@@ -1,0 +1,17 @@
+name = "blog"
+description = "Provides a blog content type with tags"
+version = "1.0.0"
+dependencies = ["item", "categories"]
+
+[taps]
+implements = [
+    "tap_item_info",
+    "tap_item_view",
+    "tap_item_access",
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[taps.options]
+tap_item_view = { data_mode = "handle" }
