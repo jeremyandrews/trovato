@@ -25,13 +25,26 @@ mod bench_serialize;
 mod fixture;
 mod host;
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 use host::{BenchHost, HostConfig};
+
+/// Path to the compiled guest plugin WASM (debug or release based on availability).
+fn guest_wasm_path() -> &'static str {
+    let release_path = "target/wasm32-wasip1/release/phase0_guest.wasm";
+    let debug_path = "target/wasm32-wasip1/debug/phase0_guest.wasm";
+
+    if std::path::Path::new(release_path).exists() {
+        release_path
+    } else {
+        debug_path
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -43,79 +56,94 @@ async fn main() -> Result<()> {
 
     println!("=== Trovato Phase 0: WASM Architecture Validation ===\n");
 
-    // Story 1.1: Initialize Wasmtime Engine with pooling allocator
-    println!("Initializing benchmark host environment...");
-    let start = Instant::now();
-
+    // Initialize benchmark host
+    println!("Initializing benchmark host...");
     let config = HostConfig {
         max_instances: 1000,
-        max_memory_pages: 1024, // 64MB max per instance
-        async_support: true,
+        max_memory_pages: 1024,
+        async_support: false, // Disable for now, enable for Story 1.5
     };
-
     let host = BenchHost::with_config(&config)?;
-    let init_time = start.elapsed();
+    println!("  ✓ Engine created with pooling allocator\n");
 
-    println!("  ✓ Engine created with pooling allocator");
-    println!("  ✓ Linker configured with host functions (log, variables)");
-    println!("  ✓ Initialization time: {init_time:?}");
-    println!();
-
-    // Verify fixture generation
-    println!("Verifying test fixtures...");
-    let item = fixture::synthetic_item();
-    let item_size = fixture::synthetic_item_size();
-    println!("  ✓ Synthetic item payload: {item_size} bytes (~4KB target)");
-    println!(
-        "  ✓ Item type: {}",
-        item.get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-    );
-    println!(
-        "  ✓ Field count: {}",
-        item.get("fields")
-            .and_then(|f| f.as_object())
-            .map(|f| f.len())
-            .unwrap_or(0)
-    );
-    println!();
-
-    // Verify store creation
-    println!("Verifying store creation...");
-    let store_start = Instant::now();
-    let _store = host.create_store();
-    let store_time = store_start.elapsed();
-    println!("  ✓ Store creation time: {store_time:?}");
-
-    // Create multiple stores to verify pooling
-    let mut store_times = Vec::with_capacity(100);
-    for _ in 0..100 {
-        let s = Instant::now();
-        let _store = host.create_store();
-        store_times.push(s.elapsed());
+    // Load the guest plugin
+    println!("Loading guest plugin...");
+    let wasm_path = PathBuf::from(guest_wasm_path());
+    if !wasm_path.exists() {
+        println!("  ✗ Guest plugin not found at: {}", wasm_path.display());
+        println!("  Build it with: cargo build --target wasm32-wasip1 -p phase0-guest");
+        return Ok(());
     }
-    store_times.sort();
-    let p50 = store_times[49];
-    let p95 = store_times[94];
-    let p99 = store_times[98];
-    println!("  ✓ Store creation (100 iterations): p50={p50:?}, p95={p95:?}, p99={p99:?}");
+
+    let module = host.compile_from_file(&wasm_path)?;
+    println!("  ✓ Loaded: {}", wasm_path.display());
     println!();
 
-    // Summary
-    println!("=== Story 1.1 Complete ===");
+    // Verify both modes work before benchmarking
+    println!("Verifying plugin functionality...");
+    bench_handle::verify_handle_access(&host, &module)?;
+    bench_serialize::verify_serialize_access(&host, &module)?;
+    println!("  ✓ Both data access modes verified\n");
+
+    // Run benchmarks
+    const ITERATIONS: u32 = 500;
+
+    println!("Running handle-based benchmark ({} iterations)...", ITERATIONS);
+    let handle_results = bench_handle::run_handle_benchmark(&host, &module, ITERATIONS)?;
+    println!("  {}", handle_results.total);
+    println!("  {}", handle_results.tap_only);
+    println!("  {}\n", handle_results.instantiation_only);
+
+    println!("Running full-serialization benchmark ({} iterations)...", ITERATIONS);
+    let serialize_results = bench_serialize::run_serialize_benchmark(&host, &module, ITERATIONS)?;
+    println!("  {}", serialize_results.total);
+    println!("  {}", serialize_results.tap_only);
+    println!("  {}\n", serialize_results.instantiation_only);
+
+    // Calculate speedup ratios
+    let handle_tap_avg = handle_results.tap_only.per_call_avg.as_nanos() as f64;
+    let serialize_tap_avg = serialize_results.tap_only.per_call_avg.as_nanos() as f64;
+    let tap_speedup = serialize_tap_avg / handle_tap_avg;
+
+    let handle_total_avg = handle_results.total.per_call_avg.as_nanos() as f64;
+    let serialize_total_avg = serialize_results.total.per_call_avg.as_nanos() as f64;
+    let total_speedup = serialize_total_avg / handle_total_avg;
+
+    println!("=== Results Summary ===\n");
+    println!("Handle-based (tap call only):");
+    println!("  Average: {:?}", handle_results.tap_only.per_call_avg);
+    println!("  p50: {:?}, p95: {:?}, p99: {:?}",
+             handle_results.tap_only.p50, handle_results.tap_only.p95, handle_results.tap_only.p99);
     println!();
-    println!("Benchmark host binary initialized successfully.");
-    println!("Next steps (Story 1.2):");
-    println!("  1. Create minimal test guest plugin (wasm32-wasip1 target)");
-    println!("  2. Implement tap-item-view export in guest");
-    println!("  3. Verify plugin loads and executes in benchmark host");
+    println!("Full-serialization (tap call only):");
+    println!("  Average: {:?}", serialize_results.tap_only.per_call_avg);
+    println!("  p50: {:?}, p95: {:?}, p99: {:?}",
+             serialize_results.tap_only.p50, serialize_results.tap_only.p95, serialize_results.tap_only.p99);
     println!();
-    println!("Remaining Phase 0 stories:");
-    println!("  1.3: Implement handle-based host functions (item-api)");
-    println!("  1.4: Run handle vs serialize benchmark (500 calls)");
-    println!("  1.5: Run concurrency benchmark (100 parallel)");
-    println!("  1.6: Run async host function validation");
+    println!("Tap-only speedup ratio: {:.2}x", tap_speedup);
+    println!("Total (including instantiation) speedup ratio: {:.2}x", total_speedup);
+    println!();
+
+    println!("Instantiation overhead:");
+    println!("  Handle-based: {:?}", handle_results.instantiation_only.per_call_avg);
+    println!("  Full-serialization: {:?}", serialize_results.instantiation_only.per_call_avg);
+    println!();
+
+    // Gate check - use tap-only comparison for the architectural decision
+    if tap_speedup >= 5.0 {
+        println!("✓ GATE PASSED: Handle-based tap is {:.1}x faster (threshold: 5x)", tap_speedup);
+        println!("  Recommendation: Use handle-based as the default data access mode.");
+    } else if tap_speedup >= 2.0 {
+        println!("⚠ GATE MARGINAL: Handle-based tap is only {:.1}x faster (threshold: 5x)", tap_speedup);
+        println!("  Recommendation: Consider hybrid approach or further optimization.");
+    } else if tap_speedup >= 1.0 {
+        println!("⚠ GATE MARGINAL: Handle-based tap is only {:.1}x faster (threshold: 5x)", tap_speedup);
+        println!("  Note: Instantiation dominates; both modes are viable.");
+        println!("  Recommendation: Choose based on ergonomics (handle-based for partial access).");
+    } else {
+        println!("✗ UNEXPECTED: Full-serialization is faster than handle-based ({:.1}x)", 1.0/tap_speedup);
+        println!("  Recommendation: Investigate handle-based overhead.");
+    }
 
     Ok(())
 }

@@ -241,15 +241,19 @@ impl StubHostState {
     }
 }
 
-/// Creates a Linker with basic host functions registered.
+/// Creates a Linker with all host functions registered for benchmarking.
 ///
-/// This registers the `logging` and `variables` interfaces from the WIT.
-/// Additional interfaces (item-api, db, etc.) are added in later stories.
+/// This registers:
+/// - `logging` interface (log)
+/// - `variables` interface (get)
+/// - `item-api` interface (get_title, get_field_string, set_field_string)
 pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
     let mut linker = Linker::new(engine);
 
-    // Register logging::log host function
-    // WIT: log: func(level: string, plugin: string, message: string);
+    // =========================================================================
+    // Logging Interface
+    // =========================================================================
+
     linker.func_wrap(
         "trovato:kernel/logging",
         "log",
@@ -260,7 +264,6 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
          plugin_len: i32,
          message_ptr: i32,
          message_len: i32| {
-            // Read strings from WASM memory
             let memory = match caller.get_export("memory") {
                 Some(wasmtime::Extern::Memory(mem)) => mem,
                 _ => return,
@@ -275,10 +278,10 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
         },
     )?;
 
-    // Register variables::get host function
-    // WIT: get: func(name: string, default-value: string) -> string;
-    // Note: For simplicity in Phase 0, we use a simpler ABI.
-    // The actual implementation will use wit-bindgen generated bindings.
+    // =========================================================================
+    // Variables Interface
+    // =========================================================================
+
     linker.func_wrap(
         "trovato:kernel/variables",
         "get",
@@ -298,10 +301,120 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
                 read_string(&memory, &caller, default_ptr, default_len).unwrap_or_default();
 
             let result = caller.data().get_variable(&name, &default);
-
-            // Return pointer and length packed into i64 (simplified for benchmarks)
-            // Real implementation will use proper canonical ABI
             result.len() as i64
+        },
+    )?;
+
+    // =========================================================================
+    // Item API Interface (Handle-Based)
+    // =========================================================================
+
+    // get_title(handle: i32, buf_ptr: i32, buf_len: i32) -> i32
+    // Returns the number of bytes written, or -1 on error.
+    linker.func_wrap(
+        "trovato:kernel/item-api",
+        "get_title",
+        |mut caller: wasmtime::Caller<'_, StubHostState>,
+         handle: i32,
+         buf_ptr: i32,
+         buf_len: i32|
+         -> i32 {
+            let title = match caller.data().get_title(handle) {
+                Some(t) => t,
+                None => return -1,
+            };
+
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(mem)) => mem,
+                _ => return -1,
+            };
+
+            write_string_to_memory(&memory, &mut caller, buf_ptr, buf_len, &title)
+        },
+    )?;
+
+    // get_field_string(handle, field_ptr, field_len, buf_ptr, buf_len) -> i32
+    // Returns bytes written, or -1 if field not found.
+    linker.func_wrap(
+        "trovato:kernel/item-api",
+        "get_field_string",
+        |mut caller: wasmtime::Caller<'_, StubHostState>,
+         handle: i32,
+         field_ptr: i32,
+         field_len: i32,
+         buf_ptr: i32,
+         buf_len: i32|
+         -> i32 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(mem)) => mem,
+                _ => return -1,
+            };
+
+            let field_name =
+                match read_string(&memory, &caller, field_ptr, field_len) {
+                    Some(s) => s,
+                    None => return -1,
+                };
+
+            let value = match caller.data().get_field_string(handle, &field_name) {
+                Some(v) => v,
+                None => return -1,
+            };
+
+            write_string_to_memory(&memory, &mut caller, buf_ptr, buf_len, &value)
+        },
+    )?;
+
+    // set_field_string(handle, field_ptr, field_len, value_ptr, value_len)
+    linker.func_wrap(
+        "trovato:kernel/item-api",
+        "set_field_string",
+        |mut caller: wasmtime::Caller<'_, StubHostState>,
+         handle: i32,
+         field_ptr: i32,
+         field_len: i32,
+         value_ptr: i32,
+         value_len: i32| {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(mem)) => mem,
+                _ => return,
+            };
+
+            let field_name = match read_string(&memory, &caller, field_ptr, field_len) {
+                Some(s) => s,
+                None => return,
+            };
+
+            let value = match read_string(&memory, &caller, value_ptr, value_len) {
+                Some(s) => s,
+                None => return,
+            };
+
+            caller.data_mut().set_field_string(handle, &field_name, &value);
+        },
+    )?;
+
+    // =========================================================================
+    // WASI-like stubs (for wasm32-wasip1 compatibility)
+    // =========================================================================
+
+    // memcmp is used by wee_alloc and string comparison in the guest
+    linker.func_wrap(
+        "env",
+        "memcmp",
+        |mut caller: wasmtime::Caller<'_, StubHostState>, a: i32, b: i32, n: i32| -> i32 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(mem)) => mem,
+                _ => return 0,
+            };
+            let data = memory.data(&caller);
+            let slice_a = &data[a as usize..(a + n) as usize];
+            let slice_b = &data[b as usize..(b + n) as usize];
+            match slice_a.cmp(slice_b) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            }
         },
     )?;
 
@@ -328,6 +441,30 @@ fn read_string<T>(
     }
 
     String::from_utf8(data[start..end].to_vec()).ok()
+}
+
+/// Helper to write a string to WASM linear memory.
+/// Returns the number of bytes written, or -1 on error.
+fn write_string_to_memory<T>(
+    memory: &Memory,
+    caller: &mut wasmtime::Caller<'_, T>,
+    ptr: i32,
+    max_len: i32,
+    value: &str,
+) -> i32 {
+    let bytes = value.as_bytes();
+    let write_len = bytes.len().min(max_len as usize);
+
+    let data = memory.data_mut(caller);
+    let start = ptr as usize;
+    let end = start + write_len;
+
+    if end > data.len() {
+        return -1;
+    }
+
+    data[start..end].copy_from_slice(&bytes[..write_len]);
+    write_len as i32
 }
 
 /// Compiles a WASM module from bytes.

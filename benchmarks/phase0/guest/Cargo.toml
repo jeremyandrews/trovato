@@ -1,0 +1,17 @@
+[package]
+name = "phase0-guest"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "Minimal test plugin for Phase 0 WASM benchmarks"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Minimal allocator for no_std WASM
+wee_alloc = "0.4"
+
+[profile.release]
+opt-level = "s"
+lto = true

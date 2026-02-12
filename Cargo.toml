@@ -5,6 +5,7 @@ members = [
     "crates/plugin-sdk",
     "crates/test-utils",
     "benchmarks/phase0",
+    "benchmarks/phase0/guest",
     "plugins/blog",
 ]
 
@@ -21,6 +22,7 @@ tower-sessions-redis-store = "0.14"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json", "chrono"] }
 sea-query = { version = "0.32", features = ["backend-postgres"] }
 wasmtime = "28"
+wasmtime-wasi = "28"
 argon2 = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
