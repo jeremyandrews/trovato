@@ -5,6 +5,7 @@
 mod config;
 mod db;
 mod error;
+mod lockout;
 mod models;
 mod permissions;
 mod routes;
@@ -51,6 +52,8 @@ async fn main() -> Result<()> {
     // Build the router
     let app = Router::new()
         .merge(routes::auth::router())
+        .merge(routes::admin::router())
+        .merge(routes::password_reset::router())
         .merge(routes::health::router())
         .layer(session_layer)
         .layer(TraceLayer::new_for_http())

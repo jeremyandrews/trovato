@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use crate::config::Config;
 use crate::db;
+use crate::lockout::LockoutService;
 use crate::permissions::PermissionService;
 
 /// Shared application state.
@@ -27,6 +28,9 @@ struct AppStateInner {
 
     /// Permission service for access control.
     permissions: PermissionService,
+
+    /// Account lockout service.
+    lockout: LockoutService,
 }
 
 impl AppState {
@@ -60,8 +64,11 @@ impl AppState {
         // Create permission service
         let permissions = PermissionService::new(db.clone());
 
+        // Create lockout service
+        let lockout = LockoutService::new(redis.clone());
+
         Ok(Self {
-            inner: Arc::new(AppStateInner { db, redis, permissions }),
+            inner: Arc::new(AppStateInner { db, redis, permissions, lockout }),
         })
     }
 
@@ -78,6 +85,11 @@ impl AppState {
     /// Get the permission service.
     pub fn permissions(&self) -> &PermissionService {
         &self.inner.permissions
+    }
+
+    /// Get the lockout service.
+    pub fn lockout(&self) -> &LockoutService {
+        &self.inner.lockout
     }
 
     /// Check if PostgreSQL is healthy.

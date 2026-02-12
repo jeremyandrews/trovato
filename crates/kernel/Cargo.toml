@@ -35,4 +35,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
 trovato-sdk = { path = "../plugin-sdk" }

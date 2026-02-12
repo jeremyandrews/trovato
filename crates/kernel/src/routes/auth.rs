@@ -17,6 +17,9 @@ pub const SESSION_USER_ID: &str = "user_id";
 /// Session key for storing the active stage.
 pub const SESSION_ACTIVE_STAGE: &str = "active_stage";
 
+/// Session key for remember_me flag.
+pub const SESSION_REMEMBER_ME: &str = "remember_me";
+
 /// Login request body.
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -42,6 +45,7 @@ pub struct AuthError {
 /// Login handler.
 ///
 /// POST /user/login
+/// - Checks for account lockout
 /// - Verifies username and password
 /// - Creates session on success
 /// - Updates login/access timestamps
@@ -61,29 +65,88 @@ async fn login(
         )
     };
 
+    // Check if account is locked
+    match state.lockout().is_locked(&request.username).await {
+        Ok(true) => {
+            // Get remaining lockout time for user-friendly message
+            let remaining = state
+                .lockout()
+                .get_lockout_remaining(&request.username)
+                .await
+                .unwrap_or(None);
+
+            let message = if let Some(secs) = remaining {
+                format!(
+                    "Account temporarily locked. Try again in {} minutes.",
+                    (secs / 60) + 1
+                )
+            } else {
+                "Account temporarily locked. Try again later.".to_string()
+            };
+
+            return Err((StatusCode::TOO_MANY_REQUESTS, Json(AuthError { error: message })));
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "failed to check lockout status");
+            // Continue with login attempt even if lockout check fails
+        }
+    }
+
     // Find user by username
-    let user = User::find_by_name(state.db(), &request.username)
-        .await
-        .map_err(|e| {
+    let user = match User::find_by_name(state.db(), &request.username).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            // Record failed attempt even for non-existent users (prevent enumeration)
+            let _ = state.lockout().record_failed_attempt(&request.username).await;
+            return Err(auth_error());
+        }
+        Err(e) => {
             tracing::error!(error = %e, "database error during login");
-            (
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(AuthError {
                     error: "Internal server error".to_string(),
                 }),
-            )
-        })?
-        .ok_or_else(auth_error)?;
+            ));
+        }
+    };
 
     // Check if user is active
     if !user.is_active() {
+        let _ = state.lockout().record_failed_attempt(&request.username).await;
         return Err(auth_error());
     }
 
     // Verify password
     if !user.verify_password(&request.password) {
+        // Record failed attempt
+        match state.lockout().record_failed_attempt(&request.username).await {
+            Ok((locked, remaining)) => {
+                if locked {
+                    return Err((
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(AuthError {
+                            error: "Account temporarily locked due to too many failed attempts. Try again in 15 minutes.".to_string(),
+                        }),
+                    ));
+                } else {
+                    tracing::info!(
+                        username = %request.username,
+                        remaining_attempts = remaining,
+                        "failed login attempt"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to record failed attempt");
+            }
+        }
         return Err(auth_error());
     }
+
+    // Successful login - clear any failed attempts
+    let _ = state.lockout().clear_attempts(&request.username).await;
 
     // Update login timestamp
     if let Err(e) = User::touch_login(state.db(), user.id).await {
@@ -118,9 +181,20 @@ async fn login(
             )
         })?;
 
-    // Handle remember_me by extending session expiry
-    // Note: tower-sessions handles this via configuration
-    // For now we just log it; actual implementation would adjust session config
+    // Store remember_me preference in session
+    session
+        .insert(SESSION_REMEMBER_ME, request.remember_me)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to insert remember_me into session");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AuthError {
+                    error: "Internal server error".to_string(),
+                }),
+            )
+        })?;
+
     if request.remember_me {
         info!(user_id = %user.id, "user logged in with remember_me");
     } else {
