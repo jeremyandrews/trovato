@@ -16,6 +16,7 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 tower-sessions = { workspace = true }
 tower-sessions-redis-store = { workspace = true }
+fred = { workspace = true }
 sqlx = { workspace = true }
 sea-query = { workspace = true }
 wasmtime = { workspace = true }

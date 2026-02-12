@@ -162,7 +162,7 @@ version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
- "axum-core 0.5.6",
+ "axum-core",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -187,26 +187,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
-dependencies = [
- "async-trait",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "rustversion",
- "sync_wrapper",
- "tower-layer",
- "tower-service",
 ]
 
 [[package]]
@@ -1014,9 +994,9 @@ dependencies = [
 
 [[package]]
 name = "float-cmp"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
 dependencies = [
  "num-traits",
 ]
@@ -1055,15 +1035,14 @@ dependencies = [
 
 [[package]]
 name = "fred"
-version = "9.4.0"
+version = "10.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cdd5378252ea124b712e0ac55147d26ae3af575883b34b8423091a4c719606b"
+checksum = "3a7b2fd0f08b23315c13b6156f971aeedb6f75fb16a29ac1872d2eabccc1490e"
 dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
  "bytes-utils",
- "crossbeam-queue",
  "float-cmp",
  "fred-macros",
  "futures",
@@ -2400,9 +2379,9 @@ dependencies = [
 
 [[package]]
 name = "redis-protocol"
-version = "5.0.1"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65deb7c9501fbb2b6f812a30d59c0253779480853545153a51d8e9e444ddc99f"
+checksum = "9cdba59219406899220fc4cdfd17a95191ba9c9afb719b5fa5a083d63109a9f1"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -3383,12 +3362,11 @@ dependencies = [
 
 [[package]]
 name = "tower-cookies"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fd0118512cf0b3768f7fcccf0bef1ae41d68f2b45edc1e77432b36c97c56c6d"
+checksum = "151b5a3e3c45df17466454bb74e9ecedecc955269bdedbf4d150dfa393b55a36"
 dependencies = [
- "async-trait",
- "axum-core 0.4.5",
+ "axum-core",
  "cookie",
  "futures-util",
  "http",
@@ -3432,9 +3410,9 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tower-sessions"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65856c81ee244e0f8a55ab0f7b769b72fbde387c235f0a73cd97c579818d05eb"
+checksum = "43a05911f23e8fae446005fe9b7b97e66d95b6db589dc1c4d59f6a2d4d4927d3"
 dependencies = [
  "async-trait",
  "http",
@@ -3450,12 +3428,12 @@ dependencies = [
 
 [[package]]
 name = "tower-sessions-core"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb6abbfcaf6436ec5a772cd9f965401da12db793e404ae6134eac066fa5a04f3"
+checksum = "ce8cce604865576b7751b7a6bc3058f754569a60d689328bb74c52b1d87e355b"
 dependencies = [
  "async-trait",
- "axum-core 0.4.5",
+ "axum-core",
  "base64 0.22.1",
  "futures",
  "http",
@@ -3463,7 +3441,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "time",
  "tokio",
  "tracing",
@@ -3471,9 +3449,9 @@ dependencies = [
 
 [[package]]
 name = "tower-sessions-memory-store"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fad75660c8afbe74f4e7cbbe8e9090171a056b57370ea4d7d5e9eb3e4af3092"
+checksum = "fb05909f2e1420135a831dd5df9f5596d69196d0a64c3499ca474c4bd3d33242"
 dependencies = [
  "async-trait",
  "time",
@@ -3483,14 +3461,14 @@ dependencies = [
 
 [[package]]
 name = "tower-sessions-redis-store"
-version = "0.14.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7d9f0fdeebdc2c6accbc760a585c2932bf6eebf68537715e8ff199dfd9b5d03"
+checksum = "8e15b774f3d46625a27a8ac1238ecd73c8bd50013244e2de004026e161aad728"
 dependencies = [
  "async-trait",
  "fred",
  "rmp-serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "time",
  "tower-sessions-core",
 ]
@@ -3567,6 +3545,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "dotenvy",
+ "fred",
  "moka",
  "redis",
  "sea-query",

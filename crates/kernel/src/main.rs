@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod models;
 mod routes;
+mod session;
 mod state;
 
 use std::net::SocketAddr;
@@ -41,9 +42,16 @@ async fn main() -> Result<()> {
 
     info!("Database and Redis connections established");
 
+    // Create session layer
+    let session_layer = session::create_session_layer(&config.redis_url)
+        .await
+        .context("failed to create session layer")?;
+
     // Build the router
     let app = Router::new()
+        .merge(routes::auth::router())
         .merge(routes::health::router())
+        .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

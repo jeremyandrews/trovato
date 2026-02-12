@@ -18,8 +18,9 @@ axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "timeout", "compression-gzip"] }
-tower-sessions = "0.13"
-tower-sessions-redis-store = "0.14"
+tower-sessions = "0.14"
+tower-sessions-redis-store = "0.16"
+fred = { version = "10", features = ["subscriber-client"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json", "chrono", "uuid"] }
 sea-query = { version = "0.32", features = ["backend-postgres"] }
 wasmtime = "28"
