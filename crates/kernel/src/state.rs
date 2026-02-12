@@ -7,9 +7,13 @@ use redis::Client as RedisClient;
 use sqlx::PgPool;
 
 use crate::config::Config;
+use crate::content::{ContentTypeRegistry, ItemService};
 use crate::db;
 use crate::lockout::LockoutService;
+use crate::menu::MenuRegistry;
 use crate::permissions::PermissionService;
+use crate::plugin::{PluginConfig, PluginRuntime};
+use crate::tap::{TapDispatcher, TapRegistry};
 
 /// Shared application state.
 ///
@@ -31,6 +35,24 @@ struct AppStateInner {
 
     /// Account lockout service.
     lockout: LockoutService,
+
+    /// Plugin runtime.
+    plugin_runtime: Arc<PluginRuntime>,
+
+    /// Tap registry.
+    tap_registry: Arc<TapRegistry>,
+
+    /// Tap dispatcher.
+    tap_dispatcher: Arc<TapDispatcher>,
+
+    /// Menu registry.
+    menu_registry: Arc<MenuRegistry>,
+
+    /// Content type registry.
+    content_types: Arc<ContentTypeRegistry>,
+
+    /// Item service.
+    items: Arc<ItemService>,
 }
 
 impl AppState {
@@ -67,8 +89,61 @@ impl AppState {
         // Create lockout service
         let lockout = LockoutService::new(redis.clone());
 
+        // Create plugin runtime and load plugins
+        let plugin_config = PluginConfig::default();
+        let mut plugin_runtime = PluginRuntime::new(&plugin_config)
+            .context("failed to create plugin runtime")?;
+
+        // Load plugins
+        plugin_runtime
+            .load_all(&config.plugins_dir)
+            .await
+            .context("failed to load plugins")?;
+
+        let plugin_runtime = Arc::new(plugin_runtime);
+
+        // Create tap registry
+        let tap_registry = Arc::new(TapRegistry::from_plugins(&plugin_runtime));
+
+        // Create tap dispatcher
+        let tap_dispatcher = Arc::new(TapDispatcher::new(
+            plugin_runtime.clone(),
+            tap_registry.clone(),
+        ));
+
+        // Create menu registry from plugins by invoking tap_menu
+        use crate::tap::{RequestState, UserContext};
+        let menu_state = RequestState::without_services(UserContext::anonymous());
+        let menu_results = tap_dispatcher.dispatch("tap_menu", "{}", menu_state).await;
+        let menu_jsons: Vec<(String, String)> = menu_results
+            .into_iter()
+            .map(|r| (r.plugin_name, r.output))
+            .collect();
+        let menu_registry = Arc::new(MenuRegistry::from_tap_results(menu_jsons));
+
+        // Create content type registry
+        let content_types = Arc::new(ContentTypeRegistry::new(db.clone()));
+        content_types
+            .sync_from_plugins(&tap_dispatcher)
+            .await
+            .context("failed to sync content types")?;
+
+        // Create item service
+        let items = Arc::new(ItemService::new(db.clone(), tap_dispatcher.clone()));
+
         Ok(Self {
-            inner: Arc::new(AppStateInner { db, redis, permissions, lockout }),
+            inner: Arc::new(AppStateInner {
+                db,
+                redis,
+                permissions,
+                lockout,
+                plugin_runtime,
+                tap_registry,
+                tap_dispatcher,
+                menu_registry,
+                content_types,
+                items,
+            }),
         })
     }
 
@@ -90,6 +165,36 @@ impl AppState {
     /// Get the lockout service.
     pub fn lockout(&self) -> &LockoutService {
         &self.inner.lockout
+    }
+
+    /// Get the plugin runtime.
+    pub fn plugin_runtime(&self) -> &Arc<PluginRuntime> {
+        &self.inner.plugin_runtime
+    }
+
+    /// Get the tap registry.
+    pub fn tap_registry(&self) -> &Arc<TapRegistry> {
+        &self.inner.tap_registry
+    }
+
+    /// Get the tap dispatcher.
+    pub fn tap_dispatcher(&self) -> &Arc<TapDispatcher> {
+        &self.inner.tap_dispatcher
+    }
+
+    /// Get the menu registry.
+    pub fn menu_registry(&self) -> &Arc<MenuRegistry> {
+        &self.inner.menu_registry
+    }
+
+    /// Get the content type registry.
+    pub fn content_types(&self) -> &Arc<ContentTypeRegistry> {
+        &self.inner.content_types
+    }
+
+    /// Get the item service.
+    pub fn items(&self) -> &Arc<ItemService> {
+        &self.inner.items
     }
 
     /// Check if PostgreSQL is healthy.

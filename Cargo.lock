@@ -3551,6 +3551,7 @@ dependencies = [
  "moka",
  "rand",
  "redis",
+ "regex",
  "sea-query",
  "serde",
  "serde_json",

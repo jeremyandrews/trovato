@@ -3,6 +3,7 @@
 //! HTTP server, plugin runtime, and core services.
 
 mod config;
+mod content;
 mod db;
 mod error;
 mod host;
@@ -53,12 +54,20 @@ async fn main() -> Result<()> {
         .await
         .context("failed to create session layer")?;
 
+    // Log plugin and content type info
+    info!(
+        plugins = state.plugin_runtime().plugin_count(),
+        content_types = state.content_types().len(),
+        "Plugins and content types loaded"
+    );
+
     // Build the router
     let app = Router::new()
         .merge(routes::auth::router())
         .merge(routes::admin::router())
         .merge(routes::password_reset::router())
         .merge(routes::health::router())
+        .merge(routes::item::router())
         .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

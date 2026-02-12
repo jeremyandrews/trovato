@@ -45,6 +45,11 @@ impl UserContext {
     pub fn has_permission(&self, permission: &str) -> bool {
         self.permissions.iter().any(|p| p == permission)
     }
+
+    /// Check if user is admin.
+    pub fn is_admin(&self) -> bool {
+        self.has_permission("administer site")
+    }
 }
 
 impl Default for UserContext {

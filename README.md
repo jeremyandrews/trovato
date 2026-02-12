@@ -32,6 +32,9 @@ Built the HTTP server foundation with Axum, PostgreSQL via SQLx, and Redis sessi
 ### Phase 2: Plugin Development Platform
 Implemented the complete WASM plugin system. Created plugin loader with pooling allocator (~5µs instantiation), tap registry for hook dispatch, and 7 host function modules (item, db, user, cache, variables, request-context, logging). Built `#[plugin_tap]` proc macro for SDK. Reference blog plugin compiles to WASM with 4 tap exports. Added menu registry with path matching, dependency resolver with cycle detection, and structured error types.
 
+### Phase 3: Content System (Complete)
+Implemented the core content management functionality (Epic 4, Stories 4.1-4.11). Database schema for item_type, item, and item_revision tables with JSONB field storage, GIN indexes, and full-text search vectors. Item model with full CRUD operations and revision history. ContentTypeRegistry syncs definitions from plugins via tap_item_info and caches in DashMap. ItemService with tap integration (insert, update, delete, view, access) and proper access control aggregation (Deny wins, then Grant, else Neutral). HTTP routes for item CRUD at /item/* paths with API endpoints. Text format filter pipeline for XSS protection (plain_text, filtered_html, full_html). Auto-generated admin forms from field definitions supporting all field types. 170+ tests passing.
+
 ---
 
 *This project is being developed with AI assistance.*

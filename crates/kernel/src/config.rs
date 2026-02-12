@@ -1,6 +1,7 @@
 //! Configuration loaded from environment variables.
 
 use std::env;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
@@ -18,6 +19,9 @@ pub struct Config {
 
     /// Maximum database connections in pool (default: 10).
     pub database_max_connections: u32,
+
+    /// Path to plugins directory (default: ./plugins).
+    pub plugins_dir: PathBuf,
 }
 
 impl Config {
@@ -39,11 +43,16 @@ impl Config {
             .parse()
             .context("DATABASE_MAX_CONNECTIONS must be a valid u32")?;
 
+        let plugins_dir = env::var("PLUGINS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./plugins"));
+
         Ok(Self {
             port,
             database_url,
             redis_url,
             database_max_connections,
+            plugins_dir,
         })
     }
 }
