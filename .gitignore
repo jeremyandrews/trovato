@@ -1,8 +1,24 @@
+# Build artifacts
 /target
 **/*.rs.bk
-Cargo.lock
+
+# WASM binaries (generated, not source)
 *.wasm
+
+# Editor files
 *.swp
 *.swo
 *~
 .DS_Store
+
+# Claude Code local settings (personal preferences)
+.claude/settings.local.json
+
+# BMAD methodology templates (installable tooling)
+# Keep _bmad-output/ which contains project-specific artifacts
+_bmad/
+.claude/commands/
+
+# SQLx offline cache (regenerated with cargo sqlx prepare)
+# Uncomment if not using offline mode in CI
+# .sqlx/

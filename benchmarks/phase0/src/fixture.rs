@@ -3,7 +3,7 @@
 //! Generates a 4KB JSON item with 15 fields, nested arrays, and record
 //! references to match the Phase 0 benchmark specification.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Generate a synthetic 4KB item JSON payload with 15 fields.
