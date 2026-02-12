@@ -33,6 +33,11 @@ impl AppState {
             .await
             .context("failed to create database pool")?;
 
+        // Run migrations
+        db::run_migrations(&db)
+            .await
+            .context("failed to run migrations")?;
+
         // Create Redis client
         let redis = RedisClient::open(config.redis_url.as_str())
             .context("failed to create Redis client")?;
