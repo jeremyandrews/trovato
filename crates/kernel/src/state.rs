@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use crate::config::Config;
 use crate::db;
+use crate::permissions::PermissionService;
 
 /// Shared application state.
 ///
@@ -19,10 +20,13 @@ pub struct AppState {
 
 struct AppStateInner {
     /// PostgreSQL connection pool.
-    pub db: PgPool,
+    db: PgPool,
 
     /// Redis client for sessions and caching.
-    pub redis: RedisClient,
+    redis: RedisClient,
+
+    /// Permission service for access control.
+    permissions: PermissionService,
 }
 
 impl AppState {
@@ -53,8 +57,11 @@ impl AppState {
             .await
             .context("Redis PING failed")?;
 
+        // Create permission service
+        let permissions = PermissionService::new(db.clone());
+
         Ok(Self {
-            inner: Arc::new(AppStateInner { db, redis }),
+            inner: Arc::new(AppStateInner { db, redis, permissions }),
         })
     }
 
@@ -66,6 +73,11 @@ impl AppState {
     /// Get the Redis client.
     pub fn redis(&self) -> &RedisClient {
         &self.inner.redis
+    }
+
+    /// Get the permission service.
+    pub fn permissions(&self) -> &PermissionService {
+        &self.inner.permissions
     }
 
     /// Check if PostgreSQL is healthy.

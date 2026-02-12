@@ -6,6 +6,7 @@ mod config;
 mod db;
 mod error;
 mod models;
+mod permissions;
 mod routes;
 mod session;
 mod state;
