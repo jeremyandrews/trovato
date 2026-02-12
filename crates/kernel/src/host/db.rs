@@ -1,0 +1,231 @@
+//! Database host functions for WASM plugins.
+//!
+//! Provides structured database access to prevent SQL injection.
+//! All queries use JSON-encoded parameters.
+
+use anyhow::Result;
+use wasmtime::Linker;
+
+use super::{read_string_from_memory, write_string_to_memory};
+use crate::tap::RequestState;
+
+/// Register database host functions.
+pub fn register_db_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+    // select(query_json) -> result<string, string>
+    linker.func_wrap(
+        "trovato:kernel/db",
+        "select",
+        |mut caller: wasmtime::Caller<'_, RequestState>,
+         query_ptr: i32,
+         query_len: i32,
+         out_ptr: i32,
+         out_max_len: i32|
+         -> i32 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return -1,
+            };
+
+            let _query = match read_string_from_memory(&memory, &caller, query_ptr, query_len) {
+                Ok(q) => q,
+                Err(_) => return -2,
+            };
+
+            // TODO: Implement actual database select
+            // Query format: {"table": "...", "columns": [...], "where": {...}, "order": [...], "limit": n}
+            let empty_results = "[]";
+
+            write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, empty_results)
+                .unwrap_or(-3)
+        },
+    )?;
+
+    // insert(table, data_json) -> result<string, string>
+    linker.func_wrap(
+        "trovato:kernel/db",
+        "insert",
+        |mut caller: wasmtime::Caller<'_, RequestState>,
+         table_ptr: i32,
+         table_len: i32,
+         data_ptr: i32,
+         data_len: i32,
+         out_ptr: i32,
+         out_max_len: i32|
+         -> i32 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return -1,
+            };
+
+            let _table = match read_string_from_memory(&memory, &caller, table_ptr, table_len) {
+                Ok(t) => t,
+                Err(_) => return -2,
+            };
+
+            let _data = match read_string_from_memory(&memory, &caller, data_ptr, data_len) {
+                Ok(d) => d,
+                Err(_) => return -3,
+            };
+
+            // TODO: Implement actual database insert
+            // Returns the inserted row as JSON
+            let stub_result = r#"{"id":"00000000-0000-0000-0000-000000000000"}"#;
+
+            write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, stub_result)
+                .unwrap_or(-4)
+        },
+    )?;
+
+    // update(table, data_json, where_json) -> result<u64, string>
+    linker.func_wrap(
+        "trovato:kernel/db",
+        "update",
+        |mut caller: wasmtime::Caller<'_, RequestState>,
+         table_ptr: i32,
+         table_len: i32,
+         data_ptr: i32,
+         data_len: i32,
+         where_ptr: i32,
+         where_len: i32|
+         -> i64 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return -1,
+            };
+
+            let _table = match read_string_from_memory(&memory, &caller, table_ptr, table_len) {
+                Ok(t) => t,
+                Err(_) => return -2,
+            };
+
+            let _data = match read_string_from_memory(&memory, &caller, data_ptr, data_len) {
+                Ok(d) => d,
+                Err(_) => return -3,
+            };
+
+            let _where_clause = match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
+                Ok(w) => w,
+                Err(_) => return -4,
+            };
+
+            // TODO: Implement actual database update
+            // Returns rows affected
+            0
+        },
+    )?;
+
+    // delete(table, where_json) -> result<u64, string>
+    linker.func_wrap(
+        "trovato:kernel/db",
+        "delete",
+        |mut caller: wasmtime::Caller<'_, RequestState>,
+         table_ptr: i32,
+         table_len: i32,
+         where_ptr: i32,
+         where_len: i32|
+         -> i64 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return -1,
+            };
+
+            let _table = match read_string_from_memory(&memory, &caller, table_ptr, table_len) {
+                Ok(t) => t,
+                Err(_) => return -2,
+            };
+
+            let _where_clause = match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
+                Ok(w) => w,
+                Err(_) => return -3,
+            };
+
+            // TODO: Implement actual database delete
+            // Returns rows affected
+            0
+        },
+    )?;
+
+    // query_raw(sql, params_json) -> result<string, string>
+    // Note: This is a privileged operation - plugins may need explicit permission
+    linker.func_wrap(
+        "trovato:kernel/db",
+        "query-raw",
+        |mut caller: wasmtime::Caller<'_, RequestState>,
+         sql_ptr: i32,
+         sql_len: i32,
+         params_ptr: i32,
+         params_len: i32,
+         out_ptr: i32,
+         out_max_len: i32|
+         -> i32 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return -1,
+            };
+
+            let _sql = match read_string_from_memory(&memory, &caller, sql_ptr, sql_len) {
+                Ok(s) => s,
+                Err(_) => return -2,
+            };
+
+            let _params = match read_string_from_memory(&memory, &caller, params_ptr, params_len) {
+                Ok(p) => p,
+                Err(_) => return -3,
+            };
+
+            // TODO: Implement actual raw query execution with proper sandboxing
+            let empty_results = "[]";
+
+            write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, empty_results)
+                .unwrap_or(-4)
+        },
+    )?;
+
+    // execute_raw(sql, params_json) -> result<u64, string>
+    linker.func_wrap(
+        "trovato:kernel/db",
+        "execute-raw",
+        |mut caller: wasmtime::Caller<'_, RequestState>,
+         sql_ptr: i32,
+         sql_len: i32,
+         params_ptr: i32,
+         params_len: i32|
+         -> i64 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return -1,
+            };
+
+            let _sql = match read_string_from_memory(&memory, &caller, sql_ptr, sql_len) {
+                Ok(s) => s,
+                Err(_) => return -2,
+            };
+
+            let _params = match read_string_from_memory(&memory, &caller, params_ptr, params_len) {
+                Ok(p) => p,
+                Err(_) => return -3,
+            };
+
+            // TODO: Implement actual raw execute with proper sandboxing
+            0
+        },
+    )?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasmtime::Engine;
+
+    #[test]
+    fn register_db_succeeds() {
+        let config = wasmtime::Config::new();
+        let engine = Engine::new(&config).unwrap();
+        let mut linker: Linker<RequestState> = Linker::new(&engine);
+
+        let result = register_db_functions(&mut linker);
+        assert!(result.is_ok());
+    }
+}

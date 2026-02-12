@@ -12,6 +12,3 @@ implements = [
     "tap_perm",
 ]
 weight = 0
-
-[taps.options]
-tap_item_view = { data_mode = "handle" }

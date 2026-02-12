@@ -7,7 +7,15 @@
 pub mod types;
 pub mod render;
 
+// Re-export proc macros
+pub use trovato_sdk_macros::{plugin_tap, plugin_tap_result};
+
+// Re-export serde_json for use in macro-generated code
+#[doc(hidden)]
+pub use serde_json;
+
 pub mod prelude {
     pub use crate::types::*;
     pub use crate::render;
+    pub use crate::{plugin_tap, plugin_tap_result};
 }

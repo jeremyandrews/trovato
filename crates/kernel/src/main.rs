@@ -5,12 +5,16 @@
 mod config;
 mod db;
 mod error;
+mod host;
 mod lockout;
+mod menu;
 mod models;
 mod permissions;
+mod plugin;
 mod routes;
 mod session;
 mod state;
+mod tap;
 
 use std::net::SocketAddr;
 

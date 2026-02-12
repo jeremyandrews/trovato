@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Trovato CMS kernel — HTTP server, plugin runtime, and core services"
 
+[lib]
+name = "trovato_kernel"
+path = "src/lib.rs"
+
 [[bin]]
 name = "trovato"
 path = "src/main.rs"
@@ -39,3 +43,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 trovato-sdk = { path = "../plugin-sdk" }
+
+[dev-dependencies]
+http-body-util = "0.1"
+uuid = { workspace = true }

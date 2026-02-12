@@ -1,16 +1,15 @@
 //! Blog plugin for Trovato.
 //!
 //! Provides a "blog" content type with body and tags fields.
-//! This is a reference plugin demonstrating the SDK's handle-based API.
-//!
-//! Once proc macros are implemented (Phase 2), this file will use
-//! `#[plugin_info]` and `#[plugin_tap]` attributes. For now it defines
-//! the types and logic that those macros will wrap.
+//! Demonstrates the SDK's `#[plugin_tap]` proc macro for tap registration.
 
 use trovato_sdk::prelude::*;
 
-/// Content type definition for blog posts.
-pub fn item_info() -> Vec<ContentTypeDefinition> {
+/// Content type definitions for blog posts.
+///
+/// Called during plugin initialization to register content types.
+#[plugin_tap]
+pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
     vec![ContentTypeDefinition {
         machine_name: "blog".into(),
         label: "Blog Post".into(),
@@ -27,7 +26,8 @@ pub fn item_info() -> Vec<ContentTypeDefinition> {
 }
 
 /// Permissions provided by the blog plugin.
-pub fn perm() -> Vec<PermissionDefinition> {
+#[plugin_tap]
+pub fn tap_perm() -> Vec<PermissionDefinition> {
     vec![
         PermissionDefinition::new("create blog content", "Create new blog posts"),
         PermissionDefinition::new("edit own blog content", "Edit own blog posts"),
@@ -36,12 +36,38 @@ pub fn perm() -> Vec<PermissionDefinition> {
 }
 
 /// Menu routes provided by the blog plugin.
-pub fn menu() -> Vec<MenuDefinition> {
-    vec![MenuDefinition {
-        path: "blog".into(),
-        title: "Blog".into(),
-        callback: "blog_listing".into(),
-        permission: "access content".into(),
-        parent: None,
-    }]
+#[plugin_tap]
+pub fn tap_menu() -> Vec<MenuDefinition> {
+    vec![
+        MenuDefinition::new("/blog", "Blog")
+            .callback("blog_listing")
+            .permission("access content"),
+        MenuDefinition::new("/blog/:slug", "Post")
+            .callback("blog_view")
+            .permission("access content"),
+    ]
+}
+
+/// Access control for blog items.
+#[plugin_tap]
+pub fn tap_item_access(input: ItemAccessInput) -> AccessResult {
+    // Only handle blog items
+    if input.item.item_type != "blog" {
+        return AccessResult::Neutral;
+    }
+
+    // Published posts are accessible to all
+    if input.item.status == 1 && input.op == "view" {
+        return AccessResult::Grant;
+    }
+
+    // Otherwise neutral - let permission system decide
+    AccessResult::Neutral
+}
+
+/// Input for tap_item_access.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ItemAccessInput {
+    pub item: Item,
+    pub op: String,
 }

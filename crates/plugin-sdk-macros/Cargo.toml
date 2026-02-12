@@ -1,0 +1,14 @@
+[package]
+name = "trovato-sdk-macros"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Proc macros for Trovato plugin development"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing"] }

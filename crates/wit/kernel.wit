@@ -1,30 +1,21 @@
 package trovato:kernel;
 
-/// Item API — handle-based field access across the WASM boundary.
-/// Plugins receive an opaque s32 handle and call host functions to
-/// read/write individual fields, avoiding bulk serialization.
+/// Item API — full-serialization access to items.
+/// Plugins receive and return complete item JSON, avoiding multiple
+/// boundary crossings. Phase 0 benchmarks proved this is 1.2-1.6x faster
+/// than handle-based field access.
 interface item-api {
-    // Read
-    get-title: func(item-handle: s32) -> string;
-    get-field-string: func(item-handle: s32, field-name: string) -> option<string>;
-    get-field-int: func(item-handle: s32, field-name: string) -> option<s64>;
-    get-field-float: func(item-handle: s32, field-name: string) -> option<f64>;
-    get-field-json: func(item-handle: s32, field-name: string) -> option<string>;
-    get-type: func(item-handle: s32) -> string;
-    get-id: func(item-handle: s32) -> string;
-    get-revision-id: func(item-handle: s32) -> string;
-    get-author-id: func(item-handle: s32) -> string;
-    get-status: func(item-handle: s32) -> s32;
-    get-created: func(item-handle: s32) -> s64;
-    get-changed: func(item-handle: s32) -> s64;
+    /// Get an item by ID, returns full item JSON.
+    get-item: func(id: string) -> result<string, string>;
 
-    // Write
-    set-title: func(item-handle: s32, value: string);
-    set-field-string: func(item-handle: s32, field-name: string, value: string);
-    set-field-int: func(item-handle: s32, field-name: string, value: s64);
-    set-field-float: func(item-handle: s32, field-name: string, value: f64);
-    set-field-json: func(item-handle: s32, field-name: string, value-json: string);
-    set-status: func(item-handle: s32, value: s32);
+    /// Save an item from JSON (insert or update based on whether id exists).
+    save-item: func(item-json: string) -> result<string, string>;
+
+    /// Delete an item by ID.
+    delete-item: func(id: string) -> result<_, string>;
+
+    /// Query items with structured query, returns JSON array.
+    query-items: func(query-json: string) -> result<string, string>;
 }
 
 /// Structured database API — prevents SQL injection from plugins.
@@ -75,6 +66,7 @@ interface logging {
 }
 
 /// The plugin world — all imports and exports for a Trovato plugin.
+/// All tap functions use full-serialization (JSON in, JSON out).
 world plugin {
     import item-api;
     import db;
@@ -91,21 +83,16 @@ world plugin {
     export tap-disable: func() -> result<_, string>;
     export tap-uninstall: func() -> result<_, string>;
 
-    // Content type registration
+    // Content type registration (returns JSON array of ContentTypeDefinition)
     export tap-item-info: func() -> string;
 
-    // Item CRUD — handle-based (default)
-    export tap-item-view: func(item-handle: s32) -> string;
-    export tap-item-view-alter: func(render-json: string, item-handle: s32) -> string;
-    export tap-item-insert: func(item-handle: s32) -> result<_, string>;
-    export tap-item-update: func(item-handle: s32) -> result<_, string>;
+    // Item CRUD — full-serialization (item-json contains complete item)
+    export tap-item-view: func(item-json: string) -> string;
+    export tap-item-view-alter: func(render-json: string, item-json: string) -> string;
+    export tap-item-insert: func(item-json: string) -> result<_, string>;
+    export tap-item-update: func(item-json: string) -> result<_, string>;
     export tap-item-delete: func(item-id: string) -> result<_, string>;
-    export tap-item-access: func(item-handle: s32, op: string) -> string;
-
-    // Item CRUD — full-serialization (opt-in)
-    export tap-item-view-full: func(item-json: string) -> string;
-    export tap-item-insert-full: func(item-json: string) -> result<_, string>;
-    export tap-item-update-full: func(item-json: string) -> result<_, string>;
+    export tap-item-access: func(item-json: string, op: string) -> string;
 
     // Categories
     export tap-categories-term-insert: func(term-json: string) -> result<_, string>;
@@ -117,16 +104,16 @@ world plugin {
     export tap-form-validate: func(form-id: string, values-json: string) -> string;
     export tap-form-submit: func(form-id: string, values-json: string) -> result<_, string>;
 
-    // Routing & permissions
+    // Routing & permissions (return JSON arrays)
     export tap-menu: func() -> string;
     export tap-perm: func() -> string;
 
     // Theme
     export tap-theme: func() -> string;
-    export tap-preprocess-item: func(context-json: string, item-handle: s32) -> string;
+    export tap-preprocess-item: func(context-json: string, item-json: string) -> string;
 
     // Search
-    export tap-item-update-index: func(item-handle: s32) -> string;
+    export tap-item-update-index: func(item-json: string) -> string;
 
     // Cron & queues
     export tap-cron: func() -> result<_, string>;

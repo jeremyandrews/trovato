@@ -3547,6 +3547,7 @@ dependencies = [
  "dotenvy",
  "fred",
  "hex",
+ "http-body-util",
  "moka",
  "rand",
  "redis",
@@ -3592,7 +3593,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "trovato-sdk-macros",
  "uuid",
+]
+
+[[package]]
+name = "trovato-sdk-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

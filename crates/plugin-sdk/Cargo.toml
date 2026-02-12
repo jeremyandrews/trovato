@@ -9,3 +9,4 @@ description = "Trovato Plugin SDK — types, traits, and host function bindings 
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+trovato-sdk-macros = { path = "../plugin-sdk-macros" }

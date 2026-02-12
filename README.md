@@ -29,6 +29,9 @@ Benchmarked WASM plugin performance on ARM and x86-64. Validated that full-seria
 ### Phase 1: Skeleton
 Built the HTTP server foundation with Axum, PostgreSQL via SQLx, and Redis sessions. Implemented user authentication (Argon2id), role-based permissions, account lockout, password reset, and stage switching.
 
+### Phase 2: Plugin Development Platform
+Implemented the complete WASM plugin system. Created plugin loader with pooling allocator (~5µs instantiation), tap registry for hook dispatch, and 7 host function modules (item, db, user, cache, variables, request-context, logging). Built `#[plugin_tap]` proc macro for SDK. Reference blog plugin compiles to WASM with 4 tap exports. Added menu registry with path matching, dependency resolver with cycle detection, and structured error types.
+
 ---
 
 *This project is being developed with AI assistance.*

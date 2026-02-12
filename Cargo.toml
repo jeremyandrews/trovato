@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/kernel",
     "crates/plugin-sdk",
+    "crates/plugin-sdk-macros",
     "crates/test-utils",
     "benchmarks/phase0",
     "benchmarks/phase0/guest",
@@ -12,6 +13,7 @@ members = [
 default-members = [
     "crates/kernel",
     "crates/plugin-sdk",
+    "crates/plugin-sdk-macros",
     "crates/test-utils",
     "benchmarks/phase0",
     "plugins/blog",
