@@ -152,19 +152,19 @@ fn filter_operators() {
 
     // Category operators
     assert_eq!(
-        serde_json::to_string(&FilterOperator::HasTerm).unwrap(),
-        "\"has_term\""
+        serde_json::to_string(&FilterOperator::HasTag).unwrap(),
+        "\"has_tag\""
     );
     assert_eq!(
-        serde_json::to_string(&FilterOperator::HasTermOrDescendants).unwrap(),
-        "\"has_term_or_descendants\""
+        serde_json::to_string(&FilterOperator::HasTagOrDescendants).unwrap(),
+        "\"has_tag_or_descendants\""
     );
 }
 
 #[test]
 fn filter_operator_deserialization() {
-    let parsed: FilterOperator = serde_json::from_str("\"has_term_or_descendants\"").unwrap();
-    assert_eq!(parsed, FilterOperator::HasTermOrDescendants);
+    let parsed: FilterOperator = serde_json::from_str("\"has_tag_or_descendants\"").unwrap();
+    assert_eq!(parsed, FilterOperator::HasTagOrDescendants);
 
     let parsed: FilterOperator = serde_json::from_str("\"equals\"").unwrap();
     assert_eq!(parsed, FilterOperator::Equals);
@@ -452,7 +452,7 @@ fn gate_test_recent_articles_view_definition() {
     // This is the gate test case from the Phase 4 requirements:
     // "Recent Articles" Gather query with category filter + pager
 
-    let tech_term_id = Uuid::nil(); // In real test, this would be a real term ID
+    let tech_tag_id = Uuid::nil(); // In real test, this would be a real tag ID
 
     let view = GatherView {
         view_id: "recent_articles".to_string(),
@@ -495,8 +495,8 @@ fn gate_test_recent_articles_view_definition() {
                 // Category filter with hierarchy support
                 ViewFilter {
                     field: "fields.category".to_string(),
-                    operator: FilterOperator::HasTermOrDescendants,
-                    value: FilterValue::Uuid(tech_term_id),
+                    operator: FilterOperator::HasTagOrDescendants,
+                    value: FilterValue::Uuid(tech_tag_id),
                     exposed: true,
                     exposed_label: Some("Category".to_string()),
                 },
@@ -550,7 +550,7 @@ fn gate_test_recent_articles_view_definition() {
     assert_eq!(category_filter.field, "fields.category");
     assert_eq!(
         category_filter.operator,
-        FilterOperator::HasTermOrDescendants
+        FilterOperator::HasTagOrDescendants
     );
     assert!(category_filter.exposed);
 

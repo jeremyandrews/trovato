@@ -165,7 +165,7 @@ impl GatherService {
             .resolve_exposed_filters(definition.clone(), exposed_filters)
             .await?;
 
-        // Resolve category hierarchy for HasTermOrDescendants filters
+        // Resolve category hierarchy for HasTagOrDescendants filters
         let final_definition = self.resolve_category_hierarchies(resolved_definition).await?;
 
         // Build and execute queries
@@ -216,18 +216,18 @@ impl GatherService {
         let mut resolved_filters = Vec::new();
 
         for filter in definition.filters {
-            if filter.operator == FilterOperator::HasTermOrDescendants {
+            if filter.operator == FilterOperator::HasTagOrDescendants {
                 // Expand to include all descendant tag IDs
                 let tag_id = filter.value.as_uuid().ok_or_else(|| {
-                    anyhow::anyhow!("HasTermOrDescendants requires UUID value")
+                    anyhow::anyhow!("HasTagOrDescendants requires UUID value")
                 })?;
 
                 let descendant_ids = self.categories.get_tag_with_descendants(tag_id).await?;
 
-                // Replace with HasAnyTerm using expanded list
+                // Replace with HasAnyTag using expanded list
                 resolved_filters.push(ViewFilter {
                     field: filter.field,
-                    operator: FilterOperator::HasAnyTerm,
+                    operator: FilterOperator::HasAnyTag,
                     value: FilterValue::List(
                         descendant_ids.into_iter().map(FilterValue::Uuid).collect(),
                     ),

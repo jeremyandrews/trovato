@@ -115,14 +115,18 @@ pub enum FilterOperator {
     IsNull,
     /// Field is not NULL.
     IsNotNull,
-    /// Has exact category term.
-    HasTerm,
-    /// Has any of the specified terms.
-    HasAnyTerm,
-    /// Has all of the specified terms.
-    HasAllTerms,
-    /// Has term or any of its descendants (hierarchical filter).
-    HasTermOrDescendants,
+    /// Has exact category tag.
+    #[serde(rename = "has_tag")]
+    HasTag,
+    /// Has any of the specified tags.
+    #[serde(rename = "has_any_tag")]
+    HasAnyTag,
+    /// Has all of the specified tags.
+    #[serde(rename = "has_all_tags")]
+    HasAllTags,
+    /// Has tag or any of its descendants (hierarchical filter).
+    #[serde(rename = "has_tag_or_descendants")]
+    HasTagOrDescendants,
 }
 
 /// Filter value types.
@@ -501,12 +505,12 @@ mod tests {
 
     #[test]
     fn filter_operator_serialization() {
-        let op = FilterOperator::HasTermOrDescendants;
+        let op = FilterOperator::HasTagOrDescendants;
         let json = serde_json::to_string(&op).unwrap();
-        assert_eq!(json, "\"has_term_or_descendants\"");
+        assert_eq!(json, "\"has_tag_or_descendants\"");
 
         let parsed: FilterOperator = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, FilterOperator::HasTermOrDescendants);
+        assert_eq!(parsed, FilterOperator::HasTagOrDescendants);
     }
 
     #[test]

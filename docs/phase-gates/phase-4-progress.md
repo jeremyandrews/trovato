@@ -6,28 +6,27 @@
 
 ## Executive Summary
 
-Phase 4 implements the Gather query engine and Categories system. Gather provides a type-safe query builder using SeaQuery for constructing content listings with filters, sorts, and paging. Categories enable hierarchical taxonomy with vocabularies and terms supporting DAG structures (multiple parents).
+Phase 4 implements the Gather query engine and Categories system. Gather provides a type-safe query builder using SeaQuery for constructing content listings with filters, sorts, and paging. Categories enable hierarchical taxonomy with tags supporting DAG structures (multiple parents).
 
 ## Completed Work
 
 ### Database Schema (4 migrations)
 
-**category_vocabulary table**:
-- `vid` VARCHAR(32) PRIMARY KEY
+**category table**:
+- `id` VARCHAR(32) PRIMARY KEY
 - `label`, `description`, `hierarchy`, `weight`
-- Seeded "tags" (flat) and "categories" (DAG)
 
-**category_term table**:
-- `tid` UUID PRIMARY KEY
-- `vid` FK to vocabulary
+**category_tag table**:
+- `id` UUID PRIMARY KEY
+- `category_id` FK to category
 - `label`, `description`, `weight`
 - `created`, `changed` timestamps
 
-**category_term_hierarchy table**:
+**category_tag_hierarchy table**:
 - `id` SERIAL PRIMARY KEY
-- `tid`, `parent_tid` UUIDs with CASCADE delete
-- Unique indexes for parent relationships and root terms
-- Supports DAG (multiple parents per term)
+- `tag_id`, `parent_id` UUIDs with CASCADE delete
+- Unique indexes for parent relationships and root tags
+- Supports DAG (multiple parents per tag)
 
 **gather_view table**:
 - `view_id` VARCHAR(64) PRIMARY KEY
@@ -37,13 +36,13 @@ Phase 4 implements the Gather query engine and Categories system. Gather provide
 
 ### Category Models (`models/category.rs`)
 
-**CategoryVocabulary**:
-- `find_by_vid`, `list`, `create`, `update`, `delete`, `exists`
+**Category**:
+- `find_by_id`, `list`, `create`, `update`, `delete`, `exists`
 
-**CategoryTerm**:
-- CRUD: `find_by_tid`, `list_by_vocabulary`, `create`, `update`, `delete`
+**Tag**:
+- CRUD: `find_by_id`, `list_by_category`, `create`, `update`, `delete`
 - Hierarchy: `get_parents`, `get_children`, `get_roots`
-- Recursive CTEs: `get_ancestors`, `get_descendants`, `get_term_and_descendant_ids`
+- Recursive CTEs: `get_ancestors`, `get_descendants`, `get_tag_and_descendant_ids`
 - Hierarchy management: `set_parents`, `add_parent`, `remove_parent`
 
 ### CategoryService (`gather/category_service.rs`)
@@ -59,7 +58,7 @@ Phase 4 implements the Gather query engine and Categories system. Gather provide
 | `ViewDefinition` | Query specification: base_table, item_type, fields, filters, sorts, relationships |
 | `ViewDisplay` | Rendering: format, items_per_page, pager config |
 | `ViewFilter` | Field, operator, value, exposed flag |
-| `FilterOperator` | 16 operators including category-aware: `HasTerm`, `HasTermOrDescendants` |
+| `FilterOperator` | 16 operators including category-aware: `HasTag`, `HasTagOrDescendants` |
 | `FilterValue` | String, Integer, Float, Boolean, UUID, List, Contextual |
 | `ViewSort` | Field, direction (Asc/Desc), nulls handling |
 | `GatherView` | Complete view definition with metadata |
@@ -79,24 +78,24 @@ Phase 4 implements the Gather query engine and Categories system. Gather provide
 - View registration and persistence
 - View loading from database at startup
 - Query execution with exposed filter resolution
-- Category hierarchy expansion (`HasTermOrDescendants` → term + all descendants)
+- Category hierarchy expansion (`HasTagOrDescendants` → tag + all descendants)
 
 ### HTTP Routes
 
 **Category Routes** (`routes/category.rs`):
 | Method | Path | Handler |
 |--------|------|---------|
-| GET | `/api/vocabularies` | list_vocabularies |
-| GET/POST/PUT/DELETE | `/api/vocabulary/{vid}` | CRUD |
-| GET | `/api/vocabulary/{vid}/terms` | list_terms |
-| GET | `/api/vocabulary/{vid}/roots` | get_root_terms |
-| GET/POST/PUT/DELETE | `/api/term/{tid}` | CRUD |
-| GET | `/api/term/{tid}/parents` | get_parents |
-| PUT | `/api/term/{tid}/parents` | set_parents |
-| GET | `/api/term/{tid}/children` | get_children |
-| GET | `/api/term/{tid}/ancestors` | get_ancestors |
-| GET | `/api/term/{tid}/descendants` | get_descendants |
-| GET | `/api/term/{tid}/breadcrumb` | get_breadcrumb |
+| GET | `/api/categories` | list_categories |
+| GET/POST/PUT/DELETE | `/api/category/{id}` | CRUD |
+| GET | `/api/category/{id}/tags` | list_tags |
+| GET | `/api/category/{id}/roots` | get_root_tags |
+| GET/POST/PUT/DELETE | `/api/tag/{id}` | CRUD |
+| GET | `/api/tag/{id}/parents` | get_parents |
+| PUT | `/api/tag/{id}/parents` | set_parents |
+| GET | `/api/tag/{id}/children` | get_children |
+| GET | `/api/tag/{id}/ancestors` | get_ancestors |
+| GET | `/api/tag/{id}/descendants` | get_descendants |
+| GET | `/api/tag/{id}/breadcrumb` | get_breadcrumb |
 
 **Gather Routes** (`routes/gather.rs`):
 | Method | Path | Handler |
@@ -117,7 +116,7 @@ Added to `state.rs`:
 ## Test Coverage
 
 **Unit Tests** (in lib - 110 total):
-- Category models: 5 tests (vocabulary, term, hierarchy)
+- Category models: 5 tests (category, tag, hierarchy)
 - Gather types: 12 tests (serialization, defaults, conversions)
 - Query builder: 5 tests (SQL generation, filters, pagination)
 - Gather service: 5 tests (result pagination)
@@ -128,7 +127,7 @@ Added to `state.rs`:
 - Tap system: 10+ tests
 
 **Integration Tests** (117 total):
-- `category_test.rs`: 13 tests (vocabulary, term, hierarchy)
+- `category_test.rs`: 13 tests (category, tag, hierarchy)
 - `gather_test.rs`: 24 tests (types, operators, gate test)
 - `item_test.rs`: 47 tests
 - `plugin_test.rs`: 24 tests
@@ -136,7 +135,7 @@ Added to `state.rs`:
 
 **Test Utils** (6 tests)
 
-**Total: 233+ tests passing**
+**Total: 227+ tests passing**
 
 ## Gate Test
 
@@ -156,8 +155,8 @@ fn gate_test_recent_articles_view_definition() {
                 },
                 ViewFilter {
                     field: "fields.category",
-                    operator: FilterOperator::HasTermOrDescendants,
-                    value: FilterValue::Uuid(tech_term_id),
+                    operator: FilterOperator::HasTagOrDescendants,
+                    value: FilterValue::Uuid(tech_tag_id),
                     exposed: true,
                 },
             ],
@@ -185,14 +184,14 @@ fn gate_test_recent_articles_view_definition() {
 ```
 crates/kernel/
 ├── migrations/
-│   ├── 20260212000006_create_category_vocabulary.sql
-│   ├── 20260212000007_create_category_term.sql
-│   ├── 20260212000008_create_category_hierarchy.sql
+│   ├── 20260212000006_create_category.sql
+│   ├── 20260212000007_create_category_tag.sql
+│   ├── 20260212000008_create_category_tag_hierarchy.sql
 │   └── 20260212000009_create_gather_view.sql
 ├── src/
 │   ├── models/
 │   │   ├── mod.rs           # Added category exports
-│   │   └── category.rs      # Vocabulary, Term, Hierarchy
+│   │   └── category.rs      # Category, Tag, TagHierarchy
 │   ├── gather/
 │   │   ├── mod.rs           # Module exports
 │   │   ├── types.rs         # ViewDefinition, ViewDisplay, etc.
@@ -201,7 +200,7 @@ crates/kernel/
 │   │   └── gather_service.rs
 │   ├── routes/
 │   │   ├── mod.rs           # Added gather/category routes
-│   │   ├── category.rs      # Vocabulary/term HTTP handlers
+│   │   ├── category.rs      # Category/tag HTTP handlers
 │   │   └── gather.rs        # View execution handlers
 │   ├── lib.rs               # Added gather module export
 │   ├── main.rs              # Added gather module and routes
@@ -233,7 +232,7 @@ cargo test --test plugin_test
 cargo test --test integration_test
 # running 9 tests ... ok
 
-# Total: 233+ tests passing
+# Total: 227+ tests passing
 ```
 
 ## Dependencies
@@ -242,10 +241,10 @@ cargo test --test integration_test
 
 ## Key Design Decisions
 
-1. **DAG Hierarchy**: Terms can have multiple parents via junction table
+1. **DAG Hierarchy**: Tags can have multiple parents via junction table
 2. **Recursive CTEs**: Efficient tree traversal without application-level recursion
 3. **SeaQuery**: Type-safe SQL building with JSONB support via `Expr::cust()`
-4. **Category Filter Expansion**: `HasTermOrDescendants` resolved at query time
+4. **Category Filter Expansion**: `HasTagOrDescendants` resolved at query time
 5. **Stage-Aware Queries**: All queries automatically filter by `stage_id`
 6. **Exposed Filters**: User-modifiable filter values for dynamic views
 

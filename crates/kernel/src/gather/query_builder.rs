@@ -229,19 +229,19 @@ impl ViewQueryBuilder {
             FilterOperator::IsNull => Some(field_expr.is_null()),
             FilterOperator::IsNotNull => Some(field_expr.is_not_null()),
             // Category operators - these need special handling with subqueries
-            FilterOperator::HasTerm => {
+            FilterOperator::HasTag => {
                 let uuid = filter.value.as_uuid()?;
                 self.build_category_filter(&filter.field, vec![uuid], false)
             }
-            FilterOperator::HasAnyTerm => {
+            FilterOperator::HasAnyTag => {
                 let uuids = filter.value.as_uuid_list();
                 if uuids.is_empty() {
                     return None;
                 }
                 self.build_category_filter(&filter.field, uuids, false)
             }
-            FilterOperator::HasAllTerms => {
-                // For "has all", we need AND conditions for each term
+            FilterOperator::HasAllTags => {
+                // For "has all", we need AND conditions for each tag
                 let uuids = filter.value.as_uuid_list();
                 if uuids.is_empty() {
                     return None;
@@ -255,7 +255,7 @@ impl ViewQueryBuilder {
                 }
                 Some(cond.into())
             }
-            FilterOperator::HasTermOrDescendants => {
+            FilterOperator::HasTagOrDescendants => {
                 let uuid = filter.value.as_uuid()?;
                 self.build_category_filter(&filter.field, vec![uuid], true)
             }
@@ -298,11 +298,11 @@ impl ViewQueryBuilder {
     }
 
     /// Build a category filter condition.
-    /// If `include_descendants` is true, matches the term or any of its descendants.
+    /// If `include_descendants` is true, matches the tag or any of its descendants.
     fn build_category_filter(
         &self,
         field: &str,
-        term_ids: Vec<uuid::Uuid>,
+        tag_ids: Vec<uuid::Uuid>,
         include_descendants: bool,
     ) -> Option<SimpleExpr> {
         let jsonb_path = if field.starts_with("fields.") {
@@ -312,7 +312,7 @@ impl ViewQueryBuilder {
         };
 
         // Build the list of UUIDs to check
-        let uuid_list: Vec<String> = term_ids.iter().map(|u| format!("'{}'", u)).collect();
+        let uuid_list: Vec<String> = tag_ids.iter().map(|u| format!("'{}'", u)).collect();
 
         if include_descendants {
             // Use a subquery with recursive CTE to get all descendants
