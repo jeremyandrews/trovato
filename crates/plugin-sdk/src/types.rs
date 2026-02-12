@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// A complete item (content entity) for full-serialization taps.
+/// A complete item (content record) for full-serialization taps.
 ///
 /// Plugins receive this struct serialized as JSON for view/alter/insert/update taps.
 /// Phase 0 benchmarks proved full-serialization is 1.2-1.6x faster than handle-based

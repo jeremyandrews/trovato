@@ -1,6 +1,6 @@
 //! Item model and CRUD operations.
 //!
-//! Items are the core content entities in Trovato (like nodes in Drupal).
+//! Items are the core content records in Trovato (like nodes in Drupal).
 //! They support JSONB field storage and revision history.
 
 use anyhow::{Context, Result};
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Item record (content entity).
+/// Item record (content record).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Item {
     /// Unique identifier (UUIDv7).

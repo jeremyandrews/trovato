@@ -251,6 +251,6 @@ cargo test --test integration_test
 ## Next Steps (Phase 5)
 
 1. Template integration for HTML rendering
-2. Block/region system for page layouts
+2. Tile/slot system for page layouts
 3. Asset pipeline (CSS/JS bundling)
 4. Cache layer for query results

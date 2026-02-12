@@ -1,6 +1,6 @@
 //! Item host functions for WASM plugins.
 //!
-//! Provides CRUD operations for items (content entities).
+//! Provides CRUD operations for items (content records).
 
 use anyhow::Result;
 use wasmtime::Linker;

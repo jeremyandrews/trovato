@@ -1,6 +1,6 @@
-//! Tap system for plugin hook points.
+//! Tap system for plugin extension points.
 //!
-//! Taps are named hook points that plugins can implement. When a tap is invoked,
+//! Taps are named extension points that plugins can implement. When a tap is invoked,
 //! all plugins that implement it are called in weight order (lower = higher priority).
 
 mod dispatcher;

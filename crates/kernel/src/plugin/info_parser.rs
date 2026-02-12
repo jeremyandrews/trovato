@@ -3,7 +3,7 @@
 //! Each plugin has a `{name}.info.toml` file that declares metadata:
 //! - name, version, description
 //! - dependencies (other plugins that must load first)
-//! - taps (which hook functions the plugin implements)
+//! - taps (which tap functions the plugin implements)
 
 use std::collections::HashMap;
 use std::path::Path;

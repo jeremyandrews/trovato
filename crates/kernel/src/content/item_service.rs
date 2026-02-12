@@ -1,7 +1,7 @@
 //! Item service with tap integration.
 //!
 //! Provides CRUD operations for items with automatic tap invocations
-//! for plugin hooks (insert, update, delete, view, access).
+//! for plugin taps (insert, update, delete, view, access).
 
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ impl ItemService {
         // Create the item in the database
         let item = Item::create(&self.inner.pool, input).await?;
 
-        // Invoke tap_item_insert for post-insert hooks
+        // Invoke tap_item_insert for post-insert taps
         let item_json = serde_json::to_string(&item).context("serialize item")?;
         let state = RequestState::without_services(user.clone());
 
