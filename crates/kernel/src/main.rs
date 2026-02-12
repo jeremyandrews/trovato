@@ -6,6 +6,7 @@ mod config;
 mod content;
 mod db;
 mod error;
+mod gather;
 mod host;
 mod lockout;
 mod menu;
@@ -68,6 +69,8 @@ async fn main() -> Result<()> {
         .merge(routes::password_reset::router())
         .merge(routes::health::router())
         .merge(routes::item::router())
+        .merge(routes::category::router())
+        .merge(routes::gather::router())
         .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

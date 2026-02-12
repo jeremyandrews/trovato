@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use crate::config::Config;
 use crate::content::{ContentTypeRegistry, ItemService};
 use crate::db;
+use crate::gather::{CategoryService, GatherService};
 use crate::lockout::LockoutService;
 use crate::menu::MenuRegistry;
 use crate::permissions::PermissionService;
@@ -53,6 +54,12 @@ struct AppStateInner {
 
     /// Item service.
     items: Arc<ItemService>,
+
+    /// Category service.
+    categories: Arc<CategoryService>,
+
+    /// Gather service.
+    gather: Arc<GatherService>,
 }
 
 impl AppState {
@@ -131,6 +138,16 @@ impl AppState {
         // Create item service
         let items = Arc::new(ItemService::new(db.clone(), tap_dispatcher.clone()));
 
+        // Create category service
+        let categories = CategoryService::new(db.clone());
+
+        // Create gather service and load views
+        let gather = GatherService::new(db.clone(), categories.clone());
+        gather
+            .load_views()
+            .await
+            .context("failed to load gather views")?;
+
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
@@ -143,6 +160,8 @@ impl AppState {
                 menu_registry,
                 content_types,
                 items,
+                categories,
+                gather,
             }),
         })
     }
@@ -195,6 +214,16 @@ impl AppState {
     /// Get the item service.
     pub fn items(&self) -> &Arc<ItemService> {
         &self.inner.items
+    }
+
+    /// Get the category service.
+    pub fn categories(&self) -> &Arc<CategoryService> {
+        &self.inner.categories
+    }
+
+    /// Get the gather service.
+    pub fn gather(&self) -> &Arc<GatherService> {
+        &self.inner.gather
     }
 
     /// Check if PostgreSQL is healthy.

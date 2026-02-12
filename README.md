@@ -35,6 +35,9 @@ Implemented the complete WASM plugin system. Created plugin loader with pooling 
 ### Phase 3: Content System (Complete)
 Implemented the core content management functionality (Epic 4, Stories 4.1-4.11). Database schema for item_type, item, and item_revision tables with JSONB field storage, GIN indexes, and full-text search vectors. Item model with full CRUD operations and revision history. ContentTypeRegistry syncs definitions from plugins via tap_item_info and caches in DashMap. ItemService with tap integration (insert, update, delete, view, access) and proper access control aggregation (Deny wins, then Grant, else Neutral). HTTP routes for item CRUD at /item/* paths with API endpoints. Text format filter pipeline for XSS protection (plain_text, filtered_html, full_html). Auto-generated admin forms from field definitions supporting all field types. 170+ tests passing.
 
+### Phase 4: Gather Query Engine & Categories (Complete)
+Implemented the Gather query engine and Categories system. Categories support vocabularies, terms, and DAG hierarchy (multiple parents per term) with recursive CTEs for ancestor/descendant queries. Gather provides type-safe query building via SeaQuery with 16 filter operators including category-aware filters (HasTerm, HasTermOrDescendants). ViewDefinition specifies queries declaratively; ViewDisplay configures rendering with pager support. GatherService executes queries with exposed filter resolution and stage awareness. REST API for vocabularies/terms at /api/vocabulary/* and /api/term/*, view execution at /api/view/*/execute. Gate test verified: "Recent Articles" query with category hierarchy filter and pagination. 233+ tests passing.
+
 ---
 
 *This project is being developed with AI assistance.*
