@@ -148,9 +148,9 @@ If WASM proves problematic, consider these alternatives:
 ## Next Steps & Follow-up Work
 
 ### Immediate Actions
-1. Update design documents to reflect full-serialization default
+1. ~~Update design documents to reflect full-serialization default~~ → Deferred to Phase 2 start
 2. Proceed to Phase 1 (Skeleton) with validated architecture
-3. Implement Plugin SDK with full-serialization as primary mode
+3. Implement Plugin SDK with full-serialization as primary mode (Phase 2)
 
 ### Required Before Plugin SDK Design
 - [ ] **Security review**: Evaluate field-level access control implications of full-serialization vs handle-based
