@@ -1,10 +1,33 @@
 # Trovato
 
-Trovato is a content management system built in Rust, reimagining Drupal 6's elegant mental model with modern foundations. The core insight that made Drupal 6 powerful—everything is a node, fields bolt on via CCK, Views queries anything, hooks enable extensibility—remains valuable, but the implementation deserves a fresh start. Trovato rebuilds these ideas with Axum and Tokio for async HTTP, PostgreSQL with hybrid relational/JSONB storage to eliminate field-join complexity, and WebAssembly plugins that run in per-request sandboxes via Wasmtime.
+A content management system built in Rust, reimagining Drupal 6's mental model with modern foundations.
 
-Security and performance drive the architecture. Plugins are treated as untrusted code: they run in WASM sandboxes, return structured JSON render trees rather than raw HTML, and access data through a handle-based API that avoids serialization overhead. The kernel sanitizes all output before rendering via Tera templates. A structured database interface prevents SQL injection at the boundary, and explicit capability grants control what each plugin can access. This isn't security theater—the WASM boundary enforces isolation whether plugin authors intend it or not.
+## What It Is
 
-The system is designed for horizontal scaling from day one. No persistent state lives in the binary; everything goes to PostgreSQL or Redis. Content staging ("Stages") is baked into the schema rather than bolted on later. The plugin SDK prioritizes developer ergonomics—write the code you want plugin authors to write, then build the host to support it. Trovato carries forward the ideas that made Drupal great while taking full advantage of Rust's safety guarantees and modern async runtimes.
+Trovato takes the core ideas that made Drupal 6 powerful—nodes, fields, views, hooks—and rebuilds them with:
+
+- **Axum + Tokio** for async HTTP
+- **PostgreSQL + JSONB** for flexible field storage without join complexity
+- **WebAssembly plugins** running in per-request sandboxes via Wasmtime
+- **Content staging** built into the schema from day one
+
+## Security Model
+
+Plugins are untrusted code. They run in WASM sandboxes, return JSON render trees (not raw HTML), and access data through a structured API. The kernel sanitizes all output. This isn't optional—the WASM boundary enforces isolation whether plugin authors intend it or not.
+
+## Scaling
+
+No persistent state in the binary. PostgreSQL and Redis handle everything. Horizontal scaling works out of the box.
+
+---
+
+## Progress
+
+### Phase 0: WASM Architecture Validation
+Benchmarked WASM plugin performance on ARM and x86-64. Validated that full-serialization (passing complete JSON to plugins) outperforms handle-based field access by 1.2-1.6x. Confirmed pooling allocator scales to 2000+ concurrent requests with sub-millisecond p95 latency.
+
+### Phase 1: Skeleton
+Built the HTTP server foundation with Axum, PostgreSQL via SQLx, and Redis sessions. Implemented user authentication (Argon2id), role-based permissions, account lockout, password reset, and stage switching.
 
 ---
 
