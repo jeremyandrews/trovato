@@ -8,6 +8,14 @@ members = [
     "benchmarks/phase0/guest",
     "plugins/blog",
 ]
+# Guest WASM crate must be built separately with --target wasm32-wasip1
+default-members = [
+    "crates/kernel",
+    "crates/plugin-sdk",
+    "crates/test-utils",
+    "benchmarks/phase0",
+    "plugins/blog",
+]
 
 [workspace.package]
 edition = "2024"
