@@ -22,3 +22,11 @@ _bmad/
 # SQLx offline cache (regenerated with cargo sqlx prepare)
 # Uncomment if not using offline mode in CI
 # .sqlx/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# Docker volumes (local dev data)
+docker-data/

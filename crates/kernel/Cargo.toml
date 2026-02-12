@@ -13,6 +13,7 @@ path = "src/main.rs"
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
+tower-http = { workspace = true }
 tower-sessions = { workspace = true }
 tower-sessions-redis-store = { workspace = true }
 sqlx = { workspace = true }
@@ -31,4 +32,6 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
 trovato-sdk = { path = "../plugin-sdk" }
