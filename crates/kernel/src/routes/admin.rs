@@ -8,7 +8,7 @@ use axum::{Form, Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use crate::form::{generate_csrf_token, verify_csrf_token, AjaxRequest};
+use crate::form::{generate_csrf_token, verify_csrf_token, AjaxCommand, AjaxRequest};
 use crate::models::User;
 use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
 use crate::state::AppState;
@@ -418,6 +418,8 @@ async fn manage_fields(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
+    use crate::form::FormState;
+
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -428,6 +430,16 @@ async fn manage_fields(
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
     let form_build_id = uuid::Uuid::new_v4().to_string();
+
+    // Save initial form state for AJAX callbacks
+    let form_state = FormState::new(
+        format!("manage_fields_{}", type_name),
+        form_build_id.clone(),
+    );
+
+    if let Err(e) = state.forms().save_state(&form_build_id, &form_state).await {
+        tracing::warn!(error = %e, "failed to save initial form state");
+    }
 
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
@@ -520,9 +532,33 @@ async fn ajax_callback(
     session: Session,
     Json(request): Json<AjaxRequest>,
 ) -> Response {
+    use crate::form::AjaxResponse;
     use crate::tap::{RequestState, UserContext};
 
-    let user_context = UserContext::anonymous(); // TODO: get from session
+    // Require authentication for AJAX requests
+    let user = match require_auth(&state, &session).await {
+        Ok(user) => user,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(AjaxResponse::new().alert("Session expired. Please log in again.")),
+            )
+                .into_response();
+        }
+    };
+
+    // Handle admin-specific AJAX triggers
+    if request.trigger == "add_field" {
+        return handle_ajax_add_field(&state, &request).await;
+    }
+
+    // Build user context with permissions
+    let permissions = if user.is_admin {
+        vec!["administer site".to_string()]
+    } else {
+        vec![]
+    };
+    let user_context = UserContext::authenticated(user.id, permissions);
     let request_state = RequestState::without_services(user_context);
 
     match state
@@ -535,11 +571,126 @@ async fn ajax_callback(
             tracing::error!(error = %e, "AJAX callback failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(crate::form::AjaxResponse::new().alert("An error occurred. Please try again.")),
+                Json(AjaxResponse::new().alert("An error occurred. Please try again.")),
             )
                 .into_response()
         }
     }
+}
+
+/// Handle AJAX add_field trigger for manage_fields forms.
+async fn handle_ajax_add_field(
+    state: &AppState,
+    request: &AjaxRequest,
+) -> Response {
+    use crate::form::AjaxResponse;
+
+    // Load form state to get the content type name
+    let form_state = match state.forms().load_state(&request.form_build_id).await {
+        Ok(Some(fs)) => fs,
+        Ok(None) => {
+            return Json(AjaxResponse::new().alert("Form session expired. Please reload the page."))
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load form state");
+            return Json(AjaxResponse::new().alert("An error occurred. Please try again."))
+                .into_response();
+        }
+    };
+
+    // Extract content type name from form_id (format: "manage_fields_{type}")
+    let type_name = form_state
+        .form_id
+        .strip_prefix("manage_fields_")
+        .unwrap_or(&form_state.form_id);
+
+    // Get field values from request
+    let label = request
+        .values
+        .get("label")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let name = request
+        .values
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let field_type = request
+        .values
+        .get("field_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    // Validate
+    if label.is_empty() {
+        return Json(AjaxResponse::new().alert("Label is required.")).into_response();
+    }
+    if name.is_empty() {
+        return Json(AjaxResponse::new().alert("Machine name is required.")).into_response();
+    }
+    if !is_valid_machine_name(name) {
+        return Json(AjaxResponse::new().alert(
+            "Machine name must start with a letter and contain only lowercase letters, numbers, and underscores.",
+        ))
+        .into_response();
+    }
+    if field_type.is_empty() {
+        return Json(AjaxResponse::new().alert("Field type is required.")).into_response();
+    }
+
+    // Add the field
+    if let Err(e) = state
+        .content_types()
+        .add_field(type_name, name, label, field_type)
+        .await
+    {
+        tracing::error!(error = %e, "failed to add field via AJAX");
+        return Json(AjaxResponse::new().alert("Failed to add field.")).into_response();
+    }
+
+    tracing::info!(content_type = %type_name, field = %name, "field added via AJAX");
+
+    // Build the new row HTML
+    let row_html = format!(
+        r#"<tr data-field="{}">
+            <td>{}</td>
+            <td><code>{}</code></td>
+            <td>{}</td>
+            <td>No</td>
+            <td>
+                <a href="/admin/structure/types/{}/fields/{}/edit">Edit</a>
+                &middot;
+                <a href="/admin/structure/types/{}/fields/{}/delete"
+                   onclick="return confirm('Are you sure you want to delete this field?')">Delete</a>
+            </td>
+        </tr>"#,
+        html_escape(name),
+        html_escape(label),
+        html_escape(name),
+        html_escape(field_type),
+        html_escape(type_name),
+        html_escape(name),
+        html_escape(type_name),
+        html_escape(name),
+    );
+
+    // Return AJAX response to append row and reset form
+    Json(
+        AjaxResponse::new()
+            .append("#fields-tbody", row_html)
+            .invoke(
+                "Trovato.resetAddFieldForm",
+                serde_json::json!({}),
+            )
+            .command(AjaxCommand::Remove {
+                selector: "#no-fields-message".to_string(),
+            }),
+    )
+    .into_response()
 }
 
 // =============================================================================

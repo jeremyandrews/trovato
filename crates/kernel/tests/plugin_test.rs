@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use trovato_kernel::host;
 use trovato_kernel::menu::MenuRegistry;
-use trovato_kernel::plugin::{resolve_load_order, PluginConfig, PluginInfo, PluginRuntime};
+use trovato_kernel::plugin::{resolve_load_order, PluginConfig, PluginInfo, PluginRuntime, PluginState};
 use trovato_kernel::tap::{RequestState, TapDispatcher, TapRegistry, UserContext};
 use uuid::Uuid;
 use wasmtime::{Engine, Linker};
@@ -366,7 +366,7 @@ fn request_state_context_store() {
 fn host_functions_register_all() {
     let config = wasmtime::Config::new();
     let engine = Engine::new(&config).unwrap();
-    let mut linker: Linker<RequestState> = Linker::new(&engine);
+    let mut linker: Linker<PluginState> = Linker::new(&engine);
 
     let result = host::register_all(&mut linker);
     assert!(result.is_ok(), "Failed to register host functions: {:?}", result.err());
