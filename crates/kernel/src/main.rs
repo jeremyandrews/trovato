@@ -2,6 +2,7 @@
 //!
 //! HTTP server, plugin runtime, and core services.
 
+mod batch;
 mod cache;
 mod config;
 mod content;
@@ -32,7 +33,7 @@ use anyhow::{Context, Result};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::Config;
 use crate::state::AppState;
@@ -83,6 +84,8 @@ async fn main() -> Result<()> {
         .merge(routes::cron::router())
         .merge(routes::file::router())
         .merge(routes::metrics::router())
+        .merge(routes::batch::router())
+        .merge(routes::static_files::router())
         .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -95,9 +98,7 @@ async fn main() -> Result<()> {
 
     info!(%addr, "Server listening");
 
-    axum::serve(listener, app)
-        .await
-        .context("server error")?;
+    axum::serve(listener, app).await.context("server error")?;
 
     Ok(())
 }

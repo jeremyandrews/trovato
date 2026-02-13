@@ -1,0 +1,262 @@
+<div class="file-upload" id="file-upload-{{ name }}">
+    {% if element.title %}
+    <label class="form-item__label{% if element.required %} form-item__label--required{% endif %}">
+        {{ element.title }}
+    </label>
+    {% endif %}
+
+    <div class="file-upload__dropzone" data-field="{{ name }}">
+        <input
+            type="file"
+            id="{{ name }}"
+            name="{{ name }}"
+            class="file-upload__input"
+            {% if element.required and not existing_files %}required{% endif %}
+            {% if element.multiple %}multiple{% endif %}
+            {% if element.accept %}accept="{{ element.accept }}"{% endif %}
+        >
+        <div class="file-upload__content">
+            <svg class="file-upload__icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p class="file-upload__text">
+                <span class="file-upload__browse">Click to browse</span> or drag and drop
+            </p>
+            <p class="file-upload__hint">
+                {% if element.accept %}{{ element.accept }}{% else %}Images, documents, and media{% endif %}
+                &middot; Max {{ max_size | default(value="10MB") }}
+            </p>
+        </div>
+        <div class="file-upload__dragover">
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p>Drop files here</p>
+        </div>
+    </div>
+
+    <div class="file-upload__progress" style="display: none;">
+        <div class="file-upload__progress-bar">
+            <div class="file-upload__progress-fill"></div>
+        </div>
+        <span class="file-upload__progress-text">Uploading...</span>
+    </div>
+
+    <div class="file-upload__files" data-field="{{ name }}">
+        {% if existing_files %}
+        {% for file in existing_files %}
+        <div class="file-upload__file" data-file-id="{{ file.id }}">
+            <input type="hidden" name="{{ name }}_files[]" value="{{ file.id }}">
+            {% if file.filemime is starting_with("image/") %}
+            <img src="{{ file.url }}" alt="{{ file.filename }}" class="file-upload__preview">
+            {% else %}
+            <div class="file-upload__file-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                </svg>
+            </div>
+            {% endif %}
+            <div class="file-upload__file-info">
+                <span class="file-upload__file-name">{{ file.filename }}</span>
+                <span class="file-upload__file-size">{{ (file.filesize / 1024) | round(precision=1) }} KB</span>
+            </div>
+            <button type="button" class="file-upload__remove" data-file-id="{{ file.id }}" title="Remove file">&times;</button>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+
+    {% if element.description %}
+    <p class="form-item__description">{{ element.description }}</p>
+    {% endif %}
+</div>
+
+<style>
+.file-upload__dropzone {
+    position: relative;
+    border: 2px dashed var(--gray-300);
+    border-radius: 0.5rem;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+
+.file-upload__dropzone:hover {
+    border-color: var(--primary);
+    background-color: var(--gray-50);
+}
+
+.file-upload__dropzone.dragover {
+    border-color: var(--primary);
+    background-color: #eff6ff;
+}
+
+.file-upload__dropzone.dragover .file-upload__content {
+    display: none;
+}
+
+.file-upload__dropzone.dragover .file-upload__dragover {
+    display: flex;
+}
+
+.file-upload__input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.file-upload__content {
+    pointer-events: none;
+}
+
+.file-upload__icon {
+    color: var(--gray-400);
+    margin-bottom: 0.5rem;
+}
+
+.file-upload__text {
+    margin: 0 0 0.25rem 0;
+    color: var(--gray-700);
+}
+
+.file-upload__browse {
+    color: var(--primary);
+    font-weight: 500;
+}
+
+.file-upload__hint {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--gray-500);
+}
+
+.file-upload__dragover {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--primary);
+    pointer-events: none;
+}
+
+.file-upload__progress {
+    margin-top: 1rem;
+}
+
+.file-upload__progress-bar {
+    height: 4px;
+    background: var(--gray-200);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.file-upload__progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--primary);
+    transition: width 0.1s;
+}
+
+.file-upload__progress-text {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.875rem;
+    color: var(--gray-600);
+}
+
+.file-upload__files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.file-upload__files:empty {
+    display: none;
+}
+
+.file-upload__file {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: var(--gray-100);
+    border-radius: 0.375rem;
+    max-width: 200px;
+}
+
+.file-upload__preview {
+    width: 40px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 0.25rem;
+}
+
+.file-upload__file-icon {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--gray-500);
+}
+
+.file-upload__file-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.file-upload__file-name {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-upload__file-size {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--gray-500);
+}
+
+.file-upload__remove {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--gray-500);
+    cursor: pointer;
+    font-size: 1.25rem;
+    line-height: 1;
+    border-radius: 50%;
+}
+
+.file-upload__remove:hover {
+    background: var(--gray-200);
+    color: var(--danger);
+}
+
+.file-upload__error {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 0.375rem;
+    color: var(--danger);
+    font-size: 0.875rem;
+}
+</style>

@@ -16,12 +16,13 @@ Specific verification:
 
 | Component | Database | Code | Endpoints | Status |
 |-----------|----------|------|-----------|--------|
-| **Files** | ❌ | ❌ | ❌ | 0% |
-| **Search** | ✅ (search_vector + GIN + config) | ✅ SearchService | ✅ /search, /api/search | 100% |
-| **Cron/Queue** | ❌ | ✅ CronService + RedisQueue | ✅ /cron/:key, /cron/status | 90% |
-| **Rate Limiting** | ❌ | ✅ (LockoutService for auth) | ❌ | 20% |
-| **Metrics** | ❌ | ✅ (tracing layer) | ❌ | 15% |
-| **Cache Layer** | ❌ | ✅ CacheLayer (Moka L1 + Redis L2) | N/A | 100% |
+| **Files** | ✅ file_managed | ✅ FileService + LocalFileStorage | ✅ /api/file/upload, /api/file/{id} | 100% |
+| **Search** | ✅ (search_vector + GIN + config) | ✅ SearchService | ✅ /search, /api/search, admin UI | 100% |
+| **Cron/Queue** | ✅ | ✅ CronService + RedisQueue | ✅ /cron/:key, /cron/status | 100% |
+| **Rate Limiting** | ✅ Redis | ✅ RateLimiter middleware | ✅ (integrated) | 100% |
+| **Metrics** | N/A | ✅ Metrics struct | ✅ /metrics | 100% |
+| **Cache Layer** | N/A | ✅ CacheLayer (Moka L1 + Redis L2) | N/A | 100% |
+| **Batch API** | ✅ Redis | ✅ BatchService | ✅ /api/batch/* | 100% |
 
 ### Phase 6A Complete (2026-02-13)
 - ✅ `CacheLayer` with Moka L1 + Redis L2, tag-based invalidation, stage-scoped keys
@@ -35,12 +36,31 @@ Specific verification:
 - ✅ `/cron/status` endpoint (admin only)
 - ✅ Heartbeat pattern to extend lock TTL for long-running tasks
 
-### What's Missing (Phase 6B-D)
-- `file_managed` table and FileStorage trait
-- File upload endpoint
-- Rate limiting middleware (Tower)
-- Prometheus metrics endpoint
-- Load testing infrastructure
+### Phase 6B Complete (2026-02-13)
+- ✅ `file_managed` table with status tracking (temporary/permanent)
+- ✅ `FileStorage` trait with `LocalFileStorage` implementation
+- ✅ `FileService` for file CRUD operations
+- ✅ `/api/file/upload` endpoint with multipart form support
+- ✅ `/api/file/{id}` for file info retrieval
+- ✅ Temporary file cleanup in cron
+
+### Phase 6C Complete (2026-02-13)
+- ✅ `RateLimiter` middleware with Redis-backed distributed counting
+- ✅ `Metrics` struct with Prometheus counters and histograms
+- ✅ `/metrics` endpoint in Prometheus format
+- ✅ `http_requests_total`, `cache_hits_total`, `cache_misses_total` metrics
+
+### Phase 6D Complete (2026-02-13)
+- ✅ Search field configuration UI at `/admin/structure/types/{type}/search`
+- ✅ Drag-and-drop file uploads with progress bar (`static/js/file-upload.js`)
+- ✅ `BatchService` for long-running operations with Redis storage
+- ✅ Batch API: `POST /api/batch`, `GET /api/batch/{id}`, cancel, delete
+- ✅ Documentation at `docs/phase-6d-features.md`
+- ✅ 63 integration tests passing
+
+### What's Remaining
+- Load testing infrastructure (goose)
+- S3 storage backend (LocalFileStorage sufficient for MVP)
 
 ---
 
@@ -518,7 +538,9 @@ goose = "0.17"  # dev-dependency for load tests
 ## Out of Scope (Deferred)
 
 - Meilisearch/Typesense integration (Postgres FTS sufficient for MVP)
-- Drag-and-drop file uploads (JS complexity)
-- Batch API progress polling (nice-to-have)
+- ~~Drag-and-drop file uploads~~ ✅ Implemented in Phase 6D
+- ~~Batch API progress polling~~ ✅ Implemented in Phase 6D
 - Search highlighting (can add later)
 - Stage-aware search (requires per-stage tsvector)
+- S3 storage backend (LocalFileStorage sufficient for MVP)
+- Load testing with goose (infrastructure ready, tests not written)

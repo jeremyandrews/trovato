@@ -1,0 +1,165 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Search configuration: {{ content_type.label }}</h2>
+    <div style="display: flex; gap: 0.5rem;">
+        <a href="/admin/structure/types/{{ content_type.machine_name }}/fields" class="button button--secondary">Manage fields</a>
+        <a href="/admin/structure/types/{{ content_type.machine_name }}/edit" class="button button--secondary">Edit content type</a>
+    </div>
+</div>
+
+<div class="admin-card">
+    <p class="description">
+        Configure which fields are indexed for full-text search and their relevance weights.
+        Weight <strong>A</strong> is highest priority (title is always A), <strong>D</strong> is lowest.
+    </p>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th>Type</th>
+                <th>Search Weight</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Title</strong></td>
+                <td>Text</td>
+                <td><span class="weight weight--A">A (Highest)</span></td>
+                <td><em>Always indexed</em></td>
+            </tr>
+            {% for field in fields %}
+            <tr>
+                <td>{{ field.label }}</td>
+                <td>{{ field.field_type }}</td>
+                <td>
+                    {% if search_configs[field.field_name] %}
+                        <span class="weight weight--{{ search_configs[field.field_name] }}">
+                            {{ search_configs[field.field_name] }}
+                            {% if search_configs[field.field_name] == "A" %}(Highest)
+                            {% elif search_configs[field.field_name] == "B" %}(High)
+                            {% elif search_configs[field.field_name] == "C" %}(Normal)
+                            {% elif search_configs[field.field_name] == "D" %}(Low)
+                            {% endif %}
+                        </span>
+                    {% else %}
+                        <span class="weight weight--none">Not indexed</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if search_configs[field.field_name] %}
+                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" style="display: inline;">
+                            <button type="submit" class="link-button">Remove</button>
+                        </form>
+                    {% else %}
+                        <span class="text-muted">-</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if not fields %}
+    <p>No custom fields defined. <a href="/admin/structure/types/{{ content_type.machine_name }}/fields">Add fields</a> first.</p>
+    {% endif %}
+</div>
+
+{% if fields %}
+<div class="admin-card" style="margin-top: 1rem;">
+    <h3 style="margin-top: 0;">Add field to search index</h3>
+    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/add">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
+            <div class="form-item" style="flex: 1; min-width: 200px;">
+                <label for="field_name" class="form-item__label form-item__label--required">Field</label>
+                <select id="field_name" name="field_name" class="form-select" required>
+                    <option value="">- Select field -</option>
+                    {% for field in fields %}
+                    {% if not search_configs[field.field_name] %}
+                    <option value="{{ field.field_name }}">{{ field.label }}</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="form-item" style="flex: 1; min-width: 200px;">
+                <label for="weight" class="form-item__label form-item__label--required">Weight</label>
+                <select id="weight" name="weight" class="form-select" required>
+                    <option value="B">B - High priority</option>
+                    <option value="C" selected>C - Normal priority</option>
+                    <option value="D">D - Low priority</option>
+                </select>
+            </div>
+
+            <div class="form-item">
+                <button type="submit" class="button button--primary">Add to index</button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endif %}
+
+<div class="admin-card" style="margin-top: 1rem;">
+    <h3 style="margin-top: 0;">Reindex content</h3>
+    <p>After changing search configuration, reindex all content of this type to apply the changes.</p>
+    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/reindex">
+        <button type="submit" class="button button--secondary" onclick="return confirm('This will update the search index for all {{ content_type.label }} content. Continue?')">
+            Reindex all {{ content_type.label }} content
+        </button>
+    </form>
+</div>
+
+<style>
+    .description {
+        color: var(--gray-600);
+        margin-bottom: 1rem;
+    }
+    .weight {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+    .weight--A {
+        background: #dbeafe;
+        color: #1e40af;
+    }
+    .weight--B {
+        background: #dcfce7;
+        color: #166534;
+    }
+    .weight--C {
+        background: #fef9c3;
+        color: #854d0e;
+    }
+    .weight--D {
+        background: #f3f4f6;
+        color: #4b5563;
+    }
+    .weight--none {
+        background: #f3f4f6;
+        color: #9ca3af;
+    }
+    .link-button {
+        background: none;
+        border: none;
+        color: var(--primary);
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+    }
+    .link-button:hover {
+        text-decoration: underline;
+    }
+    .text-muted {
+        color: var(--gray-400);
+    }
+</style>
+{% endblock %}

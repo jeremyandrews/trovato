@@ -9,6 +9,7 @@ use sqlx::PgPool;
 
 use tracing::info;
 
+use crate::batch::BatchService;
 use crate::cache::CacheLayer;
 use crate::config::Config;
 use crate::content::{ContentTypeRegistry, ItemService};
@@ -95,6 +96,9 @@ struct AppStateInner {
 
     /// Rate limiter.
     rate_limiter: Arc<RateLimiter>,
+
+    /// Batch operations service.
+    batch: Arc<BatchService>,
 }
 
 impl AppState {
@@ -133,8 +137,8 @@ impl AppState {
 
         // Create plugin runtime and load plugins
         let plugin_config = PluginConfig::default();
-        let mut plugin_runtime = PluginRuntime::new(&plugin_config)
-            .context("failed to create plugin runtime")?;
+        let mut plugin_runtime =
+            PluginRuntime::new(&plugin_config).context("failed to create plugin runtime")?;
 
         // Load plugins
         plugin_runtime
@@ -188,9 +192,11 @@ impl AppState {
         info!(?template_dir, "loading templates from directory");
         let theme = Arc::new(
             ThemeEngine::new(&template_dir)
-                .inspect_err(|e| tracing::warn!(error = ?e, "failed to load templates, using empty engine"))
+                .inspect_err(
+                    |e| tracing::warn!(error = ?e, "failed to load templates, using empty engine"),
+                )
                 .or_else(|_| ThemeEngine::empty())
-                .context("failed to create theme engine")?
+                .context("failed to create theme engine")?,
         );
 
         // Create form service
@@ -214,13 +220,20 @@ impl AppState {
         let files = Arc::new(FileService::new(db.clone(), file_storage));
 
         // Create cron service with file service for proper cleanup
-        let cron = Arc::new(CronService::with_file_service(redis.clone(), db.clone(), files.clone()));
+        let cron = Arc::new(CronService::with_file_service(
+            redis.clone(),
+            db.clone(),
+            files.clone(),
+        ));
 
         // Create metrics
         let metrics = Arc::new(Metrics::new());
 
         // Create rate limiter
         let rate_limiter = Arc::new(RateLimiter::new(redis.clone(), RateLimitConfig::default()));
+
+        // Create batch service
+        let batch = Arc::new(BatchService::new(redis.clone()));
 
         Ok(Self {
             inner: Arc::new(AppStateInner {
@@ -244,6 +257,7 @@ impl AppState {
                 cron,
                 metrics,
                 rate_limiter,
+                batch,
             }),
         })
     }
@@ -357,6 +371,11 @@ impl AppState {
     /// Get the rate limiter.
     pub fn rate_limiter(&self) -> &Arc<RateLimiter> {
         &self.inner.rate_limiter
+    }
+
+    /// Get the batch service.
+    pub fn batch(&self) -> &Arc<BatchService> {
+        &self.inner.batch
     }
 
     /// Check if PostgreSQL is healthy.

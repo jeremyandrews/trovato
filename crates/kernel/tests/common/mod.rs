@@ -3,10 +3,10 @@
 //! This module provides test infrastructure that uses the REAL kernel code,
 //! not mock implementations. This ensures tests verify actual behavior.
 
-use axum::body::Body;
-use axum::http::{header, Request};
-use axum::response::Response;
 use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, header};
+use axum::response::Response;
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -27,16 +27,21 @@ impl TestApp {
 
         // Set templates directory to project root templates/
         // Tests run from crates/kernel/, so we need to go up two levels
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+        let project_root = std::path::Path::new(&manifest_dir)
+            .parent() // crates/
+            .and_then(|p| p.parent()) // project root
+            .unwrap_or(std::path::Path::new("."));
+
         if std::env::var("TEMPLATES_DIR").is_err() {
-            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-                .unwrap_or_else(|_| ".".to_string());
-            let templates_dir = std::path::Path::new(&manifest_dir)
-                .parent()  // crates/
-                .and_then(|p| p.parent())  // project root
-                .map(|p| p.join("templates"))
-                .unwrap_or_else(|| std::path::PathBuf::from("./templates"));
+            let templates_dir = project_root.join("templates");
             // SAFETY: We're setting the environment variable before spawning threads
             unsafe { std::env::set_var("TEMPLATES_DIR", templates_dir) };
+        }
+
+        if std::env::var("STATIC_DIR").is_err() {
+            let static_dir = project_root.join("static");
+            unsafe { std::env::set_var("STATIC_DIR", static_dir) };
         }
 
         // Create config from environment
@@ -67,6 +72,8 @@ impl TestApp {
             .merge(trovato_kernel::routes::cron::router())
             .merge(trovato_kernel::routes::file::router())
             .merge(trovato_kernel::routes::metrics::router())
+            .merge(trovato_kernel::routes::batch::router())
+            .merge(trovato_kernel::routes::static_files::router())
             .layer(session_layer)
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .with_state(state);
@@ -131,7 +138,12 @@ impl TestApp {
     }
 
     /// Create a test user and return session cookies after logging in.
-    pub async fn create_and_login_user(&self, username: &str, password: &str, email: &str) -> String {
+    pub async fn create_and_login_user(
+        &self,
+        username: &str,
+        password: &str,
+        email: &str,
+    ) -> String {
         self.create_test_user(username, password, email).await;
         self.login(username, password).await
     }
@@ -139,8 +151,8 @@ impl TestApp {
     /// Create a test user directly in the database.
     pub async fn create_test_user(&self, username: &str, password: &str, email: &str) {
         use argon2::{
-            password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
             Argon2,
+            password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
         };
 
         let salt = SaltString::generate(&mut OsRng);
@@ -167,7 +179,6 @@ impl TestApp {
         .await
         .expect("Failed to create test user");
     }
-
 }
 
 /// Extract Set-Cookie headers from a response for use in subsequent requests.
