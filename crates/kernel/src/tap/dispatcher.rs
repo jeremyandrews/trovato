@@ -61,7 +61,7 @@ impl TapDispatcher {
 
         for handler in handlers {
             match self
-                .invoke_handler(tap_name, input_json, &handler, state.clone())
+                .invoke_handler(tap_name, input_json, handler, state.clone())
                 .await
             {
                 Ok(output) => {

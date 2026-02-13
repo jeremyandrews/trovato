@@ -264,6 +264,28 @@ impl ItemService {
         Item::list_published(&self.inner.pool, limit, offset).await
     }
 
+    /// List items with filtering and return total count for pagination.
+    pub async fn list_filtered(
+        &self,
+        item_type: Option<&str>,
+        status: Option<i16>,
+        author_id: Option<Uuid>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Item>, i64)> {
+        let items = Item::list_filtered(
+            &self.inner.pool,
+            item_type,
+            status,
+            author_id,
+            limit,
+            offset,
+        )
+        .await?;
+        let total = Item::count_filtered(&self.inner.pool, item_type, status, author_id).await?;
+        Ok((items, total))
+    }
+
     /// Get revisions for an item.
     pub async fn get_revisions(&self, item_id: Uuid) -> Result<Vec<ItemRevision>> {
         Item::get_revisions(&self.inner.pool, item_id).await

@@ -474,6 +474,53 @@ impl Item {
         Ok(items)
     }
 
+    /// Count items with optional filters.
+    pub async fn count_filtered(
+        pool: &PgPool,
+        item_type: Option<&str>,
+        status: Option<i16>,
+        author_id: Option<Uuid>,
+    ) -> Result<i64> {
+        let mut query = String::from("SELECT COUNT(*) FROM item WHERE 1=1");
+        let mut param_idx = 1;
+        let mut conditions = Vec::new();
+
+        if item_type.is_some() {
+            conditions.push(format!(" AND type = ${}", param_idx));
+            param_idx += 1;
+        }
+        if status.is_some() {
+            conditions.push(format!(" AND status = ${}", param_idx));
+            param_idx += 1;
+        }
+        if author_id.is_some() {
+            conditions.push(format!(" AND author_id = ${}", param_idx));
+        }
+
+        for cond in conditions {
+            query.push_str(&cond);
+        }
+
+        let mut query_builder = sqlx::query_scalar::<_, i64>(&query);
+
+        if let Some(t) = item_type {
+            query_builder = query_builder.bind(t);
+        }
+        if let Some(s) = status {
+            query_builder = query_builder.bind(s);
+        }
+        if let Some(a) = author_id {
+            query_builder = query_builder.bind(a);
+        }
+
+        let count = query_builder
+            .fetch_one(pool)
+            .await
+            .context("failed to count filtered items")?;
+
+        Ok(count)
+    }
+
     /// Count all items.
     pub async fn count_all(pool: &PgPool) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item")

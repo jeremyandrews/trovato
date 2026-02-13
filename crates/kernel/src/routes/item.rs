@@ -4,7 +4,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
@@ -14,7 +14,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::{FilterPipeline, FormBuilder};
-use crate::models::{CreateItem, UpdateItem};
+use crate::models::{CreateItem, UpdateItem, User};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
@@ -34,6 +34,66 @@ pub struct ItemResponse {
     pub title: String,
     pub item_type: String,
     pub status: i16,
+}
+
+/// Full item response for JSON API.
+#[derive(Debug, Serialize)]
+pub struct ItemApiResponse {
+    pub id: Uuid,
+    #[serde(rename = "type")]
+    pub item_type: String,
+    pub title: String,
+    pub status: i16,
+    pub author_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<AuthorResponse>,
+    pub created: i64,
+    pub changed: i64,
+    pub promote: i16,
+    pub sticky: i16,
+    pub fields: serde_json::Value,
+    pub stage_id: String,
+}
+
+/// Author information for embedding.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthorResponse {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// Paginated list response.
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T> {
+    pub items: Vec<T>,
+    pub pagination: PaginationMeta,
+}
+
+/// Pagination metadata.
+#[derive(Debug, Serialize)]
+pub struct PaginationMeta {
+    pub total: i64,
+    pub page: i64,
+    pub per_page: i64,
+    pub total_pages: i64,
+}
+
+/// Query parameters for listing items.
+#[derive(Debug, Deserialize)]
+pub struct ListItemsQuery {
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+    pub status: Option<i16>,
+    pub author_id: Option<Uuid>,
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+    pub include: Option<String>,
+}
+
+/// Query parameters for getting a single item.
+#[derive(Debug, Deserialize)]
+pub struct GetItemQuery {
+    pub include: Option<String>,
 }
 
 /// Request for creating an item.
@@ -73,6 +133,9 @@ pub fn router() -> Router<AppState> {
         // API endpoints
         .route("/api/content-types", get(list_content_types))
         .route("/api/items/{type}", get(list_items_by_type))
+        // JSON API endpoints
+        .route("/api/item/{id}", get(get_item_api))
+        .route("/api/items", get(list_items_api))
 }
 
 /// Get current user from session.
@@ -638,4 +701,170 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+// =============================================================================
+// JSON API Endpoints
+// =============================================================================
+
+/// Get a single item by ID (JSON API).
+///
+/// GET /api/item/{id}?include=author
+async fn get_item_api(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<GetItemQuery>,
+) -> Result<Json<ItemApiResponse>, (StatusCode, Json<ItemError>)> {
+    // Load item
+    let item = match state.items().load(id).await {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ItemError {
+                    error: "Item not found".to_string(),
+                }),
+            ));
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load item");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ItemError {
+                    error: "Internal server error".to_string(),
+                }),
+            ));
+        }
+    };
+
+    // Check if we should include author
+    let include_author = query
+        .include
+        .as_ref()
+        .map(|s| s.split(',').any(|part| part.trim() == "author"))
+        .unwrap_or(false);
+
+    let author = if include_author {
+        match User::find_by_id(state.db(), item.author_id).await {
+            Ok(Some(user)) => Some(AuthorResponse {
+                id: user.id,
+                name: user.name,
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    Ok(Json(ItemApiResponse {
+        id: item.id,
+        item_type: item.item_type,
+        title: item.title,
+        status: item.status,
+        author_id: item.author_id,
+        author,
+        created: item.created,
+        changed: item.changed,
+        promote: item.promote,
+        sticky: item.sticky,
+        fields: item.fields,
+        stage_id: item.stage_id,
+    }))
+}
+
+/// List items with filtering and pagination (JSON API).
+///
+/// GET /api/items?type=article&status=1&page=1&per_page=20&include=author
+async fn list_items_api(
+    State(state): State<AppState>,
+    Query(query): Query<ListItemsQuery>,
+) -> Result<Json<PaginatedResponse<ItemApiResponse>>, (StatusCode, Json<ItemError>)> {
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * per_page;
+
+    // Check if we should include author
+    let include_author = query
+        .include
+        .as_ref()
+        .map(|s| s.split(',').any(|part| part.trim() == "author"))
+        .unwrap_or(false);
+
+    // Build query with filters
+    let (items, total) = state
+        .items()
+        .list_filtered(
+            query.item_type.as_deref(),
+            query.status,
+            query.author_id,
+            per_page,
+            offset,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to list items");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ItemError {
+                    error: "Failed to list items".to_string(),
+                }),
+            )
+        })?;
+
+    // Optionally load authors
+    let mut author_cache: std::collections::HashMap<Uuid, AuthorResponse> =
+        std::collections::HashMap::new();
+    if include_author {
+        let author_ids: Vec<Uuid> = items.iter().map(|i| i.author_id).collect();
+        for author_id in author_ids {
+            if !author_cache.contains_key(&author_id) {
+                if let Ok(Some(user)) = User::find_by_id(state.db(), author_id).await {
+                    author_cache.insert(
+                        author_id,
+                        AuthorResponse {
+                            id: user.id,
+                            name: user.name,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    let total_pages = (total as f64 / per_page as f64).ceil() as i64;
+
+    let items_response: Vec<ItemApiResponse> = items
+        .into_iter()
+        .map(|item| {
+            let author = if include_author {
+                author_cache.get(&item.author_id).cloned()
+            } else {
+                None
+            };
+            ItemApiResponse {
+                id: item.id,
+                item_type: item.item_type,
+                title: item.title,
+                status: item.status,
+                author_id: item.author_id,
+                author,
+                created: item.created,
+                changed: item.changed,
+                promote: item.promote,
+                sticky: item.sticky,
+                fields: item.fields,
+                stage_id: item.stage_id,
+            }
+        })
+        .collect();
+
+    Ok(Json(PaginatedResponse {
+        items: items_response,
+        pagination: PaginationMeta {
+            total,
+            page,
+            per_page,
+            total_pages,
+        },
+    }))
 }

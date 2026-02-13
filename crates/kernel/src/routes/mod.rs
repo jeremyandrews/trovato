@@ -4,6 +4,7 @@ pub mod admin;
 pub mod auth;
 pub mod batch;
 pub mod category;
+pub mod comment;
 pub mod cron;
 pub mod file;
 pub mod gather;

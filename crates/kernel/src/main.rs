@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
         .merge(routes::health::router())
         .merge(routes::item::router())
         .merge(routes::category::router())
+        .merge(routes::comment::router())
         .merge(routes::gather::router())
         .merge(routes::search::router())
         .merge(routes::cron::router())

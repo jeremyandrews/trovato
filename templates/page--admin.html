@@ -103,8 +103,9 @@
                 <li><a href="/admin" {% if path == "/admin" %}class="active"{% endif %}>Dashboard</a></li>
 
                 <div class="admin-nav-section">Content</div>
-                <li><a href="/admin/content" {% if path is starting_with("/admin/content") and not path is starting_with("/admin/content/files") %}class="active"{% endif %}>Content</a></li>
+                <li><a href="/admin/content" {% if path is starting_with("/admin/content") and not path is starting_with("/admin/content/files") and not path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Content</a></li>
                 <li><a href="/admin/content/add">Add content</a></li>
+                <li><a href="/admin/content/comments" {% if path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Comments</a></li>
                 <li><a href="/admin/content/files" {% if path is starting_with("/admin/content/files") %}class="active"{% endif %}>Files</a></li>
 
                 <div class="admin-nav-section">Structure</div>

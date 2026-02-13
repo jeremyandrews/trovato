@@ -1,0 +1,197 @@
+{# Comment section for displaying on item pages #}
+<section class="comments" id="comments">
+    <h2 class="comments__title">Comments{% if total %} ({{ total }}){% endif %}</h2>
+
+    {% if comments %}
+    <div class="comments__list">
+        {% for comment in comments %}
+        <article class="comment comment--depth-{{ comment.depth }}" id="comment-{{ comment.id }}" style="margin-left: {{ comment.depth * 2 }}rem;">
+            <header class="comment__header">
+                <span class="comment__author">{{ comment.author_name | default(value="Anonymous") }}</span>
+                <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
+            </header>
+            <div class="comment__body">
+                {{ comment.body_html | safe }}
+            </div>
+            <footer class="comment__footer">
+                {% if can_reply %}
+                <a href="#comment-form" class="comment__reply-link" data-parent-id="{{ comment.id }}">Reply</a>
+                {% endif %}
+            </footer>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="comments__empty">No comments yet. Be the first to comment!</p>
+    {% endif %}
+
+    {% if can_comment %}
+    <div class="comment-form-wrapper" id="comment-form">
+        <h3 class="comment-form__title">Add a Comment</h3>
+        <form class="comment-form" method="post" action="/api/item/{{ item_id }}/comments">
+            <input type="hidden" name="parent_id" id="comment-parent-id" value="">
+
+            <div class="form-group">
+                <label for="comment-body" class="sr-only">Your comment</label>
+                <textarea id="comment-body" name="body" rows="4" placeholder="Write your comment..." required></textarea>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="button button--primary">Post Comment</button>
+                <span id="replying-to" class="replying-indicator" style="display: none;">
+                    Replying to comment <span id="reply-parent-id"></span>
+                    <button type="button" class="cancel-reply" onclick="cancelReply()">Cancel</button>
+                </span>
+            </div>
+        </form>
+    </div>
+    {% elif not user_logged_in %}
+    <p class="comments__login-prompt">
+        <a href="/user/login?destination={{ current_path | urlencode }}">Log in</a> to post a comment.
+    </p>
+    {% endif %}
+</section>
+
+<style>
+    .comments {
+        margin-top: 3rem;
+        padding-top: 2rem;
+        border-top: 1px solid var(--gray-200);
+    }
+    .comments__title {
+        font-size: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+    .comments__list {
+        margin-bottom: 2rem;
+    }
+    .comments__empty {
+        color: var(--gray-600);
+        font-style: italic;
+    }
+    .comment {
+        padding: 1rem;
+        margin-bottom: 1rem;
+        background: var(--gray-50);
+        border-radius: 0.5rem;
+        border-left: 3px solid var(--gray-300);
+    }
+    .comment--depth-0 {
+        border-left-color: var(--primary);
+    }
+    .comment__header {
+        display: flex;
+        gap: 1rem;
+        align-items: baseline;
+        margin-bottom: 0.75rem;
+    }
+    .comment__author {
+        font-weight: 600;
+        color: var(--gray-900);
+    }
+    .comment__date {
+        font-size: 0.875rem;
+        color: var(--gray-500);
+    }
+    .comment__body {
+        color: var(--gray-700);
+        line-height: 1.6;
+    }
+    .comment__body p {
+        margin: 0 0 0.75rem 0;
+    }
+    .comment__body p:last-child {
+        margin-bottom: 0;
+    }
+    .comment__footer {
+        margin-top: 0.75rem;
+    }
+    .comment__reply-link {
+        font-size: 0.875rem;
+        color: var(--primary);
+    }
+    .comment-form-wrapper {
+        background: var(--gray-50);
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin-top: 2rem;
+    }
+    .comment-form__title {
+        font-size: 1.125rem;
+        margin-bottom: 1rem;
+    }
+    .comment-form .form-group {
+        margin-bottom: 1rem;
+    }
+    .comment-form textarea {
+        width: 100%;
+        padding: 0.75rem;
+        border: 1px solid var(--gray-300);
+        border-radius: 0.25rem;
+        font-family: inherit;
+        font-size: 1rem;
+        resize: vertical;
+    }
+    .comment-form textarea:focus {
+        outline: none;
+        border-color: var(--primary);
+        box-shadow: 0 0 0 2px rgba(var(--primary-rgb), 0.1);
+    }
+    .form-actions {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    .replying-indicator {
+        font-size: 0.875rem;
+        color: var(--gray-600);
+    }
+    .cancel-reply {
+        background: none;
+        border: none;
+        color: var(--primary);
+        cursor: pointer;
+        font-size: 0.875rem;
+        padding: 0;
+        margin-left: 0.5rem;
+    }
+    .cancel-reply:hover {
+        text-decoration: underline;
+    }
+    .comments__login-prompt {
+        background: var(--gray-50);
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        text-align: center;
+        color: var(--gray-600);
+    }
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+    }
+</style>
+
+<script>
+    // Handle reply links
+    document.querySelectorAll('.comment__reply-link').forEach(function(link) {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            var parentId = this.getAttribute('data-parent-id');
+            document.getElementById('comment-parent-id').value = parentId;
+            document.getElementById('reply-parent-id').textContent = '#' + parentId.substring(0, 8);
+            document.getElementById('replying-to').style.display = 'inline';
+            document.getElementById('comment-body').focus();
+        });
+    });
+
+    function cancelReply() {
+        document.getElementById('comment-parent-id').value = '';
+        document.getElementById('replying-to').style.display = 'none';
+    }
+</script>

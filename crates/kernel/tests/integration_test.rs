@@ -17,6 +17,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use chrono::Utc;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 
@@ -1648,7 +1649,7 @@ async fn e2e_admin_edit_content() {
     // Create content to edit
     let item_id = uuid::Uuid::now_v7();
     let author_id = uuid::Uuid::nil();
-    let now = chrono::Utc::now().timestamp();
+    let now = Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO item (id, type, title, author_id, status, fields, created, changed) VALUES ($1, 'page', $2, $3, 1, '{}', $4, $5)"
     )
@@ -1730,7 +1731,7 @@ async fn e2e_admin_delete_content() {
     // Create content to delete
     let item_id = uuid::Uuid::now_v7();
     let author_id = uuid::Uuid::nil();
-    let now = chrono::Utc::now().timestamp();
+    let now = Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO item (id, type, title, author_id, status, fields, created, changed) VALUES ($1, 'page', $2, $3, 1, '{}', $4, $5)"
     )
@@ -2102,7 +2103,7 @@ async fn e2e_admin_delete_tag() {
 
     // Create tag to delete
     let tag_id = uuid::Uuid::now_v7();
-    let now = chrono::Utc::now().timestamp();
+    let now = Utc::now().timestamp();
     sqlx::query("INSERT INTO category_tag (id, category_id, label, weight, created, changed) VALUES ($1, $2, 'Delete Me', 0, $3, $4)")
         .bind(tag_id)
         .bind(&cat_id)
@@ -2197,7 +2198,7 @@ async fn e2e_admin_file_details() {
     let file_id = uuid::Uuid::now_v7();
     let unique_id = file_id.simple().to_string();
     let owner_id = uuid::Uuid::nil();
-    let now = chrono::Utc::now().timestamp();
+    let now = Utc::now().timestamp();
     let filename = format!("test_{}.txt", &unique_id[..16]);
     let uri = format!("local://{}", filename);
     sqlx::query(
@@ -2251,7 +2252,7 @@ async fn e2e_admin_delete_file() {
     // Create a test file record
     let file_id = uuid::Uuid::now_v7();
     let owner_id = uuid::Uuid::nil();
-    let now = chrono::Utc::now().timestamp();
+    let now = Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed) VALUES ($1, $2, 'delete_me.txt', 'local://delete_me.txt', 'text/plain', 100, 0, $3, $4)"
     )
@@ -2954,4 +2955,568 @@ fn extract_form_build_id(html: &str) -> Option<String> {
         }
     }
     None
+}
+
+// =============================================================================
+// JSON API Tests
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_api_list_items_returns_paginated() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(
+            Request::get("/api/items?per_page=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_json(response).await;
+    assert!(body["items"].is_array());
+    assert!(body["pagination"].is_object());
+    assert!(body["pagination"]["total"].is_number());
+    assert!(body["pagination"]["page"].is_number());
+    assert!(body["pagination"]["per_page"].is_number());
+    assert!(body["pagination"]["total_pages"].is_number());
+}
+
+#[tokio::test]
+async fn e2e_api_list_items_filters_by_type() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(
+            Request::get("/api/items?type=article")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_json(response).await;
+    assert!(body["items"].is_array());
+    // All items should be of type article (or empty if none exist)
+    for item in body["items"].as_array().unwrap() {
+        assert_eq!(item["type"], "article");
+    }
+}
+
+#[tokio::test]
+async fn e2e_api_list_items_filters_by_status() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(
+            Request::get("/api/items?status=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_json(response).await;
+    assert!(body["items"].is_array());
+    // All items should have status 1
+    for item in body["items"].as_array().unwrap() {
+        assert_eq!(item["status"], 1);
+    }
+}
+
+#[tokio::test]
+async fn e2e_api_get_item_not_found() {
+    let app = TestApp::new().await;
+
+    let fake_id = uuid::Uuid::now_v7();
+    let response = app
+        .request(
+            Request::get(&format!("/api/item/{}", fake_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// =============================================================================
+// Comment API Tests
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_api_list_comments_for_nonexistent_item() {
+    let app = TestApp::new().await;
+
+    let fake_id = uuid::Uuid::now_v7();
+    let response = app
+        .request(
+            Request::get(&format!("/api/item/{}/comments", fake_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn e2e_api_create_comment_requires_auth() {
+    let app = TestApp::new().await;
+
+    let fake_id = uuid::Uuid::now_v7();
+    let response = app
+        .request(
+            Request::post(&format!("/api/item/{}/comments", fake_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({
+                        "body": "Test comment"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn e2e_api_comment_crud() {
+    let app = TestApp::new().await;
+
+    // Create a user and login
+    let cookies = app
+        .create_and_login_user("comment_user", "password123", "comment@test.com")
+        .await;
+
+    // Get user ID for author
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE name = 'comment_user' LIMIT 1")
+            .fetch_one(&app.db)
+            .await
+            .expect("User should exist");
+
+    // Ensure content type exists
+    let type_name = format!(
+        "commenttest_{}",
+        uuid::Uuid::now_v7().to_string()[..8].to_string()
+    );
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, plugin, settings)
+         VALUES ($1, 'Comment Test', 'For testing', 'test', '{}'::jsonb)
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(&type_name)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create content type");
+
+    // Create item directly in DB for testing
+    let item_id = uuid::Uuid::now_v7();
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO item (id, type, title, status, author_id, created, changed, promote, sticky, fields)
+         VALUES ($1, $2, 'Comment Test Item', 1, $3, $4, $5, 0, 0, '{}'::jsonb)"
+    )
+    .bind(item_id)
+    .bind(&type_name)
+    .bind(user_id)
+    .bind(now)
+    .bind(now)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create item");
+
+    // Test 1: List comments (should be empty)
+    let list_response = app
+        .request(
+            Request::get(&format!("/api/item/{}/comments", item_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let body = response_json(list_response).await;
+    assert_eq!(body["total"], 0);
+    assert!(body["comments"].as_array().unwrap().is_empty());
+
+    // Test 2: Create a comment
+    let create_response = app
+        .request_with_cookies(
+            Request::post(&format!("/api/item/{}/comments", item_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({
+                        "body": "This is a test comment"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let created = response_json(create_response).await;
+    let comment_id = created["id"].as_str().expect("Comment should have id");
+    assert_eq!(created["body"], "This is a test comment");
+    assert_eq!(created["status"], 1);
+    assert_eq!(created["depth"], 0);
+
+    // Test 3: List comments (should have one)
+    let list_response = app
+        .request(
+            Request::get(&format!("/api/item/{}/comments", item_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let body = response_json(list_response).await;
+    assert_eq!(body["total"], 1);
+
+    // Test 4: Get single comment
+    let get_response = app
+        .request(
+            Request::get(&format!("/api/comment/{}?include=author", comment_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let comment = response_json(get_response).await;
+    assert_eq!(comment["body"], "This is a test comment");
+    assert!(comment["author"].is_object());
+
+    // Test 5: Update comment
+    let update_response = app
+        .request_with_cookies(
+            Request::put(&format!("/api/comment/{}", comment_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({
+                        "body": "Updated comment text"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let updated = response_json(update_response).await;
+    assert_eq!(updated["body"], "Updated comment text");
+
+    // Test 6: Create a reply
+    let reply_response = app
+        .request_with_cookies(
+            Request::post(&format!("/api/item/{}/comments", item_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({
+                        "body": "This is a reply",
+                        "parent_id": comment_id
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(reply_response.status(), StatusCode::OK);
+    let reply = response_json(reply_response).await;
+    assert_eq!(reply["depth"], 1);
+    let reply_id = reply["id"].as_str().expect("Reply should have id");
+
+    // Test 7: Delete comment
+    let delete_response = app
+        .request_with_cookies(
+            Request::delete(&format!("/api/comment/{}", reply_id))
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    // Cleanup
+    sqlx::query("DELETE FROM comment WHERE item_id = $1")
+        .bind(item_id)
+        .execute(&app.db)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(item_id)
+        .execute(&app.db)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn e2e_api_comment_validation() {
+    let app = TestApp::new().await;
+
+    let cookies = app
+        .create_and_login_user("comment_val_user", "password123", "commentval@test.com")
+        .await;
+
+    // Get user ID for author
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE name = 'comment_val_user' LIMIT 1")
+            .fetch_one(&app.db)
+            .await
+            .expect("User should exist");
+
+    // Ensure content type exists
+    let type_name = format!(
+        "commentval_{}",
+        uuid::Uuid::now_v7().to_string()[..8].to_string()
+    );
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, plugin, settings)
+         VALUES ($1, 'Comment Val', 'For testing', 'test', '{}'::jsonb)
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(&type_name)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create content type");
+
+    // Create item directly in DB
+    let item_id = uuid::Uuid::now_v7();
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO item (id, type, title, status, author_id, created, changed, promote, sticky, fields)
+         VALUES ($1, $2, 'Val Test Item', 1, $3, $4, $5, 0, 0, '{}'::jsonb)"
+    )
+    .bind(item_id)
+    .bind(&type_name)
+    .bind(user_id)
+    .bind(now)
+    .bind(now)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create item");
+
+    // Test: Empty body should fail
+    let empty_response = app
+        .request_with_cookies(
+            Request::post(&format!("/api/item/{}/comments", item_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({
+                        "body": "   "
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(empty_response.status(), StatusCode::BAD_REQUEST);
+
+    // Cleanup
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(item_id)
+        .execute(&app.db)
+        .await
+        .ok();
+}
+
+// =============================================================================
+// Comment Admin Moderation Tests
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_admin_list_comments() {
+    let app = TestApp::new().await;
+
+    let cookies = app
+        .create_and_login_user("comment_admin", "password123", "commentadmin@test.com")
+        .await;
+
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/content/comments")
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await;
+    assert!(body.contains("Comments"));
+}
+
+#[tokio::test]
+async fn e2e_admin_comment_moderation() {
+    let app = TestApp::new().await;
+
+    let cookies = app
+        .create_and_login_user("comment_mod", "password123", "commentmod@test.com")
+        .await;
+
+    // Get user ID
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE name = 'comment_mod' LIMIT 1")
+            .fetch_one(&app.db)
+            .await
+            .expect("User should exist");
+
+    // Create content type and item
+    let type_name = format!(
+        "commentmod_{}",
+        uuid::Uuid::now_v7().to_string()[..8].to_string()
+    );
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, plugin, settings)
+         VALUES ($1, 'Comment Mod', 'For testing', 'test', '{}'::jsonb)
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(&type_name)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create content type");
+
+    let item_id = uuid::Uuid::now_v7();
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO item (id, type, title, status, author_id, created, changed, promote, sticky, fields)
+         VALUES ($1, $2, 'Mod Test Item', 1, $3, $4, $5, 0, 0, '{}'::jsonb)"
+    )
+    .bind(item_id)
+    .bind(&type_name)
+    .bind(user_id)
+    .bind(now)
+    .bind(now)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create item");
+
+    // Create a comment via API
+    let create_response = app
+        .request_with_cookies(
+            Request::post(&format!("/api/item/{}/comments", item_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({
+                        "body": "Comment for moderation test"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let created = response_json(create_response).await;
+    let comment_id = created["id"].as_str().expect("Comment should have id");
+
+    // Test: View comments list
+    let list_response = app
+        .request_with_cookies(
+            Request::get("/admin/content/comments")
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let body = response_text(list_response).await;
+    assert!(body.contains("Comment for moderation"));
+
+    // Test: Edit comment form
+    let edit_form_response = app
+        .request_with_cookies(
+            Request::get(&format!("/admin/content/comments/{}/edit", comment_id))
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(edit_form_response.status(), StatusCode::OK);
+    let body = response_text(edit_form_response).await;
+    assert!(body.contains("Edit Comment"));
+
+    // Test: Edit comment submit
+    let edit_response = app
+        .request_with_cookies(
+            Request::post(&format!("/admin/content/comments/{}/edit", comment_id))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("body=Updated+comment+body&status=1"))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert!(edit_response.status().is_redirection());
+
+    // Test: Unpublish comment
+    let unpublish_response = app
+        .request_with_cookies(
+            Request::post(&format!("/admin/content/comments/{}/unpublish", comment_id))
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert!(unpublish_response.status().is_redirection());
+
+    // Verify it's unpublished
+    let comment_status: i16 = sqlx::query_scalar("SELECT status FROM comment WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(comment_id).unwrap())
+        .fetch_one(&app.db)
+        .await
+        .expect("Comment should exist");
+    assert_eq!(comment_status, 0);
+
+    // Test: Approve comment
+    let approve_response = app
+        .request_with_cookies(
+            Request::post(&format!("/admin/content/comments/{}/approve", comment_id))
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert!(approve_response.status().is_redirection());
+
+    // Verify it's published
+    let comment_status: i16 = sqlx::query_scalar("SELECT status FROM comment WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(comment_id).unwrap())
+        .fetch_one(&app.db)
+        .await
+        .expect("Comment should exist");
+    assert_eq!(comment_status, 1);
+
+    // Test: Delete comment
+    let delete_response = app
+        .request_with_cookies(
+            Request::post(&format!("/admin/content/comments/{}/delete", comment_id))
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert!(delete_response.status().is_redirection());
+
+    // Verify it's deleted
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment WHERE id = $1)")
+        .bind(uuid::Uuid::parse_str(comment_id).unwrap())
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert!(!exists);
+
+    // Cleanup
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(item_id)
+        .execute(&app.db)
+        .await
+        .ok();
 }

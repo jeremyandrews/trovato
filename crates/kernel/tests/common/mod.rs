@@ -67,6 +67,7 @@ impl TestApp {
             .merge(trovato_kernel::routes::health::router())
             .merge(trovato_kernel::routes::item::router())
             .merge(trovato_kernel::routes::category::router())
+            .merge(trovato_kernel::routes::comment::router())
             .merge(trovato_kernel::routes::gather::router())
             .merge(trovato_kernel::routes::search::router())
             .merge(trovato_kernel::routes::cron::router())

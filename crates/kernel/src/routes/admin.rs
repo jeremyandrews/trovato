@@ -13,8 +13,8 @@ use crate::form::{AjaxCommand, AjaxRequest, generate_csrf_token, verify_csrf_tok
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{
-    Category, CreateCategory, CreateItem, CreateTag, CreateUser, Item, Role, Tag, UpdateCategory,
-    UpdateTag, UpdateUser, User,
+    Category, Comment, CreateCategory, CreateItem, CreateTag, CreateUser, Item, Role, Tag,
+    UpdateCategory, UpdateComment, UpdateTag, UpdateUser, User,
 };
 use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
 use crate::state::AppState;
@@ -2881,6 +2881,238 @@ fn is_valid_machine_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+// =============================================================================
+// Comment Moderation
+// =============================================================================
+
+/// Query params for comment list.
+#[derive(Debug, Deserialize)]
+pub struct CommentListQuery {
+    pub status: Option<i16>,
+    pub page: Option<i64>,
+}
+
+/// Form data for editing a comment.
+#[derive(Debug, Deserialize)]
+pub struct EditCommentForm {
+    pub body: String,
+    pub status: i16,
+}
+
+/// List all comments for moderation.
+///
+/// GET /admin/content/comments
+async fn list_comments(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(query): axum::extract::Query<CommentListQuery>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page: i64 = 25;
+    let offset = (page - 1) * per_page;
+
+    let comments = if let Some(status) = query.status {
+        Comment::list_by_status(state.db(), status, per_page, offset)
+            .await
+            .unwrap_or_default()
+    } else {
+        Comment::list_all(state.db(), per_page, offset)
+            .await
+            .unwrap_or_default()
+    };
+
+    let total = Comment::count_all(state.db()).await.unwrap_or(0);
+
+    // Get author names
+    let mut authors: std::collections::HashMap<uuid::Uuid, String> =
+        std::collections::HashMap::new();
+    for comment in &comments {
+        if !authors.contains_key(&comment.author_id) {
+            if let Ok(Some(user)) = User::find_by_id(state.db(), comment.author_id).await {
+                authors.insert(comment.author_id, user.name);
+            }
+        }
+    }
+
+    // Get item titles
+    let mut items: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
+    for comment in &comments {
+        if !items.contains_key(&comment.item_id) {
+            if let Ok(Some(item)) = Item::find_by_id(state.db(), comment.item_id).await {
+                items.insert(comment.item_id, item.title);
+            }
+        }
+    }
+
+    let mut context = tera::Context::new();
+    context.insert("comments", &comments);
+    context.insert("authors", &authors);
+    context.insert("items", &items);
+    context.insert("total", &total);
+    context.insert("page", &page);
+    context.insert("per_page", &per_page);
+    context.insert(
+        "status_filter",
+        &query.status.map(|s| s.to_string()).unwrap_or_default(),
+    );
+    context.insert("path", "/admin/content/comments");
+
+    render_admin_template(&state, "admin/comments.html", &context).await
+}
+
+/// Edit a comment form.
+///
+/// GET /admin/content/comments/{id}/edit
+async fn edit_comment_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<uuid::Uuid>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let comment = match Comment::find_by_id(state.db(), id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load comment");
+            return render_error(&state, "Failed to load comment").await;
+        }
+    };
+
+    let author_name = User::find_by_id(state.db(), comment.author_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.name);
+
+    let item_title = Item::find_by_id(state.db(), comment.item_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|i| i.title);
+
+    let mut context = tera::Context::new();
+    context.insert("comment", &comment);
+    context.insert("author_name", &author_name);
+    context.insert("item_title", &item_title);
+    context.insert("path", "/admin/content/comments");
+
+    render_admin_template(&state, "admin/comment-form.html", &context).await
+}
+
+/// Edit a comment submit.
+///
+/// POST /admin/content/comments/{id}/edit
+async fn edit_comment_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<EditCommentForm>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let input = UpdateComment {
+        body: Some(form.body),
+        body_format: None,
+        status: Some(form.status),
+    };
+
+    match Comment::update(state.db(), id, input).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(None) => render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to update comment");
+            render_error(&state, "Failed to update comment").await
+        }
+    }
+}
+
+/// Approve a comment.
+///
+/// POST /admin/content/comments/{id}/approve
+async fn approve_comment(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<uuid::Uuid>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let input = UpdateComment {
+        body: None,
+        body_format: None,
+        status: Some(1),
+    };
+
+    match Comment::update(state.db(), id, input).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(None) => render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to approve comment");
+            render_error(&state, "Failed to approve comment").await
+        }
+    }
+}
+
+/// Unpublish a comment.
+///
+/// POST /admin/content/comments/{id}/unpublish
+async fn unpublish_comment(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<uuid::Uuid>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let input = UpdateComment {
+        body: None,
+        body_format: None,
+        status: Some(0),
+    };
+
+    match Comment::update(state.db(), id, input).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(None) => render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to unpublish comment");
+            render_error(&state, "Failed to unpublish comment").await
+        }
+    }
+}
+
+/// Delete a comment.
+///
+/// POST /admin/content/comments/{id}/delete
+async fn delete_comment_admin(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<uuid::Uuid>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    match Comment::delete(state.db(), id).await {
+        Ok(true) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(false) => render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to delete comment");
+            render_error(&state, "Failed to delete comment").await
+        }
+    }
+}
+
 /// Render an admin template.
 async fn render_admin_template(
     state: &AppState,
@@ -2988,6 +3220,25 @@ pub fn router() -> Router<AppState> {
         .route("/admin/content/files", get(list_files))
         .route("/admin/content/files/{id}", get(file_details))
         .route("/admin/content/files/{id}/delete", post(delete_file))
+        // Comment moderation
+        .route("/admin/content/comments", get(list_comments))
+        .route("/admin/content/comments/{id}/edit", get(edit_comment_form))
+        .route(
+            "/admin/content/comments/{id}/edit",
+            post(edit_comment_submit),
+        )
+        .route(
+            "/admin/content/comments/{id}/approve",
+            post(approve_comment),
+        )
+        .route(
+            "/admin/content/comments/{id}/unpublish",
+            post(unpublish_comment),
+        )
+        .route(
+            "/admin/content/comments/{id}/delete",
+            post(delete_comment_admin),
+        )
         // Content type management
         .route("/admin/structure/types", get(list_content_types))
         .route("/admin/structure/types/add", get(add_content_type_form))
