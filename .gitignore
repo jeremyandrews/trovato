@@ -30,3 +30,7 @@ _bmad/
 
 # Docker volumes (local dev data)
 docker-data/
+
+# File uploads (runtime data)
+uploads/
+**/uploads/
