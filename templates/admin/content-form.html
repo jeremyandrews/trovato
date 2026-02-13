@@ -1,0 +1,81 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit {{ content_type.label }}{% else %}Create {{ content_type.label }}{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="content-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="title" class="form-item__label form-item__label--required">Title</label>
+            <input type="text" id="title" name="title" class="form-text"
+                   value="{{ values.title | default(value='') }}"
+                   required>
+        </div>
+
+        {% for field in content_type.fields %}
+        <div class="form-item">
+            <label for="{{ field.name }}" class="form-item__label {% if field.required %}form-item__label--required{% endif %}">
+                {{ field.label }}
+            </label>
+            {% if field.field_type == "text" %}
+            <input type="text" id="{{ field.name }}" name="{{ field.name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.name] | default(value='') }}{% elif item %}{{ item.fields[field.name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "textarea" or field.field_type == "text_long" %}
+            <textarea id="{{ field.name }}" name="{{ field.name }}" class="form-textarea" rows="5"
+                      {% if field.required %}required{% endif %}>{% if values.fields %}{{ values.fields[field.name] | default(value='') }}{% elif item %}{{ item.fields[field.name] | default(value='') }}{% endif %}</textarea>
+            {% elif field.field_type == "boolean" %}
+            <div class="form-checkbox-wrapper">
+                <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" value="1"
+                       {% if values.fields[field.name] or (item and item.fields[field.name]) %}checked{% endif %}>
+            </div>
+            {% elif field.field_type == "integer" or field.field_type == "number" %}
+            <input type="number" id="{{ field.name }}" name="{{ field.name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.name] | default(value='') }}{% elif item %}{{ item.fields[field.name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% else %}
+            <input type="text" id="{{ field.name }}" name="{{ field.name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.name] | default(value='') }}{% elif item %}{{ item.fields[field.name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% endif %}
+            {% if field.description %}
+            <p class="form-item__description">{{ field.description }}</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <fieldset class="fieldset">
+            <legend>Publishing options</legend>
+            <div class="fieldset__content">
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="status" name="status" value="1"
+                               {% if values.status %}checked{% elif not editing %}checked{% endif %}>
+                        <label for="status">Published</label>
+                    </div>
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create content{% endif %}</button>
+            <a href="/admin/content" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

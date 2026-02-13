@@ -227,6 +227,82 @@ impl FileService {
         })
     }
 
+    /// List all files.
+    pub async fn list(&self) -> Result<Vec<FileInfo>> {
+        let rows: Vec<FileRow> = sqlx::query_as(
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed ORDER BY created DESC"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list files")?;
+
+        Ok(rows.into_iter().map(FileInfo::from).collect())
+    }
+
+    /// List files with pagination.
+    pub async fn list_paginated(&self, limit: i64, offset: i64) -> Result<Vec<FileInfo>> {
+        let rows: Vec<FileRow> = sqlx::query_as(
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list files")?;
+
+        Ok(rows.into_iter().map(FileInfo::from).collect())
+    }
+
+    /// List files with optional status filter.
+    pub async fn list_by_status(&self, status: Option<FileStatus>, limit: i64, offset: i64) -> Result<Vec<FileInfo>> {
+        let rows: Vec<FileRow> = match status {
+            Some(s) => {
+                sqlx::query_as(
+                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed WHERE status = $1 ORDER BY created DESC LIMIT $2 OFFSET $3"
+                )
+                .bind(s as i16)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to list files by status")?
+            }
+            None => {
+                sqlx::query_as(
+                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
+                )
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to list files")?
+            }
+        };
+
+        Ok(rows.into_iter().map(FileInfo::from).collect())
+    }
+
+    /// Count all files.
+    pub async fn count(&self) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_managed")
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to count files")?;
+
+        Ok(count)
+    }
+
+    /// Count files by status.
+    pub async fn count_by_status(&self, status: FileStatus) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_managed WHERE status = $1")
+            .bind(status as i16)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to count files by status")?;
+
+        Ok(count)
+    }
+
     /// Get file info by ID.
     pub async fn get(&self, id: Uuid) -> Result<Option<FileInfo>> {
         let row = sqlx::query_as::<_, FileRow>(

@@ -234,6 +234,40 @@ impl User {
         Ok(())
     }
 
+    /// List all users.
+    pub async fn list(pool: &PgPool) -> Result<Vec<Self>> {
+        let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY name")
+            .fetch_all(pool)
+            .await
+            .context("failed to list users")?;
+
+        Ok(users)
+    }
+
+    /// List users with pagination.
+    pub async fn list_paginated(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
+        let users = sqlx::query_as::<_, User>(
+            "SELECT * FROM users ORDER BY name LIMIT $1 OFFSET $2"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .context("failed to list users")?;
+
+        Ok(users)
+    }
+
+    /// Count all users.
+    pub async fn count(pool: &PgPool) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(pool)
+            .await
+            .context("failed to count users")?;
+
+        Ok(count)
+    }
+
     /// Delete a user.
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool> {
         // Prevent deletion of anonymous user

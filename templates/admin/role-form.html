@@ -1,0 +1,52 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit role{% else %}Add role{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="role-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="name" class="form-item__label form-item__label--required">Role name</label>
+            <input type="text" id="name" name="name" class="form-text"
+                   value="{{ values.name | default(value='') }}"
+                   required>
+            <p class="form-item__description">The human-readable name of this role.</p>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create role{% endif %}</button>
+            <a href="/admin/people/roles" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+{% if editing and role_permissions %}
+<div class="admin-card" style="margin-top: 1rem;">
+    <h3>Current Permissions</h3>
+    {% if role_permissions | length > 0 %}
+    <ul>
+        {% for perm in role_permissions %}
+        <li>{{ perm }}</li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>No permissions assigned. Use the <a href="/admin/people/permissions">permission matrix</a> to assign permissions.</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

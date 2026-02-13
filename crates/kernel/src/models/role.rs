@@ -74,6 +74,20 @@ impl Role {
         Ok(role)
     }
 
+    /// Update a role's name.
+    pub async fn update(pool: &PgPool, id: Uuid, name: &str) -> Result<Option<Self>> {
+        let result = sqlx::query_as::<_, Role>(
+            "UPDATE roles SET name = $1 WHERE id = $2 RETURNING *"
+        )
+        .bind(name)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .context("failed to update role")?;
+
+        Ok(result)
+    }
+
     /// Delete a role.
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool> {
         // Prevent deletion of well-known roles

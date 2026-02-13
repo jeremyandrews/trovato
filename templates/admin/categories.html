@@ -1,0 +1,66 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Categories</h2>
+    <a href="/admin/structure/categories/add" class="button button--primary">Add category</a>
+</div>
+
+<div class="admin-card">
+    {% if categories %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Machine name</th>
+                <th>Hierarchy</th>
+                <th>Tags</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for cat in categories %}
+            <tr>
+                <td>
+                    <a href="/admin/structure/categories/{{ cat.id }}/tags">{{ cat.label }}</a>
+                </td>
+                <td><code>{{ cat.id }}</code></td>
+                <td>
+                    {% if cat.hierarchy == 0 %}Flat
+                    {% elif cat.hierarchy == 1 %}Single parent
+                    {% else %}Multiple parents
+                    {% endif %}
+                </td>
+                <td>{{ tag_counts[cat.id] | default(value=0) }}</td>
+                <td>
+                    <a href="/admin/structure/categories/{{ cat.id }}/tags">List tags</a>
+                    &middot;
+                    <a href="/admin/structure/categories/{{ cat.id }}/edit">Edit</a>
+                    &middot;
+                    <form method="post" action="/admin/structure/categories/{{ cat.id }}/delete" style="display: inline;">
+                        <button type="submit" class="link-button" onclick="return confirm('Are you sure you want to delete this category and all its tags?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No categories found. <a href="/admin/structure/categories/add">Create one now</a>.</p>
+    {% endif %}
+</div>
+
+<style>
+    .link-button {
+        background: none;
+        border: none;
+        color: var(--primary);
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+    }
+    .link-button:hover {
+        text-decoration: underline;
+    }
+</style>
+{% endblock %}

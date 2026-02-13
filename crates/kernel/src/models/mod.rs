@@ -15,4 +15,4 @@ pub use item::{CreateItem, Item, ItemRevision, UpdateItem};
 pub use item_type::{CreateItemType, ItemType};
 pub use password_reset::PasswordResetToken;
 pub use role::Role;
-pub use user::User;
+pub use user::{CreateUser, UpdateUser, User};

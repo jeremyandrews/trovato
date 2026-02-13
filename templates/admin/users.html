@@ -1,0 +1,83 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Users</h2>
+    <a href="/admin/people/add" class="button button--primary">Add user</a>
+</div>
+
+<div class="admin-card">
+    {% if users %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Admin</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>
+                    <a href="/admin/people/{{ user.id }}/edit">{{ user.name }}</a>
+                </td>
+                <td>{{ user.mail }}</td>
+                <td>
+                    {% if user.status == 1 %}
+                    <span class="status status--active">Active</span>
+                    {% else %}
+                    <span class="status status--inactive">Blocked</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if user.is_admin %}Yes{% else %}No{% endif %}
+                </td>
+                <td>
+                    <a href="/admin/people/{{ user.id }}/edit">Edit</a>
+                    {% if user.id != "00000000-0000-0000-0000-000000000000" %}
+                    &middot;
+                    <form method="post" action="/admin/people/{{ user.id }}/delete" style="display: inline;">
+                        <button type="submit" class="link-button" onclick="return confirm('Are you sure you want to delete this user?')">Delete</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No users found. <a href="/admin/people/add">Create one now</a>.</p>
+    {% endif %}
+</div>
+
+<style>
+    .status {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.875rem;
+    }
+    .status--active {
+        background: #d4edda;
+        color: #155724;
+    }
+    .status--inactive {
+        background: #f8d7da;
+        color: #721c24;
+    }
+    .link-button {
+        background: none;
+        border: none;
+        color: var(--primary);
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+    }
+    .link-button:hover {
+        text-decoration: underline;
+    }
+</style>
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit user{% else %}Add user{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="user-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="name" class="form-item__label form-item__label--required">Username</label>
+            <input type="text" id="name" name="name" class="form-text"
+                   value="{{ values.name | default(value='') }}"
+                   required>
+            <p class="form-item__description">The unique username for this account.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="mail" class="form-item__label form-item__label--required">Email</label>
+            <input type="email" id="mail" name="mail" class="form-text"
+                   value="{{ values.mail | default(value='') }}"
+                   required>
+            <p class="form-item__description">A valid email address for this user.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="password" class="form-item__label {% if not editing %}form-item__label--required{% endif %}">Password</label>
+            <input type="password" id="password" name="password" class="form-text"
+                   {% if not editing %}required{% endif %}
+                   minlength="8">
+            <p class="form-item__description">
+                {% if editing %}
+                Leave blank to keep the current password. Minimum 8 characters.
+                {% else %}
+                Minimum 8 characters.
+                {% endif %}
+            </p>
+        </div>
+
+        <fieldset class="fieldset">
+            <legend>Status and permissions</legend>
+            <div class="fieldset__content">
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="status" name="status" value="1"
+                               {% if values.status %}checked{% endif %}>
+                        <label for="status">Active</label>
+                    </div>
+                    <p class="form-item__description">Blocked users cannot log in.</p>
+                </div>
+
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="is_admin" name="is_admin" value="1"
+                               {% if values.is_admin %}checked{% endif %}>
+                        <label for="is_admin">Administrator</label>
+                    </div>
+                    <p class="form-item__description">Administrators have full access to the site.</p>
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create user{% endif %}</button>
+            <a href="/admin/people" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

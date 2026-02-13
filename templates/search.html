@@ -19,7 +19,7 @@
                 {% for result in results %}
                 <article class="search-result">
                     <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
-                    <div class="result-meta">{{ result.item_type }}</div>
+                    <div class="result-meta">{{ result.type }}</div>
                     {% if result.snippet %}
                         <div class="result-snippet">{{ result.snippet | safe }}</div>
                     {% endif %}

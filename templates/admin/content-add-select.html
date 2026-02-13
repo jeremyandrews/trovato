@@ -1,0 +1,64 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Add content</h2>
+</div>
+
+<div class="admin-card">
+    {% if content_types %}
+    <p>Select a content type to create:</p>
+    <ul class="content-type-list">
+        {% for ct in content_types %}
+        <li>
+            <a href="/admin/content/add/{{ ct.machine_name }}" class="content-type-link">
+                <strong>{{ ct.label }}</strong>
+                {% if ct.description %}
+                <span class="description">{{ ct.description }}</span>
+                {% endif %}
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>No content types available. <a href="/admin/structure/types/add">Create one first</a>.</p>
+    {% endif %}
+</div>
+
+<style>
+    .content-type-list {
+        list-style: none;
+        padding: 0;
+        margin: 1rem 0 0 0;
+    }
+    .content-type-list li {
+        margin: 0;
+        padding: 0;
+        border-bottom: 1px solid #eee;
+    }
+    .content-type-list li:last-child {
+        border-bottom: none;
+    }
+    .content-type-link {
+        display: block;
+        padding: 1rem;
+        text-decoration: none;
+        color: inherit;
+        transition: background-color 0.15s;
+    }
+    .content-type-link:hover {
+        background: #f5f5f5;
+        text-decoration: none;
+    }
+    .content-type-link strong {
+        display: block;
+        color: var(--primary);
+        margin-bottom: 0.25rem;
+    }
+    .content-type-link .description {
+        display: block;
+        font-size: 0.875rem;
+        color: #666;
+    }
+</style>
+{% endblock %}

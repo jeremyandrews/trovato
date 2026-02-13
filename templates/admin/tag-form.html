@@ -1,0 +1,80 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit tag{% else %}Add tag to {{ category.label }}{% endif %}</h2>
+</div>
+
+<nav class="breadcrumb">
+    <a href="/admin/structure/categories">Categories</a>
+    &raquo;
+    <a href="/admin/structure/categories/{{ category.id }}/tags">{{ category.label }}</a>
+    &raquo;
+    <span>{% if editing %}Edit{% else %}Add{% endif %}</span>
+</nav>
+
+<div class="admin-card">
+    <form id="tag-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="label" class="form-item__label form-item__label--required">Name</label>
+            <input type="text" id="label" name="label" class="form-text"
+                   value="{{ values.label | default(value='') }}"
+                   required>
+        </div>
+
+        <div class="form-item">
+            <label for="description" class="form-item__label">Description</label>
+            <textarea id="description" name="description" class="form-textarea" rows="3">{{ values.description | default(value='') }}</textarea>
+        </div>
+
+        {% if category.hierarchy > 0 %}
+        <div class="form-item">
+            <label for="parent_id" class="form-item__label">Parent tag</label>
+            <select id="parent_id" name="parent_id" class="form-select">
+                <option value="">- None (root) -</option>
+                {% for tag in existing_tags %}
+                <option value="{{ tag.id }}" {% if values.parent_id == tag.id %}selected{% endif %}>{{ tag.label }}</option>
+                {% endfor %}
+            </select>
+            <p class="form-item__description">Select a parent tag to create a hierarchy.</p>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="weight" class="form-item__label">Weight</label>
+            <input type="number" id="weight" name="weight" class="form-text"
+                   value="{{ values.weight | default(value='0') }}"
+                   style="max-width: 100px;">
+            <p class="form-item__description">Lower weights appear first in listings.</p>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create tag{% endif %}</button>
+            <a href="/admin/structure/categories/{{ category.id }}/tags" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<style>
+    .breadcrumb {
+        margin: 0 0 1rem 0;
+        font-size: 0.875rem;
+    }
+    .breadcrumb a {
+        color: var(--primary);
+    }
+</style>
+{% endblock %}
