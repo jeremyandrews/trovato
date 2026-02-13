@@ -1,0 +1,104 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit content type{% else %}Add content type{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="content-type-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="label" class="form-item__label form-item__label--required">Name</label>
+            <input type="text" id="label" name="label" class="form-text"
+                   value="{{ values.label | default(value='') }}"
+                   required
+                   data-machine-name-source="#machine_name">
+            <p class="form-item__description">The human-readable name of this content type.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="machine_name" class="form-item__label form-item__label--required">Machine name</label>
+            <input type="text" id="machine_name" name="machine_name" class="form-text"
+                   value="{{ values.machine_name | default(value='') }}"
+                   pattern="[a-z][a-z0-9_]*"
+                   required
+                   {% if editing %}readonly{% endif %}>
+            <p class="form-item__description">A unique machine-readable name. Can only contain lowercase letters, numbers, and underscores.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="description" class="form-item__label">Description</label>
+            <textarea id="description" name="description" class="form-textarea" rows="3">{{ values.description | default(value='') }}</textarea>
+            <p class="form-item__description">Describe this content type. The text will be displayed on the content type administration page.</p>
+        </div>
+
+        <fieldset class="fieldset">
+            <legend>Submission form settings</legend>
+            <div class="fieldset__content">
+                <div class="form-item">
+                    <label for="title_label" class="form-item__label">Title field label</label>
+                    <input type="text" id="title_label" name="title_label" class="form-text"
+                           value="{{ values.title_label | default(value='Title') }}">
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
+            <legend>Publishing options</legend>
+            <div class="fieldset__content">
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="published_default" name="published_default" value="1"
+                               {% if values.published_default %}checked{% endif %}>
+                        <label for="published_default">Published by default</label>
+                    </div>
+                </div>
+
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="revision_default" name="revision_default" value="1"
+                               {% if values.revision_default %}checked{% endif %}>
+                        <label for="revision_default">Create new revision by default</label>
+                    </div>
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">Save content type</button>
+            <a href="/admin/structure/types" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script>
+// Auto-generate machine name from label
+document.getElementById('label').addEventListener('input', function(e) {
+    const machineNameInput = document.getElementById('machine_name');
+    if (!machineNameInput.readOnly && !machineNameInput.dataset.userEdited) {
+        machineNameInput.value = e.target.value
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .substring(0, 32);
+    }
+});
+
+document.getElementById('machine_name').addEventListener('input', function() {
+    this.dataset.userEdited = 'true';
+});
+</script>
+{% endblock %}

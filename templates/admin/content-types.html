@@ -1,0 +1,41 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Content Types</h2>
+    <a href="/admin/structure/types/add" class="button button--primary">Add content type</a>
+</div>
+
+<div class="admin-card">
+    {% if content_types %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Machine name</th>
+                <th>Description</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ct in content_types %}
+            <tr>
+                <td>
+                    <a href="/admin/structure/types/{{ ct.machine_name }}/edit">{{ ct.label }}</a>
+                </td>
+                <td><code>{{ ct.machine_name }}</code></td>
+                <td>{{ ct.description | default(value="-") }}</td>
+                <td>
+                    <a href="/admin/structure/types/{{ ct.machine_name }}/edit">Edit</a>
+                    &middot;
+                    <a href="/admin/structure/types/{{ ct.machine_name }}/fields">Manage fields</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No content types defined. <a href="/admin/structure/types/add">Create one now</a>.</p>
+    {% endif %}
+</div>
+{% endblock %}

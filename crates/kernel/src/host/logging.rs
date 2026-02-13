@@ -7,14 +7,14 @@ use tracing::{debug, error, info, trace, warn};
 use wasmtime::Linker;
 
 use super::read_string_from_memory;
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 /// Register logging host functions.
-pub fn register_logging_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_logging_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/logging",
         "log",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          level_ptr: i32,
          level_len: i32,
          plugin_ptr: i32,
@@ -59,7 +59,7 @@ mod tests {
     fn register_logging_succeeds() {
         let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
-        let mut linker: Linker<RequestState> = Linker::new(&engine);
+        let mut linker: Linker<PluginState> = Linker::new(&engine);
 
         let result = register_logging_functions(&mut linker);
         assert!(result.is_ok());

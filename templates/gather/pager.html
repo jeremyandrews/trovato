@@ -1,0 +1,66 @@
+<nav class="pager" aria-label="Pagination">
+    <ul class="pager__items">
+        {% if pager.current_page > 1 %}
+        <li class="pager__item pager__item--previous">
+            <a href="{{ pager.base_url }}?page={{ pager.current_page - 1 }}">Previous</a>
+        </li>
+        {% endif %}
+
+        {% for page in pager.pages %}
+        <li class="pager__item{% if page == pager.current_page %} pager__item--active{% endif %}">
+            {% if page == pager.current_page %}
+            <span>{{ page }}</span>
+            {% elif page == "..." %}
+            <span class="pager__ellipsis">...</span>
+            {% else %}
+            <a href="{{ pager.base_url }}?page={{ page }}">{{ page }}</a>
+            {% endif %}
+        </li>
+        {% endfor %}
+
+        {% if pager.current_page < pager.total_pages %}
+        <li class="pager__item pager__item--next">
+            <a href="{{ pager.base_url }}?page={{ pager.current_page + 1 }}">Next</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+
+<style>
+    .pager {
+        margin-top: 1.5rem;
+    }
+
+    .pager__items {
+        display: flex;
+        gap: 0.25rem;
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        justify-content: center;
+    }
+
+    .pager__item a,
+    .pager__item span {
+        display: block;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--gray-200);
+        border-radius: 0.375rem;
+        color: var(--gray-700);
+        text-decoration: none;
+    }
+
+    .pager__item a:hover {
+        background: var(--gray-100);
+    }
+
+    .pager__item--active span {
+        background: var(--primary);
+        color: white;
+        border-color: var(--primary);
+    }
+
+    .pager__ellipsis {
+        border: none;
+    }
+</style>

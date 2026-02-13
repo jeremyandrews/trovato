@@ -12,9 +12,21 @@ use tracing::{debug, info, warn};
 use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, Linker, Module, PoolingAllocationConfig,
 };
-
 use super::info_parser::PluginInfo;
 use crate::tap::RequestState;
+
+/// Combined state for WASM stores, including both request state and random seed.
+pub struct PluginState {
+    /// Request-specific state (user context, services).
+    pub request: RequestState,
+}
+
+impl PluginState {
+    /// Create a new plugin state.
+    pub fn new(request: RequestState) -> Self {
+        Self { request }
+    }
+}
 
 /// Configuration for the plugin runtime.
 #[derive(Debug, Clone)]
@@ -50,8 +62,8 @@ pub struct CompiledPlugin {
 pub struct PluginRuntime {
     /// Wasmtime engine with pooling allocator.
     engine: Engine,
-    /// Linker with host function bindings.
-    linker: Linker<RequestState>,
+    /// Linker with host function bindings and WASI support.
+    linker: Linker<PluginState>,
     /// Compiled plugins indexed by name.
     plugins: HashMap<String, Arc<CompiledPlugin>>,
 }
@@ -74,8 +86,8 @@ impl PluginRuntime {
         &self.engine
     }
 
-    /// Get the linker with host functions.
-    pub fn linker(&self) -> &Linker<RequestState> {
+    /// Get the linker with host functions and WASI support.
+    pub fn linker(&self) -> &Linker<PluginState> {
         &self.linker
     }
 
@@ -220,11 +232,98 @@ fn create_engine(config: &PluginConfig) -> Result<Engine> {
     Engine::new(&wasmtime_config).context("failed to create wasmtime engine with pooling allocator")
 }
 
-/// Creates a Linker with host function bindings.
-fn create_linker(engine: &Engine) -> Result<Linker<RequestState>> {
+/// Creates a Linker with host function bindings and WASI support.
+fn create_linker(engine: &Engine) -> Result<Linker<PluginState>> {
     let mut linker = Linker::new(engine);
+
+    // Add minimal WASI stubs for wasi_snapshot_preview1
+    add_wasi_stubs(&mut linker)?;
+
+    // Add custom host functions
     crate::host::register_all(&mut linker)?;
+
     Ok(linker)
+}
+
+/// Add minimal WASI stubs for wasi_snapshot_preview1.
+///
+/// These stubs allow plugins compiled for wasm32-wasip1 to run
+/// without full WASI support.
+fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
+    // fd_write(fd, iovs, iovs_len, nwritten) -> errno
+    // Stub that returns ENOSYS (not supported)
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "fd_write",
+        |_fd: i32, _iovs: i32, _iovs_len: i32, _nwritten: i32| -> i32 {
+            52 // ENOSYS
+        },
+    )?;
+
+    // random_get(buf, buf_len) -> errno
+    // Stub that fills buffer with pseudo-random bytes
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "random_get",
+        |mut caller: wasmtime::Caller<'_, PluginState>, buf: i32, buf_len: i32| -> i32 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return 8, // EBADF
+            };
+            let data = memory.data_mut(&mut caller);
+            let buf = buf as usize;
+            let len = buf_len as usize;
+            if buf + len > data.len() {
+                return 21; // EFAULT
+            }
+            // Simple pseudo-random fill
+            for i in 0..len {
+                data[buf + i] = ((buf + i) as u8).wrapping_mul(31);
+            }
+            0 // Success
+        },
+    )?;
+
+    // environ_get(environ, environ_buf) -> errno
+    // Stub that returns no environment variables
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "environ_get",
+        |_environ: i32, _environ_buf: i32| -> i32 {
+            0 // Success (no env vars)
+        },
+    )?;
+
+    // environ_sizes_get(environ_count, environ_buf_size) -> errno
+    // Stub that returns 0 env vars
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "environ_sizes_get",
+        |mut caller: wasmtime::Caller<'_, PluginState>, count_ptr: i32, size_ptr: i32| -> i32 {
+            let memory = match caller.get_export("memory") {
+                Some(wasmtime::Extern::Memory(m)) => m,
+                _ => return 8, // EBADF
+            };
+            let data = memory.data_mut(&mut caller);
+            let count_ptr = count_ptr as usize;
+            let size_ptr = size_ptr as usize;
+            if count_ptr + 4 > data.len() || size_ptr + 4 > data.len() {
+                return 21; // EFAULT
+            }
+            // Write 0 for both count and size
+            data[count_ptr..count_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
+            data[size_ptr..size_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
+            0 // Success
+        },
+    )?;
+
+    // proc_exit(code) -> never returns
+    // Stub that panics (shouldn't be called)
+    linker.func_wrap("wasi_snapshot_preview1", "proc_exit", |_code: i32| {
+        // Can't actually exit from a plugin
+    })?;
+
+    Ok(())
 }
 
 #[cfg(test)]

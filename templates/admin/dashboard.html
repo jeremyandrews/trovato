@@ -1,0 +1,53 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Administration</h2>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-top: 1rem;">
+    <div class="admin-card">
+        <h3 style="margin-top: 0;">Structure</h3>
+        <ul style="list-style: none; padding: 0; margin: 0;">
+            <li style="padding: 0.5rem 0; border-bottom: 1px solid #eee;">
+                <a href="/admin/structure/types">Content types</a>
+                <p style="margin: 0.25rem 0 0; color: #666; font-size: 0.875rem;">
+                    Manage content types and their fields
+                </p>
+            </li>
+        </ul>
+    </div>
+
+    <div class="admin-card">
+        <h3 style="margin-top: 0;">Content</h3>
+        <ul style="list-style: none; padding: 0; margin: 0;">
+            {% for content_type in content_types %}
+            <li style="padding: 0.5rem 0; border-bottom: 1px solid #eee;">
+                <a href="/item/add/{{ content_type.machine_name }}">Add {{ content_type.label }}</a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="admin-card">
+        <h3 style="margin-top: 0;">System</h3>
+        <ul style="list-style: none; padding: 0; margin: 0;">
+            <li style="padding: 0.5rem 0; border-bottom: 1px solid #eee;">
+                <a href="/health">Health check</a>
+                <p style="margin: 0.25rem 0 0; color: #666; font-size: 0.875rem;">
+                    Database and Redis status
+                </p>
+            </li>
+            <li style="padding: 0.5rem 0;">
+                <a href="/user/logout">Log out</a>
+            </li>
+        </ul>
+    </div>
+</div>
+
+{% if user %}
+<div style="margin-top: 2rem; padding: 1rem; background: #f5f5f5; border-radius: 4px;">
+    <p style="margin: 0;">Logged in as <strong>{{ user.name }}</strong></p>
+</div>
+{% endif %}
+{% endblock %}

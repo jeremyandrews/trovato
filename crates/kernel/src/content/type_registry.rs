@@ -135,6 +135,11 @@ impl ContentTypeRegistry {
         self.inner.types.get(type_name).map(|r| r.clone())
     }
 
+    /// Get a content type by machine name (async version for API compatibility).
+    pub async fn get_async(&self, type_name: &str) -> Option<ContentTypeDefinition> {
+        self.get(type_name)
+    }
+
     /// List all content types.
     pub fn list(&self) -> Vec<ContentTypeDefinition> {
         self.inner
@@ -142,6 +147,142 @@ impl ContentTypeRegistry {
             .iter()
             .map(|r| r.value().clone())
             .collect()
+    }
+
+    /// List all content types (async version for API compatibility).
+    pub async fn list_all(&self) -> Vec<ContentTypeDefinition> {
+        self.list()
+    }
+
+    /// Create a new content type.
+    pub async fn create(
+        &self,
+        machine_name: &str,
+        label: &str,
+        description: Option<&str>,
+        settings: serde_json::Value,
+    ) -> Result<()> {
+        let input = CreateItemType {
+            type_name: machine_name.to_string(),
+            label: label.to_string(),
+            description: description.map(|s| s.to_string()),
+            has_title: Some(true),
+            title_label: Some("Title".to_string()),
+            plugin: "core".to_string(),
+            settings: Some(settings.clone()),
+        };
+
+        ItemType::upsert(&self.inner.pool, input).await?;
+
+        // Update cache
+        let def = ContentTypeDefinition {
+            machine_name: machine_name.to_string(),
+            label: label.to_string(),
+            description: description.unwrap_or("").to_string(),
+            fields: vec![],
+        };
+        self.inner.types.insert(machine_name.to_string(), def);
+
+        info!(type_name = %machine_name, "content type created");
+        Ok(())
+    }
+
+    /// Update an existing content type.
+    pub async fn update(
+        &self,
+        machine_name: &str,
+        label: &str,
+        description: Option<&str>,
+        settings: serde_json::Value,
+    ) -> Result<()> {
+        // Get existing type to preserve fields
+        let existing = self.get(machine_name);
+
+        let input = CreateItemType {
+            type_name: machine_name.to_string(),
+            label: label.to_string(),
+            description: description.map(|s| s.to_string()),
+            has_title: Some(true),
+            title_label: settings.get("title_label")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or(Some("Title".to_string())),
+            plugin: "core".to_string(),
+            settings: Some(settings.clone()),
+        };
+
+        ItemType::upsert(&self.inner.pool, input).await?;
+
+        // Update cache
+        let def = ContentTypeDefinition {
+            machine_name: machine_name.to_string(),
+            label: label.to_string(),
+            description: description.unwrap_or("").to_string(),
+            fields: existing.map(|e| e.fields).unwrap_or_default(),
+        };
+        self.inner.types.insert(machine_name.to_string(), def);
+
+        info!(type_name = %machine_name, "content type updated");
+        Ok(())
+    }
+
+    /// Add a field to a content type.
+    pub async fn add_field(
+        &self,
+        type_name: &str,
+        field_name: &str,
+        field_label: &str,
+        field_type: &str,
+    ) -> Result<()> {
+        use trovato_sdk::types::FieldType;
+
+        let mut def = self.get(type_name).context("content type not found")?;
+
+        // Parse field type
+        let ft = match field_type {
+            "text" => FieldType::Text { max_length: None },
+            "text_long" => FieldType::TextLong,
+            "integer" => FieldType::Integer,
+            "float" => FieldType::Float,
+            "boolean" => FieldType::Boolean,
+            "date" => FieldType::Date,
+            "email" => FieldType::Email,
+            "record_reference" => FieldType::RecordReference(String::new()),
+            _ => FieldType::Text { max_length: None },
+        };
+
+        // Create field definition
+        let field = FieldDefinition {
+            field_name: field_name.to_string(),
+            field_type: ft,
+            label: field_label.to_string(),
+            required: false,
+            cardinality: 1,
+            settings: serde_json::Value::Object(serde_json::Map::new()),
+        };
+
+        // Add to existing fields
+        def.fields.push(field);
+
+        // Update database
+        let settings = serde_json::json!({
+            "fields": def.fields,
+        });
+
+        sqlx::query(
+            "UPDATE item_type SET settings = $1 WHERE type = $2"
+        )
+        .bind(&settings)
+        .bind(type_name)
+        .execute(&self.inner.pool)
+        .await
+        .context("failed to update item_type")?;
+
+        // Update cache
+        self.inner.types.insert(type_name.to_string(), def);
+
+        info!(type_name = %type_name, field = %field_name, "field added");
+        Ok(())
     }
 
     /// List content type names.

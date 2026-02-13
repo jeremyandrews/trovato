@@ -1,0 +1,2 @@
+{%- set href = attributes.href | default(value="#") -%}
+<a href="{{ href }}"{% if class %} class="{{ class }}"{% endif %}{% if attributes %}{% for key, value in attributes %}{% if key != "class" and key != "href" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>{{ value | safe }}</a>

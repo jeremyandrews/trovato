@@ -319,6 +319,18 @@ pub enum DisplayFormat {
     Custom(String),
 }
 
+impl DisplayFormat {
+    /// Get the format as a string for template names.
+    pub fn as_str(&self) -> &str {
+        match self {
+            DisplayFormat::Table => "table",
+            DisplayFormat::List => "list",
+            DisplayFormat::Grid => "grid",
+            DisplayFormat::Custom(name) => name.as_str(),
+        }
+    }
+}
+
 /// Pager configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PagerConfig {

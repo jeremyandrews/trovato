@@ -14,4 +14,4 @@ mod runtime;
 pub use dependency::{check_dependencies, resolve_load_order};
 pub use error::PluginError;
 pub use info_parser::{PluginInfo, TapConfig, TapOptions, KNOWN_TAPS};
-pub use runtime::{CompiledPlugin, PluginConfig, PluginRuntime};
+pub use runtime::{CompiledPlugin, PluginConfig, PluginRuntime, PluginState};

@@ -1,0 +1,26 @@
+{% extends "gather/view.html" %}
+
+{% block view_content %}
+<table class="table gather-table">
+    <thead>
+        <tr>
+            {% for column in columns %}
+            <th>{{ column.label }}</th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr data-id="{{ row.id }}">
+            {% for column in columns %}
+            <td>{{ row[column.field] | default(value="-") }}</td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if not rows %}
+<p class="gather-empty">No results found.</p>
+{% endif %}
+{% endblock %}

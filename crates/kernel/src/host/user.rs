@@ -6,15 +6,15 @@ use anyhow::Result;
 use wasmtime::Linker;
 
 use super::{read_string_from_memory, write_string_to_memory};
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 /// Register user host functions.
-pub fn register_user_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_user_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // current_user_id() -> string
     linker.func_wrap(
         "trovato:kernel/user-api",
         "current-user-id",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
@@ -23,7 +23,7 @@ pub fn register_user_functions(linker: &mut Linker<RequestState>) -> Result<()> 
                 _ => return 0,
             };
 
-            let user_id = caller.data().user_id_string();
+            let user_id = caller.data().request.user_id_string();
 
             write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &user_id)
                 .unwrap_or(0)
@@ -34,7 +34,7 @@ pub fn register_user_functions(linker: &mut Linker<RequestState>) -> Result<()> 
     linker.func_wrap(
         "trovato:kernel/user-api",
         "current-user-has-permission",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          perm_ptr: i32,
          perm_len: i32|
          -> i32 {
@@ -48,7 +48,7 @@ pub fn register_user_functions(linker: &mut Linker<RequestState>) -> Result<()> 
                 Err(_) => return 0,
             };
 
-            let has_perm = caller.data().user.has_permission(&permission);
+            let has_perm = caller.data().request.user.has_permission(&permission);
             if has_perm { 1 } else { 0 }
         },
     )?;
@@ -65,7 +65,7 @@ mod tests {
     fn register_user_succeeds() {
         let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
-        let mut linker: Linker<RequestState> = Linker::new(&engine);
+        let mut linker: Linker<PluginState> = Linker::new(&engine);
 
         let result = register_user_functions(&mut linker);
         assert!(result.is_ok());

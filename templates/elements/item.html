@@ -1,0 +1,15 @@
+<article class="item item--{{ item.item_type }}">
+    <header class="item__header">
+        <h1 class="item__title">{{ item.title }}</h1>
+        <div class="item__meta">
+            <span class="item__type">{{ item.item_type }}</span>
+            {% if item.created %}
+            <time class="item__date" datetime="{{ item.created }}">{{ item.created }}</time>
+            {% endif %}
+        </div>
+    </header>
+
+    <div class="item__content">
+        {{ children | safe }}
+    </div>
+</article>

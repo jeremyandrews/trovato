@@ -7,15 +7,15 @@ use anyhow::Result;
 use wasmtime::Linker;
 
 use super::{read_string_from_memory, write_string_to_memory};
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 /// Register database host functions.
-pub fn register_db_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // select(query_json) -> result<string, string>
     linker.func_wrap(
         "trovato:kernel/db",
         "select",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          query_ptr: i32,
          query_len: i32,
          out_ptr: i32,
@@ -44,7 +44,7 @@ pub fn register_db_functions(linker: &mut Linker<RequestState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/db",
         "insert",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          table_ptr: i32,
          table_len: i32,
          data_ptr: i32,
@@ -80,7 +80,7 @@ pub fn register_db_functions(linker: &mut Linker<RequestState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/db",
         "update",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          table_ptr: i32,
          table_len: i32,
          data_ptr: i32,
@@ -118,7 +118,7 @@ pub fn register_db_functions(linker: &mut Linker<RequestState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/db",
         "delete",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          table_ptr: i32,
          table_len: i32,
          where_ptr: i32,
@@ -150,7 +150,7 @@ pub fn register_db_functions(linker: &mut Linker<RequestState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/db",
         "query-raw",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          sql_ptr: i32,
          sql_len: i32,
          params_ptr: i32,
@@ -185,7 +185,7 @@ pub fn register_db_functions(linker: &mut Linker<RequestState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/db",
         "execute-raw",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          sql_ptr: i32,
          sql_len: i32,
          params_ptr: i32,
@@ -223,7 +223,7 @@ mod tests {
     fn register_db_succeeds() {
         let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
-        let mut linker: Linker<RequestState> = Linker::new(&engine);
+        let mut linker: Linker<PluginState> = Linker::new(&engine);
 
         let result = register_db_functions(&mut linker);
         assert!(result.is_ok());

@@ -1,0 +1,39 @@
+{# Element rendering macros #}
+
+{# Render attributes from a JSON object #}
+{% macro attributes(attrs) %}
+{%- for key, value in attrs -%}
+{%- if key != "class" %} {{ key }}="{{ value | escape }}"{% endif -%}
+{%- endfor -%}
+{% endmacro %}
+
+{# Render class attribute #}
+{% macro classes(class_list) %}
+{%- if class_list is iterable -%}
+class="{{ class_list | join(sep=' ') }}"
+{%- elif class_list -%}
+class="{{ class_list }}"
+{%- endif -%}
+{% endmacro %}
+
+{# Render a container element #}
+{% macro container(element, children="") %}
+<div {{ self::classes(class=element.class) }} {{ self::attributes(attrs=element.attributes) }}>
+    {{ children | safe }}
+</div>
+{% endmacro %}
+
+{# Render a heading #}
+{% macro heading(level, text, class="") %}
+<h{{ level }}{% if class %} class="{{ class }}"{% endif %}>{{ text }}</h{{ level }}>
+{% endmacro %}
+
+{# Render a link #}
+{% macro link(href, text, class="", target="") %}
+<a href="{{ href }}"{% if class %} class="{{ class }}"{% endif %}{% if target %} target="{{ target }}"{% endif %}>{{ text }}</a>
+{% endmacro %}
+
+{# Render a button #}
+{% macro button(text, type="button", class="button") %}
+<button type="{{ type }}" class="{{ class }}">{{ text }}</button>
+{% endmacro %}

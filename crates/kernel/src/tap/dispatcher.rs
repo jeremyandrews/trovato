@@ -10,7 +10,7 @@ use tracing::{debug, error, warn};
 use wasmtime::{Instance, Store, TypedFunc};
 
 use super::{RequestState, TapHandler, TapRegistry};
-use crate::plugin::PluginRuntime;
+use crate::plugin::{PluginRuntime, PluginState};
 
 /// Result from a single tap invocation.
 #[derive(Debug)]
@@ -119,8 +119,11 @@ impl TapDispatcher {
         let plugin = &handler.plugin;
         let engine = self.runtime.engine();
 
-        // Create a new Store with per-request state
-        let mut store = Store::new(engine, state);
+        // Create combined plugin state with WASI and request state
+        let plugin_state = PluginState::new(state);
+
+        // Create a new Store with plugin state
+        let mut store = Store::new(engine, plugin_state);
 
         // Instantiate the module
         let instance = self.runtime.linker()
@@ -141,14 +144,12 @@ impl TapDispatcher {
 /// Get a tap function from a WASM instance.
 fn get_tap_function(
     instance: &Instance,
-    store: &mut Store<RequestState>,
+    store: &mut Store<PluginState>,
     tap_name: &str,
 ) -> Result<TypedFunc<(i32, i32), i64>> {
-    // Convert tap name to export name (e.g., "tap_item_view" -> "tap-item-view")
-    let export_name = tap_name.replace('_', "-");
-
+    // Use tap name directly as export name (e.g., "tap_item_view" stays "tap_item_view")
     instance
-        .get_typed_func::<(i32, i32), i64>(&mut *store, &export_name)
+        .get_typed_func::<(i32, i32), i64>(&mut *store, tap_name)
         .with_context(|| format!("tap '{}' not exported", tap_name))
 }
 
@@ -160,7 +161,7 @@ fn get_tap_function(
 /// 3. Read output JSON from returned ptr<<32|len
 async fn call_tap_function(
     instance: &Instance,
-    store: &mut Store<RequestState>,
+    store: &mut Store<PluginState>,
     func: TypedFunc<(i32, i32), i64>,
     input_json: &str,
 ) -> Result<String> {

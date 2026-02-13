@@ -1,0 +1,12 @@
+<div class="form-actions">
+    <button
+        type="submit"
+        id="{{ name }}"
+        name="{{ name }}"
+        class="form-submit button button--primary"
+        {% if element.disabled %}disabled{% endif %}
+        {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
+    >
+        {{ element.element_type.value | default(value="Submit") }}
+    </button>
+</div>

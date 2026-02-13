@@ -1,0 +1,35 @@
+<div id="{{ field_name }}-{{ index }}" class="multi-value-item" data-delta="{{ index }}">
+    <div class="multi-value-item__content">
+        <input
+            type="text"
+            name="{{ name }}"
+            class="form-text"
+            {% if element.placeholder %}placeholder="{{ element.placeholder }}"{% endif %}
+        >
+    </div>
+    <button
+        type="button"
+        class="multi-value-item__remove button button--secondary"
+        data-ajax-trigger="remove_{{ field_name }}_{{ index }}"
+    >
+        Remove
+    </button>
+</div>
+
+<style>
+    .multi-value-item {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
+
+    .multi-value-item__content {
+        flex: 1;
+    }
+
+    .multi-value-item__remove {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+    }
+</style>

@@ -248,10 +248,49 @@ async fn render_view_html(
             )
         })?;
 
-    // Generate simple HTML output
-    let html = render_gather_html(&view, &result);
+    // Try to render via Tera templates
+    let html = render_gather_with_theme(&state, &view, &result)
+        .unwrap_or_else(|| render_gather_html(&view, &result));
 
     Ok(Html(html))
+}
+
+fn render_gather_with_theme(
+    state: &AppState,
+    view: &GatherView,
+    result: &crate::gather::GatherResult,
+) -> Option<String> {
+    // Try to find a template for this view
+    let suggestions = [
+        format!("gather/view--{}.html", view.view_id),
+        format!("gather/view--{}.html", view.display.format.as_str()),
+        "gather/view.html".to_string(),
+    ];
+
+    let suggestion_refs: Vec<&str> = suggestions.iter().map(|s| s.as_str()).collect();
+    let template = state.theme().resolve_template(&suggestion_refs)?;
+
+    // Build context
+    let mut context = tera::Context::new();
+    context.insert("view", view);
+    context.insert("rows", &result.items);
+    context.insert("total", &result.total);
+    context.insert("page", &result.page);
+    context.insert("per_page", &result.per_page);
+    context.insert("total_pages", &result.total_pages);
+    context.insert("has_next", &result.has_next);
+    context.insert("has_prev", &result.has_prev);
+
+    // Pager info
+    if view.display.pager.enabled && result.total_pages > 1 {
+        context.insert("pager", &serde_json::json!({
+            "current_page": result.page,
+            "total_pages": result.total_pages,
+            "base_url": format!("/gather/{}", view.view_id),
+        }));
+    }
+
+    state.theme().tera().render(&template, &context).ok()
 }
 
 // -------------------------------------------------------------------------

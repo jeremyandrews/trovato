@@ -3570,6 +3570,7 @@ dependencies = [
  "trovato-sdk",
  "uuid",
  "wasmtime",
+ "wasmtime-wasi",
 ]
 
 [[package]]

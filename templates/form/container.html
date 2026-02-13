@@ -1,0 +1,16 @@
+<div
+    id="{{ name }}-wrapper"
+    class="form-container"
+    {% if element.ajax %}data-ajax-wrapper="{{ element.ajax.wrapper | default(value='') }}"{% endif %}
+    {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
+>
+    {% if element.title %}
+    <div class="form-container__title">{{ element.title }}</div>
+    {% endif %}
+
+    {% if element.description %}
+    <p class="form-item__description">{{ element.description }}</p>
+    {% endif %}
+
+    {{ children | safe }}
+</div>

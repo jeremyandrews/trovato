@@ -1,0 +1,34 @@
+<div class="gather-view gather-view--{{ view.id }}" data-view-id="{{ view.id }}">
+    {% if view.title %}
+    <h2 class="gather-view__title">{{ view.title }}</h2>
+    {% endif %}
+
+    {% if view.description %}
+    <p class="gather-view__description">{{ view.description }}</p>
+    {% endif %}
+
+    <div class="gather-view__content">
+        {% block view_content %}
+        {{ content | safe }}
+        {% endblock %}
+    </div>
+
+    {% if pager %}
+    {% include "gather/pager.html" %}
+    {% endif %}
+</div>
+
+<style>
+    .gather-view {
+        margin-bottom: 2rem;
+    }
+
+    .gather-view__title {
+        margin: 0 0 0.5rem 0;
+    }
+
+    .gather-view__description {
+        color: var(--gray-500);
+        margin: 0 0 1rem 0;
+    }
+</style>

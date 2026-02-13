@@ -6,16 +6,16 @@ use anyhow::Result;
 use wasmtime::Linker;
 
 use super::{read_string_from_memory, write_string_to_memory};
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 /// Register request context host functions.
-pub fn register_request_context_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // get(key) -> option<string>
     // Returns -1 if not found, or length if found
     linker.func_wrap(
         "trovato:kernel/request-context",
         "get",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          key_ptr: i32,
          key_len: i32,
          out_ptr: i32,
@@ -32,7 +32,7 @@ pub fn register_request_context_functions(linker: &mut Linker<RequestState>) -> 
             };
 
             // Get the value and clone it to avoid borrow issues
-            let value = caller.data().get_context(&key).map(|s| s.to_string());
+            let value = caller.data().request.get_context(&key).map(|s| s.to_string());
 
             match value {
                 Some(v) => {
@@ -48,7 +48,7 @@ pub fn register_request_context_functions(linker: &mut Linker<RequestState>) -> 
     linker.func_wrap(
         "trovato:kernel/request-context",
         "set",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          key_ptr: i32,
          key_len: i32,
          value_ptr: i32,
@@ -68,7 +68,7 @@ pub fn register_request_context_functions(linker: &mut Linker<RequestState>) -> 
                 Err(_) => return,
             };
 
-            caller.data_mut().set_context(key, value);
+            caller.data_mut().request.set_context(key, value);
         },
     )?;
 
@@ -84,7 +84,7 @@ mod tests {
     fn register_request_context_succeeds() {
         let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
-        let mut linker: Linker<RequestState> = Linker::new(&engine);
+        let mut linker: Linker<PluginState> = Linker::new(&engine);
 
         let result = register_request_context_functions(&mut linker);
         assert!(result.is_ok());

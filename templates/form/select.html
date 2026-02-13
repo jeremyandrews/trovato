@@ -1,0 +1,33 @@
+<div class="form-item form-item--select">
+    {% if element.title %}
+    <label for="{{ name }}" class="form-item__label{% if element.required %} form-item__label--required{% endif %}">
+        {{ element.title }}
+    </label>
+    {% endif %}
+
+    {% if element.prefix %}{{ element.prefix | safe }}{% endif %}
+
+    <select
+        id="{{ name }}"
+        name="{{ name }}{% if element.element_type.multiple %}[]{% endif %}"
+        class="form-select"
+        {% if element.element_type.multiple %}multiple{% endif %}
+        {% if element.required %}required{% endif %}
+        {% if element.disabled %}disabled{% endif %}
+        {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
+        {% if element.ajax %}data-ajax-trigger="{{ element.ajax.callback }}" data-ajax-event="{{ element.ajax.event | default(value='change') }}"{% endif %}
+    >
+        {% if not element.required and not element.element_type.multiple %}
+        <option value="">- Select -</option>
+        {% endif %}
+        {% for option in element.element_type.options %}
+        <option value="{{ option.0 }}"{% if element.default_value == option.0 %} selected{% endif %}>{{ option.1 }}</option>
+        {% endfor %}
+    </select>
+
+    {% if element.suffix %}{{ element.suffix | safe }}{% endif %}
+
+    {% if element.description %}
+    <p class="form-item__description">{{ element.description }}</p>
+    {% endif %}
+</div>

@@ -6,6 +6,7 @@ mod config;
 mod content;
 mod db;
 mod error;
+mod form;
 mod gather;
 mod host;
 mod lockout;
@@ -17,6 +18,7 @@ mod routes;
 mod session;
 mod state;
 mod tap;
+mod theme;
 
 use std::net::SocketAddr;
 

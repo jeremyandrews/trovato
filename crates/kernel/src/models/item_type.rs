@@ -10,7 +10,7 @@ use sqlx::PgPool;
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ItemType {
     /// Machine name (e.g., "blog", "page").
-    #[sqlx(rename = "type")]
+    /// Note: Database column is "type", queries must use "type as type_name" alias.
     #[serde(rename = "type")]
     pub type_name: String,
 

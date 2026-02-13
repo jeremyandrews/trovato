@@ -1,20 +1,25 @@
 //! Application state shared across all handlers.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use redis::Client as RedisClient;
 use sqlx::PgPool;
 
+use tracing::info;
+
 use crate::config::Config;
 use crate::content::{ContentTypeRegistry, ItemService};
 use crate::db;
+use crate::form::FormService;
 use crate::gather::{CategoryService, GatherService};
 use crate::lockout::LockoutService;
 use crate::menu::MenuRegistry;
 use crate::permissions::PermissionService;
 use crate::plugin::{PluginConfig, PluginRuntime};
 use crate::tap::{TapDispatcher, TapRegistry};
+use crate::theme::ThemeEngine;
 
 /// Shared application state.
 ///
@@ -60,6 +65,12 @@ struct AppStateInner {
 
     /// Gather service.
     gather: Arc<GatherService>,
+
+    /// Theme engine for template rendering.
+    theme: Arc<ThemeEngine>,
+
+    /// Form service for form handling.
+    forms: Arc<FormService>,
 }
 
 impl AppState {
@@ -148,6 +159,23 @@ impl AppState {
             .await
             .context("failed to load gather views")?;
 
+        // Create theme engine
+        let template_dir = Self::resolve_template_dir();
+        info!(?template_dir, "loading templates from directory");
+        let theme = Arc::new(
+            ThemeEngine::new(&template_dir)
+                .inspect_err(|e| tracing::warn!(error = ?e, "failed to load templates, using empty engine"))
+                .or_else(|_| ThemeEngine::empty())
+                .context("failed to create theme engine")?
+        );
+
+        // Create form service
+        let forms = Arc::new(FormService::new(
+            db.clone(),
+            tap_dispatcher.clone(),
+            theme.clone(),
+        ));
+
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
@@ -162,8 +190,21 @@ impl AppState {
                 items,
                 categories,
                 gather,
+                theme,
+                forms,
             }),
         })
+    }
+
+    /// Resolve the templates directory.
+    fn resolve_template_dir() -> PathBuf {
+        // Check environment variable first
+        if let Ok(dir) = std::env::var("TEMPLATES_DIR") {
+            return PathBuf::from(dir);
+        }
+
+        // Default to ./templates relative to working directory
+        PathBuf::from("./templates")
     }
 
     /// Get the database pool.
@@ -224,6 +265,16 @@ impl AppState {
     /// Get the gather service.
     pub fn gather(&self) -> &Arc<GatherService> {
         &self.inner.gather
+    }
+
+    /// Get the theme engine.
+    pub fn theme(&self) -> &Arc<ThemeEngine> {
+        &self.inner.theme
+    }
+
+    /// Get the form service.
+    pub fn forms(&self) -> &Arc<FormService> {
+        &self.inner.forms
     }
 
     /// Check if PostgreSQL is healthy.

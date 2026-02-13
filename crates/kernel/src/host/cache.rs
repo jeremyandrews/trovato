@@ -6,16 +6,16 @@ use anyhow::Result;
 use wasmtime::Linker;
 
 use super::read_string_from_memory;
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 /// Register cache host functions.
-pub fn register_cache_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // get(bin, key) -> option<string>
     // Returns -1 if not found, or length if found
     linker.func_wrap(
         "trovato:kernel/cache-api",
         "get",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          bin_ptr: i32,
          bin_len: i32,
          key_ptr: i32,
@@ -43,7 +43,7 @@ pub fn register_cache_functions(linker: &mut Linker<RequestState>) -> Result<()>
     linker.func_wrap(
         "trovato:kernel/cache-api",
         "set",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          bin_ptr: i32,
          bin_len: i32,
          key_ptr: i32,
@@ -75,7 +75,7 @@ pub fn register_cache_functions(linker: &mut Linker<RequestState>) -> Result<()>
     linker.func_wrap(
         "trovato:kernel/cache-api",
         "invalidate-tag",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          tag_ptr: i32,
          tag_len: i32| {
             let memory = match caller.get_export("memory") {
@@ -103,7 +103,7 @@ mod tests {
     fn register_cache_succeeds() {
         let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
-        let mut linker: Linker<RequestState> = Linker::new(&engine);
+        let mut linker: Linker<PluginState> = Linker::new(&engine);
 
         let result = register_cache_functions(&mut linker);
         assert!(result.is_ok());

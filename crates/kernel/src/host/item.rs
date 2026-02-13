@@ -6,16 +6,16 @@ use anyhow::Result;
 use wasmtime::Linker;
 
 use super::{read_string_from_memory, write_string_to_memory};
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 /// Register item host functions.
-pub fn register_item_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // get_item(id) -> result<string, string>
     // Returns: length of JSON on success, negative error code on failure
     linker.func_wrap(
         "trovato:kernel/item-api",
         "get-item",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          id_ptr: i32,
          id_len: i32,
          out_ptr: i32,
@@ -45,7 +45,7 @@ pub fn register_item_functions(linker: &mut Linker<RequestState>) -> Result<()> 
     linker.func_wrap(
         "trovato:kernel/item-api",
         "save-item",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          item_ptr: i32,
          item_len: i32,
          out_ptr: i32,
@@ -73,7 +73,7 @@ pub fn register_item_functions(linker: &mut Linker<RequestState>) -> Result<()> 
     linker.func_wrap(
         "trovato:kernel/item-api",
         "delete-item",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          id_ptr: i32,
          id_len: i32|
          -> i32 {
@@ -98,7 +98,7 @@ pub fn register_item_functions(linker: &mut Linker<RequestState>) -> Result<()> 
     linker.func_wrap(
         "trovato:kernel/item-api",
         "query-items",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          query_ptr: i32,
          query_len: i32,
          out_ptr: i32,
@@ -135,7 +135,7 @@ mod tests {
     fn register_item_succeeds() {
         let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
-        let mut linker: Linker<RequestState> = Linker::new(&engine);
+        let mut linker: Linker<PluginState> = Linker::new(&engine);
 
         let result = register_item_functions(&mut linker);
         assert!(result.is_ok());

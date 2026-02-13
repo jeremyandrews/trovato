@@ -1,0 +1,29 @@
+<div class="form-item form-item--radio">
+    {% if element.title %}
+    <span class="form-item__label{% if element.required %} form-item__label--required{% endif %}">
+        {{ element.title }}
+    </span>
+    {% endif %}
+
+    <div class="form-radios">
+        {% for option in element.element_type.options %}
+        <div class="form-radio-wrapper">
+            <input
+                type="radio"
+                id="{{ name }}_{{ loop.index0 }}"
+                name="{{ name }}"
+                value="{{ option.0 }}"
+                class="form-radio"
+                {% if element.default_value == option.0 %}checked{% endif %}
+                {% if element.required and loop.first %}required{% endif %}
+                {% if element.disabled %}disabled{% endif %}
+            >
+            <label for="{{ name }}_{{ loop.index0 }}">{{ option.1 }}</label>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% if element.description %}
+    <p class="form-item__description">{{ element.description }}</p>
+    {% endif %}
+</div>

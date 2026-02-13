@@ -14,7 +14,7 @@ mod variables;
 use anyhow::Result;
 use wasmtime::Linker;
 
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 pub use cache::register_cache_functions;
 pub use db::register_db_functions;
@@ -25,7 +25,7 @@ pub use user::register_user_functions;
 pub use variables::register_variables_functions;
 
 /// Register all host functions with the linker.
-pub fn register_all(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_all(linker: &mut Linker<PluginState>) -> Result<()> {
     register_logging_functions(linker)?;
     register_variables_functions(linker)?;
     register_request_context_functions(linker)?;

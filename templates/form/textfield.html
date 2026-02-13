@@ -1,0 +1,29 @@
+<div class="form-item form-item--textfield"{% if element.ajax %} data-ajax-wrapper{% endif %}>
+    {% if element.title %}
+    <label for="{{ name }}" class="form-item__label{% if element.required %} form-item__label--required{% endif %}">
+        {{ element.title }}
+    </label>
+    {% endif %}
+
+    {% if element.prefix %}{{ element.prefix | safe }}{% endif %}
+
+    <input
+        type="text"
+        id="{{ name }}"
+        name="{{ name }}"
+        class="form-text"
+        {% if element.default_value %}value="{{ element.default_value }}"{% endif %}
+        {% if element.placeholder %}placeholder="{{ element.placeholder }}"{% endif %}
+        {% if element.required %}required{% endif %}
+        {% if element.disabled %}disabled{% endif %}
+        {% if element.element_type.max_length %}maxlength="{{ element.element_type.max_length }}"{% endif %}
+        {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
+        {% if element.ajax %}data-ajax-trigger="{{ element.ajax.callback }}" data-ajax-event="{{ element.ajax.event | default(value='change') }}"{% endif %}
+    >
+
+    {% if element.suffix %}{{ element.suffix | safe }}{% endif %}
+
+    {% if element.description %}
+    <p class="form-item__description">{{ element.description }}</p>
+    {% endif %}
+</div>

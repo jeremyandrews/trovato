@@ -7,16 +7,16 @@ use anyhow::Result;
 use wasmtime::Linker;
 
 use super::{read_string_from_memory, write_string_to_memory};
-use crate::tap::RequestState;
+use crate::plugin::PluginState;
 
 /// Register variables host functions.
-pub fn register_variables_functions(linker: &mut Linker<RequestState>) -> Result<()> {
+pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // get(name, default) -> string
     // For now, returns the default value. Full implementation needs DB access.
     linker.func_wrap(
         "trovato:kernel/variables",
         "get",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          name_ptr: i32,
          name_len: i32,
          default_ptr: i32,
@@ -52,7 +52,7 @@ pub fn register_variables_functions(linker: &mut Linker<RequestState>) -> Result
     linker.func_wrap(
         "trovato:kernel/variables",
         "set",
-        |mut caller: wasmtime::Caller<'_, RequestState>,
+        |mut caller: wasmtime::Caller<'_, PluginState>,
          name_ptr: i32,
          name_len: i32,
          value_ptr: i32,
@@ -86,7 +86,7 @@ mod tests {
     fn register_variables_succeeds() {
         let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
-        let mut linker: Linker<RequestState> = Linker::new(&engine);
+        let mut linker: Linker<PluginState> = Linker::new(&engine);
 
         let result = register_variables_functions(&mut linker);
         assert!(result.is_ok());

@@ -1,0 +1,2 @@
+{%- set tag = element.tag | default(value="span") -%}
+<{{ tag }}{% if class %} class="{{ class }}"{% endif %}{% if attributes %}{% for key, value in attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>{{ value | safe }}</{{ tag }}>

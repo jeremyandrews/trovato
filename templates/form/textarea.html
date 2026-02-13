@@ -1,0 +1,26 @@
+<div class="form-item form-item--textarea">
+    {% if element.title %}
+    <label for="{{ name }}" class="form-item__label{% if element.required %} form-item__label--required{% endif %}">
+        {{ element.title }}
+    </label>
+    {% endif %}
+
+    {% if element.prefix %}{{ element.prefix | safe }}{% endif %}
+
+    <textarea
+        id="{{ name }}"
+        name="{{ name }}"
+        class="form-textarea"
+        rows="{{ element.element_type.rows | default(value=5) }}"
+        {% if element.placeholder %}placeholder="{{ element.placeholder }}"{% endif %}
+        {% if element.required %}required{% endif %}
+        {% if element.disabled %}disabled{% endif %}
+        {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
+    >{% if element.default_value %}{{ element.default_value }}{% endif %}</textarea>
+
+    {% if element.suffix %}{{ element.suffix | safe }}{% endif %}
+
+    {% if element.description %}
+    <p class="form-item__description">{{ element.description }}</p>
+    {% endif %}
+</div>

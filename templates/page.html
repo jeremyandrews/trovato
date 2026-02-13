@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block header %}
+<nav style="background: white; border-bottom: 1px solid var(--gray-200); padding: 0.75rem 0;">
+    <div class="container" style="display: flex; justify-content: space-between; align-items: center;">
+        <a href="/" style="font-weight: 600; font-size: 1.125rem; color: var(--gray-900);">Trovato</a>
+        <div style="display: flex; gap: 1rem;">
+            <a href="/admin">Admin</a>
+            <a href="/user/logout">Logout</a>
+        </div>
+    </div>
+</nav>
+{% endblock %}
+
+{% block footer %}
+<div style="text-align: center; padding: 2rem; color: var(--gray-500); font-size: 0.875rem;">
+    Powered by Trovato CMS
+</div>
+{% endblock %}

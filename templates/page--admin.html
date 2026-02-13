@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+    .admin-layout {
+        display: flex;
+        min-height: 100vh;
+    }
+
+    .admin-sidebar {
+        width: 250px;
+        background: var(--gray-900);
+        color: white;
+        padding: 1.5rem 0;
+        flex-shrink: 0;
+    }
+
+    .admin-sidebar h1 {
+        font-size: 1.125rem;
+        padding: 0 1.5rem;
+        margin: 0 0 1.5rem 0;
+    }
+
+    .admin-sidebar h1 a {
+        color: white;
+    }
+
+    .admin-nav {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    .admin-nav li {
+        margin: 0;
+    }
+
+    .admin-nav a {
+        display: block;
+        padding: 0.625rem 1.5rem;
+        color: var(--gray-300);
+        transition: background-color 0.15s, color 0.15s;
+    }
+
+    .admin-nav a:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        text-decoration: none;
+    }
+
+    .admin-nav a.active {
+        background: var(--primary);
+        color: white;
+    }
+
+    .admin-nav-section {
+        padding: 0.5rem 1.5rem;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+        margin-top: 1rem;
+    }
+
+    .admin-content {
+        flex: 1;
+        padding: 2rem;
+        background: var(--gray-100);
+    }
+
+    .admin-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+    }
+
+    .admin-header h2 {
+        margin: 0;
+        font-size: 1.5rem;
+        color: var(--gray-900);
+    }
+
+    .admin-card {
+        background: white;
+        border-radius: 0.5rem;
+        padding: 1.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .admin-card + .admin-card {
+        margin-top: 1rem;
+    }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="admin-layout">
+    <aside class="admin-sidebar">
+        <h1><a href="/admin">Trovato Admin</a></h1>
+        <nav>
+            <ul class="admin-nav">
+                <li><a href="/admin">Dashboard</a></li>
+
+                <div class="admin-nav-section">Content</div>
+                <li><a href="/admin/content">Content</a></li>
+                <li><a href="/admin/content/add">Add content</a></li>
+
+                <div class="admin-nav-section">Structure</div>
+                <li><a href="/admin/structure/types" {% if path is starting_with("/admin/structure/types") %}class="active"{% endif %}>Content types</a></li>
+                <li><a href="/admin/structure/categories">Categories</a></li>
+                <li><a href="/admin/structure/menus">Menus</a></li>
+
+                <div class="admin-nav-section">Configuration</div>
+                <li><a href="/admin/config/plugins">Plugins</a></li>
+                <li><a href="/admin/config/users">Users</a></li>
+                <li><a href="/admin/config/roles">Roles</a></li>
+            </ul>
+        </nav>
+    </aside>
+
+    <main class="admin-content">
+        {% block messages %}
+        {% if messages %}
+        <div class="messages">
+            {% for message in messages %}
+            <div class="message message--{{ message.type | default(value='info') }}">
+                {{ message.text }}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endblock %}
+
+        {% block content %}
+        {{ content | safe }}
+        {% endblock %}
+    </main>
+</div>
+{% endblock %}
