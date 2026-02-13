@@ -61,6 +61,7 @@ impl TestApp {
 
         // Build the REAL router with all kernel routes
         let router = Router::new()
+            .merge(trovato_kernel::routes::install::router())
             .merge(trovato_kernel::routes::auth::router())
             .merge(trovato_kernel::routes::admin::router())
             .merge(trovato_kernel::routes::password_reset::router())

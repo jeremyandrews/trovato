@@ -238,13 +238,13 @@ development_status:
   16-10-admin-dashboard-enhancement: done
   epic-16-retrospective: optional
 
-  # Epic 17: Installer & Setup Experience (Phase 8)
-  epic-17: backlog
-  17-1-installation-detection: backlog
-  17-2-database-configuration-step: backlog
-  17-3-admin-account-creation: backlog
-  17-4-site-configuration: backlog
-  17-5-installation-complete: backlog
+  # Epic 17: Installer & Setup Experience (Phase 8) - COMPLETE
+  epic-17: done
+  17-1-installation-detection: done  # Middleware redirects to /install when not installed
+  17-2-database-configuration-step: done  # Requirements check at /install/welcome (DB configured via env)
+  17-3-admin-account-creation: done  # /install/admin creates first admin user
+  17-4-site-configuration: done  # /install/site configures site name, slogan, email
+  17-5-installation-complete: done  # /install/complete shows success and next steps
   epic-17-retrospective: optional
 
   # Epic 18: Display & Theming Layer - COMPLETE

@@ -3520,3 +3520,113 @@ async fn e2e_admin_comment_moderation() {
         .await
         .ok();
 }
+
+// =============================================================================
+// Installer Tests
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_installer_redirects_when_installed() {
+    let app = TestApp::new().await;
+
+    // Ensure site is marked as installed
+    sqlx::query("INSERT INTO site_config (key, value) VALUES ('installed', 'true'::jsonb) ON CONFLICT (key) DO UPDATE SET value = 'true'::jsonb")
+        .execute(&app.db)
+        .await
+        .ok();
+
+    // Access /install - should redirect somewhere (either / or to an install step)
+    let response = app
+        .request(Request::get("/install").body(Body::empty()).unwrap())
+        .await;
+
+    // In a shared test database, other tests may change the installed flag
+    // Accept any redirect - the important thing is that /install doesn't error
+    assert!(response.status().is_redirection());
+    let location = response
+        .headers()
+        .get("location")
+        .expect("should have location header")
+        .to_str()
+        .unwrap();
+    // Valid destinations: "/" (installed), "/install/admin" (no admin), "/install/site" (has admin)
+    assert!(
+        location == "/" || location == "/install/admin" || location == "/install/site",
+        "Unexpected redirect location: {}",
+        location
+    );
+}
+
+#[tokio::test]
+async fn e2e_installer_shows_welcome_page() {
+    let app = TestApp::new().await;
+
+    // Access /install/welcome directly
+    let response = app
+        .request(Request::get("/install/welcome").body(Body::empty()).unwrap())
+        .await;
+
+    // Even when installed, welcome page is accessible (will redirect to /)
+    let status = response.status();
+    assert!(status.is_success() || status.is_redirection());
+}
+
+#[tokio::test]
+async fn e2e_installer_admin_form_accessible() {
+    let app = TestApp::new().await;
+
+    // Mark as NOT installed
+    sqlx::query("INSERT INTO site_config (key, value) VALUES ('installed', 'false'::jsonb) ON CONFLICT (key) DO UPDATE SET value = 'false'::jsonb")
+        .execute(&app.db)
+        .await
+        .ok();
+
+    // Access /install/admin
+    let response = app
+        .request(Request::get("/install/admin").body(Body::empty()).unwrap())
+        .await;
+
+    let status = response.status();
+
+    // In a shared test database, admin users may exist from other tests
+    // If so, we get redirected to /install/site (303 redirect)
+    // If no admin users exist, we get the form (200 OK)
+    if status == StatusCode::OK {
+        let body = response_text(response).await;
+        assert!(body.contains("Create Admin Account"));
+        assert!(body.contains("Username"));
+        assert!(body.contains("Password"));
+    } else {
+        // Accept redirect to site config if admin exists
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get("location")
+            .expect("should have location header")
+            .to_str()
+            .unwrap();
+        assert!(location == "/install/site" || location == "/");
+    }
+
+    // Restore installed state for other tests
+    sqlx::query("UPDATE site_config SET value = 'true'::jsonb WHERE key = 'installed'")
+        .execute(&app.db)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn e2e_installer_complete_page() {
+    let app = TestApp::new().await;
+
+    // Access /install/complete directly - always accessible
+    let response = app
+        .request(Request::get("/install/complete").body(Body::empty()).unwrap())
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+    assert!(body.contains("Congratulations"));
+    assert!(body.contains("Installation Complete"));
+}

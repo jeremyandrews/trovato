@@ -9,6 +9,7 @@ pub mod cron;
 pub mod file;
 pub mod gather;
 pub mod health;
+pub mod install;
 pub mod item;
 pub mod metrics;
 pub mod password_reset;

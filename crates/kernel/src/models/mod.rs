@@ -6,6 +6,7 @@ pub mod item;
 pub mod item_type;
 pub mod password_reset;
 pub mod role;
+pub mod site_config;
 pub mod user;
 
 pub use category::{
@@ -17,4 +18,5 @@ pub use item::{CreateItem, Item, ItemRevision, UpdateItem};
 pub use item_type::{CreateItemType, ItemType};
 pub use password_reset::PasswordResetToken;
 pub use role::Role;
+pub use site_config::SiteConfig;
 pub use user::{CreateUser, UpdateUser, User};

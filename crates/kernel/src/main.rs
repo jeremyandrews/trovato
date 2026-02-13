@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
 
     // Build the router
     let app = Router::new()
+        .merge(routes::install::router())
         .merge(routes::auth::router())
         .merge(routes::admin::router())
         .merge(routes::password_reset::router())
@@ -87,6 +88,10 @@ async fn main() -> Result<()> {
         .merge(routes::metrics::router())
         .merge(routes::batch::router())
         .merge(routes::static_files::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::check_installation,
+        ))
         .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
