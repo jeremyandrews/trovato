@@ -9,34 +9,123 @@ Trovato takes the core ideas that made Drupal 6 powerful—nodes, fields, views,
 - **Axum + Tokio** for async HTTP
 - **PostgreSQL + JSONB** for flexible field storage without join complexity
 - **WebAssembly plugins** running in per-request sandboxes via Wasmtime
+- **Redis** for sessions, caching, and batch operations
 - **Content staging** built into the schema from day one
 
-## Security Model
+## Key Features
 
-Plugins are untrusted code. They run in WASM sandboxes, return JSON render trees (not raw HTML), and access data through a structured API. The kernel sanitizes all output. This isn't optional—the WASM boundary enforces isolation whether plugin authors intend it or not.
+### Plugin System
+- **WASM Sandboxing**: Plugins run in isolated WebAssembly instances via Wasmtime with pooled allocation (~5µs instantiation)
+- **Tap System**: Named hooks for content types, forms, access control, menus, permissions, and cron
+- **Host Functions**: Structured API for database, caching, user context, logging, and inter-plugin calls
+- **Secure Output**: Plugins return JSON render trees, kernel sanitizes and renders HTML
 
-## Scaling
+### Content Management
+- **Dynamic Content Types**: Define types with custom fields via plugins, stored in JSONB
+- **Field Types**: Text, long text, integer, float, boolean, date, email, file, entity reference
+- **Revisions**: Full revision history with revert capability
+- **Text Filters**: XSS-safe output with plain_text, filtered_html, and full_html formats
+- **Staging**: Content stages built into schema for draft/live workflows
+
+### Querying & Organization
+- **Gather Query Engine**: Type-safe query building with 16+ filter operators and pagination
+- **Categories & Tags**: DAG hierarchy with multiple parents per tag, recursive ancestor/descendant queries
+- **Full-Text Search**: PostgreSQL tsvector with configurable field weights and ranking
+
+### Forms & Admin
+- **Form API**: Declarative definitions with validation, multi-step support, and AJAX
+- **Theme Engine**: Tera templates with template suggestions and render element pipeline
+- **Admin UI**: Content type management, field configuration, user administration
+
+### Security & Auth
+- **Authentication**: Argon2id password hashing, Redis sessions, account lockout
+- **Access Control**: Role-based permissions with Deny > Grant > Neutral aggregation
+- **CSRF Protection**: Token-based form protection
+- **Rate Limiting**: Redis-backed distributed rate limiting
+
+### Infrastructure
+- **Cron & Queues**: Distributed locking via Redis, background task processing
+- **File Management**: Upload handling with temporary file cleanup
+- **Two-Tier Cache**: Moka L1 (in-memory) + Redis L2 with tag-based invalidation
+- **Metrics**: Prometheus-compatible endpoint for monitoring
+- **Batch Operations**: Long-running operations with progress tracking
+
+## Architecture
 
 No persistent state in the binary. PostgreSQL and Redis handle everything. Horizontal scaling works out of the box.
 
----
+Plugins are untrusted code running in WASM sandboxes. They access data through host functions and return structured output that the kernel sanitizes and renders.
 
-## Progress
+## Documentation
 
-### Phase 0: WASM Architecture Validation
-Benchmarked WASM plugin performance on ARM and x86-64. Validated that full-serialization (passing complete JSON to plugins) outperforms handle-based field access by 1.2-1.6x. Confirmed pooling allocator scales to 2000+ concurrent requests with sub-millisecond p95 latency.
+| Document | Description |
+|----------|-------------|
+| [Plugin Development Guide](docs/plugin-development.md) | Complete guide for plugin authors |
+| [Plugin Quick Reference](docs/plugin-quick-reference.md) | Condensed API reference |
+| [Architecture](docs/design/Architecture.md) | System architecture overview |
+| [Content Model](docs/design/Design-Content-Model.md) | Content types, fields, and items |
+| [Query Engine](docs/design/Design-Query-Engine.md) | Gather query building and execution |
+| [Plugin System](docs/design/Design-Plugin-System.md) | Plugin loading, taps, and sandboxing |
+| [Render & Theme](docs/design/Design-Render-Theme.md) | Rendering pipeline and theming |
 
-### Phase 1: Skeleton
-Built the HTTP server foundation with Axum, PostgreSQL via SQLx, and Redis sessions. Implemented user authentication (Argon2id), role-based permissions, account lockout, password reset, and stage switching.
+## Quick Start
 
-### Phase 2: Plugin Development Platform
-Implemented the complete WASM plugin system. Created plugin loader with pooling allocator (~5µs instantiation), tap registry for hook dispatch, and 7 host function modules (item, db, user, cache, variables, request-context, logging). Built `#[plugin_tap]` proc macro for SDK. Reference blog plugin compiles to WASM with 4 tap exports. Added menu registry with path matching, dependency resolver with cycle detection, and structured error types.
+```bash
+# Prerequisites: Rust, PostgreSQL, Redis
 
-### Phase 3: Content System (Complete)
-Implemented the core content management functionality (Epic 4, Stories 4.1-4.11). Database schema for item_type, item, and item_revision tables with JSONB field storage, GIN indexes, and full-text search vectors. Item model with full CRUD operations and revision history. ContentTypeRegistry syncs definitions from plugins via tap_item_info and caches in DashMap. ItemService with tap integration (insert, update, delete, view, access) and proper access control aggregation (Deny wins, then Grant, else Neutral). HTTP routes for item CRUD at /item/* paths with API endpoints. Text format filter pipeline for XSS protection (plain_text, filtered_html, full_html). Auto-generated admin forms from field definitions supporting all field types. 170+ tests passing.
+# Clone and build
+git clone https://github.com/your-org/trovato.git
+cd trovato
+cargo build --release
 
-### Phase 4: Gather Query Engine & Categories (Complete)
-Implemented the Gather query engine and Categories system. Categories and tags with DAG hierarchy (multiple parents per tag) using recursive CTEs for ancestor/descendant queries. Gather provides type-safe query building via SeaQuery with 16 filter operators including category-aware filters (HasTag, HasTagOrDescendants). ViewDefinition specifies queries declaratively; ViewDisplay configures rendering with pager support. GatherService executes queries with exposed filter resolution and stage awareness. REST API at /api/categories, /api/category/*, /api/tag/*, and view execution at /api/view/*/execute. Gate test verified: "Recent Articles" query with category hierarchy filter and pagination. 227+ tests passing.
+# Set up environment
+cp .env.example .env
+# Edit .env with your database and Redis URLs
+
+# Run migrations
+sqlx database create
+sqlx migrate run
+
+# Start the server
+cargo run -p trovato-kernel
+```
+
+## Building Plugins
+
+```bash
+# Install WASM target
+rustup target add wasm32-wasip1
+
+# Build a plugin
+cargo build -p my_plugin --target wasm32-wasip1 --release
+cp target/wasm32-wasip1/release/my_plugin.wasm plugins/my_plugin/
+```
+
+See the [Plugin Development Guide](docs/plugin-development.md) for complete documentation.
+
+## Running Tests
+
+```bash
+# Run all tests
+cargo test --all
+
+# Run integration tests only
+cargo test -p trovato-kernel --test integration_test
+```
+
+## Project Structure
+
+```
+trovato/
+├── crates/
+│   ├── kernel/          # HTTP server, plugin runtime, core services
+│   └── plugin-sdk/      # SDK and proc macros for plugin development
+├── plugins/             # Plugin WASM files and metadata
+├── templates/           # Tera templates for HTML rendering
+├── static/              # Static assets (CSS, JS)
+├── migrations/          # SQLx database migrations
+└── docs/                # Documentation
+```
 
 ---
 
