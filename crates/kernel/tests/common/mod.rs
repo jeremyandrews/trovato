@@ -63,6 +63,10 @@ impl TestApp {
             .merge(trovato_kernel::routes::item::router())
             .merge(trovato_kernel::routes::category::router())
             .merge(trovato_kernel::routes::gather::router())
+            .merge(trovato_kernel::routes::search::router())
+            .merge(trovato_kernel::routes::cron::router())
+            .merge(trovato_kernel::routes::file::router())
+            .merge(trovato_kernel::routes::metrics::router())
             .layer(session_layer)
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .with_state(state);

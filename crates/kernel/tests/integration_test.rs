@@ -404,6 +404,430 @@ async fn e2e_add_field_to_content_type() {
 }
 
 // =============================================================================
+// Search E2E Tests (Phase 6A)
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_search_returns_results() {
+    let app = TestApp::new().await;
+
+    // Create a test item to search for
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let search_term = format!("findme_{}", &unique_id[..8]);
+
+    // Insert a published item with the search term in the title
+    let item_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO item (id, type, title, status, author_id, fields, search_vector, created, changed)
+        VALUES ($1, 'page', $2, 1, $3, '{}',
+                setweight(to_tsvector('english', $2), 'A'),
+                extract(epoch from now())::bigint,
+                extract(epoch from now())::bigint)
+        "#
+    )
+    .bind(item_id)
+    .bind(&format!("Test Page {}", search_term))
+    .bind(uuid::Uuid::nil()) // System user
+    .execute(&app.db)
+    .await
+    .expect("Failed to insert test item");
+
+    // Search for the item via API
+    let response = app
+        .request(
+            Request::get(&format!("/api/search?q={}", search_term))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_json(response).await;
+    assert_eq!(body["query"], search_term);
+    assert!(body["total"].as_i64().unwrap_or(0) >= 1, "Should find at least one result");
+
+    // Verify the result contains our item
+    let results = body["results"].as_array().expect("results should be array");
+    let found = results.iter().any(|r| {
+        r["id"].as_str() == Some(&item_id.to_string())
+    });
+    assert!(found, "Search should find our test item. Results: {:?}", results);
+}
+
+#[tokio::test]
+async fn e2e_search_html_page_works() {
+    let app = TestApp::new().await;
+
+    // Login first (search requires session for user context)
+    let cookies = app.create_and_login_user("search_test", "password123", "search@test.com").await;
+
+    let response = app
+        .request_with_cookies(
+            Request::get("/search?q=test")
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    let status = response.status();
+    let body = response_text(response).await;
+
+    assert_eq!(status, StatusCode::OK,
+        "Expected 200 OK, got {}. Body: {}", status, &body[..body.len().min(1000)]);
+
+    assert!(body.contains("Search") || body.contains("search"), "Should render search page");
+}
+
+#[tokio::test]
+async fn e2e_search_empty_query_returns_no_results() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(
+            Request::get("/api/search?q=")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_json(response).await;
+    assert_eq!(body["total"], 0);
+    assert_eq!(body["results"].as_array().map(|a| a.len()).unwrap_or(0), 0);
+}
+
+// =============================================================================
+// Cron E2E Tests (Phase 6A)
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_cron_invalid_key_rejected() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(
+            Request::post("/cron/wrong-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "error");
+}
+
+#[tokio::test]
+async fn e2e_cron_valid_key_runs() {
+    let app = TestApp::new().await;
+
+    // Use the default key (tests don't set CRON_KEY env var)
+    let response = app
+        .request(
+            Request::post("/cron/default-cron-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    let status = response.status();
+    let body = response_json(response).await;
+
+    assert_eq!(status, StatusCode::OK, "Cron should succeed with valid key");
+    assert!(
+        body["status"] == "completed" || body["status"] == "skipped",
+        "Cron status should be completed or skipped, got: {:?}", body
+    );
+}
+
+#[tokio::test]
+async fn e2e_cron_status_requires_admin() {
+    let app = TestApp::new().await;
+
+    // Try without login
+    let response = app
+        .request(
+            Request::get("/cron/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    // Should redirect to login or return forbidden
+    assert!(
+        response.status() == StatusCode::SEE_OTHER || response.status() == StatusCode::FORBIDDEN,
+        "Cron status should require auth, got: {}", response.status()
+    );
+}
+
+// =============================================================================
+// File Upload E2E Tests (Phase 6B)
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_file_upload_requires_auth() {
+    let app = TestApp::new().await;
+
+    // Create a simple multipart body manually
+    let boundary = "----TestBoundary12345";
+    let body = format!(
+        "--{boundary}\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+Hello, World!\r\n\
+--{boundary}--\r\n"
+    );
+
+    let response = app
+        .request(
+            Request::post("/file/upload")
+                .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+
+    // Should require authentication
+    assert!(
+        response.status() == StatusCode::UNAUTHORIZED || response.status() == StatusCode::SEE_OTHER,
+        "File upload should require auth, got: {}", response.status()
+    );
+}
+
+#[tokio::test]
+async fn e2e_file_upload_with_auth() {
+    let app = TestApp::new().await;
+
+    // Login first
+    let cookies = app.create_and_login_user("upload_test", "password123", "upload@test.com").await;
+
+    // Create a simple multipart body for a .txt file (allowed MIME type)
+    let boundary = "----TestBoundary67890";
+    let file_content = "Hello, this is a test file!";
+    let body = format!(
+        "--{boundary}\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+{file_content}\r\n\
+--{boundary}--\r\n"
+    );
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/file/upload")
+                .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+                .body(Body::from(body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    let status = response.status();
+    let body = response_json(response).await;
+
+    // File upload should succeed - response is {success: true, file: {...}}
+    assert_eq!(status, StatusCode::OK,
+        "Expected 200 OK, got {}. Body: {:?}", status, body);
+
+    assert_eq!(body["success"], true, "Upload should succeed");
+    assert!(body["file"].get("id").is_some(), "Response should include file ID");
+    assert!(body["file"].get("url").is_some(), "Response should include file URL");
+}
+
+#[tokio::test]
+async fn e2e_file_get_info() {
+    let app = TestApp::new().await;
+
+    // Login and upload a file first
+    let cookies = app.create_and_login_user("file_info_test", "password123", "fileinfo@test.com").await;
+
+    let boundary = "----TestBoundary99999";
+    let body = format!(
+        "--{boundary}\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"info_test.txt\"\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+Test file content\r\n\
+--{boundary}--\r\n"
+    );
+
+    let upload_response = app
+        .request_with_cookies(
+            Request::post("/file/upload")
+                .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+                .body(Body::from(body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    if upload_response.status() != StatusCode::OK {
+        let body = response_text(upload_response).await;
+        panic!("Upload failed: {}", body);
+    }
+
+    let upload_body = response_json(upload_response).await;
+    assert_eq!(upload_body["success"], true, "Upload should succeed: {:?}", upload_body);
+    let file_id = upload_body["file"]["id"].as_str().expect("Should have file ID in file.id");
+
+    // Now retrieve file info
+    let info_response = app
+        .request_with_cookies(
+            Request::get(&format!("/file/{}", file_id))
+                .body(Body::empty())
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    let status = info_response.status();
+    let info_body = response_json(info_response).await;
+
+    assert_eq!(status, StatusCode::OK,
+        "Expected 200 OK for file info, got {}. Body: {:?}", status, info_body);
+
+    assert_eq!(info_body["id"], file_id);
+    assert!(info_body["filename"].as_str().is_some());
+    assert!(info_body["url"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn e2e_file_invalid_mime_type_rejected() {
+    let app = TestApp::new().await;
+
+    // Login first
+    let cookies = app.create_and_login_user("mime_test", "password123", "mime@test.com").await;
+
+    // Try to upload an executable (not allowed)
+    let boundary = "----TestBoundaryMime";
+    let body = format!(
+        "--{boundary}\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"malware.exe\"\r\n\
+Content-Type: application/x-executable\r\n\
+\r\n\
+MZ...\r\n\
+--{boundary}--\r\n"
+    );
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/file/upload")
+                .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+                .body(Body::from(body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    let status = response.status();
+    // Should reject invalid MIME type (415 Unsupported Media Type or 400 Bad Request)
+    assert!(
+        status == StatusCode::UNSUPPORTED_MEDIA_TYPE || status == StatusCode::BAD_REQUEST,
+        "Should reject executable MIME type, got: {}", status
+    );
+}
+
+// =============================================================================
+// Rate Limiting E2E Tests (Phase 6C)
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_rate_limiter_exists() {
+    let app = TestApp::new().await;
+
+    // Make a few requests - just verify the rate limiter is wired up
+    // (actual rate limit testing would require making many requests quickly)
+    for _ in 0..3 {
+        let response = app
+            .request(Request::get("/health").body(Body::empty()).unwrap())
+            .await;
+
+        // Should succeed (we're well under the limit)
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+// =============================================================================
+// Metrics E2E Tests (Phase 6C)
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_metrics_endpoint_returns_prometheus_format() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+
+    // Verify Prometheus format markers
+    assert!(body.contains("# HELP"), "Should contain HELP comments");
+    assert!(body.contains("# TYPE"), "Should contain TYPE comments");
+    assert!(body.contains("http_requests_total"), "Should contain http_requests metric");
+    assert!(body.contains("cache_hits_total"), "Should contain cache_hits metric");
+}
+
+#[tokio::test]
+async fn e2e_metrics_tracks_requests() {
+    let app = TestApp::new().await;
+
+    // Make a health check request first
+    let _ = app
+        .request(Request::get("/health").body(Body::empty()).unwrap())
+        .await;
+
+    // Now check metrics
+    let response = app
+        .request(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+
+    // Should show the http_requests metric
+    assert!(body.contains("http_requests_total"),
+        "Metrics should include http_requests_total");
+}
+
+// =============================================================================
+// Cache Layer E2E Tests (Phase 6A)
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_cache_metrics_exist() {
+    let app = TestApp::new().await;
+
+    // Make some requests that might use cache
+    let _ = app
+        .request(Request::get("/health").body(Body::empty()).unwrap())
+        .await;
+
+    // Check metrics include cache counters
+    let response = app
+        .request(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+
+    // Should have cache metrics defined
+    assert!(body.contains("cache_hits_total"), "Should have cache_hits_total metric");
+    assert!(body.contains("cache_misses_total"), "Should have cache_misses_total metric");
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

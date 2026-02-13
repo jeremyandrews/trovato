@@ -2,19 +2,25 @@
 //!
 //! HTTP server, plugin runtime, and core services.
 
+mod cache;
 mod config;
 mod content;
+mod cron;
 mod db;
 mod error;
+mod file;
 mod form;
 mod gather;
 mod host;
 mod lockout;
 mod menu;
+mod metrics;
+mod middleware;
 mod models;
 mod permissions;
 mod plugin;
 mod routes;
+mod search;
 mod session;
 mod state;
 mod tap;
@@ -73,6 +79,10 @@ async fn main() -> Result<()> {
         .merge(routes::item::router())
         .merge(routes::category::router())
         .merge(routes::gather::router())
+        .merge(routes::search::router())
+        .merge(routes::cron::router())
+        .merge(routes::file::router())
+        .merge(routes::metrics::router())
         .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

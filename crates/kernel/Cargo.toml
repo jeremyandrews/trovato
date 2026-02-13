@@ -44,7 +44,19 @@ hex = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }
+hostname = { workspace = true }
+async-trait = { workspace = true }
+urlencoding = { workspace = true }
+prometheus-client = { workspace = true }
 trovato-sdk = { path = "../plugin-sdk" }
+
+# Optional S3 support (requires Rust 1.91+)
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+
+[features]
+default = []
+s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
 
 [dev-dependencies]
 http-body-util = "0.1"

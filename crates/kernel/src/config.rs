@@ -22,6 +22,12 @@ pub struct Config {
 
     /// Path to plugins directory (default: ./plugins).
     pub plugins_dir: PathBuf,
+
+    /// Path to uploads directory (default: ./uploads).
+    pub uploads_dir: PathBuf,
+
+    /// Base URL for serving uploaded files (default: /files).
+    pub files_url: String,
 }
 
 impl Config {
@@ -47,12 +53,21 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./plugins"));
 
+        let uploads_dir = env::var("UPLOADS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./uploads"));
+
+        let files_url = env::var("FILES_URL")
+            .unwrap_or_else(|_| "/files".to_string());
+
         Ok(Self {
             port,
             database_url,
             redis_url,
             database_max_connections,
             plugins_dir,
+            uploads_dir,
+            files_url,
         })
     }
 }

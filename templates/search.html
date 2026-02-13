@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Search{% if query %}: {{ query }}{% endif %}{% endblock %}
+
+{% block content %}
+<div class="search-page">
+    <h1>Search</h1>
+
+    <form action="/search" method="get" class="search-form">
+        <input type="search" name="q" value="{{ query }}" placeholder="Search..." class="search-input">
+        <button type="submit" class="search-button">Search</button>
+    </form>
+
+    {% if query %}
+        <p class="search-summary">Found {{ total }} result{% if total != 1 %}s{% endif %} for "{{ query }}"</p>
+
+        {% if results | length > 0 %}
+            <div class="search-results">
+                {% for result in results %}
+                <article class="search-result">
+                    <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
+                    <div class="result-meta">{{ result.item_type }}</div>
+                    {% if result.snippet %}
+                        <div class="result-snippet">{{ result.snippet | safe }}</div>
+                    {% endif %}
+                </article>
+                {% endfor %}
+            </div>
+
+            {% if total_pages > 1 %}
+            <nav class="search-pagination">
+                {% if has_prev %}
+                    <a href="/search?q={{ query | urlencode }}&page={{ prev_page }}">&laquo; Previous</a>
+                {% endif %}
+
+                <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+                {% if has_next %}
+                    <a href="/search?q={{ query | urlencode }}&page={{ next_page }}">Next &raquo;</a>
+                {% endif %}
+            </nav>
+            {% endif %}
+        {% else %}
+            <p class="no-results">No results found. Try a different search term.</p>
+        {% endif %}
+    {% endif %}
+</div>
+{% endblock %}

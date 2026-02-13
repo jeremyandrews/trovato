@@ -742,7 +742,7 @@ async fn render_admin_template(
 }
 
 /// Render an error page.
-async fn render_error(state: &AppState, message: &str) -> Response {
+async fn render_error(_state: &AppState, message: &str) -> Response {
     let mut context = tera::Context::new();
     context.insert("message", message);
     context.insert("path", "/admin");
@@ -764,7 +764,7 @@ async fn render_error(state: &AppState, message: &str) -> Response {
 }
 
 /// Render a 404 page.
-async fn render_not_found(state: &AppState) -> Response {
+async fn render_not_found(_state: &AppState) -> Response {
     let html = r#"<!DOCTYPE html>
 <html><head><title>Not Found</title></head>
 <body>

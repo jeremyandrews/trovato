@@ -457,7 +457,7 @@ async fn list_revisions(
     session: Session,
     Path(id): Path<Uuid>,
 ) -> Result<Html<String>, (StatusCode, Json<ItemError>)> {
-    let user = get_user_context(&session, &state).await;
+    let _user = get_user_context(&session, &state).await;
 
     // Load item
     let item = match state.items().load(id).await {

@@ -9,15 +9,21 @@ use sqlx::PgPool;
 
 use tracing::info;
 
+use crate::cache::CacheLayer;
 use crate::config::Config;
 use crate::content::{ContentTypeRegistry, ItemService};
+use crate::cron::CronService;
 use crate::db;
+use crate::file::{FileService, LocalFileStorage};
 use crate::form::FormService;
 use crate::gather::{CategoryService, GatherService};
 use crate::lockout::LockoutService;
 use crate::menu::MenuRegistry;
+use crate::metrics::Metrics;
+use crate::middleware::{RateLimitConfig, RateLimiter};
 use crate::permissions::PermissionService;
 use crate::plugin::{PluginConfig, PluginRuntime};
+use crate::search::SearchService;
 use crate::tap::{TapDispatcher, TapRegistry};
 use crate::theme::ThemeEngine;
 
@@ -35,6 +41,9 @@ struct AppStateInner {
 
     /// Redis client for sessions and caching.
     redis: RedisClient,
+
+    /// Two-tier cache layer (Moka L1 + Redis L2).
+    cache: CacheLayer,
 
     /// Permission service for access control.
     permissions: PermissionService,
@@ -66,11 +75,26 @@ struct AppStateInner {
     /// Gather service.
     gather: Arc<GatherService>,
 
+    /// Search service for full-text search.
+    search: Arc<SearchService>,
+
     /// Theme engine for template rendering.
     theme: Arc<ThemeEngine>,
 
     /// Form service for form handling.
     forms: Arc<FormService>,
+
+    /// File service for uploads.
+    files: Arc<FileService>,
+
+    /// Cron service for scheduled operations.
+    cron: Arc<CronService>,
+
+    /// Prometheus metrics.
+    metrics: Arc<Metrics>,
+
+    /// Rate limiter.
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl AppState {
@@ -176,10 +200,33 @@ impl AppState {
             theme.clone(),
         ));
 
+        // Create cache layer (Moka L1 + Redis L2)
+        let cache = CacheLayer::new(redis.clone());
+
+        // Create search service
+        let search = Arc::new(SearchService::new(db.clone()));
+
+        // Create file service with local storage
+        let file_storage = Arc::new(LocalFileStorage::new(
+            &config.uploads_dir,
+            &config.files_url,
+        ));
+        let files = Arc::new(FileService::new(db.clone(), file_storage));
+
+        // Create cron service with file service for proper cleanup
+        let cron = Arc::new(CronService::with_file_service(redis.clone(), db.clone(), files.clone()));
+
+        // Create metrics
+        let metrics = Arc::new(Metrics::new());
+
+        // Create rate limiter
+        let rate_limiter = Arc::new(RateLimiter::new(redis.clone(), RateLimitConfig::default()));
+
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
                 redis,
+                cache,
                 permissions,
                 lockout,
                 plugin_runtime,
@@ -190,8 +237,13 @@ impl AppState {
                 items,
                 categories,
                 gather,
+                search,
                 theme,
                 forms,
+                files,
+                cron,
+                metrics,
+                rate_limiter,
             }),
         })
     }
@@ -275,6 +327,36 @@ impl AppState {
     /// Get the form service.
     pub fn forms(&self) -> &Arc<FormService> {
         &self.inner.forms
+    }
+
+    /// Get the cache layer.
+    pub fn cache(&self) -> &CacheLayer {
+        &self.inner.cache
+    }
+
+    /// Get the search service.
+    pub fn search(&self) -> &Arc<SearchService> {
+        &self.inner.search
+    }
+
+    /// Get the file service.
+    pub fn files(&self) -> &Arc<FileService> {
+        &self.inner.files
+    }
+
+    /// Get the cron service.
+    pub fn cron(&self) -> &Arc<CronService> {
+        &self.inner.cron
+    }
+
+    /// Get the metrics registry.
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.inner.metrics
+    }
+
+    /// Get the rate limiter.
+    pub fn rate_limiter(&self) -> &Arc<RateLimiter> {
+        &self.inner.rate_limiter
     }
 
     /// Check if PostgreSQL is healthy.

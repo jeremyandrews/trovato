@@ -7,6 +7,7 @@ members = [
     "crates/test-utils",
     "benchmarks/phase0",
     "benchmarks/phase0/guest",
+    "benchmarks/load-test",
     "plugins/blog",
 ]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
@@ -16,6 +17,7 @@ default-members = [
     "crates/plugin-sdk-macros",
     "crates/test-utils",
     "benchmarks/phase0",
+    "benchmarks/load-test",
     "plugins/blog",
 ]
 
@@ -24,7 +26,7 @@ edition = "2024"
 license = "GPL-2.0-or-later"
 
 [workspace.dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "timeout", "compression-gzip"] }
@@ -54,3 +56,9 @@ hex = "0.4"
 rand = "0.8"
 regex = "1"
 sha2 = "0.10"
+hostname = "0.4"
+async-trait = "0.1"
+urlencoding = "2"
+prometheus-client = "0.22"
+aws-sdk-s3 = "1"
+aws-config = "1"

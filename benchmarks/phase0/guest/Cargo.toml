@@ -7,6 +7,7 @@ description = "Minimal test plugin for Phase 0 WASM benchmarks"
 
 [lib]
 crate-type = ["cdylib"]
+test = false
 
 [dependencies]
 # Minimal allocator for no_std WASM
