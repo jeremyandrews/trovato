@@ -106,12 +106,8 @@ impl PluginInfo {
 
     /// Parse plugin info from a TOML string.
     pub fn parse_str(content: &str, path: &Path) -> Result<Self> {
-        let info: PluginInfo = toml::from_str(content).with_context(|| {
-            format!(
-                "failed to parse plugin info TOML at {}",
-                path.display()
-            )
-        })?;
+        let info: PluginInfo = toml::from_str(content)
+            .with_context(|| format!("failed to parse plugin info TOML at {}", path.display()))?;
 
         info.validate(path)?;
         Ok(info)
@@ -121,10 +117,7 @@ impl PluginInfo {
     fn validate(&self, path: &Path) -> Result<()> {
         // Validate name is not empty
         if self.name.is_empty() {
-            anyhow::bail!(
-                "plugin info at {} has empty 'name' field",
-                path.display()
-            );
+            anyhow::bail!("plugin info at {} has empty 'name' field", path.display());
         }
 
         // Validate version is not empty

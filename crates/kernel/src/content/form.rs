@@ -3,8 +3,8 @@
 //! Generates HTML forms from content type field definitions.
 //! This is a temporary solution until the full Form API is built in Epic 9.
 
-use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 use crate::models::Item;
+use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 
 /// Builder for auto-generated forms.
 pub struct FormBuilder {
@@ -27,12 +27,14 @@ impl FormBuilder {
         ));
 
         // Title field (always present)
-        html.push_str(r#"
+        html.push_str(
+            r#"
             <div class="form-group">
                 <label for="title">Title</label>
                 <input type="text" id="title" name="title" required class="form-control">
             </div>
-        "#);
+        "#,
+        );
 
         // Dynamic fields
         for field in &self.content_type.fields {
@@ -40,22 +42,26 @@ impl FormBuilder {
         }
 
         // Status field
-        html.push_str(r#"
+        html.push_str(
+            r#"
             <div class="form-group">
                 <label>
                     <input type="checkbox" name="status" value="1" checked>
                     Published
                 </label>
             </div>
-        "#);
+        "#,
+        );
 
         // Submit button
-        html.push_str(r#"
+        html.push_str(
+            r#"
             <div class="form-actions">
                 <button type="submit" class="btn btn-primary">Save</button>
             </div>
         </form>
-        "#);
+        "#,
+        );
 
         html
     }
@@ -109,12 +115,14 @@ impl FormBuilder {
         "#);
 
         // Submit button
-        html.push_str(r#"
+        html.push_str(
+            r#"
             <div class="form-actions">
                 <button type="submit" class="btn btn-primary">Save</button>
             </div>
         </form>
-        "#);
+        "#,
+        );
 
         html
     }
@@ -128,7 +136,9 @@ impl FormBuilder {
 
         match &field.field_type {
             FieldType::Text { max_length } => {
-                let max = max_length.map(|m| format!(r#"maxlength="{}""#, m)).unwrap_or_default();
+                let max = max_length
+                    .map(|m| format!(r#"maxlength="{}""#, m))
+                    .unwrap_or_default();
                 let val = extract_text_value(value);
                 format!(
                     r#"
@@ -156,8 +166,16 @@ impl FormBuilder {
                         </div>
                     </div>
                     "#,
-                    if format == "filtered_html" { "selected" } else { "" },
-                    if format == "plain_text" { "selected" } else { "" },
+                    if format == "filtered_html" {
+                        "selected"
+                    } else {
+                        ""
+                    },
+                    if format == "plain_text" {
+                        "selected"
+                    } else {
+                        ""
+                    },
                 )
             }
 
@@ -318,7 +336,9 @@ mod tests {
                 },
                 FieldDefinition {
                     field_name: "summary".to_string(),
-                    field_type: FieldType::Text { max_length: Some(255) },
+                    field_type: FieldType::Text {
+                        max_length: Some(255),
+                    },
                     label: "Summary".to_string(),
                     required: false,
                     cardinality: 1,

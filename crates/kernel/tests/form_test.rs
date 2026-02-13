@@ -1,6 +1,6 @@
 //! Form API tests.
 
-use trovato_kernel::form::{ElementType, Form, FormElement, AjaxResponse, AjaxCommand};
+use trovato_kernel::form::{AjaxCommand, AjaxResponse, ElementType, Form, FormElement};
 
 #[test]
 fn test_form_creation() {
@@ -22,7 +22,9 @@ fn test_form_element_types() {
     let textfield = FormElement::textfield().max_length(100);
     assert!(matches!(
         textfield.element_type,
-        ElementType::Textfield { max_length: Some(100) }
+        ElementType::Textfield {
+            max_length: Some(100)
+        }
     ));
 
     let textarea = FormElement::textarea(5);
@@ -40,7 +42,10 @@ fn test_form_element_types() {
     ]);
     assert!(matches!(
         select.element_type,
-        ElementType::Select { multiple: false, .. }
+        ElementType::Select {
+            multiple: false,
+            ..
+        }
     ));
 }
 
@@ -61,7 +66,9 @@ fn test_form_element_builder() {
     assert_eq!(element.weight, 10);
     assert!(matches!(
         element.element_type,
-        ElementType::Textfield { max_length: Some(50) }
+        ElementType::Textfield {
+            max_length: Some(50)
+        }
     ));
 }
 
@@ -184,7 +191,10 @@ fn test_element_type_name() {
     );
     assert_eq!(ElementType::Checkbox.type_name(), "checkbox");
     assert_eq!(
-        ElementType::Submit { value: "Save".to_string() }.type_name(),
+        ElementType::Submit {
+            value: "Save".to_string()
+        }
+        .type_name(),
         "submit"
     );
     assert_eq!(ElementType::Textarea { rows: 5 }.type_name(), "textarea");

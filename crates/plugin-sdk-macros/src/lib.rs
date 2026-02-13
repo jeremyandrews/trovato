@@ -5,7 +5,7 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, ItemFn, FnArg, PatType};
+use syn::{FnArg, ItemFn, PatType, parse_macro_input};
 
 /// Marks a function as a tap implementation.
 ///

@@ -28,10 +28,10 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
                 _ => return -1,
             };
 
-            let _bin = read_string_from_memory(&memory, &caller, bin_ptr, bin_len)
-                .unwrap_or_default();
-            let _key = read_string_from_memory(&memory, &caller, key_ptr, key_len)
-                .unwrap_or_default();
+            let _bin =
+                read_string_from_memory(&memory, &caller, bin_ptr, bin_len).unwrap_or_default();
+            let _key =
+                read_string_from_memory(&memory, &caller, key_ptr, key_len).unwrap_or_default();
 
             // TODO: Implement actual cache lookup using Redis or moka
             // For now, always return cache miss
@@ -57,14 +57,14 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
                 _ => return,
             };
 
-            let _bin = read_string_from_memory(&memory, &caller, bin_ptr, bin_len)
-                .unwrap_or_default();
-            let _key = read_string_from_memory(&memory, &caller, key_ptr, key_len)
-                .unwrap_or_default();
-            let _value = read_string_from_memory(&memory, &caller, value_ptr, value_len)
-                .unwrap_or_default();
-            let _tags = read_string_from_memory(&memory, &caller, tags_ptr, tags_len)
-                .unwrap_or_default();
+            let _bin =
+                read_string_from_memory(&memory, &caller, bin_ptr, bin_len).unwrap_or_default();
+            let _key =
+                read_string_from_memory(&memory, &caller, key_ptr, key_len).unwrap_or_default();
+            let _value =
+                read_string_from_memory(&memory, &caller, value_ptr, value_len).unwrap_or_default();
+            let _tags =
+                read_string_from_memory(&memory, &caller, tags_ptr, tags_len).unwrap_or_default();
 
             // TODO: Implement actual cache set using Redis or moka
             // For now, no-op
@@ -75,16 +75,14 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
     linker.func_wrap(
         "trovato:kernel/cache-api",
         "invalidate-tag",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         tag_ptr: i32,
-         tag_len: i32| {
+        |mut caller: wasmtime::Caller<'_, PluginState>, tag_ptr: i32, tag_len: i32| {
             let memory = match caller.get_export("memory") {
                 Some(wasmtime::Extern::Memory(m)) => m,
                 _ => return,
             };
 
-            let _tag = read_string_from_memory(&memory, &caller, tag_ptr, tag_len)
-                .unwrap_or_default();
+            let _tag =
+                read_string_from_memory(&memory, &caller, tag_ptr, tag_len).unwrap_or_default();
 
             // TODO: Implement actual cache invalidation
             // For now, no-op

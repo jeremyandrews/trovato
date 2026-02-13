@@ -5,15 +5,15 @@
 //! Usage:
 //!   cargo run -p trovato-loadtest -- --base-url http://localhost:3000 --users 100 --duration 60
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use futures::future::join_all;
+use rand::SeedableRng;
 use rand::prelude::*;
 use rand::rngs::StdRng;
-use rand::SeedableRng;
 use serde::Serialize;
 
 /// Load test configuration.
@@ -130,19 +130,9 @@ impl AtomicStats {
 }
 
 /// Available endpoints for load testing.
-const READ_ENDPOINTS: &[&str] = &[
-    "/health",
-    "/admin/structure/types",
-    "/gather/recent_items",
-];
+const READ_ENDPOINTS: &[&str] = &["/health", "/admin/structure/types", "/gather/recent_items"];
 
-const SEARCH_QUERIES: &[&str] = &[
-    "test",
-    "blog",
-    "article",
-    "content",
-    "page",
-];
+const SEARCH_QUERIES: &[&str] = &["test", "blog", "article", "content", "page"];
 
 #[tokio::main]
 async fn main() {
@@ -218,7 +208,10 @@ async fn main() {
     join_all(handles).await;
 
     let actual_duration = start_time.elapsed();
-    println!("\nTest completed in {:.2} seconds", actual_duration.as_secs_f64());
+    println!(
+        "\nTest completed in {:.2} seconds",
+        actual_duration.as_secs_f64()
+    );
 
     // Compute and display results
     let results = stats.compute_stats(args.duration);
@@ -246,9 +239,15 @@ async fn main() {
     // Check gate criterion
     println!();
     if results.p95_latency_ms <= 100 {
-        println!("✅ PASS: P95 latency ({} ms) <= 100 ms", results.p95_latency_ms);
+        println!(
+            "✅ PASS: P95 latency ({} ms) <= 100 ms",
+            results.p95_latency_ms
+        );
     } else {
-        println!("❌ FAIL: P95 latency ({} ms) > 100 ms", results.p95_latency_ms);
+        println!(
+            "❌ FAIL: P95 latency ({} ms) > 100 ms",
+            results.p95_latency_ms
+        );
     }
 
     if results.failed_requests == 0 {
@@ -270,7 +269,8 @@ async fn run_user(
     search_pct: u8,
 ) {
     // Use a seeded RNG that is Send-safe
-    let mut rng = StdRng::seed_from_u64(user_id as u64 + chrono::Utc::now().timestamp_millis() as u64);
+    let mut rng =
+        StdRng::seed_from_u64(user_id as u64 + chrono::Utc::now().timestamp_millis() as u64);
     let start = Instant::now();
 
     while start.elapsed() < duration {

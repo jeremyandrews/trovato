@@ -32,13 +32,15 @@ pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> R
             };
 
             // Get the value and clone it to avoid borrow issues
-            let value = caller.data().request.get_context(&key).map(|s| s.to_string());
+            let value = caller
+                .data()
+                .request
+                .get_context(&key)
+                .map(|s| s.to_string());
 
             match value {
-                Some(v) => {
-                    write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &v)
-                        .unwrap_or(-1)
-                }
+                Some(v) => write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &v)
+                    .unwrap_or(-1),
                 None => -1,
             }
         },

@@ -10,23 +10,15 @@ use thiserror::Error;
 pub enum PluginError {
     /// Plugin directory is missing the .info.toml manifest file.
     #[error("plugin '{plugin}': no .info.toml manifest found in {path}")]
-    MissingManifest {
-        plugin: String,
-        path: String,
-    },
+    MissingManifest { plugin: String, path: String },
 
     /// Multiple .info.toml files found in plugin directory.
     #[error("plugin directory '{path}': multiple .info.toml files found, expected exactly one")]
-    MultipleManifests {
-        path: String,
-    },
+    MultipleManifests { path: String },
 
     /// The .info.toml file could not be parsed.
     #[error("plugin '{plugin}': failed to parse manifest: {details}")]
-    InvalidManifest {
-        plugin: String,
-        details: String,
-    },
+    InvalidManifest { plugin: String, details: String },
 
     /// Plugin declares a tap that doesn't exist.
     #[error("plugin '{plugin}': declares unknown tap '{tap}'. Valid taps: {valid_taps}")]
@@ -37,7 +29,9 @@ pub enum PluginError {
     },
 
     /// Plugin's WASM file is missing.
-    #[error("plugin '{plugin}': WASM file not found at {expected_path}. Build with: cargo build -p {plugin} --target wasm32-wasip1 --release")]
+    #[error(
+        "plugin '{plugin}': WASM file not found at {expected_path}. Build with: cargo build -p {plugin} --target wasm32-wasip1 --release"
+    )]
     MissingWasm {
         plugin: String,
         expected_path: String,
@@ -45,26 +39,20 @@ pub enum PluginError {
 
     /// WASM module failed to compile.
     #[error("plugin '{plugin}': WASM compilation failed: {details}")]
-    CompilationFailed {
-        plugin: String,
-        details: String,
-    },
+    CompilationFailed { plugin: String, details: String },
 
     /// Plugin depends on another plugin that isn't loaded.
     #[error("plugin '{plugin}': depends on '{dependency}' which is not installed")]
-    MissingDependency {
-        plugin: String,
-        dependency: String,
-    },
+    MissingDependency { plugin: String, dependency: String },
 
     /// Circular dependency detected.
     #[error("circular dependency detected: {cycle}")]
-    CircularDependency {
-        cycle: String,
-    },
+    CircularDependency { cycle: String },
 
     /// Plugin declares a tap but doesn't export it.
-    #[error("plugin '{plugin}': declares '{tap}' in manifest but doesn't export function '{export_name}'")]
+    #[error(
+        "plugin '{plugin}': declares '{tap}' in manifest but doesn't export function '{export_name}'"
+    )]
     MissingExport {
         plugin: String,
         tap: String,
@@ -72,7 +60,9 @@ pub enum PluginError {
     },
 
     /// Plugin's tap export has wrong signature.
-    #[error("plugin '{plugin}': tap '{tap}' has wrong signature. Expected (i32, i32) -> i64, got {actual}")]
+    #[error(
+        "plugin '{plugin}': tap '{tap}' has wrong signature. Expected (i32, i32) -> i64, got {actual}"
+    )]
     WrongSignature {
         plugin: String,
         tap: String,
@@ -97,10 +87,7 @@ pub enum PluginError {
 
     /// General instantiation failure.
     #[error("plugin '{plugin}': failed to instantiate: {details}")]
-    InstantiationFailed {
-        plugin: String,
-        details: String,
-    },
+    InstantiationFailed { plugin: String, details: String },
 }
 
 impl PluginError {
@@ -144,7 +131,11 @@ impl PluginError {
     }
 
     /// Create a plugin panic error.
-    pub fn panic(plugin: impl Into<String>, tap: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn panic(
+        plugin: impl Into<String>,
+        tap: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self::PluginPanic {
             plugin: plugin.into(),
             tap: tap.into(),

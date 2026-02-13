@@ -60,7 +60,10 @@ impl TapDispatcher {
         let mut results = Vec::with_capacity(handlers.len());
 
         for handler in handlers {
-            match self.invoke_handler(tap_name, input_json, &handler, state.clone()).await {
+            match self
+                .invoke_handler(tap_name, input_json, &handler, state.clone())
+                .await
+            {
                 Ok(output) => {
                     results.push(TapResult {
                         plugin_name: handler.plugin.info.name.clone(),
@@ -126,7 +129,9 @@ impl TapDispatcher {
         let mut store = Store::new(engine, plugin_state);
 
         // Instantiate the module
-        let instance = self.runtime.linker()
+        let instance = self
+            .runtime
+            .linker()
             .instantiate_async(&mut store, &plugin.module)
             .await
             .with_context(|| format!("failed to instantiate plugin '{}'", plugin.info.name))?;
@@ -206,8 +211,7 @@ async fn call_tap_function(
         if end > data.len() {
             anyhow::bail!("output out of bounds: {}..{}", start, end);
         }
-        String::from_utf8(data[start..end].to_vec())
-            .context("invalid UTF-8 in tap output")?
+        String::from_utf8(data[start..end].to_vec()).context("invalid UTF-8 in tap output")?
     };
 
     Ok(output)
@@ -232,7 +236,7 @@ mod tests {
     #[test]
     fn dispatcher_creation() {
         let runtime = Arc::new(
-            PluginRuntime::new(&PluginConfig::default()).expect("failed to create runtime")
+            PluginRuntime::new(&PluginConfig::default()).expect("failed to create runtime"),
         );
         let registry = Arc::new(TapRegistry::from_plugins(&runtime));
         let dispatcher = TapDispatcher::new(runtime, registry);
@@ -244,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_empty_tap() {
         let runtime = Arc::new(
-            PluginRuntime::new(&PluginConfig::default()).expect("failed to create runtime")
+            PluginRuntime::new(&PluginConfig::default()).expect("failed to create runtime"),
         );
         let registry = Arc::new(TapRegistry::from_plugins(&runtime));
         let dispatcher = TapDispatcher::new(runtime, registry);

@@ -1,7 +1,7 @@
 //! Theme engine tests.
 
 use std::collections::BTreeMap;
-use trovato_kernel::theme::{ThemeEngine, RenderTreeConsumer};
+use trovato_kernel::theme::{RenderTreeConsumer, ThemeEngine};
 use trovato_sdk::render::RenderElement;
 
 #[test]
@@ -25,21 +25,14 @@ fn test_page_suggestions_admin() {
     let suggestions = ThemeEngine::page_suggestions("/admin/structure/types");
     assert_eq!(
         suggestions,
-        vec![
-            "page--admin--structure--types",
-            "page--admin",
-            "page"
-        ]
+        vec!["page--admin--structure--types", "page--admin", "page"]
     );
 }
 
 #[test]
 fn test_page_suggestions_frontend() {
     let suggestions = ThemeEngine::page_suggestions("/item/123");
-    assert_eq!(
-        suggestions,
-        vec!["page--item--123", "page"]
-    );
+    assert_eq!(suggestions, vec!["page--item--123", "page"]);
 }
 
 #[test]

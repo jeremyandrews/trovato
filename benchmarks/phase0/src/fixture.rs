@@ -49,7 +49,10 @@ impl std::str::FromStr for PayloadSize {
             "medium" | "m" | "10k" => Ok(PayloadSize::Medium),
             "large" | "l" | "50k" => Ok(PayloadSize::Large),
             "xlarge" | "xl" | "100k" => Ok(PayloadSize::XLarge),
-            _ => Err(format!("Unknown payload size: {}. Use: small, medium, large, xlarge", s)),
+            _ => Err(format!(
+                "Unknown payload size: {}. Use: small, medium, large, xlarge",
+                s
+            )),
         }
     }
 }

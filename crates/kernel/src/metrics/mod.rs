@@ -6,7 +6,7 @@ use prometheus_client::encoding::{EncodeLabelSet, text::encode};
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
-use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
+use prometheus_client::metrics::histogram::{Histogram, exponential_buckets};
 use prometheus_client::registry::Registry;
 
 /// HTTP request labels.
@@ -100,7 +100,11 @@ impl Metrics {
         registry.register("cache_hits_total", "Cache hit count", cache_hits.clone());
 
         let cache_misses = Counter::default();
-        registry.register("cache_misses_total", "Cache miss count", cache_misses.clone());
+        registry.register(
+            "cache_misses_total",
+            "Cache miss count",
+            cache_misses.clone(),
+        );
 
         let active_connections = Gauge::default();
         registry.register(
@@ -261,7 +265,10 @@ mod tests {
             normalize_path("/item/550e8400-e29b-41d4-a716-446655440000"),
             "/item/{id}"
         );
-        assert_eq!(normalize_path("/admin/structure/types"), "/admin/structure/types");
+        assert_eq!(
+            normalize_path("/admin/structure/types"),
+            "/admin/structure/types"
+        );
         assert_eq!(normalize_path("/"), "/");
     }
 

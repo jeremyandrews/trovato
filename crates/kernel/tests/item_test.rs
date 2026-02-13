@@ -2,12 +2,14 @@
 //!
 //! These tests verify the Item model, ItemService, and related functionality.
 
-use trovato_kernel::models::{CreateItem, Item, ItemRevision, ItemType, CreateItemType, UpdateItem};
 use trovato_kernel::content::{FilterPipeline, FormBuilder};
+use trovato_kernel::models::{
+    CreateItem, CreateItemType, Item, ItemRevision, ItemType, UpdateItem,
+};
 use trovato_kernel::tap::{RequestState, UserContext};
 use trovato_sdk::types::{
-    AccessResult, ContentTypeDefinition, FieldDefinition, FieldType,
-    Item as SdkItem, MenuDefinition, PermissionDefinition, RecordRef, TextValue,
+    AccessResult, ContentTypeDefinition, FieldDefinition, FieldType, Item as SdkItem,
+    MenuDefinition, PermissionDefinition, RecordRef, TextValue,
 };
 use uuid::Uuid;
 
@@ -75,7 +77,9 @@ fn test_content_type() -> ContentTypeDefinition {
             },
             FieldDefinition {
                 field_name: "summary".to_string(),
-                field_type: FieldType::Text { max_length: Some(255) },
+                field_type: FieldType::Text {
+                    max_length: Some(255),
+                },
                 label: "Summary".to_string(),
                 required: false,
                 cardinality: 1,
@@ -262,10 +266,7 @@ fn user_context_anonymous() {
 
 #[test]
 fn user_context_admin() {
-    let ctx = UserContext::authenticated(
-        Uuid::now_v7(),
-        vec!["administer site".to_string()],
-    );
+    let ctx = UserContext::authenticated(Uuid::now_v7(), vec!["administer site".to_string()]);
 
     assert!(ctx.authenticated);
     assert!(ctx.is_admin());
@@ -327,10 +328,15 @@ fn content_type_definition_fields() {
 
 #[test]
 fn field_definition_builder() {
-    let field = FieldDefinition::new("title", FieldType::Text { max_length: Some(255) })
-        .label("Article Title")
-        .required()
-        .cardinality(1);
+    let field = FieldDefinition::new(
+        "title",
+        FieldType::Text {
+            max_length: Some(255),
+        },
+    )
+    .label("Article Title")
+    .required()
+    .cardinality(1);
 
     assert_eq!(field.field_name, "title");
     assert_eq!(field.label, "Article Title");
@@ -419,10 +425,7 @@ fn sdk_item_field_access() {
         "body".to_string(),
         serde_json::json!({"value": "Hello world", "format": "filtered_html"}),
     );
-    fields.insert(
-        "views".to_string(),
-        serde_json::json!(100),
-    );
+    fields.insert("views".to_string(), serde_json::json!(100));
 
     let item = SdkItem {
         id: Uuid::now_v7(),
@@ -545,22 +548,21 @@ fn comprehensive_content_type() -> ContentTypeDefinition {
             FieldDefinition::new("body", FieldType::TextLong)
                 .label("Body")
                 .required(),
-            FieldDefinition::new("summary", FieldType::Text { max_length: Some(255) })
-                .label("Summary"),
-            FieldDefinition::new("views", FieldType::Integer)
-                .label("View Count"),
-            FieldDefinition::new("rating", FieldType::Float)
-                .label("Rating"),
-            FieldDefinition::new("featured", FieldType::Boolean)
-                .label("Featured"),
-            FieldDefinition::new("publish_date", FieldType::Date)
-                .label("Publish Date"),
-            FieldDefinition::new("contact", FieldType::Email)
-                .label("Contact Email"),
+            FieldDefinition::new(
+                "summary",
+                FieldType::Text {
+                    max_length: Some(255),
+                },
+            )
+            .label("Summary"),
+            FieldDefinition::new("views", FieldType::Integer).label("View Count"),
+            FieldDefinition::new("rating", FieldType::Float).label("Rating"),
+            FieldDefinition::new("featured", FieldType::Boolean).label("Featured"),
+            FieldDefinition::new("publish_date", FieldType::Date).label("Publish Date"),
+            FieldDefinition::new("contact", FieldType::Email).label("Contact Email"),
             FieldDefinition::new("related", FieldType::RecordReference("article".to_string()))
                 .label("Related Article"),
-            FieldDefinition::new("attachment", FieldType::File)
-                .label("Attachment"),
+            FieldDefinition::new("attachment", FieldType::File).label("Attachment"),
         ],
     }
 }
@@ -846,7 +848,9 @@ fn content_type_serialization_roundtrip() {
 #[test]
 fn field_type_serialization() {
     // Text with max length
-    let text = FieldType::Text { max_length: Some(255) };
+    let text = FieldType::Text {
+        max_length: Some(255),
+    };
     let json = serde_json::to_string(&text).unwrap();
     assert!(json.contains("255"));
 

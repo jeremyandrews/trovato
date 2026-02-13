@@ -22,12 +22,24 @@ pub struct CronTasks {
 impl CronTasks {
     /// Create a new cron tasks instance.
     pub fn new(pool: PgPool, queue: Arc<RedisQueue>) -> Self {
-        Self { pool, queue, files: None }
+        Self {
+            pool,
+            queue,
+            files: None,
+        }
     }
 
     /// Create a new cron tasks instance with file service.
-    pub fn with_file_service(pool: PgPool, queue: Arc<RedisQueue>, files: Arc<FileService>) -> Self {
-        Self { pool, queue, files: Some(files) }
+    pub fn with_file_service(
+        pool: PgPool,
+        queue: Arc<RedisQueue>,
+        files: Arc<FileService>,
+    ) -> Self {
+        Self {
+            pool,
+            queue,
+            files: Some(files),
+        }
     }
 
     /// Cleanup temporary files older than 6 hours.

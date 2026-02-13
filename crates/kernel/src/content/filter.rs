@@ -22,7 +22,9 @@ pub struct FilterPipeline {
 impl FilterPipeline {
     /// Create a new empty pipeline.
     pub fn new() -> Self {
-        Self { filters: Vec::new() }
+        Self {
+            filters: Vec::new(),
+        }
     }
 
     /// Add a filter to the pipeline.
@@ -43,16 +45,12 @@ impl FilterPipeline {
 
     /// Create a plain text pipeline (escapes all HTML).
     pub fn plain_text() -> Self {
-        Self::new()
-            .add(HtmlEscapeFilter)
-            .add(NewlineFilter)
+        Self::new().add(HtmlEscapeFilter).add(NewlineFilter)
     }
 
     /// Create a filtered HTML pipeline (allows safe tags).
     pub fn filtered_html() -> Self {
-        Self::new()
-            .add(FilteredHtmlFilter)
-            .add(UrlFilter)
+        Self::new().add(FilteredHtmlFilter).add(UrlFilter)
     }
 
     /// Create a full HTML pipeline (no filtering - admin only).
@@ -62,9 +60,9 @@ impl FilterPipeline {
 
     /// Process text through all filters in the pipeline.
     pub fn process(&self, input: &str) -> String {
-        self.filters.iter().fold(input.to_string(), |acc, filter| {
-            filter.process(&acc)
-        })
+        self.filters
+            .iter()
+            .fold(input.to_string(), |acc, filter| filter.process(&acc))
     }
 }
 
@@ -114,12 +112,35 @@ impl FilteredHtmlFilter {
     /// for proper tag-by-tag allowlist filtering.
     #[allow(dead_code)]
     const ALLOWED_TAGS: &'static [&'static str] = &[
-        "p", "br", "strong", "b", "em", "i", "u", "s",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "ul", "ol", "li",
-        "a", "blockquote", "pre", "code",
-        "table", "thead", "tbody", "tr", "th", "td",
-        "img", "hr",
+        "p",
+        "br",
+        "strong",
+        "b",
+        "em",
+        "i",
+        "u",
+        "s",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "li",
+        "a",
+        "blockquote",
+        "pre",
+        "code",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "img",
+        "hr",
     ];
 
     /// List of allowed attributes per tag.
@@ -210,7 +231,10 @@ impl TextFilter for UrlFilter {
                 result.push_str(url);
             } else {
                 // Convert to link
-                result.push_str(&format!(r#"<a href="{}" target="_blank" rel="noopener">{}</a>"#, url, url));
+                result.push_str(&format!(
+                    r#"<a href="{}" target="_blank" rel="noopener">{}</a>"#,
+                    url, url
+                ));
             }
 
             last_end = mat.end();
@@ -237,10 +261,7 @@ mod tests {
     #[test]
     fn newline_filter() {
         let filter = NewlineFilter;
-        assert_eq!(
-            filter.process("line1\nline2"),
-            "line1<br>\nline2"
-        );
+        assert_eq!(filter.process("line1\nline2"), "line1<br>\nline2");
     }
 
     #[test]

@@ -62,28 +62,26 @@ impl Role {
     pub async fn create(pool: &PgPool, name: &str) -> Result<Self> {
         let id = Uuid::now_v7();
 
-        let role = sqlx::query_as::<_, Role>(
-            "INSERT INTO roles (id, name) VALUES ($1, $2) RETURNING *",
-        )
-        .bind(id)
-        .bind(name)
-        .fetch_one(pool)
-        .await
-        .context("failed to create role")?;
+        let role =
+            sqlx::query_as::<_, Role>("INSERT INTO roles (id, name) VALUES ($1, $2) RETURNING *")
+                .bind(id)
+                .bind(name)
+                .fetch_one(pool)
+                .await
+                .context("failed to create role")?;
 
         Ok(role)
     }
 
     /// Update a role's name.
     pub async fn update(pool: &PgPool, id: Uuid, name: &str) -> Result<Option<Self>> {
-        let result = sqlx::query_as::<_, Role>(
-            "UPDATE roles SET name = $1 WHERE id = $2 RETURNING *"
-        )
-        .bind(name)
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .context("failed to update role")?;
+        let result =
+            sqlx::query_as::<_, Role>("UPDATE roles SET name = $1 WHERE id = $2 RETURNING *")
+                .bind(name)
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .context("failed to update role")?;
 
         Ok(result)
     }

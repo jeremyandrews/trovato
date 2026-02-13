@@ -239,7 +239,12 @@ impl Item {
     }
 
     /// Update an item and create a new revision.
-    pub async fn update(pool: &PgPool, id: Uuid, author_id: Uuid, input: UpdateItem) -> Result<Option<Self>> {
+    pub async fn update(
+        pool: &PgPool,
+        id: Uuid,
+        author_id: Uuid,
+        input: UpdateItem,
+    ) -> Result<Option<Self>> {
         let now = chrono::Utc::now().timestamp();
         let revision_id = Uuid::now_v7();
 
@@ -351,7 +356,12 @@ impl Item {
 
     /// Revert an item to a previous revision.
     /// Creates a new revision with the old revision's content.
-    pub async fn revert_to_revision(pool: &PgPool, item_id: Uuid, revision_id: Uuid, author_id: Uuid) -> Result<Self> {
+    pub async fn revert_to_revision(
+        pool: &PgPool,
+        item_id: Uuid,
+        revision_id: Uuid,
+        author_id: Uuid,
+    ) -> Result<Self> {
         // Fetch the target revision
         let revision = Self::get_revision(pool, revision_id)
             .await?
@@ -414,7 +424,7 @@ impl Item {
         // Build dynamic query
         // Note: We use 'type' not 'type' because sqlx uses the #[sqlx(rename = "type")] attribute
         let mut query = String::from(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item WHERE 1=1"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item WHERE 1=1",
         );
         let mut param_idx = 1;
         let mut conditions = Vec::new();
@@ -436,7 +446,11 @@ impl Item {
             query.push_str(&cond);
         }
 
-        query.push_str(&format!(" ORDER BY changed DESC LIMIT ${} OFFSET ${}", param_idx, param_idx + 1));
+        query.push_str(&format!(
+            " ORDER BY changed DESC LIMIT ${} OFFSET ${}",
+            param_idx,
+            param_idx + 1
+        ));
 
         let mut query_builder = sqlx::query_as::<_, Item>(&query);
 
@@ -472,10 +486,11 @@ impl Item {
 
     /// Count published items.
     pub async fn count_published(pool: &PgPool) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE status = 1 AND stage_id = 'live'")
-            .fetch_one(pool)
-            .await
-            .context("failed to count published items")?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE status = 1 AND stage_id = 'live'")
+                .fetch_one(pool)
+                .await
+                .context("failed to count published items")?;
 
         Ok(count)
     }

@@ -65,7 +65,13 @@ impl LocalFileStorage {
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let safe_filename = sanitize_filename(filename);
 
-        format!("local://{}/{}/{}_{}", year, month, &unique_id[..8], safe_filename)
+        format!(
+            "local://{}/{}/{}_{}",
+            year,
+            month,
+            &unique_id[..8],
+            safe_filename
+        )
     }
 }
 
@@ -86,9 +92,7 @@ impl FileStorage for LocalFileStorage {
             .await
             .context("failed to create file")?;
 
-        file.write_all(data)
-            .await
-            .context("failed to write file")?;
+        file.write_all(data).await.context("failed to write file")?;
 
         file.flush().await.context("failed to flush file")?;
 
@@ -107,7 +111,9 @@ impl FileStorage for LocalFileStorage {
         let path = self.parse_uri(uri)?;
 
         if path.exists() {
-            fs::remove_file(&path).await.context("failed to delete file")?;
+            fs::remove_file(&path)
+                .await
+                .context("failed to delete file")?;
             debug!(uri = %uri, "file deleted");
         } else {
             warn!(uri = %uri, "file not found for deletion");
@@ -234,7 +240,13 @@ impl S3FileStorage {
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let safe_filename = sanitize_filename(filename);
 
-        format!("s3://{}/{}/{}_{}", year, month, &unique_id[..8], safe_filename)
+        format!(
+            "s3://{}/{}/{}_{}",
+            year,
+            month,
+            &unique_id[..8],
+            safe_filename
+        )
     }
 }
 

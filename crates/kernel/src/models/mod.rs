@@ -8,8 +8,8 @@ pub mod role;
 pub mod user;
 
 pub use category::{
-    Category, CreateCategory, CreateTag, Tag, TagHierarchy, TagTreeNode, TagWithDepth, UpdateCategory,
-    UpdateTag,
+    Category, CreateCategory, CreateTag, Tag, TagHierarchy, TagTreeNode, TagWithDepth,
+    UpdateCategory, UpdateTag,
 };
 pub use item::{CreateItem, Item, ItemRevision, UpdateItem};
 pub use item_type::{CreateItemType, ItemType};

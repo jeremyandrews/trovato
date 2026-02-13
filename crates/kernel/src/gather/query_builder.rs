@@ -53,8 +53,11 @@ impl ViewQueryBuilder {
 
         // Always filter by stage
         query.and_where(
-            Expr::col((Alias::new(&self.definition.base_table), Alias::new("stage_id")))
-                .eq(&self.stage_id),
+            Expr::col((
+                Alias::new(&self.definition.base_table),
+                Alias::new("stage_id"),
+            ))
+            .eq(&self.stage_id),
         );
 
         // Filter by item_type if specified
@@ -94,8 +97,11 @@ impl ViewQueryBuilder {
 
         // Stage filter
         query.and_where(
-            Expr::col((Alias::new(&self.definition.base_table), Alias::new("stage_id")))
-                .eq(&self.stage_id),
+            Expr::col((
+                Alias::new(&self.definition.base_table),
+                Alias::new("stage_id"),
+            ))
+            .eq(&self.stage_id),
         );
 
         // Item type filter
@@ -268,11 +274,7 @@ impl ViewQueryBuilder {
             let jsonb_path = &field[7..];
             self.jsonb_extract_expr(&self.definition.base_table, jsonb_path)
         } else {
-            Expr::col((
-                Alias::new(&self.definition.base_table),
-                Alias::new(field),
-            ))
-            .into()
+            Expr::col((Alias::new(&self.definition.base_table), Alias::new(field))).into()
         }
     }
 
@@ -499,15 +501,13 @@ mod tests {
     fn filter_operators() {
         let def = ViewDefinition {
             base_table: "item".to_string(),
-            filters: vec![
-                ViewFilter {
-                    field: "title".to_string(),
-                    operator: FilterOperator::Contains,
-                    value: FilterValue::String("rust".to_string()),
-                    exposed: false,
-                    exposed_label: None,
-                },
-            ],
+            filters: vec![ViewFilter {
+                field: "title".to_string(),
+                operator: FilterOperator::Contains,
+                value: FilterValue::String("rust".to_string()),
+                exposed: false,
+                exposed_label: None,
+            }],
             ..Default::default()
         };
 

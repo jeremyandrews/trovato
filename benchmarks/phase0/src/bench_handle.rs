@@ -11,9 +11,9 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use wasmtime::{Module, TypedFunc};
 
+use crate::BenchResult;
 use crate::fixture::synthetic_item;
 use crate::host::{BenchHost, StubHostState};
-use crate::BenchResult;
 
 /// Benchmark results including separate instantiation and tap call timing.
 pub struct HandleBenchmarkResults {
@@ -28,7 +28,11 @@ pub struct HandleBenchmarkResults {
 /// 1. Total time (instantiation + tap call)
 /// 2. Tap call time only
 /// 3. Instantiation time only
-pub fn run_handle_benchmark(host: &BenchHost, module: &Module, iterations: u32) -> Result<HandleBenchmarkResults> {
+pub fn run_handle_benchmark(
+    host: &BenchHost,
+    module: &Module,
+    iterations: u32,
+) -> Result<HandleBenchmarkResults> {
     let mut total_durations = Vec::with_capacity(iterations as usize);
     let mut tap_durations = Vec::with_capacity(iterations as usize);
     let mut instantiation_durations = Vec::with_capacity(iterations as usize);
@@ -78,7 +82,10 @@ pub fn run_handle_benchmark(host: &BenchHost, module: &Module, iterations: u32) 
     Ok(HandleBenchmarkResults {
         total: BenchResult::from_durations("handle-based (total)", &total_durations),
         tap_only: BenchResult::from_durations("handle-based (tap only)", &tap_durations),
-        instantiation_only: BenchResult::from_durations("handle-based (instantiation)", &instantiation_durations),
+        instantiation_only: BenchResult::from_durations(
+            "handle-based (instantiation)",
+            &instantiation_durations,
+        ),
     })
 }
 
@@ -110,7 +117,10 @@ pub fn verify_handle_access(host: &BenchHost, module: &Module) -> Result<()> {
     let json_bytes = &data[ptr as usize..(ptr + len) as usize];
     let json = std::str::from_utf8(json_bytes).context("invalid UTF-8 in result")?;
 
-    println!("  Handle-based result preview: {}...", &json[..json.len().min(80)]);
+    println!(
+        "  Handle-based result preview: {}...",
+        &json[..json.len().min(80)]
+    );
 
     // Verify the computed field was set
     let computed = store.data().get_field_string(0, "field_computed");

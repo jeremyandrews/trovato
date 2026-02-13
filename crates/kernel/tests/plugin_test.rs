@@ -29,7 +29,9 @@ use std::sync::Arc;
 
 use trovato_kernel::host;
 use trovato_kernel::menu::MenuRegistry;
-use trovato_kernel::plugin::{resolve_load_order, PluginConfig, PluginInfo, PluginRuntime, PluginState};
+use trovato_kernel::plugin::{
+    PluginConfig, PluginInfo, PluginRuntime, PluginState, resolve_load_order,
+};
 use trovato_kernel::tap::{RequestState, TapDispatcher, TapRegistry, UserContext};
 use uuid::Uuid;
 use wasmtime::{Engine, Linker};
@@ -38,7 +40,11 @@ use wasmtime::{Engine, Linker};
 #[test]
 fn create_runtime_default_config() {
     let runtime = PluginRuntime::new(&PluginConfig::default());
-    assert!(runtime.is_ok(), "Failed to create runtime: {:?}", runtime.err());
+    assert!(
+        runtime.is_ok(),
+        "Failed to create runtime: {:?}",
+        runtime.err()
+    );
 }
 
 /// Test that PluginRuntime can be created with custom config.
@@ -50,14 +56,18 @@ fn create_runtime_custom_config() {
         async_support: false,
     };
     let runtime = PluginRuntime::new(&config);
-    assert!(runtime.is_ok(), "Failed to create runtime: {:?}", runtime.err());
+    assert!(
+        runtime.is_ok(),
+        "Failed to create runtime: {:?}",
+        runtime.err()
+    );
 }
 
 /// Test loading plugins from a directory.
 #[tokio::test]
 async fn load_plugins_from_directory() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let plugins_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -81,8 +91,8 @@ async fn load_plugins_from_directory() {
 /// Test loading a single plugin.
 #[test]
 fn load_single_plugin() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -93,20 +103,36 @@ fn load_single_plugin() {
         .join("blog");
 
     let result = runtime.load_plugin(&plugin_dir);
-    assert!(result.is_ok(), "Failed to load blog plugin: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to load blog plugin: {:?}",
+        result.err()
+    );
 
     let plugin = runtime.get_plugin("blog").expect("Plugin not found");
     assert_eq!(plugin.info.name, "blog");
     assert_eq!(plugin.info.version, "1.0.0");
-    assert!(plugin.info.taps.implements.contains(&"tap_item_info".to_string()));
-    assert!(plugin.info.taps.implements.contains(&"tap_item_view".to_string()));
+    assert!(
+        plugin
+            .info
+            .taps
+            .implements
+            .contains(&"tap_item_info".to_string())
+    );
+    assert!(
+        plugin
+            .info
+            .taps
+            .implements
+            .contains(&"tap_item_view".to_string())
+    );
 }
 
 /// Test that missing WASM file produces clear error.
 #[test]
 fn missing_wasm_file_error() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     // Create a temp directory with only .info.toml
     let temp_dir = std::env::temp_dir().join("trovato_test_plugin");
@@ -137,8 +163,8 @@ version = "1.0.0"
 /// Test that invalid .info.toml produces clear error.
 #[test]
 fn invalid_info_toml_error() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let temp_dir = std::env::temp_dir().join("trovato_test_invalid");
     std::fs::create_dir_all(&temp_dir).ok();
@@ -164,8 +190,8 @@ fn invalid_info_toml_error() {
 /// Test that unknown tap names are rejected.
 #[test]
 fn unknown_tap_rejected() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let temp_dir = std::env::temp_dir().join("trovato_test_unknown_tap");
     std::fs::create_dir_all(&temp_dir).ok();
@@ -198,10 +224,12 @@ implements = ["tap_unknown_function"]
 /// Test loading from non-existent directory doesn't fail.
 #[tokio::test]
 async fn nonexistent_plugins_dir_ok() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
-    let result = runtime.load_all(Path::new("/nonexistent/plugins/dir")).await;
+    let result = runtime
+        .load_all(Path::new("/nonexistent/plugins/dir"))
+        .await;
     assert!(result.is_ok(), "Should gracefully handle missing dir");
     assert_eq!(runtime.plugin_count(), 0);
 }
@@ -209,8 +237,8 @@ async fn nonexistent_plugins_dir_ok() {
 /// Test plugin info metadata is correct.
 #[test]
 fn plugin_metadata_correct() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -226,17 +254,50 @@ fn plugin_metadata_correct() {
 
     // Check metadata
     assert_eq!(plugin.info.name, "blog");
-    assert_eq!(plugin.info.description, "Provides a blog content type with tags");
+    assert_eq!(
+        plugin.info.description,
+        "Provides a blog content type with tags"
+    );
     assert_eq!(plugin.info.version, "1.0.0");
     assert_eq!(plugin.info.dependencies, vec!["item", "categories"]);
 
     // Check taps
     assert_eq!(plugin.info.taps.weight, 0);
-    assert!(plugin.info.taps.implements.contains(&"tap_item_info".to_string()));
-    assert!(plugin.info.taps.implements.contains(&"tap_item_view".to_string()));
-    assert!(plugin.info.taps.implements.contains(&"tap_item_access".to_string()));
-    assert!(plugin.info.taps.implements.contains(&"tap_menu".to_string()));
-    assert!(plugin.info.taps.implements.contains(&"tap_perm".to_string()));
+    assert!(
+        plugin
+            .info
+            .taps
+            .implements
+            .contains(&"tap_item_info".to_string())
+    );
+    assert!(
+        plugin
+            .info
+            .taps
+            .implements
+            .contains(&"tap_item_view".to_string())
+    );
+    assert!(
+        plugin
+            .info
+            .taps
+            .implements
+            .contains(&"tap_item_access".to_string())
+    );
+    assert!(
+        plugin
+            .info
+            .taps
+            .implements
+            .contains(&"tap_menu".to_string())
+    );
+    assert!(
+        plugin
+            .info
+            .taps
+            .implements
+            .contains(&"tap_perm".to_string())
+    );
 }
 
 // =============================================================================
@@ -246,8 +307,8 @@ fn plugin_metadata_correct() {
 /// Test creating a tap registry from plugins.
 #[test]
 fn tap_registry_indexes_taps() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -257,7 +318,9 @@ fn tap_registry_indexes_taps() {
         .join("plugins")
         .join("blog");
 
-    runtime.load_plugin(&plugin_dir).expect("Failed to load blog");
+    runtime
+        .load_plugin(&plugin_dir)
+        .expect("Failed to load blog");
 
     let registry = TapRegistry::from_plugins(&runtime);
 
@@ -273,8 +336,8 @@ fn tap_registry_indexes_taps() {
 /// Test tap handler ordering by weight.
 #[test]
 fn tap_registry_handlers_in_weight_order() {
-    let mut runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let mut runtime =
+        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -284,7 +347,9 @@ fn tap_registry_handlers_in_weight_order() {
         .join("plugins")
         .join("blog");
 
-    runtime.load_plugin(&plugin_dir).expect("Failed to load blog");
+    runtime
+        .load_plugin(&plugin_dir)
+        .expect("Failed to load blog");
 
     let registry = TapRegistry::from_plugins(&runtime);
 
@@ -297,8 +362,7 @@ fn tap_registry_handlers_in_weight_order() {
 /// Test tap registry with no plugins.
 #[test]
 fn tap_registry_empty_when_no_plugins() {
-    let runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let runtime = PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     let registry = TapRegistry::from_plugins(&runtime);
 
@@ -369,14 +433,17 @@ fn host_functions_register_all() {
     let mut linker: Linker<PluginState> = Linker::new(&engine);
 
     let result = host::register_all(&mut linker);
-    assert!(result.is_ok(), "Failed to register host functions: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to register host functions: {:?}",
+        result.err()
+    );
 }
 
 /// Test that plugin runtime includes all host functions.
 #[test]
 fn plugin_runtime_has_host_functions() {
-    let runtime = PluginRuntime::new(&PluginConfig::default())
-        .expect("Failed to create runtime");
+    let runtime = PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime");
 
     // The linker should have host functions registered
     // We can't easily inspect the linker contents, but we can verify
@@ -391,9 +458,8 @@ fn plugin_runtime_has_host_functions() {
 /// Test creating a tap dispatcher.
 #[test]
 fn tap_dispatcher_creation() {
-    let runtime = Arc::new(
-        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime")
-    );
+    let runtime =
+        Arc::new(PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime"));
     let registry = Arc::new(TapRegistry::from_plugins(&runtime));
     let _dispatcher = TapDispatcher::new(runtime, registry);
 }
@@ -401,9 +467,8 @@ fn tap_dispatcher_creation() {
 /// Test dispatching to non-existent tap returns empty.
 #[tokio::test]
 async fn tap_dispatcher_empty_result() {
-    let runtime = Arc::new(
-        PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime")
-    );
+    let runtime =
+        Arc::new(PluginRuntime::new(&PluginConfig::default()).expect("Failed to create runtime"));
     let registry = Arc::new(TapRegistry::from_plugins(&runtime));
     let dispatcher = TapDispatcher::new(runtime, registry);
 
@@ -426,9 +491,7 @@ fn menu_registry_from_json() {
         {"path": "/admin/content", "title": "Content", "parent": "/admin"}
     ]"#;
 
-    let registry = MenuRegistry::from_tap_results(vec![
-        ("admin".to_string(), json.to_string())
-    ]);
+    let registry = MenuRegistry::from_tap_results(vec![("admin".to_string(), json.to_string())]);
 
     assert_eq!(registry.len(), 2);
     assert!(registry.get("/admin").is_some());
@@ -443,9 +506,7 @@ fn menu_registry_path_matching() {
         {"path": "/blog/:slug", "title": "Post"}
     ]"#;
 
-    let registry = MenuRegistry::from_tap_results(vec![
-        ("blog".to_string(), json.to_string())
-    ]);
+    let registry = MenuRegistry::from_tap_results(vec![("blog".to_string(), json.to_string())]);
 
     // Exact match
     let result = registry.match_path("/blog");
@@ -470,20 +531,26 @@ fn dependency_resolution_no_deps() {
     use trovato_kernel::plugin::TapConfig;
 
     let mut plugins = HashMap::new();
-    plugins.insert("a".to_string(), PluginInfo {
-        name: "a".to_string(),
-        description: "Plugin A".to_string(),
-        version: "1.0.0".to_string(),
-        dependencies: vec![],
-        taps: TapConfig::default(),
-    });
-    plugins.insert("b".to_string(), PluginInfo {
-        name: "b".to_string(),
-        description: "Plugin B".to_string(),
-        version: "1.0.0".to_string(),
-        dependencies: vec![],
-        taps: TapConfig::default(),
-    });
+    plugins.insert(
+        "a".to_string(),
+        PluginInfo {
+            name: "a".to_string(),
+            description: "Plugin A".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: vec![],
+            taps: TapConfig::default(),
+        },
+    );
+    plugins.insert(
+        "b".to_string(),
+        PluginInfo {
+            name: "b".to_string(),
+            description: "Plugin B".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: vec![],
+            taps: TapConfig::default(),
+        },
+    );
 
     let order = resolve_load_order(&plugins).expect("Failed to resolve");
     assert_eq!(order.len(), 2);
@@ -495,20 +562,26 @@ fn dependency_resolution_with_deps() {
     use trovato_kernel::plugin::TapConfig;
 
     let mut plugins = HashMap::new();
-    plugins.insert("base".to_string(), PluginInfo {
-        name: "base".to_string(),
-        description: "Base Plugin".to_string(),
-        version: "1.0.0".to_string(),
-        dependencies: vec![],
-        taps: TapConfig::default(),
-    });
-    plugins.insert("child".to_string(), PluginInfo {
-        name: "child".to_string(),
-        description: "Child Plugin".to_string(),
-        version: "1.0.0".to_string(),
-        dependencies: vec!["base".to_string()],
-        taps: TapConfig::default(),
-    });
+    plugins.insert(
+        "base".to_string(),
+        PluginInfo {
+            name: "base".to_string(),
+            description: "Base Plugin".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: vec![],
+            taps: TapConfig::default(),
+        },
+    );
+    plugins.insert(
+        "child".to_string(),
+        PluginInfo {
+            name: "child".to_string(),
+            description: "Child Plugin".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: vec!["base".to_string()],
+            taps: TapConfig::default(),
+        },
+    );
 
     let order = resolve_load_order(&plugins).expect("Failed to resolve");
 
@@ -524,20 +597,26 @@ fn dependency_resolution_circular() {
     use trovato_kernel::plugin::TapConfig;
 
     let mut plugins = HashMap::new();
-    plugins.insert("a".to_string(), PluginInfo {
-        name: "a".to_string(),
-        description: "Plugin A".to_string(),
-        version: "1.0.0".to_string(),
-        dependencies: vec!["b".to_string()],
-        taps: TapConfig::default(),
-    });
-    plugins.insert("b".to_string(), PluginInfo {
-        name: "b".to_string(),
-        description: "Plugin B".to_string(),
-        version: "1.0.0".to_string(),
-        dependencies: vec!["a".to_string()],
-        taps: TapConfig::default(),
-    });
+    plugins.insert(
+        "a".to_string(),
+        PluginInfo {
+            name: "a".to_string(),
+            description: "Plugin A".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: vec!["b".to_string()],
+            taps: TapConfig::default(),
+        },
+    );
+    plugins.insert(
+        "b".to_string(),
+        PluginInfo {
+            name: "b".to_string(),
+            description: "Plugin B".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: vec!["a".to_string()],
+            taps: TapConfig::default(),
+        },
+    );
 
     let result = resolve_load_order(&plugins);
     assert!(result.is_err());

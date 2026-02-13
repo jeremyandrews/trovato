@@ -48,10 +48,7 @@ pub struct AuthError {
 ///
 /// GET /user/login
 /// - Renders login form with CSRF token
-async fn login_form(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn login_form(State(state): State<AppState>, session: Session) -> Response {
     // Generate CSRF token
     let csrf_token = match generate_csrf_token(&session).await {
         Ok(token) => token,
@@ -113,7 +110,12 @@ async fn login_form_submit(
         match verify_csrf_token(&session, token).await {
             Ok(true) => {}
             _ => {
-                return render_login_error(&state, &session, "Invalid form token. Please try again.").await;
+                return render_login_error(
+                    &state,
+                    &session,
+                    "Invalid form token. Please try again.",
+                )
+                .await;
             }
         }
     }
@@ -185,7 +187,10 @@ async fn do_login(
     let user = match User::find_by_name(state.db(), &request.username).await {
         Ok(Some(user)) => user,
         Ok(None) => {
-            let _ = state.lockout().record_failed_attempt(&request.username).await;
+            let _ = state
+                .lockout()
+                .record_failed_attempt(&request.username)
+                .await;
             return Err("Invalid username or password".to_string());
         }
         Err(e) => {
@@ -196,16 +201,25 @@ async fn do_login(
 
     // Check if user is active
     if !user.is_active() {
-        let _ = state.lockout().record_failed_attempt(&request.username).await;
+        let _ = state
+            .lockout()
+            .record_failed_attempt(&request.username)
+            .await;
         return Err("Invalid username or password".to_string());
     }
 
     // Verify password
     if !user.verify_password(&request.password) {
-        match state.lockout().record_failed_attempt(&request.username).await {
+        match state
+            .lockout()
+            .record_failed_attempt(&request.username)
+            .await
+        {
             Ok((locked, _)) => {
                 if locked {
-                    return Err("Account temporarily locked due to too many failed attempts.".to_string());
+                    return Err(
+                        "Account temporarily locked due to too many failed attempts.".to_string(),
+                    );
                 }
             }
             Err(e) => {
@@ -224,10 +238,13 @@ async fn do_login(
     }
 
     // Create session
-    session.insert(SESSION_USER_ID, user.id).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to insert user_id into session");
-        "Internal server error".to_string()
-    })?;
+    session
+        .insert(SESSION_USER_ID, user.id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to insert user_id into session");
+            "Internal server error".to_string()
+        })?;
 
     session
         .insert(SESSION_ACTIVE_STAGE, Option::<String>::None)
@@ -291,7 +308,10 @@ async fn login(
                 "Account temporarily locked. Try again later.".to_string()
             };
 
-            return Err((StatusCode::TOO_MANY_REQUESTS, Json(AuthError { error: message })));
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(AuthError { error: message }),
+            ));
         }
         Ok(false) => {}
         Err(e) => {
@@ -305,7 +325,10 @@ async fn login(
         Ok(Some(user)) => user,
         Ok(None) => {
             // Record failed attempt even for non-existent users (prevent enumeration)
-            let _ = state.lockout().record_failed_attempt(&request.username).await;
+            let _ = state
+                .lockout()
+                .record_failed_attempt(&request.username)
+                .await;
             return Err(auth_error());
         }
         Err(e) => {
@@ -321,14 +344,21 @@ async fn login(
 
     // Check if user is active
     if !user.is_active() {
-        let _ = state.lockout().record_failed_attempt(&request.username).await;
+        let _ = state
+            .lockout()
+            .record_failed_attempt(&request.username)
+            .await;
         return Err(auth_error());
     }
 
     // Verify password
     if !user.verify_password(&request.password) {
         // Record failed attempt
-        match state.lockout().record_failed_attempt(&request.username).await {
+        match state
+            .lockout()
+            .record_failed_attempt(&request.username)
+            .await
+        {
             Ok((locked, remaining)) => {
                 if locked {
                     return Err((

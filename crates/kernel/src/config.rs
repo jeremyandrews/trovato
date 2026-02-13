@@ -38,11 +38,11 @@ impl Config {
             .parse()
             .context("PORT must be a valid u16")?;
 
-        let database_url = env::var("DATABASE_URL")
-            .context("DATABASE_URL environment variable is required")?;
+        let database_url =
+            env::var("DATABASE_URL").context("DATABASE_URL environment variable is required")?;
 
-        let redis_url = env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis_url =
+            env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
         let database_max_connections = env::var("DATABASE_MAX_CONNECTIONS")
             .unwrap_or_else(|_| "10".to_string())
@@ -57,8 +57,7 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./uploads"));
 
-        let files_url = env::var("FILES_URL")
-            .unwrap_or_else(|_| "/files".to_string());
+        let files_url = env::var("FILES_URL").unwrap_or_else(|_| "/files".to_string());
 
         Ok(Self {
             port,

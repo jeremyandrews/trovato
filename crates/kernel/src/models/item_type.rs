@@ -149,11 +149,12 @@ impl ItemType {
 
     /// Check if a content type exists.
     pub async fn exists(pool: &PgPool, type_name: &str) -> Result<bool> {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item_type WHERE type = $1)")
-            .bind(type_name)
-            .fetch_one(pool)
-            .await
-            .context("failed to check item type existence")?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item_type WHERE type = $1)")
+                .bind(type_name)
+                .fetch_one(pool)
+                .await
+                .context("failed to check item type existence")?;
 
         Ok(exists)
     }

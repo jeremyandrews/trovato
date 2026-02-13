@@ -45,8 +45,8 @@ enum BenchmarkType {
     Serialize,
     Concurrency,
     Async,
-    PayloadScaling,  // Tests all payload sizes
-    Mutation,        // Write-heavy workload
+    PayloadScaling, // Tests all payload sizes
+    Mutation,       // Write-heavy workload
 }
 
 impl std::str::FromStr for BenchmarkType {
@@ -60,7 +60,10 @@ impl std::str::FromStr for BenchmarkType {
             "async" => Ok(BenchmarkType::Async),
             "payload" | "payload-scaling" | "payloads" => Ok(BenchmarkType::PayloadScaling),
             "mutation" | "mutations" | "write" => Ok(BenchmarkType::Mutation),
-            _ => Err(format!("Unknown benchmark: {}. Use: all, handle, serialize, concurrency, async, payload, mutation", s)),
+            _ => Err(format!(
+                "Unknown benchmark: {}. Use: all, handle, serialize, concurrency, async, payload, mutation",
+                s
+            )),
         }
     }
 }
@@ -155,7 +158,9 @@ fn print_help() {
     println!("    cargo run --release -p trovato-phase0 -- --benchmark payload");
     println!();
     println!("    # High concurrency test");
-    println!("    cargo run --release -p trovato-phase0 -- --benchmark concurrency --concurrency 1000");
+    println!(
+        "    cargo run --release -p trovato-phase0 -- --benchmark concurrency --concurrency 1000"
+    );
     println!();
     println!("    # Mutation-heavy workload");
     println!("    cargo run --release -p trovato-phase0 -- --benchmark mutation --iterations 500");
@@ -190,7 +195,12 @@ async fn main() -> Result<()> {
 
     // Show actual payload sizes
     println!("Payload sizes:");
-    for size in [PayloadSize::Small, PayloadSize::Medium, PayloadSize::Large, PayloadSize::XLarge] {
+    for size in [
+        PayloadSize::Small,
+        PayloadSize::Medium,
+        PayloadSize::Large,
+        PayloadSize::XLarge,
+    ] {
         let actual = fixture::synthetic_item_size_for(size);
         println!("  {}: {} bytes", size.name(), actual);
     }
@@ -198,7 +208,10 @@ async fn main() -> Result<()> {
 
     // Initialize benchmark host with higher instance limit for stress tests
     let max_instances = std::cmp::max(config.concurrency as u32 * 2, 2000);
-    println!("Initializing benchmark host (max {} instances)...", max_instances);
+    println!(
+        "Initializing benchmark host (max {} instances)...",
+        max_instances
+    );
     let host_config = HostConfig {
         max_instances,
         max_memory_pages: 1024,
@@ -227,7 +240,8 @@ async fn main() -> Result<()> {
     // Run selected benchmarks
     match config.benchmark {
         BenchmarkType::All => {
-            run_gate_benchmarks(Arc::clone(&host), Arc::clone(&module), &config, &wasm_path).await?;
+            run_gate_benchmarks(Arc::clone(&host), Arc::clone(&module), &config, &wasm_path)
+                .await?;
         }
         BenchmarkType::Handle => {
             run_handle_benchmark(&host, &module, &config)?;
@@ -268,16 +282,23 @@ async fn run_gate_benchmarks(
     // Gate 1: Handle vs Serialize
     println!("=== Gate 1: Handle-Based vs Full-Serialization ===\n");
 
-    println!("Running handle-based benchmark ({} iterations, {} payload)...",
-             config.iterations, config.payload_size.name());
+    println!(
+        "Running handle-based benchmark ({} iterations, {} payload)...",
+        config.iterations,
+        config.payload_size.name()
+    );
     let handle_results = bench_handle::run_handle_benchmark(&host, &module, config.iterations)?;
     println!("  {}", handle_results.total);
     println!("  {}", handle_results.tap_only);
     println!();
 
-    println!("Running full-serialization benchmark ({} iterations, {} payload)...",
-             config.iterations, config.payload_size.name());
-    let serialize_results = bench_serialize::run_serialize_benchmark(&host, &module, config.iterations)?;
+    println!(
+        "Running full-serialization benchmark ({} iterations, {} payload)...",
+        config.iterations,
+        config.payload_size.name()
+    );
+    let serialize_results =
+        bench_serialize::run_serialize_benchmark(&host, &module, config.iterations)?;
     println!("  {}", serialize_results.total);
     println!("  {}", serialize_results.tap_only);
     println!();
@@ -288,30 +309,49 @@ async fn run_gate_benchmarks(
     let tap_speedup = serialize_tap_avg / handle_tap_avg;
 
     println!("Results:");
-    println!("  Handle-based tap avg: {:?}", handle_results.tap_only.per_call_avg);
-    println!("  Full-serialization tap avg: {:?}", serialize_results.tap_only.per_call_avg);
+    println!(
+        "  Handle-based tap avg: {:?}",
+        handle_results.tap_only.per_call_avg
+    );
+    println!(
+        "  Full-serialization tap avg: {:?}",
+        serialize_results.tap_only.per_call_avg
+    );
     println!("  Speedup ratio: {:.2}x", tap_speedup);
     println!();
 
     let gate1_passed = tap_speedup >= 5.0;
     if tap_speedup >= 5.0 {
-        println!("✓ GATE 1 PASSED: Handle-based is {:.1}x faster", tap_speedup);
+        println!(
+            "✓ GATE 1 PASSED: Handle-based is {:.1}x faster",
+            tap_speedup
+        );
     } else if tap_speedup >= 1.0 {
-        println!("✗ GATE 1 FAILED: Handle-based is only {:.1}x faster (need 5x)", tap_speedup);
+        println!(
+            "✗ GATE 1 FAILED: Handle-based is only {:.1}x faster (need 5x)",
+            tap_speedup
+        );
     } else {
-        println!("✗ GATE 1 FAILED: Full-serialization is {:.1}x faster", 1.0/tap_speedup);
+        println!(
+            "✗ GATE 1 FAILED: Full-serialization is {:.1}x faster",
+            1.0 / tap_speedup
+        );
     }
     println!();
 
     // Gate 2: Concurrency
     println!("=== Gate 2: Store Pooling Concurrency ===\n");
 
-    println!("Running concurrency benchmark ({} parallel requests)...", config.concurrency);
+    println!(
+        "Running concurrency benchmark ({} parallel requests)...",
+        config.concurrency
+    );
     let concurrency_results = bench_concurrency::run_concurrency_benchmark(
         Arc::clone(&host),
         Arc::clone(&module),
         config.concurrency,
-    ).await?;
+    )
+    .await?;
 
     println!("  {}", concurrency_results.total);
     println!("  Total p95: {:?}", concurrency_results.total.p95);
@@ -319,9 +359,15 @@ async fn run_gate_benchmarks(
 
     let gate2_passed = concurrency_results.total.p95 < Duration::from_millis(10);
     if gate2_passed {
-        println!("✓ GATE 2 PASSED: p95 {:?} < 10ms", concurrency_results.total.p95);
+        println!(
+            "✓ GATE 2 PASSED: p95 {:?} < 10ms",
+            concurrency_results.total.p95
+        );
     } else {
-        println!("✗ GATE 2 FAILED: p95 {:?} >= 10ms", concurrency_results.total.p95);
+        println!(
+            "✗ GATE 2 FAILED: p95 {:?} >= 10ms",
+            concurrency_results.total.p95
+        );
     }
     println!();
 
@@ -331,21 +377,31 @@ async fn run_gate_benchmarks(
     let async_host = Arc::new(AsyncBenchHost::new()?);
     let async_module = Arc::new(async_host.compile_from_file(wasm_path)?);
 
-    println!("Running async benchmark ({} concurrent requests)...", config.concurrency);
+    println!(
+        "Running async benchmark ({} concurrent requests)...",
+        config.concurrency
+    );
     let async_results = bench_async::run_async_benchmark(
         Arc::clone(&async_host),
         Arc::clone(&async_module),
         config.concurrency,
-    ).await?;
+    )
+    .await?;
 
     println!("  Wall-clock time: {:?}", async_results.wall_clock_time);
-    println!("  Completed without deadlock: {}", async_results.completed_without_deadlock);
+    println!(
+        "  Completed without deadlock: {}",
+        async_results.completed_without_deadlock
+    );
     println!();
 
     let gate3_passed = async_results.completed_without_deadlock
         && async_results.wall_clock_time < Duration::from_secs(2);
     if gate3_passed {
-        println!("✓ GATE 3 PASSED: No deadlocks, {:?} wall-clock", async_results.wall_clock_time);
+        println!(
+            "✓ GATE 3 PASSED: No deadlocks, {:?} wall-clock",
+            async_results.wall_clock_time
+        );
     } else {
         println!("✗ GATE 3 FAILED");
     }
@@ -353,9 +409,18 @@ async fn run_gate_benchmarks(
 
     // Summary
     println!("=== Summary ===\n");
-    println!("Gate 1 (Handle >5x faster):    {}", if gate1_passed { "PASSED" } else { "FAILED" });
-    println!("Gate 2 (Concurrency p95 <10ms): {}", if gate2_passed { "PASSED" } else { "FAILED" });
-    println!("Gate 3 (Async no deadlock):     {}", if gate3_passed { "PASSED" } else { "FAILED" });
+    println!(
+        "Gate 1 (Handle >5x faster):    {}",
+        if gate1_passed { "PASSED" } else { "FAILED" }
+    );
+    println!(
+        "Gate 2 (Concurrency p95 <10ms): {}",
+        if gate2_passed { "PASSED" } else { "FAILED" }
+    );
+    println!(
+        "Gate 3 (Async no deadlock):     {}",
+        if gate3_passed { "PASSED" } else { "FAILED" }
+    );
 
     Ok(())
 }
@@ -417,7 +482,8 @@ async fn run_concurrency_benchmark(
         Arc::clone(&host),
         Arc::clone(&module),
         config.concurrency,
-    ).await?;
+    )
+    .await?;
 
     println!("Results:");
     println!("  {}", results.total);
@@ -425,16 +491,16 @@ async fn run_concurrency_benchmark(
     println!("  {}", results.tap_only);
     println!();
     println!("  All succeeded: {}", results.all_succeeded);
-    println!("  p95 < 10ms: {}", results.total.p95 < Duration::from_millis(10));
+    println!(
+        "  p95 < 10ms: {}",
+        results.total.p95 < Duration::from_millis(10)
+    );
 
     Ok(())
 }
 
 /// Run async benchmark only.
-async fn run_async_benchmark(
-    wasm_path: &PathBuf,
-    config: &BenchConfig,
-) -> Result<()> {
+async fn run_async_benchmark(wasm_path: &PathBuf, config: &BenchConfig) -> Result<()> {
     println!("=== Async Host Functions Benchmark ===\n");
     println!("Concurrency: {} parallel requests\n", config.concurrency);
 
@@ -447,12 +513,16 @@ async fn run_async_benchmark(
         Arc::clone(&async_host),
         Arc::clone(&async_module),
         config.concurrency,
-    ).await?;
+    )
+    .await?;
 
     println!("Results:");
     println!("  {}", results.total);
     println!("  Wall-clock: {:?}", results.wall_clock_time);
-    println!("  Completed without deadlock: {}", results.completed_without_deadlock);
+    println!(
+        "  Completed without deadlock: {}",
+        results.completed_without_deadlock
+    );
 
     Ok(())
 }
@@ -522,7 +592,8 @@ fn run_mutation_benchmark(
     println!();
 
     println!("Full-serialization (parse + modify + serialize per call):");
-    let serialize_results = bench_serialize::run_serialize_benchmark(host, module, config.iterations)?;
+    let serialize_results =
+        bench_serialize::run_serialize_benchmark(host, module, config.iterations)?;
     println!("  Tap avg: {:?}", serialize_results.tap_only.per_call_avg);
     println!("  Tap p95: {:?}", serialize_results.tap_only.p95);
     println!();
@@ -531,9 +602,15 @@ fn run_mutation_benchmark(
     let serialize_avg = serialize_results.tap_only.per_call_avg.as_nanos() as f64;
 
     if handle_avg < serialize_avg {
-        println!("Handle-based is {:.2}x faster for mutations", serialize_avg / handle_avg);
+        println!(
+            "Handle-based is {:.2}x faster for mutations",
+            serialize_avg / handle_avg
+        );
     } else {
-        println!("Full-serialization is {:.2}x faster for mutations", handle_avg / serialize_avg);
+        println!(
+            "Full-serialization is {:.2}x faster for mutations",
+            handle_avg / serialize_avg
+        );
     }
 
     println!();

@@ -13,9 +13,9 @@ use anyhow::{Context, Result};
 use tokio::task::JoinSet;
 use wasmtime::Module;
 
+use crate::BenchResult;
 use crate::fixture::synthetic_item;
 use crate::host::{BenchHost, StubHostState};
-use crate::BenchResult;
 
 /// Results from the concurrency benchmark.
 pub struct ConcurrencyBenchmarkResults {

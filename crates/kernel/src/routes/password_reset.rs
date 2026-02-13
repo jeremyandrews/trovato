@@ -7,8 +7,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::models::password_reset::PasswordResetToken;
 use crate::models::User;
+use crate::models::password_reset::PasswordResetToken;
 use crate::state::AppState;
 
 /// Password reset request (step 1: request reset).
@@ -190,5 +190,8 @@ async fn set_password(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/user/password-reset", post(request_reset))
-        .route("/user/password-reset/{token}", get(validate_token).post(set_password))
+        .route(
+            "/user/password-reset/{token}",
+            get(validate_token).post(set_password),
+        )
 }

@@ -89,7 +89,11 @@ impl ItemService {
     }
 
     /// Load an item and invoke tap_item_view for rendering.
-    pub async fn load_for_view(&self, id: Uuid, user: &UserContext) -> Result<Option<(Item, Vec<String>)>> {
+    pub async fn load_for_view(
+        &self,
+        id: Uuid,
+        user: &UserContext,
+    ) -> Result<Option<(Item, Vec<String>)>> {
         let item = match self.load(id).await? {
             Some(i) => i,
             None => return Ok(None),
@@ -111,16 +115,18 @@ impl ItemService {
             .await;
 
         // Collect render outputs
-        let render_outputs: Vec<String> = results
-            .into_iter()
-            .map(|r| r.output)
-            .collect();
+        let render_outputs: Vec<String> = results.into_iter().map(|r| r.output).collect();
 
         Ok(Some((item, render_outputs)))
     }
 
     /// Update an item with tap_item_update invocation.
-    pub async fn update(&self, id: Uuid, input: UpdateItem, user: &UserContext) -> Result<Option<Item>> {
+    pub async fn update(
+        &self,
+        id: Uuid,
+        input: UpdateItem,
+        user: &UserContext,
+    ) -> Result<Option<Item>> {
         // Load existing item
         let existing = match self.load(id).await? {
             Some(i) => i,
@@ -195,7 +201,12 @@ impl ItemService {
     }
 
     /// Check if a user has access to perform an operation on an item.
-    pub async fn check_access(&self, item: &Item, operation: &str, user: &UserContext) -> Result<bool> {
+    pub async fn check_access(
+        &self,
+        item: &Item,
+        operation: &str,
+        user: &UserContext,
+    ) -> Result<bool> {
         // Admin always has access
         if user.is_admin() {
             return Ok(true);
@@ -259,7 +270,12 @@ impl ItemService {
     }
 
     /// Revert an item to a previous revision.
-    pub async fn revert_to_revision(&self, item_id: Uuid, revision_id: Uuid, user: &UserContext) -> Result<Item> {
+    pub async fn revert_to_revision(
+        &self,
+        item_id: Uuid,
+        revision_id: Uuid,
+        user: &UserContext,
+    ) -> Result<Item> {
         // Load item to check access
         let item = self
             .load(item_id)
@@ -270,7 +286,8 @@ impl ItemService {
             anyhow::bail!("access denied");
         }
 
-        let updated = Item::revert_to_revision(&self.inner.pool, item_id, revision_id, user.id).await?;
+        let updated =
+            Item::revert_to_revision(&self.inner.pool, item_id, revision_id, user.id).await?;
 
         // Invalidate cache
         self.invalidate(item_id);

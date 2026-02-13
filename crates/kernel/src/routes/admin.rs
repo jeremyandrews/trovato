@@ -9,10 +9,13 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
 use crate::file::service::FileStatus;
-use crate::form::{generate_csrf_token, verify_csrf_token, AjaxCommand, AjaxRequest};
-use crate::models::{Category, CreateCategory, CreateItem, CreateTag, Item, Role, Tag, UpdateCategory, UpdateTag, User, CreateUser, UpdateUser};
+use crate::form::{AjaxCommand, AjaxRequest, generate_csrf_token, verify_csrf_token};
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
+use crate::models::{
+    Category, CreateCategory, CreateItem, CreateTag, CreateUser, Item, Role, Tag, UpdateCategory,
+    UpdateTag, UpdateUser, User,
+};
 use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
 use crate::state::AppState;
 
@@ -94,11 +97,7 @@ async fn get_current_stage(
 
 /// Check if user is authenticated, return user or redirect to login.
 async fn require_auth(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: Option<uuid::Uuid> = session
-        .get(SESSION_USER_ID)
-        .await
-        .ok()
-        .flatten();
+    let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id {
         if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
@@ -112,10 +111,7 @@ async fn require_auth(state: &AppState, session: &Session) -> Result<User, Respo
 /// Admin dashboard.
 ///
 /// GET /admin
-async fn dashboard(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn dashboard(State(state): State<AppState>, session: Session) -> Response {
     let user = match require_auth(&state, &session).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
@@ -239,10 +235,7 @@ pub struct TagFormData {
 /// List all content types.
 ///
 /// GET /admin/structure/types
-async fn list_content_types(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn list_content_types(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -259,10 +252,7 @@ async fn list_content_types(
 /// Show add content type form.
 ///
 /// GET /admin/structure/types/add
-async fn add_content_type_form(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn add_content_type_form(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -317,7 +307,10 @@ async fn add_content_type_submit(
 
     // Check if machine name already exists
     if state.content_types().get(&form.machine_name).is_some() {
-        errors.push(format!("A content type with machine name '{}' already exists.", form.machine_name));
+        errors.push(format!(
+            "A content type with machine name '{}' already exists.",
+            form.machine_name
+        ));
     }
 
     if !errors.is_empty() {
@@ -330,14 +323,17 @@ async fn add_content_type_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "label": form.label,
-            "machine_name": form.machine_name,
-            "description": form.description,
-            "title_label": form.title_label,
-            "published_default": form.published_default.is_some(),
-            "revision_default": form.revision_default.is_some(),
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "label": form.label,
+                "machine_name": form.machine_name,
+                "description": form.description,
+                "title_label": form.title_label,
+                "published_default": form.published_default.is_some(),
+                "revision_default": form.revision_default.is_some(),
+            }),
+        );
         context.insert("path", "/admin/structure/types/add");
 
         return render_admin_template(&state, "admin/content-type-form.html", &context).await;
@@ -391,19 +387,28 @@ async fn edit_content_type_form(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/structure/types/{}/edit", type_name));
+    context.insert(
+        "action",
+        &format!("/admin/structure/types/{}/edit", type_name),
+    );
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
-    context.insert("values", &serde_json::json!({
-        "label": content_type.label,
-        "machine_name": content_type.machine_name,
-        "description": content_type.description,
-        "title_label": "Title",
-        "published_default": false,
-        "revision_default": false,
-    }));
-    context.insert("path", &format!("/admin/structure/types/{}/edit", type_name));
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "label": content_type.label,
+            "machine_name": content_type.machine_name,
+            "description": content_type.description,
+            "title_label": "Title",
+            "published_default": false,
+            "revision_default": false,
+        }),
+    );
+    context.insert(
+        "path",
+        &format!("/admin/structure/types/{}/edit", type_name),
+    );
 
     render_admin_template(&state, "admin/content-type-form.html", &context).await
 }
@@ -446,20 +451,29 @@ async fn edit_content_type_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/structure/types/{}/edit", type_name));
+        context.insert(
+            "action",
+            &format!("/admin/structure/types/{}/edit", type_name),
+        );
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "label": form.label,
-            "machine_name": form.machine_name,
-            "description": form.description,
-            "title_label": form.title_label,
-            "published_default": form.published_default.is_some(),
-            "revision_default": form.revision_default.is_some(),
-        }));
-        context.insert("path", &format!("/admin/structure/types/{}/edit", type_name));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "label": form.label,
+                "machine_name": form.machine_name,
+                "description": form.description,
+                "title_label": form.title_label,
+                "published_default": form.published_default.is_some(),
+                "revision_default": form.revision_default.is_some(),
+            }),
+        );
+        context.insert(
+            "path",
+            &format!("/admin/structure/types/{}/edit", type_name),
+        );
 
         return render_admin_template(&state, "admin/content-type-form.html", &context).await;
     }
@@ -473,7 +487,12 @@ async fn edit_content_type_submit(
 
     match state
         .content_types()
-        .update(&type_name, &form.label, form.description.as_deref(), settings)
+        .update(
+            &type_name,
+            &form.label,
+            form.description.as_deref(),
+            settings,
+        )
         .await
     {
         Ok(_) => {
@@ -523,7 +542,10 @@ async fn manage_fields(
     context.insert("fields", &content_type.fields);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
-    context.insert("path", &format!("/admin/structure/types/{}/fields", type_name));
+    context.insert(
+        "path",
+        &format!("/admin/structure/types/{}/fields", type_name),
+    );
 
     render_admin_template(&state, "admin/field-list.html", &context).await
 }
@@ -573,7 +595,8 @@ async fn add_field(
 
     if !errors.is_empty() {
         // Return with errors - for now, just redirect back
-        return Redirect::to(&format!("/admin/structure/types/{}/fields", type_name)).into_response();
+        return Redirect::to(&format!("/admin/structure/types/{}/fields", type_name))
+            .into_response();
     }
 
     // Add the field
@@ -598,16 +621,198 @@ async fn add_field(
 }
 
 // =============================================================================
+// Search Configuration
+// =============================================================================
+
+/// Search field configuration form data.
+#[derive(Debug, Deserialize)]
+pub struct SearchConfigFormData {
+    #[serde(rename = "_token")]
+    pub token: String,
+    #[serde(rename = "_form_build_id")]
+    pub form_build_id: String,
+    pub field_name: String,
+    pub weight: String,
+}
+
+/// Manage search field configuration for a content type.
+///
+/// GET /admin/structure/types/{type}/search
+async fn manage_search_config(
+    State(state): State<AppState>,
+    session: Session,
+    Path(type_name): Path<String>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let Some(content_type) = state.content_types().get(&type_name) else {
+        return render_not_found(&state).await;
+    };
+
+    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let form_build_id = uuid::Uuid::new_v4().to_string();
+
+    // Get current search configs
+    let search_configs = match state.search().list_field_configs(&type_name).await {
+        Ok(configs) => configs,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list search configs");
+            vec![]
+        }
+    };
+
+    // Build a map of field_name -> weight for easy template access
+    let config_map: std::collections::HashMap<String, char> = search_configs
+        .iter()
+        .map(|c| (c.field_name.clone(), c.weight))
+        .collect();
+
+    let mut context = tera::Context::new();
+    context.insert("content_type", &content_type);
+    context.insert("fields", &content_type.fields);
+    context.insert("search_configs", &config_map);
+    context.insert("csrf_token", &csrf_token);
+    context.insert("form_build_id", &form_build_id);
+    context.insert(
+        "path",
+        &format!("/admin/structure/types/{}/search", type_name),
+    );
+
+    render_admin_template(&state, "admin/search-config.html", &context).await
+}
+
+/// Add or update a search field configuration.
+///
+/// POST /admin/structure/types/{type}/search/add
+async fn add_search_config(
+    State(state): State<AppState>,
+    session: Session,
+    Path(type_name): Path<String>,
+    Form(form): Form<SearchConfigFormData>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    // Verify CSRF token
+    let token_valid = verify_csrf_token(&session, &form.token)
+        .await
+        .unwrap_or(false);
+
+    if !token_valid {
+        return render_error(&state, "Invalid or expired form token. Please try again.").await;
+    }
+
+    let Some(_content_type) = state.content_types().get(&type_name) else {
+        return render_not_found(&state).await;
+    };
+
+    // Validate weight
+    let weight = form.weight.chars().next().unwrap_or('C');
+    if !['A', 'B', 'C', 'D'].contains(&weight) {
+        return render_error(&state, "Invalid weight. Must be A, B, C, or D.").await;
+    }
+
+    // Configure the field
+    match state
+        .search()
+        .configure_field(&type_name, &form.field_name, weight)
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                content_type = %type_name,
+                field = %form.field_name,
+                weight = %weight,
+                "search field configured"
+            );
+            Redirect::to(&format!("/admin/structure/types/{}/search", type_name)).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to configure search field");
+            render_error(&state, "Failed to configure search field.").await
+        }
+    }
+}
+
+/// Remove a search field configuration.
+///
+/// POST /admin/structure/types/{type}/search/{field}/delete
+async fn remove_search_config(
+    State(state): State<AppState>,
+    session: Session,
+    Path((type_name, field_name)): Path<(String, String)>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let Some(_content_type) = state.content_types().get(&type_name) else {
+        return render_not_found(&state).await;
+    };
+
+    match state
+        .search()
+        .remove_field_config(&type_name, &field_name)
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                content_type = %type_name,
+                field = %field_name,
+                "search field config removed"
+            );
+            Redirect::to(&format!("/admin/structure/types/{}/search", type_name)).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to remove search field config");
+            render_error(&state, "Failed to remove search field configuration.").await
+        }
+    }
+}
+
+/// Reindex all content of a specific type.
+///
+/// POST /admin/structure/types/{type}/search/reindex
+async fn reindex_content_type(
+    State(state): State<AppState>,
+    session: Session,
+    Path(type_name): Path<String>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let Some(_content_type) = state.content_types().get(&type_name) else {
+        return render_not_found(&state).await;
+    };
+
+    match state.search().reindex_bundle(&type_name).await {
+        Ok(count) => {
+            tracing::info!(
+                content_type = %type_name,
+                count = %count,
+                "content type reindexed"
+            );
+            Redirect::to(&format!("/admin/structure/types/{}/search", type_name)).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to reindex content type");
+            render_error(&state, "Failed to reindex content.").await
+        }
+    }
+}
+
+// =============================================================================
 // User Management
 // =============================================================================
 
 /// List all users.
 ///
 /// GET /admin/people
-async fn list_users(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn list_users(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -630,10 +835,7 @@ async fn list_users(
 /// Show add user form.
 ///
 /// GET /admin/people/add
-async fn add_user_form(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn add_user_form(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -711,12 +913,15 @@ async fn add_user_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "name": form.name,
-            "mail": form.mail,
-            "is_admin": form.is_admin.is_some(),
-            "status": form.status.is_some(),
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "name": form.name,
+                "mail": form.mail,
+                "is_admin": form.is_admin.is_some(),
+                "status": form.status.is_some(),
+            }),
+        );
         context.insert("path", "/admin/people/add");
 
         return render_admin_template(&state, "admin/user-form.html", &context).await;
@@ -767,12 +972,15 @@ async fn edit_user_form(
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
     context.insert("user_id", &user_id.to_string());
-    context.insert("values", &serde_json::json!({
-        "name": user.name,
-        "mail": user.mail,
-        "is_admin": user.is_admin,
-        "status": user.status == 1,
-    }));
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "name": user.name,
+            "mail": user.mail,
+            "is_admin": user.is_admin,
+            "status": user.status == 1,
+        }),
+    );
     context.insert("path", &format!("/admin/people/{}/edit", user_id));
 
     render_admin_template(&state, "admin/user-form.html", &context).await
@@ -847,12 +1055,15 @@ async fn edit_user_submit(
         context.insert("editing", &true);
         context.insert("user_id", &user_id.to_string());
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "name": form.name,
-            "mail": form.mail,
-            "is_admin": form.is_admin.is_some(),
-            "status": form.status.is_some(),
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "name": form.name,
+                "mail": form.mail,
+                "is_admin": form.is_admin.is_some(),
+                "status": form.status.is_some(),
+            }),
+        );
         context.insert("path", &format!("/admin/people/{}/edit", user_id));
 
         return render_admin_template(&state, "admin/user-form.html", &context).await;
@@ -934,10 +1145,7 @@ async fn delete_user(
 /// List all roles.
 ///
 /// GET /admin/people/roles
-async fn list_roles(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn list_roles(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -962,10 +1170,7 @@ async fn list_roles(
 /// Show add role form.
 ///
 /// GET /admin/people/roles/add
-async fn add_role_form(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn add_role_form(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -1027,9 +1232,12 @@ async fn add_role_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "name": form.name,
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "name": form.name,
+            }),
+        );
         context.insert("path", "/admin/people/roles/add");
 
         return render_admin_template(&state, "admin/role-form.html", &context).await;
@@ -1063,7 +1271,9 @@ async fn edit_role_form(
         return render_not_found(&state).await;
     };
 
-    let permissions = Role::get_permissions(state.db(), role_id).await.unwrap_or_default();
+    let permissions = Role::get_permissions(state.db(), role_id)
+        .await
+        .unwrap_or_default();
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
     let form_build_id = uuid::Uuid::new_v4().to_string();
@@ -1075,9 +1285,12 @@ async fn edit_role_form(
     context.insert("editing", &true);
     context.insert("role_id", &role_id.to_string());
     context.insert("role_permissions", &permissions);
-    context.insert("values", &serde_json::json!({
-        "name": role.name,
-    }));
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "name": role.name,
+        }),
+    );
     context.insert("path", &format!("/admin/people/roles/{}/edit", role_id));
 
     render_admin_template(&state, "admin/role-form.html", &context).await
@@ -1124,7 +1337,9 @@ async fn edit_role_submit(
     }
 
     if !errors.is_empty() {
-        let permissions = Role::get_permissions(state.db(), role_id).await.unwrap_or_default();
+        let permissions = Role::get_permissions(state.db(), role_id)
+            .await
+            .unwrap_or_default();
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
@@ -1136,9 +1351,12 @@ async fn edit_role_submit(
         context.insert("role_id", &role_id.to_string());
         context.insert("role_permissions", &permissions);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "name": form.name,
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "name": form.name,
+            }),
+        );
         context.insert("path", &format!("/admin/people/roles/{}/edit", role_id));
 
         return render_admin_template(&state, "admin/role-form.html", &context).await;
@@ -1189,10 +1407,7 @@ async fn delete_role(
 /// Show permission matrix.
 ///
 /// GET /admin/people/permissions
-async fn permissions_matrix(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn permissions_matrix(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -1206,9 +1421,12 @@ async fn permissions_matrix(
     };
 
     // Get permissions for each role
-    let mut role_permissions: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut role_permissions: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for role in &roles {
-        let perms = Role::get_permissions(state.db(), role.id).await.unwrap_or_default();
+        let perms = Role::get_permissions(state.db(), role.id)
+            .await
+            .unwrap_or_default();
         role_permissions.insert(role.id.to_string(), perms);
     }
 
@@ -1288,7 +1506,9 @@ async fn save_permissions(
 
     // Process form data - permissions are submitted as "perm_{role_id}_{permission}"
     for role in &roles {
-        let current_perms = Role::get_permissions(state.db(), role.id).await.unwrap_or_default();
+        let current_perms = Role::get_permissions(state.db(), role.id)
+            .await
+            .unwrap_or_default();
 
         for permission in &available_permissions {
             let key = format!("perm_{}_{}", role.id, permission.replace(' ', "_"));
@@ -1330,13 +1550,14 @@ async fn list_content(
     let type_filter = params.get("type").map(|s| s.as_str());
     let status_filter = params.get("status").and_then(|s| s.parse::<i16>().ok());
 
-    let items = match Item::list_filtered(state.db(), type_filter, status_filter, None, 100, 0).await {
-        Ok(items) => items,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to list content");
-            return render_error(&state, "Failed to load content.").await;
-        }
-    };
+    let items =
+        match Item::list_filtered(state.db(), type_filter, status_filter, None, 100, 0).await {
+            Ok(items) => items,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to list content");
+                return render_error(&state, "Failed to load content.").await;
+            }
+        };
 
     // Get authors for display
     let mut authors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -1355,7 +1576,10 @@ async fn list_content(
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
     context.insert("type_filter", &type_filter.unwrap_or(""));
-    context.insert("status_filter", &status_filter.map(|s| s.to_string()).unwrap_or_default());
+    context.insert(
+        "status_filter",
+        &status_filter.map(|s| s.to_string()).unwrap_or_default(),
+    );
     context.insert("path", "/admin/content");
 
     render_admin_template(&state, "admin/content-list.html", &context).await
@@ -1364,10 +1588,7 @@ async fn list_content(
 /// Select content type before adding.
 ///
 /// GET /admin/content/add
-async fn select_content_type(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn select_content_type(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -1457,10 +1678,13 @@ async fn add_content_submit(
         context.insert("editing", &false);
         context.insert("content_type", &content_type);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "title": form.title,
-            "status": form.status.is_some(),
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "title": form.title,
+                "status": form.status.is_some(),
+            }),
+        );
         context.insert("path", &format!("/admin/content/add/{}", type_name));
 
         return render_admin_template(&state, "admin/content-form.html", &context).await;
@@ -1529,11 +1753,14 @@ async fn edit_content_form(
     context.insert("item_id", &item_id.to_string());
     context.insert("content_type", &content_type);
     context.insert("item", &item);
-    context.insert("values", &serde_json::json!({
-        "title": item.title,
-        "status": item.status == 1,
-        "fields": item.fields,
-    }));
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "title": item.title,
+            "status": item.status == 1,
+            "fields": item.fields,
+        }),
+    );
     context.insert("path", &format!("/admin/content/{}/edit", item_id));
 
     render_admin_template(&state, "admin/content-form.html", &context).await
@@ -1590,10 +1817,13 @@ async fn edit_content_submit(
         context.insert("content_type", &content_type);
         context.insert("item", &item);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "title": form.title,
-            "status": form.status.is_some(),
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "title": form.title,
+                "status": form.status.is_some(),
+            }),
+        );
         context.insert("path", &format!("/admin/content/{}/edit", item_id));
 
         return render_admin_template(&state, "admin/content-form.html", &context).await;
@@ -1660,10 +1890,7 @@ async fn delete_content(
 /// List all categories.
 ///
 /// GET /admin/structure/categories
-async fn list_categories(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn list_categories(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -1679,7 +1906,9 @@ async fn list_categories(
     // Get tag counts for each category
     let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for cat in &categories {
-        let count = Tag::count_by_category(state.db(), &cat.id).await.unwrap_or(0);
+        let count = Tag::count_by_category(state.db(), &cat.id)
+            .await
+            .unwrap_or(0);
         tag_counts.insert(cat.id.clone(), count);
     }
 
@@ -1694,10 +1923,7 @@ async fn list_categories(
 /// Show add category form.
 ///
 /// GET /admin/structure/categories/add
-async fn add_category_form(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn add_category_form(State(state): State<AppState>, session: Session) -> Response {
     if let Err(redirect) = require_auth(&state, &session).await {
         return redirect;
     }
@@ -1751,7 +1977,10 @@ async fn add_category_submit(
     }
 
     // Check if category already exists
-    if Category::exists(state.db(), &form.id).await.unwrap_or(false) {
+    if Category::exists(state.db(), &form.id)
+        .await
+        .unwrap_or(false)
+    {
         errors.push(format!("A category with ID '{}' already exists.", form.id));
     }
 
@@ -1765,12 +1994,15 @@ async fn add_category_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "id": form.id,
-            "label": form.label,
-            "description": form.description,
-            "hierarchy": form.hierarchy,
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "id": form.id,
+                "label": form.label,
+                "description": form.description,
+                "hierarchy": form.hierarchy,
+            }),
+        );
         context.insert("path", "/admin/structure/categories/add");
 
         return render_admin_template(&state, "admin/category-form.html", &context).await;
@@ -1808,7 +2040,11 @@ async fn edit_category_form(
         return redirect;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id).await.ok().flatten() else {
+    let Some(category) = Category::find_by_id(state.db(), &category_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_not_found(&state).await;
     };
 
@@ -1816,18 +2052,27 @@ async fn edit_category_form(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/structure/categories/{}/edit", category_id));
+    context.insert(
+        "action",
+        &format!("/admin/structure/categories/{}/edit", category_id),
+    );
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
     context.insert("category_id", &category_id);
-    context.insert("values", &serde_json::json!({
-        "id": category.id,
-        "label": category.label,
-        "description": category.description,
-        "hierarchy": category.hierarchy,
-    }));
-    context.insert("path", &format!("/admin/structure/categories/{}/edit", category_id));
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "id": category.id,
+            "label": category.label,
+            "description": category.description,
+            "hierarchy": category.hierarchy,
+        }),
+    );
+    context.insert(
+        "path",
+        &format!("/admin/structure/categories/{}/edit", category_id),
+    );
 
     render_admin_template(&state, "admin/category-form.html", &context).await
 }
@@ -1854,7 +2099,10 @@ async fn edit_category_submit(
         return render_error(&state, "Invalid or expired form token. Please try again.").await;
     }
 
-    if !Category::exists(state.db(), &category_id).await.unwrap_or(false) {
+    if !Category::exists(state.db(), &category_id)
+        .await
+        .unwrap_or(false)
+    {
         return render_not_found(&state).await;
     }
 
@@ -1870,19 +2118,28 @@ async fn edit_category_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/structure/categories/{}/edit", category_id));
+        context.insert(
+            "action",
+            &format!("/admin/structure/categories/{}/edit", category_id),
+        );
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
         context.insert("category_id", &category_id);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "id": form.id,
-            "label": form.label,
-            "description": form.description,
-            "hierarchy": form.hierarchy,
-        }));
-        context.insert("path", &format!("/admin/structure/categories/{}/edit", category_id));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "id": form.id,
+                "label": form.label,
+                "description": form.description,
+                "hierarchy": form.hierarchy,
+            }),
+        );
+        context.insert(
+            "path",
+            &format!("/admin/structure/categories/{}/edit", category_id),
+        );
 
         return render_admin_template(&state, "admin/category-form.html", &context).await;
     }
@@ -1943,7 +2200,11 @@ async fn list_tags(
         return redirect;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id).await.ok().flatten() else {
+    let Some(category) = Category::find_by_id(state.db(), &category_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_not_found(&state).await;
     };
 
@@ -1958,7 +2219,10 @@ async fn list_tags(
     let mut context = tera::Context::new();
     context.insert("category", &category);
     context.insert("tags", &tags);
-    context.insert("path", &format!("/admin/structure/categories/{}/tags", category_id));
+    context.insert(
+        "path",
+        &format!("/admin/structure/categories/{}/tags", category_id),
+    );
 
     render_admin_template(&state, "admin/tags.html", &context).await
 }
@@ -1975,25 +2239,37 @@ async fn add_tag_form(
         return redirect;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id).await.ok().flatten() else {
+    let Some(category) = Category::find_by_id(state.db(), &category_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_not_found(&state).await;
     };
 
     // Get existing tags for parent selector
-    let tags = Tag::list_by_category(state.db(), &category_id).await.unwrap_or_default();
+    let tags = Tag::list_by_category(state.db(), &category_id)
+        .await
+        .unwrap_or_default();
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/structure/categories/{}/tags/add", category_id));
+    context.insert(
+        "action",
+        &format!("/admin/structure/categories/{}/tags/add", category_id),
+    );
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
     context.insert("category", &category);
     context.insert("existing_tags", &tags);
     context.insert("values", &serde_json::json!({}));
-    context.insert("path", &format!("/admin/structure/categories/{}/tags/add", category_id));
+    context.insert(
+        "path",
+        &format!("/admin/structure/categories/{}/tags/add", category_id),
+    );
 
     render_admin_template(&state, "admin/tag-form.html", &context).await
 }
@@ -2020,7 +2296,11 @@ async fn add_tag_submit(
         return render_error(&state, "Invalid or expired form token. Please try again.").await;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id).await.ok().flatten() else {
+    let Some(category) = Category::find_by_id(state.db(), &category_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_not_found(&state).await;
     };
 
@@ -2032,36 +2312,45 @@ async fn add_tag_submit(
     }
 
     if !errors.is_empty() {
-        let tags = Tag::list_by_category(state.db(), &category_id).await.unwrap_or_default();
+        let tags = Tag::list_by_category(state.db(), &category_id)
+            .await
+            .unwrap_or_default();
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/structure/categories/{}/tags/add", category_id));
+        context.insert(
+            "action",
+            &format!("/admin/structure/categories/{}/tags/add", category_id),
+        );
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
         context.insert("category", &category);
         context.insert("existing_tags", &tags);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "label": form.label,
-            "description": form.description,
-            "weight": form.weight,
-            "parent_id": form.parent_id,
-        }));
-        context.insert("path", &format!("/admin/structure/categories/{}/tags/add", category_id));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "label": form.label,
+                "description": form.description,
+                "weight": form.weight,
+                "parent_id": form.parent_id,
+            }),
+        );
+        context.insert(
+            "path",
+            &format!("/admin/structure/categories/{}/tags/add", category_id),
+        );
 
         return render_admin_template(&state, "admin/tag-form.html", &context).await;
     }
 
     let parent_ids = match &form.parent_id {
-        Some(id) if !id.is_empty() => {
-            match uuid::Uuid::parse_str(id) {
-                Ok(uuid) => Some(vec![uuid]),
-                Err(_) => None,
-            }
-        }
+        Some(id) if !id.is_empty() => match uuid::Uuid::parse_str(id) {
+            Ok(uuid) => Some(vec![uuid]),
+            Err(_) => None,
+        },
         _ => None,
     };
 
@@ -2076,7 +2365,8 @@ async fn add_tag_submit(
     match Tag::create(state.db(), input).await {
         Ok(_) => {
             tracing::info!(category = %category_id, label = %form.label, "tag created");
-            Redirect::to(&format!("/admin/structure/categories/{}/tags", category_id)).into_response()
+            Redirect::to(&format!("/admin/structure/categories/{}/tags", category_id))
+                .into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to create tag");
@@ -2101,7 +2391,11 @@ async fn edit_tag_form(
         return render_not_found(&state).await;
     };
 
-    let Some(category) = Category::find_by_id(state.db(), &tag.category_id).await.ok().flatten() else {
+    let Some(category) = Category::find_by_id(state.db(), &tag.category_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_error(&state, "Category not found.").await;
     };
 
@@ -2114,7 +2408,9 @@ async fn edit_tag_form(
         .collect();
 
     // Get current parents
-    let parents = Tag::get_parents(state.db(), tag_id).await.unwrap_or_default();
+    let parents = Tag::get_parents(state.db(), tag_id)
+        .await
+        .unwrap_or_default();
     let current_parent_id = parents.first().map(|p| p.id.to_string());
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
@@ -2128,12 +2424,15 @@ async fn edit_tag_form(
     context.insert("tag_id", &tag_id.to_string());
     context.insert("category", &category);
     context.insert("existing_tags", &tags);
-    context.insert("values", &serde_json::json!({
-        "label": tag.label,
-        "description": tag.description,
-        "weight": tag.weight,
-        "parent_id": current_parent_id,
-    }));
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "label": tag.label,
+            "description": tag.description,
+            "weight": tag.weight,
+            "parent_id": current_parent_id,
+        }),
+    );
     context.insert("path", &format!("/admin/structure/tags/{}/edit", tag_id));
 
     render_admin_template(&state, "admin/tag-form.html", &context).await
@@ -2165,7 +2464,11 @@ async fn edit_tag_submit(
         return render_not_found(&state).await;
     };
 
-    let Some(category) = Category::find_by_id(state.db(), &tag.category_id).await.ok().flatten() else {
+    let Some(category) = Category::find_by_id(state.db(), &tag.category_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_error(&state, "Category not found.").await;
     };
 
@@ -2196,12 +2499,15 @@ async fn edit_tag_submit(
         context.insert("category", &category);
         context.insert("existing_tags", &tags);
         context.insert("errors", &errors);
-        context.insert("values", &serde_json::json!({
-            "label": form.label,
-            "description": form.description,
-            "weight": form.weight,
-            "parent_id": form.parent_id,
-        }));
+        context.insert(
+            "values",
+            &serde_json::json!({
+                "label": form.label,
+                "description": form.description,
+                "weight": form.weight,
+                "parent_id": form.parent_id,
+            }),
+        );
         context.insert("path", &format!("/admin/structure/tags/{}/edit", tag_id));
 
         return render_admin_template(&state, "admin/tag-form.html", &context).await;
@@ -2222,12 +2528,10 @@ async fn edit_tag_submit(
     // Update parent if hierarchy is enabled
     if category.hierarchy > 0 {
         let parent_ids: Vec<uuid::Uuid> = match &form.parent_id {
-            Some(id) if !id.is_empty() => {
-                match uuid::Uuid::parse_str(id) {
-                    Ok(uuid) => vec![uuid],
-                    Err(_) => vec![],
-                }
-            }
+            Some(id) if !id.is_empty() => match uuid::Uuid::parse_str(id) {
+                Ok(uuid) => vec![uuid],
+                Err(_) => vec![],
+            },
             _ => vec![],
         };
 
@@ -2237,7 +2541,11 @@ async fn edit_tag_submit(
     }
 
     tracing::info!(tag_id = %tag_id, "tag updated");
-    Redirect::to(&format!("/admin/structure/categories/{}/tags", tag.category_id)).into_response()
+    Redirect::to(&format!(
+        "/admin/structure/categories/{}/tags",
+        tag.category_id
+    ))
+    .into_response()
 }
 
 /// Delete a tag.
@@ -2291,12 +2599,10 @@ async fn list_files(
         return redirect;
     }
 
-    let status_filter = params.get("status").and_then(|s| {
-        match s.as_str() {
-            "0" => Some(FileStatus::Temporary),
-            "1" => Some(FileStatus::Permanent),
-            _ => None,
-        }
+    let status_filter = params.get("status").and_then(|s| match s.as_str() {
+        "0" => Some(FileStatus::Temporary),
+        "1" => Some(FileStatus::Permanent),
+        _ => None,
     });
 
     let files = match state.files().list_by_status(status_filter, 100, 0).await {
@@ -2342,7 +2648,10 @@ async fn file_details(
         return render_not_found(&state).await;
     };
 
-    let owner = User::find_by_id(state.db(), file.owner_id).await.ok().flatten();
+    let owner = User::find_by_id(state.db(), file.owner_id)
+        .await
+        .ok()
+        .flatten();
     let public_url = state.files().storage().public_url(&file.uri);
 
     let mut context = tera::Context::new();
@@ -2438,18 +2747,17 @@ async fn ajax_callback(
 }
 
 /// Handle AJAX add_field trigger for manage_fields forms.
-async fn handle_ajax_add_field(
-    state: &AppState,
-    request: &AjaxRequest,
-) -> Response {
+async fn handle_ajax_add_field(state: &AppState, request: &AjaxRequest) -> Response {
     use crate::form::AjaxResponse;
 
     // Load form state to get the content type name
     let form_state = match state.forms().load_state(&request.form_build_id).await {
         Ok(Some(fs)) => fs,
         Ok(None) => {
-            return Json(AjaxResponse::new().alert("Form session expired. Please reload the page."))
-                .into_response();
+            return Json(
+                AjaxResponse::new().alert("Form session expired. Please reload the page."),
+            )
+            .into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to load form state");
@@ -2541,10 +2849,7 @@ async fn handle_ajax_add_field(
     Json(
         AjaxResponse::new()
             .append("#fields-tbody", row_html)
-            .invoke(
-                "Trovato.resetAddFieldForm",
-                serde_json::json!({}),
-            )
+            .invoke("Trovato.resetAddFieldForm", serde_json::json!({}))
             .command(AjaxCommand::Remove {
                 selector: "#no-fields-message".to_string(),
             }),
@@ -2687,20 +2992,58 @@ pub fn router() -> Router<AppState> {
         .route("/admin/structure/types", get(list_content_types))
         .route("/admin/structure/types/add", get(add_content_type_form))
         .route("/admin/structure/types/add", post(add_content_type_submit))
-        .route("/admin/structure/types/{type}/edit", get(edit_content_type_form))
-        .route("/admin/structure/types/{type}/edit", post(edit_content_type_submit))
+        .route(
+            "/admin/structure/types/{type}/edit",
+            get(edit_content_type_form),
+        )
+        .route(
+            "/admin/structure/types/{type}/edit",
+            post(edit_content_type_submit),
+        )
         .route("/admin/structure/types/{type}/fields", get(manage_fields))
         .route("/admin/structure/types/{type}/fields/add", post(add_field))
+        // Search configuration
+        .route(
+            "/admin/structure/types/{type}/search",
+            get(manage_search_config),
+        )
+        .route(
+            "/admin/structure/types/{type}/search/add",
+            post(add_search_config),
+        )
+        .route(
+            "/admin/structure/types/{type}/search/{field}/delete",
+            post(remove_search_config),
+        )
+        .route(
+            "/admin/structure/types/{type}/search/reindex",
+            post(reindex_content_type),
+        )
         // Category management
         .route("/admin/structure/categories", get(list_categories))
         .route("/admin/structure/categories/add", get(add_category_form))
         .route("/admin/structure/categories/add", post(add_category_submit))
-        .route("/admin/structure/categories/{id}/edit", get(edit_category_form))
-        .route("/admin/structure/categories/{id}/edit", post(edit_category_submit))
-        .route("/admin/structure/categories/{id}/delete", post(delete_category))
+        .route(
+            "/admin/structure/categories/{id}/edit",
+            get(edit_category_form),
+        )
+        .route(
+            "/admin/structure/categories/{id}/edit",
+            post(edit_category_submit),
+        )
+        .route(
+            "/admin/structure/categories/{id}/delete",
+            post(delete_category),
+        )
         .route("/admin/structure/categories/{id}/tags", get(list_tags))
-        .route("/admin/structure/categories/{id}/tags/add", get(add_tag_form))
-        .route("/admin/structure/categories/{id}/tags/add", post(add_tag_submit))
+        .route(
+            "/admin/structure/categories/{id}/tags/add",
+            get(add_tag_form),
+        )
+        .route(
+            "/admin/structure/categories/{id}/tags/add",
+            post(add_tag_submit),
+        )
         // Tag management
         .route("/admin/structure/tags/{id}/edit", get(edit_tag_form))
         .route("/admin/structure/tags/{id}/edit", post(edit_tag_submit))

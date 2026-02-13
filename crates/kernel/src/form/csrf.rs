@@ -1,6 +1,6 @@
 //! CSRF token generation and verification.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use tower_sessions::Session;

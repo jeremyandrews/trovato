@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
@@ -159,7 +159,7 @@ impl FileService {
                     "local://{}/{}/{}_{}",
                     now.format("%Y"),
                     now.format("%m"),
-                    &unique_id[..8],
+                    &unique_id[..16],
                     safe_name
                 )
             }
@@ -171,7 +171,7 @@ impl FileService {
                     "s3://{}/{}/{}_{}",
                     now.format("%Y"),
                     now.format("%m"),
-                    &unique_id[..8],
+                    &unique_id[..16],
                     safe_name
                 )
             }
@@ -254,7 +254,12 @@ impl FileService {
     }
 
     /// List files with optional status filter.
-    pub async fn list_by_status(&self, status: Option<FileStatus>, limit: i64, offset: i64) -> Result<Vec<FileInfo>> {
+    pub async fn list_by_status(
+        &self,
+        status: Option<FileStatus>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<FileInfo>> {
         let rows: Vec<FileRow> = match status {
             Some(s) => {
                 sqlx::query_as(
@@ -318,15 +323,13 @@ impl FileService {
 
     /// Mark a file as permanent (attached to content).
     pub async fn mark_permanent(&self, id: Uuid) -> Result<bool> {
-        let result = sqlx::query(
-            "UPDATE file_managed SET status = $1, changed = $2 WHERE id = $3",
-        )
-        .bind(FileStatus::Permanent as i16)
-        .bind(chrono::Utc::now().timestamp())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .context("failed to update file status")?;
+        let result = sqlx::query("UPDATE file_managed SET status = $1, changed = $2 WHERE id = $3")
+            .bind(FileStatus::Permanent as i16)
+            .bind(chrono::Utc::now().timestamp())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("failed to update file status")?;
 
         Ok(result.rows_affected() > 0)
     }

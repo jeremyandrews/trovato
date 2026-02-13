@@ -320,9 +320,7 @@ mod tests {
             children: BTreeMap::new(),
         };
 
-        let result = consumer
-            .render_container(&element, "<p>Child</p>")
-            .unwrap();
+        let result = consumer.render_container(&element, "<p>Child</p>").unwrap();
         assert!(result.contains("container"));
         assert!(result.contains("<p>Child</p>"));
     }

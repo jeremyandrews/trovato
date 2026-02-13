@@ -350,11 +350,10 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
                 _ => return -1,
             };
 
-            let field_name =
-                match read_string(&memory, &caller, field_ptr, field_len) {
-                    Some(s) => s,
-                    None => return -1,
-                };
+            let field_name = match read_string(&memory, &caller, field_ptr, field_len) {
+                Some(s) => s,
+                None => return -1,
+            };
 
             let value = match caller.data().get_field_string(handle, &field_name) {
                 Some(v) => v,
@@ -390,7 +389,9 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
                 None => return,
             };
 
-            caller.data_mut().set_field_string(handle, &field_name, &value);
+            caller
+                .data_mut()
+                .set_field_string(handle, &field_name, &value);
         },
     )?;
 

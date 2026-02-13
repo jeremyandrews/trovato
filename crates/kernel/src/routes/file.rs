@@ -1,18 +1,18 @@
 //! File upload route handlers.
 
 use axum::{
+    Json, Router,
     extract::{Multipart, Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use serde::Serialize;
 use tower_sessions::Session;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::file::{UploadResult, ALLOWED_MIME_TYPES, MAX_FILE_SIZE};
+use crate::file::{ALLOWED_MIME_TYPES, MAX_FILE_SIZE, UploadResult};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
@@ -152,7 +152,11 @@ async fn upload_file(
     }
 
     // Upload file
-    match state.files().upload(user_id, &filename, &mime_type, &data).await {
+    match state
+        .files()
+        .upload(user_id, &filename, &mime_type, &data)
+        .await
+    {
         Ok(result) => (
             StatusCode::OK,
             Json(UploadResponse {
@@ -191,10 +195,7 @@ pub struct FileInfoResponse {
 /// Get file info.
 ///
 /// GET /file/{id}
-async fn get_file_info(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Response {
+async fn get_file_info(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
     match state.files().get(id).await {
         Ok(Some(file)) => {
             let url = state.files().storage().public_url(&file.uri);

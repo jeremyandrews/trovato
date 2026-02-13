@@ -18,9 +18,12 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             FieldDefinition::new("field_body", FieldType::TextLong)
                 .required()
                 .label("Body"),
-            FieldDefinition::new("field_tags", FieldType::RecordReference("category_term".into()))
-                .cardinality(-1)
-                .label("Tags"),
+            FieldDefinition::new(
+                "field_tags",
+                FieldType::RecordReference("category_term".into()),
+            )
+            .cardinality(-1)
+            .label("Tags"),
         ],
     }]
 }

@@ -103,10 +103,11 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                 Err(_) => return -3,
             };
 
-            let _where_clause = match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
-                Ok(w) => w,
-                Err(_) => return -4,
-            };
+            let _where_clause =
+                match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
+                    Ok(w) => w,
+                    Err(_) => return -4,
+                };
 
             // TODO: Implement actual database update
             // Returns rows affected
@@ -134,10 +135,11 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                 Err(_) => return -2,
             };
 
-            let _where_clause = match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
-                Ok(w) => w,
-                Err(_) => return -3,
-            };
+            let _where_clause =
+                match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
+                    Ok(w) => w,
+                    Err(_) => return -3,
+                };
 
             // TODO: Implement actual database delete
             // Returns rows affected

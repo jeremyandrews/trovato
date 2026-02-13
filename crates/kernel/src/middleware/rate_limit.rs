@@ -28,11 +28,11 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            login: (5, Duration::from_secs(60)),      // 5 per minute
-            forms: (30, Duration::from_secs(60)),     // 30 per minute
-            api: (100, Duration::from_secs(60)),      // 100 per minute
-            search: (20, Duration::from_secs(60)),    // 20 per minute
-            uploads: (10, Duration::from_secs(60)),   // 10 per minute
+            login: (5, Duration::from_secs(60)),    // 5 per minute
+            forms: (30, Duration::from_secs(60)),   // 30 per minute
+            api: (100, Duration::from_secs(60)),    // 100 per minute
+            search: (20, Duration::from_secs(60)),  // 20 per minute
+            uploads: (10, Duration::from_secs(60)), // 10 per minute
         }
     }
 }
@@ -109,7 +109,11 @@ impl RateLimiter {
     }
 
     /// Get the current count for a key (for monitoring).
-    pub async fn get_count(&self, category: &str, identifier: &str) -> Result<i64, redis::RedisError> {
+    pub async fn get_count(
+        &self,
+        category: &str,
+        identifier: &str,
+    ) -> Result<i64, redis::RedisError> {
         let key = format!("rate:{}:{}", category, identifier);
         let mut conn = self.redis.get_multiplexed_async_connection().await?;
         let count: Option<i64> = conn.get(&key).await?;
@@ -143,7 +147,10 @@ pub fn categorize_path(path: &str, method: &str) -> &'static str {
 }
 
 /// Get the client identifier (IP address) for rate limiting.
-pub fn get_client_id(addr: Option<std::net::SocketAddr>, headers: &axum::http::HeaderMap) -> String {
+pub fn get_client_id(
+    addr: Option<std::net::SocketAddr>,
+    headers: &axum::http::HeaderMap,
+) -> String {
     // Check X-Forwarded-For header first (for proxied requests)
     if let Some(forwarded) = headers.get("x-forwarded-for") {
         if let Ok(value) = forwarded.to_str() {
@@ -174,7 +181,10 @@ pub fn rate_limit_response(retry_after: u64) -> Response {
             ("retry-after", retry_after.to_string()),
             ("content-type", "application/json".to_string()),
         ],
-        format!(r#"{{"error":"Rate limit exceeded","retry_after":{}}}"#, retry_after),
+        format!(
+            r#"{{"error":"Rate limit exceeded","retry_after":{}}}"#,
+            retry_after
+        ),
     )
         .into_response()
 }

@@ -33,8 +33,7 @@ impl ThemeEngine {
             .to_str()
             .context("invalid template directory path")?;
 
-        let mut tera = Tera::new(pattern_str)
-            .context("failed to initialize Tera templates")?;
+        let mut tera = Tera::new(pattern_str).context("failed to initialize Tera templates")?;
 
         // Register custom filters
         Self::register_filters(&mut tera);
@@ -62,22 +61,28 @@ impl ThemeEngine {
     /// Register custom Tera filters.
     fn register_filters(tera: &mut Tera) {
         // Filter for text format processing
-        tera.register_filter("text_format", |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
-            let text = tera::try_get_value!("text_format", "value", String, value);
-            let format = args
-                .get("format")
-                .and_then(|v| v.as_str())
-                .unwrap_or("plain_text");
+        tera.register_filter(
+            "text_format",
+            |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
+                let text = tera::try_get_value!("text_format", "value", String, value);
+                let format = args
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("plain_text");
 
-            let pipeline = FilterPipeline::for_format(format);
-            Ok(tera::Value::String(pipeline.process(&text)))
-        });
+                let pipeline = FilterPipeline::for_format(format);
+                Ok(tera::Value::String(pipeline.process(&text)))
+            },
+        );
 
         // Filter for safe HTML output (already filtered)
-        tera.register_filter("safe_html", |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
-            // Mark as safe by returning as-is (templates should use |safe after this)
-            Ok(value.clone())
-        });
+        tera.register_filter(
+            "safe_html",
+            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+                // Mark as safe by returning as-is (templates should use |safe after this)
+                Ok(value.clone())
+            },
+        );
     }
 
     /// Get the underlying Tera instance for custom operations.
@@ -372,11 +377,7 @@ mod tests {
         let suggestions = ThemeEngine::page_suggestions("/admin/structure/types");
         assert_eq!(
             suggestions,
-            vec![
-                "page--admin--structure--types",
-                "page--admin",
-                "page"
-            ]
+            vec!["page--admin--structure--types", "page--admin", "page"]
         );
 
         let suggestions = ThemeEngine::page_suggestions("/item/123");

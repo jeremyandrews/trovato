@@ -4,8 +4,8 @@
 //! Plugins depend on this crate and use its proc macros and builder APIs
 //! to interact with the Kernel across the WASM boundary.
 
-pub mod types;
 pub mod render;
+pub mod types;
 
 // Re-export proc macros
 pub use trovato_sdk_macros::{plugin_tap, plugin_tap_result};
@@ -15,7 +15,7 @@ pub use trovato_sdk_macros::{plugin_tap, plugin_tap_result};
 pub use serde_json;
 
 pub mod prelude {
-    pub use crate::types::*;
     pub use crate::render;
+    pub use crate::types::*;
     pub use crate::{plugin_tap, plugin_tap_result};
 }

@@ -14,10 +14,7 @@ pub fn register_user_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/user-api",
         "current-user-id",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         out_ptr: i32,
-         out_max_len: i32|
-         -> i32 {
+        |mut caller: wasmtime::Caller<'_, PluginState>, out_ptr: i32, out_max_len: i32| -> i32 {
             let memory = match caller.get_export("memory") {
                 Some(wasmtime::Extern::Memory(m)) => m,
                 _ => return 0,
@@ -34,10 +31,7 @@ pub fn register_user_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/user-api",
         "current-user-has-permission",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         perm_ptr: i32,
-         perm_len: i32|
-         -> i32 {
+        |mut caller: wasmtime::Caller<'_, PluginState>, perm_ptr: i32, perm_len: i32| -> i32 {
             let memory = match caller.get_export("memory") {
                 Some(wasmtime::Extern::Memory(m)) => m,
                 _ => return 0,

@@ -30,8 +30,8 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
             };
 
             // Read variable name (for logging/future use)
-            let _name = read_string_from_memory(&memory, &caller, name_ptr, name_len)
-                .unwrap_or_default();
+            let _name =
+                read_string_from_memory(&memory, &caller, name_ptr, name_len).unwrap_or_default();
 
             // Read default value
             let default_value = read_string_from_memory(&memory, &caller, default_ptr, default_len)
@@ -42,8 +42,7 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
             let value = default_value;
 
             // Write result
-            write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &value)
-                .unwrap_or(0)
+            write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &value).unwrap_or(0)
         },
     )?;
 
@@ -63,10 +62,10 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
                 _ => return -1,
             };
 
-            let _name = read_string_from_memory(&memory, &caller, name_ptr, name_len)
-                .unwrap_or_default();
-            let _value = read_string_from_memory(&memory, &caller, value_ptr, value_len)
-                .unwrap_or_default();
+            let _name =
+                read_string_from_memory(&memory, &caller, name_ptr, name_len).unwrap_or_default();
+            let _value =
+                read_string_from_memory(&memory, &caller, value_ptr, value_len).unwrap_or_default();
 
             // TODO: Store variable in database
             // For now, return success (0)

@@ -72,9 +72,7 @@ impl AjaxResponse {
 
     /// Add a redirect command.
     pub fn redirect(self, url: impl Into<String>) -> Self {
-        self.command(AjaxCommand::Redirect {
-            url: url.into(),
-        })
+        self.command(AjaxCommand::Redirect { url: url.into() })
     }
 
     /// Add a CSS add class command.
@@ -158,10 +156,7 @@ pub enum AjaxCommand {
     },
 
     /// Update form values.
-    UpdateValues {
-        selector: String,
-        values: Value,
-    },
+    UpdateValues { selector: String, values: Value },
 
     /// Focus an element.
     Focus { selector: String },

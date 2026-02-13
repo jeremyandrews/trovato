@@ -138,3 +138,8 @@
     </main>
 </div>
 {% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="/static/js/file-upload.js"></script>
+{% endblock %}

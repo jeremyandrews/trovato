@@ -73,10 +73,7 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     linker.func_wrap(
         "trovato:kernel/item-api",
         "delete-item",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         id_ptr: i32,
-         id_len: i32|
-         -> i32 {
+        |mut caller: wasmtime::Caller<'_, PluginState>, id_ptr: i32, id_len: i32| -> i32 {
             let memory = match caller.get_export("memory") {
                 Some(wasmtime::Extern::Memory(m)) => m,
                 _ => return -1,

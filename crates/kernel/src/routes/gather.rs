@@ -5,11 +5,11 @@
 use crate::gather::{FilterValue, GatherView, ViewDefinition, ViewDisplay};
 use crate::state::AppState;
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, Json},
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -283,11 +283,14 @@ fn render_gather_with_theme(
 
     // Pager info
     if view.display.pager.enabled && result.total_pages > 1 {
-        context.insert("pager", &serde_json::json!({
-            "current_page": result.page,
-            "total_pages": result.total_pages,
-            "base_url": format!("/gather/{}", view.view_id),
-        }));
+        context.insert(
+            "pager",
+            &serde_json::json!({
+                "current_page": result.page,
+                "total_pages": result.total_pages,
+                "base_url": format!("/gather/{}", view.view_id),
+            }),
+        );
     }
 
     state.theme().tera().render(&template, &context).ok()
@@ -334,7 +337,8 @@ fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
         }
         serde_json::Value::Bool(b) => Some(FilterValue::Boolean(b)),
         serde_json::Value::Array(arr) => {
-            let values: Vec<FilterValue> = arr.into_iter().filter_map(json_to_filter_value).collect();
+            let values: Vec<FilterValue> =
+                arr.into_iter().filter_map(json_to_filter_value).collect();
             if values.is_empty() {
                 None
             } else {
@@ -345,10 +349,7 @@ fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
     }
 }
 
-fn render_gather_html(
-    view: &GatherView,
-    result: &crate::gather::GatherResult,
-) -> String {
+fn render_gather_html(view: &GatherView, result: &crate::gather::GatherResult) -> String {
     let mut html = String::new();
 
     // Header
@@ -379,7 +380,10 @@ fn render_gather_html(
             .empty_text
             .as_deref()
             .unwrap_or("No results found.");
-        html.push_str(&format!("<p class=\"empty\">{}</p>\n", escape_html(empty_text)));
+        html.push_str(&format!(
+            "<p class=\"empty\">{}</p>\n",
+            escape_html(empty_text)
+        ));
     } else {
         html.push_str("<table>\n<thead>\n<tr>\n");
 
@@ -395,11 +399,14 @@ fn render_gather_html(
                     html.push_str("<tr>\n");
                     if let Some(obj) = item.as_object() {
                         for key in obj.keys() {
-                            let value = obj.get(key).map(|v| match v {
-                                serde_json::Value::String(s) => s.clone(),
-                                serde_json::Value::Null => "".to_string(),
-                                other => other.to_string(),
-                            }).unwrap_or_default();
+                            let value = obj
+                                .get(key)
+                                .map(|v| match v {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    serde_json::Value::Null => "".to_string(),
+                                    other => other.to_string(),
+                                })
+                                .unwrap_or_default();
                             html.push_str(&format!("<td>{}</td>\n", escape_html(&value)));
                         }
                     }
@@ -430,10 +437,7 @@ fn render_gather_html(
         }
 
         if result.has_next {
-            html.push_str(&format!(
-                "<a href=\"?page={}\">Next</a>\n",
-                result.page + 1
-            ));
+            html.push_str(&format!("<a href=\"?page={}\">Next</a>\n", result.page + 1));
         }
 
         html.push_str("</div>\n");

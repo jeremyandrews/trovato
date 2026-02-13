@@ -63,12 +63,9 @@ impl PermissionService {
         let has_permission = permissions.contains(permission);
 
         // Cache the result
-        self.inner.user_cache.insert(
-            user.id,
-            CachedPermissions {
-                permissions,
-            },
-        );
+        self.inner
+            .user_cache
+            .insert(user.id, CachedPermissions { permissions });
 
         Ok(has_permission)
     }

@@ -5,11 +5,11 @@
 use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
 use crate::state::AppState;
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::Json,
     routing::{delete, get, post, put},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -89,18 +89,14 @@ struct SetParentsRequest {
 async fn list_categories(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CategoryResponse>>, (StatusCode, Json<ErrorResponse>)> {
-    let categories = state
-        .categories()
-        .list_categories()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+    let categories = state.categories().list_categories().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
 
     Ok(Json(
         categories
@@ -218,18 +214,14 @@ async fn delete_category(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    let deleted = state
-        .categories()
-        .delete_category(&id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+    let deleted = state.categories().delete_category(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
 
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -251,18 +243,21 @@ async fn list_tags(
     State(state): State<AppState>,
     Path(category_id): Path<String>,
 ) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<ErrorResponse>)> {
-    let tags = state.categories().list_tags(&category_id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+    let tags = state
+        .categories()
+        .list_tags(&category_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+        })?;
 
     Ok(Json(
-        tags
-            .into_iter()
+        tags.into_iter()
             .map(|t| TagResponse {
                 id: t.id,
                 category_id: t.category_id,
@@ -294,8 +289,7 @@ async fn get_root_tags(
         })?;
 
     Ok(Json(
-        tags
-            .into_iter()
+        tags.into_iter()
             .map(|t| TagResponse {
                 id: t.id,
                 category_id: t.category_id,
@@ -553,18 +547,14 @@ async fn get_descendants(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<TagWithDepthResponse>>, (StatusCode, Json<ErrorResponse>)> {
-    let descendants = state
-        .categories()
-        .get_descendants(id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+    let descendants = state.categories().get_descendants(id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
 
     Ok(Json(
         descendants

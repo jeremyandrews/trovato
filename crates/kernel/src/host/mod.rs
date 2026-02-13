@@ -51,7 +51,12 @@ pub fn read_string_from_memory(
 
     let data = memory.data(store);
     if ptr + len > data.len() {
-        anyhow::bail!("string read out of bounds: ptr={}, len={}, mem_size={}", ptr, len, data.len());
+        anyhow::bail!(
+            "string read out of bounds: ptr={}, len={}, mem_size={}",
+            ptr,
+            len,
+            data.len()
+        );
     }
 
     let bytes = &data[ptr..ptr + len];

@@ -61,7 +61,8 @@ impl CategoryService {
     /// Create a new category.
     pub async fn create_category(&self, input: CreateCategory) -> Result<Category> {
         let category = Category::create(&self.pool, input).await?;
-        self.category_cache.insert(category.id.clone(), category.clone());
+        self.category_cache
+            .insert(category.id.clone(), category.clone());
         Ok(category)
     }
 

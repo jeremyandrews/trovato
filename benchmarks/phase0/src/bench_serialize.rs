@@ -13,9 +13,9 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use wasmtime::{Module, TypedFunc};
 
+use crate::BenchResult;
 use crate::fixture::synthetic_item;
 use crate::host::BenchHost;
-use crate::BenchResult;
 
 /// Benchmark results including separate instantiation and tap call timing.
 pub struct SerializeBenchmarkResults {
@@ -30,7 +30,11 @@ pub struct SerializeBenchmarkResults {
 /// 1. Total time (instantiation + memory setup + tap call)
 /// 2. Tap call time only
 /// 3. Instantiation + memory setup time
-pub fn run_serialize_benchmark(host: &BenchHost, module: &Module, iterations: u32) -> Result<SerializeBenchmarkResults> {
+pub fn run_serialize_benchmark(
+    host: &BenchHost,
+    module: &Module,
+    iterations: u32,
+) -> Result<SerializeBenchmarkResults> {
     let mut total_durations = Vec::with_capacity(iterations as usize);
     let mut tap_durations = Vec::with_capacity(iterations as usize);
     let mut instantiation_durations = Vec::with_capacity(iterations as usize);
@@ -97,7 +101,10 @@ pub fn run_serialize_benchmark(host: &BenchHost, module: &Module, iterations: u3
     Ok(SerializeBenchmarkResults {
         total: BenchResult::from_durations("full-serialization (total)", &total_durations),
         tap_only: BenchResult::from_durations("full-serialization (tap only)", &tap_durations),
-        instantiation_only: BenchResult::from_durations("full-serialization (instantiation)", &instantiation_durations),
+        instantiation_only: BenchResult::from_durations(
+            "full-serialization (instantiation)",
+            &instantiation_durations,
+        ),
     })
 }
 
@@ -140,7 +147,10 @@ pub fn verify_serialize_access(host: &BenchHost, module: &Module) -> Result<()> 
     let result_bytes = &data[ptr as usize..(ptr + len) as usize];
     let result_json = std::str::from_utf8(result_bytes).context("invalid UTF-8 in result")?;
 
-    println!("  Full-serialization result preview: {}...", &result_json[..result_json.len().min(80)]);
+    println!(
+        "  Full-serialization result preview: {}...",
+        &result_json[..result_json.len().min(80)]
+    );
     println!("  Input JSON size: {} bytes", json_bytes.len());
 
     Ok(())

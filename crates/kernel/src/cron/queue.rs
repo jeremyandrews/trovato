@@ -99,7 +99,10 @@ impl Queue for RedisQueue {
             .await
             .context("failed to get Redis connection")?;
 
-        let len: u64 = conn.llen(&key).await.context("failed to get queue length")?;
+        let len: u64 = conn
+            .llen(&key)
+            .await
+            .context("failed to get queue length")?;
 
         Ok(len)
     }

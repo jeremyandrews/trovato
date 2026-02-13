@@ -96,10 +96,7 @@ impl CacheLayer {
 
         let ttl = if ttl_secs > 0 { ttl_secs } else { L2_TTL_SECS };
 
-        if let Err(e) = conn
-            .set_ex::<_, _, ()>(key, value, ttl)
-            .await
-        {
+        if let Err(e) = conn.set_ex::<_, _, ()>(key, value, ttl).await {
             warn!(error = %e, key = %key, "failed to set cache value in Redis");
             return;
         }

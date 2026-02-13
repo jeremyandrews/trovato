@@ -1,11 +1,11 @@
 //! Search route handlers.
 
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tera::Context;
@@ -116,7 +116,8 @@ async fn search_html(
         Err(e) => {
             tracing::error!(error = %e, "failed to render search template");
             // Fallback to simple HTML
-            let html = render_fallback_search(&query, &results.results, results.total, page, total_pages);
+            let html =
+                render_fallback_search(&query, &results.results, results.total, page, total_pages);
             Html(html).into_response()
         }
     }
@@ -213,13 +214,19 @@ fn render_fallback_search(
         <input type="search" name="q" value=""#,
     );
     html.push_str(&html_escape(query));
-    html.push_str(r#"" placeholder="Search...">
+    html.push_str(
+        r#"" placeholder="Search...">
         <button type="submit">Search</button>
     </form>
-"#);
+"#,
+    );
 
     if !query.is_empty() {
-        html.push_str(&format!("<p>Found {} results for \"{}\"</p>\n", total, html_escape(query)));
+        html.push_str(&format!(
+            "<p>Found {} results for \"{}\"</p>\n",
+            total,
+            html_escape(query)
+        ));
 
         for result in results {
             html.push_str("<div class=\"result\">\n");

@@ -32,8 +32,5 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
 
 /// Check if the database connection is healthy.
 pub async fn check_health(pool: &PgPool) -> bool {
-    sqlx::query("SELECT 1")
-        .execute(pool)
-        .await
-        .is_ok()
+    sqlx::query("SELECT 1").execute(pool).await.is_ok()
 }

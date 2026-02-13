@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::info_parser::PluginInfo;
+use crate::tap::RequestState;
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, Linker, Module, PoolingAllocationConfig,
 };
-use super::info_parser::PluginInfo;
-use crate::tap::RequestState;
 
 /// Combined state for WASM stores, including both request state and random seed.
 pub struct PluginState {
@@ -103,7 +103,12 @@ impl PluginRuntime {
         }
 
         let mut entries: Vec<_> = std::fs::read_dir(plugins_dir)
-            .with_context(|| format!("failed to read plugins directory: {}", plugins_dir.display()))?
+            .with_context(|| {
+                format!(
+                    "failed to read plugins directory: {}",
+                    plugins_dir.display()
+                )
+            })?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
             .collect();
@@ -135,9 +140,7 @@ impl PluginRuntime {
         let info_files: Vec<_> = std::fs::read_dir(plugin_dir)?
             .filter_map(|e| e.ok())
             .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "toml")
+                e.path().extension().is_some_and(|ext| ext == "toml")
                     && e.path()
                         .file_name()
                         .and_then(|n| n.to_str())
@@ -146,10 +149,7 @@ impl PluginRuntime {
             .collect();
 
         let info_path = match info_files.len() {
-            0 => anyhow::bail!(
-                "no .info.toml file found in {}",
-                plugin_dir.display()
-            ),
+            0 => anyhow::bail!("no .info.toml file found in {}", plugin_dir.display()),
             1 => info_files[0].path(),
             _ => anyhow::bail!(
                 "multiple .info.toml files found in {}",
@@ -174,8 +174,9 @@ impl PluginRuntime {
         let wasm_bytes = std::fs::read(&wasm_path)
             .with_context(|| format!("failed to read WASM file: {}", wasm_path.display()))?;
 
-        let module = Module::new(&self.engine, &wasm_bytes)
-            .with_context(|| format!("failed to compile WASM module for plugin '{}'", plugin_name))?;
+        let module = Module::new(&self.engine, &wasm_bytes).with_context(|| {
+            format!("failed to compile WASM module for plugin '{}'", plugin_name)
+        })?;
 
         debug!(
             plugin = %plugin_name,

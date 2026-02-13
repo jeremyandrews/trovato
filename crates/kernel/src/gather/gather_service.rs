@@ -166,7 +166,9 @@ impl GatherService {
             .await?;
 
         // Resolve category hierarchy for HasTagOrDescendants filters
-        let final_definition = self.resolve_category_hierarchies(resolved_definition).await?;
+        let final_definition = self
+            .resolve_category_hierarchies(resolved_definition)
+            .await?;
 
         // Build and execute queries
         let per_page = display.items_per_page;
@@ -181,13 +183,11 @@ impl GatherService {
 
         // Execute main query
         let main_sql = builder.build(page, per_page);
-        let rows: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
-            "SELECT row_to_json(t) FROM ({}) t",
-            main_sql
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to execute main query")?;
+        let rows: Vec<serde_json::Value> =
+            sqlx::query_scalar(&format!("SELECT row_to_json(t) FROM ({}) t", main_sql))
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to execute main query")?;
 
         Ok(GatherResult::new(rows, total as u64, page, per_page))
     }
@@ -218,9 +218,10 @@ impl GatherService {
         for filter in definition.filters {
             if filter.operator == FilterOperator::HasTagOrDescendants {
                 // Expand to include all descendant tag IDs
-                let tag_id = filter.value.as_uuid().ok_or_else(|| {
-                    anyhow::anyhow!("HasTagOrDescendants requires UUID value")
-                })?;
+                let tag_id = filter
+                    .value
+                    .as_uuid()
+                    .ok_or_else(|| anyhow::anyhow!("HasTagOrDescendants requires UUID value"))?;
 
                 let descendant_ids = self.categories.get_tag_with_descendants(tag_id).await?;
 
@@ -260,7 +261,7 @@ impl GatherService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gather::types::{PagerConfig, PagerStyle, ViewSort, SortDirection};
+    use crate::gather::types::{PagerConfig, PagerStyle, SortDirection, ViewSort};
 
     #[test]
     fn gather_result_pagination() {

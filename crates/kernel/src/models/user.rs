@@ -1,8 +1,8 @@
 //! User model and CRUD operations.
 
 use anyhow::{Context, Result};
-use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
+use argon2::password_hash::rand_core::OsRng;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -246,14 +246,13 @@ impl User {
 
     /// List users with pagination.
     pub async fn list_paginated(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
-        let users = sqlx::query_as::<_, User>(
-            "SELECT * FROM users ORDER BY name LIMIT $1 OFFSET $2"
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
-        .context("failed to list users")?;
+        let users =
+            sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY name LIMIT $1 OFFSET $2")
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await
+                .context("failed to list users")?;
 
         Ok(users)
     }
@@ -331,13 +330,17 @@ mod tests {
 
         // Verify should work
         let parsed = PasswordHash::new(&hash).unwrap();
-        assert!(Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok());
+        assert!(
+            Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok()
+        );
 
         // Wrong password should fail
-        assert!(Argon2::default()
-            .verify_password(b"wrong_password", &parsed)
-            .is_err());
+        assert!(
+            Argon2::default()
+                .verify_password(b"wrong_password", &parsed)
+                .is_err()
+        );
     }
 }

@@ -116,7 +116,9 @@ impl ContentTypeRegistry {
         ItemType::upsert(&self.inner.pool, input).await?;
 
         // Update cache
-        self.inner.types.insert(def.machine_name.clone(), def.clone());
+        self.inner
+            .types
+            .insert(def.machine_name.clone(), def.clone());
 
         info!(type_name = %def.machine_name, "registered content type");
         Ok(())
@@ -142,11 +144,7 @@ impl ContentTypeRegistry {
 
     /// List all content types.
     pub fn list(&self) -> Vec<ContentTypeDefinition> {
-        self.inner
-            .types
-            .iter()
-            .map(|r| r.value().clone())
-            .collect()
+        self.inner.types.iter().map(|r| r.value().clone()).collect()
     }
 
     /// List all content types (async version for API compatibility).
@@ -203,7 +201,8 @@ impl ContentTypeRegistry {
             label: label.to_string(),
             description: description.map(|s| s.to_string()),
             has_title: Some(true),
-            title_label: settings.get("title_label")
+            title_label: settings
+                .get("title_label")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .or(Some("Title".to_string())),
@@ -269,14 +268,12 @@ impl ContentTypeRegistry {
             "fields": def.fields,
         });
 
-        sqlx::query(
-            "UPDATE item_type SET settings = $1 WHERE type = $2"
-        )
-        .bind(&settings)
-        .bind(type_name)
-        .execute(&self.inner.pool)
-        .await
-        .context("failed to update item_type")?;
+        sqlx::query("UPDATE item_type SET settings = $1 WHERE type = $2")
+            .bind(&settings)
+            .bind(type_name)
+            .execute(&self.inner.pool)
+            .await
+            .context("failed to update item_type")?;
 
         // Update cache
         self.inner.types.insert(type_name.to_string(), def);
@@ -287,11 +284,7 @@ impl ContentTypeRegistry {
 
     /// List content type names.
     pub fn type_names(&self) -> Vec<String> {
-        self.inner
-            .types
-            .iter()
-            .map(|r| r.key().clone())
-            .collect()
+        self.inner.types.iter().map(|r| r.key().clone()).collect()
     }
 
     /// Check if a content type exists.

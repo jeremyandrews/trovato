@@ -354,12 +354,7 @@ fn gather_result_empty() {
 
 #[test]
 fn gather_result_serialization() {
-    let result = GatherResult::new(
-        vec![serde_json::json!({"title": "Test"})],
-        1,
-        1,
-        10,
-    );
+    let result = GatherResult::new(vec![serde_json::json!({"title": "Test"})], 1, 1, 10);
 
     let json = serde_json::to_string(&result).unwrap();
     assert!(json.contains("\"total\":1"));
@@ -556,14 +551,12 @@ fn gate_test_recent_articles_view_definition() {
 
     // Verify result structure would be correct
     let mock_result = GatherResult::new(
-        vec![
-            serde_json::json!({
-                "id": "01234567-89ab-cdef-0123-456789abcdef",
-                "title": "Getting Started with Rust",
-                "created": 1707782400,
-                "summary": "A beginner's guide to Rust programming"
-            }),
-        ],
+        vec![serde_json::json!({
+            "id": "01234567-89ab-cdef-0123-456789abcdef",
+            "title": "Getting Started with Rust",
+            "created": 1707782400,
+            "summary": "A beginner's guide to Rust programming"
+        })],
         1,
         1,
         10,

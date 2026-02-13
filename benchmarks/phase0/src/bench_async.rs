@@ -15,9 +15,9 @@ use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, Linker, Module, PoolingAllocationConfig, Store,
 };
 
+use crate::BenchResult;
 use crate::fixture::synthetic_item;
 use crate::host::StubHostState;
-use crate::BenchResult;
 
 /// Results from the async benchmark.
 pub struct AsyncBenchmarkResults {
@@ -102,7 +102,10 @@ impl AsyncBenchHost {
                         Err(_) => return 0i64,
                     };
 
-                    let ptr = match alloc_typed.call_async(&mut caller, result.len() as i32).await {
+                    let ptr = match alloc_typed
+                        .call_async(&mut caller, result.len() as i32)
+                        .await
+                    {
                         Ok(p) => p,
                         Err(_) => return 0i64,
                     };

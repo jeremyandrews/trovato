@@ -1,11 +1,11 @@
 //! Cron route handlers.
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
-    Json, Router,
 };
 use serde::Serialize;
 use tower_sessions::Session;
@@ -33,10 +33,7 @@ pub struct CronResponse {
 }
 
 /// Run cron tasks (protected by secret key).
-async fn run_cron(
-    State(state): State<AppState>,
-    Path(key): Path<String>,
-) -> Response {
+async fn run_cron(State(state): State<AppState>, Path(key): Path<String>) -> Response {
     // Validate cron key
     let expected_key = std::env::var("CRON_KEY").unwrap_or_else(|_| "default-cron-key".to_string());
     if key != expected_key {
@@ -119,11 +116,7 @@ pub struct QueueLengths {
 
 /// Check if user is admin, return user or redirect to login.
 async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: Option<uuid::Uuid> = session
-        .get(SESSION_USER_ID)
-        .await
-        .ok()
-        .flatten();
+    let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id {
         if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
@@ -139,10 +132,7 @@ async fn require_admin(state: &AppState, session: &Session) -> Result<User, Resp
 }
 
 /// Get cron status (admin only).
-async fn cron_status(
-    State(state): State<AppState>,
-    session: Session,
-) -> Response {
+async fn cron_status(State(state): State<AppState>, session: Session) -> Response {
     // Check admin permission
     if let Err(e) = require_admin(&state, &session).await {
         return e;

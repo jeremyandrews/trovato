@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::info_parser::PluginInfo;
 
@@ -101,10 +101,7 @@ pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<S
 }
 
 /// Check if a plugin's dependencies are satisfied.
-pub fn check_dependencies(
-    plugin: &PluginInfo,
-    available: &HashSet<String>,
-) -> Result<()> {
+pub fn check_dependencies(plugin: &PluginInfo, available: &HashSet<String>) -> Result<()> {
     for dep in &plugin.dependencies {
         if !available.contains(dep) {
             bail!(

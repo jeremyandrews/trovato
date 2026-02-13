@@ -3,11 +3,11 @@
 //! Provides endpoints for viewing, creating, editing, and deleting content items.
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
@@ -136,15 +136,29 @@ async fn view_item(
     html.push_str("</head><body>");
 
     html.push_str(&format!("<h1>{}</h1>", html_escape(&item.title)));
-    html.push_str(&format!("<p><em>Type: {} | Status: {}</em></p>", item.item_type, if item.is_published() { "Published" } else { "Unpublished" }));
+    html.push_str(&format!(
+        "<p><em>Type: {} | Status: {}</em></p>",
+        item.item_type,
+        if item.is_published() {
+            "Published"
+        } else {
+            "Unpublished"
+        }
+    ));
 
     // Render fields
     if let Some(fields) = item.fields.as_object() {
         for (name, value) in fields {
             if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
-                let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("plain_text");
+                let format = value
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("plain_text");
                 let filtered = FilterPipeline::for_format(format).process(text_val);
-                html.push_str(&format!("<div class=\"field field-{}\"><h3>{}</h3>{}</div>", name, name, filtered));
+                html.push_str(&format!(
+                    "<div class=\"field field-{}\"><h3>{}</h3>{}</div>",
+                    name, name, filtered
+                ));
             }
         }
     }
@@ -155,7 +169,10 @@ async fn view_item(
     }
 
     // Action links
-    html.push_str(&format!(r#"<p><a href="/item/{}/edit">Edit</a> | <a href="/item/{}/revisions">Revisions</a></p>"#, id, id));
+    html.push_str(&format!(
+        r#"<p><a href="/item/{}/edit">Edit</a> | <a href="/item/{}/revisions">Revisions</a></p>"#,
+        id, id
+    ));
 
     html.push_str("</body></html>");
 
@@ -312,7 +329,12 @@ async fn edit_item_form(
     };
 
     // Check access
-    if !state.items().check_access(&item, "edit", &user).await.unwrap_or(false) {
+    if !state
+        .items()
+        .check_access(&item, "edit", &user)
+        .await
+        .unwrap_or(false)
+    {
         return Err((
             StatusCode::FORBIDDEN,
             Json(ItemError {
@@ -495,12 +517,18 @@ async fn list_revisions(
     // Build HTML
     let mut html = String::new();
     html.push_str("<!DOCTYPE html><html><head>");
-    html.push_str(&format!("<title>Revisions: {}</title>", html_escape(&item.title)));
+    html.push_str(&format!(
+        "<title>Revisions: {}</title>",
+        html_escape(&item.title)
+    ));
     html.push_str("<style>body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; } table { width: 100%; border-collapse: collapse; } th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; } .btn { padding: 5px 10px; background: #007bff; color: white; text-decoration: none; border-radius: 3px; }</style>");
     html.push_str("</head><body>");
 
     html.push_str(&format!("<h1>Revisions: {}</h1>", html_escape(&item.title)));
-    html.push_str(&format!(r#"<p><a href="/item/{}">← Back to item</a></p>"#, id));
+    html.push_str(&format!(
+        r#"<p><a href="/item/{}">← Back to item</a></p>"#,
+        id
+    ));
 
     html.push_str("<table><thead><tr><th>Date</th><th>Title</th><th>Log</th><th>Actions</th></tr></thead><tbody>");
 
@@ -508,17 +536,28 @@ async fn list_revisions(
         let date = chrono::DateTime::from_timestamp(rev.created, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "Unknown".to_string());
-        let current = if Some(rev.id) == item.current_revision_id { " (current)" } else { "" };
+        let current = if Some(rev.id) == item.current_revision_id {
+            " (current)"
+        } else {
+            ""
+        };
         let log = rev.log.as_deref().unwrap_or("-");
         let revert_btn = if Some(rev.id) != item.current_revision_id {
-            format!(r#"<form method="post" action="/item/{}/revert/{}" style="display:inline"><button type="submit" class="btn">Revert</button></form>"#, id, rev.id)
+            format!(
+                r#"<form method="post" action="/item/{}/revert/{}" style="display:inline"><button type="submit" class="btn">Revert</button></form>"#,
+                id, rev.id
+            )
         } else {
             String::new()
         };
 
         html.push_str(&format!(
             "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            date, current, html_escape(&rev.title), html_escape(log), revert_btn
+            date,
+            current,
+            html_escape(&rev.title),
+            html_escape(log),
+            revert_btn
         ));
     }
 
@@ -560,9 +599,7 @@ async fn revert_revision(
 }
 
 /// List all content types (API endpoint).
-async fn list_content_types(
-    State(state): State<AppState>,
-) -> Json<Vec<String>> {
+async fn list_content_types(State(state): State<AppState>) -> Json<Vec<String>> {
     Json(state.content_types().type_names())
 }
 

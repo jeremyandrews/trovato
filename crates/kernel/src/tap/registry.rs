@@ -44,10 +44,7 @@ impl TapRegistry {
                     weight,
                 };
 
-                handlers
-                    .entry(tap_name.clone())
-                    .or_default()
-                    .push(handler);
+                handlers.entry(tap_name.clone()).or_default().push(handler);
             }
         }
 
@@ -83,10 +80,7 @@ impl TapRegistry {
 
     /// Get the count of handlers for a tap.
     pub fn handler_count(&self, tap_name: &str) -> usize {
-        self.handlers
-            .get(tap_name)
-            .map(|v| v.len())
-            .unwrap_or(0)
+        self.handlers.get(tap_name).map(|v| v.len()).unwrap_or(0)
     }
 
     /// Get total number of registered taps.

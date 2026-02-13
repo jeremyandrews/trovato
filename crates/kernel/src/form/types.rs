@@ -494,14 +494,8 @@ mod tests {
         let form = Form::new("test_form")
             .title("Test Form")
             .action("/submit")
-            .element(
-                "name",
-                FormElement::textfield().title("Name").required(),
-            )
-            .element(
-                "submit",
-                FormElement::submit("Save").weight(100),
-            );
+            .element("name", FormElement::textfield().title("Name").required())
+            .element("submit", FormElement::submit("Save").weight(100));
 
         assert_eq!(form.form_id, "test_form");
         assert_eq!(form.action, "/submit");
@@ -531,7 +525,10 @@ mod tests {
         ]);
         assert!(matches!(
             select.element_type,
-            ElementType::Select { multiple: false, .. }
+            ElementType::Select {
+                multiple: false,
+                ..
+            }
         ));
     }
 
@@ -577,8 +574,7 @@ mod tests {
 
     #[test]
     fn test_form_serialization() {
-        let form = Form::new("test")
-            .element("name", FormElement::textfield().title("Name"));
+        let form = Form::new("test").element("name", FormElement::textfield().title("Name"));
 
         let json = serde_json::to_string(&form).unwrap();
         assert!(json.contains("test"));

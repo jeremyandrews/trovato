@@ -120,10 +120,7 @@ impl LockoutService {
             .await
             .context("failed to get Redis connection")?;
 
-        let ttl: i64 = conn
-            .ttl(&key)
-            .await
-            .context("failed to get lockout TTL")?;
+        let ttl: i64 = conn.ttl(&key).await.context("failed to get lockout TTL")?;
 
         if ttl > 0 {
             Ok(Some(ttl as u64))

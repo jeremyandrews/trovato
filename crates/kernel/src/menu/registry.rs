@@ -38,9 +38,15 @@ pub struct MenuDefinition {
     pub handler_type: String,
 }
 
-fn default_true() -> bool { true }
-fn default_get() -> String { "GET".to_string() }
-fn default_page() -> String { "page".to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_get() -> String {
+    "GET".to_string()
+}
+fn default_page() -> String {
+    "page".to_string()
+}
 
 /// Result of matching a path against registered routes.
 #[derive(Debug, Clone)]
@@ -117,7 +123,8 @@ impl MenuRegistry {
 
     /// Build route patterns for path matching.
     fn build_routes(&mut self) {
-        self.routes = self.menus
+        self.routes = self
+            .menus
             .keys()
             .map(|path| {
                 // Convert path params to regex-like pattern for sorting
@@ -166,12 +173,7 @@ impl MenuRegistry {
     pub fn children_of(&self, parent: &str) -> Vec<&MenuDefinition> {
         self.children
             .get(parent)
-            .map(|paths| {
-                paths
-                    .iter()
-                    .filter_map(|p| self.menus.get(p))
-                    .collect()
-            })
+            .map(|paths| paths.iter().filter_map(|p| self.menus.get(p)).collect())
             .unwrap_or_default()
     }
 
@@ -270,9 +272,7 @@ mod tests {
             {"path": "/admin/blog/:id", "title": "Edit Post"}
         ]"#;
 
-        let registry = MenuRegistry::from_tap_results(vec![
-            ("blog".to_string(), json.to_string())
-        ]);
+        let registry = MenuRegistry::from_tap_results(vec![("blog".to_string(), json.to_string())]);
 
         assert_eq!(registry.len(), 2);
         assert!(registry.get("/admin/blog").is_some());
@@ -285,9 +285,7 @@ mod tests {
             {"path": "/blog/:slug", "title": "Post"}
         ]"#;
 
-        let registry = MenuRegistry::from_tap_results(vec![
-            ("blog".to_string(), json.to_string())
-        ]);
+        let registry = MenuRegistry::from_tap_results(vec![("blog".to_string(), json.to_string())]);
 
         let result = registry.match_path("/blog/hello-world");
         assert!(result.is_some());
@@ -304,9 +302,8 @@ mod tests {
             {"path": "/admin/users", "title": "Users", "parent": "/admin"}
         ]"#;
 
-        let registry = MenuRegistry::from_tap_results(vec![
-            ("admin".to_string(), json.to_string())
-        ]);
+        let registry =
+            MenuRegistry::from_tap_results(vec![("admin".to_string(), json.to_string())]);
 
         let children = registry.children_of("/admin");
         assert_eq!(children.len(), 2);

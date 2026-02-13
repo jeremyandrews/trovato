@@ -137,7 +137,11 @@ impl RequestState {
     ///
     /// Panics if services were not provided (test mode).
     pub fn lockout(&self) -> &LockoutService {
-        &self.services.as_ref().expect("services not initialized").lockout
+        &self
+            .services
+            .as_ref()
+            .expect("services not initialized")
+            .lockout
     }
 
     /// Check if services are available.
@@ -216,6 +220,9 @@ mod tests {
         let ctx = UserContext::authenticated(id, vec![]);
         let state = RequestState::without_services(ctx);
 
-        assert_eq!(state.user_id_string(), "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            state.user_id_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
     }
 }

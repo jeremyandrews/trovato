@@ -26,11 +26,7 @@ pub struct FormService {
 
 impl FormService {
     /// Create a new form service.
-    pub fn new(
-        pool: PgPool,
-        dispatcher: Arc<TapDispatcher>,
-        theme: Arc<ThemeEngine>,
-    ) -> Self {
+    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>, theme: Arc<ThemeEngine>) -> Self {
         Self {
             pool,
             dispatcher,
@@ -99,10 +95,7 @@ impl FormService {
         state: &RequestState,
     ) -> Result<FormResult> {
         // Verify CSRF token
-        let csrf_token = values
-            .get("_token")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let csrf_token = values.get("_token").and_then(|v| v.as_str()).unwrap_or("");
 
         if !verify_csrf_token(session, csrf_token).await? {
             return Ok(FormResult::ValidationFailed(vec![ValidationError {
@@ -182,12 +175,9 @@ impl FormService {
         };
 
         // Update form state with current values
-        form_state.values.extend(
-            request
-                .values
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone())),
-        );
+        form_state
+            .values
+            .extend(request.values.iter().map(|(k, v)| (k.clone(), v.clone())));
 
         // Handle the trigger
         let response = self
@@ -215,7 +205,11 @@ impl FormService {
         }
 
         if trigger.starts_with("remove_") {
-            let parts: Vec<&str> = trigger.strip_prefix("remove_").unwrap_or(trigger).split('_').collect();
+            let parts: Vec<&str> = trigger
+                .strip_prefix("remove_")
+                .unwrap_or(trigger)
+                .split('_')
+                .collect();
             if parts.len() >= 2 {
                 let field_name = parts[0];
                 let index: usize = parts[1].parse().unwrap_or(0);
@@ -269,20 +263,22 @@ impl FormService {
             .unwrap_or(1) as usize;
 
         let new_count = current_count + 1;
-        state.extra.insert(count_key, Value::Number(new_count.into()));
+        state
+            .extra
+            .insert(count_key, Value::Number(new_count.into()));
 
         // Generate HTML for new item
         let new_item_html = self.render_multi_value_item(field_name, new_count - 1)?;
 
         Ok(AjaxResponse::new()
-            .append(
-                format!("#{}-wrapper", field_name),
-                new_item_html,
-            )
-            .invoke("Trovato.updateFieldDelta", serde_json::json!({
-                "field": field_name,
-                "count": new_count
-            })))
+            .append(format!("#{}-wrapper", field_name), new_item_html)
+            .invoke(
+                "Trovato.updateFieldDelta",
+                serde_json::json!({
+                    "field": field_name,
+                    "count": new_count
+                }),
+            ))
     }
 
     /// Handle "Remove item" for multi-value fields.
@@ -301,17 +297,17 @@ impl FormService {
             .unwrap_or(1) as usize;
 
         if current_count > 0 {
-            state.extra.insert(count_key, Value::Number((current_count - 1).into()));
+            state
+                .extra
+                .insert(count_key, Value::Number((current_count - 1).into()));
         }
 
-        Ok(AjaxResponse::new()
-            .remove(format!("#{}-{}", field_name, index)))
+        Ok(AjaxResponse::new().remove(format!("#{}-{}", field_name, index)))
     }
 
     /// Render a multi-value field item.
     fn render_multi_value_item(&self, field_name: &str, index: usize) -> Result<String> {
-        let element = FormElement::textfield()
-            .title(format!("Item {}", index + 1));
+        let element = FormElement::textfield().title(format!("Item {}", index + 1));
 
         let mut context = tera::Context::new();
         context.insert("name", &format!("{}[{}]", field_name, index));
@@ -372,20 +368,19 @@ impl FormService {
 
     /// Load form state.
     pub async fn load_state(&self, form_build_id: &str) -> Result<Option<FormState>> {
-        let row: Option<(Value,)> = sqlx::query_as(
-            "SELECT state FROM form_state_cache WHERE form_build_id = $1",
-        )
-        .bind(form_build_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to load form state")?;
+        let row: Option<(Value,)> =
+            sqlx::query_as("SELECT state FROM form_state_cache WHERE form_build_id = $1")
+                .bind(form_build_id)
+                .fetch_optional(&self.pool)
+                .await
+                .context("failed to load form state")?;
 
         let Some((state_json,)) = row else {
             return Ok(None);
         };
 
-        let state: FormState = serde_json::from_value(state_json)
-            .context("failed to deserialize form state")?;
+        let state: FormState =
+            serde_json::from_value(state_json).context("failed to deserialize form state")?;
 
         Ok(Some(state))
     }
@@ -522,7 +517,9 @@ mod tests {
     #[test]
     fn test_form_state_serialization() {
         let mut state = FormState::new("test", "build-1");
-        state.values.insert("name".to_string(), Value::String("John".to_string()));
+        state
+            .values
+            .insert("name".to_string(), Value::String("John".to_string()));
         state.step = 2;
 
         let json = serde_json::to_string(&state).unwrap();

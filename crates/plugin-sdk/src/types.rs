@@ -52,7 +52,9 @@ pub struct Item {
 impl Item {
     /// Get a field value as a specific type.
     pub fn get_field<T: for<'de> Deserialize<'de>>(&self, name: &str) -> Option<T> {
-        self.fields.get(name).and_then(|v| serde_json::from_value(v.clone()).ok())
+        self.fields
+            .get(name)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     /// Set a field value.
@@ -144,9 +146,16 @@ pub struct FieldDefinition {
     pub field_name: String,
     pub field_type: FieldType,
     pub label: String,
+    #[serde(default)]
     pub required: bool,
+    #[serde(default = "default_cardinality")]
     pub cardinality: i32,
+    #[serde(default)]
     pub settings: serde_json::Value,
+}
+
+fn default_cardinality() -> i32 {
+    1
 }
 
 impl FieldDefinition {

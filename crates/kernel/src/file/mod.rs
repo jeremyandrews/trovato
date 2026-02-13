@@ -5,7 +5,9 @@
 pub mod service;
 pub mod storage;
 
-pub use service::{FileInfo, FileService, FileStatus, UploadResult, ALLOWED_MIME_TYPES, MAX_FILE_SIZE};
+pub use service::{
+    ALLOWED_MIME_TYPES, FileInfo, FileService, FileStatus, MAX_FILE_SIZE, UploadResult,
+};
 pub use storage::{FileStorage, LocalFileStorage};
 
 #[cfg(feature = "s3")]

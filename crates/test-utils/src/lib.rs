@@ -88,10 +88,13 @@ impl TestItem {
 
     /// Add a text field.
     pub fn with_text_field(self, name: &str, value: &str, format: &str) -> Self {
-        self.with_field(name, serde_json::json!({
-            "value": value,
-            "format": format
-        }))
+        self.with_field(
+            name,
+            serde_json::json!({
+                "value": value,
+                "format": format
+            }),
+        )
     }
 
     /// Set stage.
@@ -177,7 +180,8 @@ pub mod assert {
     /// Assert that a JSON value equals expected.
     pub fn json_eq(actual: &Value, expected: &Value) {
         assert_eq!(
-            actual, expected,
+            actual,
+            expected,
             "JSON mismatch:\nactual: {}\nexpected: {}",
             serde_json::to_string_pretty(actual).unwrap(),
             serde_json::to_string_pretty(expected).unwrap()
