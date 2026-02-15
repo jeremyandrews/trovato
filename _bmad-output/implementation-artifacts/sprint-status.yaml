@@ -282,7 +282,7 @@ development_status:
   20-1-traditional-website-use-case: done    # 2026-02-15
   20-2-headless-cms-use-case: done           # 2026-02-15
   20-3-argus-composite-gather-responses: done     # 2026-02-15 Tests Gather expressiveness (story + articles + entities in one response)
-  20-4-netgrasp-lean-runtime-validation: backlog  # Tests Raspberry Pi deployment, event-driven patterns
+  20-4-netgrasp-lean-runtime-validation: done      # 2026-02-15 6 content types, 2 Gather queries, auth roles, dashboard templates
   20-5-goose-high-throughput-metrics: backlog     # Tests write throughput (1000+ writes/sec), real-time queries
   epic-20-retrospective: optional
 
