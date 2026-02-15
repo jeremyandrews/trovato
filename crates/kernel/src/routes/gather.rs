@@ -2,7 +2,8 @@
 //!
 //! REST endpoints for executing view queries.
 
-use crate::gather::{FilterValue, GatherView, ViewDefinition, ViewDisplay};
+use crate::gather::{FilterValue, GatherView, QueryContext, ViewDefinition, ViewDisplay};
+use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 use axum::{
     Router,
@@ -13,6 +14,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tower_sessions::Session;
+use uuid::Uuid;
 
 use super::helpers::html_escape as escape_html;
 
@@ -150,15 +153,28 @@ async fn get_view(
 
 async fn execute_view(
     State(state): State<AppState>,
+    session: Session,
     Path(view_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Json<GatherResultResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let context = QueryContext {
+        current_user_id: user_id,
+        url_args: params.filters.clone(),
+    };
+
     // Parse exposed filter values
     let exposed_filters = parse_filter_params(&params.filters);
 
     let result = state
         .gather()
-        .execute(&view_id, params.page, exposed_filters, &params.stage)
+        .execute(
+            &view_id,
+            params.page,
+            exposed_filters,
+            &params.stage,
+            &context,
+        )
         .await
         .map_err(|e| {
             (
@@ -182,8 +198,15 @@ async fn execute_view(
 
 async fn execute_adhoc_query(
     State(state): State<AppState>,
+    session: Session,
     Json(request): Json<AdhocQueryRequest>,
 ) -> Result<Json<GatherResultResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let context = QueryContext {
+        current_user_id: user_id,
+        url_args: HashMap::new(),
+    };
+
     // Convert JSON filter values to FilterValue
     let exposed_filters: HashMap<String, FilterValue> = request
         .filters
@@ -199,6 +222,7 @@ async fn execute_adhoc_query(
             request.page,
             exposed_filters,
             &request.stage,
+            &context,
         )
         .await
         .map_err(|e| {
@@ -223,10 +247,16 @@ async fn execute_adhoc_query(
 
 async fn render_view_html(
     State(state): State<AppState>,
-    session: tower_sessions::Session,
+    session: Session,
     Path(view_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<ErrorResponse>)> {
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let query_context = QueryContext {
+        current_user_id: user_id,
+        url_args: params.filters.clone(),
+    };
+
     let view = state.gather().get_view(&view_id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -240,7 +270,13 @@ async fn render_view_html(
 
     let result = state
         .gather()
-        .execute(&view_id, params.page, exposed_filters, &params.stage)
+        .execute(
+            &view_id,
+            params.page,
+            exposed_filters,
+            &params.stage,
+            &query_context,
+        )
         .await
         .map_err(|e| {
             (

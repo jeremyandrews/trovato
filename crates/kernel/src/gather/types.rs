@@ -6,6 +6,7 @@
 //! - FilterOperator: Comparison operators including category-aware filters
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Complete view definition for Gather queries.
@@ -33,6 +34,10 @@ pub struct ViewDefinition {
     /// Join relationships.
     #[serde(default)]
     pub relationships: Vec<ViewRelationship>,
+
+    /// Named sub-queries to nest into parent results.
+    #[serde(default)]
+    pub includes: HashMap<String, IncludeDefinition>,
 }
 
 fn default_base_table() -> String {
@@ -48,6 +53,7 @@ impl Default for ViewDefinition {
             filters: Vec::new(),
             sorts: Vec::new(),
             relationships: Vec::new(),
+            includes: HashMap::new(),
         }
     }
 }
@@ -201,6 +207,36 @@ pub enum ContextualValue {
     CurrentTime,
     /// Value from URL argument.
     UrlArg(String),
+}
+
+/// Nested sub-query specification for composite responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncludeDefinition {
+    /// Child query definition.
+    pub definition: ViewDefinition,
+
+    /// Field on the parent item to match (e.g., "id").
+    pub parent_field: String,
+
+    /// Field on the child item to match (e.g., "fields.story_id").
+    pub child_field: String,
+
+    /// If true, embed as a single object; if false, embed as an array.
+    #[serde(default)]
+    pub singular: bool,
+
+    /// Optional display/pagination for the child query.
+    pub display: Option<ViewDisplay>,
+}
+
+/// Runtime context for query execution.
+#[derive(Debug, Clone, Default)]
+pub struct QueryContext {
+    /// Current authenticated user's ID (None for anonymous).
+    pub current_user_id: Option<Uuid>,
+
+    /// URL arguments available for UrlArg resolution.
+    pub url_args: HashMap<String, String>,
 }
 
 /// Sort specification.
@@ -583,10 +619,88 @@ mod tests {
                 nulls: None,
             }],
             relationships: vec![],
+            includes: HashMap::new(),
         };
 
         let json = serde_json::to_string(&def).unwrap();
         let parsed: ViewDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.item_type, Some("blog".to_string()));
+    }
+
+    #[test]
+    fn include_definition_serde_roundtrip() {
+        let include = IncludeDefinition {
+            definition: ViewDefinition {
+                item_type: Some("article".to_string()),
+                ..Default::default()
+            },
+            parent_field: "id".to_string(),
+            child_field: "fields.story_id".to_string(),
+            singular: false,
+            display: None,
+        };
+
+        let json = serde_json::to_string(&include).unwrap();
+        let parsed: IncludeDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.parent_field, "id");
+        assert_eq!(parsed.child_field, "fields.story_id");
+        assert!(!parsed.singular);
+        assert_eq!(parsed.definition.item_type, Some("article".to_string()));
+    }
+
+    #[test]
+    fn include_definition_singular_roundtrip() {
+        let include = IncludeDefinition {
+            definition: ViewDefinition {
+                item_type: Some("reaction".to_string()),
+                ..Default::default()
+            },
+            parent_field: "id".to_string(),
+            child_field: "fields.item_id".to_string(),
+            singular: true,
+            display: None,
+        };
+
+        let json = serde_json::to_string(&include).unwrap();
+        let parsed: IncludeDefinition = serde_json::from_str(&json).unwrap();
+        assert!(parsed.singular);
+    }
+
+    #[test]
+    fn view_definition_with_includes_roundtrip() {
+        let mut includes = HashMap::new();
+        includes.insert(
+            "articles".to_string(),
+            IncludeDefinition {
+                definition: ViewDefinition {
+                    item_type: Some("article".to_string()),
+                    ..Default::default()
+                },
+                parent_field: "id".to_string(),
+                child_field: "fields.story_id".to_string(),
+                singular: false,
+                display: None,
+            },
+        );
+
+        let def = ViewDefinition {
+            item_type: Some("story".to_string()),
+            includes,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&def).unwrap();
+        let parsed: ViewDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.includes.len(), 1);
+        assert!(parsed.includes.contains_key("articles"));
+    }
+
+    #[test]
+    fn view_definition_without_includes_deserializes() {
+        // Backward compatibility: JSON without "includes" should parse fine
+        let json = r#"{"item_type":"blog"}"#;
+        let parsed: ViewDefinition = serde_json::from_str(json).unwrap();
+        assert!(parsed.includes.is_empty());
         assert_eq!(parsed.item_type, Some("blog".to_string()));
     }
 }

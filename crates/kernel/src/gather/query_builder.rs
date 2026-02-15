@@ -372,6 +372,7 @@ impl ViewQueryBuilder {
         match value {
             FilterValue::List(items) => items.iter().filter_map(|v| v.as_string()).collect(),
             FilterValue::String(s) => vec![s.clone()],
+            FilterValue::Uuid(u) => vec![u.to_string()],
             _ => Vec::new(),
         }
     }

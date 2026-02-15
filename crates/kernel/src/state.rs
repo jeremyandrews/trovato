@@ -244,6 +244,7 @@ impl AppState {
                         nulls: None,
                     }],
                     relationships: Vec::new(),
+                    includes: std::collections::HashMap::new(),
                 },
                 display: ViewDisplay {
                     format: DisplayFormat::List,

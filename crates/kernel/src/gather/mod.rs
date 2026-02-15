@@ -15,7 +15,7 @@ pub use category_service::CategoryService;
 pub use gather_service::GatherService;
 pub use query_builder::{CategoryHierarchyQuery, ViewQueryBuilder};
 pub use types::{
-    DisplayFormat, FilterOperator, FilterValue, GatherResult, GatherView, JoinType, NullsOrder,
-    PagerConfig, PagerStyle, SortDirection, ViewDefinition, ViewDisplay, ViewField, ViewFilter,
-    ViewRelationship, ViewSort,
+    DisplayFormat, FilterOperator, FilterValue, GatherResult, GatherView, IncludeDefinition,
+    JoinType, NullsOrder, PagerConfig, PagerStyle, QueryContext, SortDirection, ViewDefinition,
+    ViewDisplay, ViewField, ViewFilter, ViewRelationship, ViewSort,
 };
