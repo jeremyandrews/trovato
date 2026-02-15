@@ -1,8 +1,8 @@
 <div class="blog-listing">
-    <h1>{{ view.label }}</h1>
+    <h1>{{ query.label }}</h1>
 
-    {% if view.description %}
-    <p class="gather-view__description">{{ view.description }}</p>
+    {% if query.description %}
+    <p class="gather-query__description">{{ query.description }}</p>
     {% endif %}
 
     {% if rows | length == 0 %}

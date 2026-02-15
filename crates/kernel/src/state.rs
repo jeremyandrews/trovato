@@ -209,36 +209,36 @@ impl AppState {
         // Create category service
         let categories = CategoryService::new(db.clone());
 
-        // Create gather service and load views
+        // Create gather service and load queries
         let gather = GatherService::new(db.clone(), categories.clone());
         gather
-            .load_views()
+            .load_queries()
             .await
-            .context("failed to load gather views")?;
+            .context("failed to load gather queries")?;
 
-        // Register blog_listing view if it doesn't exist
-        if gather.get_view("blog_listing").is_none() {
+        // Register blog_listing query if it doesn't exist
+        if gather.get_query("blog_listing").is_none() {
             use crate::gather::{
-                DisplayFormat, FilterOperator, FilterValue, GatherView, PagerConfig, SortDirection,
-                ViewDefinition, ViewDisplay, ViewFilter, ViewSort,
+                DisplayFormat, FilterOperator, FilterValue, GatherQuery, PagerConfig,
+                QueryDefinition, QueryDisplay, QueryFilter, QuerySort, SortDirection,
             };
 
-            let blog_view = GatherView {
-                view_id: "blog_listing".to_string(),
+            let blog_query = GatherQuery {
+                query_id: "blog_listing".to_string(),
                 label: "Blog".to_string(),
                 description: Some("Recent blog posts".to_string()),
-                definition: ViewDefinition {
+                definition: QueryDefinition {
                     base_table: "item".to_string(),
                     item_type: Some("blog".to_string()),
                     fields: Vec::new(),
-                    filters: vec![ViewFilter {
+                    filters: vec![QueryFilter {
                         field: "status".to_string(),
                         operator: FilterOperator::Equals,
                         value: FilterValue::Integer(1),
                         exposed: false,
                         exposed_label: None,
                     }],
-                    sorts: vec![ViewSort {
+                    sorts: vec![QuerySort {
                         field: "created".to_string(),
                         direction: SortDirection::Desc,
                         nulls: None,
@@ -246,7 +246,7 @@ impl AppState {
                     relationships: Vec::new(),
                     includes: std::collections::HashMap::new(),
                 },
-                display: ViewDisplay {
+                display: QueryDisplay {
                     format: DisplayFormat::List,
                     items_per_page: 10,
                     pager: PagerConfig {
@@ -262,8 +262,8 @@ impl AppState {
                 changed: chrono::Utc::now().timestamp(),
             };
 
-            if let Err(e) = gather.register_view(blog_view).await {
-                tracing::warn!(error = %e, "failed to register blog_listing view");
+            if let Err(e) = gather.register_query(blog_query).await {
+                tracing::warn!(error = %e, "failed to register blog_listing query");
             }
         }
 

@@ -12,32 +12,32 @@ In Drupal 6, Gather is a plugin that lets you build database queries through a U
 
 We use SeaQuery because it builds SQL as an AST rather than string concatenation — safe and dialect-agnostic.
 
-### The View Definition
+### The Query Definition
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewDefinition {
+pub struct QueryDefinition {
     pub name: String,
     pub base_table: String,
-    pub displays: Vec<ViewDisplay>,
+    pub displays: Vec<QueryDisplay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewDisplay {
+pub struct QueryDisplay {
     pub id: String,
     pub display_type: DisplayType,
-    pub fields: Vec<ViewField>,
-    pub filters: Vec<ViewFilter>,
-    pub sorts: Vec<ViewSort>,
-    pub relationships: Vec<ViewRelationship>,
-    pub arguments: Vec<ViewArgument>,
+    pub fields: Vec<QueryField>,
+    pub filters: Vec<QueryFilter>,
+    pub sorts: Vec<QuerySort>,
+    pub relationships: Vec<QueryRelationship>,
+    pub arguments: Vec<QueryArgument>,
     pub pager: PagerSettings,
     pub path: Option<String>,
     pub style: StylePlugin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewField {
+pub struct QueryField {
     pub id: String,
     pub table: String,
     pub column: String,
@@ -46,7 +46,7 @@ pub struct ViewField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewFilter {
+pub struct QueryFilter {
     pub table: String,
     pub column: String,
     pub operator: FilterOperator,
@@ -64,7 +64,7 @@ pub enum FilterOperator {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewRelationship {
+pub struct QueryRelationship {
     pub id: String,
     pub base_table: String,
     pub base_column: String,
@@ -75,7 +75,7 @@ pub struct ViewRelationship {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewArgument {
+pub struct QueryArgument {
     pub table: String,
     pub column: String,
     pub position: usize,
@@ -88,7 +88,7 @@ pub enum ArgumentDefault {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewSort {
+pub struct QuerySort {
     pub table: String,
     pub column: String,
     pub direction: SortDirection,
@@ -105,14 +105,14 @@ pub enum SortDirection {
 ```rust
 use sea_query::{Alias, Cond, Expr, Order, PostgresQueryBuilder, Query};
 
-pub struct ViewQueryBuilder;
+pub struct GatherQueryBuilder;
 
-impl ViewQueryBuilder {
+impl GatherQueryBuilder {
     pub fn build(
-        display: &ViewDisplay,
+        display: &QueryDisplay,
         base_table: &str,
         url_arguments: &[String],
-    ) -> Result<(String, Vec<sea_query::Value>), ViewError> {
+    ) -> Result<(String, Vec<sea_query::Value>), QueryError> {
         let mut query = Query::select();
         let base = Alias::new(base_table);
         query.from(base.clone());
@@ -217,7 +217,7 @@ impl ViewQueryBuilder {
                                 json_to_sea_value(&a[0]),
                                 json_to_sea_value(&a[1]),
                             ),
-                        _ => return Err(ViewError::InvalidFilterValue(
+                        _ => return Err(QueryError::InvalidFilterValue(
                             format!("{}: Between requires [min, max] array",
                                     filter.column)
                         )),
@@ -260,7 +260,7 @@ impl ViewQueryBuilder {
                 }
                 (None, ArgumentDefault::Ignore) => {}
                 (None, ArgumentDefault::NotFound) => {
-                    return Err(ViewError::MissingArgument(arg.position));
+                    return Err(QueryError::MissingArgument(arg.position));
                 }
                 (None, ArgumentDefault::Fixed(default)) => {
                     query.and_where(
@@ -314,10 +314,10 @@ When executing a Gather query in a stage context, the query must:
 2. Exclude items marked as deleted in the active stage
 3. Use stage revision overrides for modified items
 
-The Gather engine achieves this by wrapping the base item query with stage filters. Rather than modifying every query, the `ViewQueryBuilder` accepts an optional `stage_id` and applies the stage CTE as a prefix:
+The Gather engine achieves this by wrapping the base item query with stage filters. Rather than modifying every query, the `GatherQueryBuilder` accepts an optional `stage_id` and applies the stage CTE as a prefix:
 
 ```rust
-impl ViewQueryBuilder {
+impl GatherQueryBuilder {
     /// Wraps a Gather query with stage-awareness.
     /// When stage_id is Some, the query uses stage revision
     /// overrides and excludes stage deletions.

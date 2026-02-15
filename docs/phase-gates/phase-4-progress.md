@@ -28,10 +28,10 @@ Phase 4 implements the Gather query engine and Categories system. Gather provide
 - Unique indexes for parent relationships and root tags
 - Supports DAG (multiple parents per tag)
 
-**gather_view table**:
-- `view_id` VARCHAR(64) PRIMARY KEY
-- `definition` JSONB (ViewDefinition)
-- `display` JSONB (ViewDisplay)
+**gather_query table**:
+- `query_id` VARCHAR(64) PRIMARY KEY
+- `definition` JSONB (QueryDefinition)
+- `display` JSONB (QueryDisplay)
 - `plugin`, `created`, `changed`
 
 ### Category Models (`models/category.rs`)
@@ -55,16 +55,16 @@ Phase 4 implements the Gather query engine and Categories system. Gather provide
 
 | Type | Description |
 |------|-------------|
-| `ViewDefinition` | Query specification: base_table, item_type, fields, filters, sorts, relationships |
-| `ViewDisplay` | Rendering: format, items_per_page, pager config |
-| `ViewFilter` | Field, operator, value, exposed flag |
+| `QueryDefinition` | Query specification: base_table, item_type, fields, filters, sorts, relationships |
+| `QueryDisplay` | Rendering: format, items_per_page, pager config |
+| `QueryFilter` | Field, operator, value, exposed flag |
 | `FilterOperator` | 16 operators including category-aware: `HasTag`, `HasTagOrDescendants` |
 | `FilterValue` | String, Integer, Float, Boolean, UUID, List, Contextual |
-| `ViewSort` | Field, direction (Asc/Desc), nulls handling |
-| `GatherView` | Complete view definition with metadata |
+| `QuerySort` | Field, direction (Asc/Desc), nulls handling |
+| `GatherQuery` | Complete query definition with metadata |
 | `GatherResult` | Query results with pagination info |
 
-### ViewQueryBuilder (`gather/query_builder.rs`)
+### GatherQueryBuilder (`gather/query_builder.rs`)
 
 - SeaQuery-based SQL generation
 - JSONB field extraction (`fields->>'name'`)
@@ -75,8 +75,8 @@ Phase 4 implements the Gather query engine and Categories system. Gather provide
 
 ### GatherService (`gather/gather_service.rs`)
 
-- View registration and persistence
-- View loading from database at startup
+- Query registration and persistence
+- Query loading from database at startup
 - Query execution with exposed filter resolution
 - Category hierarchy expansion (`HasTagOrDescendants` → tag + all descendants)
 
@@ -100,17 +100,17 @@ Phase 4 implements the Gather query engine and Categories system. Gather provide
 **Gather Routes** (`routes/gather.rs`):
 | Method | Path | Handler |
 |--------|------|---------|
-| GET | `/api/views` | list_views |
-| GET | `/api/view/{view_id}` | get_view |
-| GET | `/api/view/{view_id}/execute` | execute_view |
+| GET | `/api/queries` | list_queries |
+| GET | `/api/query/{query_id}` | get_query |
+| GET | `/api/query/{query_id}/execute` | execute_query |
 | POST | `/api/gather/query` | execute_adhoc_query |
-| GET | `/gather/{view_id}` | render_view_html |
+| GET | `/gather/{query_id}` | render_query_html |
 
 ### AppState Integration
 
 Added to `state.rs`:
 - `categories: Arc<CategoryService>` - created at startup
-- `gather: Arc<GatherService>` - loads views from database
+- `gather: Arc<GatherService>` - loads queries from database
 - Getters: `categories()`, `gather()`
 
 ## Test Coverage
@@ -141,19 +141,19 @@ Added to `state.rs`:
 
 ```rust
 #[test]
-fn gate_test_recent_articles_view_definition() {
-    let view = GatherView {
-        view_id: "recent_articles".to_string(),
-        definition: ViewDefinition {
+fn gate_test_recent_articles_query_definition() {
+    let gq = GatherQuery {
+        query_id: "recent_articles".to_string(),
+        definition: QueryDefinition {
             base_table: "item".to_string(),
             item_type: Some("blog".to_string()),
             filters: vec![
-                ViewFilter {
+                QueryFilter {
                     field: "status",
                     operator: FilterOperator::Equals,
                     value: FilterValue::Integer(1),  // Published
                 },
-                ViewFilter {
+                QueryFilter {
                     field: "fields.category",
                     operator: FilterOperator::HasTagOrDescendants,
                     value: FilterValue::Uuid(tech_tag_id),
@@ -161,12 +161,12 @@ fn gate_test_recent_articles_view_definition() {
                 },
             ],
             sorts: vec![
-                ViewSort { field: "sticky", direction: SortDirection::Desc },
-                ViewSort { field: "created", direction: SortDirection::Desc },
+                QuerySort { field: "sticky", direction: SortDirection::Desc },
+                QuerySort { field: "created", direction: SortDirection::Desc },
             ],
             ..Default::default()
         },
-        display: ViewDisplay {
+        display: QueryDisplay {
             items_per_page: 10,
             pager: PagerConfig { enabled: true, style: PagerStyle::Full },
             ..Default::default()
@@ -187,21 +187,22 @@ crates/kernel/
 │   ├── 20260212000006_create_category.sql
 │   ├── 20260212000007_create_category_tag.sql
 │   ├── 20260212000008_create_category_tag_hierarchy.sql
-│   └── 20260212000009_create_gather_view.sql
+│   ├── 20260212000009_create_gather_view.sql
+│   └── 20260218000001_rename_gather_view_to_query.sql
 ├── src/
 │   ├── models/
 │   │   ├── mod.rs           # Added category exports
 │   │   └── category.rs      # Category, Tag, TagHierarchy
 │   ├── gather/
 │   │   ├── mod.rs           # Module exports
-│   │   ├── types.rs         # ViewDefinition, ViewDisplay, etc.
+│   │   ├── types.rs         # QueryDefinition, QueryDisplay, etc.
 │   │   ├── query_builder.rs # SeaQuery SQL generation
 │   │   ├── category_service.rs
 │   │   └── gather_service.rs
 │   ├── routes/
 │   │   ├── mod.rs           # Added gather/category routes
 │   │   ├── category.rs      # Category/tag HTTP handlers
-│   │   └── gather.rs        # View execution handlers
+│   │   └── gather.rs        # Query execution handlers
 │   ├── lib.rs               # Added gather module export
 │   ├── main.rs              # Added gather module and routes
 │   └── state.rs             # Added CategoryService, GatherService
@@ -246,7 +247,7 @@ cargo test --test integration_test
 3. **SeaQuery**: Type-safe SQL building with JSONB support via `Expr::cust()`
 4. **Category Filter Expansion**: `HasTagOrDescendants` resolved at query time
 5. **Stage-Aware Queries**: All queries automatically filter by `stage_id`
-6. **Exposed Filters**: User-modifiable filter values for dynamic views
+6. **Exposed Filters**: User-modifiable filter values for dynamic queries
 
 ## Next Steps (Phase 5)
 

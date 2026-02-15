@@ -1,17 +1,17 @@
 //! Gather query engine types.
 //!
 //! Provides type definitions for the declarative query builder:
-//! - ViewDefinition: Query specification (filters, sorts, fields)
-//! - ViewDisplay: Rendering configuration (format, pager)
+//! - QueryDefinition: Query specification (filters, sorts, fields)
+//! - QueryDisplay: Rendering configuration (format, pager)
 //! - FilterOperator: Comparison operators including category-aware filters
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-/// Complete view definition for Gather queries.
+/// Complete query definition for Gather queries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewDefinition {
+pub struct QueryDefinition {
     /// Base table to query (typically "item").
     #[serde(default = "default_base_table")]
     pub base_table: String,
@@ -21,19 +21,19 @@ pub struct ViewDefinition {
 
     /// Fields to select.
     #[serde(default)]
-    pub fields: Vec<ViewField>,
+    pub fields: Vec<QueryField>,
 
     /// Filter conditions.
     #[serde(default)]
-    pub filters: Vec<ViewFilter>,
+    pub filters: Vec<QueryFilter>,
 
     /// Sort order.
     #[serde(default)]
-    pub sorts: Vec<ViewSort>,
+    pub sorts: Vec<QuerySort>,
 
     /// Join relationships.
     #[serde(default)]
-    pub relationships: Vec<ViewRelationship>,
+    pub relationships: Vec<QueryRelationship>,
 
     /// Named sub-queries to nest into parent results.
     #[serde(default)]
@@ -44,7 +44,7 @@ fn default_base_table() -> String {
     "item".to_string()
 }
 
-impl Default for ViewDefinition {
+impl Default for QueryDefinition {
     fn default() -> Self {
         Self {
             base_table: default_base_table(),
@@ -60,7 +60,7 @@ impl Default for ViewDefinition {
 
 /// Field to select in the query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewField {
+pub struct QueryField {
     /// Field name (can use dots for JSONB paths: "fields.body").
     pub field_name: String,
 
@@ -73,7 +73,7 @@ pub struct ViewField {
 
 /// Filter condition for queries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewFilter {
+pub struct QueryFilter {
     /// Field to filter on.
     pub field: String,
 
@@ -213,7 +213,7 @@ pub enum ContextualValue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncludeDefinition {
     /// Child query definition.
-    pub definition: ViewDefinition,
+    pub definition: QueryDefinition,
 
     /// Field on the parent item to match (e.g., "id").
     pub parent_field: String,
@@ -226,7 +226,7 @@ pub struct IncludeDefinition {
     pub singular: bool,
 
     /// Optional display/pagination for the child query.
-    pub display: Option<ViewDisplay>,
+    pub display: Option<QueryDisplay>,
 }
 
 /// Runtime context for query execution.
@@ -241,7 +241,7 @@ pub struct QueryContext {
 
 /// Sort specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewSort {
+pub struct QuerySort {
     /// Field to sort by.
     pub field: String,
 
@@ -272,7 +272,7 @@ pub enum NullsOrder {
 
 /// Relationship/join specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewRelationship {
+pub struct QueryRelationship {
     /// Relationship name (used as table alias).
     pub name: String,
 
@@ -302,7 +302,7 @@ pub enum JoinType {
 
 /// Display configuration for rendering results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewDisplay {
+pub struct QueryDisplay {
     /// Output format.
     #[serde(default)]
     pub format: DisplayFormat,
@@ -329,7 +329,7 @@ fn default_items_per_page() -> u32 {
     10
 }
 
-impl Default for ViewDisplay {
+impl Default for QueryDisplay {
     fn default() -> Self {
         Self {
             format: DisplayFormat::default(),
@@ -410,11 +410,11 @@ pub enum PagerStyle {
     Infinite,
 }
 
-/// Complete gather view (definition + display + metadata).
+/// Complete gather query (definition + display + metadata).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatherView {
-    /// Unique view identifier.
-    pub view_id: String,
+pub struct GatherQuery {
+    /// Unique query identifier.
+    pub query_id: String,
 
     /// Human-readable label.
     pub label: String,
@@ -423,10 +423,10 @@ pub struct GatherView {
     pub description: Option<String>,
 
     /// Query definition.
-    pub definition: ViewDefinition,
+    pub definition: QueryDefinition,
 
     /// Display configuration.
-    pub display: ViewDisplay,
+    pub display: QueryDisplay,
 
     /// Owning plugin.
     pub plugin: String,
@@ -440,14 +440,14 @@ pub struct GatherView {
     pub changed: i64,
 }
 
-impl Default for GatherView {
+impl Default for GatherQuery {
     fn default() -> Self {
         Self {
-            view_id: String::new(),
+            query_id: String::new(),
             label: String::new(),
             description: None,
-            definition: ViewDefinition::default(),
-            display: ViewDisplay::default(),
+            definition: QueryDefinition::default(),
+            display: QueryDisplay::default(),
             plugin: "core".to_string(),
             created: 0,
             changed: 0,
@@ -501,6 +501,7 @@ impl GatherResult {
     }
 
     /// Create an empty result.
+    #[allow(dead_code)]
     pub fn empty(page: u32, per_page: u32) -> Self {
         Self {
             items: Vec::new(),
@@ -519,8 +520,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn view_definition_defaults() {
-        let def = ViewDefinition::default();
+    fn query_definition_defaults() {
+        let def = QueryDefinition::default();
         assert_eq!(def.base_table, "item");
         assert!(def.filters.is_empty());
         assert!(def.sorts.is_empty());
@@ -562,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn view_display_defaults() {
-        let display = ViewDisplay::default();
+    fn query_display_defaults() {
+        let display = QueryDisplay::default();
         assert_eq!(display.items_per_page, 10);
         assert!(display.pager.enabled);
     }
@@ -597,23 +598,23 @@ mod tests {
     }
 
     #[test]
-    fn view_definition_serialization() {
-        let def = ViewDefinition {
+    fn query_definition_serialization() {
+        let def = QueryDefinition {
             base_table: "item".to_string(),
             item_type: Some("blog".to_string()),
-            fields: vec![ViewField {
+            fields: vec![QueryField {
                 field_name: "title".to_string(),
                 table_alias: None,
                 label: Some("Title".to_string()),
             }],
-            filters: vec![ViewFilter {
+            filters: vec![QueryFilter {
                 field: "status".to_string(),
                 operator: FilterOperator::Equals,
                 value: FilterValue::Integer(1),
                 exposed: false,
                 exposed_label: None,
             }],
-            sorts: vec![ViewSort {
+            sorts: vec![QuerySort {
                 field: "created".to_string(),
                 direction: SortDirection::Desc,
                 nulls: None,
@@ -623,14 +624,14 @@ mod tests {
         };
 
         let json = serde_json::to_string(&def).unwrap();
-        let parsed: ViewDefinition = serde_json::from_str(&json).unwrap();
+        let parsed: QueryDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.item_type, Some("blog".to_string()));
     }
 
     #[test]
     fn include_definition_serde_roundtrip() {
         let include = IncludeDefinition {
-            definition: ViewDefinition {
+            definition: QueryDefinition {
                 item_type: Some("article".to_string()),
                 ..Default::default()
             },
@@ -651,7 +652,7 @@ mod tests {
     #[test]
     fn include_definition_singular_roundtrip() {
         let include = IncludeDefinition {
-            definition: ViewDefinition {
+            definition: QueryDefinition {
                 item_type: Some("reaction".to_string()),
                 ..Default::default()
             },
@@ -667,12 +668,12 @@ mod tests {
     }
 
     #[test]
-    fn view_definition_with_includes_roundtrip() {
+    fn query_definition_with_includes_roundtrip() {
         let mut includes = HashMap::new();
         includes.insert(
             "articles".to_string(),
             IncludeDefinition {
-                definition: ViewDefinition {
+                definition: QueryDefinition {
                     item_type: Some("article".to_string()),
                     ..Default::default()
                 },
@@ -683,23 +684,23 @@ mod tests {
             },
         );
 
-        let def = ViewDefinition {
+        let def = QueryDefinition {
             item_type: Some("story".to_string()),
             includes,
             ..Default::default()
         };
 
         let json = serde_json::to_string(&def).unwrap();
-        let parsed: ViewDefinition = serde_json::from_str(&json).unwrap();
+        let parsed: QueryDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.includes.len(), 1);
         assert!(parsed.includes.contains_key("articles"));
     }
 
     #[test]
-    fn view_definition_without_includes_deserializes() {
+    fn query_definition_without_includes_deserializes() {
         // Backward compatibility: JSON without "includes" should parse fine
         let json = r#"{"item_type":"blog"}"#;
-        let parsed: ViewDefinition = serde_json::from_str(json).unwrap();
+        let parsed: QueryDefinition = serde_json::from_str(json).unwrap();
         assert!(parsed.includes.is_empty());
         assert_eq!(parsed.item_type, Some("blog".to_string()));
     }

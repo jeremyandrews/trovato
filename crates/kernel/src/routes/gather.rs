@@ -1,8 +1,8 @@
 //! Gather query API routes.
 //!
-//! REST endpoints for executing view queries.
+//! REST endpoints for executing gather queries.
 
-use crate::gather::{FilterValue, GatherView, QueryContext, ViewDefinition, ViewDisplay};
+use crate::gather::{FilterValue, GatherQuery, QueryContext, QueryDefinition, QueryDisplay};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 use axum::{
@@ -22,11 +22,11 @@ use super::helpers::html_escape as escape_html;
 /// Create the gather router.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/views", get(list_views))
-        .route("/api/view/{view_id}", get(get_view))
-        .route("/api/view/{view_id}/execute", get(execute_view))
+        .route("/api/queries", get(list_queries))
+        .route("/api/query/{query_id}", get(get_query))
+        .route("/api/query/{query_id}/execute", get(execute_query))
         .route("/api/gather/query", post(execute_adhoc_query))
-        .route("/gather/{view_id}", get(render_view_html))
+        .route("/gather/{query_id}", get(render_query_html))
 }
 
 // -------------------------------------------------------------------------
@@ -34,20 +34,20 @@ pub fn router() -> Router<AppState> {
 // -------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct ViewSummary {
-    view_id: String,
+struct QuerySummary {
+    query_id: String,
     label: String,
     description: Option<String>,
     plugin: String,
 }
 
 #[derive(Serialize)]
-struct ViewResponse {
-    view_id: String,
+struct QueryResponse {
+    query_id: String,
     label: String,
     description: Option<String>,
-    definition: ViewDefinition,
-    display: ViewDisplay,
+    definition: QueryDefinition,
+    display: QueryDisplay,
     plugin: String,
     created: i64,
     changed: i64,
@@ -94,8 +94,8 @@ fn default_stage() -> String {
 
 #[derive(Deserialize)]
 struct AdhocQueryRequest {
-    definition: ViewDefinition,
-    display: ViewDisplay,
+    definition: QueryDefinition,
+    display: QueryDisplay,
     #[serde(default = "default_page")]
     page: u32,
     #[serde(default = "default_stage")]
@@ -108,53 +108,53 @@ struct AdhocQueryRequest {
 // Handlers
 // -------------------------------------------------------------------------
 
-async fn list_views(
+async fn list_queries(
     State(state): State<AppState>,
-) -> Result<Json<Vec<ViewSummary>>, (StatusCode, Json<ErrorResponse>)> {
-    let views = state.gather().list_views();
+) -> Result<Json<Vec<QuerySummary>>, (StatusCode, Json<ErrorResponse>)> {
+    let queries = state.gather().list_queries();
 
     Ok(Json(
-        views
+        queries
             .into_iter()
-            .map(|v| ViewSummary {
-                view_id: v.view_id,
-                label: v.label,
-                description: v.description,
-                plugin: v.plugin,
+            .map(|q| QuerySummary {
+                query_id: q.query_id,
+                label: q.label,
+                description: q.description,
+                plugin: q.plugin,
             })
             .collect(),
     ))
 }
 
-async fn get_view(
+async fn get_query(
     State(state): State<AppState>,
-    Path(view_id): Path<String>,
-) -> Result<Json<ViewResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let view = state.gather().get_view(&view_id).ok_or_else(|| {
+    Path(query_id): Path<String>,
+) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let query = state.gather().get_query(&query_id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "view not found".to_string(),
+                error: "query not found".to_string(),
             }),
         )
     })?;
 
-    Ok(Json(ViewResponse {
-        view_id: view.view_id,
-        label: view.label,
-        description: view.description,
-        definition: view.definition,
-        display: view.display,
-        plugin: view.plugin,
-        created: view.created,
-        changed: view.changed,
+    Ok(Json(QueryResponse {
+        query_id: query.query_id,
+        label: query.label,
+        description: query.description,
+        definition: query.definition,
+        display: query.display,
+        plugin: query.plugin,
+        created: query.created,
+        changed: query.changed,
     }))
 }
 
-async fn execute_view(
+async fn execute_query(
     State(state): State<AppState>,
     session: Session,
-    Path(view_id): Path<String>,
+    Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Json<GatherResultResponse>, (StatusCode, Json<ErrorResponse>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
@@ -169,7 +169,7 @@ async fn execute_view(
     let result = state
         .gather()
         .execute(
-            &view_id,
+            &query_id,
             params.page,
             exposed_filters,
             &params.stage,
@@ -245,10 +245,10 @@ async fn execute_adhoc_query(
     }))
 }
 
-async fn render_view_html(
+async fn render_query_html(
     State(state): State<AppState>,
     session: Session,
-    Path(view_id): Path<String>,
+    Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<ErrorResponse>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
@@ -257,11 +257,11 @@ async fn render_view_html(
         url_args: params.filters.clone(),
     };
 
-    let view = state.gather().get_view(&view_id).ok_or_else(|| {
+    let gather_query = state.gather().get_query(&query_id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "view not found".to_string(),
+                error: "query not found".to_string(),
             }),
         )
     })?;
@@ -271,7 +271,7 @@ async fn render_view_html(
     let result = state
         .gather()
         .execute(
-            &view_id,
+            &query_id,
             params.page,
             exposed_filters,
             &params.stage,
@@ -288,32 +288,37 @@ async fn render_view_html(
         })?;
 
     // Render gather content (either via theme template or fallback HTML)
-    let content_html = render_gather_with_theme(&state, &view, &result)
-        .unwrap_or_else(|| render_gather_content_html(&view, &result));
+    let content_html = render_gather_with_theme(&state, &gather_query, &result)
+        .unwrap_or_else(|| render_gather_content_html(&gather_query, &result));
 
     // Wrap in page layout with site context
-    let gather_path = format!("/gather/{}", view_id);
+    let gather_path = format!("/gather/{}", query_id);
     let mut context = tera::Context::new();
     super::helpers::inject_site_context(&state, &session, &mut context).await;
 
     let page_html = state
         .theme()
-        .render_page(&gather_path, &view.label, &content_html, &mut context)
-        .unwrap_or_else(|_| render_gather_html(&view, &result));
+        .render_page(
+            &gather_path,
+            &gather_query.label,
+            &content_html,
+            &mut context,
+        )
+        .unwrap_or_else(|_| render_gather_html(&gather_query, &result));
 
     Ok(Html(page_html))
 }
 
 fn render_gather_with_theme(
     state: &AppState,
-    view: &GatherView,
+    query: &GatherQuery,
     result: &crate::gather::GatherResult,
 ) -> Option<String> {
-    // Try to find a template for this view
+    // Try to find a template for this query
     let suggestions = [
-        format!("gather/view--{}.html", view.view_id),
-        format!("gather/view--{}.html", view.display.format.as_str()),
-        "gather/view.html".to_string(),
+        format!("gather/query--{}.html", query.query_id),
+        format!("gather/query--{}.html", query.display.format.as_str()),
+        "gather/query.html".to_string(),
     ];
 
     let suggestion_refs: Vec<&str> = suggestions.iter().map(|s| s.as_str()).collect();
@@ -321,7 +326,7 @@ fn render_gather_with_theme(
 
     // Build context
     let mut context = tera::Context::new();
-    context.insert("view", view);
+    context.insert("query", query);
     context.insert("rows", &result.items);
     context.insert("total", &result.total);
     context.insert("page", &result.page);
@@ -331,13 +336,13 @@ fn render_gather_with_theme(
     context.insert("has_prev", &result.has_prev);
 
     // Pager info
-    if view.display.pager.enabled && result.total_pages > 1 {
+    if query.display.pager.enabled && result.total_pages > 1 {
         context.insert(
             "pager",
             &serde_json::json!({
                 "current_page": result.page,
                 "total_pages": result.total_pages,
-                "base_url": format!("/gather/{}", view.view_id),
+                "base_url": format!("/gather/{}", query.query_id),
             }),
         );
     }
@@ -399,19 +404,19 @@ fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
 }
 
 /// Render gather content as an HTML fragment (no page wrapper).
-fn render_gather_content_html(view: &GatherView, result: &crate::gather::GatherResult) -> String {
+fn render_gather_content_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
     let mut html = String::new();
 
     // Title
-    html.push_str(&format!("<h1>{}</h1>\n", escape_html(&view.label)));
+    html.push_str(&format!("<h1>{}</h1>\n", escape_html(&query.label)));
 
-    if let Some(ref desc) = view.description {
+    if let Some(ref desc) = query.description {
         html.push_str(&format!("<p>{}</p>\n", escape_html(desc)));
     }
 
     // Results
     if result.items.is_empty() {
-        let empty_text = view
+        let empty_text = query
             .display
             .empty_text
             .as_deref()
@@ -454,10 +459,10 @@ fn render_gather_content_html(view: &GatherView, result: &crate::gather::GatherR
     }
 
     // Pager
-    if view.display.pager.enabled && result.total_pages > 1 {
+    if query.display.pager.enabled && result.total_pages > 1 {
         html.push_str("<div class=\"pager\">\n");
 
-        if view.display.pager.show_count {
+        if query.display.pager.show_count {
             html.push_str(&format!(
                 "<span>Showing page {} of {} ({} total)</span>\n",
                 result.page, result.total_pages, result.total
@@ -482,15 +487,15 @@ fn render_gather_content_html(view: &GatherView, result: &crate::gather::GatherR
 }
 
 /// Full standalone fallback page (used when theme engine fails).
-fn render_gather_html(view: &GatherView, result: &crate::gather::GatherResult) -> String {
-    let content = render_gather_content_html(view, result);
+fn render_gather_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
+    let content = render_gather_content_html(query, result);
     format!(
         "<!DOCTYPE html>\n<html>\n<head>\n<title>{}</title>\n\
         <style>\nbody {{ font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }}\n\
         table {{ width: 100%; border-collapse: collapse; }}\nth, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}\n\
         th {{ background: #f5f5f5; }}\n.pager {{ margin-top: 20px; }}\n.pager a {{ margin: 0 5px; }}\n\
         .empty {{ color: #666; font-style: italic; }}\n</style>\n</head>\n<body>\n{}\n</body>\n</html>",
-        escape_html(&view.label),
+        escape_html(&query.label),
         content
     )
 }

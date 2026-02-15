@@ -1,21 +1,21 @@
 //! Gather query engine integration tests.
 //!
-//! Tests for ViewDefinition, ViewDisplay, query building, and results.
+//! Tests for QueryDefinition, QueryDisplay, query building, and results.
 
 use trovato_kernel::gather::{
-    DisplayFormat, FilterOperator, FilterValue, GatherResult, GatherView, NullsOrder, PagerConfig,
-    PagerStyle, SortDirection, ViewDefinition, ViewDisplay, ViewField, ViewFilter,
-    ViewRelationship, ViewSort,
+    DisplayFormat, FilterOperator, FilterValue, GatherQuery, GatherResult, NullsOrder, PagerConfig,
+    PagerStyle, QueryDefinition, QueryDisplay, QueryField, QueryFilter, QueryRelationship,
+    QuerySort, SortDirection,
 };
 use uuid::Uuid;
 
 // -------------------------------------------------------------------------
-// ViewDefinition tests
+// QueryDefinition tests
 // -------------------------------------------------------------------------
 
 #[test]
-fn view_definition_defaults() {
-    let def = ViewDefinition::default();
+fn query_definition_defaults() {
+    let def = QueryDefinition::default();
 
     assert_eq!(def.base_table, "item");
     assert!(def.item_type.is_none());
@@ -26,19 +26,19 @@ fn view_definition_defaults() {
 }
 
 #[test]
-fn view_definition_with_filters() {
-    let def = ViewDefinition {
+fn query_definition_with_filters() {
+    let def = QueryDefinition {
         base_table: "item".to_string(),
         item_type: Some("blog".to_string()),
         filters: vec![
-            ViewFilter {
+            QueryFilter {
                 field: "status".to_string(),
                 operator: FilterOperator::Equals,
                 value: FilterValue::Integer(1),
                 exposed: false,
                 exposed_label: None,
             },
-            ViewFilter {
+            QueryFilter {
                 field: "title".to_string(),
                 operator: FilterOperator::Contains,
                 value: FilterValue::String("rust".to_string()),
@@ -55,16 +55,16 @@ fn view_definition_with_filters() {
 }
 
 #[test]
-fn view_definition_with_sorts() {
-    let def = ViewDefinition {
+fn query_definition_with_sorts() {
+    let def = QueryDefinition {
         base_table: "item".to_string(),
         sorts: vec![
-            ViewSort {
+            QuerySort {
                 field: "sticky".to_string(),
                 direction: SortDirection::Desc,
                 nulls: None,
             },
-            ViewSort {
+            QuerySort {
                 field: "created".to_string(),
                 direction: SortDirection::Desc,
                 nulls: Some(NullsOrder::Last),
@@ -79,32 +79,33 @@ fn view_definition_with_sorts() {
 }
 
 #[test]
-fn view_definition_serialization() {
-    let def = ViewDefinition {
+fn query_definition_serialization() {
+    let def = QueryDefinition {
         base_table: "item".to_string(),
         item_type: Some("page".to_string()),
-        fields: vec![ViewField {
+        fields: vec![QueryField {
             field_name: "title".to_string(),
             table_alias: None,
             label: Some("Title".to_string()),
         }],
-        filters: vec![ViewFilter {
+        filters: vec![QueryFilter {
             field: "status".to_string(),
             operator: FilterOperator::Equals,
             value: FilterValue::Integer(1),
             exposed: false,
             exposed_label: None,
         }],
-        sorts: vec![ViewSort {
+        sorts: vec![QuerySort {
             field: "created".to_string(),
             direction: SortDirection::Desc,
             nulls: None,
         }],
         relationships: vec![],
+        includes: std::collections::HashMap::new(),
     };
 
     let json = serde_json::to_string(&def).unwrap();
-    let parsed: ViewDefinition = serde_json::from_str(&json).unwrap();
+    let parsed: QueryDefinition = serde_json::from_str(&json).unwrap();
 
     assert_eq!(parsed.item_type, Some("page".to_string()));
     assert_eq!(parsed.fields.len(), 1);
@@ -232,12 +233,12 @@ fn filter_value_serialization() {
 }
 
 // -------------------------------------------------------------------------
-// ViewDisplay tests
+// QueryDisplay tests
 // -------------------------------------------------------------------------
 
 #[test]
-fn view_display_defaults() {
-    let display = ViewDisplay::default();
+fn query_display_defaults() {
+    let display = QueryDisplay::default();
 
     assert_eq!(display.items_per_page, 10);
     assert_eq!(display.format, DisplayFormat::Table);
@@ -246,8 +247,8 @@ fn view_display_defaults() {
 }
 
 #[test]
-fn view_display_custom() {
-    let display = ViewDisplay {
+fn query_display_custom() {
+    let display = QueryDisplay {
         format: DisplayFormat::Grid,
         items_per_page: 20,
         pager: PagerConfig {
@@ -362,26 +363,26 @@ fn gather_result_serialization() {
 }
 
 // -------------------------------------------------------------------------
-// GatherView tests
+// GatherQuery tests
 // -------------------------------------------------------------------------
 
 #[test]
-fn gather_view_creation() {
-    let view = GatherView {
-        view_id: "recent_articles".to_string(),
+fn gather_query_creation() {
+    let gq = GatherQuery {
+        query_id: "recent_articles".to_string(),
         label: "Recent Articles".to_string(),
         description: Some("Shows the most recent blog posts".to_string()),
-        definition: ViewDefinition {
+        definition: QueryDefinition {
             base_table: "item".to_string(),
             item_type: Some("blog".to_string()),
-            sorts: vec![ViewSort {
+            sorts: vec![QuerySort {
                 field: "created".to_string(),
                 direction: SortDirection::Desc,
                 nulls: None,
             }],
             ..Default::default()
         },
-        display: ViewDisplay {
+        display: QueryDisplay {
             items_per_page: 10,
             ..Default::default()
         },
@@ -390,41 +391,41 @@ fn gather_view_creation() {
         changed: 1000,
     };
 
-    assert_eq!(view.view_id, "recent_articles");
-    assert_eq!(view.plugin, "blog");
-    assert_eq!(view.definition.item_type, Some("blog".to_string()));
+    assert_eq!(gq.query_id, "recent_articles");
+    assert_eq!(gq.plugin, "blog");
+    assert_eq!(gq.definition.item_type, Some("blog".to_string()));
 }
 
 #[test]
-fn gather_view_serialization() {
-    let view = GatherView {
-        view_id: "test_view".to_string(),
-        label: "Test View".to_string(),
+fn gather_query_serialization() {
+    let gq = GatherQuery {
+        query_id: "test_query".to_string(),
+        label: "Test Query".to_string(),
         description: None,
-        definition: ViewDefinition::default(),
-        display: ViewDisplay::default(),
+        definition: QueryDefinition::default(),
+        display: QueryDisplay::default(),
         plugin: "core".to_string(),
         created: 1000,
         changed: 2000,
     };
 
-    let json = serde_json::to_string(&view).unwrap();
-    let parsed: GatherView = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&gq).unwrap();
+    let parsed: GatherQuery = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(parsed.view_id, "test_view");
+    assert_eq!(parsed.query_id, "test_query");
     assert_eq!(parsed.created, 1000);
     assert_eq!(parsed.changed, 2000);
 }
 
 // -------------------------------------------------------------------------
-// ViewRelationship tests
+// QueryRelationship tests
 // -------------------------------------------------------------------------
 
 #[test]
-fn view_relationship() {
+fn query_relationship() {
     use trovato_kernel::gather::JoinType;
 
-    let rel = ViewRelationship {
+    let rel = QueryRelationship {
         name: "author".to_string(),
         target_table: "users".to_string(),
         join_type: JoinType::Left,
@@ -440,39 +441,39 @@ fn view_relationship() {
 // Gate test: Recent Articles with Category Filter
 // -------------------------------------------------------------------------
 
-/// Gate test: Verify a "Recent Articles" view definition with category filter
+/// Gate test: Verify a "Recent Articles" query definition with category filter
 /// can be constructed and serialized correctly.
 #[test]
-fn gate_test_recent_articles_view_definition() {
+fn gate_test_recent_articles_query_definition() {
     // This is the gate test case from the Phase 4 requirements:
     // "Recent Articles" Gather query with category filter + pager
 
     let tech_tag_id = Uuid::nil(); // In real test, this would be a real tag ID
 
-    let view = GatherView {
-        view_id: "recent_articles".to_string(),
+    let gq = GatherQuery {
+        query_id: "recent_articles".to_string(),
         label: "Recent Articles".to_string(),
         description: Some("Blog posts filtered by category with pagination".to_string()),
-        definition: ViewDefinition {
+        definition: QueryDefinition {
             base_table: "item".to_string(),
             item_type: Some("blog".to_string()),
             fields: vec![
-                ViewField {
+                QueryField {
                     field_name: "id".to_string(),
                     table_alias: None,
                     label: None,
                 },
-                ViewField {
+                QueryField {
                     field_name: "title".to_string(),
                     table_alias: None,
                     label: Some("Title".to_string()),
                 },
-                ViewField {
+                QueryField {
                     field_name: "created".to_string(),
                     table_alias: None,
                     label: Some("Date".to_string()),
                 },
-                ViewField {
+                QueryField {
                     field_name: "fields.summary".to_string(),
                     table_alias: None,
                     label: Some("Summary".to_string()),
@@ -480,7 +481,7 @@ fn gate_test_recent_articles_view_definition() {
             ],
             filters: vec![
                 // Published only
-                ViewFilter {
+                QueryFilter {
                     field: "status".to_string(),
                     operator: FilterOperator::Equals,
                     value: FilterValue::Integer(1),
@@ -488,7 +489,7 @@ fn gate_test_recent_articles_view_definition() {
                     exposed_label: None,
                 },
                 // Category filter with hierarchy support
-                ViewFilter {
+                QueryFilter {
                     field: "fields.category".to_string(),
                     operator: FilterOperator::HasTagOrDescendants,
                     value: FilterValue::Uuid(tech_tag_id),
@@ -498,20 +499,21 @@ fn gate_test_recent_articles_view_definition() {
             ],
             sorts: vec![
                 // Sticky first, then by date
-                ViewSort {
+                QuerySort {
                     field: "sticky".to_string(),
                     direction: SortDirection::Desc,
                     nulls: None,
                 },
-                ViewSort {
+                QuerySort {
                     field: "created".to_string(),
                     direction: SortDirection::Desc,
                     nulls: None,
                 },
             ],
             relationships: vec![],
+            includes: std::collections::HashMap::new(),
         },
-        display: ViewDisplay {
+        display: QueryDisplay {
             format: DisplayFormat::List,
             items_per_page: 10,
             pager: PagerConfig {
@@ -529,11 +531,11 @@ fn gate_test_recent_articles_view_definition() {
     };
 
     // Verify serialization round-trip
-    let json = serde_json::to_string_pretty(&view).unwrap();
-    let parsed: GatherView = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string_pretty(&gq).unwrap();
+    let parsed: GatherQuery = serde_json::from_str(&json).unwrap();
 
     // Verify key properties
-    assert_eq!(parsed.view_id, "recent_articles");
+    assert_eq!(parsed.query_id, "recent_articles");
     assert_eq!(parsed.definition.item_type, Some("blog".to_string()));
     assert_eq!(parsed.definition.filters.len(), 2);
     assert_eq!(parsed.definition.sorts.len(), 2);
@@ -573,22 +575,22 @@ fn gate_test_recent_articles_view_definition() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn jsonb_field_in_view_definition() {
-    let def = ViewDefinition {
+fn jsonb_field_in_query_definition() {
+    let def = QueryDefinition {
         base_table: "item".to_string(),
         fields: vec![
-            ViewField {
+            QueryField {
                 field_name: "fields.body".to_string(),
                 table_alias: None,
                 label: Some("Body".to_string()),
             },
-            ViewField {
+            QueryField {
                 field_name: "fields.tags".to_string(),
                 table_alias: None,
                 label: Some("Tags".to_string()),
             },
         ],
-        filters: vec![ViewFilter {
+        filters: vec![QueryFilter {
             field: "fields.featured".to_string(),
             operator: FilterOperator::Equals,
             value: FilterValue::Boolean(true),

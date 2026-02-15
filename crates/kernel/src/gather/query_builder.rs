@@ -1,13 +1,13 @@
-//! View query builder using SeaQuery.
+//! Gather query builder using SeaQuery.
 //!
-//! Generates type-safe SQL queries from ViewDefinition with support for:
+//! Generates type-safe SQL queries from QueryDefinition with support for:
 //! - JSONB field extraction
 //! - Category hierarchy filters
 //! - Stage-aware queries
 //! - Pagination
 
 use super::types::{
-    FilterOperator, FilterValue, JoinType, SortDirection, ViewDefinition, ViewFilter,
+    FilterOperator, FilterValue, JoinType, QueryDefinition, QueryFilter, SortDirection,
 };
 use sea_query::{
     Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order, PostgresQueryBuilder, Query,
@@ -20,15 +20,15 @@ use sea_query::{
 #[iden = "item"]
 struct ItemTable;
 
-/// Query builder for Gather views.
-pub struct ViewQueryBuilder {
-    definition: ViewDefinition,
+/// Query builder for Gather queries.
+pub struct GatherQueryBuilder {
+    definition: QueryDefinition,
     stage_id: String,
 }
 
-impl ViewQueryBuilder {
+impl GatherQueryBuilder {
     /// Create a new query builder.
-    pub fn new(definition: ViewDefinition, stage_id: &str) -> Self {
+    pub fn new(definition: QueryDefinition, stage_id: &str) -> Self {
         Self {
             definition,
             stage_id: stage_id.to_string(),
@@ -178,7 +178,7 @@ impl ViewQueryBuilder {
     }
 
     /// Build a single filter condition.
-    fn build_filter_condition(&self, filter: &ViewFilter) -> Option<SimpleExpr> {
+    fn build_filter_condition(&self, filter: &QueryFilter) -> Option<SimpleExpr> {
         let field_expr = self.field_expr(&filter.field);
 
         match &filter.operator {
@@ -379,8 +379,10 @@ impl ViewQueryBuilder {
 }
 
 /// Builder for creating category hierarchy subqueries.
+#[allow(dead_code)]
 pub struct CategoryHierarchyQuery;
 
+#[allow(dead_code)]
 impl CategoryHierarchyQuery {
     /// Build a recursive CTE to get a tag and all its descendants.
     /// Returns the SQL for the WITH clause that can be prepended to the main query.
@@ -409,21 +411,21 @@ impl CategoryHierarchyQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gather::types::{ViewField, ViewFilter, ViewSort};
+    use crate::gather::types::{QueryField, QueryFilter, QuerySort};
 
     #[test]
     fn simple_query_build() {
-        let def = ViewDefinition {
+        let def = QueryDefinition {
             base_table: "item".to_string(),
             item_type: Some("blog".to_string()),
-            filters: vec![ViewFilter {
+            filters: vec![QueryFilter {
                 field: "status".to_string(),
                 operator: FilterOperator::Equals,
                 value: FilterValue::Integer(1),
                 exposed: false,
                 exposed_label: None,
             }],
-            sorts: vec![ViewSort {
+            sorts: vec![QuerySort {
                 field: "created".to_string(),
                 direction: SortDirection::Desc,
                 nulls: None,
@@ -431,7 +433,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = ViewQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, "live");
         let sql = builder.build(1, 10);
 
         assert!(sql.contains("FROM \"item\""));
@@ -442,13 +444,13 @@ mod tests {
 
     #[test]
     fn count_query_build() {
-        let def = ViewDefinition {
+        let def = QueryDefinition {
             base_table: "item".to_string(),
             item_type: Some("blog".to_string()),
             ..Default::default()
         };
 
-        let builder = ViewQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, "live");
         let sql = builder.build_count();
 
         assert!(sql.contains("COUNT(*)"));
@@ -458,9 +460,9 @@ mod tests {
 
     #[test]
     fn jsonb_field_query() {
-        let def = ViewDefinition {
+        let def = QueryDefinition {
             base_table: "item".to_string(),
-            fields: vec![ViewField {
+            fields: vec![QueryField {
                 field_name: "fields.body".to_string(),
                 table_alias: None,
                 label: Some("body".to_string()),
@@ -468,7 +470,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = ViewQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, "live");
         let sql = builder.build(1, 10);
 
         assert!(sql.contains("fields->>'body'"));
@@ -486,23 +488,23 @@ mod tests {
 
     #[test]
     fn pagination_offset() {
-        let def = ViewDefinition::default();
-        let builder = ViewQueryBuilder::new(def, "live");
+        let def = QueryDefinition::default();
+        let builder = GatherQueryBuilder::new(def, "live");
 
         let sql_page1 = builder.build(1, 10);
         assert!(sql_page1.contains("OFFSET 0"));
 
-        let def2 = ViewDefinition::default();
-        let builder2 = ViewQueryBuilder::new(def2, "live");
+        let def2 = QueryDefinition::default();
+        let builder2 = GatherQueryBuilder::new(def2, "live");
         let sql_page2 = builder2.build(2, 10);
         assert!(sql_page2.contains("OFFSET 10"));
     }
 
     #[test]
     fn filter_operators() {
-        let def = ViewDefinition {
+        let def = QueryDefinition {
             base_table: "item".to_string(),
-            filters: vec![ViewFilter {
+            filters: vec![QueryFilter {
                 field: "title".to_string(),
                 operator: FilterOperator::Contains,
                 value: FilterValue::String("rust".to_string()),
@@ -512,7 +514,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = ViewQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, "live");
         let sql = builder.build(1, 10);
 
         assert!(sql.contains("LIKE"));

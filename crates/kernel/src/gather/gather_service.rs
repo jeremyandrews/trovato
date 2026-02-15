@@ -1,16 +1,16 @@
-//! Gather service for executing view queries.
+//! Gather service for executing queries.
 //!
 //! Provides high-level query execution with:
-//! - View registration and lookup
+//! - Query registration and lookup
 //! - Category hierarchy resolution
 //! - Exposed filter handling
 //! - Result caching
 
 use super::category_service::CategoryService;
-use super::query_builder::ViewQueryBuilder;
+use super::query_builder::GatherQueryBuilder;
 use super::types::{
-    ContextualValue, FilterOperator, FilterValue, GatherResult, GatherView, QueryContext,
-    ViewDefinition, ViewDisplay, ViewFilter,
+    ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult, QueryContext,
+    QueryDefinition, QueryDisplay, QueryFilter,
 };
 use anyhow::{Context, Result};
 use dashmap::DashMap;
@@ -26,8 +26,8 @@ const MAX_INCLUDE_DEPTH: u8 = 3;
 pub struct GatherService {
     pool: PgPool,
     categories: Arc<CategoryService>,
-    /// Registered views by view_id
-    views: DashMap<String, GatherView>,
+    /// Registered queries by query_id
+    queries: DashMap<String, GatherQuery>,
 }
 
 impl GatherService {
@@ -36,24 +36,24 @@ impl GatherService {
         Arc::new(Self {
             pool,
             categories,
-            views: DashMap::new(),
+            queries: DashMap::new(),
         })
     }
 
-    /// Register a view definition.
-    pub async fn register_view(&self, view: GatherView) -> Result<()> {
-        let view_id = view.view_id.clone();
+    /// Register a query definition.
+    pub async fn register_query(&self, query: GatherQuery) -> Result<()> {
+        let query_id = query.query_id.clone();
 
         // Persist to database
         let now = chrono::Utc::now().timestamp();
-        let definition_json = serde_json::to_value(&view.definition)?;
-        let display_json = serde_json::to_value(&view.display)?;
+        let definition_json = serde_json::to_value(&query.definition)?;
+        let display_json = serde_json::to_value(&query.display)?;
 
         sqlx::query(
             r#"
-            INSERT INTO gather_view (view_id, label, description, definition, display, plugin, created, changed)
+            INSERT INTO gather_query (query_id, label, description, definition, display, plugin, created, changed)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (view_id) DO UPDATE SET
+            ON CONFLICT (query_id) DO UPDATE SET
                 label = EXCLUDED.label,
                 description = EXCLUDED.description,
                 definition = EXCLUDED.definition,
@@ -61,39 +61,39 @@ impl GatherService {
                 changed = EXCLUDED.changed
             "#,
         )
-        .bind(&view.view_id)
-        .bind(&view.label)
-        .bind(&view.description)
+        .bind(&query.query_id)
+        .bind(&query.label)
+        .bind(&query.description)
         .bind(&definition_json)
         .bind(&display_json)
-        .bind(&view.plugin)
+        .bind(&query.plugin)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await
-        .context("failed to register view")?;
+        .context("failed to register query")?;
 
         // Cache in memory
-        self.views.insert(view_id, view);
+        self.queries.insert(query_id, query);
 
         Ok(())
     }
 
-    /// Get a view by ID.
-    pub fn get_view(&self, view_id: &str) -> Option<GatherView> {
-        self.views.get(view_id).map(|v| v.clone())
+    /// Get a query by ID.
+    pub fn get_query(&self, query_id: &str) -> Option<GatherQuery> {
+        self.queries.get(query_id).map(|v| v.clone())
     }
 
-    /// List all registered views.
-    pub fn list_views(&self) -> Vec<GatherView> {
-        self.views.iter().map(|v| v.clone()).collect()
+    /// List all registered queries.
+    pub fn list_queries(&self) -> Vec<GatherQuery> {
+        self.queries.iter().map(|v| v.clone()).collect()
     }
 
-    /// Load views from database into memory cache.
-    pub async fn load_views(&self) -> Result<()> {
+    /// Load queries from database into memory cache.
+    pub async fn load_queries(&self) -> Result<()> {
         #[derive(sqlx::FromRow)]
-        struct ViewRow {
-            view_id: String,
+        struct QueryRow {
+            query_id: String,
             label: String,
             description: Option<String>,
             definition: serde_json::Value,
@@ -103,21 +103,21 @@ impl GatherService {
             changed: i64,
         }
 
-        let rows = sqlx::query_as::<_, ViewRow>(
-            "SELECT view_id, label, description, definition, display, plugin, created, changed FROM gather_view",
+        let rows = sqlx::query_as::<_, QueryRow>(
+            "SELECT query_id, label, description, definition, display, plugin, created, changed FROM gather_query",
         )
         .fetch_all(&self.pool)
         .await
-        .context("failed to load views")?;
+        .context("failed to load queries")?;
 
         for row in rows {
-            let definition: ViewDefinition = serde_json::from_value(row.definition)
-                .context("failed to parse view definition")?;
-            let display: ViewDisplay =
-                serde_json::from_value(row.display).context("failed to parse view display")?;
+            let definition: QueryDefinition = serde_json::from_value(row.definition)
+                .context("failed to parse query definition")?;
+            let display: QueryDisplay =
+                serde_json::from_value(row.display).context("failed to parse query display")?;
 
-            let view = GatherView {
-                view_id: row.view_id.clone(),
+            let query = GatherQuery {
+                query_id: row.query_id.clone(),
                 label: row.label,
                 description: row.description,
                 definition,
@@ -127,29 +127,29 @@ impl GatherService {
                 changed: row.changed,
             };
 
-            self.views.insert(row.view_id, view);
+            self.queries.insert(row.query_id, query);
         }
 
         Ok(())
     }
 
-    /// Execute a registered view by ID.
+    /// Execute a registered query by ID.
     pub async fn execute(
         &self,
-        view_id: &str,
+        query_id: &str,
         page: u32,
         exposed_filters: HashMap<String, FilterValue>,
         stage_id: &str,
         context: &QueryContext,
     ) -> Result<GatherResult> {
-        let view = self
-            .views
-            .get(view_id)
-            .ok_or_else(|| anyhow::anyhow!("view not found: {}", view_id))?;
+        let query = self
+            .queries
+            .get(query_id)
+            .ok_or_else(|| anyhow::anyhow!("query not found: {}", query_id))?;
 
         self.execute_definition(
-            &view.definition,
-            &view.display,
+            &query.definition,
+            &query.display,
             page,
             exposed_filters,
             stage_id,
@@ -158,11 +158,11 @@ impl GatherService {
         .await
     }
 
-    /// Execute a view definition directly (for ad-hoc queries).
+    /// Execute a query definition directly (for ad-hoc queries).
     pub async fn execute_definition(
         &self,
-        definition: &ViewDefinition,
-        display: &ViewDisplay,
+        definition: &QueryDefinition,
+        display: &QueryDisplay,
         page: u32,
         exposed_filters: HashMap<String, FilterValue>,
         stage_id: &str,
@@ -184,14 +184,14 @@ impl GatherService {
         // Split includes from definition to avoid cloning the full tree
         // just for the query builder (which only uses filters/sorts/fields).
         let includes = final_definition.includes.clone();
-        let builder_def = ViewDefinition {
+        let builder_def = QueryDefinition {
             includes: HashMap::new(),
             ..final_definition
         };
 
         // Build and execute queries
         let per_page = display.items_per_page;
-        let builder = ViewQueryBuilder::new(builder_def, stage_id);
+        let builder = GatherQueryBuilder::new(builder_def, stage_id);
 
         // Execute count query
         let count_sql = builder.build_count();
@@ -220,9 +220,9 @@ impl GatherService {
     /// Apply exposed filter values from user input.
     async fn resolve_exposed_filters(
         &self,
-        mut definition: ViewDefinition,
+        mut definition: QueryDefinition,
         exposed_values: HashMap<String, FilterValue>,
-    ) -> Result<ViewDefinition> {
+    ) -> Result<QueryDefinition> {
         for filter in &mut definition.filters {
             if filter.exposed {
                 if let Some(value) = exposed_values.get(&filter.field) {
@@ -236,8 +236,8 @@ impl GatherService {
     /// Resolve category hierarchy filters by expanding tag IDs.
     async fn resolve_category_hierarchies(
         &self,
-        mut definition: ViewDefinition,
-    ) -> Result<ViewDefinition> {
+        mut definition: QueryDefinition,
+    ) -> Result<QueryDefinition> {
         let mut resolved_filters = Vec::new();
 
         for filter in definition.filters {
@@ -251,7 +251,7 @@ impl GatherService {
                 let descendant_ids = self.categories.get_tag_with_descendants(tag_id).await?;
 
                 // Replace with HasAnyTag using expanded list
-                resolved_filters.push(ViewFilter {
+                resolved_filters.push(QueryFilter {
                     field: filter.field,
                     operator: FilterOperator::HasAnyTag,
                     value: FilterValue::List(
@@ -272,9 +272,9 @@ impl GatherService {
     /// Resolve contextual values in filters, replacing `ContextualValue` variants
     /// with concrete `FilterValue`s based on the runtime context.
     fn resolve_contextual_values(
-        mut definition: ViewDefinition,
+        mut definition: QueryDefinition,
         context: &QueryContext,
-    ) -> ViewDefinition {
+    ) -> QueryDefinition {
         for filter in &mut definition.filters {
             if let FilterValue::Contextual(ref ctx_val) = filter.value {
                 filter.value = match ctx_val {
@@ -355,7 +355,7 @@ impl GatherService {
                     })
                     .collect();
 
-                child_def.filters.push(ViewFilter {
+                child_def.filters.push(QueryFilter {
                     field: include_def.child_field.clone(),
                     operator: FilterOperator::In,
                     value: FilterValue::List(filter_values),
@@ -368,14 +368,14 @@ impl GatherService {
 
                 // Split child includes before executing (they recurse separately)
                 let child_includes = child_def.includes.clone();
-                let child_def_for_query = ViewDefinition {
+                let child_def_for_query = QueryDefinition {
                     includes: HashMap::new(),
                     ..child_def
                 };
 
                 // Default limit for child queries; warn if results may be truncated
                 let default_child_limit: u32 = 1000;
-                let child_display = include_def.display.clone().unwrap_or(ViewDisplay {
+                let child_display = include_def.display.clone().unwrap_or(QueryDisplay {
                     items_per_page: default_child_limit,
                     ..Default::default()
                 });
@@ -451,15 +451,16 @@ impl GatherService {
         })
     }
 
-    /// Delete a view.
-    pub async fn delete_view(&self, view_id: &str) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM gather_view WHERE view_id = $1")
-            .bind(view_id)
+    /// Delete a query.
+    #[allow(dead_code)]
+    pub async fn delete_query(&self, query_id: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM gather_query WHERE query_id = $1")
+            .bind(query_id)
             .execute(&self.pool)
             .await
-            .context("failed to delete view")?;
+            .context("failed to delete query")?;
 
-        self.views.remove(view_id);
+        self.queries.remove(query_id);
 
         Ok(result.rows_affected() > 0)
     }
@@ -517,7 +518,7 @@ fn json_value_to_string(v: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gather::types::{PagerConfig, PagerStyle, SortDirection, ViewSort};
+    use crate::gather::types::{PagerConfig, PagerStyle, QuerySort, SortDirection};
 
     #[test]
     fn gather_result_pagination() {
@@ -558,22 +559,22 @@ mod tests {
     }
 
     #[test]
-    fn gather_view_serialization() {
-        let view = GatherView {
-            view_id: "recent_articles".to_string(),
+    fn gather_query_serialization() {
+        let gq = GatherQuery {
+            query_id: "recent_articles".to_string(),
             label: "Recent Articles".to_string(),
             description: Some("Shows recent blog posts".to_string()),
-            definition: ViewDefinition {
+            definition: QueryDefinition {
                 base_table: "item".to_string(),
                 item_type: Some("blog".to_string()),
-                sorts: vec![ViewSort {
+                sorts: vec![QuerySort {
                     field: "created".to_string(),
                     direction: SortDirection::Desc,
                     nulls: None,
                 }],
                 ..Default::default()
             },
-            display: ViewDisplay {
+            display: QueryDisplay {
                 items_per_page: 10,
                 pager: PagerConfig {
                     enabled: true,
@@ -587,10 +588,10 @@ mod tests {
             changed: 1000,
         };
 
-        let json = serde_json::to_string(&view).unwrap();
-        let parsed: GatherView = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&gq).unwrap();
+        let parsed: GatherQuery = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.view_id, "recent_articles");
+        assert_eq!(parsed.query_id, "recent_articles");
         assert_eq!(parsed.definition.item_type, Some("blog".to_string()));
     }
 
@@ -660,8 +661,8 @@ mod tests {
             url_args: HashMap::new(),
         };
 
-        let def = ViewDefinition {
-            filters: vec![ViewFilter {
+        let def = QueryDefinition {
+            filters: vec![QueryFilter {
                 field: "fields.user_id".to_string(),
                 operator: FilterOperator::Equals,
                 value: FilterValue::Contextual(ContextualValue::CurrentUser),
@@ -682,8 +683,8 @@ mod tests {
     fn resolve_contextual_current_user_anonymous() {
         let context = QueryContext::default();
 
-        let def = ViewDefinition {
-            filters: vec![ViewFilter {
+        let def = QueryDefinition {
+            filters: vec![QueryFilter {
                 field: "fields.user_id".to_string(),
                 operator: FilterOperator::Equals,
                 value: FilterValue::Contextual(ContextualValue::CurrentUser),
@@ -705,8 +706,8 @@ mod tests {
         let context = QueryContext::default();
         let before = chrono::Utc::now().timestamp();
 
-        let def = ViewDefinition {
-            filters: vec![ViewFilter {
+        let def = QueryDefinition {
+            filters: vec![QueryFilter {
                 field: "created".to_string(),
                 operator: FilterOperator::LessThan,
                 value: FilterValue::Contextual(ContextualValue::CurrentTime),
@@ -736,8 +737,8 @@ mod tests {
             url_args,
         };
 
-        let def = ViewDefinition {
-            filters: vec![ViewFilter {
+        let def = QueryDefinition {
+            filters: vec![QueryFilter {
                 field: "fields.category".to_string(),
                 operator: FilterOperator::Equals,
                 value: FilterValue::Contextual(ContextualValue::UrlArg("category".to_string())),

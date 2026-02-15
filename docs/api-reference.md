@@ -108,7 +108,7 @@ All timestamps are **Unix epoch seconds** (i64).
 
 ### IDs
 
-Most resource IDs are UUIDv7. Categories and views use string identifiers.
+Most resource IDs are UUIDv7. Categories and queries use string identifiers.
 
 ---
 
@@ -290,19 +290,19 @@ GET /api/search?q=hello&page=1&limit=10
 
 ---
 
-## Gather (Views)
+## Gather (Queries)
 
-### List Views
+### List Queries
 
 ```
-GET /api/views
+GET /api/queries
 ```
 
 **Response (200):**
 ```json
 [
   {
-    "view_id": "blog_listing",
+    "query_id": "blog_listing",
     "label": "Blog",
     "description": "Recent blog posts",
     "plugin": "core"
@@ -310,19 +310,19 @@ GET /api/views
 ]
 ```
 
-### Get View Definition
+### Get Query Definition
 
 ```
-GET /api/view/{view_id}
+GET /api/query/{query_id}
 ```
 
-Returns full view configuration including definition, display settings, filters,
+Returns full query configuration including definition, display settings, filters,
 and sorts.
 
-### Execute View
+### Execute Query
 
 ```
-GET /api/view/{view_id}/execute?page=1&stage=live
+GET /api/query/{query_id}/execute?page=1&stage=live
 ```
 
 Exposed filters can be passed as query parameters.
@@ -355,7 +355,7 @@ Content-Type: application/json
 }
 ```
 
-Returns the same response shape as Execute View.
+Returns the same response shape as Execute Query.
 
 ---
 
