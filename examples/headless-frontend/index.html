@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trovato Headless Frontend</title>
+<style>
+  :root { --c-bg:#f8f9fa; --c-fg:#212529; --c-accent:#0d6efd; --c-border:#dee2e6; --c-muted:#6c757d; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:system-ui,-apple-system,sans-serif; background:var(--c-bg); color:var(--c-fg); line-height:1.6; }
+  .container { max-width:820px; margin:0 auto; padding:1rem; }
+  h1 { font-size:1.5rem; margin-bottom:.5rem; }
+  h2 { font-size:1.25rem; margin:1rem 0 .5rem; }
+  a { color:var(--c-accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  button, .btn { background:var(--c-accent); color:#fff; border:none; padding:.4rem .8rem; border-radius:4px; cursor:pointer; font-size:.9rem; }
+  button:hover { opacity:.9; }
+  input, textarea { border:1px solid var(--c-border); padding:.4rem .6rem; border-radius:4px; font-size:.9rem; width:100%; }
+  textarea { resize:vertical; min-height:4rem; }
+  .card { background:#fff; border:1px solid var(--c-border); border-radius:6px; padding:1rem; margin-bottom:.75rem; }
+  .meta { color:var(--c-muted); font-size:.85rem; }
+  .toolbar { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-bottom:1rem; }
+  .toolbar select, .toolbar input { width:auto; flex:1; min-width:120px; }
+  .pager { display:flex; gap:.5rem; justify-content:center; margin:1rem 0; }
+  #auth-bar { background:#fff; border-bottom:1px solid var(--c-border); padding:.5rem 1rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; font-size:.85rem; }
+  #auth-bar input { width:auto; flex:1; min-width:140px; }
+  #status { color:var(--c-muted); }
+  .hidden { display:none; }
+  .comment { border-top:1px solid var(--c-border); padding-top:.5rem; margin-top:.5rem; }
+  .comment .meta { margin-bottom:.25rem; }
+  #detail-view .body-content { margin:1rem 0; }
+</style>
+</head>
+<body>
+
+<!-- Auth bar -->
+<div id="auth-bar">
+  <span id="status">Not authenticated</span>
+  <span id="login-fields">
+    <input id="login-user" placeholder="Username" style="max-width:140px">
+    <input id="login-pass" type="password" placeholder="Password" style="max-width:140px">
+    <button onclick="doLogin()">Login</button>
+  </span>
+  <span>or token:</span>
+  <input id="token-input" placeholder="Bearer token">
+  <button onclick="setToken()">Use Token</button>
+  <button id="logout-btn" class="hidden" onclick="doLogout()">Logout</button>
+</div>
+
+<div class="container">
+  <h1><a href="#" onclick="showList(); return false;">Trovato Headless Demo</a></h1>
+
+  <!-- List view -->
+  <div id="list-view">
+    <div class="toolbar">
+      <select id="type-filter" onchange="loadItems(1)">
+        <option value="">All types</option>
+      </select>
+      <input id="search-input" placeholder="Search…" onkeydown="if(event.key==='Enter')doSearch()">
+      <button onclick="doSearch()">Search</button>
+    </div>
+
+    <div id="items"></div>
+
+    <div class="pager">
+      <button id="prev-btn" class="hidden" onclick="loadItems(currentPage-1)">← Previous</button>
+      <span id="page-info" class="meta"></span>
+      <button id="next-btn" class="hidden" onclick="loadItems(currentPage+1)">Next →</button>
+    </div>
+  </div>
+
+  <!-- Detail view -->
+  <div id="detail-view" class="hidden">
+    <p><a href="#" onclick="showList(); return false;">← Back to list</a></p>
+    <div id="detail-content"></div>
+    <div id="comments-section" class="hidden">
+      <h2>Comments</h2>
+      <div id="comments-list"></div>
+      <div id="comment-form" class="hidden" style="margin-top:1rem;">
+        <textarea id="comment-body" placeholder="Write a comment…"></textarea>
+        <button onclick="postComment()" style="margin-top:.5rem;">Post Comment</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- Configuration ----
+const API_BASE = 'http://localhost:3000';
+
+let bearerToken = '';
+let currentPage = 1;
+let currentSearch = '';
+let currentItemId = null;
+
+// ---- Helpers ----
+function headers() {
+  const h = { 'Content-Type': 'application/json' };
+  if (bearerToken) h['Authorization'] = 'Bearer ' + bearerToken;
+  return h;
+}
+
+function fetchOpts(method, body) {
+  const opts = { method, headers: headers(), credentials: 'include' };
+  if (body) opts.body = JSON.stringify(body);
+  return opts;
+}
+
+async function api(path, opts) {
+  const res = await fetch(API_BASE + path, opts || fetchOpts('GET'));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function ts(epoch) {
+  if (!epoch) return '';
+  return new Date(epoch * 1000).toLocaleDateString();
+}
+
+// ---- Auth ----
+async function doLogin() {
+  const username = document.getElementById('login-user').value;
+  const password = document.getElementById('login-pass').value;
+  try {
+    await api('/user/login/json', fetchOpts('POST', { username, password }));
+    document.getElementById('status').textContent = 'Logged in as ' + username;
+    document.getElementById('login-fields').classList.add('hidden');
+    document.getElementById('logout-btn').classList.remove('hidden');
+    if (currentItemId) showItem(currentItemId);
+  } catch (e) {
+    alert('Login failed: ' + e.message);
+  }
+}
+
+function setToken() {
+  bearerToken = document.getElementById('token-input').value.trim();
+  if (bearerToken) {
+    document.getElementById('status').textContent = 'Using Bearer token';
+    document.getElementById('login-fields').classList.add('hidden');
+    document.getElementById('logout-btn').classList.remove('hidden');
+    if (currentItemId) showItem(currentItemId);
+  }
+}
+
+async function doLogout() {
+  bearerToken = '';
+  try { await api('/user/logout'); } catch (_) {}
+  document.getElementById('status').textContent = 'Not authenticated';
+  document.getElementById('login-fields').classList.remove('hidden');
+  document.getElementById('logout-btn').classList.add('hidden');
+  document.getElementById('token-input').value = '';
+  if (currentItemId) showItem(currentItemId);
+}
+
+// ---- Content types ----
+async function loadContentTypes() {
+  try {
+    const data = await api('/api/content-types');
+    const select = document.getElementById('type-filter');
+    (data.content_types || data).forEach(ct => {
+      const opt = document.createElement('option');
+      opt.value = ct.machine_name || ct.name;
+      opt.textContent = ct.label || ct.name || ct.machine_name;
+      select.appendChild(opt);
+    });
+  } catch (_) {}
+}
+
+// ---- Item list ----
+async function loadItems(page) {
+  currentPage = page || 1;
+  currentSearch = '';
+  const type = document.getElementById('type-filter').value;
+  let path = '/api/items?per_page=10&page=' + currentPage + '&include=author';
+  if (type) path += '&type=' + encodeURIComponent(type);
+
+  try {
+    const data = await api(path);
+    renderItems(data);
+  } catch (e) {
+    document.getElementById('items').innerHTML = '<p>Error: ' + esc(e.message) + '</p>';
+  }
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) { loadItems(1); return; }
+  currentSearch = q;
+  currentPage = 1;
+  try {
+    const data = await api('/api/search?q=' + encodeURIComponent(q) + '&page=1&limit=10');
+    renderItems(data);
+  } catch (e) {
+    document.getElementById('items').innerHTML = '<p>Error: ' + esc(e.message) + '</p>';
+  }
+}
+
+function renderItems(data) {
+  const items = data.items || data.results || [];
+  const container = document.getElementById('items');
+  if (!items.length) {
+    container.innerHTML = '<p class="meta">No items found.</p>';
+  } else {
+    container.innerHTML = items.map(item => `
+      <div class="card">
+        <a href="#" onclick="showItem('${item.id}'); return false;"><strong>${esc(item.title)}</strong></a>
+        <div class="meta">${esc(item.type || item.item_type || '')} · ${ts(item.created)}
+          ${item.author ? ' · ' + esc(item.author.name || item.author.username || '') : ''}</div>
+      </div>
+    `).join('');
+  }
+
+  // Items API nests pagination; search API uses top-level fields
+  const pagination = data.pagination || {};
+  const total = pagination.total || data.total || 0;
+  const perPage = pagination.per_page || data.limit || data.per_page || 10;
+  const totalPages = pagination.total_pages || Math.ceil(total / perPage) || 1;
+  document.getElementById('page-info').textContent = 'Page ' + currentPage + ' of ' + totalPages;
+  document.getElementById('prev-btn').classList.toggle('hidden', currentPage <= 1);
+  document.getElementById('next-btn').classList.toggle('hidden', currentPage >= totalPages);
+}
+
+// ---- Detail view ----
+async function showItem(id) {
+  currentItemId = id;
+  document.getElementById('list-view').classList.add('hidden');
+  document.getElementById('detail-view').classList.remove('hidden');
+
+  try {
+    const item = await api('/api/item/' + id + '?include=author');
+    const dc = document.getElementById('detail-content');
+    dc.innerHTML = `
+      <h2>${esc(item.title)}</h2>
+      <div class="meta">${esc(item.type || item.item_type || '')} · ${ts(item.created)}
+        ${item.author ? ' · ' + esc(item.author.name || item.author.username || '') : ''}</div>
+      <div class="body-content">${esc(item.body || '')}</div>
+    `;
+    loadComments(id);
+  } catch (e) {
+    document.getElementById('detail-content').innerHTML = '<p>Error: ' + esc(e.message) + '</p>';
+  }
+}
+
+function showList() {
+  currentItemId = null;
+  document.getElementById('detail-view').classList.add('hidden');
+  document.getElementById('list-view').classList.remove('hidden');
+}
+
+// ---- Comments ----
+async function loadComments(itemId) {
+  const section = document.getElementById('comments-section');
+  section.classList.remove('hidden');
+
+  try {
+    const data = await api('/api/item/' + itemId + '/comments');
+    const comments = data.comments || data || [];
+    const list = document.getElementById('comments-list');
+    if (!comments.length) {
+      list.innerHTML = '<p class="meta">No comments yet.</p>';
+    } else {
+      list.innerHTML = comments.map(c => `
+        <div class="comment">
+          <div class="meta">${esc(c.author_name || 'Anonymous')} · ${ts(c.created)}</div>
+          <div>${esc(c.body)}</div>
+        </div>
+      `).join('');
+    }
+  } catch (_) {
+    document.getElementById('comments-list').innerHTML = '<p class="meta">Could not load comments.</p>';
+  }
+
+  // Show comment form if authenticated
+  const isAuth = bearerToken || document.getElementById('logout-btn').classList.contains('hidden') === false;
+  document.getElementById('comment-form').classList.toggle('hidden', !isAuth);
+}
+
+async function postComment() {
+  const body = document.getElementById('comment-body').value.trim();
+  if (!body || !currentItemId) return;
+  try {
+    await api('/api/item/' + currentItemId + '/comments', fetchOpts('POST', { body }));
+    document.getElementById('comment-body').value = '';
+    loadComments(currentItemId);
+  } catch (e) {
+    alert('Failed to post comment: ' + e.message);
+  }
+}
+
+// ---- Init ----
+loadContentTypes();
+loadItems(1);
+</script>
+</body>
+</html>

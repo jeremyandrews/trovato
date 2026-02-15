@@ -28,6 +28,12 @@ pub struct Config {
 
     /// Base URL for serving uploaded files (default: /files).
     pub files_url: String,
+
+    /// CORS allowed origins (comma-separated, default: "*").
+    pub cors_allowed_origins: Vec<String>,
+
+    /// Cookie SameSite policy: "strict", "lax", or "none" (default: "strict").
+    pub cookie_same_site: String,
 }
 
 impl Config {
@@ -59,6 +65,14 @@ impl Config {
 
         let files_url = env::var("FILES_URL").unwrap_or_else(|_| "/files".to_string());
 
+        let cors_allowed_origins = env::var("CORS_ALLOWED_ORIGINS")
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_else(|_| vec!["*".to_string()]);
+
+        let cookie_same_site = env::var("COOKIE_SAME_SITE")
+            .unwrap_or_else(|_| "strict".to_string())
+            .to_lowercase();
+
         Ok(Self {
             port,
             database_url,
@@ -67,6 +81,8 @@ impl Config {
             plugins_dir,
             uploads_dir,
             files_url,
+            cors_allowed_origins,
+            cookie_same_site,
         })
     }
 }

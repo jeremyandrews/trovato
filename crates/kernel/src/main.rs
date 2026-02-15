@@ -33,8 +33,11 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use axum::Router;
+use axum::http::{HeaderValue, Method};
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tower_sessions::cookie::SameSite;
+use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::Config;
@@ -62,7 +65,12 @@ async fn main() -> Result<()> {
     info!("Database and Redis connections established");
 
     // Create session layer
-    let session_layer = session::create_session_layer(&config.redis_url)
+    let same_site = match config.cookie_same_site.as_str() {
+        "lax" => SameSite::Lax,
+        "none" => SameSite::None,
+        _ => SameSite::Strict,
+    };
+    let session_layer = session::create_session_layer(&config.redis_url, same_site)
         .await
         .context("failed to create session layer")?;
 
@@ -72,6 +80,9 @@ async fn main() -> Result<()> {
         content_types = state.content_types().len(),
         "Plugins and content types loaded"
     );
+
+    // Build CORS layer from config
+    let cors = build_cors_layer(&config);
 
     // Build the router
     let app = Router::new()
@@ -90,8 +101,10 @@ async fn main() -> Result<()> {
         .merge(routes::file::router())
         .merge(routes::metrics::router())
         .merge(routes::batch::router())
+        .merge(routes::api_token::router())
         .merge(routes::static_files::router())
-        // Path alias middleware runs first (last added = first executed)
+        // Middleware layers (last added = first executed in request flow):
+        // TraceLayer → session → CORS → api_token → install_check → path_alias → routes
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::resolve_path_alias,
@@ -100,7 +113,12 @@ async fn main() -> Result<()> {
             state.clone(),
             crate::middleware::check_installation,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::authenticate_api_token,
+        ))
         .layer(session_layer)
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -115,6 +133,41 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await.context("server error")?;
 
     Ok(())
+}
+
+fn build_cors_layer(config: &Config) -> CorsLayer {
+    let methods = [
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::OPTIONS,
+    ];
+
+    if config.cors_allowed_origins.len() == 1 && config.cors_allowed_origins[0] == "*" {
+        CorsLayer::new()
+            .allow_origin(tower_http::cors::Any)
+            .allow_methods(methods)
+            .allow_headers(tower_http::cors::Any)
+    } else {
+        let origins: Vec<HeaderValue> = config
+            .cors_allowed_origins
+            .iter()
+            .filter_map(|o| match o.parse::<HeaderValue>() {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    warn!(origin = %o, "ignoring unparseable CORS origin");
+                    None
+                }
+            })
+            .collect();
+
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods(methods)
+            .allow_headers(tower_http::cors::Any)
+            .allow_credentials(true)
+    }
 }
 
 fn init_tracing() {

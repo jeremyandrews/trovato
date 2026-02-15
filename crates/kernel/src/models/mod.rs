@@ -1,5 +1,6 @@
 //! Database models.
 
+pub mod api_token;
 pub mod category;
 pub mod comment;
 pub mod item;

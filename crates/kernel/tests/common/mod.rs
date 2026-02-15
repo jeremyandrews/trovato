@@ -56,7 +56,10 @@ impl TestApp {
         let db = state.db().clone();
 
         // Create session layer
-        let session_layer = trovato_kernel::session::create_session_layer(&config.redis_url)
+        let session_layer = trovato_kernel::session::create_session_layer(
+                &config.redis_url,
+                tower_sessions::cookie::SameSite::Strict,
+            )
             .await
             .expect("Failed to create session layer");
 
