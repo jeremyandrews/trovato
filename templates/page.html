@@ -1,19 +1,109 @@
 {% extends "base.html" %}
 
+{% block head %}
+<style>
+    .site-header {
+        background: white;
+        border-bottom: 1px solid var(--gray-200);
+        padding: 0.75rem 0;
+    }
+
+    .site-header .container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .site-branding {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .site-branding__name {
+        font-weight: 600;
+        font-size: 1.125rem;
+        color: var(--gray-900);
+        text-decoration: none;
+    }
+
+    .site-branding__name:hover {
+        text-decoration: none;
+        color: var(--primary);
+    }
+
+    .site-branding__slogan {
+        font-size: 0.8rem;
+        color: var(--gray-500);
+        margin-top: -2px;
+    }
+
+    .site-nav {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    .site-nav__link {
+        padding: 0.375rem 0.75rem;
+        border-radius: 0.375rem;
+        color: var(--gray-700);
+        font-size: 0.875rem;
+        text-decoration: none;
+        transition: background-color 0.15s;
+    }
+
+    .site-nav__link:hover {
+        background: var(--gray-100);
+        text-decoration: none;
+    }
+
+    .site-nav__divider {
+        width: 1px;
+        height: 1rem;
+        background: var(--gray-200);
+        margin: 0 0.25rem;
+    }
+
+    .site-footer {
+        text-align: center;
+        padding: 2rem;
+        color: var(--gray-500);
+        font-size: 0.875rem;
+        border-top: 1px solid var(--gray-200);
+        margin-top: 2rem;
+    }
+</style>
+{% endblock %}
+
 {% block header %}
-<nav style="background: white; border-bottom: 1px solid var(--gray-200); padding: 0.75rem 0;">
-    <div class="container" style="display: flex; justify-content: space-between; align-items: center;">
-        <a href="/" style="font-weight: 600; font-size: 1.125rem; color: var(--gray-900);">Trovato</a>
-        <div style="display: flex; gap: 1rem;">
-            <a href="/admin">Admin</a>
-            <a href="/user/logout">Logout</a>
+<div class="site-header">
+    <div class="container">
+        <div class="site-branding">
+            <a href="/" class="site-branding__name">{{ site_name | default(value="Trovato") }}</a>
+            {% if site_slogan %}
+            <span class="site-branding__slogan">{{ site_slogan }}</span>
+            {% endif %}
         </div>
+        <nav class="site-nav">
+            {% if menus is defined %}
+            {% for menu in menus %}
+            <a href="{{ menu.path }}" class="site-nav__link">{{ menu.title }}</a>
+            {% endfor %}
+            {% endif %}
+            <div class="site-nav__divider"></div>
+            {% if user_authenticated %}
+            <a href="/admin" class="site-nav__link">Admin</a>
+            <a href="/user/logout" class="site-nav__link">Logout</a>
+            {% else %}
+            <a href="/user/login" class="site-nav__link">Login</a>
+            {% endif %}
+        </nav>
     </div>
-</nav>
+</div>
 {% endblock %}
 
 {% block footer %}
-<div style="text-align: center; padding: 2rem; color: var(--gray-500); font-size: 0.875rem;">
-    Powered by Trovato CMS
+<div class="site-footer">
+    &copy; {{ site_name | default(value="Trovato") }}. Powered by Trovato CMS.
 </div>
 {% endblock %}

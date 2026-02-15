@@ -99,6 +99,17 @@ impl SiteConfig {
         Self::set(pool, "site_mail", serde_json::json!(mail)).await
     }
 
+    /// Get the front page path.
+    pub async fn front_page(pool: &PgPool) -> Result<Option<String>> {
+        let value = Self::get(pool, "site_front_page").await?;
+        Ok(value.and_then(|v| v.as_str().map(String::from)).filter(|s| !s.is_empty()))
+    }
+
+    /// Set the front page path (e.g., "/item/{uuid}").
+    pub async fn set_front_page(pool: &PgPool, path: &str) -> Result<()> {
+        Self::set(pool, "site_front_page", serde_json::json!(path)).await
+    }
+
     /// Get all configuration as a map.
     pub async fn all(
         pool: &PgPool,

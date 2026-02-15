@@ -179,7 +179,22 @@ impl AppState {
             .into_iter()
             .map(|r| (r.plugin_name, r.output))
             .collect();
-        let menu_registry = Arc::new(MenuRegistry::from_tap_results(menu_jsons));
+        let mut menu_registry = MenuRegistry::from_tap_results(menu_jsons);
+
+        // Register core "Home" menu item
+        menu_registry.register(crate::menu::MenuDefinition {
+            path: "/".to_string(),
+            title: "Home".to_string(),
+            plugin: "core".to_string(),
+            permission: String::new(),
+            parent: None,
+            weight: -10,
+            visible: true,
+            method: "GET".to_string(),
+            handler_type: "page".to_string(),
+        });
+
+        let menu_registry = Arc::new(menu_registry);
 
         // Create content type registry
         let content_types = Arc::new(ContentTypeRegistry::new(db.clone()));
@@ -200,6 +215,74 @@ impl AppState {
             .load_views()
             .await
             .context("failed to load gather views")?;
+
+        // Register blog_listing view if it doesn't exist
+        if gather.get_view("blog_listing").is_none() {
+            use crate::gather::{
+                DisplayFormat, FilterOperator, FilterValue, GatherView, PagerConfig,
+                SortDirection, ViewDefinition, ViewDisplay, ViewFilter, ViewSort,
+            };
+
+            let blog_view = GatherView {
+                view_id: "blog_listing".to_string(),
+                label: "Blog".to_string(),
+                description: Some("Recent blog posts".to_string()),
+                definition: ViewDefinition {
+                    base_table: "item".to_string(),
+                    item_type: Some("blog".to_string()),
+                    fields: Vec::new(),
+                    filters: vec![
+                        ViewFilter {
+                            field: "status".to_string(),
+                            operator: FilterOperator::Equals,
+                            value: FilterValue::Integer(1),
+                            exposed: false,
+                            exposed_label: None,
+                        },
+                    ],
+                    sorts: vec![ViewSort {
+                        field: "created".to_string(),
+                        direction: SortDirection::Desc,
+                        nulls: None,
+                    }],
+                    relationships: Vec::new(),
+                },
+                display: ViewDisplay {
+                    format: DisplayFormat::List,
+                    items_per_page: 10,
+                    pager: PagerConfig {
+                        enabled: true,
+                        ..PagerConfig::default()
+                    },
+                    empty_text: Some("No blog posts yet.".to_string()),
+                    header: None,
+                    footer: None,
+                },
+                plugin: "core".to_string(),
+                created: chrono::Utc::now().timestamp(),
+                changed: chrono::Utc::now().timestamp(),
+            };
+
+            if let Err(e) = gather.register_view(blog_view).await {
+                tracing::warn!(error = %e, "failed to register blog_listing view");
+            }
+        }
+
+        // Register /blog URL alias for the blog listing view
+        {
+            use crate::models::UrlAlias;
+            if let Err(e) = UrlAlias::upsert_for_source(
+                &db,
+                "/gather/blog_listing",
+                "/blog",
+                "live",
+                "en",
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "failed to register /blog alias");
+            }
+        }
 
         // Create theme engine
         let template_dir = Self::resolve_template_dir();

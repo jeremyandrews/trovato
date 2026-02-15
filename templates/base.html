@@ -145,6 +145,90 @@
         .table tr:hover td {
             background: var(--gray-50);
         }
+
+        /* Item styles */
+        .item {
+            margin-bottom: 2rem;
+        }
+
+        .item__title {
+            margin: 0 0 0.25rem 0;
+            font-size: 1.75rem;
+        }
+
+        .item__meta {
+            color: var(--gray-500);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+
+        .item__content {
+            line-height: 1.7;
+        }
+
+        .item__content p {
+            margin-bottom: 1rem;
+        }
+
+        /* Blog teaser styles */
+        .blog-teaser {
+            padding: 1.5rem 0;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .blog-teaser:last-child {
+            border-bottom: none;
+        }
+
+        .blog-teaser__title {
+            margin: 0 0 0.25rem 0;
+            font-size: 1.25rem;
+        }
+
+        .blog-teaser__title a {
+            color: var(--gray-900);
+        }
+
+        .blog-teaser__title a:hover {
+            color: var(--primary);
+        }
+
+        .blog-teaser__meta {
+            color: var(--gray-500);
+            font-size: 0.8rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .blog-teaser__summary {
+            color: var(--gray-700);
+            line-height: 1.6;
+        }
+
+        .blog-teaser__read-more {
+            display: inline-block;
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        /* Front page styles */
+        .front-listing {
+            margin-top: 1rem;
+        }
+
+        .front-welcome {
+            text-align: center;
+            padding: 3rem 1rem;
+        }
+
+        .front-welcome h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .front-welcome p {
+            color: var(--gray-500);
+            font-size: 1.1rem;
+        }
     </style>
     {% block head %}{% endblock %}
 </head>

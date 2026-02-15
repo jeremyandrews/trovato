@@ -18,6 +18,8 @@ use crate::models::{CreateItem, UpdateItem, UrlAlias, User};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
+use super::helpers::html_escape;
+
 /// Session key for user ID.
 const SESSION_USER_ID: &str = "user_id";
 
@@ -192,25 +194,8 @@ async fn view_item(
         }
     };
 
-    // Build simple HTML output (templates would be used in production)
-    let mut html = String::new();
-    html.push_str("<!DOCTYPE html><html><head>");
-    html.push_str(&format!("<title>{}</title>", html_escape(&item.title)));
-    html.push_str("<style>body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }</style>");
-    html.push_str("</head><body>");
-
-    html.push_str(&format!("<h1>{}</h1>", html_escape(&item.title)));
-    html.push_str(&format!(
-        "<p><em>Type: {} | Status: {}</em></p>",
-        item.item_type,
-        if item.is_published() {
-            "Published"
-        } else {
-            "Unpublished"
-        }
-    ));
-
-    // Render fields
+    // Render fields through filter pipeline
+    let mut children_html = String::new();
     if let Some(fields) = item.fields.as_object() {
         for (name, value) in fields {
             if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
@@ -219,9 +204,9 @@ async fn view_item(
                     .and_then(|v| v.as_str())
                     .unwrap_or("plain_text");
                 let filtered = FilterPipeline::for_format(format).process(text_val);
-                html.push_str(&format!(
-                    "<div class=\"field field-{}\"><h3>{}</h3>{}</div>",
-                    name, name, filtered
+                children_html.push_str(&format!(
+                    "<div class=\"field field-{}\">{}</div>",
+                    name, filtered
                 ));
             }
         }
@@ -229,18 +214,50 @@ async fn view_item(
 
     // Include plugin render outputs
     for output in render_outputs {
-        html.push_str(&output);
+        children_html.push_str(&output);
     }
 
-    // Action links
-    html.push_str(&format!(
-        r#"<p><a href="/item/{}/edit">Edit</a> | <a href="/item/{}/revisions">Revisions</a></p>"#,
-        id, id
-    ));
+    // Resolve item template via theme engine
+    let suggestions = vec![
+        format!("elements/item--{}--{}", item.item_type, item.id),
+        format!("elements/item--{}", item.item_type),
+        "elements/item".to_string(),
+    ];
+    let suggestion_refs: Vec<&str> = suggestions.iter().map(|s| s.as_str()).collect();
+    let template = state
+        .theme()
+        .resolve_template(&suggestion_refs)
+        .unwrap_or_else(|| "elements/item.html".to_string());
 
-    html.push_str("</body></html>");
+    let mut context = tera::Context::new();
+    context.insert("item", &item);
+    context.insert("children", &children_html);
 
-    Ok(Html(html))
+    let item_html = state
+        .theme()
+        .tera()
+        .render(&template, &context)
+        .unwrap_or_else(|_| {
+            // Fallback if template rendering fails
+            format!(
+                "<h1>{}</h1>{}",
+                html_escape(&item.title),
+                children_html
+            )
+        });
+
+    // Wrap in page layout with site context
+    let item_path = format!("/item/{}", id);
+    super::helpers::inject_site_context(&state, &session, &mut context).await;
+
+    let page_html = state
+        .theme()
+        .render_page(&item_path, &item.title, &item_html, &mut context)
+        .unwrap_or_else(|_| {
+            format!("<!DOCTYPE html><html><body>{}</body></html>", item_html)
+        });
+
+    Ok(Html(page_html))
 }
 
 /// Display add item form.
@@ -744,14 +761,6 @@ async fn list_items_by_type(
             ))
         }
     }
-}
-
-/// HTML-escape a string.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 // =============================================================================

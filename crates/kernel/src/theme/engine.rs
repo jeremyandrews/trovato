@@ -75,6 +75,23 @@ impl ThemeEngine {
             },
         );
 
+        // Filter for formatting Unix timestamps as human-readable dates
+        tera.register_filter(
+            "format_date",
+            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+                let timestamp = match value {
+                    tera::Value::Number(n) => n.as_i64().unwrap_or(0),
+                    _ => return Ok(tera::Value::String(String::new())),
+                };
+
+                let formatted = chrono::DateTime::from_timestamp(timestamp, 0)
+                    .map(|dt| dt.format("%B %-d, %Y").to_string())
+                    .unwrap_or_else(|| "Unknown date".to_string());
+
+                Ok(tera::Value::String(formatted))
+            },
+        );
+
         // Filter for safe HTML output (already filtered)
         tera.register_filter(
             "safe_html",
@@ -407,5 +424,41 @@ mod tests {
         assert!(suggestions[0].contains("item--blog--"));
         assert_eq!(suggestions[1], "elements/item--blog");
         assert_eq!(suggestions[2], "elements/item");
+    }
+
+    #[test]
+    fn test_format_date_filter_with_valid_timestamp() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera);
+
+        tera.add_raw_template("test", "{{ ts | format_date }}").unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("ts", &1739577600_i64); // 2025-02-15 00:00:00 UTC
+        let result = tera.render("test", &ctx).unwrap();
+        assert_eq!(result, "February 15, 2025");
+    }
+
+    #[test]
+    fn test_format_date_filter_with_zero() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera);
+
+        tera.add_raw_template("test", "{{ ts | format_date }}").unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("ts", &0_i64);
+        let result = tera.render("test", &ctx).unwrap();
+        assert_eq!(result, "January 1, 1970");
+    }
+
+    #[test]
+    fn test_format_date_filter_with_string() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera);
+
+        tera.add_raw_template("test", "{{ ts | format_date }}").unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("ts", "not a number");
+        let result = tera.render("test", &ctx).unwrap();
+        assert_eq!(result, "");
     }
 }

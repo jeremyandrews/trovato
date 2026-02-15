@@ -1,0 +1,39 @@
+<div class="blog-listing">
+    <h1>{{ view.label }}</h1>
+
+    {% if view.description %}
+    <p class="gather-view__description">{{ view.description }}</p>
+    {% endif %}
+
+    {% if rows | length == 0 %}
+    <p class="empty">No blog posts yet.</p>
+    {% else %}
+    <div class="blog-listing__items">
+        {% for row in rows %}
+        <div class="blog-teaser">
+            <h2 class="blog-teaser__title">
+                <a href="/item/{{ row.id }}">{{ row.title }}</a>
+            </h2>
+            <div class="blog-teaser__meta">
+                <time>{{ row.created | format_date }}</time>
+            </div>
+            {% if row.fields is defined and row.fields is object %}
+                {% if row.fields.body is defined %}
+                    {% set body_val = row.fields.body %}
+                    {% if body_val.value is defined %}
+                    <div class="blog-teaser__summary">
+                        {{ body_val.value | truncate(length=200) }}
+                    </div>
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+            <a href="/item/{{ row.id }}" class="blog-teaser__read-more">Read more &rarr;</a>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if pager %}
+    {% include "gather/pager.html" %}
+    {% endif %}
+</div>

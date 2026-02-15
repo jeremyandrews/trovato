@@ -1,0 +1,16 @@
+{% extends "page.html" %}
+
+{% block content %}
+{% if content %}
+{{ content | safe }}
+{% else %}
+<div class="front-welcome">
+    <h1>Welcome to {{ site_name | default(value="Trovato") }}</h1>
+    {% if site_slogan %}
+    <p>{{ site_slogan }}</p>
+    {% else %}
+    <p>Your site is ready. Create some content to get started.</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

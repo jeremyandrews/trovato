@@ -14,6 +14,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::helpers::html_escape as escape_html;
+
 /// Create the gather router.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -221,6 +223,7 @@ async fn execute_adhoc_query(
 
 async fn render_view_html(
     State(state): State<AppState>,
+    session: tower_sessions::Session,
     Path(view_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<ErrorResponse>)> {
@@ -248,11 +251,21 @@ async fn render_view_html(
             )
         })?;
 
-    // Try to render via Tera templates
-    let html = render_gather_with_theme(&state, &view, &result)
-        .unwrap_or_else(|| render_gather_html(&view, &result));
+    // Render gather content (either via theme template or fallback HTML)
+    let content_html = render_gather_with_theme(&state, &view, &result)
+        .unwrap_or_else(|| render_gather_content_html(&view, &result));
 
-    Ok(Html(html))
+    // Wrap in page layout with site context
+    let gather_path = format!("/gather/{}", view_id);
+    let mut context = tera::Context::new();
+    super::helpers::inject_site_context(&state, &session, &mut context).await;
+
+    let page_html = state
+        .theme()
+        .render_page(&gather_path, &view.label, &content_html, &mut context)
+        .unwrap_or_else(|_| render_gather_html(&view, &result));
+
+    Ok(Html(page_html))
 }
 
 fn render_gather_with_theme(
@@ -349,22 +362,9 @@ fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
     }
 }
 
-fn render_gather_html(view: &GatherView, result: &crate::gather::GatherResult) -> String {
+/// Render gather content as an HTML fragment (no page wrapper).
+fn render_gather_content_html(view: &GatherView, result: &crate::gather::GatherResult) -> String {
     let mut html = String::new();
-
-    // Header
-    html.push_str("<!DOCTYPE html>\n<html>\n<head>\n");
-    html.push_str(&format!("<title>{}</title>\n", escape_html(&view.label)));
-    html.push_str("<style>\n");
-    html.push_str("body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }\n");
-    html.push_str("table { width: 100%; border-collapse: collapse; }\n");
-    html.push_str("th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }\n");
-    html.push_str("th { background: #f5f5f5; }\n");
-    html.push_str(".pager { margin-top: 20px; }\n");
-    html.push_str(".pager a { margin: 0 5px; }\n");
-    html.push_str(".empty { color: #666; font-style: italic; }\n");
-    html.push_str("</style>\n");
-    html.push_str("</head>\n<body>\n");
 
     // Title
     html.push_str(&format!("<h1>{}</h1>\n", escape_html(&view.label)));
@@ -385,9 +385,8 @@ fn render_gather_html(view: &GatherView, result: &crate::gather::GatherResult) -
             escape_html(empty_text)
         ));
     } else {
-        html.push_str("<table>\n<thead>\n<tr>\n");
+        html.push_str("<table class=\"table\">\n<thead>\n<tr>\n");
 
-        // Determine columns from first item
         if let Some(first) = result.items.first() {
             if let Some(obj) = first.as_object() {
                 for key in obj.keys() {
@@ -443,14 +442,19 @@ fn render_gather_html(view: &GatherView, result: &crate::gather::GatherResult) -
         html.push_str("</div>\n");
     }
 
-    html.push_str("</body>\n</html>");
     html
 }
 
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
+/// Full standalone fallback page (used when theme engine fails).
+fn render_gather_html(view: &GatherView, result: &crate::gather::GatherResult) -> String {
+    let content = render_gather_content_html(view, result);
+    format!(
+        "<!DOCTYPE html>\n<html>\n<head>\n<title>{}</title>\n\
+        <style>\nbody {{ font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }}\n\
+        table {{ width: 100%; border-collapse: collapse; }}\nth, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}\n\
+        th {{ background: #f5f5f5; }}\n.pager {{ margin-top: 20px; }}\n.pager a {{ margin: 0 5px; }}\n\
+        .empty {{ color: #666; font-style: italic; }}\n</style>\n</head>\n<body>\n{}\n</body>\n</html>",
+        escape_html(&view.label),
+        content
+    )
 }

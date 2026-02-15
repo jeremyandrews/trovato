@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
 
     // Build the router
     let app = Router::new()
+        .merge(routes::front::router())
         .merge(routes::install::router())
         .merge(routes::auth::router())
         .merge(routes::admin::router())
