@@ -3563,7 +3563,11 @@ async fn e2e_installer_shows_welcome_page() {
 
     // Access /install/welcome directly
     let response = app
-        .request(Request::get("/install/welcome").body(Body::empty()).unwrap())
+        .request(
+            Request::get("/install/welcome")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await;
 
     // Even when installed, welcome page is accessible (will redirect to /)
@@ -3621,7 +3625,11 @@ async fn e2e_installer_complete_page() {
 
     // Access /install/complete directly - always accessible
     let response = app
-        .request(Request::get("/install/complete").body(Body::empty()).unwrap())
+        .request(
+            Request::get("/install/complete")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await;
 
     assert_eq!(response.status(), StatusCode::OK);

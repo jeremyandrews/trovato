@@ -1,0 +1,54 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit URL alias{% else %}Add URL alias{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="alias-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="source" class="form-item__label form-item__label--required">Source path</label>
+            <input type="text" id="source" name="source" class="form-text"
+                   value="{{ values.source | default(value='') }}"
+                   placeholder="/item/550e8400-e29b-41d4-a716-446655440000"
+                   required>
+            <p class="form-item__description">The internal path (e.g., /item/uuid)</p>
+        </div>
+
+        <div class="form-item">
+            <label for="alias" class="form-item__label form-item__label--required">Alias path</label>
+            <input type="text" id="alias" name="alias" class="form-text"
+                   value="{{ values.alias | default(value='') }}"
+                   placeholder="/about-us"
+                   required>
+            <p class="form-item__description">The human-readable URL (e.g., /about-us)</p>
+        </div>
+
+        <div class="form-item">
+            <label for="language" class="form-item__label">Language</label>
+            <input type="text" id="language" name="language" class="form-text"
+                   value="{{ values.language | default(value='en') }}"
+                   placeholder="en">
+            <p class="form-item__description">Language code for this alias (e.g., en, es, fr)</p>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create alias{% endif %}</button>
+            <a href="/admin/structure/aliases" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

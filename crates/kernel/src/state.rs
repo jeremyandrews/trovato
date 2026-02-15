@@ -12,6 +12,7 @@ use tracing::info;
 use crate::batch::BatchService;
 use crate::cache::CacheLayer;
 use crate::config::Config;
+use crate::config_storage::{ConfigStorage, DirectConfigStorage, StageAwareConfigStorage};
 use crate::content::{ContentTypeRegistry, ItemService};
 use crate::cron::CronService;
 use crate::db;
@@ -25,6 +26,7 @@ use crate::middleware::{RateLimitConfig, RateLimiter};
 use crate::permissions::PermissionService;
 use crate::plugin::{PluginConfig, PluginRuntime};
 use crate::search::SearchService;
+use crate::stage::StageService;
 use crate::tap::{TapDispatcher, TapRegistry};
 use crate::theme::ThemeEngine;
 
@@ -45,6 +47,10 @@ struct AppStateInner {
 
     /// Two-tier cache layer (Moka L1 + Redis L2).
     cache: CacheLayer,
+
+    /// Configuration storage for all config entities.
+    /// All config reads/writes MUST go through this interface.
+    config_storage: Arc<dyn ConfigStorage>,
 
     /// Permission service for access control.
     permissions: PermissionService,
@@ -99,6 +105,9 @@ struct AppStateInner {
 
     /// Batch operations service.
     batch: Arc<BatchService>,
+
+    /// Stage service for publish operations.
+    stage: Arc<StageService>,
 }
 
 impl AppState {
@@ -128,6 +137,11 @@ impl AppState {
             .query_async::<String>(&mut conn)
             .await
             .context("Redis PING failed")?;
+
+        // Create config storage
+        // This is the central interface for all config entity access.
+        // Post-MVP, we can swap this with StageAwareConfigStorage for stage awareness.
+        let config_storage: Arc<dyn ConfigStorage> = Arc::new(DirectConfigStorage::new(db.clone()));
 
         // Create permission service
         let permissions = PermissionService::new(db.clone());
@@ -235,11 +249,15 @@ impl AppState {
         // Create batch service
         let batch = Arc::new(BatchService::new(redis.clone()));
 
+        // Create stage service
+        let stage = Arc::new(StageService::new(db.clone(), cache.clone()));
+
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
                 redis,
                 cache,
+                config_storage,
                 permissions,
                 lockout,
                 plugin_runtime,
@@ -258,6 +276,7 @@ impl AppState {
                 metrics,
                 rate_limiter,
                 batch,
+                stage,
             }),
         })
     }
@@ -348,6 +367,34 @@ impl AppState {
         &self.inner.cache
     }
 
+    /// Get the config storage.
+    ///
+    /// All config entity access MUST go through this interface.
+    /// This is critical for future stage-aware config support.
+    pub fn config_storage(&self) -> &Arc<dyn ConfigStorage> {
+        &self.inner.config_storage
+    }
+
+    /// Get stage-aware config storage for a specific stage.
+    ///
+    /// This creates a StageAwareConfigStorage that reads/writes to the given stage,
+    /// falling back to live for reads. Use this when you need to operate within
+    /// a stage context.
+    pub fn config_storage_for_stage(&self, stage_id: &str) -> Arc<dyn ConfigStorage> {
+        if stage_id == "live" {
+            // Live stage uses direct storage
+            self.inner.config_storage.clone()
+        } else {
+            // Non-live stages use stage-aware storage
+            let direct = Arc::new(DirectConfigStorage::new(self.inner.db.clone()));
+            Arc::new(StageAwareConfigStorage::new(
+                direct,
+                self.inner.db.clone(),
+                stage_id.to_string(),
+            ))
+        }
+    }
+
     /// Get the search service.
     pub fn search(&self) -> &Arc<SearchService> {
         &self.inner.search
@@ -376,6 +423,11 @@ impl AppState {
     /// Get the batch service.
     pub fn batch(&self) -> &Arc<BatchService> {
         &self.inner.batch
+    }
+
+    /// Get the stage service.
+    pub fn stage(&self) -> &Arc<StageService> {
+        &self.inner.stage
     }
 
     /// Check if PostgreSQL is healthy.

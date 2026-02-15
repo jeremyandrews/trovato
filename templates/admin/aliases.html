@@ -1,0 +1,82 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>URL Aliases</h2>
+    <a href="/admin/structure/aliases/add" class="button button--primary">Add URL alias</a>
+</div>
+
+<div class="admin-card">
+    <p>Total aliases: {{ total }}</p>
+
+    {% if aliases %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Alias</th>
+                <th>Source</th>
+                <th>Language</th>
+                <th>Created</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for alias in aliases %}
+            <tr>
+                <td>
+                    <a href="{{ alias.alias }}">{{ alias.alias }}</a>
+                </td>
+                <td><code>{{ alias.source }}</code></td>
+                <td>{{ alias.language }}</td>
+                <td>{{ alias.created_display }}</td>
+                <td>
+                    <a href="/admin/structure/aliases/{{ alias.id }}/edit">Edit</a>
+                    &middot;
+                    <form method="post" action="/admin/structure/aliases/{{ alias.id }}/delete" style="display: inline;">
+                        <button type="submit" class="link-button" onclick="return confirm('Are you sure you want to delete this alias?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <nav class="pagination">
+        {% for p in range(start=1, end=total_pages + 1) %}
+            {% if p == page %}
+            <span class="pagination__current">{{ p }}</span>
+            {% else %}
+            <a href="/admin/structure/aliases?page={{ p }}" class="pagination__link">{{ p }}</a>
+            {% endif %}
+        {% endfor %}
+    </nav>
+    {% endif %}
+
+    {% else %}
+    <p>No URL aliases found. <a href="/admin/structure/aliases/add">Create one now</a>.</p>
+    {% endif %}
+</div>
+
+<style>
+    .link-button {
+        background: none;
+        border: none;
+        color: var(--primary);
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+    }
+    .link-button:hover {
+        text-decoration: underline;
+    }
+    .pagination {
+        margin-top: 1rem;
+        display: flex;
+        gap: 0.5rem;
+    }
+    .pagination__current {
+        font-weight: bold;
+    }
+</style>
+{% endblock %}

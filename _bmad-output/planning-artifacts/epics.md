@@ -2610,3 +2610,2215 @@ So that regressions can be detected.
 
 ---
 
+# Phase 7-9: Post-MVP Epics
+
+## Epic List (Phase 7-9)
+
+| Epic | Title | Phase | Gate Criteria |
+|------|-------|-------|---------------|
+| 15 | Drupal 6 Alignment Audit | 7 (parallel) | Documented alignment report with intentional vs accidental divergences |
+| 16 | Admin Interface Completion | 7 | All admin CRUD operations functional via UI |
+| 17 | Installer & Setup Experience | 8 | Fresh install completes via wizard, creates working site |
+| 18 | Display & Theming Layer | 7 | Content renders via API and themed HTML with comments |
+| 19 | CI & Test Infrastructure | 7 | PR pipeline enforces fmt, clippy, tests; coverage tracked |
+| 20 | Use Case Exploration | 8 | Three use cases validated with working examples |
+| 21 | Complete Stage Workflow | 9 | All config entities stage-aware with atomic publish |
+| 22 | Modern CMS Features | 9 | Selected D7+ features implemented and documented |
+
+---
+
+## Epic 15: Drupal 6 Alignment Audit
+
+**Goal:** Systematically document where Trovato aligns with and diverges from Drupal 6 + CCK + Views patterns, plus the two modern additions (Workspaces/Stages, Gander/Profiling). Identify and address critical gaps.
+
+**Scope:**
+- Review all Drupal 6 core concepts against Trovato implementation
+- Include CCK (field system) and Views (Gather) alignment
+- Include modern additions: Workspaces→Stages, Gander→Profiling
+- Document intentional divergences with rationale
+- Identify accidental gaps that should be addressed
+- **Implement Path Aliases** (critical gap identified)
+- Create alignment roadmap for future work
+
+**Gate:** Comprehensive alignment report completed with prioritized gap list; path aliases functional.
+
+**Note:** This epic runs in parallel with other Phase 7 work.
+
+---
+
+### Story 15.1: Core Concept Mapping
+
+As a **project lead**,
+I want a systematic mapping of Drupal 6 core concepts to Trovato equivalents,
+So that we understand our alignment baseline.
+
+**Acceptance Criteria:**
+
+1. **Given** the Drupal 6 + CCK + Views architecture
+   **When** I review the mapping document
+   **Then** it covers all major subsystems with alignment status
+
+2. Document must include mapping tables for:
+   - Content System: nodes→items, node types→item types, revisions
+   - CCK: field definitions, field instances, field types, JSONB storage
+   - Views→Gather: view definitions, filters, sorts, relationships, arguments, pagers, exposed filters
+   - Taxonomy→Categories: vocabularies, terms, hierarchy, term references
+   - Users: authentication, roles, permissions, access control
+   - Hooks→Taps: lifecycle hooks, form hooks, render hooks
+   - Modules→Plugins: WASM loading, dependency resolution
+   - Form API: elements, validation, submission, AJAX
+   - Theme System: templates, suggestions, preprocess, regions
+   - Filters: text formats, filter pipeline
+   - Menu System: routing, menu trees, breadcrumbs
+   - Files: upload, storage, cleanup
+   - Search: indexing, querying
+   - Cron/Queue: scheduled tasks, background processing
+   - Modern Additions: Workspaces→Stages, Gander→Profiling
+
+3. Each concept has: D6 implementation, Trovato implementation, alignment status (✅ aligned / ⚠️ partial / ❌ missing)
+
+**Tasks:**
+- [ ] Create docs/alignment/drupal6-mapping.md
+- [ ] Document Content System alignment
+- [ ] Document CCK→JSONB Fields alignment
+- [ ] Document Views→Gather alignment
+- [ ] Document Taxonomy→Categories alignment
+- [ ] Document all remaining subsystems
+- [ ] Add alignment status badges to each section
+
+**Dev Notes:**
+- Reference Design-Content-Model.md, Design-Query-Engine.md, Terminology.md
+- Use sprint-status.yaml to verify completed stories per subsystem
+- Include code references (file:line) for key implementations
+
+---
+
+### Story 15.2: Intentional Divergence Documentation
+
+As an **architect**,
+I want intentional divergences documented with rationale,
+So that future developers understand why we differ from D6.
+
+**Acceptance Criteria:**
+
+1. **Given** the concept mapping from 15.1
+   **When** I review intentional divergences
+   **Then** each divergence explains: what D6 did, what Trovato does differently, why the change was made, benefits gained
+
+2. Must document these key divergences:
+   - WASM sandboxed plugins vs PHP modules (security, isolation)
+   - JSONB field storage vs EAV tables (performance, no N+1 JOINs)
+   - RenderElement JSON vs raw HTML (XSS prevention, alterability)
+   - UUIDv7 vs auto-increment IDs (no enumeration, time-sortable, merge-safe)
+   - Stages vs simple published flag (content staging from day one)
+   - is_admin boolean vs User 1 magic (explicit, self-documenting)
+   - SeaQuery AST vs string SQL (injection-safe)
+   - Argon2id vs MD5/SHA (modern password hashing)
+   - Redis sessions vs database sessions (TTL native, multi-server)
+   - Handle-based WASM data access vs full serialization (performance)
+
+3. Each divergence references Decision Log in Design-Project-Meta.md
+
+**Tasks:**
+- [ ] Create docs/alignment/intentional-divergences.md
+- [ ] Document each divergence with D6 behavior and Trovato approach
+- [ ] Include performance/security rationale
+- [ ] Cross-reference Design-Project-Meta.md §21 Decision Log
+
+---
+
+### Story 15.3: Gap Analysis and Prioritization
+
+As a **product owner**,
+I want gaps prioritized by impact,
+So that we can plan remediation work.
+
+**Acceptance Criteria:**
+
+1. **Given** the concept mapping shows missing features
+   **When** I review the gap analysis
+   **Then** each gap has: description, impact assessment, effort estimate, recommended resolution
+
+2. Must analyze these identified gaps:
+   - **Path Aliases** (HIGH priority - addressed in 15.5)
+   - Localization/i18n (LOW - explicitly deferred)
+   - Text format per-role permissions (MEDIUM - verify implementation)
+   - hook_user variants / tap_user_* coverage (LOW - verify)
+   - Actions/Trigger system (LOW - not common D6 usage)
+   - Update status checking (LOW - different deployment model)
+
+3. Gaps sorted by priority with clear recommendations
+
+**Tasks:**
+- [ ] Create docs/alignment/gap-analysis.md
+- [ ] Audit each potential gap against codebase
+- [ ] Assign priority (High/Medium/Low) based on user impact
+- [ ] Estimate effort (S/M/L) for remediation
+- [ ] Recommend: implement now, defer, or intentionally skip
+
+---
+
+### Story 15.4: Alignment Roadmap
+
+As a **project lead**,
+I want an alignment roadmap,
+So that we have a plan to address critical gaps.
+
+**Acceptance Criteria:**
+
+1. **Given** the gap analysis
+   **When** I review the roadmap
+   **Then** it shows which gaps to address and when
+
+2. Roadmap must specify:
+   - Gaps addressed in Epic 15 (Path Aliases)
+   - Gaps addressed in Epic 21 (Stage completeness)
+   - Gaps addressed in Epic 22 (Modern CMS features)
+   - Gaps intentionally deferred (with rationale)
+   - Success criteria for "Drupal 6 + CCK + Views parity"
+
+3. Maintained as living document in docs/alignment/roadmap.md
+
+**Tasks:**
+- [ ] Create docs/alignment/roadmap.md
+- [ ] Map gaps to future epics
+- [ ] Define success criteria for D6 parity
+- [ ] Document deferred items with rationale
+
+---
+
+### Story 15.5: Path Alias System
+
+As a **content editor**,
+I want URL aliases for content,
+So that pages have human-readable URLs instead of /item/{uuid}.
+
+**Acceptance Criteria:**
+
+1. **Given** an item exists
+   **When** I create a path alias
+   **Then** the item is accessible via both /item/{id} and the alias path
+
+2. **Given** a path alias exists
+   **When** a request comes for that path
+   **Then** the system routes to the correct item without redirect (internal rewrite)
+
+3. **Given** an alias path is requested
+   **When** the item is loaded
+   **Then** the canonical URL uses the alias in templates/links
+
+4. **Given** multiple aliases exist for one item
+   **When** I view the item
+   **Then** the most recent alias is canonical
+
+5. **Given** I'm an admin
+   **When** I edit an item
+   **Then** I can set/change the URL alias
+
+6. Path aliases are stage-aware (alias can differ per stage)
+
+**Tasks:**
+- [ ] Create `url_alias` table schema (AC: 1, 2)
+- [ ] Create `UrlAlias` model with CRUD operations (AC: 1)
+- [ ] Add path alias middleware to resolve aliases before routing (AC: 2)
+- [ ] Add `get_canonical_url()` helper for templates (AC: 3)
+- [ ] Handle multiple aliases - most recent wins (AC: 4)
+- [ ] Add alias field to item edit form (AC: 5)
+- [ ] Make aliases stage-aware (AC: 6)
+- [ ] Add integration tests for alias resolution
+- [ ] Add admin UI for managing aliases (/admin/config/aliases)
+
+**Dev Notes:**
+- Middleware runs before router, rewrites request path
+- Store original path in request extension for canonical URL
+- Pattern: `/blog/my-post` → internal `/item/01936e3b-4f5a-7000-8000-000000000001`
+- Consider auto-generation from title (pathauto pattern) as future enhancement
+
+**Schema:**
+```sql
+CREATE TABLE url_alias (
+    id UUID PRIMARY KEY,
+    source VARCHAR(255) NOT NULL,      -- /item/{uuid}
+    alias VARCHAR(255) NOT NULL,
+    language VARCHAR(12) DEFAULT 'en',
+    stage_id VARCHAR(64) DEFAULT 'live' REFERENCES stage(id),
+    created BIGINT NOT NULL,
+    UNIQUE (alias, stage_id)
+);
+CREATE INDEX idx_alias_source ON url_alias(source);
+CREATE INDEX idx_alias_alias ON url_alias(alias);
+```
+
+**References:**
+- Drupal 6 path module for behavior reference
+- Design-Web-Layer.md for middleware patterns
+
+---
+
+## Epic 16: Admin Interface Completion
+
+**Goal:** Complete the admin UI to enable full system management through the browser, supporting both manual testing and day-to-day administration.
+
+**FRs covered:** Admin CRUD for users, roles, permissions, content, categories, files
+
+**Scope:**
+- User management (list, create, edit, delete)
+- Role management with permission matrix
+- Content listing with filters and bulk operations
+- Category and tag management
+- File browser and management
+- All operations testable via integration tests
+
+**Gate:** Administrator can manage all system entities through the UI.
+
+---
+
+### Story 16.1: User List and Search
+
+As a **site administrator**,
+I want to view and search all users,
+So that I can manage user accounts.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer users" permission
+**When** I access `/admin/people`
+**Then** I see a paginated list of users with: username, email, status, roles, last access
+**And** I can search by username or email
+**And** I can filter by status (active/blocked) and role
+
+---
+
+### Story 16.2: User Create and Edit
+
+As a **site administrator**,
+I want to create and edit user accounts,
+So that I can onboard new users and update existing ones.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer users" permission
+**When** I access `/admin/people/add`
+**Then** I can create a user with: username, email, password, status, roles, is_admin flag
+**And** validation ensures unique username and email
+**And** password is hashed with Argon2id
+
+**When** I access `/admin/people/{id}/edit`
+**Then** I can edit all user fields except username
+**And** password field is optional (only updates if provided)
+**And** I cannot remove my own admin access
+
+---
+
+### Story 16.3: User Delete with Safety
+
+As a **site administrator**,
+I want to delete user accounts safely,
+So that I can remove users without breaking the system.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer users" permission
+**When** I delete a user at `/admin/people/{id}/delete`
+**Then** confirmation is required
+**And** I cannot delete my own account
+**And** I cannot delete the anonymous user (Uuid::nil)
+**And** content authored by deleted user is reassigned or preserved
+
+---
+
+### Story 16.4: Role Management
+
+As a **site administrator**,
+I want to manage roles,
+So that I can organize permissions into logical groups.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer permissions" permission
+**When** I access `/admin/people/roles`
+**Then** I see all roles with user counts
+**And** I can create new roles with unique machine names
+**And** I can edit role names
+**And** I cannot delete "anonymous" or "authenticated" built-in roles
+**And** deleting a role removes it from all users
+
+---
+
+### Story 16.5: Permission Matrix
+
+As a **site administrator**,
+I want a permission matrix UI,
+So that I can assign permissions to roles visually.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer permissions" permission
+**When** I access `/admin/people/permissions`
+**Then** I see a grid: rows are permissions, columns are roles
+**And** checkboxes indicate which roles have which permissions
+**And** I can toggle permissions and save changes
+**And** permissions are grouped by module/category
+**And** admin role permissions are shown but not editable (always has all)
+
+---
+
+### Story 16.6: Content List with Filters
+
+As a **site administrator**,
+I want to view all content with filters,
+So that I can manage content across the site.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer content" permission
+**When** I access `/admin/content`
+**Then** I see a paginated list with: title, type, author, status, created, changed
+**And** I can filter by: content type, status (published/unpublished), author
+**And** I can sort by any column
+**And** each row links to edit and delete actions
+
+---
+
+### Story 16.7: Content Quick Edit Actions
+
+As a **content editor**,
+I want quick actions on the content list,
+So that I can efficiently manage content.
+
+**Acceptance Criteria:**
+
+**Given** I am viewing the content list
+**When** I select items via checkboxes
+**Then** I can apply bulk actions: publish, unpublish, delete
+**And** confirmation is required for destructive actions
+**And** success/failure feedback is shown
+
+---
+
+### Story 16.8: Category Management UI
+
+As a **site administrator**,
+I want to manage categories and tags through the UI,
+So that I can organize content taxonomy.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer categories" permission
+**When** I access `/admin/structure/categories`
+**Then** I see all category vocabularies
+**And** I can create, edit, and delete vocabularies
+**When** I access `/admin/structure/categories/{vocab}/tags`
+**Then** I see tags in hierarchical tree view
+**And** I can create, edit, delete, and reorder tags
+**And** I can set parent relationships for hierarchy
+
+---
+
+### Story 16.9: File Management UI
+
+As a **site administrator**,
+I want to view and manage uploaded files,
+So that I can track and clean up media.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer files" permission
+**When** I access `/admin/content/files`
+**Then** I see files with: filename, type, size, status (temp/permanent), owner, upload date
+**And** I can filter by status and MIME type
+**And** I can delete orphaned/temporary files
+**And** I can view file details and usage (which items reference it)
+
+---
+
+### Story 16.10: Admin Dashboard Enhancement
+
+As a **site administrator**,
+I want a useful admin dashboard,
+So that I have quick access to common tasks.
+
+**Acceptance Criteria:**
+
+**Given** I access `/admin`
+**When** the dashboard loads
+**Then** I see: recent content, system status, quick links to common admin tasks
+**And** navigation sidebar links to all admin sections
+**And** user count, content count, and other key metrics are displayed
+
+---
+
+## Epic 17: Installer & Setup Experience
+
+**Goal:** Create a guided installation experience that sets up Trovato for first-time use, making onboarding seamless for developers and site administrators.
+
+**Scope:**
+- Database connection setup
+- Initial admin user creation
+- Default content type creation
+- Site configuration (name, email, timezone)
+- Environment validation
+
+**Gate:** Fresh install completes via wizard and produces working site.
+
+---
+
+### Story 17.1: Installation Detection
+
+As a **new user**,
+I want the system to detect if installation is needed,
+So that I'm guided to setup on first access.
+
+**Acceptance Criteria:**
+
+**Given** the database has no users table or it's empty
+**When** I access any page
+**Then** I am redirected to `/install`
+**And** installation cannot be bypassed until complete
+**And** if already installed, `/install` returns 404
+
+---
+
+### Story 17.2: Database Configuration Step
+
+As a **new user**,
+I want to configure database connection,
+So that Trovato can store data.
+
+**Acceptance Criteria:**
+
+**Given** I am on the install wizard
+**When** I reach the database step
+**Then** I can enter: host, port, database name, username, password
+**And** connection is tested before proceeding
+**And** migrations are run automatically on success
+**And** clear error messages explain connection failures
+
+---
+
+### Story 17.3: Admin Account Creation
+
+As a **new user**,
+I want to create the initial admin account,
+So that I can manage the site.
+
+**Acceptance Criteria:**
+
+**Given** database is configured
+**When** I reach the admin account step
+**Then** I enter: username, email, password (with confirmation)
+**And** password strength is validated
+**And** account is created with is_admin=true
+**And** I am logged in automatically after creation
+
+---
+
+### Story 17.4: Site Configuration
+
+As a **new user**,
+I want to configure basic site settings,
+So that the site has proper identity.
+
+**Acceptance Criteria:**
+
+**Given** admin account is created
+**When** I reach the site configuration step
+**Then** I can set: site name, site email, default timezone
+**And** settings are saved to variables table
+**And** reasonable defaults are pre-filled
+
+---
+
+### Story 17.5: Installation Complete
+
+As a **new user**,
+I want confirmation that installation succeeded,
+So that I can start using the site.
+
+**Acceptance Criteria:**
+
+**Given** all installation steps complete
+**When** I reach the final step
+**Then** I see success message with next steps
+**And** links to: admin dashboard, create content, view site
+**And** installation is marked complete (prevents re-running)
+
+---
+
+## Epic 18: Display & Theming Layer
+
+**Goal:** Enable content to be displayed both as JSON API responses and as themed HTML pages, with full support for comments and interactive elements.
+
+**Scope:**
+- JSON API endpoints for headless usage
+- Tera template rendering for server-side HTML
+- Threaded comments system
+- Pagination and breadcrumbs
+- Template override system
+
+**Gate:** Content renders via API and themed HTML with working comments.
+
+---
+
+### Story 18.1: JSON API Content Endpoints
+
+As a **frontend developer**,
+I want JSON API endpoints for content,
+So that I can build decoupled frontends.
+
+**Acceptance Criteria:**
+
+**Given** content exists in the system
+**When** I GET `/api/item/{id}`
+**Then** I receive JSON with: id, type, title, fields, author, created, changed, status
+**And** field values are properly typed (not all strings)
+**And** referenced entities can be included via `?include=author,category`
+
+**When** I GET `/api/items?type=article&status=1`
+**Then** I receive paginated list of items matching filters
+**And** pagination metadata includes: total, page, per_page, links
+
+---
+
+### Story 18.2: JSON API for Categories
+
+As a **frontend developer**,
+I want JSON API for categories,
+So that I can build navigation and filters.
+
+**Acceptance Criteria:**
+
+**Given** categories exist
+**When** I GET `/api/categories`
+**Then** I receive list of vocabularies
+**When** I GET `/api/category/{vocab}/tags`
+**Then** I receive tags with hierarchy information
+**And** parent/children relationships are included
+
+---
+
+### Story 18.3: Theme Template System
+
+As a **theme developer**,
+I want a template override system,
+So that I can customize content display.
+
+**Acceptance Criteria:**
+
+**Given** default templates exist in `templates/`
+**When** a theme provides `templates/themes/{theme}/item--article.html`
+**Then** the theme template is used instead of default
+**And** template suggestions follow order: item--{type}--{id}.html, item--{type}.html, item.html
+**And** templates have access to: item, user, site variables
+
+---
+
+### Story 18.4: Page Layout Templates
+
+As a **theme developer**,
+I want page layout templates,
+So that I can control overall page structure.
+
+**Acceptance Criteria:**
+
+**Given** page templates exist
+**When** a page renders
+**Then** layout includes: header, navigation, main content, sidebar, footer regions
+**And** regions can contain blocks
+**And** page--{path}.html suggestions work for specific paths
+
+---
+
+### Story 18.5: Comment Entity and Storage
+
+As a **kernel developer**,
+I want comments stored as entities,
+So that users can discuss content.
+
+**Acceptance Criteria:**
+
+**Given** the comment system is enabled
+**Then** `comment` table exists with: id, item_id, parent_id (for threading), author_id, body, status, created, changed
+**And** comments support threading (parent_id references another comment)
+**And** comment count is tracked on parent item
+
+---
+
+### Story 18.6: Comment Display
+
+As a **site visitor**,
+I want to view comments on content,
+So that I can read discussions.
+
+**Acceptance Criteria:**
+
+**Given** an item has comments
+**When** I view the item
+**Then** comments are displayed below content
+**And** threaded comments are visually indented
+**And** each comment shows: author, date, body
+**And** pagination handles large comment threads
+
+---
+
+### Story 18.7: Comment Submission
+
+As a **authenticated user**,
+I want to post comments,
+So that I can participate in discussions.
+
+**Acceptance Criteria:**
+
+**Given** I am logged in and comments are enabled for this content type
+**When** I submit a comment
+**Then** the comment is saved with my user as author
+**And** I can reply to existing comments (threading)
+**And** CSRF protection is enforced
+**And** the page refreshes to show my comment
+
+---
+
+### Story 18.8: Comment Moderation
+
+As a **site administrator**,
+I want to moderate comments,
+So that I can remove inappropriate content.
+
+**Acceptance Criteria:**
+
+**Given** I have "administer comments" permission
+**When** I access `/admin/content/comments`
+**Then** I see all comments with: content title, author, excerpt, status, date
+**And** I can approve, unpublish, or delete comments
+**And** bulk operations are supported
+
+---
+
+## Epic 19: CI & Test Infrastructure
+
+**Goal:** Establish comprehensive CI/CD pipeline that enforces code quality and ensures all changes are properly tested.
+
+**Scope:**
+- GitHub Actions CI pipeline
+- cargo fmt enforcement
+- cargo clippy checks
+- Test coverage tracking
+- Pre-commit hooks
+
+**Gate:** PR pipeline enforces fmt, clippy, and tests; coverage is tracked.
+
+---
+
+### Story 19.1: GitHub Actions Workflow
+
+As a **developer**,
+I want CI to run on every PR,
+So that code quality is automatically verified.
+
+**Acceptance Criteria:**
+
+**Given** a PR is opened
+**When** CI runs
+**Then** the workflow: checks out code, sets up Rust toolchain, runs tests
+**And** workflow completes in reasonable time (<10 min)
+**And** status is reported on the PR
+
+---
+
+### Story 19.2: Cargo Fmt Enforcement
+
+As a **developer**,
+I want code formatting enforced,
+So that the codebase stays consistent.
+
+**Acceptance Criteria:**
+
+**Given** CI runs on a PR
+**When** code doesn't match `cargo fmt`
+**Then** CI fails with clear message about formatting issues
+**And** `cargo fmt --check` is used (no auto-fix in CI)
+**And** instructions explain how to fix locally
+
+---
+
+### Story 19.3: Cargo Clippy Checks
+
+As a **developer**,
+I want linting enforced,
+So that common mistakes are caught.
+
+**Acceptance Criteria:**
+
+**Given** CI runs on a PR
+**When** clippy finds warnings
+**Then** CI fails (warnings are errors in CI)
+**And** clippy output clearly identifies issues
+**And** reasonable allow list exists for intentional exceptions
+
+---
+
+### Story 19.4: Integration Test Suite
+
+As a **developer**,
+I want all integration tests to run in CI,
+So that regressions are caught.
+
+**Acceptance Criteria:**
+
+**Given** CI runs on a PR
+**When** tests execute
+**Then** all tests in `crates/kernel/tests/` run
+**And** database and Redis are available (via services)
+**And** test failures clearly identify which test failed and why
+**And** tests run in parallel where possible
+
+---
+
+### Story 19.5: Test Coverage Tracking
+
+As a **developer**,
+I want test coverage tracked,
+So that we can identify undertested code.
+
+**Acceptance Criteria:**
+
+**Given** CI runs
+**When** tests complete
+**Then** coverage report is generated (via cargo-tarpaulin or similar)
+**And** coverage percentage is reported on PR
+**And** coverage trends are visible over time
+**And** critical paths have minimum coverage requirements
+
+---
+
+### Story 19.6: Pre-commit Hooks
+
+As a **developer**,
+I want pre-commit hooks available,
+So that I catch issues before pushing.
+
+**Acceptance Criteria:**
+
+**Given** I have the repo cloned
+**When** I run the setup script
+**Then** pre-commit hooks are installed
+**And** hooks run: cargo fmt --check, cargo clippy
+**And** hooks can be bypassed with --no-verify for WIP commits
+**And** setup instructions are in CONTRIBUTING.md
+
+---
+
+### Story 19.7: WASM Plugin Test Infrastructure
+
+As a **plugin developer**,
+I want plugin tests to run in CI,
+So that SDK changes don't break plugins.
+
+**Acceptance Criteria:**
+
+**Given** CI runs
+**When** plugin tests execute
+**Then** wasm32-wasip1 target is available
+**And** reference plugins compile successfully
+**And** plugin integration tests pass
+**And** SDK compatibility is verified
+
+---
+
+## Epic 20: Use Case Exploration
+
+**Goal:** Validate Trovato against real-world use cases to identify gaps and prove the platform's versatility. The three plugin projects (Argus, Netgrasp, Goose) serve as primary validation that Trovato's Plugin system, Record/Gather model, and auth/roles architecture work under diverse, genuine workloads.
+
+**Scope:**
+- Traditional website (pages, blog, navigation)
+- Backend API (headless CMS)
+- Argus: AI news intelligence (composite Gather responses, vector search)
+- Netgrasp: Network monitor (lean runtime, event-driven state machine)
+- Goose: Load testing UI (high-throughput writes, real-time queries)
+
+**Gate:** Five use cases validated; Argus/Netgrasp/Goose can use Trovato without bypassing Record/Gather with custom endpoints.
+
+**Cross-references:** [[Projects/Argus]], [[Projects/Netgrasp]], [[Projects/Goose]]
+
+---
+
+### Story 20.1: Traditional Website Use Case
+
+As a **site builder**,
+I want to build a traditional website with Trovato,
+So that the CMS serves its primary purpose.
+
+**Acceptance Criteria:**
+
+1. **Given** a fresh Trovato installation
+   **When** I follow the website tutorial
+   **Then** I can create: home page, about page, blog with posts, navigation menu
+
+2. Pages render with theming (base template, page template, content templates)
+
+3. Blog has list view with pagination via Gather
+
+4. Navigation menu renders from MenuRegistry
+
+5. The result feels like a real website, not a demo
+
+**Tasks:**
+- [ ] Create "Building Your First Site" tutorial document
+- [ ] Define Page and Blog Post content types with fields
+- [ ] Create example Gather for blog listing
+- [ ] Add sample theme with homepage, blog, about page templates
+- [ ] Verify menu system renders navigation
+
+---
+
+### Story 20.2: Headless CMS Use Case
+
+As a **frontend developer**,
+I want to use Trovato as a headless CMS,
+So that I can build custom frontends.
+
+**Acceptance Criteria:**
+
+1. **Given** content exists in Trovato
+   **When** I query the JSON API
+   **Then** I can: list items, fetch single items, filter by type/field, paginate
+
+2. Authentication works via session cookies or API tokens
+
+3. API documentation (OpenAPI spec or equivalent) is complete
+
+4. Example frontend (vanilla JS or simple framework) demonstrates:
+   - Fetching and displaying content list
+   - Single item view
+   - Filtering and search
+   - Authenticated actions (if applicable)
+
+**Tasks:**
+- [ ] Verify /api/items and /api/item/{id} endpoints cover common use cases
+- [ ] Add API authentication documentation
+- [ ] Create simple example frontend (static HTML + fetch)
+- [ ] Document all JSON API endpoints
+
+---
+
+### Story 20.3: Argus Integration - Composite Gather Responses
+
+As an **Argus developer**,
+I want Trovato to produce composite JSON responses,
+So that the iOS app can fetch a Story with embedded articles, entities, and user state in one request.
+
+**Acceptance Criteria:**
+
+1. **Given** Argus content types exist (Article, Story, Topic, Feed, Entity)
+   **When** I define a Gather for "story with details"
+   **Then** the response includes the story plus nested arrays of related articles, entities, and user reactions
+
+2. Gather supports "includes" or relationship loading:
+   ```json
+   {
+     "id": "...",
+     "title": "Story Title",
+     "summary": "...",
+     "articles": [
+       { "id": "...", "title": "...", "summary": "..." }
+     ],
+     "entities": [
+       { "id": "...", "name": "...", "type": "person" }
+     ],
+     "user_reaction": { "bookmarked": true, "read": true }
+   }
+   ```
+
+3. No custom hand-rolled endpoints required for composite responses
+
+4. Auth roles work: "admin" (full access), "reader" (stories, articles, feedback only)
+
+5. Document any Trovato enhancements needed (e.g., Gather includes, nested loading)
+
+**Content Types for Argus:**
+- Article: URL, title, content, relevance_score, summary, critical_analysis, vector_embedding, feed_id, topic_id, story_id
+- Story: title, summary, source_attribution (JSON), topic_id, article_count, relevance_score, active flag
+- Topic: name, relevance_prompt, threshold
+- Feed: URL, name, fetch_interval, health_status
+- Entity: canonical_name, aliases, type, description
+- Reaction: user_id, item_id, type (upvote/downvote/bookmark/flag)
+- Discussion: story_id, parent_id, user_id, content, created
+
+**Key Validation:**
+- If Gather can produce the composite Story response natively, the abstraction is validated
+- If custom endpoints are needed, document what Gather lacks
+
+**Tasks:**
+- [ ] Define Argus content types as Trovato item_types
+- [ ] Design Gather "includes" feature if not present
+- [ ] Create "story_with_details" Gather definition
+- [ ] Test composite response structure
+- [ ] Document gaps or required Trovato enhancements
+- [ ] Verify auth roles (admin vs reader)
+
+**Dev Notes:**
+- pgvector integration may be needed for vector_embedding field (separate story or defer)
+- This is the most demanding test of Gather's expressiveness
+
+---
+
+### Story 20.4: Netgrasp Integration - Lean Runtime Validation
+
+As a **Netgrasp developer**,
+I want Trovato to run efficiently on a Raspberry Pi,
+So that the network monitor doesn't overwhelm limited hardware.
+
+**Acceptance Criteria:**
+
+1. **Given** Netgrasp content types exist (Device, Person, Event, PresenceSession)
+   **When** Trovato runs on Raspberry Pi 4 (4GB RAM)
+   **Then** idle memory usage is under 100MB and CPU is negligible
+
+2. **Given** 500 devices and 10,000 events in the database
+   **When** I query the device list Gather
+   **Then** response time is under 100ms
+
+3. Event-driven state machine pattern works:
+   - Device state changes (online → idle → offline) create Event records
+   - Person presence derived from device ownership
+   - Gather can filter devices by state, type, owner
+
+4. Auth roles work: "network_admin" (view + edit), "viewer" (read-only dashboard)
+
+5. Web dashboard renders via Trovato pages + templates (no heavy JS framework)
+
+**Content Types for Netgrasp:**
+- Device: mac, display_name, hostname, vendor, device_type, os_family, state (online/idle/offline), last_ip, current_ap, owner_id, hidden, notify, baseline
+- Person: name, notes, notification_prefs
+- Event: device_id, event_type, timestamp, details (JSON)
+- PresenceSession: device_id, start_time, end_time
+- IPHistory: device_id, ip_address, first_seen, last_seen
+- LocationHistory: device_id, location, start_time, end_time
+
+**Key Validation:**
+- Binary size and runtime memory are acceptable for embedded deployment
+- Event ingestion (10s polling, ~100 events/minute peaks) doesn't cause performance issues
+
+**Tasks:**
+- [ ] Define Netgrasp content types as Trovato item_types
+- [ ] Benchmark Trovato on Raspberry Pi 4 (memory, CPU, query latency)
+- [ ] Create device list Gather with state/type/owner filters
+- [ ] Create event log Gather with time range filter
+- [ ] Test event write throughput (simulate device state changes)
+- [ ] Verify auth roles (network_admin vs viewer)
+- [ ] Document performance baseline and any optimizations needed
+
+**Dev Notes:**
+- SQLite mentioned in original doc, but PostgreSQL is Trovato's database
+- For Pi deployment, may need lightweight PostgreSQL or evaluate SQLite support as future work
+- This is the "lean runtime" stress test
+
+---
+
+### Story 20.5: Goose Integration - High-Throughput Metrics Dashboard
+
+As a **Goose developer**,
+I want Trovato to handle high-throughput metric writes and real-time queries,
+So that the load testing UI can show live results during active tests.
+
+**Acceptance Criteria:**
+
+1. **Given** a load test is running at 1000 requests/second
+   **When** Goose writes endpoint metrics to Trovato
+   **Then** writes complete without blocking test execution (async/buffered)
+
+2. **Given** metrics are being written in real-time
+   **When** the dashboard queries recent metrics via Gather
+   **Then** results reflect data written within the last 5 seconds
+
+3. Historical queries work efficiently:
+   - "All runs for site X" with pagination
+   - "Endpoints sorted by p99 latency" within a run
+   - "Compare run A vs run B" showing regressions
+
+4. Auth roles work: "operator" (run tests, view results), "viewer" (read-only)
+
+5. Dashboard can render live charts (requests/sec, response time, errors)
+
+**Content Types for Goose:**
+- TestRun: target_site_id, start_time, end_time, config (JSON), status, aggregate_metrics (JSON)
+- Scenario: name, description, target_site_id, user_count, hatch_rate, duration, task_config
+- EndpointResult: test_run_id, url_pattern, method, request_count, error_count, avg_ms, p50_ms, p90_ms, p95_ms, p99_ms, rps
+- Site: name, base_url, description, environment
+- ComparisonSnapshot: name, run_ids (JSON array), annotations, created
+
+**Key Validation:**
+- Write throughput: Can Trovato handle 1000+ metric writes/second?
+- Query freshness: Can Gather return data written seconds ago?
+- This is a different access pattern than Argus (write-once) or Netgrasp (event-driven)
+
+**Tasks:**
+- [ ] Define Goose content types as Trovato item_types
+- [ ] Benchmark write throughput (simulate 1000 req/s metric ingestion)
+- [ ] Test Gather query freshness (write → query latency)
+- [ ] Create "runs by site" Gather with date range filter
+- [ ] Create "endpoints by latency" Gather with aggregation
+- [ ] Design real-time dashboard pattern (polling vs SSE vs WebSocket)
+- [ ] Verify auth roles (operator vs viewer)
+- [ ] Document performance characteristics and any buffering strategies
+
+**Dev Notes:**
+- May need write batching or async queue for high-throughput scenarios
+- Real-time updates could use polling initially, SSE/WebSocket later
+- Goose also tests Trovato itself (Phase 6), creating a dual relationship
+
+---
+
+## Epic 21: Complete Stage Workflow
+
+**Goal:** Extend staging (workspaces) to cover all configurable entities, enabling full preview-and-publish workflows. The central lesson from Drupal Workspaces: define the interface contract now, even if the UI is deferred.
+
+**Scope:**
+- ConfigStorage trait for all config entity access (v1.0 required)
+- Config revision schema scaffolding (v1.0 schema only)
+- Stage-aware content types, fields, categories (post-MVP)
+- Stage-aware menus and URL aliases (post-MVP)
+- Conflict detection with warn-only UI (post-MVP)
+- Atomic publish ordering framework (v1.0 framework)
+- Stage hierarchy support (post-MVP)
+
+**Gate:**
+- v1.0: ConfigStorage trait used by all config reads/writes; publish ordering framework in place
+- Post-MVP: Full config staging UI with conflict detection
+
+**Design Principles:**
+1. All config reads/writes go through ConfigStorage trait - no bypassing
+2. Keep interface surface small (load, save, delete, list)
+3. v1.0 uses DirectConfigStorage; post-MVP swaps in StageAwareConfigStorage decorator
+4. Publish ordering: config first, then content, then dependent entities (menus, aliases)
+
+**Entity Tiers:**
+- Tier 1 (must be stage-aware): item_type, field_config, field_instance, category_*
+- Tier 2 (important): menu, menu_link, url_alias
+- Tier 3 (defer - security risk): role_permission, variable
+
+**Cross-references:** [[Projects/Trovato/Design-Content-Model]], Drupal Workspaces integration patterns
+
+---
+
+### Story 21.1: ConfigStorage Trait (v1.0 Required)
+
+As an **architect**,
+I want all config entity reads/writes to go through a ConfigStorage interface,
+So that stage-aware config is a decorator swap, not a rewrite.
+
+**Acceptance Criteria:**
+
+1. `ConfigStorage` trait defined with core methods:
+   ```rust
+   #[async_trait]
+   pub trait ConfigStorage: Send + Sync {
+       async fn load(&self, entity_type: &str, id: &str) -> Result<Option<ConfigEntity>>;
+       async fn save(&self, entity: &ConfigEntity) -> Result<()>;
+       async fn delete(&self, entity_type: &str, id: &str) -> Result<()>;
+       async fn list(&self, entity_type: &str, filter: Option<&Filter>) -> Result<Vec<ConfigEntity>>;
+   }
+   ```
+
+2. All config entity types use this interface:
+   - `item_type`, `field_config`, `field_instance`
+   - `category_vocabulary`, `category_term`
+   - `menu`, `menu_link`
+   - `url_alias` (from Story 15.5)
+   - `variable` (site config)
+
+3. v1.0 implementation: `DirectConfigStorage` - no stage awareness, just clean interface
+
+4. No code paths bypass the trait (no raw SQL for config reads)
+
+5. Interface is small and stable - enables decoration without changing call sites
+
+**Tasks:**
+- [ ] Define ConfigStorage trait in crates/kernel/src/config/mod.rs
+- [ ] Define ConfigEntity enum or struct covering all entity types
+- [ ] Implement DirectConfigStorage
+- [ ] Refactor item_type loading to use ConfigStorage
+- [ ] Refactor field_config/field_instance to use ConfigStorage
+- [ ] Refactor category_vocabulary/category_term to use ConfigStorage
+- [ ] Refactor menu/menu_link to use ConfigStorage
+- [ ] Add ConfigStorage to AppState
+- [ ] Audit for any raw SQL config reads and migrate them
+
+**Dev Notes:**
+- This is the Drupal Workspaces lesson: if subsystems bypass entity loading, stage awareness breaks
+- Keep the interface surface small (Fabian's principle)
+- The trait enables post-MVP stage awareness without touching call sites
+
+---
+
+### Story 21.2: Config Revision Schema (v1.0 Schema Only)
+
+As an **architect**,
+I want config revision tables in the schema,
+So that adding config staging later is schema-ready.
+
+**Acceptance Criteria:**
+
+1. Migration creates these tables (empty, not populated in v1.0):
+   ```sql
+   CREATE TABLE config_revision (
+       id UUID PRIMARY KEY,
+       entity_type VARCHAR(64) NOT NULL,
+       entity_id UUID NOT NULL,
+       data JSONB NOT NULL,
+       created BIGINT NOT NULL,
+       author_id UUID REFERENCES users(id)
+   );
+   CREATE INDEX idx_config_revision_entity ON config_revision(entity_type, entity_id);
+
+   CREATE TABLE config_stage_association (
+       stage_id VARCHAR(64) NOT NULL REFERENCES stage(id),
+       entity_type VARCHAR(64) NOT NULL,
+       entity_id UUID NOT NULL,
+       target_revision_id UUID NOT NULL REFERENCES config_revision(id),
+       PRIMARY KEY (stage_id, entity_type, entity_id)
+   );
+   ```
+
+2. `stage_deletion` table already supports config entities via `entity_type` column
+
+3. No v1.0 code writes to these tables - they're scaffolding for post-MVP
+
+4. Schema documented in design docs for future reference
+
+**Tasks:**
+- [ ] Create migration file for config_revision table
+- [ ] Create migration file for config_stage_association table
+- [ ] Verify stage_deletion already has entity_type column
+- [ ] Document schema in Design-Content-Model.md
+
+---
+
+### Story 21.3: Stage-Aware Content Types & Fields (Post-MVP)
+
+As a **site administrator**,
+I want to add/modify content types and fields in a stage,
+So that I can test schema changes before going live.
+
+**Acceptance Criteria:**
+
+1. **Given** I create a content type in a stage
+   **When** I view that stage
+   **Then** the type exists and I can create items of that type
+   **And** the type does not exist in Live
+
+2. **Given** I add a field to an existing content type in a stage
+   **When** I view items in that stage
+   **Then** the field appears on edit forms
+   **And** Live items don't have the field
+
+3. **Given** I publish a stage with content type changes
+   **When** publishing completes
+   **Then** the content type/field exists in Live
+   **And** existing items get default values for new fields
+
+4. Stage preview shows content forms with staged field configuration
+
+**Tasks:**
+- [ ] Implement StageAwareConfigStorage decorator
+- [ ] Wire item_type reads through stage-aware path
+- [ ] Wire field_config/field_instance through stage-aware path
+- [ ] Handle field migration on publish (add columns, backfill defaults)
+- [ ] Update admin UI forms to show staged fields
+- [ ] Add integration tests for staged content type workflow
+
+**Dev Notes:**
+- This is Tier 1 - content depends on type definitions existing in stage
+- Field migration on publish needs careful handling
+- Requires 21.1 (ConfigStorage trait) to be complete
+
+---
+
+### Story 21.4: Stage-Aware Categories (Post-MVP)
+
+As a **site administrator**,
+I want to modify categories in a stage,
+So that I can reorganize taxonomy and tag staged content with new terms.
+
+**Acceptance Criteria:**
+
+1. **Given** I create a vocabulary/term in a stage
+   **When** I edit items in that stage
+   **Then** I can tag items with the new term
+   **And** the term doesn't exist in Live
+
+2. **Given** I reorganize term hierarchy in a stage
+   **When** I view breadcrumbs/hierarchy in that stage
+   **Then** the new hierarchy is reflected
+   **And** Live hierarchy is unchanged
+
+3. **Given** I delete a term in a stage (via stage_deletion)
+   **When** I view items in that stage
+   **Then** items show the term as orphaned/removed
+   **And** Live items still have the term
+
+4. **Given** I publish a stage with category changes
+   **When** publishing completes
+   **Then** vocabulary/term changes apply to Live
+   **And** term deletions remove terms from Live
+
+**Tasks:**
+- [ ] Wire category_vocabulary through StageAwareConfigStorage
+- [ ] Wire category_term through StageAwareConfigStorage
+- [ ] Handle hierarchy queries with stage awareness (recursive CTE adjustment)
+- [ ] Update category admin UI for stage context
+- [ ] Handle term deletion via stage_deletion table
+- [ ] Add integration tests
+
+**Dev Notes:**
+- Terms may be referenced by staged content - must resolve within stage
+- Hierarchy queries need stage-aware CTE wrapping
+
+---
+
+### Story 21.5: Stage-Aware Menus & Aliases (Post-MVP)
+
+As a **site administrator**,
+I want menus and URL aliases to be stage-aware,
+So that navigation and URLs work correctly in stage preview.
+
+**Acceptance Criteria:**
+
+1. **Given** I create a menu item linking to staged content
+   **When** I preview the stage
+   **Then** the menu item appears and links work
+   **And** Live menus don't show the item
+
+2. **Given** I create a URL alias for staged content
+   **When** I access that alias in stage preview
+   **Then** the alias resolves to the staged item
+   **And** the alias doesn't exist in Live
+
+3. **Given** two stages create the same alias for different items
+   **When** I try to create the second alias
+   **Then** a conflict warning is shown
+
+4. **Given** I publish a stage with menu/alias changes
+   **When** publishing completes
+   **Then** menus and aliases are live
+
+**Tasks:**
+- [ ] Wire menu/menu_link through StageAwareConfigStorage
+- [ ] Wire url_alias through StageAwareConfigStorage (connects to 15.5)
+- [ ] Update path alias middleware to be stage-aware
+- [ ] Update menu rendering to be stage-aware
+- [ ] Handle alias conflicts across stages
+- [ ] Add integration tests
+
+**Dev Notes:**
+- URL aliases (15.5) should use ConfigStorage from day one to enable this
+- Menu items may reference staged content - must validate references
+
+---
+
+### Story 21.6: Conflict Detection - Warn Only (Post-MVP)
+
+As a **site administrator**,
+I want warnings when publishing over changed live content,
+So that I don't accidentally overwrite others' work.
+
+**Acceptance Criteria:**
+
+1. **Given** I have staged changes to an item
+   **And** that item was modified in Live after my stage was created
+   **When** I attempt to publish
+   **Then** a conflict warning is displayed:
+   - "Item 'About Us' was modified in Live on Feb 10 by admin"
+
+2. **Given** I have staged changes to config (field, term, menu)
+   **And** that config was changed in Live
+   **When** I attempt to publish
+   **Then** a conflict warning is displayed:
+   - "Field 'field_tags' on 'Article' was changed in Live"
+
+3. For each conflict, I can choose:
+   - **Overwrite** - publish anyway (Last Publish Wins)
+   - **Skip** - don't publish this entity, continue with others
+   - **Cancel** - abort entire publish operation
+
+4. No merge UI - detect and warn only
+
+**Tasks:**
+- [ ] Add conflict detection to stage_publish() for items
+- [ ] Add conflict detection for config entities
+- [ ] Create conflict display UI (list of conflicts with actions)
+- [ ] Implement skip/overwrite/cancel logic
+- [ ] Add integration tests for conflict scenarios
+
+**Dev Notes:**
+- Compare stage_association.target_revision_id vs current live revision
+- For config: compare config_stage_association vs current live state
+- Full three-way merge requires field-level diff semantics - defer to future
+
+---
+
+### Story 21.7: Atomic Publish Ordering Framework (v1.0 Framework)
+
+As an **architect**,
+I want a publish ordering framework,
+So that config and content publish in the correct dependency order.
+
+**Acceptance Criteria:**
+
+1. Publish order is defined and enforced:
+   ```
+   Phase 1: Content types, fields (nothing depends on these)
+   Phase 2: Categories (may be referenced by content)
+   Phase 3: Content items (depend on types and categories existing)
+   Phase 4: Menus, aliases (reference content)
+   ```
+
+2. All phases run in single Postgres transaction
+
+3. If any phase fails, entire transaction rolls back
+
+4. v1.0: Only Phase 3 (items) is active - other phases are no-op hooks
+   Post-MVP: Wire up other phases as config staging is added
+
+5. Cache invalidation follows same ordering (invalidate after all writes)
+
+6. Publish function accepts phase callbacks:
+   ```rust
+   pub struct PublishPhases {
+       pub config_types: Box<dyn Fn(&mut Transaction) -> Result<()>>,
+       pub categories: Box<dyn Fn(&mut Transaction) -> Result<()>>,
+       pub items: Box<dyn Fn(&mut Transaction) -> Result<()>>,
+       pub dependents: Box<dyn Fn(&mut Transaction) -> Result<()>>,
+   }
+   ```
+
+**Tasks:**
+- [ ] Refactor stage_publish() into phased structure
+- [ ] Define PublishPhases struct with phase callbacks
+- [ ] v1.0: Implement items phase (existing logic)
+- [ ] v1.0: Add no-op hooks for other phases
+- [ ] Ensure single transaction wraps all phases
+- [ ] Document publish ordering in design docs
+- [ ] Add integration tests for rollback on failure
+
+**Dev Notes:**
+- The framework is what matters for v1.0
+- Current stage_publish() becomes Phase 3 (items)
+- Ordering prevents "Event item published before Event type" errors
+
+---
+
+### Story 21.8: Stage Hierarchy Support (Post-MVP)
+
+As a **site administrator**,
+I want to publish a child stage to its parent (not necessarily Live),
+So that I can have multi-level editorial workflows.
+
+**Acceptance Criteria:**
+
+1. **Given** a stage with `upstream_id` set to another stage (not Live)
+   **When** I load content in the child stage
+   **Then** I see parent's staged content as baseline
+   **And** child's changes override parent
+
+2. **Given** I publish child stage to its parent
+   **When** publishing completes
+   **Then** parent stage receives child's changes
+   **And** Live is unchanged
+
+3. **Given** I later publish parent stage to Live
+   **When** publishing completes
+   **Then** all changes (including merged child changes) go Live
+
+4. Publish ordering guarantees apply to parent-child publishes
+
+**Tasks:**
+- [ ] Update stage_publish() to accept target_stage parameter
+- [ ] Implement inheritance: child falls back to parent's stage_association
+- [ ] Handle child → parent publish flow
+- [ ] Update stage admin UI to show hierarchy
+- [ ] Add integration tests for multi-level workflow
+
+**Dev Notes:**
+- Schema already has `upstream_id` on `stage` table
+- Enables "Spring Campaign" → "Q1 Staging" → "Live" workflows
+- Complex but powerful for enterprise editorial teams
+
+---
+
+## Epic 22: Plugin Architecture & Standard Plugins
+
+**Governing Principle:** Core enables. Plugins implement.
+
+The Kernel provides infrastructure and interfaces. It does not provide features. Features are plugins. The "blog" content type is a plugin. The categories system is a plugin. Comments, media, search, image processing -- all plugins. If someone doesn't like the standard implementation, they replace the plugin. Core stays small.
+
+**Goal:** Complete the Kernel infrastructure that enables plugins to implement features, then build/refactor the standard plugins that ship with Trovato.
+
+**Scope:**
+- Kernel Infrastructure: Plugin migrations, Gather extension API, compound field type, image hooks, language column
+- Standard Plugins: Media, Redirects, OAuth2, Image Styles, Scheduled Publishing, Webhooks, Audit Log, Content Locking
+- Refactoring: Move Categories and Comments from Kernel code to plugins
+- Multilingual: Language infrastructure (Kernel) + translation plugins (post-MVP)
+
+**Gate:**
+- v1.0: Plugin migration infrastructure works; Gather extension API formalized; language column added
+- Post-MVP: Standard plugin inventory complete; Categories/Comments refactored to plugins
+
+**Plugin Tiers:**
+- **Standard Plugins** - Ship with Trovato, replaceable (Page, Blog, Categories, Comments, Media, etc.)
+- **Contrib Plugins** - Community-built (Content Moderation, GraphQL, Layout Builder)
+- **Project-Specific Plugins** - Single use case (Argus, Netgrasp, Goose)
+
+**Cross-references:** [[Projects/Trovato/Design-Plugin-System]], Argus/Netgrasp/Goose integration docs
+
+---
+
+## Section A: Kernel Infrastructure
+
+These must exist in Core for plugins to work properly.
+
+---
+
+### Story 22.1: Plugin Entity Type Registration
+
+As a **plugin developer**,
+I want to declare database tables in my plugin's info.toml,
+So that my plugin can manage its own entity types without modifying Kernel code.
+
+**Acceptance Criteria:**
+
+1. Plugin `info.toml` supports migration declarations:
+   ```toml
+   [migrations]
+   files = ["migrations/001_create_media.sql", "migrations/002_add_media_fields.sql"]
+   depends_on = ["categories"]  # Run after categories plugin migrations
+   ```
+
+2. Kernel provides plugin migration runner that:
+   - Reads migration declarations from installed plugins
+   - Resolves dependency order (Categories before Blog)
+   - Runs migrations on plugin install
+   - Tracks applied migrations in `plugin_migration` table
+
+3. `plugin_migration` table schema:
+   ```sql
+   CREATE TABLE plugin_migration (
+       plugin VARCHAR(64) NOT NULL,
+       migration VARCHAR(255) NOT NULL,
+       applied_at BIGINT NOT NULL,
+       PRIMARY KEY (plugin, migration)
+   );
+   ```
+
+4. Migration rollback supported for plugin uninstall (optional, can be manual)
+
+**Tasks:**
+- [ ] Add migration declaration support to info.toml parser
+- [ ] Create plugin_migration table
+- [ ] Implement migration dependency resolver
+- [ ] Implement migration runner (run on plugin install)
+- [ ] Add CLI command: `trovato migrate:plugin <plugin_name>`
+- [ ] Document plugin migration format
+
+**Dev Notes:**
+- Similar to D6's system table tracking schema versions
+- Categories and Comments will need refactoring to use this (see 22.14)
+
+---
+
+### Story 22.2: Gather Extension API
+
+As a **plugin developer**,
+I want to register custom filter types, relationship types, and sort handlers with Gather,
+So that my plugin can extend query capabilities without modifying Kernel code.
+
+**Acceptance Criteria:**
+
+1. Plugins can register custom filter types:
+   ```rust
+   gather.register_filter_type("hierarchical_term", |params, builder| {
+       // Generate SQL fragment for hierarchical term filtering
+       // Uses recursive CTE pattern
+   });
+   ```
+
+2. Plugins can register custom relationship types:
+   ```rust
+   gather.register_relationship_type("term_items", |params, builder| {
+       // Generate JOIN for term → items relationship
+   });
+   ```
+
+3. Plugins can register custom sort handlers:
+   ```rust
+   gather.register_sort_handler("term_weight", |direction, builder| {
+       // Generate ORDER BY for term weight
+   });
+   ```
+
+4. Registration happens during plugin initialization (tap_init or similar)
+
+5. Categories plugin uses this API (refactored from any special-casing)
+
+**Tasks:**
+- [ ] Audit current Categories integration - is it generic or special-cased?
+- [ ] Define FilterTypeHandler, RelationshipTypeHandler, SortHandler traits
+- [ ] Add registration methods to GatherEngine
+- [ ] Store registered handlers in plugin-accessible registry
+- [ ] Refactor Categories to use registration API
+- [ ] Document Gather extension API for plugin developers
+
+**Dev Notes:**
+- Check if Netgrasp's "device state transition" filter can be implemented via this API
+- This is what makes Gather truly extensible vs. hard-coded
+
+---
+
+### Story 22.3: Compound/Polymorphic Field Type
+
+As a **content editor**,
+I want fields that store arrays of typed, reorderable content sections,
+So that I can build rich pages without a separate "paragraphs" system.
+
+**Acceptance Criteria:**
+
+1. Field type `compound` registered in core field type registry:
+   ```rust
+   FieldType::Compound {
+       allowed_types: vec!["text", "image", "quote", "video"],
+       min_items: 0,
+       max_items: None,  // unlimited
+   }
+   ```
+
+2. JSONB storage format:
+   ```json
+   "field_sections": [
+     { "type": "text", "body": { "value": "<p>...</p>", "format": "filtered_html" }, "weight": 0 },
+     { "type": "image", "file_id": "...", "alt": "...", "caption": "...", "weight": 1 },
+     { "type": "quote", "text": "...", "attribution": "...", "weight": 2 }
+   ]
+   ```
+
+3. Each section type defines its own schema for validation
+
+4. Form widget supports:
+   - Adding sections of any allowed type
+   - Reordering via drag-drop or weight adjustment
+   - Removing sections
+   - Inline editing per section type
+
+5. Render pipeline handles compound fields (iterates sections, applies per-type templates)
+
+**Tasks:**
+- [ ] Define CompoundFieldType in field type registry
+- [ ] Define section type schema format
+- [ ] Implement validation for compound fields
+- [ ] Create compound field form widget (AJAX add/remove/reorder)
+- [ ] Create compound field display formatter
+- [ ] Add section type templates (text, image, quote, video as examples)
+- [ ] Document compound field usage for plugin developers
+
+**Dev Notes:**
+- This is Paragraphs without the complexity
+- Section types could be plugin-registered in future (22.2 pattern)
+
+---
+
+### Story 22.4: Image Processing Hooks
+
+As a **plugin developer**,
+I want a `tap_file_url` integration point,
+So that my Image Styles plugin can rewrite image URLs and trigger on-demand processing.
+
+**Acceptance Criteria:**
+
+1. Kernel provides `tap_file_url` hook:
+   ```rust
+   // Called when generating public URL for a file
+   fn tap_file_url(file: &File, context: &UrlContext) -> Option<String>;
+   ```
+
+2. Plugins can intercept and rewrite URLs:
+   - Original: `/files/images/photo.jpg`
+   - Rewritten: `/files/styles/thumbnail/images/photo.jpg`
+
+3. Kernel routing handles style URL pattern and delegates to plugin for processing
+
+4. Integration with FileStorage trait for reading source and writing processed files
+
+**Tasks:**
+- [ ] Define tap_file_url in WIT interface
+- [ ] Add URL generation hook point in file serving code
+- [ ] Add route pattern for `/files/styles/{style}/**`
+- [ ] Define FileProcessor trait for on-demand processing
+- [ ] Document image hook usage
+
+**Dev Notes:**
+- The hook is Kernel infrastructure; the actual Image Styles plugin is 22.10
+
+---
+
+### Story 22.5: Language Infrastructure
+
+As an **architect**,
+I want language support built into the Kernel from day one,
+So that multilingual can be added post-MVP without retrofitting the item table.
+
+**Acceptance Criteria:**
+
+1. `language` table created:
+   ```sql
+   CREATE TABLE language (
+       id VARCHAR(12) PRIMARY KEY,
+       label VARCHAR(255) NOT NULL,
+       weight INTEGER NOT NULL DEFAULT 0,
+       is_default BOOLEAN NOT NULL DEFAULT false,
+       direction VARCHAR(3) NOT NULL DEFAULT 'ltr'
+   );
+   INSERT INTO language (id, label, is_default) VALUES ('en', 'English', true);
+   ```
+
+2. `language` column added to item table:
+   ```sql
+   ALTER TABLE item ADD COLUMN language VARCHAR(12) DEFAULT 'en' REFERENCES language(id);
+   ```
+
+3. `LanguageNegotiator` trait defined for pluggable detection:
+   ```rust
+   #[async_trait]
+   pub trait LanguageNegotiator: Send + Sync {
+       async fn negotiate(&self, request: &Request) -> Option<String>;
+       fn priority(&self) -> i32;
+   }
+   ```
+
+4. Negotiation middleware chains negotiators (URL prefix, domain, cookie, header)
+
+5. Resolved language available in request context for templates and queries
+
+**Tasks:**
+- [ ] Create language table migration
+- [ ] Add language column to item table migration
+- [ ] Define LanguageNegotiator trait
+- [ ] Implement default negotiators (URL prefix, Accept-Language header)
+- [ ] Add negotiation middleware to request pipeline
+- [ ] Store resolved language in request context
+- [ ] Document language infrastructure
+
+**Dev Notes:**
+- Same principle as stage_id - add column now, avoid retrofitting later
+- Monolingual sites never think about it
+- Full multilingual plugins (22.15-22.17) are post-MVP
+
+---
+
+## Section B: Standard Plugins
+
+Plugins that ship with Trovato. All are replaceable.
+
+---
+
+### Story 22.6: Media Plugin
+
+As a **content editor**,
+I want a media library,
+So that I can reuse uploaded files across content with metadata.
+
+**Acceptance Criteria:**
+
+1. Media entity type wrapping file_managed:
+   ```sql
+   CREATE TABLE media (
+       id UUID PRIMARY KEY,
+       file_id UUID NOT NULL REFERENCES file_managed(id),
+       name VARCHAR(255) NOT NULL,
+       alt_text VARCHAR(255),
+       caption TEXT,
+       credit VARCHAR(255),
+       created BIGINT NOT NULL,
+       changed BIGINT NOT NULL,
+       author_id UUID REFERENCES users(id)
+   );
+   ```
+
+2. Media browser (Gather-powered) for selecting/reusing existing media
+
+3. Image field widget integrates with media browser (select existing or upload new)
+
+4. Media usage tracked (which items reference which media)
+
+5. Media admin UI for browsing, editing metadata, viewing usage
+
+**Tasks:**
+- [ ] Create media plugin with info.toml and migrations (uses 22.1)
+- [ ] Define Media entity type
+- [ ] Create media browser Gather configuration
+- [ ] Create media field widget
+- [ ] Implement media usage tracking
+- [ ] Create media admin UI
+- [ ] Add integration tests
+
+**Dev Notes:**
+- Sites reference media items via RecordReference fields, not file_managed directly
+- Gets revision tracking, stage awareness, searchability for free
+
+---
+
+### Story 22.7: Redirects Plugin
+
+As a **site administrator**,
+I want automatic redirects when URL aliases change,
+So that old links don't break.
+
+**Acceptance Criteria:**
+
+1. `redirect` table:
+   ```sql
+   CREATE TABLE redirect (
+       id UUID PRIMARY KEY,
+       source VARCHAR(512) NOT NULL,
+       destination VARCHAR(512) NOT NULL,
+       status_code SMALLINT NOT NULL DEFAULT 301,
+       language VARCHAR(12),
+       created BIGINT NOT NULL,
+       UNIQUE (source, language)
+   );
+   ```
+
+2. When URL alias changes, old alias automatically becomes a redirect
+
+3. Redirect middleware checks redirects before alias resolution
+
+4. Admin UI for managing redirects (view, edit, delete, create manual)
+
+5. Redirect loops detected and prevented
+
+**Tasks:**
+- [ ] Create redirects plugin with migrations
+- [ ] Implement redirect creation on alias change (hook into URL Aliases plugin)
+- [ ] Add redirect middleware to routing pipeline
+- [ ] Create redirects admin UI
+- [ ] Add loop detection
+- [ ] Add integration tests
+
+---
+
+### Story 22.8: OAuth2 Provider Plugin
+
+As an **API consumer** (iOS app, SPA, external service),
+I want bearer token authentication,
+So that I can authenticate without cookies.
+
+**Acceptance Criteria:**
+
+1. `oauth_client` table for application registration:
+   ```sql
+   CREATE TABLE oauth_client (
+       id UUID PRIMARY KEY,
+       client_id VARCHAR(64) NOT NULL UNIQUE,
+       client_secret_hash VARCHAR(255) NOT NULL,
+       name VARCHAR(255) NOT NULL,
+       redirect_uris JSONB DEFAULT '[]',
+       grant_types JSONB DEFAULT '["authorization_code"]',
+       created BIGINT NOT NULL
+   );
+   ```
+
+2. Supported grant types:
+   - `authorization_code` - for user-facing apps (Argus iOS)
+   - `client_credentials` - for server-to-server (webhooks, integrations)
+
+3. JWT tokens (self-contained, signature-verified):
+   - Access token with configurable expiration
+   - Refresh token for token renewal
+   - No per-request Redis lookup (signature verification only)
+
+4. Token revocation via Redis blocklist (for logout, security)
+
+5. OAuth endpoints: `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`
+
+6. Admin UI for managing OAuth clients
+
+**Tasks:**
+- [ ] Create oauth plugin with migrations
+- [ ] Implement JWT signing/verification
+- [ ] Implement authorization_code flow
+- [ ] Implement client_credentials flow
+- [ ] Implement token revocation with Redis blocklist
+- [ ] Create OAuth client admin UI
+- [ ] Add integration tests
+- [ ] Document OAuth setup for API consumers
+
+**Dev Notes:**
+- Argus iOS app and Goose management UI need this
+- Session cookies don't work for mobile apps or SPAs
+
+---
+
+### Story 22.9: Image Styles Plugin
+
+As a **site builder**,
+I want named image styles with processing effects,
+So that images are automatically resized/cropped for different contexts.
+
+**Acceptance Criteria:**
+
+1. Image styles configuration:
+   ```sql
+   CREATE TABLE image_style (
+       id UUID PRIMARY KEY,
+       name VARCHAR(64) NOT NULL UNIQUE,
+       label VARCHAR(255) NOT NULL,
+       effects JSONB NOT NULL  -- [{"type": "scale", "width": 200}, {"type": "crop", "width": 200, "height": 200}]
+   );
+   ```
+
+2. Default styles: thumbnail (100x100 crop), medium (500 wide scale), large (1000 wide scale)
+
+3. Processing effects: scale, crop, resize, desaturate
+
+4. On-demand processing: first request generates styled image, cached to disk
+
+5. URL pattern: `/files/styles/{style_name}/path/to/image.jpg`
+
+6. Uses tap_file_url hook (22.4) to rewrite image URLs
+
+7. Admin UI for managing styles and effects
+
+**Tasks:**
+- [ ] Create image_styles plugin with migrations
+- [ ] Implement image processing using `image` crate
+- [ ] Implement effect chain (scale → crop → etc.)
+- [ ] Implement on-demand processing with disk caching
+- [ ] Register tap_file_url handler
+- [ ] Create styles admin UI
+- [ ] Add integration tests
+
+---
+
+### Story 22.10: Scheduled Publishing Plugin
+
+As a **content editor**,
+I want to schedule content to publish/unpublish at specific times,
+So that content goes live automatically.
+
+**Acceptance Criteria:**
+
+1. Fields added to items (via field_config, not schema change):
+   - `publish_on` - timestamp when item should be published
+   - `unpublish_on` - timestamp when item should be unpublished
+
+2. Cron handler (`tap_cron`) checks timestamps and updates item status
+
+3. Items with future `publish_on` are created with status=0 (unpublished)
+
+4. Admin UI shows scheduled state on content list
+
+5. Scheduling visible on item edit form
+
+**Tasks:**
+- [ ] Create scheduled_publishing plugin
+- [ ] Register publish_on/unpublish_on fields
+- [ ] Implement cron handler for status changes
+- [ ] Add scheduling UI to item edit form
+- [ ] Add scheduled filter to content list
+- [ ] Add integration tests
+
+---
+
+### Story 22.11: Webhooks Plugin
+
+As an **integration developer**,
+I want HTTP notifications on content changes,
+So that external systems stay synchronized.
+
+**Acceptance Criteria:**
+
+1. `webhook` table:
+   ```sql
+   CREATE TABLE webhook (
+       id UUID PRIMARY KEY,
+       name VARCHAR(255) NOT NULL,
+       url VARCHAR(512) NOT NULL,
+       events JSONB NOT NULL,  -- ["item.create", "item.update", "item.delete"]
+       secret VARCHAR(255),  -- for HMAC signature
+       active BOOLEAN NOT NULL DEFAULT true,
+       created BIGINT NOT NULL
+   );
+   ```
+
+2. Taps fire webhooks on item CRUD: tap_item_insert, tap_item_update, tap_item_delete
+
+3. Payload includes: event type, item ID, item type, changed fields, timestamp
+
+4. HMAC signature in header for verification
+
+5. Retry logic for failed deliveries (queue-based)
+
+6. Admin UI for managing webhooks
+
+**Tasks:**
+- [ ] Create webhooks plugin with migrations
+- [ ] Implement webhook dispatch on item taps
+- [ ] Implement HMAC signing
+- [ ] Implement retry queue
+- [ ] Create webhooks admin UI
+- [ ] Add integration tests
+
+**Dev Notes:**
+- Essential for headless/decoupled architectures
+- Argus could use this for pipeline triggers
+
+---
+
+### Story 22.12: Audit Log Plugin
+
+As a **site administrator**,
+I want a log of significant actions,
+So that I can audit who did what and when.
+
+**Acceptance Criteria:**
+
+1. `audit_log` table:
+   ```sql
+   CREATE TABLE audit_log (
+       id UUID PRIMARY KEY,
+       action VARCHAR(64) NOT NULL,
+       entity_type VARCHAR(64),
+       entity_id UUID,
+       user_id UUID REFERENCES users(id),
+       ip_address VARCHAR(45),
+       details JSONB,
+       created BIGINT NOT NULL
+   );
+   CREATE INDEX idx_audit_log_created ON audit_log(created DESC);
+   CREATE INDEX idx_audit_log_user ON audit_log(user_id);
+   CREATE INDEX idx_audit_log_entity ON audit_log(entity_type, entity_id);
+   ```
+
+2. Actions logged via taps:
+   - Item CRUD (create, update, delete, publish)
+   - User login/logout/failed login
+   - Permission changes
+   - Config changes
+
+3. Gather-powered admin view for browsing the log with filters
+
+4. Log retention policy (configurable, default 90 days)
+
+**Tasks:**
+- [ ] Create audit_log plugin with migrations
+- [ ] Implement logging via taps
+- [ ] Create audit log admin UI (Gather-powered)
+- [ ] Implement retention cleanup in cron
+- [ ] Add integration tests
+
+---
+
+### Story 22.13: Content Locking Plugin
+
+As a **content editor**,
+I want to know if someone else is editing content,
+So that we don't overwrite each other's work.
+
+**Acceptance Criteria:**
+
+1. `editing_lock` table:
+   ```sql
+   CREATE TABLE editing_lock (
+       entity_type VARCHAR(64) NOT NULL,
+       entity_id UUID NOT NULL,
+       user_id UUID NOT NULL REFERENCES users(id),
+       locked_at BIGINT NOT NULL,
+       expires_at BIGINT NOT NULL,
+       PRIMARY KEY (entity_type, entity_id)
+   );
+   ```
+
+2. Lock acquired on form load, released on save or timeout (configurable, default 15 min)
+
+3. Lock check on form load: if locked by another user, show warning with options:
+   - View content (read-only)
+   - Break lock (admin only)
+   - Wait and retry
+
+4. Lock heartbeat via AJAX to extend expiration while editing
+
+5. Stale locks cleaned up by cron
+
+**Tasks:**
+- [ ] Create content_locking plugin with migrations
+- [ ] Implement lock acquisition on form load
+- [ ] Implement lock release on save
+- [ ] Implement lock heartbeat
+- [ ] Add lock warning UI
+- [ ] Implement break lock for admins
+- [ ] Add cron cleanup
+- [ ] Add integration tests
+
+---
+
+### Story 22.14: Refactor Categories and Comments to Plugins
+
+As an **architect**,
+I want Categories and Comments to be true plugins,
+So that they follow the "core enables, plugins implement" principle.
+
+**Acceptance Criteria:**
+
+1. Categories plugin:
+   - Own `info.toml` with migration declarations
+   - Migrations moved from Kernel to plugin
+   - Model code moved to plugin
+   - Routes registered via tap_menu
+   - Uses Gather extension API (22.2) for hierarchical filters
+
+2. Comments plugin:
+   - Own `info.toml` with migration declarations
+   - Migrations moved from Kernel to plugin
+   - Model code moved to plugin
+   - Routes registered via tap_menu
+   - tap_form_alter to add comment forms to items
+
+3. Kernel migrations only contain core tables (users, roles, items, stages, etc.)
+
+4. Plugin migrations run after Kernel migrations via 22.1 infrastructure
+
+**Tasks:**
+- [ ] Create categories plugin structure (info.toml, migrations/)
+- [ ] Move category migrations from Kernel to plugin
+- [ ] Move category model/service code to plugin crate
+- [ ] Register category routes via tap_menu
+- [ ] Create comments plugin structure
+- [ ] Move comment migrations from Kernel to plugin
+- [ ] Move comment model/service code to plugin crate
+- [ ] Register comment routes via tap_menu
+- [ ] Update Kernel migrations to remove category/comment tables
+- [ ] Add integration tests for plugin loading
+
+**Dev Notes:**
+- This is refactoring, not new functionality
+- Validates that 22.1 (plugin migrations) works correctly
+- Sets the pattern for all future entity-providing plugins
+
+---
+
+## Section C: Multilingual Plugins (Post-MVP)
+
+---
+
+### Story 22.15: Content Translation Plugin
+
+As a **multilingual site editor**,
+I want to translate content field-by-field,
+So that I can have partial translations with fallback.
+
+**Acceptance Criteria:**
+
+1. `item_translation` table:
+   ```sql
+   CREATE TABLE item_translation (
+       item_id UUID NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+       language VARCHAR(12) NOT NULL REFERENCES language(id),
+       title VARCHAR(255) NOT NULL,
+       fields JSONB DEFAULT '{}'::jsonb,
+       PRIMARY KEY (item_id, language)
+   );
+   ```
+
+2. Field-level fallback: if field not in translation JSONB, fall back to default language
+
+3. Translations participate in revisions (add language to item_revision)
+
+4. Translations participate in staging (stage_association pattern)
+
+5. Translation UI: side-by-side editing with source language
+
+6. Gather accepts language parameter for filtered queries
+
+**Tasks:**
+- [ ] Create content_translation plugin with migrations
+- [ ] Implement translation storage and fallback
+- [ ] Integrate with revision system
+- [ ] Integrate with stage system
+- [ ] Create translation UI
+- [ ] Update Gather for language filtering
+- [ ] Add integration tests
+
+---
+
+### Story 22.16: Locale Plugin (UI Strings)
+
+As a **multilingual site builder**,
+I want to translate UI strings,
+So that the interface appears in the user's language.
+
+**Acceptance Criteria:**
+
+1. `locale_string` table:
+   ```sql
+   CREATE TABLE locale_string (
+       id UUID PRIMARY KEY,
+       source TEXT NOT NULL,
+       translation TEXT NOT NULL,
+       language VARCHAR(12) NOT NULL REFERENCES language(id),
+       context VARCHAR(255),
+       UNIQUE (source, language, context)
+   );
+   ```
+
+2. Tera function `{{ t("Read more") }}` for translatable strings
+
+3. .po file import for bulk translation loading
+
+4. Translation UI for managing strings
+
+5. String extraction tool for finding translatable strings in templates
+
+**Tasks:**
+- [ ] Create locale plugin with migrations
+- [ ] Implement t() Tera function
+- [ ] Implement .po file parser and importer
+- [ ] Create locale string admin UI
+- [ ] Create string extraction tool
+- [ ] Add integration tests
+
+---
+
+### Story 22.17: Config Translation Plugin
+
+As a **multilingual site administrator**,
+I want to translate config labels (menus, field labels, vocabulary names),
+So that the admin interface and public-facing config are localized.
+
+**Acceptance Criteria:**
+
+1. `config_translation` table:
+   ```sql
+   CREATE TABLE config_translation (
+       entity_type VARCHAR(64) NOT NULL,
+       entity_id UUID NOT NULL,
+       language VARCHAR(12) NOT NULL REFERENCES language(id),
+       data JSONB NOT NULL,
+       PRIMARY KEY (entity_type, entity_id, language)
+   );
+   ```
+
+2. Translation overlays for: menu labels, field labels, vocabulary/term names
+
+3. Builds on ConfigStorage trait (Epic 21) - translations applied at read time
+
+4. Translation UI for config entities
+
+**Tasks:**
+- [ ] Create config_translation plugin with migrations
+- [ ] Implement ConfigStorage decorator for translation overlay
+- [ ] Create config translation UI
+- [ ] Add integration tests
+
+**Dev Notes:**
+- Depends on 21.1 (ConfigStorage trait)
+
+---
+

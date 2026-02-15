@@ -13,8 +13,9 @@ use crate::form::{AjaxCommand, AjaxRequest, generate_csrf_token, verify_csrf_tok
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{
-    Category, Comment, CreateCategory, CreateItem, CreateTag, CreateUser, Item, Role, Tag,
-    UpdateCategory, UpdateComment, UpdateTag, UpdateUser, User,
+    Category, Comment, CreateCategory, CreateItem, CreateTag, CreateUrlAlias, CreateUser, Item,
+    Role, Tag, UpdateCategory, UpdateComment, UpdateTag, UpdateUrlAlias, UpdateUser, UrlAlias,
+    User,
 };
 use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
 use crate::state::AppState;
@@ -2584,6 +2585,280 @@ async fn delete_tag(
 }
 
 // =============================================================================
+// URL Alias Management
+// =============================================================================
+
+/// URL alias form data.
+#[derive(Debug, Deserialize)]
+pub struct UrlAliasFormData {
+    #[serde(rename = "_token")]
+    pub token: String,
+    pub source: String,
+    pub alias: String,
+    pub language: Option<String>,
+}
+
+/// Alias display struct for templates.
+#[derive(Debug, Serialize)]
+struct AliasDisplay {
+    id: uuid::Uuid,
+    source: String,
+    alias: String,
+    language: String,
+    created_display: String,
+}
+
+/// List all URL aliases.
+///
+/// GET /admin/structure/aliases
+async fn list_aliases(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let page: i64 = params
+        .get("page")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let per_page: i64 = 50;
+    let offset = (page - 1) * per_page;
+
+    let aliases = match UrlAlias::list_all(state.db(), per_page, offset).await {
+        Ok(aliases) => aliases,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list url aliases");
+            return render_error(&state, "Failed to load URL aliases.").await;
+        }
+    };
+
+    let total = UrlAlias::count_all(state.db()).await.unwrap_or(0);
+    let total_pages = (total as f64 / per_page as f64).ceil() as i64;
+
+    // Convert to display structs with formatted dates
+    let aliases_display: Vec<AliasDisplay> = aliases
+        .into_iter()
+        .map(|a| AliasDisplay {
+            id: a.id,
+            source: a.source,
+            alias: a.alias,
+            language: a.language,
+            created_display: chrono::DateTime::from_timestamp(a.created, 0)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "Unknown".to_string()),
+        })
+        .collect();
+
+    let mut context = tera::Context::new();
+    context.insert("aliases", &aliases_display);
+    context.insert("total", &total);
+    context.insert("page", &page);
+    context.insert("total_pages", &total_pages);
+    context.insert("path", "/admin/structure/aliases");
+
+    render_admin_template(&state, "admin/aliases.html", &context).await
+}
+
+/// Add URL alias form.
+///
+/// GET /admin/structure/aliases/add
+async fn add_alias_form(State(state): State<AppState>, session: Session) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+
+    let mut context = tera::Context::new();
+    context.insert("csrf_token", &csrf_token);
+    context.insert("action", "/admin/structure/aliases/add");
+    context.insert("editing", &false);
+    context.insert("values", &serde_json::json!({}));
+    context.insert("path", "/admin/structure/aliases/add");
+
+    render_admin_template(&state, "admin/alias-form.html", &context).await
+}
+
+/// Add URL alias submit.
+///
+/// POST /admin/structure/aliases/add
+async fn add_alias_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<UrlAliasFormData>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let token_valid = verify_csrf_token(&session, &form.token)
+        .await
+        .unwrap_or(false);
+
+    if !token_valid {
+        return render_error(&state, "Invalid or expired form token. Please try again.").await;
+    }
+
+    // Normalize paths
+    let source = if form.source.starts_with('/') {
+        form.source.clone()
+    } else {
+        format!("/{}", form.source)
+    };
+
+    let alias = if form.alias.starts_with('/') {
+        form.alias.clone()
+    } else {
+        format!("/{}", form.alias)
+    };
+
+    let input = CreateUrlAlias {
+        source,
+        alias,
+        language: form.language,
+        stage_id: Some("live".to_string()),
+    };
+
+    match UrlAlias::create(state.db(), input).await {
+        Ok(_) => Redirect::to("/admin/structure/aliases").into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to create url alias");
+            render_error(
+                &state,
+                "Failed to create URL alias. The alias may already exist.",
+            )
+            .await
+        }
+    }
+}
+
+/// Edit URL alias form.
+///
+/// GET /admin/structure/aliases/{id}/edit
+async fn edit_alias_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(alias_id): Path<uuid::Uuid>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let alias = match UrlAlias::find_by_id(state.db(), alias_id).await {
+        Ok(Some(alias)) => alias,
+        Ok(None) => return render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load url alias");
+            return render_error(&state, "Failed to load URL alias.").await;
+        }
+    };
+
+    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+
+    let mut context = tera::Context::new();
+    context.insert("csrf_token", &csrf_token);
+    context.insert(
+        "action",
+        &format!("/admin/structure/aliases/{}/edit", alias_id),
+    );
+    context.insert("editing", &true);
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "source": alias.source,
+            "alias": alias.alias,
+            "language": alias.language,
+        }),
+    );
+    context.insert(
+        "path",
+        &format!("/admin/structure/aliases/{}/edit", alias_id),
+    );
+
+    render_admin_template(&state, "admin/alias-form.html", &context).await
+}
+
+/// Edit URL alias submit.
+///
+/// POST /admin/structure/aliases/{id}/edit
+async fn edit_alias_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(alias_id): Path<uuid::Uuid>,
+    Form(form): Form<UrlAliasFormData>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    let token_valid = verify_csrf_token(&session, &form.token)
+        .await
+        .unwrap_or(false);
+
+    if !token_valid {
+        return render_error(&state, "Invalid or expired form token. Please try again.").await;
+    }
+
+    // Normalize paths
+    let source = if form.source.starts_with('/') {
+        form.source.clone()
+    } else {
+        format!("/{}", form.source)
+    };
+
+    let alias = if form.alias.starts_with('/') {
+        form.alias.clone()
+    } else {
+        format!("/{}", form.alias)
+    };
+
+    let input = UpdateUrlAlias {
+        source: Some(source),
+        alias: Some(alias),
+        language: form.language,
+        stage_id: None,
+    };
+
+    match UrlAlias::update(state.db(), alias_id, input).await {
+        Ok(Some(_)) => Redirect::to("/admin/structure/aliases").into_response(),
+        Ok(None) => render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to update url alias");
+            render_error(&state, "Failed to update URL alias.").await
+        }
+    }
+}
+
+/// Delete URL alias.
+///
+/// POST /admin/structure/aliases/{id}/delete
+async fn delete_alias(
+    State(state): State<AppState>,
+    session: Session,
+    Path(alias_id): Path<uuid::Uuid>,
+) -> Response {
+    if let Err(redirect) = require_auth(&state, &session).await {
+        return redirect;
+    }
+
+    match UrlAlias::delete(state.db(), alias_id).await {
+        Ok(true) => {
+            tracing::info!(alias_id = %alias_id, "url alias deleted");
+            Redirect::to("/admin/structure/aliases").into_response()
+        }
+        Ok(false) => render_not_found(&state).await,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to delete url alias");
+            render_error(&state, "Failed to delete URL alias.").await
+        }
+    }
+}
+
+// =============================================================================
 // File Management
 // =============================================================================
 
@@ -3299,6 +3574,16 @@ pub fn router() -> Router<AppState> {
         .route("/admin/structure/tags/{id}/edit", get(edit_tag_form))
         .route("/admin/structure/tags/{id}/edit", post(edit_tag_submit))
         .route("/admin/structure/tags/{id}/delete", post(delete_tag))
+        // URL Alias management
+        .route("/admin/structure/aliases", get(list_aliases))
+        .route("/admin/structure/aliases/add", get(add_alias_form))
+        .route("/admin/structure/aliases/add", post(add_alias_submit))
+        .route("/admin/structure/aliases/{id}/edit", get(edit_alias_form))
+        .route(
+            "/admin/structure/aliases/{id}/edit",
+            post(edit_alias_submit),
+        )
+        .route("/admin/structure/aliases/{id}/delete", post(delete_alias))
         // AJAX endpoint
         .route("/system/ajax", post(ajax_callback))
 }

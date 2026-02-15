@@ -18,7 +18,7 @@ mod bench_serialize;
 mod fixture;
 mod host;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -271,7 +271,7 @@ async fn run_gate_benchmarks(
     host: Arc<BenchHost>,
     module: Arc<wasmtime::Module>,
     config: &BenchConfig,
-    wasm_path: &PathBuf,
+    wasm_path: &Path,
 ) -> Result<()> {
     // Verify both modes work before benchmarking
     println!("Verifying plugin functionality...");
@@ -500,7 +500,7 @@ async fn run_concurrency_benchmark(
 }
 
 /// Run async benchmark only.
-async fn run_async_benchmark(wasm_path: &PathBuf, config: &BenchConfig) -> Result<()> {
+async fn run_async_benchmark(wasm_path: &Path, config: &BenchConfig) -> Result<()> {
     println!("=== Async Host Functions Benchmark ===\n");
     println!("Concurrency: {} parallel requests\n", config.concurrency);
 
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn bench_result_from_durations() {
-        let durations: Vec<Duration> = (1..=100).map(|i| Duration::from_micros(i)).collect();
+        let durations: Vec<Duration> = (1..=100).map(Duration::from_micros).collect();
         let result = BenchResult::from_durations("test", &durations);
 
         assert_eq!(result.name, "test");

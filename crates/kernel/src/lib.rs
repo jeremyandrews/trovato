@@ -6,6 +6,7 @@
 pub mod batch;
 pub mod cache;
 pub mod config;
+pub mod config_storage;
 pub mod content;
 pub mod cron;
 pub mod db;
@@ -23,10 +24,19 @@ pub mod plugin;
 pub mod routes;
 pub mod search;
 pub mod session;
+pub mod stage;
 pub mod state;
 pub mod tap;
 pub mod theme;
 
 // Re-export key types for testing
 pub use config::Config;
+pub use config_storage::{
+    ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage, SearchFieldConfig,
+    StageAwareConfigStorage, entity_types,
+};
+pub use stage::{
+    ConflictInfo, ConflictResolution, ConflictType, PublishPhase, PublishResult, Resolution,
+    StageService,
+};
 pub use state::AppState;

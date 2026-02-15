@@ -5,6 +5,7 @@
 mod batch;
 mod cache;
 mod config;
+mod config_storage;
 mod content;
 mod cron;
 mod db;
@@ -23,6 +24,7 @@ mod plugin;
 mod routes;
 mod search;
 mod session;
+mod stage;
 mod state;
 mod tap;
 mod theme;
@@ -88,6 +90,11 @@ async fn main() -> Result<()> {
         .merge(routes::metrics::router())
         .merge(routes::batch::router())
         .merge(routes::static_files::router())
+        // Path alias middleware runs first (last added = first executed)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::resolve_path_alias,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::check_installation,

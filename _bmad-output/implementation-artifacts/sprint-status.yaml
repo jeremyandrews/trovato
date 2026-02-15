@@ -217,11 +217,13 @@ development_status:
   # ═══════════════════════════════════════════════════════════
 
   # Epic 15: Drupal 6 Alignment Audit (parallel research)
-  epic-15: backlog
+  # Scope: D6 + CCK + Views alignment, plus Workspaces→Stages, Gander→Profiling
+  epic-15: in-progress
   15-1-core-concept-mapping: backlog
   15-2-intentional-divergence-documentation: backlog
   15-3-gap-analysis-and-prioritization: backlog
   15-4-alignment-roadmap: backlog
+  15-5-path-alias-system: done  # URL aliases for human-readable URLs
   epic-15-retrospective: optional
 
   # Epic 16: Admin Interface Completion - COMPLETE
@@ -275,12 +277,13 @@ development_status:
   # ═══════════════════════════════════════════════════════════
 
   # Epic 20: Use Case Exploration
+  # Validates Trovato against real workloads: traditional site, headless API, and three plugin projects
   epic-20: backlog
   20-1-traditional-website-use-case: backlog
   20-2-headless-cms-use-case: backlog
-  20-3-argus-integration-exploration: backlog
-  20-4-netgrasp-integration-exploration: backlog
-  20-5-goose-integration-exploration: backlog
+  20-3-argus-composite-gather-responses: backlog  # Tests Gather expressiveness (story + articles + entities in one response)
+  20-4-netgrasp-lean-runtime-validation: backlog  # Tests Raspberry Pi deployment, event-driven patterns
+  20-5-goose-high-throughput-metrics: backlog     # Tests write throughput (1000+ writes/sec), real-time queries
   epic-20-retrospective: optional
 
   # ═══════════════════════════════════════════════════════════
@@ -288,20 +291,46 @@ development_status:
   # ═══════════════════════════════════════════════════════════
 
   # Epic 21: Complete Stage Workflow
-  epic-21: backlog
-  21-1-stage-aware-content-type-definitions: backlog
-  21-2-stage-aware-categories: backlog
-  21-3-stage-aware-menus: backlog
-  21-4-stage-aware-permissions: backlog
-  21-5-stage-conflict-detection: backlog
-  21-6-atomic-stage-publish: backlog
+  # v1.0: Interface contracts (21.1, 21.2, 21.7) - foundation for post-MVP staging
+  # Post-MVP: Full config staging UI
+  epic-21: in-progress
+  21-1-config-storage-trait: done              # v1.0 REQUIRED - ConfigStorage trait, DirectConfigStorage, 8 tests
+  21-2-config-revision-schema: done            # v1.0 Schema only - scaffolding for post-MVP
+  21-3-stage-aware-content-types-fields: done         # Post-MVP Tier 1
+  21-4-stage-aware-categories: done             # Post-MVP Tier 1
+  21-5-stage-aware-menus-aliases: backlog      # Post-MVP Tier 2 - needs menu DB storage (Story 15.5 done)
+  21-6-conflict-detection-warn-only: done # Post-MVP - detect and warn, no merge UI
+  21-7-atomic-publish-ordering: done           # v1.0 FRAMEWORK - phase callbacks for publish order
+  21-8-stage-hierarchy-support: backlog        # Post-MVP - child→parent→live workflows
   epic-21-retrospective: optional
 
-  # Epic 22: Modern CMS Features (Drupal 7+)
+  # Epic 22: Modern CMS Features - "Core Enables, Plugins Implement"
+  # Section A: Kernel Infrastructure (v1.0 REQUIRED)
+  # Section B: Standard Plugins (ship with Trovato)
+  # Section C: Multilingual (v1.0 REQUIRED)
   epic-22: backlog
-  22-1-feature-evaluation-matrix: backlog
-  22-2-media-library: backlog
-  22-3-structured-content-blocks: backlog
-  22-4-content-moderation-workflow: backlog
-  22-5-feature-documentation: backlog
+
+  # --- Section A: Kernel Infrastructure ---
+  22-1-plugin-migration-system: backlog         # v1.0 REQUIRED - plugins declare migrations in info.toml
+  22-2-gather-extension-api: backlog            # v1.0 REQUIRED - register custom filter/sort/relationship types
+  22-3-compound-field-type: backlog             # v1.0 REQUIRED - arrays of typed, reorderable objects in JSONB
+  22-4-config-export-import: backlog            # v1.0 REQUIRED - YAML serialization of config entities
+  22-5-language-column-infrastructure: backlog  # v1.0 REQUIRED - language table, column, negotiator trait
+
+  # --- Section B: Standard Plugins ---
+  22-6-media-library-plugin: backlog            # Standard Plugin - file browser, image styles, focal point
+  22-7-structured-content-plugin: backlog       # Standard Plugin - Compound field widget UI
+  22-8-content-moderation-plugin: backlog       # Standard Plugin - Draft→Review→Published workflow
+  22-9-oauth2-provider-plugin: backlog          # Standard Plugin - authorization_code, client_credentials
+  22-10-image-styles-plugin: backlog            # Standard Plugin - derivative generation, focal point
+  22-11-content-locking-plugin: backlog         # Standard Plugin - pessimistic locks, break lock permission
+  22-12-redirect-plugin: backlog                # Standard Plugin - URL redirect management
+  22-13-metatag-plugin: backlog                 # Standard Plugin - SEO meta tags per item
+  22-14-refactor-categories-to-plugin: backlog  # Standard Plugin - move from Kernel migrations
+
+  # --- Section C: Multilingual ---
+  22-15-content-translation-plugin: backlog     # Standard Plugin - item field overrides per language
+  22-16-interface-translation: backlog          # Standard Plugin - UI string translation
+  22-17-language-detection-plugin: backlog      # Standard Plugin - URL prefix, browser, domain negotiation
+
   epic-22-retrospective: optional

@@ -58,9 +58,20 @@ async fn count_admin_users(state: &AppState) -> i64 {
 }
 
 /// Render installer template.
-fn render_installer(title: &str, step: u8, total_steps: u8, content: &str, error: Option<&str>) -> Response {
+fn render_installer(
+    title: &str,
+    step: u8,
+    total_steps: u8,
+    content: &str,
+    error: Option<&str>,
+) -> Response {
     let error_html = error
-        .map(|e| format!(r#"<div class="alert alert--error">{}</div>"#, html_escape(e)))
+        .map(|e| {
+            format!(
+                r#"<div class="alert alert--error">{}</div>"#,
+                html_escape(e)
+            )
+        })
         .unwrap_or_default();
 
     let html = format!(

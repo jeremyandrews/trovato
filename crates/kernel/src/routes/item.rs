@@ -14,7 +14,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::{FilterPipeline, FormBuilder};
-use crate::models::{CreateItem, UpdateItem, User};
+use crate::models::{CreateItem, UpdateItem, UrlAlias, User};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
@@ -112,6 +112,7 @@ pub struct UpdateItemRequest {
     pub status: Option<i16>,
     pub fields: Option<serde_json::Value>,
     pub log: Option<String>,
+    pub url_alias: Option<String>,
 }
 
 /// Create the item router.
@@ -420,6 +421,24 @@ async fn edit_item_form(
     let form_builder = FormBuilder::new(content_type.clone());
     let form_html = form_builder.build_edit_form(&item, &format!("/item/{}/edit", id));
 
+    // Get current URL alias for this item
+    let source = format!("/item/{}", id);
+    let current_alias = UrlAlias::get_canonical_alias(state.db(), &source)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+
+    // Build URL alias field HTML
+    let alias_field = format!(
+        r#"<div class="form-group">
+            <label for="url_alias">URL Alias</label>
+            <input type="text" id="url_alias" name="url_alias" class="form-control"
+                   value="{}" placeholder="/about-us">
+            <p class="form-help">Human-readable URL path. Leave empty for default (/item/id)</p>
+        </div>"#,
+        html_escape(&current_alias)
+    );
+
     let html = format!(
         r#"<!DOCTYPE html><html><head>
         <title>Edit {}</title>
@@ -436,10 +455,12 @@ async fn edit_item_form(
         </head><body>
         <h1>Edit: {}</h1>
         {}
+        {}
         </body></html>"#,
         html_escape(&item.title),
         html_escape(&item.title),
-        form_html
+        form_html,
+        alias_field
     );
 
     Ok(Html(html))
@@ -464,12 +485,42 @@ async fn update_item(
     };
 
     match state.items().update(id, input, &user).await {
-        Ok(Some(item)) => Ok(Json(ItemResponse {
-            id: item.id,
-            title: item.title,
-            item_type: item.item_type,
-            status: item.status,
-        })),
+        Ok(Some(item)) => {
+            // Handle URL alias update if provided
+            if let Some(alias_path) = request.url_alias {
+                let source = format!("/item/{}", id);
+                let alias_path = alias_path.trim();
+
+                if alias_path.is_empty() {
+                    // Delete existing alias if path is cleared
+                    if let Err(e) = UrlAlias::delete_by_source(state.db(), &source).await {
+                        tracing::warn!(error = %e, "failed to delete url alias");
+                    }
+                } else {
+                    // Ensure alias starts with /
+                    let alias_path = if alias_path.starts_with('/') {
+                        alias_path.to_string()
+                    } else {
+                        format!("/{}", alias_path)
+                    };
+
+                    // Create or update alias
+                    if let Err(e) =
+                        UrlAlias::upsert_for_source(state.db(), &source, &alias_path, "live", "en")
+                            .await
+                    {
+                        tracing::warn!(error = %e, "failed to update url alias");
+                    }
+                }
+            }
+
+            Ok(Json(ItemResponse {
+                id: item.id,
+                title: item.title,
+                item_type: item.item_type,
+                status: item.status,
+            }))
+        }
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
             Json(ItemError {

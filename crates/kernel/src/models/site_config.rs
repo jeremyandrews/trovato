@@ -100,11 +100,14 @@ impl SiteConfig {
     }
 
     /// Get all configuration as a map.
-    pub async fn all(pool: &PgPool) -> Result<std::collections::HashMap<String, serde_json::Value>> {
-        let configs = sqlx::query_as::<_, SiteConfig>("SELECT key, value, updated FROM site_config")
-            .fetch_all(pool)
-            .await
-            .context("failed to get all site configs")?;
+    pub async fn all(
+        pool: &PgPool,
+    ) -> Result<std::collections::HashMap<String, serde_json::Value>> {
+        let configs =
+            sqlx::query_as::<_, SiteConfig>("SELECT key, value, updated FROM site_config")
+                .fetch_all(pool)
+                .await
+                .context("failed to get all site configs")?;
 
         Ok(configs.into_iter().map(|c| (c.key, c.value)).collect())
     }

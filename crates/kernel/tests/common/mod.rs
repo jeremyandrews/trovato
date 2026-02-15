@@ -11,12 +11,13 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use trovato_kernel::{AppState, Config};
+use trovato_kernel::{AppState, Config, ConfigStorage};
 
 /// Test application wrapper using the REAL kernel routes and state.
 pub struct TestApp {
     router: Router,
     pub db: PgPool,
+    pub state: AppState,
 }
 
 impl TestApp {
@@ -76,14 +77,29 @@ impl TestApp {
             .merge(trovato_kernel::routes::metrics::router())
             .merge(trovato_kernel::routes::batch::router())
             .merge(trovato_kernel::routes::static_files::router())
+            // Path alias middleware runs first (last added = first executed)
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::resolve_path_alias,
+            ))
             .layer(session_layer)
             .layer(tower_http::trace::TraceLayer::new_for_http())
-            .with_state(state);
+            .with_state(state.clone());
 
         // Note: We don't do global cleanup here because it interferes with parallel tests.
         // Each test should use unique identifiers and clean up its own data if needed.
 
-        Self { router, db }
+        Self { router, db, state }
+    }
+
+    /// Get the config storage for direct access.
+    pub fn config_storage(&self) -> &std::sync::Arc<dyn ConfigStorage> {
+        self.state.config_storage()
+    }
+
+    /// Get the stage service for direct access.
+    pub fn stage(&self) -> &std::sync::Arc<trovato_kernel::stage::StageService> {
+        self.state.stage()
     }
 
     /// Clean up a specific test content type by machine name.

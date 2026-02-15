@@ -212,6 +212,12 @@ impl ItemService {
             return Ok(true);
         }
 
+        // Published content is viewable by anyone with "access content" permission
+        // This is the standard CMS pattern - published = publicly visible
+        if operation == "view" && item.is_published() && user.has_permission("access content") {
+            return Ok(true);
+        }
+
         // Build access check input
         let input = ItemAccessInput {
             item_id: item.id,
