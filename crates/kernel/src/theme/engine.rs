@@ -431,7 +431,8 @@ mod tests {
         let mut tera = Tera::default();
         ThemeEngine::register_filters(&mut tera);
 
-        tera.add_raw_template("test", "{{ ts | format_date }}").unwrap();
+        tera.add_raw_template("test", "{{ ts | format_date }}")
+            .unwrap();
         let mut ctx = tera::Context::new();
         ctx.insert("ts", &1739577600_i64); // 2025-02-15 00:00:00 UTC
         let result = tera.render("test", &ctx).unwrap();
@@ -443,7 +444,8 @@ mod tests {
         let mut tera = Tera::default();
         ThemeEngine::register_filters(&mut tera);
 
-        tera.add_raw_template("test", "{{ ts | format_date }}").unwrap();
+        tera.add_raw_template("test", "{{ ts | format_date }}")
+            .unwrap();
         let mut ctx = tera::Context::new();
         ctx.insert("ts", &0_i64);
         let result = tera.render("test", &ctx).unwrap();
@@ -455,7 +457,8 @@ mod tests {
         let mut tera = Tera::default();
         ThemeEngine::register_filters(&mut tera);
 
-        tera.add_raw_template("test", "{{ ts | format_date }}").unwrap();
+        tera.add_raw_template("test", "{{ ts | format_date }}")
+            .unwrap();
         let mut ctx = tera::Context::new();
         ctx.insert("ts", "not a number");
         let result = tera.render("test", &ctx).unwrap();

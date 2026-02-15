@@ -1,11 +1,6 @@
 //! Front page route handler.
 
-use axum::{
-    Router,
-    extract::State,
-    response::Html,
-    routing::get,
-};
+use axum::{Router, extract::State, response::Html, routing::get};
 use tower_sessions::Session;
 use uuid::Uuid;
 
@@ -28,10 +23,7 @@ pub fn router() -> Router<AppState> {
 ///
 /// If `site_front_page` is configured, loads and renders that item.
 /// Otherwise, shows promoted content or a welcome message.
-async fn front_page(
-    State(state): State<AppState>,
-    session: Session,
-) -> Html<String> {
+async fn front_page(State(state): State<AppState>, session: Session) -> Html<String> {
     // Check for configured front page item
     if let Ok(Some(front_path)) = SiteConfig::front_page(state.db()).await {
         if let Some(html) = render_configured_front_page(&state, &session, &front_path).await {
@@ -94,11 +86,7 @@ async fn render_configured_front_page(
     context.insert("item", &item);
     context.insert("children", &children_html);
 
-    let item_html = state
-        .theme()
-        .tera()
-        .render(&template, &context)
-        .ok()?;
+    let item_html = state.theme().tera().render(&template, &context).ok()?;
 
     // Wrap in page layout
     inject_site_context(state, session, &mut context).await;
@@ -142,8 +130,15 @@ async fn render_promoted_listing(state: &AppState) -> String {
         }
 
         // Render body field summary if available
-        if let Some(body) = item.fields.get("body").and_then(|f| f.get("value")).and_then(|v| v.as_str()) {
-            let format = item.fields.get("body")
+        if let Some(body) = item
+            .fields
+            .get("body")
+            .and_then(|f| f.get("value"))
+            .and_then(|v| v.as_str())
+        {
+            let format = item
+                .fields
+                .get("body")
                 .and_then(|f| f.get("format"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("plain_text");

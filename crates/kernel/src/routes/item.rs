@@ -239,11 +239,7 @@ async fn view_item(
         .render(&template, &context)
         .unwrap_or_else(|_| {
             // Fallback if template rendering fails
-            format!(
-                "<h1>{}</h1>{}",
-                html_escape(&item.title),
-                children_html
-            )
+            format!("<h1>{}</h1>{}", html_escape(&item.title), children_html)
         });
 
     // Wrap in page layout with site context
@@ -253,9 +249,7 @@ async fn view_item(
     let page_html = state
         .theme()
         .render_page(&item_path, &item.title, &item_html, &mut context)
-        .unwrap_or_else(|_| {
-            format!("<!DOCTYPE html><html><body>{}</body></html>", item_html)
-        });
+        .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{}</body></html>", item_html));
 
     Ok(Html(page_html))
 }

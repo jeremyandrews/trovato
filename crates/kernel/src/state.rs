@@ -219,8 +219,8 @@ impl AppState {
         // Register blog_listing view if it doesn't exist
         if gather.get_view("blog_listing").is_none() {
             use crate::gather::{
-                DisplayFormat, FilterOperator, FilterValue, GatherView, PagerConfig,
-                SortDirection, ViewDefinition, ViewDisplay, ViewFilter, ViewSort,
+                DisplayFormat, FilterOperator, FilterValue, GatherView, PagerConfig, SortDirection,
+                ViewDefinition, ViewDisplay, ViewFilter, ViewSort,
             };
 
             let blog_view = GatherView {
@@ -231,15 +231,13 @@ impl AppState {
                     base_table: "item".to_string(),
                     item_type: Some("blog".to_string()),
                     fields: Vec::new(),
-                    filters: vec![
-                        ViewFilter {
-                            field: "status".to_string(),
-                            operator: FilterOperator::Equals,
-                            value: FilterValue::Integer(1),
-                            exposed: false,
-                            exposed_label: None,
-                        },
-                    ],
+                    filters: vec![ViewFilter {
+                        field: "status".to_string(),
+                        operator: FilterOperator::Equals,
+                        value: FilterValue::Integer(1),
+                        exposed: false,
+                        exposed_label: None,
+                    }],
                     sorts: vec![ViewSort {
                         field: "created".to_string(),
                         direction: SortDirection::Desc,
@@ -271,14 +269,9 @@ impl AppState {
         // Register /blog URL alias for the blog listing view
         {
             use crate::models::UrlAlias;
-            if let Err(e) = UrlAlias::upsert_for_source(
-                &db,
-                "/gather/blog_listing",
-                "/blog",
-                "live",
-                "en",
-            )
-            .await
+            if let Err(e) =
+                UrlAlias::upsert_for_source(&db, "/gather/blog_listing", "/blog", "live", "en")
+                    .await
             {
                 tracing::warn!(error = %e, "failed to register /blog alias");
             }

@@ -12,11 +12,7 @@ const SESSION_USER_ID: &str = "user_id";
 /// Inject site-wide context variables into a Tera context.
 ///
 /// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`
-pub async fn inject_site_context(
-    state: &AppState,
-    session: &Session,
-    context: &mut tera::Context,
-) {
+pub async fn inject_site_context(state: &AppState, session: &Session, context: &mut tera::Context) {
     // Load site name and slogan in a single query
     let all_config = SiteConfig::all(state.db()).await.unwrap_or_default();
     let site_name = all_config
