@@ -267,7 +267,7 @@ impl AppState {
             }
         }
 
-        // Register /blog URL alias for the blog listing view
+        // Register /blog URL alias for the blog listing query
         {
             use crate::models::UrlAlias;
             if let Err(e) =
@@ -277,6 +277,9 @@ impl AppState {
                 tracing::warn!(error = %e, "failed to register /blog alias");
             }
         }
+
+        // Register Netgrasp validation content types, queries, roles, and aliases
+        register_netgrasp_validation(&db, &content_types, &gather).await;
 
         // Create theme engine
         let template_dir = Self::resolve_template_dir();
@@ -522,5 +525,322 @@ impl AppState {
             .query_async::<String>(&mut conn)
             .await
             .is_ok()
+    }
+}
+
+/// Register Netgrasp-style content types, Gather queries, auth roles, and URL aliases.
+///
+/// This is an Epic 20 validation function: it proves Trovato's existing content model,
+/// query engine, auth system, and template rendering can handle a network monitoring
+/// application without custom endpoints or schema changes.
+async fn register_netgrasp_validation(
+    db: &PgPool,
+    content_types: &ContentTypeRegistry,
+    gather: &GatherService,
+) {
+    use crate::gather::{
+        DisplayFormat, FilterOperator, FilterValue, GatherQuery, PagerConfig, QueryDefinition,
+        QueryDisplay, QueryFilter, QuerySort, SortDirection,
+    };
+    use crate::models::{Role, UrlAlias};
+
+    // ── Content Types ───────────────────────────────────────────────────
+
+    let ng_types: &[(&str, &str, &str, serde_json::Value)] = &[
+        (
+            "ng_device",
+            "Device",
+            "Network device tracked by Netgrasp",
+            serde_json::json!({
+                "fields": [
+                    {"name": "mac", "type": "string", "label": "MAC Address", "required": true},
+                    {"name": "display_name", "type": "string", "label": "Display Name"},
+                    {"name": "hostname", "type": "string", "label": "Hostname"},
+                    {"name": "vendor", "type": "string", "label": "Vendor"},
+                    {"name": "device_type", "type": "string", "label": "Device Type"},
+                    {"name": "os_family", "type": "string", "label": "OS Family"},
+                    {"name": "state", "type": "string", "label": "State"},
+                    {"name": "last_ip", "type": "string", "label": "Last IP"},
+                    {"name": "current_ap", "type": "string", "label": "Current AP"},
+                    {"name": "owner_id", "type": "string", "label": "Owner"},
+                    {"name": "hidden", "type": "boolean", "label": "Hidden"},
+                    {"name": "notify", "type": "boolean", "label": "Notify"},
+                    {"name": "baseline", "type": "boolean", "label": "Baseline"}
+                ]
+            }),
+        ),
+        (
+            "ng_person",
+            "Person",
+            "Person associated with network devices",
+            serde_json::json!({
+                "fields": [
+                    {"name": "name", "type": "string", "label": "Name", "required": true},
+                    {"name": "notes", "type": "text", "label": "Notes"},
+                    {"name": "notification_prefs", "type": "string", "label": "Notification Preferences"}
+                ]
+            }),
+        ),
+        (
+            "ng_event",
+            "Event",
+            "Network event (device seen, new device, etc.)",
+            serde_json::json!({
+                "fields": [
+                    {"name": "device_id", "type": "string", "label": "Device ID", "required": true},
+                    {"name": "event_type", "type": "string", "label": "Event Type", "required": true},
+                    {"name": "timestamp", "type": "integer", "label": "Timestamp", "required": true},
+                    {"name": "details", "type": "text", "label": "Details"}
+                ]
+            }),
+        ),
+        (
+            "ng_presence",
+            "Presence Session",
+            "Device presence session (online period)",
+            serde_json::json!({
+                "fields": [
+                    {"name": "device_id", "type": "string", "label": "Device ID", "required": true},
+                    {"name": "start_time", "type": "integer", "label": "Start Time", "required": true},
+                    {"name": "end_time", "type": "integer", "label": "End Time"}
+                ]
+            }),
+        ),
+        (
+            "ng_ip_history",
+            "IP History",
+            "Historical IP address assignments for devices",
+            serde_json::json!({
+                "fields": [
+                    {"name": "device_id", "type": "string", "label": "Device ID", "required": true},
+                    {"name": "ip_address", "type": "string", "label": "IP Address", "required": true},
+                    {"name": "first_seen", "type": "integer", "label": "First Seen", "required": true},
+                    {"name": "last_seen", "type": "integer", "label": "Last Seen"}
+                ]
+            }),
+        ),
+        (
+            "ng_location",
+            "Location History",
+            "Device location history",
+            serde_json::json!({
+                "fields": [
+                    {"name": "device_id", "type": "string", "label": "Device ID", "required": true},
+                    {"name": "location", "type": "string", "label": "Location", "required": true},
+                    {"name": "start_time", "type": "integer", "label": "Start Time", "required": true},
+                    {"name": "end_time", "type": "integer", "label": "End Time"}
+                ]
+            }),
+        ),
+    ];
+
+    for (machine_name, label, description, settings) in ng_types {
+        if !content_types.exists(machine_name) {
+            if let Err(e) = content_types
+                .create(machine_name, label, Some(description), settings.clone())
+                .await
+            {
+                tracing::warn!(error = %e, content_type = machine_name, "failed to register ng content type");
+            }
+        }
+    }
+
+    // ── Gather Queries ──────────────────────────────────────────────────
+
+    let now = chrono::Utc::now().timestamp();
+
+    // Device listing with 3 exposed filters
+    if gather.get_query("ng_device_list").is_none() {
+        let query = GatherQuery {
+            query_id: "ng_device_list".to_string(),
+            label: "Devices".to_string(),
+            description: Some("Network devices tracked by Netgrasp".to_string()),
+            definition: QueryDefinition {
+                base_table: "item".to_string(),
+                item_type: Some("ng_device".to_string()),
+                fields: Vec::new(),
+                filters: vec![
+                    QueryFilter {
+                        field: "status".to_string(),
+                        operator: FilterOperator::Equals,
+                        value: FilterValue::Integer(1),
+                        exposed: false,
+                        exposed_label: None,
+                    },
+                    QueryFilter {
+                        field: "fields.state".to_string(),
+                        operator: FilterOperator::Contains,
+                        value: FilterValue::String(String::new()),
+                        exposed: true,
+                        exposed_label: Some("State".to_string()),
+                    },
+                    QueryFilter {
+                        field: "fields.device_type".to_string(),
+                        operator: FilterOperator::Contains,
+                        value: FilterValue::String(String::new()),
+                        exposed: true,
+                        exposed_label: Some("Device Type".to_string()),
+                    },
+                    QueryFilter {
+                        field: "fields.owner_id".to_string(),
+                        operator: FilterOperator::Contains,
+                        value: FilterValue::String(String::new()),
+                        exposed: true,
+                        exposed_label: Some("Owner".to_string()),
+                    },
+                ],
+                sorts: vec![QuerySort {
+                    field: "fields.display_name".to_string(),
+                    direction: SortDirection::Asc,
+                    nulls: None,
+                }],
+                relationships: Vec::new(),
+                includes: std::collections::HashMap::new(),
+            },
+            display: QueryDisplay {
+                format: DisplayFormat::Table,
+                items_per_page: 50,
+                pager: PagerConfig {
+                    enabled: true,
+                    ..PagerConfig::default()
+                },
+                empty_text: Some("No devices found.".to_string()),
+                header: None,
+                footer: None,
+            },
+            plugin: "core".to_string(),
+            created: now,
+            changed: now,
+        };
+
+        if let Err(e) = gather.register_query(query).await {
+            tracing::warn!(error = %e, "failed to register ng_device_list query");
+        }
+    }
+
+    // Event log with time-range exposed filters
+    if gather.get_query("ng_event_log").is_none() {
+        let query = GatherQuery {
+            query_id: "ng_event_log".to_string(),
+            label: "Event Log".to_string(),
+            description: Some("Network events and activity log".to_string()),
+            definition: QueryDefinition {
+                base_table: "item".to_string(),
+                item_type: Some("ng_event".to_string()),
+                fields: Vec::new(),
+                filters: vec![
+                    QueryFilter {
+                        field: "status".to_string(),
+                        operator: FilterOperator::Equals,
+                        value: FilterValue::Integer(1),
+                        exposed: false,
+                        exposed_label: None,
+                    },
+                    QueryFilter {
+                        field: "fields.timestamp".to_string(),
+                        operator: FilterOperator::GreaterOrEqual,
+                        value: FilterValue::Integer(0),
+                        exposed: true,
+                        exposed_label: Some("After".to_string()),
+                    },
+                    QueryFilter {
+                        field: "fields.timestamp".to_string(),
+                        operator: FilterOperator::LessOrEqual,
+                        value: FilterValue::Integer(i64::MAX),
+                        exposed: true,
+                        exposed_label: Some("Before".to_string()),
+                    },
+                ],
+                sorts: vec![QuerySort {
+                    field: "fields.timestamp".to_string(),
+                    direction: SortDirection::Desc,
+                    nulls: None,
+                }],
+                relationships: Vec::new(),
+                includes: std::collections::HashMap::new(),
+            },
+            display: QueryDisplay {
+                format: DisplayFormat::Table,
+                items_per_page: 100,
+                pager: PagerConfig {
+                    enabled: true,
+                    ..PagerConfig::default()
+                },
+                empty_text: Some("No events recorded.".to_string()),
+                header: None,
+                footer: None,
+            },
+            plugin: "core".to_string(),
+            created: now,
+            changed: now,
+        };
+
+        if let Err(e) = gather.register_query(query).await {
+            tracing::warn!(error = %e, "failed to register ng_event_log query");
+        }
+    }
+
+    // ── URL Aliases ─────────────────────────────────────────────────────
+
+    for (source, alias) in [
+        ("/gather/ng_device_list", "/devices"),
+        ("/gather/ng_event_log", "/events"),
+    ] {
+        if let Err(e) = UrlAlias::upsert_for_source(db, source, alias, "live", "en").await {
+            tracing::warn!(error = %e, alias, "failed to register ng alias");
+        }
+    }
+
+    // ── Auth Roles ──────────────────────────────────────────────────────
+
+    let ng_type_names = [
+        "ng_device",
+        "ng_person",
+        "ng_event",
+        "ng_presence",
+        "ng_ip_history",
+        "ng_location",
+    ];
+
+    // network_admin: full CRUD on all ng_* types
+    if Role::find_by_name(db, "network_admin")
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        match Role::create(db, "network_admin").await {
+            Ok(role) => {
+                let mut perms = vec!["access content".to_string()];
+                for t in &ng_type_names {
+                    perms.push(format!("create {} content", t));
+                    perms.push(format!("edit any {} content", t));
+                    perms.push(format!("delete any {} content", t));
+                }
+                for perm in &perms {
+                    if let Err(e) = Role::add_permission(db, role.id, perm).await {
+                        tracing::warn!(error = %e, perm, "failed to add permission to network_admin");
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "failed to create network_admin role"),
+        }
+    }
+
+    // ng_viewer: read-only access
+    if Role::find_by_name(db, "ng_viewer")
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        match Role::create(db, "ng_viewer").await {
+            Ok(role) => {
+                if let Err(e) = Role::add_permission(db, role.id, "access content").await {
+                    tracing::warn!(error = %e, "failed to add permission to ng_viewer");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "failed to create ng_viewer role"),
+        }
     }
 }
