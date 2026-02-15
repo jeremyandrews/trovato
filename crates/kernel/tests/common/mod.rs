@@ -57,11 +57,11 @@ impl TestApp {
 
         // Create session layer
         let session_layer = trovato_kernel::session::create_session_layer(
-                &config.redis_url,
-                tower_sessions::cookie::SameSite::Strict,
-            )
-            .await
-            .expect("Failed to create session layer");
+            &config.redis_url,
+            tower_sessions::cookie::SameSite::Strict,
+        )
+        .await
+        .expect("Failed to create session layer");
 
         // Build the REAL router with all kernel routes
         let router = Router::new()

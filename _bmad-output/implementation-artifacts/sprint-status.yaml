@@ -278,9 +278,9 @@ development_status:
 
   # Epic 20: Use Case Exploration
   # Validates Trovato against real workloads: traditional site, headless API, and three plugin projects
-  epic-20: backlog
-  20-1-traditional-website-use-case: backlog
-  20-2-headless-cms-use-case: backlog
+  epic-20: in-progress
+  20-1-traditional-website-use-case: done    # 2026-02-15
+  20-2-headless-cms-use-case: done           # 2026-02-15
   20-3-argus-composite-gather-responses: backlog  # Tests Gather expressiveness (story + articles + entities in one response)
   20-4-netgrasp-lean-runtime-validation: backlog  # Tests Raspberry Pi deployment, event-driven patterns
   20-5-goose-high-throughput-metrics: backlog     # Tests write throughput (1000+ writes/sec), real-time queries

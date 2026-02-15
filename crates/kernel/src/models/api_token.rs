@@ -119,24 +119,22 @@ impl ApiToken {
 
     /// Count tokens for a user.
     pub async fn count_for_user(pool: &PgPool, user_id: Uuid) -> Result<i64> {
-        let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM api_tokens WHERE user_id = $1")
-                .bind(user_id)
-                .fetch_one(pool)
-                .await
-                .context("failed to count API tokens")?;
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM api_tokens WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .context("failed to count API tokens")?;
         Ok(row.0)
     }
 
     /// Delete (revoke) a token, scoped to the owning user.
     pub async fn delete(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool> {
-        let result =
-            sqlx::query("DELETE FROM api_tokens WHERE id = $1 AND user_id = $2")
-                .bind(id)
-                .bind(user_id)
-                .execute(pool)
-                .await
-                .context("failed to delete API token")?;
+        let result = sqlx::query("DELETE FROM api_tokens WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .context("failed to delete API token")?;
 
         Ok(result.rows_affected() > 0)
     }

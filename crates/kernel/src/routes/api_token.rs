@@ -102,18 +102,17 @@ async fn create_token(
         .expires_in_days
         .map(|days| Utc::now() + Duration::days(i64::from(days)));
 
-    let (token_record, raw_token) =
-        ApiToken::create(state.db(), user_id, name, expires_at)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to create API token");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Failed to create token".to_string(),
-                    }),
-                )
-            })?;
+    let (token_record, raw_token) = ApiToken::create(state.db(), user_id, name, expires_at)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to create API token");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to create token".to_string(),
+                }),
+            )
+        })?;
 
     Ok((
         StatusCode::CREATED,
