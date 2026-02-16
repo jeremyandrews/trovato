@@ -6,6 +6,7 @@
 //! - Stage-aware queries
 //! - Pagination
 
+use super::extension::{FilterContext, GatherExtensionRegistry};
 use super::types::{
     FilterOperator, FilterValue, JoinType, QueryDefinition, QueryFilter, SortDirection,
 };
@@ -13,6 +14,7 @@ use sea_query::{
     Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order, PostgresQueryBuilder, Query,
     SelectStatement, SimpleExpr,
 };
+use std::sync::Arc;
 
 /// Identifier for dynamic table/column names.
 #[allow(dead_code)]
@@ -24,6 +26,7 @@ struct ItemTable;
 pub struct GatherQueryBuilder {
     definition: QueryDefinition,
     stage_id: String,
+    extensions: Option<Arc<GatherExtensionRegistry>>,
 }
 
 impl GatherQueryBuilder {
@@ -32,7 +35,14 @@ impl GatherQueryBuilder {
         Self {
             definition,
             stage_id: stage_id.to_string(),
+            extensions: None,
         }
+    }
+
+    /// Set the extension registry for custom filter/sort/relationship handling.
+    pub fn with_extensions(mut self, extensions: Arc<GatherExtensionRegistry>) -> Self {
+        self.extensions = Some(extensions);
+        self
     }
 
     /// Build the main SELECT query with pagination.
@@ -264,6 +274,34 @@ impl GatherQueryBuilder {
             FilterOperator::HasTagOrDescendants => {
                 let uuid = filter.value.as_uuid()?;
                 self.build_category_filter(&filter.field, vec![uuid], true)
+            }
+            FilterOperator::Custom(name) => {
+                if let Some(ref extensions) = self.extensions {
+                    if let Some((handler, config)) = extensions.get_filter(name) {
+                        let ctx = FilterContext {
+                            base_table: self.definition.base_table.clone(),
+                            stage_id: self.stage_id.clone(),
+                        };
+                        match handler.build_condition(filter, config, &ctx) {
+                            Ok(expr) => return expr,
+                            Err(e) => {
+                                tracing::error!(
+                                    filter = name,
+                                    error = %e,
+                                    "custom filter handler failed; restricting results"
+                                );
+                                // Return FALSE to restrict rather than widen query results
+                                return Some(Expr::cust("FALSE"));
+                            }
+                        }
+                    }
+                }
+                tracing::error!(
+                    filter = name,
+                    "custom filter operator has no registered extension; restricting results"
+                );
+                // Return FALSE to restrict rather than widen query results
+                Some(Expr::cust("FALSE"))
             }
         }
     }

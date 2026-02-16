@@ -314,7 +314,7 @@ development_status:
 
   # --- Section A: Kernel Infrastructure (NEXT UP) ---
   22-1-plugin-migration-system: done             # 2026-02-16 Plugin migrations, status tracking, CLI management
-  22-2-gather-extension-api: backlog            # v1.0 REQUIRED - register custom filter/sort/relationship types
+  22-2-gather-extension-api: done               # 2026-02-16 GatherExtensionRegistry, tap_gather_extend, built-in handlers
   22-3-compound-field-type: backlog             # v1.0 REQUIRED - arrays of typed, reorderable objects in JSONB
   22-4-config-export-import: backlog            # v1.0 REQUIRED - YAML serialization of config entities
   22-5-language-column-infrastructure: backlog  # v1.0 REQUIRED - language table, column, negotiator trait

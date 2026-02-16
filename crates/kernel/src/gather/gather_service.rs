@@ -7,6 +7,7 @@
 //! - Result caching
 
 use super::category_service::CategoryService;
+use super::extension::GatherExtensionRegistry;
 use super::query_builder::GatherQueryBuilder;
 use super::types::{
     ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult, QueryContext,
@@ -26,16 +27,22 @@ const MAX_INCLUDE_DEPTH: u8 = 3;
 pub struct GatherService {
     pool: PgPool,
     categories: Arc<CategoryService>,
+    extensions: Arc<GatherExtensionRegistry>,
     /// Registered queries by query_id
     queries: DashMap<String, GatherQuery>,
 }
 
 impl GatherService {
     /// Create a new GatherService.
-    pub fn new(pool: PgPool, categories: Arc<CategoryService>) -> Arc<Self> {
+    pub fn new(
+        pool: PgPool,
+        categories: Arc<CategoryService>,
+        extensions: Arc<GatherExtensionRegistry>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             pool,
             categories,
+            extensions,
             queries: DashMap::new(),
         })
     }
@@ -177,9 +184,12 @@ impl GatherService {
         let resolved_definition = Self::resolve_contextual_values(resolved_definition, context);
 
         // Resolve category hierarchy for HasTagOrDescendants filters
-        let final_definition = self
+        let resolved_definition = self
             .resolve_category_hierarchies(resolved_definition)
             .await?;
+
+        // Resolve custom filter extensions (expand hierarchies, etc.)
+        let final_definition = self.resolve_custom_filters(resolved_definition).await?;
 
         // Split includes from definition to avoid cloning the full tree
         // just for the query builder (which only uses filters/sorts/fields).
@@ -191,7 +201,8 @@ impl GatherService {
 
         // Build and execute queries
         let per_page = display.items_per_page;
-        let builder = GatherQueryBuilder::new(builder_def, stage_id);
+        let builder =
+            GatherQueryBuilder::new(builder_def, stage_id).with_extensions(self.extensions.clone());
 
         // Execute count query
         let count_sql = builder.build_count();
@@ -260,6 +271,34 @@ impl GatherService {
                     exposed: filter.exposed,
                     exposed_label: filter.exposed_label,
                 });
+            } else {
+                resolved_filters.push(filter);
+            }
+        }
+
+        definition.filters = resolved_filters;
+        Ok(definition)
+    }
+
+    /// Resolve custom filter extensions by calling each handler's resolve phase.
+    async fn resolve_custom_filters(
+        &self,
+        mut definition: QueryDefinition,
+    ) -> Result<QueryDefinition> {
+        let mut resolved_filters = Vec::new();
+
+        for filter in definition.filters {
+            if let FilterOperator::Custom(ref name) = filter.operator {
+                let name = name.clone();
+                if let Some((handler, config)) = self.extensions.get_filter(&name) {
+                    let resolved = handler
+                        .resolve(filter, config, &self.pool)
+                        .await
+                        .context(format!("failed to resolve custom filter '{}'", name))?;
+                    resolved_filters.push(resolved);
+                } else {
+                    resolved_filters.push(filter);
+                }
             } else {
                 resolved_filters.push(filter);
             }

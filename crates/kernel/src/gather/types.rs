@@ -133,6 +133,9 @@ pub enum FilterOperator {
     /// Has tag or any of its descendants (hierarchical filter).
     #[serde(rename = "has_tag_or_descendants")]
     HasTagOrDescendants,
+    /// Custom filter provided by a plugin extension.
+    #[serde(rename = "custom")]
+    Custom(String),
 }
 
 /// Filter value types.

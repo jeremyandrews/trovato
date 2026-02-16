@@ -109,6 +109,8 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_queue_worker",
     // User
     "tap_user_login",
+    // Gather extensions
+    "tap_gather_extend",
 ];
 
 impl PluginInfo {

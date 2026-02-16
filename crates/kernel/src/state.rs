@@ -18,7 +18,9 @@ use crate::cron::CronService;
 use crate::db;
 use crate::file::{FileService, LocalFileStorage};
 use crate::form::FormService;
-use crate::gather::{CategoryService, GatherService};
+use crate::gather::{
+    CategoryService, GatherExtensionDeclaration, GatherExtensionRegistry, GatherService,
+};
 use crate::lockout::LockoutService;
 use crate::menu::MenuRegistry;
 use crate::metrics::Metrics;
@@ -251,8 +253,38 @@ impl AppState {
         // Create category service
         let categories = CategoryService::new(db.clone());
 
+        // Build Gather extension registry from plugin tap_gather_extend declarations
+        let gather_extensions = {
+            let mut registry = GatherExtensionRegistry::new();
+            let extend_state = RequestState::without_services(UserContext::anonymous());
+            let extend_results = tap_dispatcher
+                .dispatch("tap_gather_extend", "{}", extend_state)
+                .await;
+
+            let mut declarations = Vec::new();
+            for result in extend_results {
+                match serde_json::from_str::<GatherExtensionDeclaration>(&result.output) {
+                    Ok(decl) => declarations.push((result.plugin_name, decl)),
+                    Err(e) => {
+                        tracing::warn!(
+                            plugin = %result.plugin_name,
+                            error = %e,
+                            "failed to parse tap_gather_extend response"
+                        );
+                    }
+                }
+            }
+
+            let warnings = registry.apply_declarations(declarations);
+            for warning in &warnings {
+                tracing::warn!("{}", warning);
+            }
+
+            Arc::new(registry)
+        };
+
         // Create gather service and load queries
-        let gather = GatherService::new(db.clone(), categories.clone());
+        let gather = GatherService::new(db.clone(), categories.clone(), gather_extensions);
         gather
             .load_queries()
             .await
