@@ -247,6 +247,11 @@ impl ContentTypeRegistry {
             "date" => FieldType::Date,
             "email" => FieldType::Email,
             "record_reference" => FieldType::RecordReference(String::new()),
+            "compound" => FieldType::Compound {
+                allowed_types: vec![],
+                min_items: None,
+                max_items: None,
+            },
             _ => FieldType::Text { max_length: None },
         };
 

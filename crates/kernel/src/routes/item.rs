@@ -198,15 +198,134 @@ async fn view_item(
     let mut children_html = String::new();
     if let Some(fields) = item.fields.as_object() {
         for (name, value) in fields {
-            if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
-                let format = value
+            // Compound field: has "sections" array
+            if let Some(sections_raw) = value.get("sections").and_then(|s| s.as_array()) {
+                // Sort sections by weight for correct display order
+                let mut sorted_sections = sections_raw.clone();
+                sorted_sections
+                    .sort_by_key(|s| s.get("weight").and_then(|w| w.as_i64()).unwrap_or(0));
+
+                for section in &sorted_sections {
+                    let section_type = section
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown");
+
+                    // Sanitize section_type for template suggestion: only allow
+                    // alphanumeric, hyphens, and underscores to prevent path traversal
+                    let safe_type: String = section_type
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                        .collect();
+
+                    // Process section data fields through FilterPipeline
+                    let mut section_fields_html = String::new();
+                    if let Some(data) = section.get("data").and_then(|d| d.as_object()) {
+                        for (_key, val) in data {
+                            if let (Some(text), Some(fmt)) = (
+                                val.get("value").and_then(|v| v.as_str()),
+                                val.get("format").and_then(|v| v.as_str()),
+                            ) {
+                                // Only allow known safe formats; reject user-supplied
+                                // values like "full_html" which bypass sanitization
+                                let safe_fmt = match fmt {
+                                    "plain_text" | "filtered_html" => fmt,
+                                    _ => "plain_text",
+                                };
+                                let filtered = FilterPipeline::for_format(safe_fmt).process(text);
+                                section_fields_html.push_str(&filtered);
+                            } else if let Some(text) = val.as_str() {
+                                let filtered =
+                                    FilterPipeline::for_format("plain_text").process(text);
+                                section_fields_html.push_str(&filtered);
+                            } else {
+                                // Render non-string values (Integer, Float, Boolean) as
+                                // escaped text so they're not silently dropped
+                                if !val.is_object() && !val.is_array() && !val.is_null() {
+                                    let text = val.to_string();
+                                    let filtered =
+                                        FilterPipeline::for_format("plain_text").process(&text);
+                                    section_fields_html.push_str(&filtered);
+                                }
+                            }
+                        }
+                    }
+
+                    // Try to resolve section template using sanitized type
+                    let suggestions = [
+                        format!("elements/compound-section--{}", safe_type),
+                        "elements/compound-section".to_string(),
+                    ];
+                    let suggestion_refs: Vec<&str> =
+                        suggestions.iter().map(|s| s.as_str()).collect();
+                    let template = state
+                        .theme()
+                        .resolve_template(&suggestion_refs)
+                        .unwrap_or_else(|| "elements/compound-section.html".to_string());
+
+                    // Build sanitized section data: HTML-escape all string values
+                    // so custom templates can safely use {{ section_data.field }}
+                    let sanitized_data = if let Some(data) =
+                        section.get("data").and_then(|d| d.as_object())
+                    {
+                        let mut clean = serde_json::Map::new();
+                        for (k, v) in data {
+                            if let Some(s) = v.as_str() {
+                                clean.insert(k.clone(), serde_json::json!(html_escape(s)));
+                            } else if let Some(obj) = v.as_object() {
+                                // Escape string values inside nested objects like {value, format}
+                                let mut inner = serde_json::Map::new();
+                                for (ik, iv) in obj {
+                                    if let Some(s) = iv.as_str() {
+                                        inner.insert(ik.clone(), serde_json::json!(html_escape(s)));
+                                    } else {
+                                        inner.insert(ik.clone(), iv.clone());
+                                    }
+                                }
+                                clean.insert(k.clone(), serde_json::Value::Object(inner));
+                            } else {
+                                clean.insert(k.clone(), v.clone());
+                            }
+                        }
+                        serde_json::Value::Object(clean)
+                    } else {
+                        serde_json::json!({})
+                    };
+
+                    let mut section_ctx = tera::Context::new();
+                    section_ctx.insert("section_data", &sanitized_data);
+                    section_ctx.insert("section_type", &safe_type);
+                    section_ctx.insert("section_body", &section_fields_html);
+
+                    let section_html = state
+                        .theme()
+                        .tera()
+                        .render(&template, &section_ctx)
+                        .unwrap_or_else(|_| {
+                            format!(
+                                "<div class=\"compound-section compound-section--{}\">{}</div>",
+                                html_escape(&safe_type),
+                                section_fields_html
+                            )
+                        });
+                    children_html.push_str(&section_html);
+                }
+            } else if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
+                let raw_fmt = value
                     .get("format")
                     .and_then(|v| v.as_str())
                     .unwrap_or("plain_text");
-                let filtered = FilterPipeline::for_format(format).process(text_val);
+                // Only allow known safe formats; reject user-supplied
+                // values like "full_html" which bypass sanitization
+                let safe_fmt = match raw_fmt {
+                    "plain_text" | "filtered_html" => raw_fmt,
+                    _ => "plain_text",
+                };
+                let filtered = FilterPipeline::for_format(safe_fmt).process(text_val);
                 children_html.push_str(&format!(
                     "<div class=\"field field-{}\">{}</div>",
-                    name, filtered
+                    html_escape(name),
+                    filtered
                 ));
             }
         }

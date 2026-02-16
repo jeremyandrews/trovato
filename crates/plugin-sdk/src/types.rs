@@ -117,10 +117,40 @@ impl RecordRef {
     }
 }
 
+/// Schema for a section type within a compound field.
+/// Defined in FieldDefinition.settings.section_types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionTypeSchema {
+    pub machine_name: String,
+    pub label: String,
+    pub fields: Vec<SectionFieldSchema>,
+}
+
+/// A field within a section type schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionFieldSchema {
+    pub field_name: String,
+    pub field_type: FieldType,
+    pub label: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// A single section instance stored in JSONB.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompoundSection {
+    #[serde(rename = "type")]
+    pub section_type: String,
+    pub weight: i32,
+    pub data: serde_json::Value,
+}
+
 /// Field type definitions for content type registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FieldType {
-    Text { max_length: Option<usize> },
+    Text {
+        max_length: Option<usize>,
+    },
     TextLong,
     Integer,
     Float,
@@ -129,6 +159,11 @@ pub enum FieldType {
     File,
     Date,
     Email,
+    Compound {
+        allowed_types: Vec<String>,
+        min_items: Option<usize>,
+        max_items: Option<usize>,
+    },
 }
 
 /// A content type definition returned by `tap_item_info`.

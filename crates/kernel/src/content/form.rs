@@ -285,6 +285,47 @@ impl FormBuilder {
                     "#
                 )
             }
+
+            FieldType::Compound {
+                allowed_types,
+                min_items,
+                max_items,
+            } => {
+                // Build config JSON (Compound type constraints only)
+                let config = serde_json::json!({
+                    "allowed_types": allowed_types,
+                    "min_items": min_items,
+                    "max_items": max_items,
+                });
+                let config_json = html_escape(&serde_json::to_string(&config).unwrap_or_default());
+
+                // Build section type schemas JSON separately
+                let section_types =
+                    crate::content::compound::parse_section_schemas(&field.settings);
+                let section_types_json =
+                    html_escape(&serde_json::to_string(&section_types).unwrap_or_default());
+
+                // Serialize existing value for hidden input
+                let existing_json = value
+                    .map(|v| serde_json::to_string(v).unwrap_or_default())
+                    .unwrap_or_else(|| r#"{"sections":[]}"#.to_string());
+                let existing_escaped = html_escape(&existing_json);
+
+                format!(
+                    r#"
+                    <div class="form-group">
+                        <label>{label}{required_star}</label>
+                        <div class="compound-field" id="compound-{field_name}" data-field="{field_name}" data-config="{config_json}" data-section-types="{section_types_json}">
+                            <div class="compound-field__sections"></div>
+                            <input type="hidden" name="{field_name}" class="compound-field__value" value="{existing_escaped}">
+                            <div class="compound-field__actions">
+                                <button type="button" class="button compound-field__add">Add section</button>
+                            </div>
+                        </div>
+                    </div>
+                    "#
+                )
+            }
         }
     }
 }
@@ -424,6 +465,55 @@ mod tests {
         let form = builder.build_add_form("/item/add/blog");
         assert!(form.contains(r#"name="status""#));
         assert!(form.contains("Published"));
+    }
+
+    #[test]
+    fn compound_field_renders_container_and_hidden_input() {
+        let ct = ContentTypeDefinition {
+            machine_name: "page".to_string(),
+            label: "Page".to_string(),
+            description: "A page".to_string(),
+            fields: vec![FieldDefinition {
+                field_name: "sections".to_string(),
+                field_type: FieldType::Compound {
+                    allowed_types: vec!["text".to_string()],
+                    min_items: None,
+                    max_items: None,
+                },
+                label: "Sections".to_string(),
+                required: false,
+                cardinality: 1,
+                settings: serde_json::json!({
+                    "section_types": [{
+                        "machine_name": "text",
+                        "label": "Text",
+                        "fields": []
+                    }]
+                }),
+            }],
+        };
+        let builder = FormBuilder::new(ct);
+        let form = builder.build_add_form("/item/add/page");
+        assert!(
+            form.contains("compound-field"),
+            "should contain compound-field class"
+        );
+        assert!(
+            form.contains(r#"data-field="sections""#),
+            "should have data-field"
+        );
+        assert!(
+            form.contains("compound-field__value"),
+            "should have hidden input"
+        );
+        assert!(
+            form.contains("compound-field__add"),
+            "should have add button"
+        );
+        assert!(
+            form.contains("data-section-types="),
+            "should have data-section-types attribute"
+        );
     }
 
     #[test]

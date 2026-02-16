@@ -1,5 +1,17 @@
 {% extends "page--admin.html" %}
 
+{% set has_compound = false %}
+{% for field in content_type.fields %}
+{% if field.field_type.Compound %}{% set_global has_compound = true %}{% endif %}
+{% endfor %}
+
+{% block head %}
+{{ super() }}
+{% if has_compound %}
+<link rel="stylesheet" href="/static/css/compound-field.css">
+{% endif %}
+{% endblock %}
+
 {% block content %}
 <div class="admin-header">
     <h2>{% if editing %}Edit {{ content_type.label }}{% else %}Create {{ content_type.label }}{% endif %}</h2>
@@ -48,6 +60,19 @@
             <input type="number" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
                    {% if field.required %}required{% endif %}>
+            {% elif field.field_type.Compound %}
+            <div class="compound-field" id="compound-{{ field.field_name }}"
+                 data-field="{{ field.field_name }}"
+                 data-config="{{ field.field_type.Compound | json_encode() | escape }}"
+                 data-section-types="{{ field.settings.section_types | default(value=[]) | json_encode() | escape }}">
+                <div class="compound-field__sections">
+                </div>
+                <input type="hidden" name="{{ field.field_name }}" class="compound-field__value"
+                       value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}{&quot;sections&quot;:[]}{% endif %}">
+                <div class="compound-field__actions">
+                    <button type="button" class="button compound-field__add">Add section</button>
+                </div>
+            </div>
             {% else %}
             <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
@@ -78,4 +103,11 @@
         </div>
     </form>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{% if has_compound %}
+<script src="/static/js/compound-field.js"></script>
+{% endif %}
 {% endblock %}

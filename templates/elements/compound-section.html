@@ -1,0 +1,5 @@
+<div class="compound-section compound-section--{{ section_type }}">
+    {% if section_body is defined %}
+    {{ section_body | safe }}
+    {% endif %}
+</div>

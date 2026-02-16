@@ -1661,12 +1661,32 @@ async fn add_content_submit(
         return render_not_found(&state).await;
     };
 
-    // Validate
+    // Build fields JSON from form data (excluding system fields)
+    let mut fields_json = serde_json::Map::new();
+    for (key, value) in &form.fields {
+        if !key.starts_with('_') && key != "title" && key != "status" && key != "log" {
+            fields_json.insert(key.clone(), value.clone());
+        }
+    }
+
+    // Validate all fields before checking errors
     let mut errors = Vec::new();
 
     if form.title.trim().is_empty() {
         errors.push("Title is required.".to_string());
     }
+
+    // Process compound fields: parse JSON string from hidden input
+    errors.extend(crate::content::compound::process_compound_fields(
+        &mut fields_json,
+        &content_type.fields,
+    ));
+
+    // Validate required non-compound fields
+    errors.extend(crate::content::compound::validate_required_fields(
+        &fields_json,
+        &content_type.fields,
+    ));
 
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
@@ -1684,19 +1704,12 @@ async fn add_content_submit(
             &serde_json::json!({
                 "title": form.title,
                 "status": form.status.is_some(),
+                "fields": fields_json,
             }),
         );
         context.insert("path", &format!("/admin/content/add/{}", type_name));
 
         return render_admin_template(&state, "admin/content-form.html", &context).await;
-    }
-
-    // Build fields JSON from form data (excluding system fields)
-    let mut fields_json = serde_json::Map::new();
-    for (key, value) in &form.fields {
-        if !key.starts_with('_') && key != "title" && key != "status" {
-            fields_json.insert(key.clone(), value.clone());
-        }
     }
 
     let input = CreateItem {
@@ -1805,6 +1818,26 @@ async fn edit_content_submit(
         errors.push("Title is required.".to_string());
     }
 
+    // Build fields JSON from form data
+    let mut fields_json = serde_json::Map::new();
+    for (key, value) in &form.fields {
+        if !key.starts_with('_') && key != "title" && key != "status" && key != "log" {
+            fields_json.insert(key.clone(), value.clone());
+        }
+    }
+
+    // Process compound fields: parse JSON string from hidden input
+    errors.extend(crate::content::compound::process_compound_fields(
+        &mut fields_json,
+        &content_type.fields,
+    ));
+
+    // Validate required non-compound fields
+    errors.extend(crate::content::compound::validate_required_fields(
+        &fields_json,
+        &content_type.fields,
+    ));
+
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
         let form_build_id = uuid::Uuid::new_v4().to_string();
@@ -1823,19 +1856,12 @@ async fn edit_content_submit(
             &serde_json::json!({
                 "title": form.title,
                 "status": form.status.is_some(),
+                "fields": fields_json,
             }),
         );
         context.insert("path", &format!("/admin/content/{}/edit", item_id));
 
         return render_admin_template(&state, "admin/content-form.html", &context).await;
-    }
-
-    // Build fields JSON from form data
-    let mut fields_json = serde_json::Map::new();
-    for (key, value) in &form.fields {
-        if !key.starts_with('_') && key != "title" && key != "status" {
-            fields_json.insert(key.clone(), value.clone());
-        }
     }
 
     let input = crate::models::UpdateItem {

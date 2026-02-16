@@ -6,6 +6,7 @@
 //! - FilterPipeline: Text format filtering for security
 //! - FormBuilder: Auto-generated admin forms
 
+pub mod compound;
 mod filter;
 mod form;
 mod item_service;
