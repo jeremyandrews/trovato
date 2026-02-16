@@ -60,5 +60,6 @@ hostname = "0.4"
 async-trait = "0.1"
 urlencoding = "2"
 prometheus-client = "0.22"
+clap = { version = "4", features = ["derive"] }
 aws-sdk-s3 = "1"
 aws-config = "1"

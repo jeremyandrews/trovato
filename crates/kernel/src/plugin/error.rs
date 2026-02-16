@@ -88,6 +88,22 @@ pub enum PluginError {
     /// General instantiation failure.
     #[error("plugin '{plugin}': failed to instantiate: {details}")]
     InstantiationFailed { plugin: String, details: String },
+
+    /// Migration SQL file not found on disk.
+    #[error("plugin '{plugin}': migration file not found: {path}")]
+    MigrationFileNotFound { plugin: String, path: String },
+
+    /// Migration SQL execution failed.
+    #[error("plugin '{plugin}': migration '{migration}' failed: {details}")]
+    MigrationFailed {
+        plugin: String,
+        migration: String,
+        details: String,
+    },
+
+    /// Migration declares a dependency on a plugin that isn't available.
+    #[error("plugin '{plugin}': migration depends on '{dependency}' which is not available")]
+    MigrationDependencyMissing { plugin: String, dependency: String },
 }
 
 impl PluginError {

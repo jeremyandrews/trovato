@@ -24,7 +24,9 @@ use crate::menu::MenuRegistry;
 use crate::metrics::Metrics;
 use crate::middleware::{RateLimitConfig, RateLimiter};
 use crate::permissions::PermissionService;
-use crate::plugin::{PluginConfig, PluginRuntime};
+use crate::plugin::{
+    PluginConfig, PluginRuntime, migration as plugin_migration, status as plugin_status,
+};
 use crate::search::SearchService;
 use crate::stage::StageService;
 use crate::tap::{TapDispatcher, TapRegistry};
@@ -149,16 +151,56 @@ impl AppState {
         // Create lockout service
         let lockout = LockoutService::new(redis.clone());
 
-        // Create plugin runtime and load plugins
+        // Discover plugins on disk (parse info.toml without compiling WASM)
+        let discovered = PluginRuntime::discover_plugins(&config.plugins_dir);
+
+        // Auto-install any new plugins into plugin_status table
+        let discovered_pairs: Vec<(&str, &str)> = discovered
+            .iter()
+            .map(|(name, (info, _))| (name.as_str(), info.version.as_str()))
+            .collect();
+        let new_count = plugin_status::auto_install_new_plugins(&db, &discovered_pairs)
+            .await
+            .context("failed to auto-install new plugins")?;
+        if new_count > 0 {
+            info!(count = new_count, "auto-installed new plugins");
+        }
+
+        // Get enabled plugin set
+        let enabled_names = plugin_status::get_enabled_names(&db)
+            .await
+            .context("failed to get enabled plugins")?;
+        let enabled_set: std::collections::HashSet<String> = enabled_names.into_iter().collect();
+
+        // Create plugin runtime and load only enabled plugins
         let plugin_config = PluginConfig::default();
         let mut plugin_runtime =
             PluginRuntime::new(&plugin_config).context("failed to create plugin runtime")?;
 
-        // Load plugins
         plugin_runtime
-            .load_all(&config.plugins_dir)
+            .load_enabled(&config.plugins_dir, &enabled_set)
             .await
             .context("failed to load plugins")?;
+
+        // Run pending plugin migrations for enabled plugins
+        let enabled_discovered: std::collections::HashMap<
+            String,
+            (crate::plugin::PluginInfo, std::path::PathBuf),
+        > = discovered
+            .into_iter()
+            .filter(|(name, _)| enabled_set.contains(name))
+            .collect();
+        let migration_results =
+            plugin_migration::run_all_pending_migrations(&db, &enabled_discovered)
+                .await
+                .context("failed to run plugin migrations")?;
+        for (plugin_name, applied) in &migration_results {
+            info!(
+                plugin = %plugin_name,
+                count = applied.len(),
+                "applied plugin migrations"
+            );
+        }
 
         let plugin_runtime = Arc::new(plugin_runtime);
 

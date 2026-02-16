@@ -30,6 +30,22 @@ pub struct PluginInfo {
     /// Tap configuration.
     #[serde(default)]
     pub taps: TapConfig,
+
+    /// Migration configuration.
+    #[serde(default)]
+    pub migrations: MigrationConfig,
+}
+
+/// Configuration for plugin-declared SQL migrations.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MigrationConfig {
+    /// Ordered list of SQL migration files relative to the plugin directory.
+    #[serde(default)]
+    pub files: Vec<String>,
+
+    /// Plugins whose migrations must run before this plugin's migrations.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 /// Configuration for which taps a plugin implements.
@@ -141,6 +157,34 @@ impl PluginInfo {
             }
         }
 
+        // Validate migration file paths: must be relative, no traversal, .sql only
+        for file in &self.migrations.files {
+            let p = Path::new(file);
+            if p.is_absolute() {
+                anyhow::bail!(
+                    "plugin '{}': migration file '{}' must be a relative path",
+                    self.name,
+                    file
+                );
+            }
+            if p.components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                anyhow::bail!(
+                    "plugin '{}': migration file '{}' contains '..' path segment",
+                    self.name,
+                    file
+                );
+            }
+            if !file.ends_with(".sql") {
+                anyhow::bail!(
+                    "plugin '{}': migration file '{}' must have .sql extension",
+                    self.name,
+                    file
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -225,5 +269,87 @@ version = ""
         let result = PluginInfo::parse_str(toml, Path::new("test.toml"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty 'version'"));
+    }
+
+    #[test]
+    fn parse_migration_config() {
+        let toml = r#"
+name = "netgrasp"
+description = "Network monitoring"
+version = "1.0.0"
+
+[migrations]
+files = ["migrations/001_create_devices.sql", "migrations/002_create_events.sql"]
+depends_on = ["blog"]
+"#;
+
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(info.migrations.files.len(), 2);
+        assert_eq!(
+            info.migrations.files[0],
+            "migrations/001_create_devices.sql"
+        );
+        assert_eq!(info.migrations.depends_on, vec!["blog"]);
+    }
+
+    #[test]
+    fn parse_no_migrations_defaults_empty() {
+        let toml = r#"
+name = "simple"
+description = "No migrations"
+version = "1.0.0"
+"#;
+
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        assert!(info.migrations.files.is_empty());
+        assert!(info.migrations.depends_on.is_empty());
+    }
+
+    #[test]
+    fn reject_migration_path_traversal() {
+        let toml = r#"
+name = "evil"
+description = "Path traversal"
+version = "1.0.0"
+
+[migrations]
+files = ["../../../etc/passwd.sql"]
+"#;
+
+        let result = PluginInfo::parse_str(toml, Path::new("test.toml"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains(".."));
+    }
+
+    #[test]
+    fn reject_migration_absolute_path() {
+        let toml = r#"
+name = "evil"
+description = "Absolute path"
+version = "1.0.0"
+
+[migrations]
+files = ["/tmp/malicious.sql"]
+"#;
+
+        let result = PluginInfo::parse_str(toml, Path::new("test.toml"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("relative path"));
+    }
+
+    #[test]
+    fn reject_migration_non_sql() {
+        let toml = r#"
+name = "bad"
+description = "Non-SQL migration"
+version = "1.0.0"
+
+[migrations]
+files = ["migrations/001_create.txt"]
+"#;
+
+        let result = PluginInfo::parse_str(toml, Path::new("test.toml"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains(".sql"));
     }
 }

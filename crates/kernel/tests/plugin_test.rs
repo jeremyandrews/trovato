@@ -539,6 +539,7 @@ fn dependency_resolution_no_deps() {
             version: "1.0.0".to_string(),
             dependencies: vec![],
             taps: TapConfig::default(),
+            migrations: trovato_kernel::plugin::MigrationConfig::default(),
         },
     );
     plugins.insert(
@@ -549,6 +550,7 @@ fn dependency_resolution_no_deps() {
             version: "1.0.0".to_string(),
             dependencies: vec![],
             taps: TapConfig::default(),
+            migrations: trovato_kernel::plugin::MigrationConfig::default(),
         },
     );
 
@@ -570,6 +572,7 @@ fn dependency_resolution_with_deps() {
             version: "1.0.0".to_string(),
             dependencies: vec![],
             taps: TapConfig::default(),
+            migrations: trovato_kernel::plugin::MigrationConfig::default(),
         },
     );
     plugins.insert(
@@ -580,6 +583,7 @@ fn dependency_resolution_with_deps() {
             version: "1.0.0".to_string(),
             dependencies: vec!["base".to_string()],
             taps: TapConfig::default(),
+            migrations: trovato_kernel::plugin::MigrationConfig::default(),
         },
     );
 
@@ -605,6 +609,7 @@ fn dependency_resolution_circular() {
             version: "1.0.0".to_string(),
             dependencies: vec!["b".to_string()],
             taps: TapConfig::default(),
+            migrations: trovato_kernel::plugin::MigrationConfig::default(),
         },
     );
     plugins.insert(
@@ -615,6 +620,7 @@ fn dependency_resolution_circular() {
             version: "1.0.0".to_string(),
             dependencies: vec!["a".to_string()],
             taps: TapConfig::default(),
+            migrations: trovato_kernel::plugin::MigrationConfig::default(),
         },
     );
 

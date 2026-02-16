@@ -55,29 +55,35 @@ pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<S
         }
     }
 
-    // Kahn's algorithm
+    // Kahn's algorithm with deterministic ordering.
+    // Sort newly-unblocked nodes so independent plugins load in alphabetical order.
     let mut result = Vec::with_capacity(plugins.len());
     let mut queue: VecDeque<&str> = VecDeque::new();
 
-    // Start with plugins that have no dependencies
-    for (name, &degree) in &in_degree {
-        if degree == 0 {
-            queue.push_back(*name);
-        }
-    }
+    // Seed with zero-in-degree nodes in sorted order
+    let mut roots: Vec<&str> = in_degree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(name, _)| *name)
+        .collect();
+    roots.sort();
+    queue.extend(roots);
 
     while let Some(plugin) = queue.pop_front() {
         result.push(plugin.to_string());
 
         // For each plugin that depends on this one, decrease its in_degree
         if let Some(deps) = dependents.get(plugin) {
+            let mut newly_ready: Vec<&str> = Vec::new();
             for dependent in deps {
                 let degree = in_degree.get_mut(*dependent).unwrap();
                 *degree -= 1;
                 if *degree == 0 {
-                    queue.push_back(*dependent);
+                    newly_ready.push(*dependent);
                 }
             }
+            newly_ready.sort();
+            queue.extend(newly_ready);
         }
     }
 
@@ -117,7 +123,7 @@ pub fn check_dependencies(plugin: &PluginInfo, available: &HashSet<String>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::info_parser::TapConfig;
+    use crate::plugin::info_parser::{MigrationConfig, TapConfig};
 
     fn make_plugin(name: &str, deps: Vec<&str>) -> PluginInfo {
         PluginInfo {
@@ -126,6 +132,7 @@ mod tests {
             version: "1.0.0".to_string(),
             dependencies: deps.into_iter().map(String::from).collect(),
             taps: TapConfig::default(),
+            migrations: MigrationConfig::default(),
         }
     }
 
@@ -213,6 +220,21 @@ mod tests {
         let result = resolve_load_order(&plugins);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("circular"));
+    }
+
+    #[test]
+    fn deterministic_order_for_independent_plugins() {
+        // Independent plugins (no deps) should always come out in sorted order.
+        let mut plugins = HashMap::new();
+        plugins.insert("zebra".to_string(), make_plugin("zebra", vec![]));
+        plugins.insert("alpha".to_string(), make_plugin("alpha", vec![]));
+        plugins.insert("middle".to_string(), make_plugin("middle", vec![]));
+
+        // Run multiple times to confirm determinism
+        for _ in 0..10 {
+            let order = resolve_load_order(&plugins).unwrap();
+            assert_eq!(order, vec!["alpha", "middle", "zebra"]);
+        }
     }
 
     #[test]

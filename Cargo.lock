@@ -4958,6 +4958,7 @@ dependencies = [
  "aws-sdk-s3",
  "axum",
  "chrono",
+ "clap",
  "dashmap",
  "dotenvy",
  "fred",

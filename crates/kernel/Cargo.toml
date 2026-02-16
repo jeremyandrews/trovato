@@ -48,6 +48,7 @@ hostname = { workspace = true }
 async-trait = { workspace = true }
 urlencoding = { workspace = true }
 prometheus-client = { workspace = true }
+clap = { workspace = true }
 trovato-sdk = { path = "../plugin-sdk" }
 
 # Optional S3 support (requires Rust 1.91+)

@@ -278,12 +278,14 @@ development_status:
 
   # Epic 20: Use Case Exploration
   # Validates Trovato against real workloads: traditional site, headless API, and three plugin projects
+  # NOTE: 20.1-20.2 validated kernel features. 20.3-20.5 require plugin infrastructure (Epic 22A)
+  # so that Argus/Netgrasp/Goose are real plugins, not kernel hacks.
   epic-20: in-progress
   20-1-traditional-website-use-case: done    # 2026-02-15
   20-2-headless-cms-use-case: done           # 2026-02-15
-  20-3-argus-composite-gather-responses: done     # 2026-02-15 Tests Gather expressiveness (story + articles + entities in one response)
-  20-4-netgrasp-lean-runtime-validation: done      # 2026-02-15 6 content types, 2 Gather queries, auth roles, dashboard templates
-  20-5-goose-high-throughput-metrics: backlog     # Tests write throughput (1000+ writes/sec), real-time queries
+  20-3-argus-composite-gather-responses: done     # 2026-02-15 Kernel infra only (includes feature) - needs plugin rewrite
+  20-4-netgrasp-lean-runtime-validation: done      # 2026-02-15 Kernel hack in state.rs - needs plugin rewrite
+  20-5-goose-high-throughput-metrics: backlog     # BLOCKED on 22.1, 22.2 - must be a real plugin
   epic-20-retrospective: optional
 
   # ═══════════════════════════════════════════════════════════
@@ -305,17 +307,24 @@ development_status:
   epic-21-retrospective: optional
 
   # Epic 22: Modern CMS Features - "Core Enables, Plugins Implement"
-  # Section A: Kernel Infrastructure (v1.0 REQUIRED)
+  # Section A: Kernel Infrastructure (v1.0 REQUIRED) - DO FIRST, unblocks Epic 20.3-20.5
   # Section B: Standard Plugins (ship with Trovato)
   # Section C: Multilingual (v1.0 REQUIRED)
-  epic-22: backlog
+  epic-22: in-progress
 
-  # --- Section A: Kernel Infrastructure ---
-  22-1-plugin-migration-system: backlog         # v1.0 REQUIRED - plugins declare migrations in info.toml
+  # --- Section A: Kernel Infrastructure (NEXT UP) ---
+  22-1-plugin-migration-system: done             # 2026-02-16 Plugin migrations, status tracking, CLI management
   22-2-gather-extension-api: backlog            # v1.0 REQUIRED - register custom filter/sort/relationship types
   22-3-compound-field-type: backlog             # v1.0 REQUIRED - arrays of typed, reorderable objects in JSONB
   22-4-config-export-import: backlog            # v1.0 REQUIRED - YAML serialization of config entities
   22-5-language-column-infrastructure: backlog  # v1.0 REQUIRED - language table, column, negotiator trait
+
+  # --- Use Case Plugins (after 22.1 + 22.2) ---
+  # Develop as real WASM plugins here first, then move to their respective project repos.
+  # These validate the plugin infrastructure against real workloads.
+  20-3-argus-plugin: backlog                    # Rewrite as WASM plugin → eventually lives in Argus repo
+  20-4-netgrasp-plugin: backlog                 # Rewrite as WASM plugin → eventually lives in Netgrasp repo
+  # 20-5-goose-high-throughput-metrics          # Listed above in Epic 20 → eventually lives in Goose repo
 
   # --- Section B: Standard Plugins ---
   22-6-media-library-plugin: backlog            # Standard Plugin - file browser, image styles, focal point

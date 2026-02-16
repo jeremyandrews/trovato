@@ -3,8 +3,8 @@
 //! Manages the Wasmtime engine, linker, and compiled plugin modules.
 //! Uses a pooling allocator for efficient per-request instantiation (~5µs).
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::info_parser::PluginInfo;
@@ -205,6 +205,165 @@ impl PluginRuntime {
     /// Get the number of loaded plugins.
     pub fn plugin_count(&self) -> usize {
         self.plugins.len()
+    }
+
+    /// Discover plugins on disk without compiling WASM.
+    ///
+    /// Parses each plugin's `info.toml` and returns a map of plugin name to
+    /// `(PluginInfo, plugin_dir_path)`. Useful for CLI commands and startup
+    /// status sync.
+    pub fn discover_plugins(plugins_dir: &Path) -> HashMap<String, (PluginInfo, PathBuf)> {
+        let mut discovered = HashMap::new();
+
+        if !plugins_dir.exists() {
+            info!(
+                ?plugins_dir,
+                "plugins directory does not exist, nothing to discover"
+            );
+            return discovered;
+        }
+
+        let entries = match std::fs::read_dir(plugins_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!(error = %e, "failed to read plugins directory");
+                return discovered;
+            }
+        };
+
+        let mut dirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+
+        dirs.sort_by_key(|e| e.file_name());
+
+        for entry in dirs {
+            let plugin_dir = entry.path();
+
+            // Find the .info.toml file
+            let info_files: Vec<_> = match std::fs::read_dir(&plugin_dir) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.path().extension().is_some_and(|ext| ext == "toml")
+                            && e.path()
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.ends_with(".info.toml"))
+                    })
+                    .collect(),
+                Err(e) => {
+                    warn!(dir = %plugin_dir.display(), error = %e, "failed to read plugin dir");
+                    continue;
+                }
+            };
+
+            let info_path = match info_files.len() {
+                0 => {
+                    warn!(dir = %plugin_dir.display(), "no .info.toml file found, skipping");
+                    continue;
+                }
+                1 => info_files[0].path(),
+                _ => {
+                    warn!(dir = %plugin_dir.display(), "multiple .info.toml files found, skipping");
+                    continue;
+                }
+            };
+
+            match PluginInfo::parse(&info_path) {
+                Ok(info) => {
+                    let name = info.name.clone();
+                    discovered.insert(name, (info, plugin_dir));
+                }
+                Err(e) => {
+                    warn!(path = %info_path.display(), error = %e, "failed to parse plugin info");
+                }
+            }
+        }
+
+        discovered
+    }
+
+    /// Load only plugins whose names are in the enabled set.
+    ///
+    /// Similar to `load_all` but skips plugins not in the provided set.
+    pub async fn load_enabled(
+        &mut self,
+        plugins_dir: &Path,
+        enabled: &HashSet<String>,
+    ) -> Result<()> {
+        if !plugins_dir.exists() {
+            info!(?plugins_dir, "plugins directory does not exist, skipping");
+            return Ok(());
+        }
+
+        let mut entries: Vec<_> = std::fs::read_dir(plugins_dir)
+            .with_context(|| {
+                format!(
+                    "failed to read plugins directory: {}",
+                    plugins_dir.display()
+                )
+            })?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+
+        entries.sort_by_key(|e| e.file_name());
+
+        for entry in entries {
+            let plugin_dir = entry.path();
+
+            // Peek at the dir name to see if we should bother loading
+            let dir_name = entry.file_name().to_str().unwrap_or_default().to_string();
+
+            // We need to parse info.toml to get the real name, but we can
+            // skip compilation for dirs that don't match any enabled name.
+            // First, try a cheap check.
+            if !enabled.contains(&dir_name) {
+                // The dir name might not match the plugin name in info.toml,
+                // so we still need to check. Parse info.toml cheaply.
+                let info_files: Vec<_> = match std::fs::read_dir(&plugin_dir) {
+                    Ok(entries) => entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| {
+                            e.path()
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.ends_with(".info.toml"))
+                        })
+                        .collect(),
+                    Err(_) => continue,
+                };
+
+                if info_files.len() != 1 {
+                    continue;
+                }
+
+                match PluginInfo::parse(&info_files[0].path()) {
+                    Ok(info) if !enabled.contains(&info.name) => {
+                        debug!(plugin = %info.name, "skipping disabled plugin");
+                        continue;
+                    }
+                    Err(_) => continue,
+                    _ => {} // enabled, fall through to load
+                }
+            }
+
+            match self.load_plugin(&plugin_dir) {
+                Ok(()) => {}
+                Err(e) => {
+                    warn!(
+                        plugin_dir = %plugin_dir.display(),
+                        error = %e,
+                        "failed to load plugin, skipping"
+                    );
+                }
+            }
+        }
+
+        info!(count = self.plugins.len(), "loaded enabled plugins");
+        Ok(())
     }
 }
 

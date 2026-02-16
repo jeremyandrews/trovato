@@ -34,6 +34,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result};
 use axum::Router;
 use axum::http::{HeaderValue, Method};
+use clap::{Parser, Subcommand};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_sessions::cookie::SameSite;
@@ -43,6 +44,50 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use crate::config::Config;
 use crate::state::AppState;
 
+#[derive(Parser)]
+#[command(name = "trovato", about = "Trovato CMS")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start the HTTP server (default).
+    Serve,
+    /// Plugin management commands.
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginAction {
+    /// List discovered plugins and their status.
+    List,
+    /// Install a plugin (run migrations, set enabled).
+    Install {
+        /// Plugin machine name.
+        name: String,
+    },
+    /// Run pending migrations for a plugin (or all plugins).
+    Migrate {
+        /// Plugin name. If omitted, runs migrations for all plugins.
+        name: Option<String>,
+    },
+    /// Enable a plugin.
+    Enable {
+        /// Plugin machine name.
+        name: String,
+    },
+    /// Disable a plugin.
+    Disable {
+        /// Plugin machine name.
+        name: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load .env file if present
@@ -51,6 +96,16 @@ async fn main() -> Result<()> {
     // Initialize tracing
     init_tracing();
 
+    let cli = Cli::parse();
+
+    match cli.command {
+        None | Some(Commands::Serve) => run_server().await,
+        Some(Commands::Plugin { action }) => run_plugin_command(action).await,
+    }
+}
+
+/// Run the HTTP server (original startup path).
+async fn run_server() -> Result<()> {
     info!("Starting Trovato CMS kernel");
 
     // Load configuration from environment
@@ -131,6 +186,40 @@ async fn main() -> Result<()> {
     info!(%addr, "Server listening");
 
     axum::serve(listener, app).await.context("server error")?;
+
+    Ok(())
+}
+
+/// Run a plugin CLI command with a minimal context (pool only).
+async fn run_plugin_command(action: PluginAction) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+
+    let pool = db::create_pool(&config)
+        .await
+        .context("failed to create database pool")?;
+
+    // Run kernel migrations to ensure plugin_status table exists
+    db::run_migrations(&pool)
+        .await
+        .context("failed to run migrations")?;
+
+    match action {
+        PluginAction::List => {
+            plugin::cli::cmd_plugin_list(&pool, &config.plugins_dir).await?;
+        }
+        PluginAction::Install { name } => {
+            plugin::cli::cmd_plugin_install(&pool, &config.plugins_dir, &name).await?;
+        }
+        PluginAction::Migrate { name } => {
+            plugin::cli::cmd_plugin_migrate(&pool, &config.plugins_dir, name.as_deref()).await?;
+        }
+        PluginAction::Enable { name } => {
+            plugin::cli::cmd_plugin_enable(&pool, &name).await?;
+        }
+        PluginAction::Disable { name } => {
+            plugin::cli::cmd_plugin_disable(&pool, &name).await?;
+        }
+    }
 
     Ok(())
 }
