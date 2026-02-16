@@ -26,6 +26,7 @@
 
 mod direct;
 mod stage_aware;
+pub mod yaml;
 
 use std::fmt;
 

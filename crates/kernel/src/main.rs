@@ -60,6 +60,33 @@ enum Commands {
         #[command(subcommand)]
         action: PluginAction,
     },
+    /// Configuration export/import commands.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Export all config to YAML files.
+    Export {
+        /// Output directory.
+        #[arg(default_value = "config")]
+        dir: String,
+        /// Remove stale .yml config files after exporting.
+        #[arg(long)]
+        clean: bool,
+    },
+    /// Import config from YAML files.
+    Import {
+        /// Input directory.
+        #[arg(default_value = "config")]
+        dir: String,
+        /// Validate files without writing to the database.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -101,6 +128,7 @@ async fn main() -> Result<()> {
     match cli.command {
         None | Some(Commands::Serve) => run_server().await,
         Some(Commands::Plugin { action }) => run_plugin_command(action).await,
+        Some(Commands::Config { action }) => run_config_command(action).await,
     }
 }
 
@@ -222,6 +250,57 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Run a config CLI command with a minimal context (pool only).
+async fn run_config_command(action: ConfigAction) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+
+    let pool = db::create_pool(&config)
+        .await
+        .context("failed to create database pool")?;
+
+    db::run_migrations(&pool)
+        .await
+        .context("failed to run migrations")?;
+
+    let storage = config_storage::DirectConfigStorage::new(pool.clone());
+
+    match action {
+        ConfigAction::Export { dir, clean } => {
+            let dir = std::path::PathBuf::from(dir);
+            let result = config_storage::yaml::export_config(&storage, &pool, &dir, clean).await?;
+            print_config_summary("Exported", &dir, &result.counts, &result.warnings);
+        }
+        ConfigAction::Import { dir, dry_run } => {
+            let dir = std::path::PathBuf::from(dir);
+            let result =
+                config_storage::yaml::import_config(&storage, &pool, &dir, dry_run).await?;
+            let verb = if dry_run { "Would import" } else { "Imported" };
+            print_config_summary(verb, &dir, &result.counts, &result.warnings);
+        }
+    }
+
+    Ok(())
+}
+
+fn print_config_summary(
+    verb: &str,
+    dir: &std::path::Path,
+    counts: &std::collections::BTreeMap<String, usize>,
+    warnings: &[String],
+) {
+    let total: usize = counts.values().sum();
+    println!("{verb} {total} config entities ({})", dir.display());
+    for (entity_type, count) in counts {
+        println!("  {entity_type}: {count}");
+    }
+    if !warnings.is_empty() {
+        println!("{} warning(s):", warnings.len());
+        for warning in warnings {
+            println!("  warning: {warning}");
+        }
+    }
 }
 
 fn build_cors_layer(config: &Config) -> CorsLayer {
