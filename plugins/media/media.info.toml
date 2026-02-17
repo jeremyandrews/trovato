@@ -1,0 +1,20 @@
+name = "media"
+description = "Media entity wrapping file_managed with revision tracking"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_item_info",
+    "tap_item_access",
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_gather_queries.sql",
+    "migrations/002_url_aliases.sql",
+    "migrations/003_roles.sql",
+]

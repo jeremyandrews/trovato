@@ -1,0 +1,17 @@
+name = "audit_log"
+description = "Audit logging for content, auth, and permission changes"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_create_audit_log.sql",
+    "migrations/002_gather_queries.sql",
+]

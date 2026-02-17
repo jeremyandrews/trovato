@@ -8,6 +8,7 @@ use tracing::{debug, info};
 
 use super::queue::RedisQueue;
 use crate::file::FileService;
+use crate::services;
 
 /// Temporary file max age in seconds (6 hours).
 const TEMP_FILE_MAX_AGE_SECS: i64 = 6 * 60 * 60;
@@ -17,6 +18,10 @@ pub struct CronTasks {
     pool: PgPool,
     queue: Arc<RedisQueue>,
     files: Option<Arc<FileService>>,
+    scheduled_publishing: Option<Arc<services::scheduled_publishing::ScheduledPublishingService>>,
+    content_lock: Option<Arc<services::content_lock::ContentLockService>>,
+    webhooks: Option<Arc<services::webhook::WebhookService>>,
+    audit: Option<Arc<services::audit::AuditService>>,
 }
 
 impl CronTasks {
@@ -26,6 +31,10 @@ impl CronTasks {
             pool,
             queue,
             files: None,
+            scheduled_publishing: None,
+            content_lock: None,
+            webhooks: None,
+            audit: None,
         }
     }
 
@@ -39,7 +48,27 @@ impl CronTasks {
             pool,
             queue,
             files: Some(files),
+            scheduled_publishing: None,
+            content_lock: None,
+            webhooks: None,
+            audit: None,
         }
+    }
+
+    /// Set optional plugin services for cron.
+    pub fn set_plugin_services(
+        &mut self,
+        scheduled_publishing: Option<
+            Arc<services::scheduled_publishing::ScheduledPublishingService>,
+        >,
+        content_lock: Option<Arc<services::content_lock::ContentLockService>>,
+        webhooks: Option<Arc<services::webhook::WebhookService>>,
+        audit: Option<Arc<services::audit::AuditService>>,
+    ) {
+        self.scheduled_publishing = scheduled_publishing;
+        self.content_lock = content_lock;
+        self.webhooks = webhooks;
+        self.audit = audit;
     }
 
     /// Cleanup temporary files older than 6 hours.
@@ -169,6 +198,42 @@ impl CronTasks {
         }
 
         Ok(total_processed)
+    }
+
+    /// Process scheduled publishing (publish/unpublish items on schedule).
+    pub async fn process_scheduled_publishing(&self) -> Result<u64> {
+        if let Some(ref service) = self.scheduled_publishing {
+            service.process().await
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Cleanup expired content locks.
+    pub async fn cleanup_expired_locks(&self) -> Result<u64> {
+        if let Some(ref service) = self.content_lock {
+            service.cleanup_expired().await
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Process pending webhook deliveries.
+    pub async fn process_webhook_deliveries(&self) -> Result<u64> {
+        if let Some(ref service) = self.webhooks {
+            service.process_deliveries().await
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Cleanup old audit log entries (90 day retention).
+    pub async fn cleanup_audit_log(&self) -> Result<u64> {
+        if let Some(ref service) = self.audit {
+            service.cleanup(90).await
+        } else {
+            Ok(0)
+        }
     }
 
     /// Process a single email queue item.

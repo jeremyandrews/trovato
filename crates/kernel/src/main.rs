@@ -23,6 +23,7 @@ mod permissions;
 mod plugin;
 mod routes;
 mod search;
+mod services;
 mod session;
 mod stage;
 mod state;
@@ -185,12 +186,19 @@ async fn run_server() -> Result<()> {
         .merge(routes::metrics::router())
         .merge(routes::batch::router())
         .merge(routes::api_token::router())
+        .merge(routes::lock::router())
+        .merge(routes::image_style::router())
+        .merge(routes::oauth::router())
         .merge(routes::static_files::router())
         // Middleware layers (last added = first executed in request flow):
-        // TraceLayer → session → CORS → api_token → install_check → negotiate_language → path_alias → routes
+        // TraceLayer → session → CORS → bearer_auth → api_token → install_check → negotiate_language → redirect → path_alias → routes
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::resolve_path_alias,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::check_redirect,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -203,6 +211,10 @@ async fn run_server() -> Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::authenticate_api_token,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::authenticate_bearer_token,
         ))
         .layer(session_layer)
         .layer(cors)

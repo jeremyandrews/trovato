@@ -78,6 +78,20 @@ impl CronService {
         }
     }
 
+    /// Set optional plugin services for cron tasks.
+    pub fn set_plugin_services(
+        &mut self,
+        scheduled_publishing: Option<
+            std::sync::Arc<crate::services::scheduled_publishing::ScheduledPublishingService>,
+        >,
+        content_lock: Option<std::sync::Arc<crate::services::content_lock::ContentLockService>>,
+        webhooks: Option<std::sync::Arc<crate::services::webhook::WebhookService>>,
+        audit: Option<std::sync::Arc<crate::services::audit::AuditService>>,
+    ) {
+        self.tasks
+            .set_plugin_services(scheduled_publishing, content_lock, webhooks, audit);
+    }
+
     /// Run all cron tasks.
     ///
     /// Acquires a distributed lock before running to ensure only one
@@ -145,6 +159,46 @@ impl CronService {
                 tasks_run.push(format!("process_queues: {}", count));
             }
             Err(e) => warn!(error = %e, "failed to process queues"),
+        }
+
+        // Process scheduled publishing
+        match self.tasks.process_scheduled_publishing().await {
+            Ok(count) if count > 0 => {
+                info!(count = count, "processed scheduled publishing");
+                tasks_run.push(format!("scheduled_publishing: {}", count));
+            }
+            Err(e) => warn!(error = %e, "failed to process scheduled publishing"),
+            _ => {}
+        }
+
+        // Cleanup expired content locks
+        match self.tasks.cleanup_expired_locks().await {
+            Ok(count) if count > 0 => {
+                info!(count = count, "cleaned up expired locks");
+                tasks_run.push(format!("cleanup_expired_locks: {}", count));
+            }
+            Err(e) => warn!(error = %e, "failed to cleanup locks"),
+            _ => {}
+        }
+
+        // Process webhook deliveries
+        match self.tasks.process_webhook_deliveries().await {
+            Ok(count) if count > 0 => {
+                info!(count = count, "processed webhook deliveries");
+                tasks_run.push(format!("webhook_deliveries: {}", count));
+            }
+            Err(e) => warn!(error = %e, "failed to process webhooks"),
+            _ => {}
+        }
+
+        // Cleanup audit log (periodic)
+        match self.tasks.cleanup_audit_log().await {
+            Ok(count) if count > 0 => {
+                info!(count = count, "cleaned up old audit log entries");
+                tasks_run.push(format!("cleanup_audit_log: {}", count));
+            }
+            Err(e) => warn!(error = %e, "failed to cleanup audit log"),
+            _ => {}
         }
 
         // Stop heartbeat

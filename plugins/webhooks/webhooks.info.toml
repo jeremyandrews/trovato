@@ -1,0 +1,18 @@
+name = "webhooks"
+description = "Event-driven webhook dispatch with HMAC-SHA256 signatures"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_create_webhook.sql",
+    "migrations/002_create_webhook_delivery.sql",
+    "migrations/003_gather_queries.sql",
+]

@@ -51,6 +51,15 @@ urlencoding = { workspace = true }
 prometheus-client = { workspace = true }
 clap = { workspace = true }
 trovato-sdk = { path = "../plugin-sdk" }
+image = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+hmac = { workspace = true }
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+subtle = { workspace = true }
+base64 = { workspace = true }
+url = { workspace = true }
 
 # Optional S3 support (requires Rust 1.91+)
 aws-sdk-s3 = { workspace = true, optional = true }

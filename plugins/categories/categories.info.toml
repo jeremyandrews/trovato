@@ -1,0 +1,17 @@
+name = "categories"
+description = "Category vocabulary and term management"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = -5
+
+[migrations]
+files = [
+    "migrations/001_seed_gather_queries.sql",
+    "migrations/002_roles.sql",
+]

@@ -1,0 +1,16 @@
+name = "locale"
+description = "Interface string translation with .po file import"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = -10
+
+[migrations]
+files = [
+    "migrations/001_create_locale_string.sql",
+]

@@ -23,6 +23,7 @@ pub mod permissions;
 pub mod plugin;
 pub mod routes;
 pub mod search;
+pub mod services;
 pub mod session;
 pub mod stage;
 pub mod state;

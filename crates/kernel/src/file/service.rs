@@ -430,6 +430,21 @@ impl FileService {
     pub fn storage(&self) -> &Arc<dyn FileStorage> {
         &self.storage
     }
+
+    /// Load file data by path (convenience for image processing, etc.).
+    pub async fn load_file_data(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        match self.storage.read(path).await {
+            Ok(data) => Ok(Some(data)),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("not found") || msg.contains("No such file") {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
 }
 
 /// Sanitize a filename for safe storage.

@@ -1,0 +1,18 @@
+name = "oauth2"
+description = "OAuth2 authorization server with JWT tokens"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_create_oauth_client.sql",
+    "migrations/002_gather_queries.sql",
+    "migrations/003_roles.sql",
+]

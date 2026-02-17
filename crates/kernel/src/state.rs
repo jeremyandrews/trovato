@@ -34,6 +34,7 @@ use crate::plugin::{
     PluginConfig, PluginRuntime, migration as plugin_migration, status as plugin_status,
 };
 use crate::search::SearchService;
+use crate::services;
 use crate::stage::StageService;
 use crate::tap::{TapDispatcher, TapRegistry};
 use crate::theme::ThemeEngine;
@@ -132,6 +133,34 @@ struct AppStateInner {
     ///
     /// Frozen at startup: changing the default language requires a restart.
     default_language: String,
+
+    // --- Optional services (available when their plugins are enabled) ---
+    /// Audit logging service.
+    audit: Option<Arc<services::audit::AuditService>>,
+
+    /// Content lock service.
+    content_lock: Option<Arc<services::content_lock::ContentLockService>>,
+
+    /// Webhook service.
+    webhooks: Option<Arc<services::webhook::WebhookService>>,
+
+    /// Image style service.
+    image_styles: Option<Arc<services::image_style::ImageStyleService>>,
+
+    /// OAuth2 service.
+    oauth: Option<Arc<services::oauth::OAuthService>>,
+
+    /// Locale service.
+    locale: Option<Arc<services::locale::LocaleService>>,
+
+    /// Content translation service.
+    translation: Option<Arc<services::translation::TranslationService>>,
+
+    /// Scheduled publishing service.
+    scheduled_publishing: Option<Arc<services::scheduled_publishing::ScheduledPublishingService>>,
+
+    /// Redirect lookup cache.
+    redirect_cache: Arc<services::redirect::RedirectCache>,
 }
 
 impl AppState {
@@ -343,11 +372,7 @@ impl AppState {
         let files = Arc::new(FileService::new(db.clone(), file_storage));
 
         // Create cron service with file service for proper cleanup
-        let cron = Arc::new(CronService::with_file_service(
-            redis.clone(),
-            db.clone(),
-            files.clone(),
-        ));
+        let mut cron = CronService::with_file_service(redis.clone(), db.clone(), files.clone());
 
         // Create metrics
         let metrics = Arc::new(Metrics::new());
@@ -386,6 +411,130 @@ impl AppState {
         ];
         language_negotiators.sort_by_key(|n| std::cmp::Reverse(n.priority()));
 
+        // Initialize optional services based on enabled plugins
+        let audit = if enabled_set.contains("audit_log") {
+            Some(Arc::new(services::audit::AuditService::new(db.clone())))
+        } else {
+            None
+        };
+
+        let content_lock = if enabled_set.contains("content_locking") {
+            Some(Arc::new(services::content_lock::ContentLockService::new(
+                db.clone(),
+            )))
+        } else {
+            None
+        };
+
+        let webhooks = if enabled_set.contains("webhooks") {
+            let encryption_key = std::env::var("WEBHOOK_ENCRYPTION_KEY").ok().and_then(|k| {
+                if k.len() < 32 {
+                    tracing::error!(
+                        len = k.len(),
+                        "WEBHOOK_ENCRYPTION_KEY must be at least 32 bytes; \
+                             webhook encryption disabled"
+                    );
+                    return None;
+                }
+                use hkdf::Hkdf;
+                use sha2::Sha256;
+                let hkdf = Hkdf::<Sha256>::new(None, k.as_bytes());
+                let mut key = [0u8; 32];
+                hkdf.expand(b"trovato-webhook-encryption", &mut key)
+                    .expect("HKDF expansion failed for webhook encryption key");
+                Some(key)
+            });
+            if encryption_key.is_none() {
+                tracing::warn!(
+                    "WEBHOOK_ENCRYPTION_KEY not set or too short; \
+                     webhook secrets will be stored as plaintext"
+                );
+            }
+            Some(Arc::new(services::webhook::WebhookService::new(
+                db.clone(),
+                encryption_key,
+            )))
+        } else {
+            None
+        };
+
+        let image_styles = if enabled_set.contains("image_styles") {
+            Some(Arc::new(services::image_style::ImageStyleService::new(
+                db.clone(),
+                std::path::Path::new(&config.uploads_dir),
+            )))
+        } else {
+            None
+        };
+
+        let oauth = if enabled_set.contains("oauth2") {
+            match std::env::var("JWT_SECRET") {
+                Ok(secret) if secret.len() >= 32 => {
+                    // Warn about low-entropy secrets
+                    let unique_chars: std::collections::HashSet<u8> = secret.bytes().collect();
+                    if unique_chars.len() < 8 {
+                        tracing::warn!(
+                            unique_chars = unique_chars.len(),
+                            "JWT_SECRET has low character diversity; consider using a more random value"
+                        );
+                    }
+                    Some(Arc::new(services::oauth::OAuthService::new(
+                        db.clone(),
+                        secret.as_bytes(),
+                    )))
+                }
+                Ok(secret) => {
+                    tracing::error!(
+                        len = secret.len(),
+                        "JWT_SECRET is too short (must be >= 32 bytes); OAuth2 disabled"
+                    );
+                    None
+                }
+                Err(_) => {
+                    tracing::error!("JWT_SECRET environment variable is not set; OAuth2 disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let locale = if enabled_set.contains("locale") {
+            let locale_service = services::locale::LocaleService::new(db.clone());
+            // Pre-load translations for default language
+            if let Err(e) = locale_service.load_language(&default_language).await {
+                tracing::warn!(error = %e, "failed to pre-load locale translations");
+            }
+            Some(Arc::new(locale_service))
+        } else {
+            None
+        };
+
+        let translation = if enabled_set.contains("content_translation") {
+            Some(Arc::new(services::translation::TranslationService::new(
+                db.clone(),
+            )))
+        } else {
+            None
+        };
+
+        let scheduled_publishing = if enabled_set.contains("scheduled_publishing") {
+            Some(Arc::new(
+                services::scheduled_publishing::ScheduledPublishingService::new(db.clone()),
+            ))
+        } else {
+            None
+        };
+
+        // Wire plugin services into cron
+        cron.set_plugin_services(
+            scheduled_publishing.clone(),
+            content_lock.clone(),
+            webhooks.clone(),
+            audit.clone(),
+        );
+        let cron = Arc::new(cron);
+
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
@@ -414,6 +563,15 @@ impl AppState {
                 language_negotiators,
                 known_languages,
                 default_language,
+                audit,
+                content_lock,
+                webhooks,
+                image_styles,
+                oauth,
+                locale,
+                translation,
+                scheduled_publishing,
+                redirect_cache: Arc::new(services::redirect::RedirectCache::new()),
             }),
         })
     }
@@ -580,6 +738,53 @@ impl AppState {
     /// Get the default language code (loaded from DB at startup).
     pub fn default_language(&self) -> &str {
         &self.inner.default_language
+    }
+
+    /// Get the audit service (if audit_log plugin is enabled).
+    pub fn audit(&self) -> Option<&Arc<services::audit::AuditService>> {
+        self.inner.audit.as_ref()
+    }
+
+    /// Get the content lock service (if content_locking plugin is enabled).
+    pub fn content_lock(&self) -> Option<&Arc<services::content_lock::ContentLockService>> {
+        self.inner.content_lock.as_ref()
+    }
+
+    /// Get the webhook service (if webhooks plugin is enabled).
+    pub fn webhooks(&self) -> Option<&Arc<services::webhook::WebhookService>> {
+        self.inner.webhooks.as_ref()
+    }
+
+    /// Get the image style service (if image_styles plugin is enabled).
+    pub fn image_styles(&self) -> Option<&Arc<services::image_style::ImageStyleService>> {
+        self.inner.image_styles.as_ref()
+    }
+
+    /// Get the OAuth2 service (if oauth2 plugin is enabled).
+    pub fn oauth(&self) -> Option<&Arc<services::oauth::OAuthService>> {
+        self.inner.oauth.as_ref()
+    }
+
+    /// Get the locale service (if locale plugin is enabled).
+    pub fn locale(&self) -> Option<&Arc<services::locale::LocaleService>> {
+        self.inner.locale.as_ref()
+    }
+
+    /// Get the content translation service (if content_translation plugin is enabled).
+    pub fn translation(&self) -> Option<&Arc<services::translation::TranslationService>> {
+        self.inner.translation.as_ref()
+    }
+
+    /// Get the scheduled publishing service (if scheduled_publishing plugin is enabled).
+    pub fn scheduled_publishing(
+        &self,
+    ) -> Option<&Arc<services::scheduled_publishing::ScheduledPublishingService>> {
+        self.inner.scheduled_publishing.as_ref()
+    }
+
+    /// Get the redirect cache.
+    pub fn redirect_cache(&self) -> &Arc<services::redirect::RedirectCache> {
+        &self.inner.redirect_cache
     }
 
     /// Check if PostgreSQL is healthy.

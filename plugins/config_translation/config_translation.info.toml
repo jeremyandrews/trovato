@@ -1,0 +1,16 @@
+name = "config_translation"
+description = "Configuration entity translation overlay"
+version = "1.0.0"
+dependencies = ["locale"]
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_create_config_translation.sql",
+]

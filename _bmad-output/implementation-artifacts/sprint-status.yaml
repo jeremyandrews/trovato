@@ -311,7 +311,7 @@ development_status:
   # Section A: Kernel Infrastructure (v1.0 REQUIRED) - DO FIRST, unblocks Epic 20.3-20.5
   # Section B: Standard Plugins (ship with Trovato)
   # Section C: Multilingual (v1.0 REQUIRED)
-  epic-22: in-progress
+  epic-22: done
 
   # --- Section A: Kernel Infrastructure (NEXT UP) ---
   22-1-plugin-migration-system: done             # 2026-02-16 Plugin migrations, status tracking, CLI management
@@ -328,20 +328,20 @@ development_status:
   # 20-5-goose-high-throughput-metrics          # Listed above in Epic 20 → eventually lives in Goose repo
 
   # --- Section B: Standard Plugins ---
-  22-6-media-library-plugin: backlog            # Standard Plugin - file browser, image styles, focal point
-  22-7-structured-content-plugin: backlog       # Standard Plugin - Compound field widget UI
-  22-8-content-moderation-plugin: backlog       # Standard Plugin - Draft→Review→Published workflow
-  22-9-oauth2-provider-plugin: backlog          # Standard Plugin - authorization_code, client_credentials
-  22-10-image-styles-plugin: backlog            # Standard Plugin - derivative generation, focal point
-  22-11-content-locking-plugin: backlog         # Standard Plugin - pessimistic locks, break lock permission
-  22-12-redirect-plugin: backlog                # Standard Plugin - URL redirect management
-  22-13-metatag-plugin: backlog                 # Standard Plugin - SEO meta tags per item
-  22-14-refactor-categories-to-plugin: backlog  # Standard Plugin - move from Kernel migrations
+  22-6-media-plugin: done                           # 2026-02-17 WASM plugin + content type
+  22-7-redirects-plugin: done                       # 2026-02-17 WASM plugin + kernel redirect middleware
+  22-8-oauth2-provider-plugin: done                 # 2026-02-17 WASM plugin + kernel OAuth2 service/routes/middleware
+  22-9-image-styles-plugin: done                    # 2026-02-17 WASM plugin + kernel image processing service/routes
+  22-10-scheduled-publishing-plugin: done            # 2026-02-17 WASM plugin + kernel cron handler
+  22-11-webhooks-plugin: done                       # 2026-02-17 WASM plugin + kernel webhook dispatch/delivery
+  22-12-audit-log-plugin: done                      # 2026-02-17 WASM plugin + kernel audit service
+  22-13-content-locking-plugin: done                # 2026-02-17 WASM plugin + kernel lock service/routes
+  22-14-refactor-categories-comments-to-plugins: done  # 2026-02-17 WASM plugins for categories + comments
 
   # --- Section C: Multilingual ---
-  22-15-content-translation-plugin: backlog     # Standard Plugin - item field overrides per language
-  22-16-interface-translation: backlog          # Standard Plugin - UI string translation
-  22-17-language-detection-plugin: backlog      # Standard Plugin - URL prefix, browser, domain negotiation
+  22-15-content-translation-plugin: done     # 2026-02-17 WASM plugin + kernel translation service
+  22-16-locale-plugin: done                  # 2026-02-17 WASM plugin + kernel locale service + .po parser
+  22-17-config-translation-plugin: done      # 2026-02-17 WASM plugin + kernel config translation wrapper
 
   epic-22-retrospective: optional
 

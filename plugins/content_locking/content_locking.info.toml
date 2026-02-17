@@ -1,0 +1,16 @@
+name = "content_locking"
+description = "Pessimistic content locking to prevent concurrent editing"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_create_editing_lock.sql",
+]

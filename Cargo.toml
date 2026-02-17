@@ -12,6 +12,19 @@ members = [
     "plugins/argus",
     "plugins/netgrasp",
     "plugins/goose",
+    "plugins/media",
+    "plugins/redirects",
+    "plugins/audit_log",
+    "plugins/scheduled_publishing",
+    "plugins/content_locking",
+    "plugins/webhooks",
+    "plugins/image_styles",
+    "plugins/oauth2",
+    "plugins/categories",
+    "plugins/comments",
+    "plugins/locale",
+    "plugins/content_translation",
+    "plugins/config_translation",
 ]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
 # Plugin cdylibs (argus, netgrasp, goose) excluded — build with --target wasm32-wasip1
@@ -66,5 +79,14 @@ async-trait = "0.1"
 urlencoding = "2"
 prometheus-client = "0.22"
 clap = { version = "4", features = ["derive"] }
+image = "0.25"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", features = ["json"] }
+hmac = "0.12"
+aes-gcm = "0.10"
+hkdf = "0.12"
+subtle = "2"
+base64 = "0.22"
+url = "2"
 aws-sdk-s3 = "1"
 aws-config = "1"
