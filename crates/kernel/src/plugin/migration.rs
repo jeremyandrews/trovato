@@ -93,7 +93,10 @@ pub async fn run_plugin_migrations(
             "executing migration"
         );
 
-        sqlx::query(&sql)
+        // Use raw_sql instead of query() because migration files contain
+        // multiple SQL statements. query() uses prepared statements which
+        // only support a single statement per call.
+        sqlx::raw_sql(&sql)
             .execute(&mut *tx)
             .await
             .map_err(|e| PluginError::MigrationFailed {

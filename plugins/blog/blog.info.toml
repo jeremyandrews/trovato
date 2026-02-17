@@ -1,7 +1,7 @@
 name = "blog"
 description = "Provides a blog content type with tags"
 version = "1.0.0"
-dependencies = ["item", "categories"]
+dependencies = []
 
 [taps]
 implements = [
