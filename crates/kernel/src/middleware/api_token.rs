@@ -15,6 +15,7 @@ use serde_json::json;
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::middleware::bearer_auth::BearerAuth;
 use crate::models::api_token::ApiToken;
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
@@ -49,6 +50,12 @@ pub async fn authenticate_api_token(
         Some(v) if v.starts_with("Bearer ") => &v[7..],
         _ => return next.run(request).await,
     };
+
+    // If bearer auth middleware already authenticated this request via JWT,
+    // skip API token lookup to avoid rejecting valid JWT tokens.
+    if request.extensions().get::<BearerAuth>().is_some() {
+        return next.run(request).await;
+    }
 
     // If session already has a user (cookie auth), let it take precedence.
     if let Ok(Some(_)) = session.get::<Uuid>(SESSION_USER_ID).await {

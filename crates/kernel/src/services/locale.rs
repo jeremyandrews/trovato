@@ -111,8 +111,11 @@ impl LocaleService {
 }
 
 /// Build a cache key from language, context, and source.
+///
+/// Uses null byte separator (`\0`) to prevent collisions when source or
+/// context strings contain colons (e.g., "12:00" as a source string).
 fn cache_key(language: &str, context: &str, source: &str) -> String {
-    format!("{language}:{context}:{source}")
+    format!("{language}\0{context}\0{source}")
 }
 
 impl std::fmt::Debug for LocaleService {
@@ -149,8 +152,16 @@ mod tests {
 
     #[test]
     fn cache_key_format() {
-        assert_eq!(cache_key("fr", "", "Hello"), "fr::Hello");
-        assert_eq!(cache_key("fr", "menu", "Hello"), "fr:menu:Hello");
+        assert_eq!(cache_key("fr", "", "Hello"), "fr\0\0Hello");
+        assert_eq!(cache_key("fr", "menu", "Hello"), "fr\0menu\0Hello");
+    }
+
+    #[test]
+    fn cache_key_no_collision_with_colons() {
+        // Source strings containing colons should not collide
+        let k1 = cache_key("en", "", "12:00");
+        let k2 = cache_key("en", "12", "00");
+        assert_ne!(k1, k2);
     }
 
     #[test]
@@ -162,14 +173,14 @@ mod tests {
     #[test]
     fn translate_returns_cached_translation() {
         let cache = DashMap::new();
-        cache.insert("fr::Hello".to_string(), "Bonjour".to_string());
+        cache.insert("fr\0\0Hello".to_string(), "Bonjour".to_string());
         assert_eq!(translate(&cache, "Hello", "", "fr"), "Bonjour");
     }
 
     #[test]
     fn translate_context_fallback() {
         let cache = DashMap::new();
-        cache.insert("fr::Save".to_string(), "Enregistrer".to_string());
+        cache.insert("fr\0\0Save".to_string(), "Enregistrer".to_string());
         assert_eq!(translate(&cache, "Save", "form", "fr"), "Enregistrer");
     }
 }

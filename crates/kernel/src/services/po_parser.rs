@@ -79,15 +79,34 @@ pub fn parse_po(content: &str) -> Vec<PoEntry> {
 }
 
 /// Remove surrounding quotes and unescape basic sequences.
+///
+/// Uses a single-pass character-by-character parser to avoid ordering bugs
+/// where chained `.replace()` calls could double-unescape sequences like `\\n`.
 fn unquote(s: &str) -> String {
     let s = s.trim();
     let s = s.strip_prefix('"').unwrap_or(s);
     let s = s.strip_suffix('"').unwrap_or(s);
 
-    s.replace("\\n", "\n")
-        .replace("\\t", "\t")
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\")
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('"') => result.push('"'),
+                Some('\\') => result.push('\\'),
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -163,6 +182,22 @@ msgstr "Ligne 1\nLigne 2"
         let entries = parse_po(content);
         assert_eq!(entries[0].source, "Line 1\nLine 2");
         assert_eq!(entries[0].translation, "Ligne 1\nLigne 2");
+    }
+
+    #[test]
+    fn unescape_double_backslash_then_n() {
+        // "\\n" in a .po file means literal backslash + n, not a newline.
+        // The single-pass parser handles this correctly.
+        let result = unquote(r#""line\\nend""#);
+        assert_eq!(result, "line\\nend");
+
+        // Contrast with a simple \n which is a newline
+        let result2 = unquote(r#""line\nend""#);
+        assert_eq!(result2, "line\nend");
+
+        // Double backslash alone
+        let result3 = unquote(r#""path\\to\\file""#);
+        assert_eq!(result3, "path\\to\\file");
     }
 
     #[test]

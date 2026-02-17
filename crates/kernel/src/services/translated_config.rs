@@ -73,7 +73,16 @@ impl ConfigStorage for TranslatedConfigStorage {
     }
 
     async fn save(&self, entity: &ConfigEntity) -> Result<()> {
-        // Saves always go to the inner storage (base language)
+        // Saves always go to the inner storage (base language).
+        // If called with a non-default language active, this writes to the base
+        // language — callers that need translation-aware save should use the
+        // config_translation table directly.
+        if !self.language.is_empty() && self.language != "en" {
+            tracing::warn!(
+                language = %self.language,
+                "TranslatedConfigStorage::save writes to base storage, not translation layer"
+            );
+        }
         self.inner.save(entity).await
     }
 

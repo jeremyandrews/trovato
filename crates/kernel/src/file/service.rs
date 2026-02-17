@@ -17,12 +17,11 @@ pub const MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Allowed MIME types for upload.
 pub const ALLOWED_MIME_TYPES: &[&str] = &[
-    // Images
+    // Images (SVG excluded: XML-based format enables stored XSS)
     "image/jpeg",
     "image/png",
     "image/gif",
     "image/webp",
-    "image/svg+xml",
     // Documents
     "application/pdf",
     "application/msword",
@@ -492,5 +491,7 @@ mod tests {
         assert!(ALLOWED_MIME_TYPES.contains(&"image/jpeg"));
         assert!(ALLOWED_MIME_TYPES.contains(&"application/pdf"));
         assert!(!ALLOWED_MIME_TYPES.contains(&"application/x-executable"));
+        // SVG excluded to prevent stored XSS
+        assert!(!ALLOWED_MIME_TYPES.contains(&"image/svg+xml"));
     }
 }

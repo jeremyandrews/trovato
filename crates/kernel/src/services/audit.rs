@@ -19,6 +19,18 @@ impl AuditService {
         Self { pool }
     }
 
+    /// Sanitize an IP address string for storage.
+    ///
+    /// Validates that the string is a valid IP address (v4 or v6). If not,
+    /// returns "invalid" to prevent arbitrary string injection.
+    fn sanitize_ip(ip: &str) -> &str {
+        if ip.parse::<std::net::IpAddr>().is_ok() {
+            ip
+        } else {
+            "invalid"
+        }
+    }
+
     /// Log an auditable action.
     pub async fn log(
         &self,
@@ -29,6 +41,8 @@ impl AuditService {
         ip_address: &str,
         details: serde_json::Value,
     ) -> Result<()> {
+        let ip_address = Self::sanitize_ip(ip_address);
+
         sqlx::query(
             r#"
             INSERT INTO audit_log (id, action, entity_type, entity_id, user_id, ip_address, details, created)
@@ -87,6 +101,19 @@ impl std::fmt::Debug for AuditService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ip_address_sanitization() {
+        assert_eq!(AuditService::sanitize_ip("192.168.1.1"), "192.168.1.1");
+        assert_eq!(AuditService::sanitize_ip("::1"), "::1");
+        assert_eq!(AuditService::sanitize_ip("2001:db8::1"), "2001:db8::1");
+        assert_eq!(AuditService::sanitize_ip("not-an-ip"), "invalid");
+        assert_eq!(AuditService::sanitize_ip(""), "invalid");
+        assert_eq!(
+            AuditService::sanitize_ip("192.168.1.1; DROP TABLE"),
+            "invalid"
+        );
+    }
 
     #[test]
     fn retention_cutoff_calculation() {

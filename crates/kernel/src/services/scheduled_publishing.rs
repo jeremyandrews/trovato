@@ -25,13 +25,15 @@ impl ScheduledPublishingService {
         let now = chrono::Utc::now().timestamp();
         let mut total = 0u64;
 
-        // Publish items where field_publish_on <= now AND status = 0
+        // Publish items where field_publish_on <= now AND status = 0.
+        // The regex check ensures the cast to bigint won't fail on malformed data.
         let published = sqlx::query(
             r#"
             UPDATE item
             SET status = 1, changed = $1
             WHERE status = 0
               AND fields->>'field_publish_on' IS NOT NULL
+              AND (fields->>'field_publish_on') ~ '^[0-9]+$'
               AND (fields->>'field_publish_on')::bigint <= $1
             "#,
         )
@@ -52,13 +54,15 @@ impl ScheduledPublishingService {
             }
         }
 
-        // Unpublish items where field_unpublish_on <= now AND status = 1
+        // Unpublish items where field_unpublish_on <= now AND status = 1.
+        // The regex check ensures the cast to bigint won't fail on malformed data.
         let unpublished = sqlx::query(
             r#"
             UPDATE item
             SET status = 0, changed = $1
             WHERE status = 1
               AND fields->>'field_unpublish_on' IS NOT NULL
+              AND (fields->>'field_unpublish_on') ~ '^[0-9]+$'
               AND (fields->>'field_unpublish_on')::bigint <= $1
             "#,
         )

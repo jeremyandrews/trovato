@@ -124,19 +124,32 @@ async fn serve_derivative(
         }
     };
 
-    // Process through style effects
-    let derivative = match image_service.process_image(&original, &style) {
-        Ok(data) => data,
-        Err(e) => {
+    // Process through style effects on a blocking thread to avoid starving
+    // the Tokio runtime with CPU-intensive image decoding/encoding.
+    let svc = image_service.clone();
+    let sn = style_name.clone();
+    let fp = file_path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let derivative = svc.process_image(&original, &style)?;
+        // Save to disk cache while still on the blocking thread
+        if let Err(e) = svc.save_derivative(&sn, &fp, &derivative) {
+            tracing::warn!(error = %e, "failed to cache derivative");
+        }
+        Ok::<Vec<u8>, anyhow::Error>(derivative)
+    })
+    .await;
+
+    let derivative = match result {
+        Ok(Ok(data)) => data,
+        Ok(Err(e)) => {
             tracing::warn!(error = %e, "failed to process image");
             return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to process image").into_response();
         }
+        Err(e) => {
+            tracing::warn!(error = %e, "image processing task panicked");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to process image").into_response();
+        }
     };
-
-    // Save to disk cache
-    if let Err(e) = image_service.save_derivative(&style_name, &file_path, &derivative) {
-        tracing::warn!(error = %e, "failed to cache derivative");
-    }
 
     let content_type = "image/jpeg".to_string(); // Derivatives are always JPEG
     (

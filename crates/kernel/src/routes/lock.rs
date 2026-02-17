@@ -22,6 +22,9 @@ pub struct LockRequest {
 /// pollute the editing_lock table or be used for denial-of-service.
 const ALLOWED_ENTITY_TYPES: &[&str] = &["item", "category", "comment", "media"];
 
+/// Maximum length for entity_id to prevent storage abuse.
+const MAX_ENTITY_ID_LENGTH: usize = 200;
+
 /// Create the lock routes.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -37,6 +40,9 @@ async fn heartbeat(
 ) -> impl IntoResponse {
     if !ALLOWED_ENTITY_TYPES.contains(&payload.entity_type.as_str()) {
         return (StatusCode::BAD_REQUEST, "Invalid entity type").into_response();
+    }
+    if payload.entity_id.len() > MAX_ENTITY_ID_LENGTH {
+        return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
     }
 
     let user_id = match session.get::<Uuid>("user_id").await.ok().flatten() {
@@ -73,6 +79,9 @@ async fn break_lock(
 ) -> impl IntoResponse {
     if !ALLOWED_ENTITY_TYPES.contains(&payload.entity_type.as_str()) {
         return (StatusCode::BAD_REQUEST, "Invalid entity type").into_response();
+    }
+    if payload.entity_id.len() > MAX_ENTITY_ID_LENGTH {
+        return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
     }
 
     let user_id = match session.get::<Uuid>("user_id").await.ok().flatten() {

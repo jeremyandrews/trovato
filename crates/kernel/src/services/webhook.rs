@@ -205,7 +205,9 @@ impl WebhookService {
         let now = chrono::Utc::now().timestamp();
         let mut processed = 0u64;
 
-        // Fetch pending deliveries
+        // Fetch pending deliveries with row-level locking to prevent
+        // duplicate delivery when multiple cron workers run concurrently.
+        // FOR UPDATE SKIP LOCKED ensures each delivery is processed by exactly one worker.
         let deliveries = sqlx::query_as::<_, WebhookDelivery>(
             r#"
             SELECT d.id, d.webhook_id, d.event, d.payload, d.status_code,
@@ -216,6 +218,7 @@ impl WebhookService {
               AND (d.next_retry IS NULL OR d.next_retry <= $2)
             ORDER BY d.created ASC
             LIMIT 50
+            FOR UPDATE SKIP LOCKED
             "#,
         )
         .bind(MAX_ATTEMPTS)

@@ -9,8 +9,10 @@ use uuid::Uuid;
 /// Cache TTL in seconds.
 const CACHE_TTL_SECS: i64 = 60;
 
-/// Maximum number of entries in the redirect cache.
+/// Maximum number of entries in the redirect cache (soft cap).
 /// Prevents unbounded memory growth from attackers requesting unique paths.
+/// This is an approximate limit — under concurrent load, the cache may
+/// temporarily exceed this by a small amount due to DashMap's sharded len().
 const MAX_CACHE_ENTRIES: usize = 10_000;
 
 /// Cached redirect lookup result (including negative lookups).

@@ -10,6 +10,10 @@ use uuid::Uuid;
 /// Default lock duration in seconds (15 minutes).
 const DEFAULT_LOCK_DURATION_SECS: i64 = 900;
 
+/// Maximum absolute lock lifetime in seconds (24 hours).
+/// Prevents indefinite lock extension via repeated heartbeats.
+const MAX_ABSOLUTE_LOCK_LIFETIME_SECS: i64 = 86400;
+
 /// Lock information.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct EditingLock {
@@ -109,6 +113,9 @@ impl ContentLockService {
     }
 
     /// Extend lock expiration (heartbeat).
+    ///
+    /// Enforces a maximum absolute lifetime from the original lock time to
+    /// prevent indefinite lock extension via repeated heartbeats.
     pub async fn heartbeat(
         &self,
         entity_type: &str,
@@ -118,17 +125,21 @@ impl ContentLockService {
         let now = chrono::Utc::now().timestamp();
         let expires_at = now + DEFAULT_LOCK_DURATION_SECS;
 
+        // Only extend if the lock hasn't exceeded its maximum absolute lifetime.
         let result = sqlx::query(
             r#"
             UPDATE editing_lock
             SET expires_at = $1
             WHERE entity_type = $2 AND entity_id = $3 AND user_id = $4
+              AND locked_at + $5 > $6
             "#,
         )
         .bind(expires_at)
         .bind(entity_type)
         .bind(entity_id)
         .bind(user_id)
+        .bind(MAX_ABSOLUTE_LOCK_LIFETIME_SECS)
+        .bind(now)
         .execute(&self.pool)
         .await
         .context("failed to heartbeat lock")?;
@@ -189,6 +200,13 @@ mod tests {
     #[test]
     fn lock_duration_is_15_minutes() {
         assert_eq!(DEFAULT_LOCK_DURATION_SECS, 900);
+    }
+
+    #[test]
+    fn max_absolute_lifetime_is_24_hours() {
+        assert_eq!(MAX_ABSOLUTE_LOCK_LIFETIME_SECS, 86400);
+        // Max lifetime should be much larger than single lock duration
+        assert!(MAX_ABSOLUTE_LOCK_LIFETIME_SECS > DEFAULT_LOCK_DURATION_SECS * 10);
     }
 
     #[test]

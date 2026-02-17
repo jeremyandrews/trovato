@@ -460,8 +460,21 @@ impl OAuthService {
         self.create_access_token(user_id, &data.client_id, &granted_scope, true)
     }
 
+    /// Validate that a JTI is a well-formed UUID.
+    ///
+    /// JTIs are generated as `Uuid::now_v7().to_string()`. Validating format
+    /// prevents arbitrary strings from being used as Redis keys.
+    fn validate_jti(jti: &str) -> Result<()> {
+        if jti.parse::<Uuid>().is_err() {
+            anyhow::bail!("malformed JTI: not a valid UUID");
+        }
+        Ok(())
+    }
+
     /// Check if a token's JTI has been revoked (via Redis blocklist).
     pub async fn is_revoked(&self, jti: &str, redis: &redis::Client) -> Result<bool> {
+        Self::validate_jti(jti)?;
+
         let mut conn = redis
             .get_multiplexed_async_connection()
             .await
@@ -483,6 +496,8 @@ impl OAuthService {
         ttl_secs: u64,
         redis: &redis::Client,
     ) -> Result<()> {
+        Self::validate_jti(jti)?;
+
         let mut conn = redis
             .get_multiplexed_async_connection()
             .await
@@ -711,6 +726,19 @@ mod tests {
             unrestricted.filter_scope("read write admin"),
             "read write admin"
         );
+    }
+
+    #[test]
+    fn jti_validation() {
+        // Valid UUIDs
+        assert!(OAuthService::validate_jti("00000000-0000-0000-0000-000000000000").is_ok());
+        assert!(OAuthService::validate_jti(&Uuid::now_v7().to_string()).is_ok());
+
+        // Invalid JTIs
+        assert!(OAuthService::validate_jti("not-a-uuid").is_err());
+        assert!(OAuthService::validate_jti("").is_err());
+        assert!(OAuthService::validate_jti("../../etc/passwd").is_err());
+        assert!(OAuthService::validate_jti("key\ninjection").is_err());
     }
 
     #[test]

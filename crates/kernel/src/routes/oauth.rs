@@ -49,13 +49,23 @@ pub struct RevokeRequest {
     pub client_secret: String,
 }
 
-/// Validate that a scope string contains only safe characters.
+/// Maximum allowed length for scope strings to prevent memory abuse.
+const MAX_SCOPE_LENGTH: usize = 1000;
+
+/// Maximum allowed length for PKCE code_verifier (RFC 7636 §4.1: 43-128 chars,
+/// but we allow up to 256 for safety margin).
+const MAX_CODE_VERIFIER_LENGTH: usize = 256;
+
+/// Validate that a scope string contains only safe characters and is bounded in length.
 ///
 /// Scope tokens are defined in RFC 6749 §3.3 as: `%x21 / %x23-5B / %x5D-7E`
 /// (printable ASCII except `"` and `\`, separated by spaces).
 fn validate_scope(scope: &str) -> bool {
     if scope.is_empty() {
         return true;
+    }
+    if scope.len() > MAX_SCOPE_LENGTH {
+        return false;
     }
     scope
         .bytes()
@@ -149,6 +159,17 @@ async fn authorize(
     // Validate redirect_uri
     let redirect_uris: Vec<String> =
         serde_json::from_value(client.redirect_uris.clone()).unwrap_or_default();
+
+    // RFC 6749 §3.1.2.3: If multiple redirect URIs are registered, the client
+    // MUST include the redirect_uri parameter in the authorization request.
+    if redirect_uri.is_empty() && redirect_uris.len() > 1 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "redirect_uri required when client has multiple registered URIs",
+        )
+            .into_response();
+    }
+
     if !redirect_uris.contains(&redirect_uri.to_string()) {
         return (StatusCode::BAD_REQUEST, "Invalid redirect_uri").into_response();
     }
@@ -197,7 +218,13 @@ async fn authorize(
         redirect = format!("{}&state={}", redirect, urlencoding::encode(state_param));
     }
 
-    (StatusCode::FOUND, [("Location", redirect)]).into_response()
+    // Sanitize redirect to prevent CRLF injection into Location header.
+    let safe_redirect: String = redirect
+        .chars()
+        .filter(|c| *c != '\r' && *c != '\n')
+        .collect();
+
+    (StatusCode::FOUND, [("Location", safe_redirect)]).into_response()
 }
 
 /// POST /oauth/token — token endpoint.
@@ -267,6 +294,11 @@ async fn token(
             (headers, axum::Json(response)).into_response()
         }
         "authorization_code" => {
+            // Validate code_verifier length (RFC 7636 §4.1: 43-128 ASCII chars)
+            if payload.code_verifier.len() > MAX_CODE_VERIFIER_LENGTH {
+                return (StatusCode::BAD_REQUEST, "code_verifier too long").into_response();
+            }
+
             // Exchange the opaque authorization code
             // (handles client auth, PKCE verification, grant_type check internally)
             let response = match oauth
@@ -455,4 +487,32 @@ async fn revoke(
     }
 
     StatusCode::OK.into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_validation_accepts_valid() {
+        assert!(validate_scope(""));
+        assert!(validate_scope("read"));
+        assert!(validate_scope("read write"));
+        assert!(validate_scope("openid profile email"));
+    }
+
+    #[test]
+    fn scope_validation_rejects_invalid() {
+        assert!(!validate_scope("scope\"injection"));
+        assert!(!validate_scope("scope\\injection"));
+        // Exceeds max length
+        let long = "a".repeat(MAX_SCOPE_LENGTH + 1);
+        assert!(!validate_scope(&long));
+    }
+
+    #[test]
+    fn scope_at_max_length_accepted() {
+        let exactly_max = "a".repeat(MAX_SCOPE_LENGTH);
+        assert!(validate_scope(&exactly_max));
+    }
 }
