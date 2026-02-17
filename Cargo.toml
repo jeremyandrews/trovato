@@ -9,8 +9,12 @@ members = [
     "benchmarks/phase0/guest",
     "benchmarks/load-test",
     "plugins/blog",
+    "plugins/argus",
+    "plugins/netgrasp",
+    "plugins/goose",
 ]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
+# Plugin cdylibs (argus, netgrasp, goose) excluded — build with --target wasm32-wasip1
 default-members = [
     "crates/kernel",
     "crates/plugin-sdk",

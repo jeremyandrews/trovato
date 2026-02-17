@@ -221,6 +221,23 @@ impl FieldDefinition {
     }
 }
 
+/// Input for `tap_item_access`.
+///
+/// Sent by the kernel when checking item access permissions. Contains only
+/// the fields needed for access decisions — not the full Item.
+///
+/// SYNC: An identical struct exists in `crates/kernel/src/content/item_service.rs`.
+/// The kernel serializes its copy; plugins deserialize this one. Both must have
+/// the same fields and serde attributes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemAccessInput {
+    pub item_id: Uuid,
+    pub item_type: String,
+    pub author_id: Uuid,
+    pub operation: String,
+    pub user_id: Uuid,
+}
+
 /// Access control result from `tap_item_access`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AccessResult {
@@ -282,6 +299,34 @@ impl PermissionDefinition {
             name: name.into(),
             description: description.into(),
         }
+    }
+
+    /// Generate standard view/create/edit/delete permissions for a content type.
+    ///
+    /// Produces 4 permissions matching the kernel's fallback format:
+    /// - `"view {type} content"` — view unpublished items (published items use `"access content"`)
+    /// - `"create {type} content"`
+    /// - `"edit {type} content"`
+    /// - `"delete {type} content"`
+    pub fn crud_for_type(content_type: &str) -> Vec<Self> {
+        vec![
+            Self::new(
+                &format!("view {} content", content_type),
+                &format!("View unpublished {} items", content_type),
+            ),
+            Self::new(
+                &format!("create {} content", content_type),
+                &format!("Create new {} items", content_type),
+            ),
+            Self::new(
+                &format!("edit {} content", content_type),
+                &format!("Edit any {} item", content_type),
+            ),
+            Self::new(
+                &format!("delete {} content", content_type),
+                &format!("Delete any {} item", content_type),
+            ),
+        ]
     }
 }
 

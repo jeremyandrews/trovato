@@ -2,13 +2,13 @@
 
 **Date**: 2026-02-15
 **Status**: Complete
-**Gate**: Trovato handles a Netgrasp-style network monitoring application using only existing infrastructure — no custom endpoints, no schema changes, no new migrations.
+**Gate**: Trovato handles a Netgrasp-style network monitoring application using only existing infrastructure — no custom endpoints, no schema changes, no new migrations beyond the plugin's own.
 
 ## What Was Validated
 
 ### Content Model
 
-Six content types registered at startup using `ContentTypeRegistry::create()`:
+Six content types registered via `tap_item_info` in the netgrasp WASM plugin:
 
 | Type | Label | Key Fields |
 |------|-------|------------|
@@ -23,7 +23,7 @@ All field definitions stored in `settings` JSONB. No new database tables or migr
 
 ### Gather Queries
 
-Two queries registered with exposed filters on JSONB fields:
+Two queries seeded via plugin SQL migration (`migrations/001_gather_queries.sql`):
 
 **`ng_device_list`** — Device dashboard:
 - Filters: status=1 (published), plus 3 exposed filters (state, device_type, owner_id) using `Contains` operator
@@ -41,13 +41,13 @@ The `Contains` filter with an empty default string produces `LIKE '%%'` which ma
 
 ### Auth Roles
 
-Two roles with per-type permissions:
+Two roles seeded via plugin SQL migration (`migrations/002_roles.sql`):
 
-**`network_admin`**: `access content` + create/edit/delete for all 6 `ng_*` types (19 permissions total).
+**`network_admin`**: `access content` + view/create/edit/delete for all 6 `ng_*` types (25 permissions total).
 
-**`ng_viewer`**: `access content` only (read-only dashboard access).
+**`ng_viewer`**: `access content` only (read-only dashboard access via published items).
 
-All role creation is idempotent — guarded by `Role::find_by_name()` check, and `Role::add_permission()` uses `ON CONFLICT DO NOTHING`.
+Role creation uses idempotent SQL: `ON CONFLICT (name) DO NOTHING` for roles, `ON CONFLICT (role_id, permission) DO NOTHING` for permissions.
 
 ### Dashboard Templates
 
@@ -68,15 +68,22 @@ For high-traffic deployments, expression indexes on frequently filtered JSONB fi
 
 1. **Content model flexibility**: The `item` table + JSONB fields pattern handles domain-specific data (network devices, events, presence) without schema changes.
 2. **Query engine expressiveness**: Gather queries with exposed filters on JSONB fields work correctly for dashboard-style listings.
-3. **Auth granularity**: Per-type permissions (`create ng_device content`, `edit any ng_event content`) provide fine-grained access control.
+3. **Auth granularity**: Per-type permissions (`create ng_device content`, `edit ng_event content`) provide fine-grained access control.
 4. **Template system**: Theme suggestion templates render domain-specific dashboards without any route changes.
 5. **URL aliases**: Clean URLs (`/devices`, `/events`) work via the existing alias system.
+6. **Plugin self-sufficiency**: All setup (content types, queries, aliases, roles) lives in the plugin — no kernel-inline hacks required.
 
-## Files Changed
+## Plugin Files
 
-| File | Action |
-|------|--------|
-| `crates/kernel/src/state.rs` | Added `register_netgrasp_validation()` helper |
-| `templates/gather/query--ng_device_list.html` | New — device dashboard template |
-| `templates/gather/query--ng_event_log.html` | New — event log template |
-| `docs/netgrasp-validation.md` | New — this document |
+| File | Purpose |
+|------|---------|
+| `plugins/netgrasp/Cargo.toml` | Plugin crate configuration |
+| `plugins/netgrasp/netgrasp.info.toml` | Plugin metadata, taps, and migration list |
+| `plugins/netgrasp/src/lib.rs` | Content types, permissions, menus via tap functions |
+| `plugins/netgrasp/migrations/001_gather_queries.sql` | Gather query seed (ng_device_list, ng_event_log) |
+| `plugins/netgrasp/migrations/002_roles.sql` | Auth role seed (network_admin, ng_viewer) |
+| `plugins/netgrasp/migrations/003_url_aliases.sql` | URL alias seed (/devices, /events) |
+| `plugins/netgrasp/migrations/004_cleanup_stale_permissions.sql` | Remove stale "edit any"/"delete any" permission rows |
+| `templates/gather/query--ng_device_list.html` | Device dashboard template |
+| `templates/gather/query--ng_event_log.html` | Event log template |
+| `docs/netgrasp-validation.md` | This document |

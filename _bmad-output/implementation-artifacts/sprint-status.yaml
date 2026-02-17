@@ -283,9 +283,10 @@ development_status:
   epic-20: in-progress
   20-1-traditional-website-use-case: done    # 2026-02-15
   20-2-headless-cms-use-case: done           # 2026-02-15
-  20-3-argus-composite-gather-responses: done     # 2026-02-15 Kernel infra only (includes feature) - needs plugin rewrite
-  20-4-netgrasp-lean-runtime-validation: done      # 2026-02-15 Kernel hack in state.rs - needs plugin rewrite
-  20-5-goose-high-throughput-metrics: backlog     # BLOCKED on 22.1, 22.2 - must be a real plugin
+  20-3-argus-composite-gather-responses: done     # 2026-02-17 WASM plugin with composite gather includes
+  20-4-netgrasp-lean-runtime-validation: done      # 2026-02-17 WASM plugin, kernel hacks removed from state.rs
+  20-5-goose-high-throughput-metrics: done         # 2026-02-17 WASM plugin for load testing metrics
+  # Backlog: Goose gather queries + URL aliases (deferred — value is high-throughput writes, not preset queries)
   epic-20-retrospective: optional
 
   # ═══════════════════════════════════════════════════════════
@@ -322,8 +323,8 @@ development_status:
   # --- Use Case Plugins (after 22.1 + 22.2) ---
   # Develop as real WASM plugins here first, then move to their respective project repos.
   # These validate the plugin infrastructure against real workloads.
-  20-3-argus-plugin: backlog                    # Rewrite as WASM plugin → eventually lives in Argus repo
-  20-4-netgrasp-plugin: backlog                 # Rewrite as WASM plugin → eventually lives in Netgrasp repo
+  20-3-argus-plugin: done                        # 2026-02-17 WASM plugin with 7 content types, includes, roles
+  20-4-netgrasp-plugin: done                    # 2026-02-17 WASM plugin with 6 content types, queries, aliases, roles
   # 20-5-goose-high-throughput-metrics          # Listed above in Epic 20 → eventually lives in Goose repo
 
   # --- Section B: Standard Plugins ---

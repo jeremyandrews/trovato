@@ -1,13 +1,11 @@
-name = "blog"
-description = "Provides a blog content type with tags"
+name = "goose"
+description = "Load testing: test runs, scenarios, endpoint results, sites, comparisons"
 version = "1.0.0"
-dependencies = ["item", "categories"]
+dependencies = []
 
 [taps]
 implements = [
     "tap_item_info",
-    "tap_item_view",
-    "tap_item_access",
     "tap_menu",
     "tap_perm",
 ]
@@ -17,4 +15,6 @@ weight = 0
 # plugin_migration table. Kernel tables (item, gather_query, url_alias, roles,
 # role_permissions) are guaranteed to exist before plugin migrations run.
 [migrations]
-files = ["migrations/001_seed_gather_query.sql"]
+files = [
+    "migrations/001_roles.sql",
+]

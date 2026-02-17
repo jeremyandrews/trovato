@@ -152,6 +152,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "argus"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "async-compression"
 version = "0.4.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2010,6 +2019,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "goose"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "group"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2878,6 +2896,15 @@ dependencies = [
  "security-framework 2.11.1",
  "security-framework-sys",
  "tempfile",
+]
+
+[[package]]
+name = "netgrasp"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
 ]
 
 [[package]]

@@ -18,4 +18,5 @@ pub mod prelude {
     pub use crate::render;
     pub use crate::types::*;
     pub use crate::{plugin_tap, plugin_tap_result};
+    pub use uuid::Uuid;
 }

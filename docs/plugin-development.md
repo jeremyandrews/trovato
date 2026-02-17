@@ -146,6 +146,26 @@ weight = 0  # Lower weight = earlier execution
 | `dependencies` | No | Array of required plugin names |
 | `[taps].implements` | Yes | Array of tap function names |
 | `[taps].weight` | No | Execution order (default: 0) |
+| `[migrations].files` | No | Array of SQL migration file paths |
+| `[migrations].depends_on` | No | Plugin names whose migrations run first |
+
+### SQL Migrations
+
+Plugins can include SQL migrations that run at startup. Add a `[migrations]` section:
+
+```toml
+[migrations]
+files = [
+    "migrations/001_gather_queries.sql",
+    "migrations/002_roles.sql",
+]
+```
+
+**Execution ordering:** Kernel tables are created first, then plugin migrations run in dependency order (topological sort). This means your migrations can safely reference kernel tables (`item`, `gather_query`, `url_alias`, `roles`, `role_permissions`).
+
+**Forward-only:** Migrations have no rollback mechanism. Each file runs exactly once, tracked in the `plugin_migration` table. Use idempotent SQL patterns (`ON CONFLICT ... DO UPDATE/DO NOTHING`) so migrations are safe to re-run if the tracking state is lost.
+
+**Gather query field references:** Filter and sort field paths (e.g., `"fields.display_name"`) are not validated against content type definitions at registration time. Double-check that field names in your gather query JSON match the `field_name` values in your `tap_item_info` definitions — a typo will silently produce NULL comparisons at query time.
 
 ---
 
@@ -452,27 +472,25 @@ host::item::delete(item_id)?;
 ```rust
 #[plugin_tap]
 fn tap_item_access(input: ItemAccessInput) -> AccessResult {
-    let item = &input.item;
-    let user_id = host::user::current_user_id();
+    // ItemAccessInput provides lightweight access fields (not the full Item):
+    //   item_id, item_type, author_id, operation, user_id
 
-    // Published items visible to all
-    if item.status == 1 {
+    // Only handle our own content types
+    if input.item_type != "my_plugin_type" {
+        return AccessResult::Neutral;
+    }
+
+    // Example: author can always access their own items
+    if input.user_id == input.author_id {
         return AccessResult::Grant;
     }
 
-    // Unpublished only visible to author
-    if item.author_id == user_id {
-        return AccessResult::Grant;
-    }
-
-    // Admins can see everything
-    if host::user::has_permission("administer content") {
-        return AccessResult::Grant;
-    }
-
-    AccessResult::Deny
+    // Defer to kernel's permission fallback ("{operation} {type} content")
+    AccessResult::Neutral
 }
 ```
+
+**Note:** The kernel already handles published-item access (checking `"access content"` permission) and has a permission fallback that checks `"{operation} {type} content"`. Most plugins should return `Neutral` and rely on this built-in behavior. Only implement `tap_item_access` if you need custom logic beyond standard permission checks.
 
 ### AccessResult Values
 
@@ -482,7 +500,7 @@ fn tap_item_access(input: ItemAccessInput) -> AccessResult {
 | `Deny` | Explicitly deny (wins over Grant) |
 | `Neutral` | No opinion (let other plugins decide) |
 
-**Aggregation rule:** Deny > Grant > Neutral. If all plugins return Neutral, access is denied.
+**Aggregation rule:** Deny > Grant > Neutral. If all plugins return Neutral, the kernel falls back to checking the `"{operation} {type} content"` permission.
 
 ---
 
@@ -527,6 +545,17 @@ fn tap_perm() -> Vec<PermissionDefinition> {
             "Full administrative access to blog settings"
         ),
     ]
+}
+```
+
+For plugins with multiple content types, use the `crud_for_type` helper to generate
+standard create/edit/delete permissions matching the kernel's fallback format:
+
+```rust
+#[plugin_tap]
+fn tap_perm() -> Vec<PermissionDefinition> {
+    let types = ["my_article", "my_comment"];
+    types.iter().flat_map(|t| PermissionDefinition::crud_for_type(t)).collect()
 }
 ```
 
@@ -839,27 +868,24 @@ fn tap_item_view(input: ItemViewInput) -> RenderElement {
 }
 
 // === Access Control ===
+// Most plugins don't need tap_item_access — the kernel handles published-item
+// access and falls back to "{operation} {type} content" permission checks.
+// Only implement this if you need custom logic (e.g., private items visible
+// only to their author).
 
 #[plugin_tap]
 fn tap_item_access(input: ItemAccessInput) -> AccessResult {
-    let item = &input.item;
-
-    if item.item_type != "blog" {
+    if input.item_type != "blog" {
         return AccessResult::Neutral;
     }
 
-    // Published posts visible to all
-    if item.status == 1 {
+    // Author can always access their own posts
+    if input.user_id == input.author_id {
         return AccessResult::Grant;
     }
 
-    // Unpublished only to author or admin
-    let user_id = host::user::current_user_id();
-    if item.author_id == user_id || host::user::has_permission("administer content") {
-        return AccessResult::Grant;
-    }
-
-    AccessResult::Deny
+    // Defer to kernel permission fallback
+    AccessResult::Neutral
 }
 
 // === Routes ===
@@ -877,16 +903,13 @@ fn tap_menu() -> Vec<MenuDefinition> {
 }
 
 // === Permissions ===
+// Use crud_for_type() for standard view/create/edit/delete permissions matching
+// the kernel fallback format. Author access ("own" semantics) is handled by
+// tap_item_access above, not by permission strings.
 
 #[plugin_tap]
 fn tap_perm() -> Vec<PermissionDefinition> {
-    vec![
-        PermissionDefinition::new("create blog content", "Create blog posts"),
-        PermissionDefinition::new("edit own blog content", "Edit own blog posts"),
-        PermissionDefinition::new("edit any blog content", "Edit any blog post"),
-        PermissionDefinition::new("delete own blog content", "Delete own blog posts"),
-        PermissionDefinition::new("delete any blog content", "Delete any blog post"),
-    ]
+    PermissionDefinition::crud_for_type("blog")
 }
 
 // === Helpers ===

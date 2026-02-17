@@ -707,4 +707,245 @@ mod tests {
         assert!(parsed.includes.is_empty());
         assert_eq!(parsed.item_type, Some("blog".to_string()));
     }
+
+    // ── Plugin migration JSON validation ──────────────────────────────
+    // These tests embed the exact JSON payloads from plugin SQL migrations
+    // to catch serde mismatches before they reach the database.
+    //
+    // IMPORTANT: If you change a SQL migration's JSON, update the matching
+    // test here. If you change the Rust types, check that the SQL still
+    // deserializes correctly by running these tests.
+    //
+    // LIMITATIONS:
+    // - These are serde-level tests only. The actual SQL (ON CONFLICT clauses,
+    //   column names, gen_random_uuid() calls) is not tested here — that
+    //   requires integration tests against a real PostgreSQL instance.
+    // - Field references in filters/sorts (e.g., "fields.display_name") are
+    //   not validated against content type definitions. A typo would produce
+    //   NULL comparisons at query time, not a test failure here.
+
+    #[test]
+    fn blog_listing_definition_deserializes() {
+        let json = r#"{
+            "base_table": "item",
+            "item_type": "blog",
+            "fields": [],
+            "filters": [
+                {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null}
+            ],
+            "sorts": [
+                {"field": "created", "direction": "desc", "nulls": null}
+            ],
+            "relationships": [],
+            "includes": {}
+        }"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.item_type, Some("blog".into()));
+        assert_eq!(def.filters.len(), 1);
+        assert_eq!(def.filters[0].operator, FilterOperator::Equals);
+        assert_eq!(def.sorts[0].direction, SortDirection::Desc);
+    }
+
+    #[test]
+    fn blog_listing_display_deserializes() {
+        let json = r#"{
+            "format": "list",
+            "items_per_page": 10,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No blog posts yet.",
+            "header": null,
+            "footer": null
+        }"#;
+        let display: QueryDisplay = serde_json::from_str(json).unwrap();
+        assert_eq!(display.format, DisplayFormat::List);
+        assert_eq!(display.items_per_page, 10);
+    }
+
+    #[test]
+    fn ng_device_list_definition_deserializes() {
+        let json = r#"{
+            "base_table": "item",
+            "item_type": "ng_device",
+            "fields": [],
+            "filters": [
+                {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null},
+                {"field": "fields.state", "operator": "contains", "value": "", "exposed": true, "exposed_label": "State"},
+                {"field": "fields.device_type", "operator": "contains", "value": "", "exposed": true, "exposed_label": "Device Type"},
+                {"field": "fields.owner_id", "operator": "contains", "value": "", "exposed": true, "exposed_label": "Owner"}
+            ],
+            "sorts": [
+                {"field": "fields.display_name", "direction": "asc", "nulls": null}
+            ],
+            "relationships": [],
+            "includes": {}
+        }"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.item_type, Some("ng_device".into()));
+        assert_eq!(def.filters.len(), 4);
+        // owner_id uses Contains (not Equals) so empty default = LIKE '%%' = match all.
+        // Equals with empty string would match only literal empty, breaking the listing.
+        assert_eq!(def.filters[3].operator, FilterOperator::Contains);
+        assert_eq!(def.sorts[0].direction, SortDirection::Asc);
+    }
+
+    // Note: GreaterOrEqual/LessOrEqual on `fields.timestamp` produce SQL like
+    // `item.fields->>'timestamp' >= 0`. PostgreSQL implicitly casts the text
+    // result of ->> to numeric for comparison. This works reliably for integer
+    // JSONB values but is not covered by unit tests — it requires an integration
+    // test with a real database.
+    #[test]
+    fn ng_event_log_definition_deserializes() {
+        let json = r#"{
+            "base_table": "item",
+            "item_type": "ng_event",
+            "fields": [],
+            "filters": [
+                {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null},
+                {"field": "fields.timestamp", "operator": "greater_or_equal", "value": 0, "exposed": true, "exposed_label": "After"},
+                {"field": "fields.timestamp", "operator": "less_or_equal", "value": 4102444800, "exposed": true, "exposed_label": "Before"}
+            ],
+            "sorts": [
+                {"field": "fields.timestamp", "direction": "desc", "nulls": null}
+            ],
+            "relationships": [],
+            "includes": {}
+        }"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.item_type, Some("ng_event".into()));
+        assert_eq!(def.filters[1].operator, FilterOperator::GreaterOrEqual);
+        assert_eq!(def.filters[2].operator, FilterOperator::LessOrEqual);
+    }
+
+    #[test]
+    fn argus_story_list_definition_with_includes_deserializes() {
+        let json = r#"{
+            "base_table": "item",
+            "item_type": "argus_story",
+            "fields": [],
+            "filters": [
+                {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null},
+                {"field": "fields.field_active", "operator": "equals", "value": true, "exposed": false, "exposed_label": null}
+            ],
+            "sorts": [
+                {"field": "fields.field_relevance_score", "direction": "desc", "nulls": null}
+            ],
+            "relationships": [],
+            "includes": {
+                "articles": {
+                    "definition": {
+                        "base_table": "item",
+                        "item_type": "argus_article",
+                        "fields": [],
+                        "filters": [
+                            {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null}
+                        ],
+                        "sorts": [
+                            {"field": "fields.field_relevance_score", "direction": "desc", "nulls": null}
+                        ],
+                        "relationships": [],
+                        "includes": {}
+                    },
+                    "parent_field": "id",
+                    "child_field": "fields.field_story_id",
+                    "singular": false,
+                    "display": {
+                        "format": "list",
+                        "items_per_page": 10,
+                        "pager": {"enabled": false, "style": "full", "show_count": false},
+                        "empty_text": "No articles yet.",
+                        "header": null,
+                        "footer": null
+                    }
+                }
+            }
+        }"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.item_type, Some("argus_story".into()));
+        assert_eq!(def.includes.len(), 1);
+        let articles = &def.includes["articles"];
+        assert_eq!(articles.parent_field, "id");
+        assert_eq!(articles.child_field, "fields.field_story_id");
+        assert!(!articles.singular);
+        assert_eq!(articles.definition.item_type, Some("argus_article".into()));
+    }
+
+    #[test]
+    fn ng_device_list_display_deserializes() {
+        let json = r#"{
+            "format": "table",
+            "items_per_page": 50,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No devices found.",
+            "header": null,
+            "footer": null
+        }"#;
+        let display: QueryDisplay = serde_json::from_str(json).unwrap();
+        assert_eq!(display.format, DisplayFormat::Table);
+        assert_eq!(display.items_per_page, 50);
+    }
+
+    #[test]
+    fn ng_event_log_display_deserializes() {
+        let json = r#"{
+            "format": "table",
+            "items_per_page": 100,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No events recorded.",
+            "header": null,
+            "footer": null
+        }"#;
+        let display: QueryDisplay = serde_json::from_str(json).unwrap();
+        assert_eq!(display.format, DisplayFormat::Table);
+        assert_eq!(display.items_per_page, 100);
+    }
+
+    #[test]
+    fn argus_story_list_display_deserializes() {
+        let json = r#"{
+            "format": "list",
+            "items_per_page": 20,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No active stories.",
+            "header": null,
+            "footer": null
+        }"#;
+        let display: QueryDisplay = serde_json::from_str(json).unwrap();
+        assert_eq!(display.format, DisplayFormat::List);
+        assert_eq!(display.items_per_page, 20);
+    }
+
+    #[test]
+    fn argus_feed_list_display_deserializes() {
+        let json = r#"{
+            "format": "table",
+            "items_per_page": 20,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No feeds configured.",
+            "header": null,
+            "footer": null
+        }"#;
+        let display: QueryDisplay = serde_json::from_str(json).unwrap();
+        assert_eq!(display.format, DisplayFormat::Table);
+        assert_eq!(display.items_per_page, 20);
+    }
+
+    #[test]
+    fn argus_feed_list_definition_deserializes() {
+        let json = r#"{
+            "base_table": "item",
+            "item_type": "argus_feed",
+            "fields": [],
+            "filters": [
+                {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null}
+            ],
+            "sorts": [
+                {"field": "fields.field_name", "direction": "asc", "nulls": null}
+            ],
+            "relationships": [],
+            "includes": {}
+        }"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.item_type, Some("argus_feed".into()));
+        assert_eq!(def.sorts[0].direction, SortDirection::Asc);
+    }
 }

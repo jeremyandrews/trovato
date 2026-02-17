@@ -29,13 +29,46 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
 }
 
 /// Permissions provided by the blog plugin.
+///
+/// Uses standard CRUD permissions matching the kernel fallback format.
+/// "edit blog content" / "delete blog content" serve as "edit any" / "delete any"
+/// permissions. Author access ("own" semantics) is handled by `tap_item_access`
+/// below, which grants access when user == author.
 #[plugin_tap]
 pub fn tap_perm() -> Vec<PermissionDefinition> {
-    vec![
-        PermissionDefinition::new("create blog content", "Create new blog posts"),
-        PermissionDefinition::new("edit own blog content", "Edit own blog posts"),
-        PermissionDefinition::new("delete own blog content", "Delete own blog posts"),
-    ]
+    PermissionDefinition::crud_for_type("blog")
+}
+
+/// Access control for blog posts — implements "own" semantics.
+///
+/// The kernel flow for non-admin access checks:
+/// 1. Published + "view" → kernel shortcut grants if user has "access content"
+/// 2. `tap_item_access` → this function (below)
+/// 3. Permission fallback → checks `"{operation} blog content"`
+///
+/// This tap grants access when user == author, providing "own" semantics:
+/// - Authors can view their own unpublished drafts
+/// - Authors can edit and delete their own posts
+///
+/// Non-authors fall through to the kernel permission fallback, which checks
+/// "edit blog content" / "delete blog content" — the "any" equivalent.
+///
+/// Note: The WASM boundary prevents checking user permissions inside taps
+/// (ItemAccessInput has no permission data). Author access is therefore
+/// unconditional — any authenticated author can edit/delete their own posts.
+#[plugin_tap]
+pub fn tap_item_access(input: ItemAccessInput) -> AccessResult {
+    if input.item_type != "blog" {
+        return AccessResult::Neutral;
+    }
+
+    // Author can always access their own posts (view drafts, edit, delete)
+    if input.user_id == input.author_id {
+        return AccessResult::Grant;
+    }
+
+    // Non-authors: defer to kernel permission fallback ("edit blog content", etc.)
+    AccessResult::Neutral
 }
 
 /// Menu routes provided by the blog plugin.
@@ -51,26 +84,102 @@ pub fn tap_menu() -> Vec<MenuDefinition> {
     ]
 }
 
-/// Access control for blog items.
-#[plugin_tap]
-pub fn tap_item_access(input: ItemAccessInput) -> AccessResult {
-    // Only handle blog items
-    if input.item.item_type != "blog" {
-        return AccessResult::Neutral;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_info_returns_one_type() {
+        let types = __inner_tap_item_info();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].machine_name, "blog");
     }
 
-    // Published posts are accessible to all
-    if input.item.status == 1 && input.op == "view" {
-        return AccessResult::Grant;
+    #[test]
+    fn perm_returns_four_permissions() {
+        let perms = __inner_tap_perm();
+        assert_eq!(perms.len(), 4); // 4 per type × 1 type (view/create/edit/delete)
     }
 
-    // Otherwise neutral - let permission system decide
-    AccessResult::Neutral
-}
+    #[test]
+    fn perm_format_matches_kernel_fallback() {
+        let perms = __inner_tap_perm();
+        for perm in &perms {
+            assert!(
+                perm.name.ends_with(" blog content"),
+                "permission '{}' must end with 'blog content'",
+                perm.name
+            );
+        }
+    }
 
-/// Input for tap_item_access.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct ItemAccessInput {
-    pub item: Item,
-    pub op: String,
+    #[test]
+    fn access_neutral_for_non_blog() {
+        let input = ItemAccessInput {
+            item_id: Uuid::nil(),
+            item_type: "page".into(),
+            author_id: Uuid::nil(),
+            operation: "edit".into(),
+            user_id: Uuid::nil(),
+        };
+        assert_eq!(__inner_tap_item_access(input), AccessResult::Neutral);
+    }
+
+    #[test]
+    fn access_grant_for_author() {
+        let author = Uuid::nil();
+        let input = ItemAccessInput {
+            item_id: Uuid::nil(),
+            item_type: "blog".into(),
+            author_id: author,
+            operation: "edit".into(),
+            user_id: author,
+        };
+        assert_eq!(__inner_tap_item_access(input), AccessResult::Grant);
+    }
+
+    #[test]
+    fn access_neutral_for_non_author() {
+        let input = ItemAccessInput {
+            item_id: Uuid::nil(),
+            item_type: "blog".into(),
+            author_id: Uuid::from_u128(1),
+            operation: "edit".into(),
+            user_id: Uuid::from_u128(2),
+        };
+        assert_eq!(__inner_tap_item_access(input), AccessResult::Neutral);
+    }
+
+    #[test]
+    fn access_grant_for_author_view() {
+        let author = Uuid::nil();
+        let input = ItemAccessInput {
+            item_id: Uuid::nil(),
+            item_type: "blog".into(),
+            author_id: author,
+            operation: "view".into(),
+            user_id: author,
+        };
+        assert_eq!(__inner_tap_item_access(input), AccessResult::Grant);
+    }
+
+    #[test]
+    fn access_grant_for_author_delete() {
+        let author = Uuid::nil();
+        let input = ItemAccessInput {
+            item_id: Uuid::nil(),
+            item_type: "blog".into(),
+            author_id: author,
+            operation: "delete".into(),
+            user_id: author,
+        };
+        assert_eq!(__inner_tap_item_access(input), AccessResult::Grant);
+    }
+
+    #[test]
+    fn menu_returns_two_routes() {
+        let menus = __inner_tap_menu();
+        assert_eq!(menus.len(), 2);
+        assert_eq!(menus[0].path, "/blog");
+    }
 }

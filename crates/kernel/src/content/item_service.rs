@@ -28,6 +28,10 @@ struct ItemServiceInner {
 }
 
 /// Input for checking item access.
+///
+/// SYNC: An identical struct exists in `crates/plugin-sdk/src/types.rs` for
+/// plugin-side deserialization. The kernel serializes this; plugins deserialize
+/// it. If you change fields here, update the SDK copy to match.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ItemAccessInput {
     pub item_id: Uuid,
