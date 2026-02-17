@@ -344,3 +344,32 @@ development_status:
   22-17-language-detection-plugin: backlog      # Standard Plugin - URL prefix, browser, domain negotiation
 
   epic-22-retrospective: optional
+
+  # Epic 23: Gather UI & Query Consolidation
+  # Admin UI for managing Gather query definitions + migrating hardcoded queries
+  epic-23: backlog
+  23-1-gather-admin-list-page: backlog
+  23-2-gather-definition-form: backlog
+  23-3-display-config-sub-form: backlog
+  23-4-exposed-filter-config-ui: backlog
+  23-5-include-definitions-ui: backlog
+  23-6-contextual-filter-config-ui: backlog
+  23-7-live-preview-panel: backlog
+  23-8-gather-query-cloning: backlog
+  23-9-convert-hardcoded-queries-to-gather: backlog
+  23-10-gather-query-access-control: backlog
+  epic-23-retrospective: optional
+
+  # Epic 24: Block Editor — Standard Plugin (Editor.js Integration)
+  # Block-based content editing with Editor.js, storing structured JSON in Compound fields
+  epic-24: backlog
+  24-1-editor-js-asset-pipeline: backlog
+  24-2-block-editor-field-widget: backlog
+  24-3-core-block-plugins: backlog
+  24-4-image-block-with-media-library: backlog
+  24-5-embed-block-oembed: backlog
+  24-6-block-output-rendering: backlog
+  24-7-block-data-migration-helpers: backlog
+  24-8-custom-block-plugin-api: backlog
+  24-9-block-editor-ux-polish: backlog
+  epic-24-retrospective: optional

@@ -2624,6 +2624,8 @@ So that regressions can be detected.
 | 20 | Use Case Exploration | 8 | Three use cases validated with working examples |
 | 21 | Complete Stage Workflow | 9 | All config entities stage-aware with atomic publish |
 | 22 | Modern CMS Features | 9 | Selected D7+ features implemented and documented |
+| 23 | Gather UI & Query Consolidation | 9 | Admin UI for Gather definitions; hardcoded listings converted to Gather queries |
+| 24 | Block Editor (Editor.js) | 9 | Block-based content editing via Editor.js, structured JSON storage, server-side rendering |
 
 ---
 
@@ -4819,6 +4821,613 @@ So that the admin interface and public-facing config are localized.
 
 **Dev Notes:**
 - Depends on 21.1 (ConfigStorage trait)
+
+---
+
+## Epic 23: Gather UI & Query Consolidation
+
+**Governing Principle:** Every list a user might want to customize is a Gather. Every query that isn't a Gather has a reason not to be.
+
+The Gather engine already exists as a backend: SeaQuery-based dynamic query builder with JSONB field extraction, category-aware hierarchical filters, contextual values, includes (nested sub-queries), and display configuration. What's missing is the admin UI for managing Gather definitions, and the migration of hardcoded model-layer list queries to Gather definitions.
+
+**Goal:** Build the admin interface for creating, editing, and previewing Gather definitions (Part 1), then convert hardcoded listing queries in the model layer to Gather definitions so every listing runs through Gather and can be customized through the UI (Part 2).
+
+**Scope:**
+- Part 1: Block-based Gather admin UI (Metabase-inspired, progressive disclosure, live preview)
+- Part 2: Convert ~40 hardcoded listing queries to default Gather definitions
+- Performance guardrails: mandatory pagination caps, join depth limits, query timeouts, JSONB index warnings
+
+**Gate:**
+- Admin can create, edit, clone, and preview Gather definitions via the UI
+- Core content listings (Items, Users, Comments) run through Gather
+- Performance guardrails enforced at engine level, not just UI
+
+**Design Philosophy:** "I found the Views UI overly complex. I hate that it was trivially easy to build absurdly bad queries that performed badly. I want something that makes sense and doesn't encourage abuse." — Progressive disclosure, performance guardrails baked into the engine, live preview at every step.
+
+**UI Architecture:** Block-based composition (Metabase pattern). The query is built as a vertical stack of blocks — each block is one decision (base table, filter, sort, pagination). No modal dialogs, no separate tabs, no rearrange vs configure modes.
+
+**Performance Guardrails:**
+- Mandatory pagination (max configurable cap, default 100, no "show all")
+- Join depth limit (default 3, configurable per-site)
+- Required join conditions (schema-aware pre-population)
+- JSONB filter warnings (check for expression indexes)
+- No OR groups in v1 (all filters are AND)
+- No leading wildcard searches (default to StartsWith, offer Contains with warning)
+- Query cost indicator (EXPLAIN integration for admin preview)
+
+**Cross-references:** Epic 7 (Gather backend), Epic 9 (Form API/exposed filters), Epic 22 (plugin architecture)
+
+---
+
+### Story 23.1: Gather Admin List Page
+
+As a **site administrator**,
+I want to see all registered Gather definitions in one place,
+So that I can manage, edit, clone, and delete queries.
+
+**Acceptance Criteria:**
+
+1. Admin page at `/admin/gather` listing all Gather definitions
+2. Table columns: query_id, label, item_type, plugin (source), created, changed
+3. Actions per row: edit, clone, delete, preview
+4. Plugin-provided views show "Provided by: {plugin}" badge
+5. Filter by plugin source (all, core, specific plugin)
+6. Pagination for the list itself
+
+**Tasks:**
+- [ ] Create Gather admin list route and handler
+- [ ] Build list template with action links
+- [ ] Implement clone action (duplicate definition with new query_id)
+- [ ] Implement delete action with confirmation
+- [ ] Add "Provided by" badge for plugin-registered views
+- [ ] Add source filter dropdown
+
+---
+
+### Story 23.2: Gather Query Builder UI
+
+As a **site administrator**,
+I want a block-based query editor for building Gather definitions,
+So that I can create custom content listings without writing code.
+
+**Acceptance Criteria:**
+
+1. Edit page at `/admin/gather/{query_id}/edit` with block-based editor
+2. Base block: content type selector (dropdown of registered types)
+3. Filter blocks: field picker + operator selector + value input, inline editing
+4. Sort blocks: field picker + direction toggle, drag-to-reorder
+5. Field picker shows base table columns and JSONB fields from the selected content type
+6. Operator selector filtered to valid operators for the field type
+7. Adding blocks via "+ Filter" / "+ Sort" buttons below the stack
+8. Removing blocks via X button on each block
+9. Create page at `/admin/gather/create` using the same editor
+
+**Tasks:**
+- [ ] Create Gather edit route and handler
+- [ ] Build block-based editor form (base, filters, sorts sections)
+- [ ] Implement field picker with content type awareness
+- [ ] Implement operator selector filtered by field type
+- [ ] Add filter value input (text, number, date, boolean, select)
+- [ ] Add drag-to-reorder for sort blocks
+- [ ] Implement save handler (serialize to ViewDefinition JSON)
+- [ ] Create new-view flow starting with content type picker
+- [ ] Handle exposed filter configuration (toggle + label)
+
+**Dev Notes:**
+- Each block must be a complete, valid query modification — no partial states
+- Field picker must enumerate both base table columns and JSONB fields from content type definition
+- Operator list per field type: Text → Equals/Contains/StartsWith/EndsWith/IsNull; Integer/Float → Equals/GreaterThan/LessThan/Between; Boolean → Equals; RecordReference → Equals/In/IsNull; Category → HasTag/HasAnyTag/HasAllTags/HasTagOrDescendants
+
+---
+
+### Story 23.3: Live Preview Panel
+
+As a **site administrator**,
+I want to see query results update as I build the definition,
+So that I get immediate feedback on my query without saving first.
+
+**Acceptance Criteria:**
+
+1. Preview panel shows results from the current (unsaved) definition
+2. Preview updates on every block change (debounced, ~500ms after last edit)
+3. Shows result count, first N rows, and execution time
+4. Shows "No results" with the configured empty_text if query returns nothing
+5. Preview runs with current user's permissions (not bypassing access)
+6. Preview panel at `/admin/gather/{query_id}/preview` for full-page view
+
+**Tasks:**
+- [ ] Create preview API endpoint (POST, accepts ViewDefinition JSON, returns results)
+- [ ] Add preview panel to editor page (right side or bottom)
+- [ ] Implement debounced AJAX preview on block changes
+- [ ] Show result count, rows, and execution time
+- [ ] Add full-page preview route
+- [ ] Show generated SQL for admin users (collapsible)
+
+**Dev Notes:**
+- Preview endpoint must enforce all performance guardrails (pagination cap, join depth)
+- Consider query timeout for preview (shorter than normal, e.g., 2s)
+
+---
+
+### Story 23.4: Relationship Editor
+
+As a **site administrator**,
+I want to add JOIN relationships to a Gather definition,
+So that I can include data from related tables.
+
+**Acceptance Criteria:**
+
+1. Relationship block: join type (Inner/Left) + target table + local field + foreign field
+2. Schema-aware pre-population: known relationships shown as suggestions
+3. Join depth counter visible, "+ Relationship" grayed out at limit (default 3)
+4. Joined table fields available in field picker and filter/sort blocks
+5. Join depth limit configurable in admin settings
+
+**Tasks:**
+- [ ] Add relationship block to query builder
+- [ ] Implement schema-aware relationship suggestions
+- [ ] Add join depth counter and limit enforcement
+- [ ] Make joined table fields available in field/filter/sort pickers
+- [ ] Add admin setting for max join depth
+
+---
+
+### Story 23.5: Display Configuration
+
+As a **site administrator**,
+I want to configure how Gather results are displayed,
+So that I can control format, pagination style, and empty text.
+
+**Acceptance Criteria:**
+
+1. Display section in editor: format (Table/List/Grid/Custom), items per page, pager style
+2. Pager style options: Full (numbered pages), Mini (prev/next), Infinite scroll
+3. Empty text: configurable message when no results
+4. Header/footer: optional text above/below results
+5. Show total count toggle
+6. Items per page constrained by admin-configurable maximum (default 100)
+
+**Tasks:**
+- [ ] Add display configuration section to editor
+- [ ] Implement format selector with preview of each format
+- [ ] Add pager style selector
+- [ ] Add empty text, header, footer fields
+- [ ] Enforce max items_per_page from admin settings
+
+---
+
+### Story 23.6: Performance Guardrails
+
+As a **site administrator**,
+I want the system to prevent me from building expensive queries,
+So that my site stays performant even with custom listings.
+
+**Acceptance Criteria:**
+
+1. Maximum pagination cap enforced in `GatherService::execute()` (not just UI)
+2. Join depth validated in `ViewDefinition` deserialization (reject definitions exceeding limit)
+3. Query timeout via `SET statement_timeout` before Gather execution (configurable, default 5s)
+4. JSONB filter notice: UI checks for expression indexes, shows warning if missing
+5. No leading wildcard: Contains operator shows performance note, StartsWith is default for text
+6. Query cost indicator in preview panel (EXPLAIN output, parsed cost estimate)
+7. Admin settings page for guardrail configuration
+
+**Tasks:**
+- [ ] Enforce pagination cap in GatherService::execute() (ignore client limit > max)
+- [ ] Add join depth validation to ViewDefinition deserialization
+- [ ] Add statement_timeout wrapper around Gather query execution
+- [ ] Build expression index registry (query pg_catalog for expression indexes)
+- [ ] Add JSONB index check to filter UI
+- [ ] Add EXPLAIN integration for admin preview
+- [ ] Create admin settings page for guardrail values
+
+**Dev Notes:**
+- statement_timeout should be SET LOCAL (transaction-scoped) not session-scoped
+- Expression index detection: query `pg_indexes` for indexes on `(fields->>'field_name')`
+
+---
+
+### Story 23.7: Core Content Gather Views
+
+As a **developer**,
+I want hardcoded content listing queries replaced with default Gather definitions,
+So that admins can customize all content listings through the UI.
+
+**Acceptance Criteria:**
+
+1. Default Gather views registered by core for:
+   - `core.published_items`: Published items (replaces `Item::list_published()`)
+   - `core.items_by_type`: Items by type (replaces `Item::list_by_type()`)
+   - `core.items_by_author`: Items by author (replaces `Item::list_by_author()`)
+   - `core.all_items`: Admin content list with exposed filters (replaces `Item::list_filtered()` and `Item::list_all()`)
+2. Existing model methods become thin wrappers calling `GatherService::execute()`
+3. Admin-customized versions take precedence over defaults
+4. "Reset to default" action restores the core definition
+
+**Tasks:**
+- [ ] Define default Gather views for Item listings
+- [ ] Register defaults during kernel initialization
+- [ ] Refactor Item::list_published() to use Gather
+- [ ] Refactor Item::list_by_type() to use Gather
+- [ ] Refactor Item::list_by_author() to use Gather
+- [ ] Replace Item::list_filtered() with exposed-filter Gather view
+- [ ] Refactor Item::list_all() to use Gather
+- [ ] Add "Reset to default" action for core views
+- [ ] Verify existing routes return identical results
+
+**Dev Notes:**
+- The `Item::list_filtered()` method with manual string concatenation is the highest-priority conversion
+- Comment queries that use recursive CTEs may need a custom Gather extension (Story 22.2)
+
+---
+
+### Story 23.8: Admin Entity Gather Views
+
+As a **developer**,
+I want admin entity listing queries converted to Gather definitions,
+So that admin tables are customizable and consistent.
+
+**Acceptance Criteria:**
+
+1. Default Gather views registered for:
+   - `core.user_list`: All users (replaces `User::list_paginated()`)
+   - `core.comment_list`: All comments (replaces `Comment::list_all()`)
+   - `core.comment_moderation`: Comments by status (replaces `Comment::list_by_status()`)
+   - `core.category_terms`: Tags by vocabulary (replaces `Tag::list_by_category()`)
+   - `core.url_aliases`: All aliases (replaces `UrlAlias::list_all()`)
+   - `core.roles`: All roles (replaces `Role::list()`)
+   - `core.content_types`: All types (replaces `ItemType::list()`)
+2. Admin pages updated to use Gather results
+3. Exposed filters work on admin pages (status filter on comments, type filter on content)
+
+**Tasks:**
+- [ ] Define default Gather views for User, Comment, Category, Alias, Role, ItemType
+- [ ] Register defaults during kernel initialization
+- [ ] Refactor admin user list to use Gather
+- [ ] Refactor comment moderation to use Gather
+- [ ] Refactor category admin to use Gather
+- [ ] Refactor URL alias admin to use Gather
+- [ ] Refactor role and content type admin lists to use Gather
+- [ ] Add exposed filters to admin pages where appropriate
+
+**Dev Notes:**
+- Non-item tables (users, roles, url_alias) need Gather to support base_table != "item"
+- This may require extending ViewDefinition to support arbitrary base tables
+- Recursive CTE queries (Tag::get_descendants) may not convert directly — evaluate
+
+---
+
+### Story 23.9: Search Integration
+
+As a **site administrator**,
+I want full-text search available as a Gather filter type,
+So that search results can be customized through the Gather UI.
+
+**Acceptance Criteria:**
+
+1. New filter operator: `FullTextSearch` using existing tsvector infrastructure
+2. Filter value is the search query string
+3. Results ranked by ts_rank (sort handler)
+4. Integrates with existing SearchService::search() logic
+5. Exposed as a filter in the Gather UI
+
+**Tasks:**
+- [ ] Add FullTextSearch filter operator to FilterOperator enum
+- [ ] Implement tsvector filter in query builder
+- [ ] Add ts_rank sort handler
+- [ ] Register as Gather extension via Story 22.2 API
+- [ ] Add to filter operator list in Gather UI
+
+**Dev Notes:**
+- Search already works (Epic 12). This story makes it available as a Gather filter type.
+- The existing SearchService can remain for programmatic use; Gather provides the UI path.
+
+---
+
+### Story 23.10: Include/Sub-query Editor
+
+As a **site administrator**,
+I want to configure nested sub-queries (includes) through the UI,
+So that I can build composite responses like stories-with-articles.
+
+**Acceptance Criteria:**
+
+1. Include section in editor: add sub-query with parent_field, child_field, singular toggle
+2. Sub-query inherits the block-based editor (recursive UI)
+3. Separate display config per include (items per page, format)
+4. Preview shows nested results
+
+**Tasks:**
+- [ ] Add include section to query builder
+- [ ] Implement recursive block editor for sub-query definition
+- [ ] Add parent/child field pickers with relationship awareness
+- [ ] Add singular/array toggle
+- [ ] Show nested results in preview
+
+**Dev Notes:**
+- This is the most complex UI feature. Consider deferring to v2 if timeline is tight.
+- The backend already fully supports includes (validated by Argus plugin).
+
+---
+
+## Epic 24: Block Editor -- Standard Plugin (Editor.js Integration)
+
+**Governing Principle:** Core enables. Plugins implement.
+
+The Kernel provides compound field type infrastructure (Epic 22.3), field widget registry, render pipeline, and file storage. The Block Editor plugin provides a visual editing widget using Editor.js that outputs structured JSON matching the compound field storage model.
+
+**Goal:** Provide a block-based visual content editing experience that outputs clean structured JSON, is renderable to any target (HTML, AMP, RSS, mobile), and is replaceable because the data format is the contract, not the editor.
+
+**Scope:**
+- Block type registry with JSON schema validation
+- Editor.js field widget (JavaScript, browser-side)
+- Server-side block validation and sanitization
+- Server-side block rendering (JSON → Render Tree → HTML)
+- Image upload endpoint via FileStorage trait
+- 8 standard block types (paragraph, heading, image, list, quote, code, delimiter, embed)
+
+**Gate:**
+- Content types with compound fields render Editor.js in the admin form
+- All 8 standard block types work end-to-end (edit → validate → store → render)
+- Image upload works with local file storage
+- Public pages render block content as pure HTML (no JS dependency for readers)
+
+**Why Editor.js:** Apache 2.0 licensed, block-based architecture maps directly to compound field storage, clean JSON output (no HTML blobs), vanilla JS (no framework dependency), standard tool interface for custom block types.
+
+**What this is NOT:**
+- Not a Layout Builder (content editing, not page structure)
+- Not a Gutenberg clone (content blocks and layout blocks are separate concerns)
+- Not CKEditor (no GPL, no HTML blob output, no maintenance burden)
+
+**Dependencies:**
+- Epic 22 Story 22.3 (compound field type) — storage layer
+- Field widget registry (Epic 7 / Form API)
+- FileStorage trait (existing)
+- Asset pipeline for plugin JS/CSS (existing or minor extension)
+
+**Cross-references:** Epic 22 (compound field type, standard content types), Design-Content-Model, Design-Render-Theme, Design-Plugin-System
+
+---
+
+### Story 24.1: Block Type Registry & Compound Field Integration
+
+As a **plugin developer**,
+I want to register block types with JSON schemas,
+So that the compound field type can validate blocks on save.
+
+**Acceptance Criteria:**
+
+1. `BlockTypeDefinition` struct with type_name, label, JSON schema, allowed_formats, plugin
+2. Block type registration via `tap_block_type_info` (or compound field extension mechanism)
+3. Standard block types registered: paragraph, heading, image, list, quote, code, delimiter, embed
+4. Compound field type's per-type validation dispatches to block type schemas
+5. Unknown block types rejected on save
+
+**Tasks:**
+- [ ] Define BlockTypeDefinition struct
+- [ ] Create block type registry (in-memory, populated at startup)
+- [ ] Register 8 standard block types with JSON schemas
+- [ ] Wire compound field validation to block type registry
+- [ ] Add tap or extension point for plugin-provided block types
+- [ ] Add tests for schema validation of each standard type
+
+**Dev Notes:**
+- Block storage format: `{ "type": "paragraph", "data": { "text": "..." }, "weight": 0 }`
+- This maps directly to Editor.js output with `id` stripped and `weight` added
+
+---
+
+### Story 24.2: Server-Side Block Validation
+
+As a **content administrator**,
+I want blocks validated on save to prevent malformed content,
+So that stored content is always well-formed and safe.
+
+**Acceptance Criteria:**
+
+1. Each block's `data` validated against its registered JSON schema
+2. Text fields sanitized via `ammonia` (filtered_html rules from Kernel)
+3. File references validated (image URLs point to real managed files)
+4. Unknown block types rejected with clear error message
+5. Field-level `allowed_types` enforced (only configured block types accepted)
+6. Validation errors returned per-block with block index
+
+**Tasks:**
+- [ ] Implement per-block schema validation
+- [ ] Integrate ammonia text sanitization for text-containing blocks
+- [ ] Add file reference validation for image blocks
+- [ ] Enforce field-level allowed_types list
+- [ ] Return structured validation errors with block index
+- [ ] Add tests for valid and invalid blocks of each type
+
+**Dev Notes:**
+- ammonia is already in use or planned for text format filtering
+- File reference validation: query file_managed table for the referenced URL
+
+---
+
+### Story 24.3: Editor.js Field Widget
+
+As a **content editor**,
+I want a visual block editor when editing compound fields,
+So that I can compose rich content with text, images, and embeds.
+
+**Acceptance Criteria:**
+
+1. Field widget loads Editor.js when compound field has `widget: "block_editor"` in settings
+2. Tool configuration derived from field's `allowed_block_types`
+3. Initial data loaded from Item's compound field value (mapped from Trovato → Editor.js format)
+4. Save handler extracts Editor.js JSON, maps to compound field format, submits with form
+5. Undo/redo via editorjs-undo package
+6. Configurable inline tools (bold, italic, link)
+7. Configurable placeholder text
+
+**Tasks:**
+- [ ] Create Editor.js field widget JavaScript module
+- [ ] Implement Trovato → Editor.js data mapping (add `id`, remove `weight`)
+- [ ] Implement Editor.js → Trovato data mapping (strip `id`, add `weight`)
+- [ ] Configure Editor.js tools from field settings
+- [ ] Integrate editorjs-undo for undo/redo
+- [ ] Wire save handler to form submission
+- [ ] Ship JS assets in plugin's static/ directory
+- [ ] Add widget_settings schema to field configuration
+
+**Dev Notes:**
+- Editor.js is vanilla JS — no React/Vue dependency
+- Widget settings in field_instance: `{ "widget": "block_editor", "allowed_block_types": [...], "inline_tools": [...], "placeholder": "..." }`
+- Static assets loaded via Kernel's asset pipeline when widget is active
+
+---
+
+### Story 24.4: Image Upload Endpoint
+
+As a **content editor**,
+I want images uploaded inline while editing,
+So that I can add images without leaving the editor.
+
+**Acceptance Criteria:**
+
+1. POST endpoint at `/api/block-editor/upload` accepting multipart/form-data
+2. MIME type validation (image/jpeg, image/png, image/gif, image/webp)
+3. File size limit (configurable, default 10MB)
+4. Storage via FileStorage trait (local or S3)
+5. Creates `file_managed` record for tracking
+6. Returns Editor.js expected response: `{ "success": 1, "file": { "url": "..." } }`
+7. CSRF protection on upload endpoint
+8. Access control: requires create/edit permission on the item type
+
+**Tasks:**
+- [ ] Create upload route and handler
+- [ ] Implement MIME type and size validation
+- [ ] Integrate with FileStorage trait
+- [ ] Create file_managed record on upload
+- [ ] Return Editor.js response format
+- [ ] Add CSRF token validation
+- [ ] Add permission check (item type create/edit)
+- [ ] Add configurable file size and dimension limits
+
+**Dev Notes:**
+- If Image Styles plugin is active later, it can hook into the upload to generate thumbnails
+- Upload endpoint is stateful via CSRF token tied to the editing session
+
+---
+
+### Story 24.5: Server-Side Block Rendering
+
+As a **site visitor**,
+I want block content rendered as clean HTML,
+So that pages load fast with no JavaScript dependency.
+
+**Acceptance Criteria:**
+
+1. Compound field render handler iterates blocks and builds Render Tree elements
+2. Each block type has a Tera template: `block--paragraph.html`, `block--heading.html`, etc.
+3. Templates are theme-overridable (standard template suggestion pattern)
+4. No Editor.js JavaScript on public-facing pages
+5. Render output is semantic HTML (proper heading levels, figure/figcaption for images, etc.)
+6. Code blocks render with syntax highlighting CSS classes
+
+**Tasks:**
+- [ ] Implement block-to-RenderTree mapper for each standard block type
+- [ ] Create Tera templates for all 8 block types
+- [ ] Wire into compound field display formatter
+- [ ] Add template suggestion support (block--{type}.html, block--{type}--{field}.html)
+- [ ] Verify semantic HTML output for accessibility
+- [ ] Add render tests for each block type
+
+**Dev Notes:**
+- The Render Tree is assembled server-side; templates produce final HTML
+- This is the critical architectural boundary: editor is a backend tool, public site is pure HTML
+
+---
+
+### Story 24.6: Code Block Syntax Highlighting
+
+As a **content editor**,
+I want code blocks rendered with syntax highlighting,
+So that code snippets are readable on the published page.
+
+**Acceptance Criteria:**
+
+1. Code block `data` includes `language` field (optional, auto-detect if missing)
+2. Server-side highlighting via `syntect` crate
+3. Output: `<pre><code>` with `<span>` elements for syntax tokens
+4. CSS classes for theme styling (light/dark mode support)
+5. Language selector in Editor.js code block tool
+
+**Tasks:**
+- [ ] Add syntect dependency
+- [ ] Implement syntax highlighting in code block renderer
+- [ ] Support explicit language field and auto-detection fallback
+- [ ] Generate CSS class output compatible with standard highlight themes
+- [ ] Add language selector to Editor.js code tool configuration
+
+---
+
+### Story 24.7: Embed Block Whitelist & Rendering
+
+As a **content editor**,
+I want to embed YouTube, Vimeo, and other media inline,
+So that I can include rich media in content without raw HTML.
+
+**Acceptance Criteria:**
+
+1. Configurable service whitelist (YouTube, Vimeo, etc.)
+2. URL pattern matching validates embed sources
+3. Render output: responsive iframe with CSP-safe headers
+4. oEmbed integration if feasible; otherwise direct iframe generation
+5. Caption support below embed
+
+**Tasks:**
+- [ ] Define embed service whitelist configuration
+- [ ] Implement URL pattern matching for whitelisted services
+- [ ] Generate responsive iframe HTML in render template
+- [ ] Add CSP header considerations for embed sources
+- [ ] Evaluate oEmbed integration (may defer to later)
+- [ ] Add caption rendering below embed
+
+---
+
+### Story 24.8: Read-Only Mode & Content Preview
+
+As a **content editor**,
+I want to preview block content before saving,
+So that I can verify how the content will appear on the live site.
+
+**Acceptance Criteria:**
+
+1. Editor.js readOnly mode toggle in the editing form
+2. Preview renders using the same server-side templates as the public page
+3. "Preview" button triggers server-side render of current (unsaved) block data
+4. Preview opens in modal or side panel (not a new page)
+
+**Tasks:**
+- [ ] Add preview button to block editor widget
+- [ ] Create preview endpoint (POST, accepts block JSON, returns rendered HTML)
+- [ ] Implement readOnly toggle for Editor.js
+- [ ] Render preview using same templates as public display
+- [ ] Display preview in modal or side panel
+
+---
+
+### Story 24.9: Block Editor Documentation
+
+As a **plugin developer**,
+I want documentation on creating custom block types,
+So that I can extend the editor for my domain-specific needs.
+
+**Acceptance Criteria:**
+
+1. Plugin development guide section: "Creating Custom Block Types"
+2. Covers: BlockTypeDefinition schema, Editor.js tool implementation, Tera template, registration
+3. End-user editing guide: how to use the block editor
+4. Configuration reference: widget settings, allowed types, embed whitelist
+
+**Tasks:**
+- [ ] Write custom block type development guide
+- [ ] Write end-user editing guide
+- [ ] Write configuration reference
+- [ ] Add example: creating a "callout" custom block type
 
 ---
 
