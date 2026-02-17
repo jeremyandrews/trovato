@@ -218,11 +218,11 @@ development_status:
 
   # Epic 15: Drupal 6 Alignment Audit (parallel research)
   # Scope: D6 + CCK + Views alignment, plus Workspaces→Stages, Gander→Profiling
-  epic-15: in-progress
-  15-1-core-concept-mapping: backlog
-  15-2-intentional-divergence-documentation: backlog
-  15-3-gap-analysis-and-prioritization: backlog
-  15-4-alignment-roadmap: backlog
+  epic-15: done
+  15-1-core-concept-mapping: done               # 2026-02-17 docs/alignment/drupal6-mapping.md
+  15-2-intentional-divergence-documentation: done  # 2026-02-17 docs/alignment/intentional-divergences.md
+  15-3-gap-analysis-and-prioritization: done     # 2026-02-17 docs/alignment/gap-analysis.md
+  15-4-alignment-roadmap: done                   # 2026-02-17 docs/alignment/roadmap.md
   15-5-path-alias-system: done  # URL aliases for human-readable URLs
   epic-15-retrospective: optional
 
@@ -280,7 +280,7 @@ development_status:
   # Validates Trovato against real workloads: traditional site, headless API, and three plugin projects
   # NOTE: 20.1-20.2 validated kernel features. 20.3-20.5 require plugin infrastructure (Epic 22A)
   # so that Argus/Netgrasp/Goose are real plugins, not kernel hacks.
-  epic-20: in-progress
+  epic-20: done
   20-1-traditional-website-use-case: done    # 2026-02-15
   20-2-headless-cms-use-case: done           # 2026-02-15
   20-3-argus-composite-gather-responses: done     # 2026-02-17 WASM plugin with composite gather includes
