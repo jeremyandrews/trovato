@@ -48,6 +48,9 @@ pub struct Item {
 
     /// Stage ID for content staging ('live' is default).
     pub stage_id: String,
+
+    /// Language code (default: 'en').
+    pub language: String,
 }
 
 /// Item revision record.
@@ -89,6 +92,7 @@ pub struct CreateItem {
     pub sticky: Option<i16>,
     pub fields: Option<serde_json::Value>,
     pub stage_id: Option<String>,
+    pub language: Option<String>,
     pub log: Option<String>,
 }
 
@@ -122,7 +126,7 @@ impl Item {
     /// Find an item by ID.
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let item = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item WHERE id = $1"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language FROM item WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(pool)
@@ -135,7 +139,7 @@ impl Item {
     /// List items by content type.
     pub async fn list_by_type(pool: &PgPool, item_type: &str) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item WHERE type = $1 ORDER BY created DESC"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language FROM item WHERE type = $1 ORDER BY created DESC"
         )
         .bind(item_type)
         .fetch_all(pool)
@@ -148,7 +152,7 @@ impl Item {
     /// List items by author.
     pub async fn list_by_author(pool: &PgPool, author_id: Uuid) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item WHERE author_id = $1 ORDER BY created DESC"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language FROM item WHERE author_id = $1 ORDER BY created DESC"
         )
         .bind(author_id)
         .fetch_all(pool)
@@ -161,7 +165,7 @@ impl Item {
     /// List published items.
     pub async fn list_published(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item WHERE status = 1 AND stage_id = 'live' ORDER BY sticky DESC, created DESC LIMIT $1 OFFSET $2"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language FROM item WHERE status = 1 AND stage_id = 'live' ORDER BY sticky DESC, created DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -184,8 +188,8 @@ impl Item {
         // Insert item (without current_revision_id first)
         sqlx::query(
             r#"
-            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id)
-            VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language)
+            VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             "#,
         )
         .bind(item_id)
@@ -199,6 +203,8 @@ impl Item {
         .bind(input.sticky.unwrap_or(0))
         .bind(input.fields.clone().unwrap_or(serde_json::json!({})))
         .bind(input.stage_id.as_deref().unwrap_or("live"))
+        // Routes should always provide the resolved language; "en" is a last-resort safety net.
+        .bind(input.language.as_deref().unwrap_or("en"))
         .execute(&mut *tx)
         .await
         .context("failed to insert item")?;
@@ -401,7 +407,7 @@ impl Item {
     /// List all items with pagination.
     pub async fn list_all(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item ORDER BY changed DESC LIMIT $1 OFFSET $2"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language FROM item ORDER BY changed DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -424,7 +430,7 @@ impl Item {
         // Build dynamic query
         // Note: We use 'type' not 'type' because sqlx uses the #[sqlx(rename = "type")] attribute
         let mut query = String::from(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id FROM item WHERE 1=1",
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language FROM item WHERE 1=1",
         );
         let mut param_idx = 1;
         let mut conditions = Vec::new();
@@ -562,6 +568,7 @@ mod tests {
             sticky: 0,
             fields: serde_json::json!({}),
             stage_id: "live".to_string(),
+            language: "en".to_string(),
         };
 
         assert!(item.is_published());
@@ -580,6 +587,7 @@ mod tests {
             sticky: None,
             fields: Some(serde_json::json!({"body": {"value": "Hello"}})),
             stage_id: None,
+            language: None,
             log: None,
         };
 

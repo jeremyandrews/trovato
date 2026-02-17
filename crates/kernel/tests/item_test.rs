@@ -154,6 +154,7 @@ fn form_builder_edit_form_includes_values() {
             "featured": {"value": true}
         }),
         stage_id: "live".to_string(),
+        language: "en".to_string(),
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -190,6 +191,7 @@ fn item_status_checks() {
         sticky: 0,
         fields: serde_json::json!({}),
         stage_id: "live".to_string(),
+        language: "en".to_string(),
     };
 
     assert!(item.is_published());
@@ -208,6 +210,7 @@ fn create_item_input_defaults() {
         sticky: None,
         fields: None,
         stage_id: None,
+        language: None,
         log: None,
     };
 
@@ -635,6 +638,7 @@ fn form_builder_edit_form_populates_all_types() {
             "related": {"target_id": "550e8400-e29b-41d4-a716-446655440000"},
         }),
         stage_id: "live".to_string(),
+        language: "en".to_string(),
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -672,6 +676,7 @@ fn form_builder_escapes_html_in_values() {
             "body": {"value": "<b>bold</b>", "format": "filtered_html"},
         }),
         stage_id: "live".to_string(),
+        language: "en".to_string(),
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -740,6 +745,7 @@ fn item_status_unpublished() {
         sticky: 1,
         fields: serde_json::json!({}),
         stage_id: "live".to_string(),
+        language: "en".to_string(),
     };
 
     assert!(!item.is_published());
@@ -774,6 +780,7 @@ fn create_item_with_all_fields() {
         sticky: Some(1),
         fields: Some(serde_json::json!({"body": {"value": "Content"}})),
         stage_id: Some("preview".to_string()),
+        language: Some("en".to_string()),
         log: Some("Initial creation".to_string()),
     };
 

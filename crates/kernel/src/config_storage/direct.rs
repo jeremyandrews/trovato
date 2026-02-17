@@ -12,7 +12,9 @@ use uuid::Uuid;
 use super::{
     ConfigEntity, ConfigFilter, ConfigStorage, SearchFieldConfig, entity_types, parse_tag_id,
 };
-use crate::models::{Category, CreateCategory, ItemType, Tag, UpdateCategory, UpdateTag};
+use crate::models::{
+    Category, CreateCategory, CreateLanguage, ItemType, Language, Tag, UpdateCategory, UpdateTag,
+};
 
 /// Direct database implementation of ConfigStorage.
 ///
@@ -405,6 +407,71 @@ impl DirectConfigStorage {
         Ok(result.rows_affected() > 0)
     }
 
+    // ---- Language helpers ----
+
+    async fn load_language(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let lang = Language::find_by_id(&self.pool, id).await?;
+        Ok(lang.map(ConfigEntity::Language))
+    }
+
+    async fn save_language(&self, lang: &Language) -> Result<()> {
+        let input = CreateLanguage {
+            id: lang.id.clone(),
+            label: lang.label.clone(),
+            weight: Some(lang.weight),
+            is_default: Some(lang.is_default),
+            direction: Some(lang.direction.clone()),
+        };
+
+        Language::upsert(&self.pool, input).await?;
+        Ok(())
+    }
+
+    async fn delete_language(&self, id: &str) -> Result<bool> {
+        Language::delete(&self.pool, id).await
+    }
+
+    async fn list_languages(&self, filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let langs = Language::list_all(&self.pool).await?;
+        let mut entities: Vec<ConfigEntity> =
+            langs.into_iter().map(ConfigEntity::Language).collect();
+
+        // Apply field/value filtering (e.g., field="is_default", value="true")
+        if let Some(f) = filter {
+            if let (Some(field), Some(value)) = (f.field.as_deref(), f.value.as_deref()) {
+                let is_known_field = matches!(field, "is_default" | "direction" | "id");
+                if !is_known_field {
+                    tracing::warn!(
+                        field = %field,
+                        value = %value,
+                        "list_languages: unknown filter field, returning all results"
+                    );
+                }
+                entities.retain(|e| {
+                    if let ConfigEntity::Language(lang) = e {
+                        match field {
+                            "is_default" => lang.is_default.to_string() == value,
+                            "direction" => lang.direction == value,
+                            "id" => lang.id == value,
+                            _ => true, // unknown field: don't filter (warned above)
+                        }
+                    } else {
+                        true
+                    }
+                });
+            }
+
+            if let Some(offset) = f.offset {
+                entities = entities.into_iter().skip(offset).collect();
+            }
+            if let Some(limit) = f.limit {
+                entities.truncate(limit);
+            }
+        }
+
+        Ok(entities)
+    }
+
     async fn list_variables(&self, filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
         let rows =
             sqlx::query_as::<_, VariableRow>("SELECT key, value FROM site_config ORDER BY key")
@@ -443,6 +510,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::CATEGORY => self.load_category(id).await,
             entity_types::TAG => self.load_tag(id).await,
             entity_types::VARIABLE => self.load_variable(id).await,
+            entity_types::LANGUAGE => self.load_language(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {}", entity_type)),
         }
     }
@@ -454,6 +522,7 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::Category(c) => self.save_category(c).await,
             ConfigEntity::Tag(t) => self.save_tag(t).await,
             ConfigEntity::Variable { key, value } => self.save_variable(key, value).await,
+            ConfigEntity::Language(l) => self.save_language(l).await,
         }
     }
 
@@ -464,6 +533,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::CATEGORY => self.delete_category(id).await,
             entity_types::TAG => self.delete_tag(id).await,
             entity_types::VARIABLE => self.delete_variable(id).await,
+            entity_types::LANGUAGE => self.delete_language(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {}", entity_type)),
         }
     }
@@ -479,6 +549,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::CATEGORY => self.list_categories(filter).await,
             entity_types::TAG => self.list_tags(filter).await,
             entity_types::VARIABLE => self.list_variables(filter).await,
+            entity_types::LANGUAGE => self.list_languages(filter).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {}", entity_type)),
         }
     }

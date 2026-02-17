@@ -38,7 +38,7 @@ use uuid::Uuid;
 pub use direct::DirectConfigStorage;
 pub use stage_aware::StageAwareConfigStorage;
 
-use crate::models::{Category, ItemType, Tag};
+use crate::models::{Category, ItemType, Language, Tag};
 
 /// A configuration entity that can be stored and retrieved.
 ///
@@ -69,6 +69,10 @@ pub enum ConfigEntity {
         key: String,
         value: serde_json::Value,
     },
+
+    /// Language definition.
+    #[serde(rename = "language")]
+    Language(Language),
 }
 
 impl ConfigEntity {
@@ -80,6 +84,7 @@ impl ConfigEntity {
             Self::Category(_) => "category",
             Self::Tag(_) => "tag",
             Self::Variable { .. } => "variable",
+            Self::Language(_) => "language",
         }
     }
 
@@ -91,6 +96,7 @@ impl ConfigEntity {
             Self::Category(c) => c.id.clone(),
             Self::Tag(t) => t.id.to_string(),
             Self::Variable { key, .. } => key.clone(),
+            Self::Language(l) => l.id.clone(),
         }
     }
 
@@ -162,6 +168,22 @@ impl ConfigEntity {
     pub fn into_search_field_config(self) -> Option<SearchFieldConfig> {
         match self {
             Self::SearchFieldConfig(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Try to extract a Language from this entity.
+    pub fn as_language(&self) -> Option<&Language> {
+        match self {
+            Self::Language(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Consume and convert to Language if possible.
+    pub fn into_language(self) -> Option<Language> {
+        match self {
+            Self::Language(l) => Some(l),
             _ => None,
         }
     }
@@ -292,6 +314,9 @@ pub mod entity_types {
 
     /// Site configuration variables.
     pub const VARIABLE: &str = "variable";
+
+    /// Language definitions.
+    pub const LANGUAGE: &str = "language";
 }
 
 /// Helper to parse a tag ID from a string (UUID format).
@@ -375,5 +400,45 @@ mod tests {
         };
 
         assert_eq!(format!("{}", entity), "variable:site_name");
+    }
+
+    #[test]
+    fn config_entity_language() {
+        let lang = ConfigEntity::Language(Language {
+            id: "en".to_string(),
+            label: "English".to_string(),
+            weight: 0,
+            is_default: true,
+            direction: "ltr".to_string(),
+        });
+
+        assert_eq!(lang.entity_type(), "language");
+        assert_eq!(lang.id(), "en");
+        assert!(lang.as_language().is_some());
+        assert_eq!(format!("{}", lang), "language:en");
+    }
+
+    /// Verify ConfigEntity::Language survives JSON round-trip (the path
+    /// StageAwareConfigStorage uses: serde_json::to_value → serde_json::from_value).
+    #[test]
+    fn config_entity_language_json_round_trip() {
+        let original = ConfigEntity::Language(Language {
+            id: "ar".to_string(),
+            label: "Arabic".to_string(),
+            weight: 3,
+            is_default: false,
+            direction: "rtl".to_string(),
+        });
+
+        let json = serde_json::to_value(&original).expect("serialize");
+        let restored: ConfigEntity = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(restored.entity_type(), "language");
+        let lang = restored.into_language().expect("into_language");
+        assert_eq!(lang.id, "ar");
+        assert_eq!(lang.label, "Arabic");
+        assert_eq!(lang.weight, 3);
+        assert!(!lang.is_default);
+        assert_eq!(lang.direction, "rtl");
     }
 }

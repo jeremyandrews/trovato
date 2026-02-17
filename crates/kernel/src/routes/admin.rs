@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Form, Json, Router};
+use axum::{Extension, Form, Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
@@ -1640,6 +1640,7 @@ async fn add_content_form(
 async fn add_content_submit(
     State(state): State<AppState>,
     session: Session,
+    resolved_lang: Option<Extension<crate::middleware::language::ResolvedLanguage>>,
     Path(type_name): Path<String>,
     Form(form): Form<ContentFormData>,
 ) -> Response {
@@ -1721,6 +1722,11 @@ async fn add_content_submit(
         sticky: None,
         fields: Some(serde_json::Value::Object(fields_json)),
         stage_id: None,
+        language: Some(
+            resolved_lang
+                .map(|Extension(lang)| lang.0)
+                .unwrap_or_else(|| state.default_language().to_string()),
+        ),
         log: Some("Created via admin UI".to_string()),
     };
 

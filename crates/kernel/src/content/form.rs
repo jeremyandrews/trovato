@@ -532,6 +532,7 @@ mod tests {
             sticky: 0,
             fields: serde_json::json!({}),
             stage_id: "live".to_string(),
+            language: "en".to_string(),
         };
         let form = builder.build_edit_form(&item, "/item/123/edit");
         assert!(form.contains(r#"name="log""#));

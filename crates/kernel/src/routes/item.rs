@@ -3,7 +3,7 @@
 //! Provides endpoints for viewing, creating, editing, and deleting content items.
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect},
@@ -435,6 +435,7 @@ async fn add_item_form(
 async fn create_item(
     State(state): State<AppState>,
     session: Session,
+    resolved_lang: Option<Extension<crate::middleware::language::ResolvedLanguage>>,
     Path(item_type): Path<String>,
     Json(request): Json<CreateItemRequest>,
 ) -> Result<Json<ItemResponse>, (StatusCode, Json<ItemError>)> {
@@ -461,6 +462,10 @@ async fn create_item(
         ));
     }
 
+    let language = resolved_lang
+        .map(|Extension(lang)| lang.0)
+        .unwrap_or_else(|| state.default_language().to_string());
+
     let input = CreateItem {
         item_type: item_type.clone(),
         title: request.title,
@@ -470,6 +475,7 @@ async fn create_item(
         sticky: None,
         fields: request.fields,
         stage_id: None,
+        language: Some(language),
         log: request.log,
     };
 

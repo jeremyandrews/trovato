@@ -187,10 +187,14 @@ async fn run_server() -> Result<()> {
         .merge(routes::api_token::router())
         .merge(routes::static_files::router())
         // Middleware layers (last added = first executed in request flow):
-        // TraceLayer → session → CORS → api_token → install_check → path_alias → routes
+        // TraceLayer → session → CORS → api_token → install_check → negotiate_language → path_alias → routes
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::resolve_path_alias,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::negotiate_language,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

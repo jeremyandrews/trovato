@@ -9,6 +9,10 @@ use sqlx::PgPool;
 
 use tracing::info;
 
+use crate::middleware::language::{
+    AcceptLanguageNegotiator, LanguageNegotiator, UrlPrefixNegotiator,
+};
+
 use crate::batch::BatchService;
 use crate::cache::CacheLayer;
 use crate::config::Config;
@@ -112,6 +116,22 @@ struct AppStateInner {
 
     /// Stage service for publish operations.
     stage: Arc<StageService>,
+
+    /// Language negotiator chain (sorted by priority descending).
+    ///
+    /// Frozen at startup: adding/removing languages requires a restart.
+    /// Each negotiator also holds its own snapshot of known languages.
+    language_negotiators: Vec<Arc<dyn LanguageNegotiator>>,
+
+    /// Known language codes (loaded from DB at startup).
+    ///
+    /// Frozen at startup: adding/removing languages requires a restart.
+    known_languages: Vec<String>,
+
+    /// Default language code (loaded from DB at startup).
+    ///
+    /// Frozen at startup: changing the default language requires a restart.
+    default_language: String,
 }
 
 impl AppState {
@@ -406,6 +426,31 @@ impl AppState {
         // Create stage service
         let stage = Arc::new(StageService::new(db.clone(), cache.clone()));
 
+        // Load languages and build negotiator chain
+        let languages = crate::models::Language::list_all(&db)
+            .await
+            .context("failed to load languages")?;
+        let known_languages: Vec<String> = languages.iter().map(|l| l.id.clone()).collect();
+        let default_language = languages
+            .iter()
+            .find(|l| l.is_default)
+            .map(|l| l.id.clone())
+            .unwrap_or_else(|| "en".to_string());
+        info!(
+            count = known_languages.len(),
+            default = %default_language,
+            "loaded languages"
+        );
+
+        let mut language_negotiators: Vec<Arc<dyn LanguageNegotiator>> = vec![
+            Arc::new(UrlPrefixNegotiator::new(
+                known_languages.clone(),
+                default_language.clone(),
+            )),
+            Arc::new(AcceptLanguageNegotiator::new(known_languages.clone())),
+        ];
+        language_negotiators.sort_by_key(|n| std::cmp::Reverse(n.priority()));
+
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
@@ -431,6 +476,9 @@ impl AppState {
                 rate_limiter,
                 batch,
                 stage,
+                language_negotiators,
+                known_languages,
+                default_language,
             }),
         })
     }
@@ -582,6 +630,21 @@ impl AppState {
     /// Get the stage service.
     pub fn stage(&self) -> &Arc<StageService> {
         &self.inner.stage
+    }
+
+    /// Get the language negotiator chain (sorted by priority descending).
+    pub fn language_negotiators(&self) -> &[Arc<dyn LanguageNegotiator>] {
+        &self.inner.language_negotiators
+    }
+
+    /// Get the known language codes (loaded from DB at startup).
+    pub fn known_languages(&self) -> &[String] {
+        &self.inner.known_languages
+    }
+
+    /// Get the default language code (loaded from DB at startup).
+    pub fn default_language(&self) -> &str {
+        &self.inner.default_language
     }
 
     /// Check if PostgreSQL is healthy.

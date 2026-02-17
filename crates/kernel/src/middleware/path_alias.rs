@@ -11,6 +11,7 @@ use axum::{
     response::Response,
 };
 
+use crate::middleware::language::ResolvedLanguage;
 use crate::models::UrlAlias;
 use crate::state::AppState;
 
@@ -49,27 +50,40 @@ pub async fn resolve_path_alias(
         return next.run(request).await;
     }
 
-    // Look up alias in database
-    tracing::debug!(path = %path, "looking up path alias");
-    match UrlAlias::find_by_alias(state.db(), path).await {
-        Ok(Some(alias)) => {
-            tracing::debug!(
-                alias = %alias.alias,
-                source = %alias.source,
-                "found path alias, rewriting"
-            );
-            // Rewrite URI to source path
-            if let Ok(new_uri) = rewrite_uri(request.uri(), &alias.source) {
-                tracing::debug!(new_uri = %new_uri, "URI rewritten");
-                *request.uri_mut() = new_uri;
+    // Extract resolved language from request extensions (set by negotiate_language middleware)
+    let language = request
+        .extensions()
+        .get::<ResolvedLanguage>()
+        .map(|l| l.0.as_str())
+        .unwrap_or_else(|| state.default_language());
+
+    // Look up alias in database with language context.
+    // No default-language fallback: if the alias doesn't exist for the resolved
+    // language, let the request proceed unmodified (404 from the router is correct
+    // and avoids silently serving content in the wrong language).
+    tracing::debug!(path = %path, language = %language, "looking up path alias");
+    let alias_result =
+        match UrlAlias::find_by_alias_with_context(state.db(), path, "live", language).await {
+            Ok(Some(alias)) => Some(alias),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(path = %path, error = %e, "error looking up alias");
+                None
             }
+        };
+
+    if let Some(alias) = alias_result {
+        tracing::debug!(
+            alias = %alias.alias,
+            source = %alias.source,
+            "found path alias, rewriting"
+        );
+        if let Ok(new_uri) = rewrite_uri(request.uri(), &alias.source) {
+            tracing::debug!(new_uri = %new_uri, "URI rewritten");
+            *request.uri_mut() = new_uri;
         }
-        Ok(None) => {
-            tracing::debug!(path = %path, "no alias found for path");
-        }
-        Err(e) => {
-            tracing::warn!(path = %path, error = %e, "error looking up alias");
-        }
+    } else {
+        tracing::debug!(path = %path, "no alias found for path");
     }
 
     next.run(request).await

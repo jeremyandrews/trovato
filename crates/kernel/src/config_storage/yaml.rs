@@ -24,7 +24,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::{ConfigEntity, ConfigStorage, SearchFieldConfig, entity_types};
-use crate::models::{Category, ItemType, Tag};
+use crate::models::{Category, ItemType, Language, Tag};
 
 /// Entity type ordering used for both validation and dependency-ordered import.
 ///
@@ -32,6 +32,7 @@ use crate::models::{Category, ItemType, Tag};
 /// Categories before tags (FK), item_types before search_field_configs (bundle ref).
 const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::VARIABLE,
+    entity_types::LANGUAGE,
     entity_types::ITEM_TYPE,
     entity_types::CATEGORY,
     entity_types::TAG,
@@ -147,6 +148,7 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
             key: key.clone(),
             value: value.clone(),
         }),
+        ConfigEntity::Language(lang) => serde_yml::to_string(lang),
         // Tags need parent hierarchy — callers must use serialize_tag_entity.
         ConfigEntity::Tag(tag) => {
             warnings.push(format!(
@@ -746,6 +748,10 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity,
                 serde_yml::from_str(content).context("invalid search_field_config YAML")?;
             Ok((ConfigEntity::SearchFieldConfig(sfc), Vec::new()))
         }
+        entity_types::LANGUAGE => {
+            let lang: Language = serde_yml::from_str(content).context("invalid language YAML")?;
+            Ok((ConfigEntity::Language(lang), Vec::new()))
+        }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
     }
 }
@@ -1046,6 +1052,26 @@ mod tests {
     }
 
     #[test]
+    fn language_yaml_round_trip() {
+        let lang = Language {
+            id: "en".to_string(),
+            label: "English".to_string(),
+            weight: 0,
+            is_default: true,
+            direction: "ltr".to_string(),
+        };
+
+        let yaml = serde_yml::to_string(&lang).unwrap();
+        assert!(yaml.contains("id: en"), "Expected 'id: en' in:\n{yaml}");
+
+        let parsed: Language = serde_yml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.id, "en");
+        assert_eq!(parsed.label, "English");
+        assert!(parsed.is_default);
+        assert_eq!(parsed.direction, "ltr");
+    }
+
+    #[test]
     fn variable_yaml_round_trip() {
         let var = VarYaml {
             key: "site_name".to_string(),
@@ -1066,6 +1092,12 @@ mod tests {
     fn import_order_matches_dependency_constraints() {
         let pos = |name: &str| ENTITY_TYPE_ORDER.iter().position(|&t| t == name).unwrap();
 
+        // Languages must come before item_types (no FK, but logical ordering)
+        assert!(
+            pos(entity_types::LANGUAGE) < pos(entity_types::ITEM_TYPE),
+            "languages must be imported before item_types"
+        );
+
         // Categories must come before tags (FK constraint)
         assert!(
             pos(entity_types::CATEGORY) < pos(entity_types::TAG),
@@ -1084,6 +1116,7 @@ mod tests {
         // Ensures ENTITY_TYPE_ORDER stays in sync with entity_types constants.
         let expected: HashSet<&str> = [
             entity_types::VARIABLE,
+            entity_types::LANGUAGE,
             entity_types::ITEM_TYPE,
             entity_types::CATEGORY,
             entity_types::TAG,
@@ -1149,6 +1182,15 @@ parents:
             tag_parents[0],
             Uuid::parse_str("019483a7-b1c2-7def-8012-aaa111111111").unwrap()
         );
+    }
+
+    #[test]
+    fn deserialize_entity_language() {
+        let yaml = "id: fr\nlabel: French\nweight: 1\nis_default: false\ndirection: ltr\n";
+        let (entity, tag_parents) = deserialize_entity("language", yaml).unwrap();
+        assert_eq!(entity.entity_type(), "language");
+        assert_eq!(entity.id(), "fr");
+        assert!(tag_parents.is_empty());
     }
 
     #[test]
@@ -1244,6 +1286,7 @@ parents:
         let variable_yaml = "key: site_name\nvalue: My Site\n";
         let category_yaml =
             "id: topics\nlabel: Topics\ndescription: null\nhierarchy: 0\nweight: 0\n";
+        let language_yaml = "id: en\nlabel: English\nweight: 0\nis_default: true\ndirection: ltr\n";
 
         tokio::fs::write(dir.join("item_type.blog.yml"), item_type_yaml)
             .await
@@ -1252,6 +1295,9 @@ parents:
             .await
             .unwrap();
         tokio::fs::write(dir.join("category.topics.yml"), category_yaml)
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("language.en.yml"), language_yaml)
             .await
             .unwrap();
         // Non-yml file should be ignored
@@ -1266,6 +1312,7 @@ parents:
         assert_eq!(parsed.get("item_type").unwrap().len(), 1);
         assert_eq!(parsed.get("variable").unwrap().len(), 1);
         assert_eq!(parsed.get("category").unwrap().len(), 1);
+        assert_eq!(parsed.get("language").unwrap().len(), 1);
 
         let it = &parsed["item_type"][0];
         assert_eq!(it.entity.id(), "blog");
