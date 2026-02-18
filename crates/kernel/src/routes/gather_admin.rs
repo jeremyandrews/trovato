@@ -101,14 +101,17 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
-    let empty_definition = serde_json::to_string(&QueryDefinition::default()).unwrap_or_default();
-    let empty_display = serde_json::to_string(&QueryDisplay::default()).unwrap_or_default();
+    let default_definition = QueryDefinition::default();
+    let default_display = QueryDisplay::default();
+    let empty_definition = serde_json::to_string(&default_definition).unwrap_or_default();
+    let empty_display = serde_json::to_string(&default_display).unwrap_or_default();
 
     let mut context = tera::Context::new();
     context.insert("action", "/admin/gather/create");
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
+    context.insert("definition", &default_definition);
     context.insert("definition_json", &empty_definition);
     context.insert("display_json", &empty_display);
     context.insert(
@@ -211,6 +214,7 @@ async fn create_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
         context.insert("errors", &errors);
+        context.insert("definition", &definition);
         context.insert("definition_json", &form.definition_json);
         context.insert("display_json", &form.display_json);
         context.insert(
@@ -279,6 +283,7 @@ async fn edit_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
+    context.insert("definition", &query.definition);
     context.insert("definition_json", &definition_json);
     context.insert("display_json", &display_json);
     context.insert(
@@ -368,6 +373,7 @@ async fn save_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
         context.insert("errors", &errors);
+        context.insert("definition", &definition);
         context.insert("definition_json", &form.definition_json);
         context.insert("display_json", &form.display_json);
         context.insert(
