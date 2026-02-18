@@ -37,6 +37,27 @@ pub struct Config {
 
     /// Plugin names to force-disable on first install (from DISABLED_PLUGINS env var).
     pub disabled_plugins: Vec<String>,
+
+    /// SMTP host for email delivery. When None, email is disabled.
+    pub smtp_host: Option<String>,
+
+    /// SMTP port (default: 587).
+    pub smtp_port: u16,
+
+    /// SMTP username for authentication.
+    pub smtp_username: Option<String>,
+
+    /// SMTP password for authentication.
+    pub smtp_password: Option<String>,
+
+    /// SMTP encryption mode: "starttls" (default), "tls", or "none".
+    pub smtp_encryption: String,
+
+    /// From address for outgoing email.
+    pub smtp_from_email: String,
+
+    /// Public site URL for constructing links in emails.
+    pub site_url: String,
 }
 
 impl Config {
@@ -85,6 +106,26 @@ impl Config {
             })
             .unwrap_or_default();
 
+        let smtp_host = env::var("SMTP_HOST").ok();
+
+        let smtp_port = env::var("SMTP_PORT")
+            .unwrap_or_else(|_| "587".to_string())
+            .parse()
+            .context("SMTP_PORT must be a valid u16")?;
+
+        let smtp_username = env::var("SMTP_USERNAME").ok();
+        let smtp_password = env::var("SMTP_PASSWORD").ok();
+
+        let smtp_encryption = env::var("SMTP_ENCRYPTION")
+            .unwrap_or_else(|_| "starttls".to_string())
+            .to_lowercase();
+
+        let smtp_from_email =
+            env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "noreply@localhost".to_string());
+
+        let site_url =
+            env::var("SITE_URL").unwrap_or_else(|_| format!("http://localhost:{}", port));
+
         Ok(Self {
             port,
             database_url,
@@ -96,6 +137,13 @@ impl Config {
             cors_allowed_origins,
             cookie_same_site,
             disabled_plugins,
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            smtp_encryption,
+            smtp_from_email,
+            site_url,
         })
     }
 }

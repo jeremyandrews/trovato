@@ -164,6 +164,30 @@ async fn get_user_context(session: &Session, _state: &AppState) -> UserContext {
     }
 }
 
+/// Determine which text formats the user is allowed to use.
+///
+/// Admins get all formats. Other users get formats based on their
+/// `"use filtered_html"` and `"use full_html"` permissions.
+/// `plain_text` is always allowed (handled by FormBuilder).
+fn permitted_text_formats(user: &UserContext) -> Vec<String> {
+    if user.is_admin() {
+        return vec![
+            "plain_text".to_string(),
+            "filtered_html".to_string(),
+            "full_html".to_string(),
+        ];
+    }
+
+    let mut formats = vec!["plain_text".to_string()];
+    if user.has_permission("use filtered_html") {
+        formats.push("filtered_html".to_string());
+    }
+    if user.has_permission("use full_html") {
+        formats.push("full_html".to_string());
+    }
+    formats
+}
+
 /// View an item.
 async fn view_item(
     State(state): State<AppState>,
@@ -363,7 +387,7 @@ async fn view_item(
 
     // Wrap in page layout with site context
     let item_path = format!("/item/{}", id);
-    super::helpers::inject_site_context(&state, &session, &mut context).await;
+    super::helpers::inject_site_context(&state, &session, &mut context, &item_path).await;
 
     let page_html = state
         .theme()
@@ -402,8 +426,10 @@ async fn add_item_form(
         )
     })?;
 
-    // Build form
-    let form_builder = FormBuilder::new(content_type.clone());
+    // Build form with format permissions
+    let permitted_formats = permitted_text_formats(&user);
+    let form_builder =
+        FormBuilder::new(content_type.clone()).with_permitted_formats(permitted_formats);
     let form_html = form_builder.build_add_form(&format!("/item/add/{}", item_type));
 
     let html = format!(
@@ -553,8 +579,10 @@ async fn edit_item_form(
         )
     })?;
 
-    // Build form
-    let form_builder = FormBuilder::new(content_type.clone());
+    // Build form with format permissions
+    let permitted_formats = permitted_text_formats(&user);
+    let form_builder =
+        FormBuilder::new(content_type.clone()).with_permitted_formats(permitted_formats);
     let form_html = form_builder.build_edit_form(&item, &format!("/item/{}/edit", id));
 
     // Get current URL alias for this item

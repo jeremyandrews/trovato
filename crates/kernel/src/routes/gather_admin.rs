@@ -64,7 +64,7 @@ async fn list_queries(State(state): State<AppState>, session: Session) -> Respon
     context.insert("queries", &queries);
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/gather");
-    super::helpers::inject_site_context(&state, &session, &mut context).await;
+    super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
     render_admin_template(&state, "admin/gather-list.html", context).await
 }
@@ -102,7 +102,7 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
         }),
     );
     context.insert("path", "/admin/gather/create");
-    super::helpers::inject_site_context(&state, &session, &mut context).await;
+    super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
     render_admin_template(&state, "admin/gather-form.html", context).await
 }
@@ -205,7 +205,7 @@ async fn create_submit(
             }),
         );
         context.insert("path", "/admin/gather/create");
-        super::helpers::inject_site_context(&state, &session, &mut context).await;
+        super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
         return render_admin_template(&state, "admin/gather-form.html", context).await;
     }
@@ -274,7 +274,7 @@ async fn edit_form(
         }),
     );
     context.insert("path", &format!("/admin/gather/{}/edit", id));
-    super::helpers::inject_site_context(&state, &session, &mut context).await;
+    super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
     render_admin_template(&state, "admin/gather-form.html", context).await
 }
@@ -364,7 +364,7 @@ async fn save_submit(
             }),
         );
         context.insert("path", &format!("/admin/gather/{}/edit", id));
-        super::helpers::inject_site_context(&state, &session, &mut context).await;
+        super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
         return render_admin_template(&state, "admin/gather-form.html", context).await;
     }

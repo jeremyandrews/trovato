@@ -7,6 +7,22 @@
     <p class="gather-query__description">{{ query.description }}</p>
     {% endif %}
 
+    {% if exposed_filters is defined and exposed_filters | length > 0 %}
+    <form method="get" action="/gather/{{ query.query_id }}" class="gather-exposed-filters">
+        {% for filter in exposed_filters %}
+        <div class="form-group form-group--inline">
+            <label for="filter-{{ filter.field }}">{{ filter.label }}</label>
+            <input type="text" id="filter-{{ filter.field }}" name="{{ filter.field }}"
+                   value="{% if filter_values is defined and filter_values[filter.field] is defined %}{{ filter_values[filter.field] }}{% endif %}"
+                   class="form-control">
+        </div>
+        {% endfor %}
+        <div class="form-actions">
+            <button type="submit" class="btn">Apply</button>
+        </div>
+    </form>
+    {% endif %}
+
     <div class="gather-query__content">
         {% block query_content %}
         {{ content | safe }}
@@ -30,5 +46,33 @@
     .gather-query__description {
         color: var(--gray-500);
         margin: 0 0 1rem 0;
+    }
+
+    .gather-exposed-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: flex-end;
+        margin-bottom: 1.5rem;
+        padding: 1rem;
+        background: var(--gray-50, #f9f9f9);
+        border: 1px solid var(--gray-200, #e5e5e5);
+        border-radius: 0.375rem;
+    }
+
+    .gather-exposed-filters .form-group--inline {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+
+    .gather-exposed-filters label {
+        font-size: 0.8125rem;
+        font-weight: 500;
+    }
+
+    .gather-exposed-filters .form-control {
+        padding: 0.375rem 0.5rem;
+        font-size: 0.875rem;
     }
 </style>

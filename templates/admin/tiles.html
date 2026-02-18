@@ -1,0 +1,53 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Tiles</h2>
+    <a href="/admin/structure/tiles/add" class="btn btn-primary">Add tile</a>
+</div>
+
+{% if tiles | length == 0 %}
+<div class="admin-card">
+    <p>No tiles have been created yet.</p>
+</div>
+{% else %}
+{% for tile in tiles %}
+{% if loop.first or tile.region != tiles[loop.index0 - 1].region %}
+{% if not loop.first %}</tbody></table></div>{% endif %}
+<div class="admin-card">
+    <h3>Region: {{ tile.region }}</h3>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Label</th>
+                <th>Machine name</th>
+                <th>Type</th>
+                <th>Weight</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+{% endif %}
+            <tr>
+                <td>{{ tile.label }}</td>
+                <td><code>{{ tile.machine_name }}</code></td>
+                <td>{{ tile.tile_type }}</td>
+                <td>{{ tile.weight }}</td>
+                <td>{% if tile.status == 1 %}Active{% else %}Disabled{% endif %}</td>
+                <td>
+                    <a href="/admin/structure/tiles/{{ tile.id }}/edit">Edit</a>
+                    <form method="post" action="/admin/structure/tiles/{{ tile.id }}/delete" style="display:inline">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="btn-link" onclick="return confirm('Delete this tile?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+{% if loop.last %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endblock %}

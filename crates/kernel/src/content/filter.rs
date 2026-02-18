@@ -43,6 +43,17 @@ impl FilterPipeline {
         }
     }
 
+    /// Create pipeline with permission check.
+    ///
+    /// If `has_full_html` is false and format is "full_html", downgrades to
+    /// filtered_html for safety.
+    pub fn for_format_checked(format: &str, has_full_html: bool) -> Self {
+        match format {
+            "full_html" if !has_full_html => Self::filtered_html(),
+            _ => Self::for_format(format),
+        }
+    }
+
     /// Create a plain text pipeline (escapes all HTML).
     pub fn plain_text() -> Self {
         Self::new().add(HtmlEscapeFilter).add(NewlineFilter)
@@ -103,14 +114,11 @@ impl TextFilter for NewlineFilter {
     }
 }
 
-/// Filter that allows safe HTML tags and strips dangerous ones.
+/// Filter that allows safe HTML tags and strips dangerous ones using ammonia.
 pub struct FilteredHtmlFilter;
 
 impl FilteredHtmlFilter {
     /// List of allowed HTML tags.
-    /// NOTE: Currently used for documentation; future implementation will use html5ever + ammonia
-    /// for proper tag-by-tag allowlist filtering.
-    #[allow(dead_code)]
     const ALLOWED_TAGS: &'static [&'static str] = &[
         "p",
         "br",
@@ -144,10 +152,12 @@ impl FilteredHtmlFilter {
     ];
 
     /// List of allowed attributes per tag.
-    #[allow(dead_code)]
+    ///
+    /// Note: "rel" on `<a>` is managed by ammonia's `link_rel()` and must not
+    /// appear here — ammonia panics if both are set.
     fn allowed_attributes(tag: &str) -> &'static [&'static str] {
         match tag {
-            "a" => &["href", "title", "target", "rel"],
+            "a" => &["href", "title", "target"],
             "img" => &["src", "alt", "title", "width", "height"],
             "td" | "th" => &["colspan", "rowspan"],
             _ => &[],
@@ -155,7 +165,6 @@ impl FilteredHtmlFilter {
     }
 
     /// Check if a tag is allowed.
-    #[allow(dead_code)]
     fn is_allowed_tag(tag: &str) -> bool {
         Self::ALLOWED_TAGS.contains(&tag.to_lowercase().as_str())
     }
@@ -167,31 +176,24 @@ impl TextFilter for FilteredHtmlFilter {
     }
 
     fn process(&self, input: &str) -> String {
-        // Simple regex-based filtering
-        // In production, use a proper HTML parser like html5ever + ammonia
-        let mut result = input.to_string();
+        use std::collections::{HashMap, HashSet};
 
-        // Remove script tags and content
-        let script_re = regex::Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap();
-        result = script_re.replace_all(&result, "").to_string();
+        let tags: HashSet<&str> = Self::ALLOWED_TAGS.iter().copied().collect();
 
-        // Remove style tags and content
-        let style_re = regex::Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap();
-        result = style_re.replace_all(&result, "").to_string();
+        let mut tag_attributes: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for &tag in Self::ALLOWED_TAGS {
+            let attrs = Self::allowed_attributes(tag);
+            if !attrs.is_empty() {
+                tag_attributes.insert(tag, attrs.iter().copied().collect());
+            }
+        }
 
-        // Remove event handlers (onclick, onload, etc.)
-        let event_re = regex::Regex::new(r#"(?i)\s+on\w+\s*=\s*["'][^"']*["']"#).unwrap();
-        result = event_re.replace_all(&result, "").to_string();
-
-        // Remove javascript: URLs
-        let js_re = regex::Regex::new(r#"(?i)href\s*=\s*["']javascript:[^"']*["']"#).unwrap();
-        result = js_re.replace_all(&result, "href=\"#\"").to_string();
-
-        // Remove data: URLs (can be used for XSS)
-        let data_re = regex::Regex::new(r#"(?i)(src|href)\s*=\s*["']data:[^"']*["']"#).unwrap();
-        result = data_re.replace_all(&result, "$1=\"#\"").to_string();
-
-        result
+        ammonia::Builder::default()
+            .tags(tags)
+            .tag_attributes(tag_attributes)
+            .link_rel(Some("noopener noreferrer"))
+            .clean(input)
+            .to_string()
     }
 }
 
@@ -387,5 +389,133 @@ mod tests {
         assert_eq!(NewlineFilter.name(), "newline");
         assert_eq!(FilteredHtmlFilter.name(), "filtered_html");
         assert_eq!(UrlFilter.name(), "url");
+    }
+
+    #[test]
+    fn filtered_html_preserves_allowed_attrs() {
+        let filter = FilteredHtmlFilter;
+        let input = r#"<a href="https://example.com" title="Example">Link</a>"#;
+        let output = filter.process(input);
+        assert!(output.contains(r#"href="https://example.com""#));
+        assert!(output.contains(r#"title="Example""#));
+    }
+
+    #[test]
+    fn filtered_html_strips_disallowed_attrs() {
+        let filter = FilteredHtmlFilter;
+        let input = r#"<p class="fancy" style="color:red">Text</p>"#;
+        let output = filter.process(input);
+        assert!(!output.contains("class"));
+        assert!(!output.contains("style"));
+        assert!(output.contains("<p>Text</p>"));
+    }
+
+    #[test]
+    fn filtered_html_strips_disallowed_tags() {
+        let filter = FilteredHtmlFilter;
+        let input = "<div><p>Keep</p><iframe src='evil'></iframe></div>";
+        let output = filter.process(input);
+        assert!(output.contains("<p>Keep</p>"));
+        assert!(!output.contains("iframe"));
+        assert!(!output.contains("div"));
+    }
+
+    #[test]
+    fn filtered_html_complex_xss_payloads() {
+        let filter = FilteredHtmlFilter;
+
+        // SVG-based XSS
+        let input = r#"<svg onload="alert(1)"><circle r="50"/></svg>"#;
+        let output = filter.process(input);
+        assert!(!output.contains("svg"));
+        assert!(!output.contains("onload"));
+        assert!(!output.contains("alert"));
+
+        // Nested script in attributes
+        let input = r#"<img src=x onerror="alert('xss')">"#;
+        let output = filter.process(input);
+        assert!(!output.contains("onerror"));
+
+        // data: URI
+        let input = r#"<a href="data:text/html,<script>alert(1)</script>">click</a>"#;
+        let output = filter.process(input);
+        assert!(!output.contains("data:"));
+
+        // javascript: URI
+        let input = r#"<a href="javascript:alert(1)">click</a>"#;
+        let output = filter.process(input);
+        assert!(!output.contains("javascript:"));
+    }
+
+    #[test]
+    fn filtered_html_img_attrs_preserved() {
+        let filter = FilteredHtmlFilter;
+        let input = r#"<img src="photo.jpg" alt="A photo" width="200" height="100">"#;
+        let output = filter.process(input);
+        assert!(output.contains(r#"src="photo.jpg""#));
+        assert!(output.contains(r#"alt="A photo""#));
+        assert!(output.contains(r#"width="200""#));
+        assert!(output.contains(r#"height="100""#));
+    }
+
+    #[test]
+    fn filtered_html_adds_link_rel() {
+        let filter = FilteredHtmlFilter;
+        let input = r#"<a href="https://example.com">Link</a>"#;
+        let output = filter.process(input);
+        assert!(output.contains("noopener"));
+        assert!(output.contains("noreferrer"));
+    }
+
+    #[test]
+    fn filtered_html_td_th_attrs() {
+        let filter = FilteredHtmlFilter;
+        let input =
+            r#"<table><tr><td colspan="2">Cell</td><th rowspan="3">Header</th></tr></table>"#;
+        let output = filter.process(input);
+        assert!(output.contains(r#"colspan="2""#));
+        assert!(output.contains(r#"rowspan="3""#));
+    }
+
+    #[test]
+    fn filtered_html_removes_style_tags() {
+        let filter = FilteredHtmlFilter;
+        let input = "<style>body { display:none }</style><p>Visible</p>";
+        let output = filter.process(input);
+        assert!(!output.contains("style"));
+        assert!(output.contains("<p>Visible</p>"));
+    }
+
+    #[test]
+    fn is_allowed_tag_case_insensitive() {
+        assert!(FilteredHtmlFilter::is_allowed_tag("P"));
+        assert!(FilteredHtmlFilter::is_allowed_tag("A"));
+        assert!(!FilteredHtmlFilter::is_allowed_tag("SCRIPT"));
+    }
+
+    #[test]
+    fn for_format_checked_downgrades_full_html() {
+        let pipeline = FilterPipeline::for_format_checked("full_html", false);
+        // Should downgrade: script tags should be stripped (filtered_html behavior)
+        let input = "<script>alert('xss')</script><p>Safe</p>";
+        let output = pipeline.process(input);
+        assert!(!output.contains("script"));
+        assert!(output.contains("<p>Safe</p>"));
+    }
+
+    #[test]
+    fn for_format_checked_allows_full_html_when_permitted() {
+        let pipeline = FilterPipeline::for_format_checked("full_html", true);
+        let input = "<script>alert('test')</script>";
+        let output = pipeline.process(input);
+        assert_eq!(input, output);
+    }
+
+    #[test]
+    fn for_format_checked_plain_text_unaffected() {
+        let pipeline = FilterPipeline::for_format_checked("plain_text", false);
+        let input = "<b>bold</b>";
+        let output = pipeline.process(input);
+        assert!(output.contains("&lt;b&gt;"));
     }
 }

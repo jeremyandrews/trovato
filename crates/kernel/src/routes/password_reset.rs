@@ -50,20 +50,45 @@ async fn request_reset(
             // Create reset token
             match PasswordResetToken::create(state.db(), user.id).await {
                 Ok((_, plain_token)) => {
-                    // In production, send email with reset link
-                    // For MVP, just log the token
-                    info!(
-                        user_id = %user.id,
-                        email = %input.email,
-                        token = %plain_token,
-                        "Password reset requested (token logged for MVP)"
-                    );
+                    // Send email if SMTP is configured, otherwise log
+                    if let Some(email_service) = state.email() {
+                        let site_name = crate::models::SiteConfig::get(state.db(), "site_name")
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "Trovato".to_string());
 
-                    // Log the reset URL for testing
-                    info!(
-                        reset_url = format!("/user/password-reset/{}", plain_token),
-                        "Reset URL for testing"
-                    );
+                        if let Err(e) = email_service
+                            .send_password_reset(&input.email, &plain_token, &site_name)
+                            .await
+                        {
+                            tracing::error!(error = %e, "failed to send password reset email");
+                            // Fall back to logging
+                            tracing::debug!(
+                                reset_url = format!("/user/password-reset/{}", plain_token),
+                                "Reset URL (email send failed)"
+                            );
+                        } else {
+                            info!(
+                                user_id = %user.id,
+                                email = %input.email,
+                                "password reset email sent"
+                            );
+                        }
+                    } else {
+                        // SMTP not configured — log the token for development
+                        tracing::debug!(
+                            user_id = %user.id,
+                            email = %input.email,
+                            token = %plain_token,
+                            "Password reset requested (SMTP not configured, token logged)"
+                        );
+                        tracing::debug!(
+                            reset_url = format!("/user/password-reset/{}", plain_token),
+                            "Reset URL for testing"
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to create reset token");

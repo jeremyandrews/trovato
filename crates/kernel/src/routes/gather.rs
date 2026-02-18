@@ -287,14 +287,22 @@ async fn render_query_html(
             )
         })?;
 
+    // Collect filter values for template context
+    let filter_values: HashMap<String, String> = params
+        .filters
+        .iter()
+        .filter(|(k, _)| !["page", "stage"].contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
     // Render gather content (either via theme template or fallback HTML)
-    let content_html = render_gather_with_theme(&state, &gather_query, &result)
-        .unwrap_or_else(|| render_gather_content_html(&gather_query, &result));
+    let content_html = render_gather_with_theme(&state, &gather_query, &result, &filter_values)
+        .unwrap_or_else(|| render_gather_content_html(&gather_query, &result, &filter_values));
 
     // Wrap in page layout with site context
     let gather_path = format!("/gather/{}", query_id);
     let mut context = tera::Context::new();
-    super::helpers::inject_site_context(&state, &session, &mut context).await;
+    super::helpers::inject_site_context(&state, &session, &mut context, &gather_path).await;
 
     let page_html = state
         .theme()
@@ -313,6 +321,7 @@ fn render_gather_with_theme(
     state: &AppState,
     query: &GatherQuery,
     result: &crate::gather::GatherResult,
+    filter_values: &HashMap<String, String>,
 ) -> Option<String> {
     // Try to find a template for this query
     let suggestions = [
@@ -334,6 +343,11 @@ fn render_gather_with_theme(
     context.insert("total_pages", &result.total_pages);
     context.insert("has_next", &result.has_next);
     context.insert("has_prev", &result.has_prev);
+
+    // Exposed filters for template rendering
+    let exposed_filters = collect_exposed_filters(query);
+    context.insert("exposed_filters", &exposed_filters);
+    context.insert("filter_values", filter_values);
 
     // Pager info
     if query.display.pager.enabled && result.total_pages > 1 {
@@ -403,8 +417,72 @@ fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
     }
 }
 
+/// Collect exposed filter metadata from a query definition.
+fn collect_exposed_filters(query: &GatherQuery) -> Vec<serde_json::Value> {
+    query
+        .definition
+        .filters
+        .iter()
+        .filter(|f| f.exposed)
+        .map(|f| {
+            serde_json::json!({
+                "field": f.field,
+                "label": f.exposed_label.as_deref().unwrap_or(&f.field),
+                "operator": format!("{:?}", f.operator),
+            })
+        })
+        .collect()
+}
+
+/// Render exposed filter form as HTML.
+fn render_exposed_filter_form(
+    query: &GatherQuery,
+    filter_values: &HashMap<String, String>,
+) -> String {
+    let exposed: Vec<_> = query
+        .definition
+        .filters
+        .iter()
+        .filter(|f| f.exposed)
+        .collect();
+
+    if exposed.is_empty() {
+        return String::new();
+    }
+
+    let mut html = String::new();
+    html.push_str(&format!(
+        "<form method=\"get\" action=\"/gather/{}\" class=\"gather-exposed-filters\">\n",
+        escape_html(&query.query_id)
+    ));
+
+    for filter in &exposed {
+        let label = filter.exposed_label.as_deref().unwrap_or(&filter.field);
+        let value = filter_values
+            .get(&filter.field)
+            .map(|v| escape_html(v))
+            .unwrap_or_default();
+        html.push_str(&format!(
+            "<div class=\"form-group form-group--inline\">\
+             <label for=\"filter-{field}\">{label}</label>\
+             <input type=\"text\" id=\"filter-{field}\" name=\"{field}\" value=\"{value}\" class=\"form-control\">\
+             </div>\n",
+            field = escape_html(&filter.field),
+            label = escape_html(label),
+            value = value,
+        ));
+    }
+
+    html.push_str("<div class=\"form-actions\"><button type=\"submit\" class=\"btn\">Apply</button></div>\n</form>\n");
+    html
+}
+
 /// Render gather content as an HTML fragment (no page wrapper).
-fn render_gather_content_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
+fn render_gather_content_html(
+    query: &GatherQuery,
+    result: &crate::gather::GatherResult,
+    filter_values: &HashMap<String, String>,
+) -> String {
     let mut html = String::new();
 
     // Title
@@ -413,6 +491,9 @@ fn render_gather_content_html(query: &GatherQuery, result: &crate::gather::Gathe
     if let Some(ref desc) = query.description {
         html.push_str(&format!("<p>{}</p>\n", escape_html(desc)));
     }
+
+    // Exposed filter form
+    html.push_str(&render_exposed_filter_form(query, filter_values));
 
     // Results
     if result.items.is_empty() {
@@ -488,7 +569,7 @@ fn render_gather_content_html(query: &GatherQuery, result: &crate::gather::Gathe
 
 /// Full standalone fallback page (used when theme engine fails).
 fn render_gather_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
-    let content = render_gather_content_html(query, result);
+    let content = render_gather_content_html(query, result, &HashMap::new());
     format!(
         "<!DOCTYPE html>\n<html>\n<head>\n<title>{}</title>\n\
         <style>\nbody {{ font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }}\n\

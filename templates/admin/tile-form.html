@@ -1,0 +1,118 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit tile{% else %}Add tile{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+        <div class="form-group">
+            <label for="machine_name">Machine name</label>
+            <input type="text" id="machine_name" name="machine_name"
+                   value="{{ values.machine_name | default(value='') }}"
+                   {% if editing %}readonly{% endif %}
+                   required class="form-control"
+                   pattern="[a-z0-9_]+" title="Lowercase letters, numbers, and underscores only">
+        </div>
+
+        <div class="form-group">
+            <label for="label">Label</label>
+            <input type="text" id="label" name="label"
+                   value="{{ values.label | default(value='') }}"
+                   required class="form-control">
+        </div>
+
+        <div class="form-group">
+            <label for="region">Region</label>
+            <select id="region" name="region" class="form-control">
+                <option value="sidebar" {% if values.region is defined and values.region == "sidebar" %}selected{% endif %}>Sidebar</option>
+                <option value="header" {% if values.region is defined and values.region == "header" %}selected{% endif %}>Header</option>
+                <option value="footer" {% if values.region is defined and values.region == "footer" %}selected{% endif %}>Footer</option>
+                <option value="content_top" {% if values.region is defined and values.region == "content_top" %}selected{% endif %}>Content top</option>
+                <option value="content_bottom" {% if values.region is defined and values.region == "content_bottom" %}selected{% endif %}>Content bottom</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="tile_type">Type</label>
+            <select id="tile_type" name="tile_type" class="form-control" onchange="toggleTypeFields(this.value)">
+                <option value="custom_html" {% if values.tile_type is defined and values.tile_type == "custom_html" %}selected{% endif %}>Custom HTML</option>
+                <option value="menu" {% if values.tile_type is defined and values.tile_type == "menu" %}selected{% endif %}>Menu</option>
+                <option value="gather_query" {% if values.tile_type is defined and values.tile_type == "gather_query" %}selected{% endif %}>Gather query</option>
+            </select>
+        </div>
+
+        <!-- Custom HTML fields -->
+        <div id="fields-custom_html" class="tile-type-fields">
+            <div class="form-group">
+                <label for="body">Body</label>
+                <textarea id="body" name="body" rows="8" class="form-control">{{ values.body | default(value='') }}</textarea>
+            </div>
+            <div class="form-group">
+                <label for="format">Text format</label>
+                <select id="format" name="format" class="form-control-sm">
+                    <option value="filtered_html" {% if values.format is defined and values.format == "filtered_html" %}selected{% endif %}>Filtered HTML</option>
+                    <option value="full_html" {% if values.format is defined and values.format == "full_html" %}selected{% endif %}>Full HTML</option>
+                    <option value="plain_text" {% if values.format is defined and values.format == "plain_text" %}selected{% endif %}>Plain text</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Menu fields -->
+        <div id="fields-menu" class="tile-type-fields" style="display:none">
+            <div class="form-group">
+                <label for="menu_name">Menu</label>
+                <input type="text" id="menu_name" name="menu_name"
+                       value="{{ values.menu_name | default(value='main') }}"
+                       class="form-control" placeholder="main">
+            </div>
+        </div>
+
+        <!-- Gather query fields -->
+        <div id="fields-gather_query" class="tile-type-fields" style="display:none">
+            <div class="form-group">
+                <label for="query_id">Query ID</label>
+                <input type="text" id="query_id" name="query_id"
+                       value="{{ values.query_id | default(value='') }}"
+                       class="form-control" placeholder="e.g., blog_listing">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="weight">Weight</label>
+            <input type="number" id="weight" name="weight"
+                   value="{{ values.weight | default(value=0) }}"
+                   class="form-control" style="width: 100px">
+        </div>
+
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="status" value="1"
+                       {% if not editing or (values.status is defined and values.status) %}checked{% endif %}>
+                Active
+            </label>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <a href="/admin/structure/tiles" class="btn">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script>
+function toggleTypeFields(type) {
+    document.querySelectorAll('.tile-type-fields').forEach(el => el.style.display = 'none');
+    const target = document.getElementById('fields-' + type);
+    if (target) target.style.display = 'block';
+}
+// Initialize on load
+(function() {
+    var sel = document.getElementById('tile_type');
+    if (sel) toggleTypeFields(sel.value);
+})();
+</script>
+{% endblock %}

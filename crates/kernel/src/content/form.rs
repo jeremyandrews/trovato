@@ -9,12 +9,39 @@ use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 /// Builder for auto-generated forms.
 pub struct FormBuilder {
     content_type: ContentTypeDefinition,
+    /// Text formats the current user is permitted to use.
+    /// When empty, all formats are shown (backwards compat).
+    permitted_formats: Vec<String>,
 }
 
 impl FormBuilder {
     /// Create a new form builder for a content type.
     pub fn new(content_type: ContentTypeDefinition) -> Self {
-        Self { content_type }
+        Self {
+            content_type,
+            permitted_formats: Vec::new(),
+        }
+    }
+
+    /// Set the permitted text formats for the current user.
+    ///
+    /// Only formats in this list will appear in format selectors.
+    /// `plain_text` is always allowed. If the list is empty, all formats are shown.
+    pub fn with_permitted_formats(mut self, formats: Vec<String>) -> Self {
+        self.permitted_formats = formats;
+        self
+    }
+
+    /// Check whether a format should be shown in the selector.
+    fn is_format_permitted(&self, format: &str) -> bool {
+        if self.permitted_formats.is_empty() {
+            return true;
+        }
+        // plain_text is always allowed
+        if format == "plain_text" {
+            return true;
+        }
+        self.permitted_formats.contains(&format.to_string())
     }
 
     /// Generate an add form for creating new items.
@@ -153,6 +180,40 @@ impl FormBuilder {
             FieldType::TextLong => {
                 let val = extract_text_value(value);
                 let format = extract_format_value(value);
+
+                // Build format options based on permissions
+                let mut format_options = String::new();
+                if self.is_format_permitted("filtered_html") {
+                    let sel = if format == "filtered_html" {
+                        "selected"
+                    } else {
+                        ""
+                    };
+                    format_options.push_str(&std::format!(
+                        r#"<option value="filtered_html" {sel}>Filtered HTML</option>"#
+                    ));
+                }
+                if self.is_format_permitted("full_html") {
+                    let sel = if format == "full_html" {
+                        "selected"
+                    } else {
+                        ""
+                    };
+                    format_options.push_str(&std::format!(
+                        r#"<option value="full_html" {sel}>Full HTML</option>"#
+                    ));
+                }
+                {
+                    let sel = if format == "plain_text" {
+                        "selected"
+                    } else {
+                        ""
+                    };
+                    format_options.push_str(&std::format!(
+                        r#"<option value="plain_text" {sel}>Plain Text</option>"#
+                    ));
+                }
+
                 format!(
                     r#"
                     <div class="form-group">
@@ -160,22 +221,11 @@ impl FormBuilder {
                         <textarea id="{field_name}" name="{field_name}" rows="10" {required} class="form-control">{val}</textarea>
                         <div class="form-help">
                             <select name="{field_name}_format" class="form-control-sm">
-                                <option value="filtered_html" {}>Filtered HTML</option>
-                                <option value="plain_text" {}>Plain Text</option>
+                                {format_options}
                             </select>
                         </div>
                     </div>
-                    "#,
-                    if format == "filtered_html" {
-                        "selected"
-                    } else {
-                        ""
-                    },
-                    if format == "plain_text" {
-                        "selected"
-                    } else {
-                        ""
-                    },
+                    "#
                 )
             }
 

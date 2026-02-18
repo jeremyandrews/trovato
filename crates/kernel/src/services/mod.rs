@@ -6,12 +6,14 @@
 
 pub mod audit;
 pub mod content_lock;
+pub mod email;
 pub mod image_style;
 pub mod locale;
 pub mod oauth;
 pub mod po_parser;
 pub mod redirect;
 pub mod scheduled_publishing;
+pub mod tile;
 pub mod translated_config;
 pub mod translation;
 pub mod webhook;

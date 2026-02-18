@@ -113,6 +113,10 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_queue_worker",
     // User
     "tap_user_login",
+    "tap_user_logout",
+    "tap_user_register",
+    "tap_user_update",
+    "tap_user_delete",
     // Gather extensions
     "tap_gather_extend",
 ];

@@ -23,6 +23,7 @@ pub mod password_reset;
 pub mod plugin_admin;
 pub mod search;
 pub mod static_files;
+pub mod tile_admin;
 
 use axum::Router;
 

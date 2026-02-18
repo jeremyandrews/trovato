@@ -332,6 +332,16 @@ async fn do_login(
     // Create session
     setup_session(session, user.id, request.remember_me).await?;
 
+    // Dispatch tap_user_login
+    let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
+    let tap_state = crate::tap::RequestState::without_services(
+        crate::tap::UserContext::authenticated(user.id, vec![]),
+    );
+    state
+        .tap_dispatcher()
+        .dispatch("tap_user_login", &tap_input.to_string(), tap_state)
+        .await;
+
     info!(user_id = %user.id, "user logged in");
     Ok(())
 }
@@ -366,9 +376,28 @@ async fn login(
 /// Logout handler.
 ///
 /// GET /user/logout
+/// - Dispatches tap_user_logout before destroying session
 /// - Deletes session from Redis
 /// - Clears session cookie
-async fn logout(session: Session) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+async fn logout(
+    State(state): State<AppState>,
+    session: Session,
+) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+    // Extract user_id before deleting the session
+    let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+
+    // Dispatch tap_user_logout
+    if let Some(uid) = user_id {
+        let tap_input = serde_json::json!({ "user_id": uid.to_string() });
+        let tap_state = crate::tap::RequestState::without_services(
+            crate::tap::UserContext::authenticated(uid, vec![]),
+        );
+        state
+            .tap_dispatcher()
+            .dispatch("tap_user_logout", &tap_input.to_string(), tap_state)
+            .await;
+    }
+
     session.delete().await.map_err(|e| {
         tracing::error!(error = %e, "failed to delete session");
         (

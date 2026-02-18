@@ -48,8 +48,16 @@ pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, 
 
 /// Inject site-wide context variables into a Tera context.
 ///
-/// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`
-pub async fn inject_site_context(state: &AppState, session: &Session, context: &mut tera::Context) {
+/// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`, `sidebar_tiles`
+///
+/// The `path` parameter is the current request path, used for sidebar tile
+/// visibility filtering.
+pub async fn inject_site_context(
+    state: &AppState,
+    session: &Session,
+    context: &mut tera::Context,
+    path: &str,
+) {
     // Load site name and slogan in a single query
     let all_config = SiteConfig::all(state.db()).await.unwrap_or_default();
     let site_name = all_config
@@ -77,9 +85,27 @@ pub async fn inject_site_context(state: &AppState, session: &Session, context: &
     menus.sort_by_key(|m| m.weight);
     context.insert("menus", &menus);
 
-    // User authentication status
+    // User authentication status and roles for tile visibility
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     context.insert("user_authenticated", &user_id.is_some());
+
+    let mut user_roles = vec!["anonymous user".to_string()];
+    if let Some(id) = user_id {
+        user_roles.push("authenticated user".to_string());
+        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
+            if user.is_admin {
+                user_roles.push("administrator".to_string());
+            }
+        }
+    }
+
+    // Load sidebar tiles filtered by request path and user roles
+    let sidebar_tiles_html = state
+        .tiles()
+        .render_region("sidebar", "live", path, &user_roles)
+        .await
+        .unwrap_or_default();
+    context.insert("sidebar_tiles", &sidebar_tiles_html);
 }
 
 /// Render an admin template with common context (enabled_plugins).

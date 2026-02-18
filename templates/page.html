@@ -72,6 +72,48 @@
         border-top: 1px solid var(--gray-200);
         margin-top: 2rem;
     }
+
+    .page-layout {
+        display: flex;
+        gap: 2rem;
+    }
+
+    .page-layout__main {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .page-layout__sidebar {
+        width: 300px;
+        flex-shrink: 0;
+    }
+
+    .tile {
+        background: white;
+        border: 1px solid var(--gray-200);
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .tile__title {
+        font-weight: 600;
+        font-size: 0.875rem;
+        color: var(--gray-700);
+        margin: 0 0 0.5rem 0;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--gray-200);
+    }
+
+    @media (max-width: 768px) {
+        .page-layout {
+            flex-direction: column;
+        }
+
+        .page-layout__sidebar {
+            width: 100%;
+        }
+    }
 </style>
 {% endblock %}
 
@@ -100,6 +142,21 @@
         </nav>
     </div>
 </div>
+{% endblock %}
+
+{% block content %}
+{% if sidebar_tiles is defined and sidebar_tiles %}
+<div class="page-layout">
+    <div class="page-layout__main">
+        {{ content | safe }}
+    </div>
+    <aside class="page-layout__sidebar">
+        {{ sidebar_tiles | safe }}
+    </aside>
+</div>
+{% else %}
+{{ content | safe }}
+{% endif %}
 {% endblock %}
 
 {% block footer %}

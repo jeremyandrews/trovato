@@ -35,7 +35,7 @@ async fn front_page(State(state): State<AppState>, session: Session) -> Html<Str
     let content = render_promoted_listing(&state).await;
 
     let mut context = tera::Context::new();
-    inject_site_context(&state, &session, &mut context).await;
+    inject_site_context(&state, &session, &mut context, "/").await;
 
     let html = state
         .theme()
@@ -89,7 +89,7 @@ async fn render_configured_front_page(
     let item_html = state.theme().tera().render(&template, &context).ok()?;
 
     // Wrap in page layout
-    inject_site_context(state, session, &mut context).await;
+    inject_site_context(state, session, &mut context, "/").await;
 
     state
         .theme()

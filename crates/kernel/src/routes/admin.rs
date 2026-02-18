@@ -852,9 +852,10 @@ async fn add_user_submit(
     session: Session,
     Form(form): Form<UserFormData>,
 ) -> Response {
-    if let Err(redirect) = require_login(&state, &session).await {
-        return redirect;
-    }
+    let current_user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     // Verify CSRF token
     let token_valid = verify_csrf_token(&session, &form.token)
@@ -926,7 +927,17 @@ async fn add_user_submit(
     };
 
     match User::create(state.db(), input).await {
-        Ok(_) => {
+        Ok(user) => {
+            // Dispatch tap_user_register
+            let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
+            let tap_state = crate::tap::RequestState::without_services(
+                crate::tap::UserContext::authenticated(current_user.id, vec![]),
+            );
+            state
+                .tap_dispatcher()
+                .dispatch("tap_user_register", &tap_input.to_string(), tap_state)
+                .await;
+
             tracing::info!(name = %form.name, "user created");
             Redirect::to("/admin/people").into_response()
         }
@@ -985,9 +996,10 @@ async fn edit_user_submit(
     Path(user_id): Path<uuid::Uuid>,
     Form(form): Form<UserFormData>,
 ) -> Response {
-    if let Err(redirect) = require_login(&state, &session).await {
-        return redirect;
-    }
+    let current_user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     // Verify CSRF token
     let token_valid = verify_csrf_token(&session, &form.token)
@@ -1082,6 +1094,16 @@ async fn edit_user_submit(
                 }
             }
 
+            // Dispatch tap_user_update
+            let tap_input = serde_json::json!({ "user_id": user_id.to_string() });
+            let tap_state = crate::tap::RequestState::without_services(
+                crate::tap::UserContext::authenticated(current_user.id, vec![]),
+            );
+            state
+                .tap_dispatcher()
+                .dispatch("tap_user_update", &tap_input.to_string(), tap_state)
+                .await;
+
             tracing::info!(user_id = %user_id, "user updated");
             Redirect::to("/admin/people").into_response()
         }
@@ -1117,6 +1139,16 @@ async fn delete_user(
 
     match User::delete(state.db(), user_id).await {
         Ok(true) => {
+            // Dispatch tap_user_delete
+            let tap_input = serde_json::json!({ "user_id": user_id.to_string() });
+            let tap_state = crate::tap::RequestState::without_services(
+                crate::tap::UserContext::authenticated(current_user.id, vec![]),
+            );
+            state
+                .tap_dispatcher()
+                .dispatch("tap_user_delete", &tap_input.to_string(), tap_state)
+                .await;
+
             tracing::info!(user_id = %user_id, "user deleted");
             Redirect::to("/admin/people").into_response()
         }
@@ -1434,6 +1466,8 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
         "administer categories",
         "access files",
         "administer files",
+        "use filtered_html",
+        "use full_html",
     ];
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
@@ -1492,6 +1526,8 @@ async fn save_permissions(
         "administer categories",
         "access files",
         "administer files",
+        "use filtered_html",
+        "use full_html",
     ];
 
     // Process form data - permissions are submitted as "perm_{role_id}_{permission}"

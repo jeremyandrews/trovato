@@ -11,6 +11,7 @@ pub mod password_reset;
 pub mod role;
 pub mod site_config;
 pub mod stage;
+pub mod tile;
 pub mod url_alias;
 pub mod user;
 

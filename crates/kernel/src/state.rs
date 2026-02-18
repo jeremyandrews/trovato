@@ -144,6 +144,13 @@ struct AppStateInner {
     /// Frozen at startup: changing the default language requires a restart.
     default_language: String,
 
+    /// Tile rendering service.
+    tiles: Arc<services::tile::TileService>,
+
+    // --- Optional services (available when configured) ---
+    /// Email delivery service (available when SMTP_HOST is configured).
+    email: Option<Arc<services::email::EmailService>>,
+
     // --- Optional services (available when their plugins are enabled) ---
     /// Audit logging service.
     audit: Option<Arc<services::audit::AuditService>>,
@@ -434,6 +441,9 @@ impl AppState {
         // Create stage service
         let stage = Arc::new(StageService::new(db.clone(), cache.clone()));
 
+        // Create tile service
+        let tiles = Arc::new(services::tile::TileService::new(db.clone()));
+
         // Load languages and build negotiator chain
         let languages = crate::models::Language::list_all(&db)
             .await
@@ -458,6 +468,28 @@ impl AppState {
             Arc::new(AcceptLanguageNegotiator::new(known_languages.clone())),
         ];
         language_negotiators.sort_by_key(|n| std::cmp::Reverse(n.priority()));
+
+        // Initialize email service (conditionally, when SMTP_HOST is set)
+        let email = config.smtp_host.as_ref().map(|host| {
+            match services::email::EmailService::new(
+                host,
+                config.smtp_port,
+                config.smtp_username.as_deref(),
+                config.smtp_password.as_deref(),
+                &config.smtp_encryption,
+                config.smtp_from_email.clone(),
+                config.site_url.clone(),
+            ) {
+                Ok(svc) => {
+                    info!(host = %host, port = config.smtp_port, "SMTP email service configured");
+                    Some(Arc::new(svc))
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to initialize email service");
+                    None
+                }
+            }
+        }).flatten();
 
         // Initialize optional services based on enabled plugins
         let audit = if enabled_set.contains("audit_log") {
@@ -613,6 +645,8 @@ impl AppState {
                 language_negotiators,
                 known_languages,
                 default_language,
+                tiles,
+                email,
                 audit,
                 content_lock,
                 webhooks,
@@ -813,6 +847,16 @@ impl AppState {
     /// Get the default language code (loaded from DB at startup).
     pub fn default_language(&self) -> &str {
         &self.inner.default_language
+    }
+
+    /// Get the tile service.
+    pub fn tiles(&self) -> &Arc<services::tile::TileService> {
+        &self.inner.tiles
+    }
+
+    /// Get the email service (if SMTP is configured).
+    pub fn email(&self) -> Option<&Arc<services::email::EmailService>> {
+        self.inner.email.as_ref()
     }
 
     /// Get the audit service (if audit_log plugin is enabled).
