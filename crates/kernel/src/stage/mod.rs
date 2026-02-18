@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 use crate::cache::CacheLayer;
+use crate::models::stage::{CreateStage, Stage};
 
 /// Identifies which publish phase is executing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +176,8 @@ pub struct PublishResult {
     pub items_deleted: i64,
     /// Number of config entities published.
     pub config_published: i64,
+    /// Number of dependent entities published (aliases, menu links).
+    pub dependents_published: i64,
     /// Conflicts detected (if any).
     pub conflicts: Vec<ConflictInfo>,
     /// If failed, which phase failed.
@@ -192,6 +195,7 @@ impl PublishResult {
             items_published,
             items_deleted,
             config_published: 0,
+            dependents_published: 0,
             conflicts: Vec::new(),
             failed_phase: None,
             error_message: None,
@@ -211,6 +215,7 @@ impl PublishResult {
             items_published,
             items_deleted,
             config_published: 0,
+            dependents_published: 0,
             conflicts,
             failed_phase: None,
             error_message: None,
@@ -225,6 +230,7 @@ impl PublishResult {
             items_published: 0,
             items_deleted: 0,
             config_published: 0,
+            dependents_published: 0,
             conflicts,
             failed_phase: None,
             error_message: Some("Publish cancelled due to conflicts".to_string()),
@@ -239,6 +245,7 @@ impl PublishResult {
             items_published: 0,
             items_deleted: 0,
             config_published: 0,
+            dependents_published: 0,
             conflicts: Vec::new(),
             failed_phase: Some(phase),
             error_message: Some(error),
@@ -410,8 +417,19 @@ impl StageService {
             ));
         }
 
-        // Phase 4: Dependents (no-op in v1.0)
-        debug!("executing phase 4: dependents (no-op)");
+        // Phase 4: Dependents (aliases, menu links)
+        debug!("executing phase 4: dependents");
+        let dependents_published = match publish_dependents_default(&mut tx, stage_id).await {
+            Ok(count) => count,
+            Err(e) => {
+                warn!(error = %e, "dependents phase failed");
+                return Ok(PublishResult::failure(
+                    stage_id.to_string(),
+                    PublishPhase::Dependents,
+                    e.to_string(),
+                ));
+            }
+        };
 
         // Commit transaction
         tx.commit().await.context("failed to commit transaction")?;
@@ -420,22 +438,158 @@ impl StageService {
             stage_id = %stage_id,
             items_published = %items_to_publish,
             items_deleted = %items_to_delete,
+            dependents_published = %dependents_published,
             "stage publish completed"
         );
 
         // Cache invalidation AFTER transaction commits
         self.cache.invalidate_stage(stage_id).await;
 
-        Ok(PublishResult::success(
-            stage_id.to_string(),
-            items_to_publish,
-            items_to_delete,
-        ))
+        let mut result =
+            PublishResult::success(stage_id.to_string(), items_to_publish, items_to_delete);
+        result.dependents_published = dependents_published;
+        Ok(result)
     }
 
     // Note: publish_with_phases() removed for v1.0.
     // The callback-based approach will be added post-MVP when config staging needs it.
     // For v1.0, use publish() which handles items phase directly.
+
+    // ── Stage hierarchy management ──
+
+    /// Create a new stage with an optional upstream parent.
+    pub async fn create_stage(
+        &self,
+        id: &str,
+        label: &str,
+        upstream_id: Option<&str>,
+    ) -> Result<Stage> {
+        Stage::create(
+            &self.pool,
+            CreateStage {
+                id: id.to_string(),
+                label: label.to_string(),
+                upstream_id: upstream_id.map(|s| s.to_string()),
+            },
+        )
+        .await
+    }
+
+    /// Get a stage by ID.
+    pub async fn get_stage(&self, id: &str) -> Result<Option<Stage>> {
+        Stage::find_by_id(&self.pool, id).await
+    }
+
+    /// List all stages.
+    pub async fn list_stages(&self) -> Result<Vec<Stage>> {
+        Stage::list_all(&self.pool).await
+    }
+
+    /// Get the ancestry chain for a stage (self → parent → ... → root).
+    pub async fn get_ancestry(&self, stage_id: &str) -> Result<Vec<String>> {
+        Stage::get_ancestry(&self.pool, stage_id).await
+    }
+
+    /// Resolve the upstream target for a stage.
+    ///
+    /// Returns the upstream_id if set, otherwise `"live"`.
+    async fn resolve_upstream(&self, stage_id: &str) -> Result<String> {
+        let stage = Stage::find_by_id(&self.pool, stage_id)
+            .await?
+            .with_context(|| format!("stage '{}' not found", stage_id))?;
+
+        Ok(stage
+            .upstream_id
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| "live".to_string()))
+    }
+
+    /// Publish a stage to its upstream parent (or live if no parent).
+    ///
+    /// This is the hierarchy-aware entry point: instead of always targeting
+    /// "live", it moves content to whichever stage is the direct upstream.
+    pub async fn publish_to_upstream(&self, stage_id: &str) -> Result<PublishResult> {
+        if stage_id == "live" {
+            return Ok(PublishResult::failure(
+                stage_id.to_string(),
+                PublishPhase::Items,
+                "Cannot publish 'live' stage".to_string(),
+            ));
+        }
+
+        let target = self.resolve_upstream(stage_id).await?;
+
+        info!(stage_id = %stage_id, target = %target, "publishing to upstream");
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to start transaction")?;
+
+        // Count items before publishing
+        let items_to_publish: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE stage_id = $1")
+                .bind(stage_id)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap_or(0);
+
+        let items_to_delete: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM stage_deletion WHERE stage_id = $1 AND entity_type = 'item'",
+        )
+        .bind(stage_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or(0);
+
+        // Phase 1-2: Config types / Categories (no-op in v1.0)
+        debug!("executing phases 1-2: config_types + categories (no-op)");
+
+        // Phase 3: Items — move to target stage instead of "live"
+        debug!("executing phase 3: items -> {}", target);
+        if let Err(e) = publish_items_to_target(&mut tx, stage_id, &target).await {
+            warn!(error = %e, "items phase failed");
+            return Ok(PublishResult::failure(
+                stage_id.to_string(),
+                PublishPhase::Items,
+                e.to_string(),
+            ));
+        }
+
+        // Phase 4: Dependents — move aliases/menus to target stage
+        debug!("executing phase 4: dependents -> {}", target);
+        let dependents_published =
+            match publish_dependents_to_target(&mut tx, stage_id, &target).await {
+                Ok(count) => count,
+                Err(e) => {
+                    warn!(error = %e, "dependents phase failed");
+                    return Ok(PublishResult::failure(
+                        stage_id.to_string(),
+                        PublishPhase::Dependents,
+                        e.to_string(),
+                    ));
+                }
+            };
+
+        tx.commit().await.context("failed to commit transaction")?;
+
+        info!(
+            stage_id = %stage_id,
+            target = %target,
+            items_published = %items_to_publish,
+            items_deleted = %items_to_delete,
+            dependents_published = %dependents_published,
+            "stage publish to upstream completed"
+        );
+
+        self.cache.invalidate_stage(stage_id).await;
+
+        let mut result =
+            PublishResult::success(stage_id.to_string(), items_to_publish, items_to_delete);
+        result.dependents_published = dependents_published;
+        Ok(result)
+    }
 
     /// Check if a stage has any pending changes.
     pub async fn has_changes(&self, stage_id: &str) -> Result<bool> {
@@ -496,6 +650,10 @@ impl StageService {
         // Find config entities where live version was modified after staging
         let live_modified_config = self.detect_live_modified_config_conflicts(stage_id).await?;
         conflicts.extend(live_modified_config);
+
+        // Detect cross-stage alias conflicts
+        let alias_conflicts = self.detect_cross_stage_alias_conflicts(stage_id).await?;
+        conflicts.extend(alias_conflicts);
 
         Ok(conflicts)
     }
@@ -600,6 +758,50 @@ impl StageService {
         Ok(conflicts)
     }
 
+    /// Detect URL aliases in this stage that conflict with aliases in other stages.
+    async fn detect_cross_stage_alias_conflicts(
+        &self,
+        stage_id: &str,
+    ) -> Result<Vec<ConflictInfo>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                a.alias,
+                a.language,
+                array_agg(DISTINCT b.stage_id) as other_stages
+            FROM url_alias a
+            JOIN url_alias b
+                ON a.alias = b.alias
+                AND a.language = b.language
+                AND b.stage_id != $1
+                AND b.stage_id != 'live'
+            WHERE a.stage_id = $1
+            GROUP BY a.alias, a.language
+            "#,
+        )
+        .bind(stage_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to detect cross-stage alias conflicts")?;
+
+        let mut conflicts = Vec::new();
+        for row in rows {
+            let alias: String = row.get("alias");
+            let other_stages: Vec<String> = row.get("other_stages");
+
+            conflicts.push(
+                ConflictInfo::new(
+                    "url_alias",
+                    &alias,
+                    ConflictType::CrossStage { other_stages },
+                )
+                .with_label(format!("URL alias: {}", alias)),
+            );
+        }
+
+        Ok(conflicts)
+    }
+
     /// Publish a stage with explicit conflict resolution.
     ///
     /// If conflicts are detected and resolution is Cancel, the publish is aborted.
@@ -691,8 +893,19 @@ impl StageService {
             ));
         }
 
-        // Phase 4: Dependents (no-op in v1.0)
-        debug!("executing phase 4: dependents (no-op)");
+        // Phase 4: Dependents (aliases, menu links)
+        debug!("executing phase 4: dependents");
+        let dependents_published = match publish_dependents_default(&mut tx, stage_id).await {
+            Ok(count) => count,
+            Err(e) => {
+                warn!(error = %e, "dependents phase failed");
+                return Ok(PublishResult::failure(
+                    stage_id.to_string(),
+                    PublishPhase::Dependents,
+                    e.to_string(),
+                ));
+            }
+        };
 
         // Commit transaction
         tx.commit().await.context("failed to commit transaction")?;
@@ -701,6 +914,7 @@ impl StageService {
             stage_id = %stage_id,
             items_published = %items_to_publish,
             items_deleted = %items_to_delete,
+            dependents_published = %dependents_published,
             conflicts = %conflicts.len(),
             "stage publish completed"
         );
@@ -708,12 +922,14 @@ impl StageService {
         // Cache invalidation AFTER transaction commits
         self.cache.invalidate_stage(stage_id).await;
 
-        Ok(PublishResult::success_with_conflicts(
+        let mut result = PublishResult::success_with_conflicts(
             stage_id.to_string(),
             items_to_publish,
             items_to_delete,
             conflicts,
-        ))
+        );
+        result.dependents_published = dependents_published;
+        Ok(result)
     }
 }
 
@@ -755,6 +971,194 @@ async fn publish_items_default(tx: &mut Transaction<'_, Postgres>, stage_id: &st
         .context("failed to clean up deletion records")?;
 
     Ok(())
+}
+
+/// Default dependents publish phase: moves staged aliases and menu links to live,
+/// processes dependent deletions.
+async fn publish_dependents_default(
+    tx: &mut Transaction<'_, Postgres>,
+    stage_id: &str,
+) -> Result<i64> {
+    let mut total: i64 = 0;
+
+    // Move staged url_alias records to live
+    let aliases_updated = sqlx::query("UPDATE url_alias SET stage_id = 'live' WHERE stage_id = $1")
+        .bind(stage_id)
+        .execute(&mut **tx)
+        .await
+        .context("failed to move staged aliases to live")?;
+    total += aliases_updated.rows_affected() as i64;
+    debug!(rows = %aliases_updated.rows_affected(), "moved url_alias to live");
+
+    // Move staged menu_link records to live
+    let menus_updated = sqlx::query("UPDATE menu_link SET stage_id = 'live' WHERE stage_id = $1")
+        .bind(stage_id)
+        .execute(&mut **tx)
+        .await
+        .context("failed to move staged menu links to live")?;
+    total += menus_updated.rows_affected() as i64;
+    debug!(rows = %menus_updated.rows_affected(), "moved menu_link to live");
+
+    // Process dependent deletions (url_alias, menu_link)
+    let alias_deletions = sqlx::query(
+        r#"
+        DELETE FROM url_alias
+        WHERE id IN (
+            SELECT entity_id::uuid FROM stage_deletion
+            WHERE stage_id = $1 AND entity_type = 'url_alias'
+        )
+        "#,
+    )
+    .bind(stage_id)
+    .execute(&mut **tx)
+    .await
+    .context("failed to delete staged url_alias deletions")?;
+    debug!(rows = %alias_deletions.rows_affected(), "deleted url_alias from deletion records");
+
+    let menu_deletions = sqlx::query(
+        r#"
+        DELETE FROM menu_link
+        WHERE id IN (
+            SELECT entity_id::uuid FROM stage_deletion
+            WHERE stage_id = $1 AND entity_type = 'menu_link'
+        )
+        "#,
+    )
+    .bind(stage_id)
+    .execute(&mut **tx)
+    .await
+    .context("failed to delete staged menu_link deletions")?;
+    debug!(rows = %menu_deletions.rows_affected(), "deleted menu_link from deletion records");
+
+    // Clean up dependent deletion records
+    sqlx::query(
+        "DELETE FROM stage_deletion WHERE stage_id = $1 AND entity_type IN ('url_alias', 'menu_link')",
+    )
+    .bind(stage_id)
+    .execute(&mut **tx)
+    .await
+    .context("failed to clean up dependent deletion records")?;
+
+    Ok(total)
+}
+
+/// Hierarchy-aware items publish: moves items from `source` to `target` stage.
+async fn publish_items_to_target(
+    tx: &mut Transaction<'_, Postgres>,
+    source: &str,
+    target: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().timestamp();
+
+    // Move staged items to target stage
+    let updated = sqlx::query("UPDATE item SET stage_id = $1, changed = $2 WHERE stage_id = $3")
+        .bind(target)
+        .bind(now)
+        .bind(source)
+        .execute(&mut **tx)
+        .await
+        .context("failed to move staged items to target")?;
+
+    debug!(rows = %updated.rows_affected(), target = %target, "moved items to target stage");
+
+    // Process deletions: delete items marked for deletion in this stage
+    // (Deletions always delete the actual item regardless of target.)
+    let deleted = sqlx::query(
+        r#"
+        DELETE FROM item
+        WHERE id IN (
+            SELECT entity_id::uuid FROM stage_deletion
+            WHERE stage_id = $1 AND entity_type = 'item'
+        )
+        "#,
+    )
+    .bind(source)
+    .execute(&mut **tx)
+    .await
+    .context("failed to delete staged items")?;
+
+    debug!(rows = %deleted.rows_affected(), "deleted items from deletion records");
+
+    // Clean up item deletion records for this stage only
+    // (dependent entity types like url_alias, menu_link are cleaned up in phase 4)
+    sqlx::query("DELETE FROM stage_deletion WHERE stage_id = $1 AND entity_type = 'item'")
+        .bind(source)
+        .execute(&mut **tx)
+        .await
+        .context("failed to clean up deletion records")?;
+
+    Ok(())
+}
+
+/// Hierarchy-aware dependents publish: moves aliases/menus from `source` to `target` stage.
+async fn publish_dependents_to_target(
+    tx: &mut Transaction<'_, Postgres>,
+    source: &str,
+    target: &str,
+) -> Result<i64> {
+    let mut total: i64 = 0;
+
+    // Move staged url_alias records to target stage
+    let aliases_updated = sqlx::query("UPDATE url_alias SET stage_id = $1 WHERE stage_id = $2")
+        .bind(target)
+        .bind(source)
+        .execute(&mut **tx)
+        .await
+        .context("failed to move staged aliases to target")?;
+    total += aliases_updated.rows_affected() as i64;
+    debug!(rows = %aliases_updated.rows_affected(), target = %target, "moved url_alias to target stage");
+
+    // Move staged menu_link records to target stage
+    let menus_updated = sqlx::query("UPDATE menu_link SET stage_id = $1 WHERE stage_id = $2")
+        .bind(target)
+        .bind(source)
+        .execute(&mut **tx)
+        .await
+        .context("failed to move staged menu links to target")?;
+    total += menus_updated.rows_affected() as i64;
+    debug!(rows = %menus_updated.rows_affected(), target = %target, "moved menu_link to target stage");
+
+    // Process dependent deletions (same as default — deletions are absolute)
+    let alias_deletions = sqlx::query(
+        r#"
+        DELETE FROM url_alias
+        WHERE id IN (
+            SELECT entity_id::uuid FROM stage_deletion
+            WHERE stage_id = $1 AND entity_type = 'url_alias'
+        )
+        "#,
+    )
+    .bind(source)
+    .execute(&mut **tx)
+    .await
+    .context("failed to delete staged url_alias deletions")?;
+    debug!(rows = %alias_deletions.rows_affected(), "deleted url_alias from deletion records");
+
+    let menu_deletions = sqlx::query(
+        r#"
+        DELETE FROM menu_link
+        WHERE id IN (
+            SELECT entity_id::uuid FROM stage_deletion
+            WHERE stage_id = $1 AND entity_type = 'menu_link'
+        )
+        "#,
+    )
+    .bind(source)
+    .execute(&mut **tx)
+    .await
+    .context("failed to delete staged menu_link deletions")?;
+    debug!(rows = %menu_deletions.rows_affected(), "deleted menu_link from deletion records");
+
+    // Clean up dependent deletion records
+    sqlx::query(
+        "DELETE FROM stage_deletion WHERE stage_id = $1 AND entity_type IN ('url_alias', 'menu_link')",
+    )
+    .bind(source)
+    .execute(&mut **tx)
+    .await
+    .context("failed to clean up dependent deletion records")?;
+
+    Ok(total)
 }
 
 impl std::fmt::Debug for StageService {
@@ -885,5 +1289,43 @@ mod tests {
     fn test_publish_phases_default() {
         let _phases = PublishPhases::new();
         // Just verify it builds without panic (post-MVP feature)
+    }
+
+    #[test]
+    fn test_publish_result_with_dependents() {
+        let mut result = PublishResult::success("child".to_string(), 3, 1);
+        result.dependents_published = 5;
+        assert!(result.success);
+        assert_eq!(result.items_published, 3);
+        assert_eq!(result.items_deleted, 1);
+        assert_eq!(result.dependents_published, 5);
+    }
+
+    #[test]
+    fn test_publish_result_hierarchy_target_stage() {
+        // Verify result captures the source stage_id correctly
+        let result = PublishResult::success("review".to_string(), 10, 0);
+        assert_eq!(result.stage_id, "review");
+        assert!(result.success);
+        assert!(!result.has_conflicts());
+    }
+
+    #[test]
+    fn test_publish_all_phases_enum() {
+        // Verify all phases have Display implementations
+        let phases = vec![
+            PublishPhase::ConfigTypes,
+            PublishPhase::Categories,
+            PublishPhase::Items,
+            PublishPhase::Dependents,
+        ];
+        for phase in phases {
+            let s = phase.to_string();
+            assert!(
+                !s.is_empty(),
+                "phase {:?} should have non-empty display",
+                phase
+            );
+        }
     }
 }

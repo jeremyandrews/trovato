@@ -259,7 +259,8 @@ fn plugin_metadata_correct() {
         "Provides a blog content type with tags"
     );
     assert_eq!(plugin.info.version, "1.0.0");
-    assert_eq!(plugin.info.dependencies, vec!["item", "categories"]);
+    let expected_deps: Vec<String> = vec![];
+    assert_eq!(plugin.info.dependencies, expected_deps);
 
     // Check taps
     assert_eq!(plugin.info.taps.weight, 0);

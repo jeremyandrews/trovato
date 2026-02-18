@@ -27,13 +27,17 @@ Trovato takes the core ideas that made Drupal 6 powerful -- nodes, fields, views
 - **Revisions**: Full revision history with revert capability
 - **Text Filters**: XSS-safe output with plain_text, filtered_html, and full_html formats
 - **Staging**: Content stages built into schema for draft/live workflows
+- **Stage Hierarchy**: Parent/child stage chains with upstream publishing and content overlay inheritance
+- **Stage-Aware Menus & Aliases**: Path aliases and menu links resolve per active stage, with conflict detection
 - **Scheduled Publishing**: Future publish/unpublish dates via `field_publish_on` / `field_unpublish_on`
 - **Content Locking**: Pessimistic locking prevents concurrent editing with heartbeat and break support
 
 ### Querying & Organization
 - **Gather Query Engine**: Type-safe query building with 16+ filter operators, pagination, and exposed filters
+- **Gather Admin UI**: Visual query builder with live preview, relationship editor, display configuration, and cloning
+- **Performance Guardrails**: Statement timeout, join depth limits, max items per page enforcement on gather queries
 - **Categories & Tags**: DAG hierarchy with multiple parents per tag, recursive ancestor/descendant queries
-- **Full-Text Search**: PostgreSQL tsvector with configurable field weights and ranking
+- **Full-Text Search**: PostgreSQL tsvector with configurable field weights and ranking, integrated as gather filter operator
 - **URL Aliases**: Clean URLs with automatic path alias resolution middleware
 - **Redirects**: URL redirect management with automatic alias-change tracking and loop detection
 
@@ -42,6 +46,16 @@ Trovato takes the core ideas that made Drupal 6 powerful -- nodes, fields, views
 - **Theme Engine**: Tera templates with template suggestions and render element pipeline
 - **Admin UI**: Content type management, field configuration, user administration
 - **Config Export/Import**: `trovato config export|import` for YAML-based configuration management
+
+### Block Editor
+- **Editor.js Integration**: Rich content editing with Editor.js field widget for block-based content
+- **8 Standard Block Types**: Paragraph, heading, image, list, quote, code, delimiter, embed
+- **Block Type Registry**: Extensible registry with JSON Schema validation per block type
+- **Server-Side Rendering**: Semantic HTML output with Tera templates per block type
+- **HTML Sanitization**: Ammonia-based XSS prevention on all text block output
+- **Code Highlighting**: Syntax highlighting via syntect with auto-detected language
+- **Embed Whitelist**: YouTube/Vimeo URL validation with responsive iframe rendering
+- **Image Upload**: Multipart upload endpoint with MIME validation for Editor.js image tool
 
 ### Media & Images
 - **File Management**: Upload handling with temporary file cleanup and managed file tracking
@@ -237,8 +251,10 @@ trovato/
 │   │       ├── services/    # OAuth, webhooks, image styles, redirects, etc.
 │   │       ├── middleware/   # Auth, rate limiting, redirects, language, aliases
 │   │       ├── routes/      # HTTP route handlers
-│   │       ├── content/     # Content type and item management
+│   │       ├── content/     # Content type, item, and block editor management
 │   │       ├── cron/        # Scheduled tasks
+│   │       ├── gather/      # Query engine, builder, and admin service
+│   │       ├── stage/       # Content staging and hierarchy
 │   │       ├── file/        # File management
 │   │       ├── plugin/      # WASM plugin runtime
 │   │       ├── tap/         # Extension point registry and dispatch
@@ -274,6 +290,9 @@ trovato/
 | [Query Engine](docs/design/Design-Query-Engine.md) | Gather query building and execution |
 | [Plugin System](docs/design/Design-Plugin-System.md) | Plugin loading, taps, and sandboxing |
 | [Plugin SDK](docs/design/Design-Plugin-SDK.md) | SDK design and host function API |
+| [Block Editor Guide](docs/block-editor/user-guide.md) | Editor.js block editor usage |
+| [Block Editor Config](docs/block-editor/configuration.md) | Block editor configuration reference |
+| [Custom Block Types](docs/block-editor/custom-block-types.md) | Creating custom block type plugins |
 | [Render & Theme](docs/design/Design-Render-Theme.md) | Rendering pipeline and theming |
 | [Web Layer](docs/design/Design-Web-Layer.md) | HTTP layer, routing, and middleware |
 | [Infrastructure](docs/design/Design-Infrastructure.md) | Caching, cron, sessions, metrics |

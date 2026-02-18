@@ -92,6 +92,37 @@ impl ItemService {
         Ok(item)
     }
 
+    /// Load an item by ID with stage hierarchy overlay.
+    ///
+    /// Tries to find the item in the nearest stage in the ancestry chain.
+    /// For example, with `stage_ids = ["review", "draft", "live"]`, returns
+    /// the first match found when checking stage_id = review, then draft, then live.
+    ///
+    /// Falls back to `load()` if the item exists but isn't in any of the given stages
+    /// (e.g., it was loaded by a direct UUID link).
+    pub async fn load_with_overlay(&self, id: Uuid, stage_ids: &[String]) -> Result<Option<Item>> {
+        // Check cache first (cache is stage-agnostic — items have single stage_id)
+        if let Some(item) = self.inner.cache.get(&id) {
+            // Verify the item's stage is in our overlay list
+            if stage_ids.iter().any(|s| s == &item.stage_id) {
+                return Ok(Some(item.clone()));
+            }
+        }
+
+        // Load from database — the item has a single stage_id
+        let item = Item::find_by_id(&self.inner.pool, id).await?;
+
+        if let Some(ref i) = item {
+            // Only return if the item is in one of the visible stages
+            if stage_ids.iter().any(|s| s == &i.stage_id) {
+                self.inner.cache.insert(id, i.clone());
+                return Ok(Some(i.clone()));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Load an item and invoke tap_item_view for rendering.
     pub async fn load_for_view(
         &self,

@@ -275,6 +275,34 @@ impl UrlAlias {
         Ok(count)
     }
 
+    /// Find aliases that conflict with a given alias path across stages.
+    ///
+    /// Returns aliases in other stages (excluding `excluding_stage`) that share
+    /// the same alias path and language. Used by publish conflict detection.
+    pub async fn find_conflicting_aliases(
+        pool: &PgPool,
+        alias_path: &str,
+        language: &str,
+        excluding_stage: &str,
+    ) -> Result<Vec<Self>> {
+        let aliases = sqlx::query_as::<_, UrlAlias>(
+            r#"
+            SELECT id, source, alias, language, stage_id, created
+            FROM url_alias
+            WHERE alias = $1 AND language = $2 AND stage_id != $3 AND stage_id != 'live'
+            ORDER BY created DESC
+            "#,
+        )
+        .bind(alias_path)
+        .bind(language)
+        .bind(excluding_stage)
+        .fetch_all(pool)
+        .await
+        .context("failed to find conflicting aliases")?;
+
+        Ok(aliases)
+    }
+
     /// Create or update an alias for a source path.
     /// If an alias already exists for this source (same stage/language), update it.
     /// Otherwise, create a new alias.

@@ -112,6 +112,7 @@
                 <li><a href="/admin/structure/types" {% if path is starting_with("/admin/structure/types") %}class="active"{% endif %}>Content types</a></li>
                 <li><a href="/admin/structure/categories" {% if path is starting_with("/admin/structure/categories") or path is starting_with("/admin/structure/tags") %}class="active"{% endif %}>Categories</a></li>
                 <li><a href="/admin/structure/aliases" {% if path is starting_with("/admin/structure/aliases") %}class="active"{% endif %}>URL aliases</a></li>
+                <li><a href="/admin/gather" {% if path is starting_with("/admin/gather") %}class="active"{% endif %}>Gather queries</a></li>
 
                 <div class="admin-nav-section">People</div>
                 <li><a href="/admin/people" {% if path == "/admin/people" or path is starting_with("/admin/people/add") or (path is starting_with("/admin/people/") and not path is starting_with("/admin/people/roles") and not path is starting_with("/admin/people/permissions")) %}class="active"{% endif %}>Users</a></li>

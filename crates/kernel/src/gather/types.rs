@@ -38,6 +38,12 @@ pub struct QueryDefinition {
     /// Named sub-queries to nest into parent results.
     #[serde(default)]
     pub includes: HashMap<String, IncludeDefinition>,
+
+    /// Whether this query's base table has a `stage_id` column.
+    /// Defaults to `true` (item table). Set to `false` for tables like
+    /// `users`, `role`, `url_alias` that lack a `stage_id` column.
+    #[serde(default = "default_true")]
+    pub stage_aware: bool,
 }
 
 fn default_base_table() -> String {
@@ -54,6 +60,7 @@ impl Default for QueryDefinition {
             sorts: Vec::new(),
             relationships: Vec::new(),
             includes: HashMap::new(),
+            stage_aware: true,
         }
     }
 }
@@ -133,6 +140,9 @@ pub enum FilterOperator {
     /// Has tag or any of its descendants (hierarchical filter).
     #[serde(rename = "has_tag_or_descendants")]
     HasTagOrDescendants,
+    /// PostgreSQL full-text search using tsvector/tsquery.
+    #[serde(rename = "full_text_search")]
+    FullTextSearch,
     /// Custom filter provided by a plugin extension.
     #[serde(rename = "custom")]
     Custom(String),
@@ -624,6 +634,7 @@ mod tests {
             }],
             relationships: vec![],
             includes: HashMap::new(),
+            stage_aware: true,
         };
 
         let json = serde_json::to_string(&def).unwrap();

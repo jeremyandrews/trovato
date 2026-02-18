@@ -180,6 +180,7 @@ async fn run_server() -> Result<()> {
         .merge(routes::category::router())
         .merge(routes::comment::router())
         .merge(routes::gather::router())
+        .merge(routes::gather_admin::router())
         .merge(routes::search::router())
         .merge(routes::cron::router())
         .merge(routes::file::router())

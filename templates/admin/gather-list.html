@@ -1,0 +1,49 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Gather Queries</h2>
+    <a href="/admin/gather/create" class="button button--primary">Create query</a>
+</div>
+
+<div class="admin-card">
+    {% if queries | length > 0 %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Label</th>
+                <th>Base table</th>
+                <th>Plugin</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for query in queries %}
+            <tr>
+                <td><code>{{ query.query_id }}</code></td>
+                <td>{{ query.label }}</td>
+                <td>{{ query.definition.base_table }}</td>
+                <td>{{ query.plugin }}</td>
+                <td>
+                    <a href="/admin/gather/{{ query.query_id }}/edit">Edit</a>
+                    &middot;
+                    <form method="post" action="/admin/gather/{{ query.query_id }}/clone" style="display: inline;">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="link-button">Clone</button>
+                    </form>
+                    &middot;
+                    <form method="post" action="/admin/gather/{{ query.query_id }}/delete" style="display: inline;">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="link-button" onclick="return confirm('Delete this query?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No gather queries found. <a href="/admin/gather/create">Create one now</a>.</p>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,131 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit Query: {{ values.label | default(value="") }}{% else %}Create Gather Query{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="gather-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+        <input type="hidden" id="definition_json" name="definition_json" value="{{ definition_json | default(value='{}') }}">
+        <input type="hidden" id="display_json" name="display_json" value="{{ display_json | default(value='{}') }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="query_id" class="form-item__label form-item__label--required">Query ID</label>
+            <input type="text" id="query_id" name="query_id" class="form-text"
+                   value="{{ values.query_id | default(value='') }}"
+                   {% if editing %}readonly{% endif %}
+                   required pattern="[a-z0-9_.:-]+" title="Lowercase letters, numbers, dots, colons, hyphens, underscores">
+            <p class="form-item__description">Machine name (e.g., "blog.recent_posts"). Cannot be changed after creation.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="label" class="form-item__label form-item__label--required">Label</label>
+            <input type="text" id="label" name="label" class="form-text"
+                   value="{{ values.label | default(value='') }}" required>
+        </div>
+
+        <div class="form-item">
+            <label for="description" class="form-item__label">Description</label>
+            <textarea id="description" name="description" class="form-textarea" rows="2">{{ values.description | default(value='') }}</textarea>
+        </div>
+
+        <hr>
+        <h3>Query Definition</h3>
+
+        <div class="form-item">
+            <label for="base_table" class="form-item__label form-item__label--required">Base Table</label>
+            <select id="base_table" class="form-select">
+                <option value="item" {% if definition.base_table == "item" %}selected{% endif %}>item (Content)</option>
+                <option value="users" {% if definition.base_table == "users" %}selected{% endif %}>users (Users)</option>
+                <option value="url_alias" {% if definition.base_table == "url_alias" %}selected{% endif %}>url_alias (URL Aliases)</option>
+                <option value="role" {% if definition.base_table == "role" %}selected{% endif %}>role (Roles)</option>
+                <option value="gather_query" {% if definition.base_table == "gather_query" %}selected{% endif %}>gather_query (Queries)</option>
+            </select>
+        </div>
+
+        <div id="filters-section">
+            <h4>Filters</h4>
+            <div id="filters-container"></div>
+            <button type="button" id="add-filter" class="button button--secondary">Add filter</button>
+        </div>
+
+        <div id="sorts-section">
+            <h4>Sort Criteria</h4>
+            <div id="sorts-container"></div>
+            <button type="button" id="add-sort" class="button button--secondary">Add sort</button>
+        </div>
+
+        <div id="relationships-section">
+            <h4>Relationships (Joins)</h4>
+            <div id="relationships-container"></div>
+            <button type="button" id="add-relationship" class="button button--secondary">Add relationship</button>
+            <p class="form-item__description">Maximum 3 relationships allowed.</p>
+        </div>
+
+        <hr>
+        <h3>Display Configuration</h3>
+
+        <div class="form-item">
+            <label for="display_format" class="form-item__label">Format</label>
+            <select id="display_format" class="form-select">
+                <option value="table">Table</option>
+                <option value="unformatted">Unformatted</option>
+                <option value="list">List</option>
+                <option value="grid">Grid</option>
+            </select>
+        </div>
+
+        <div class="form-item">
+            <label for="items_per_page" class="form-item__label">Items per page</label>
+            <input type="number" id="items_per_page" class="form-text" value="10" min="1" max="100">
+            <p class="form-item__description">Maximum: 100</p>
+        </div>
+
+        <div class="form-item">
+            <label for="empty_text" class="form-item__label">Empty text</label>
+            <input type="text" id="empty_text" class="form-text" value="" placeholder="No results found.">
+        </div>
+
+        <div class="form-item">
+            <label class="form-item__label">Pager</label>
+            <label><input type="checkbox" id="pager_enabled" checked> Enable pager</label>
+            <label style="margin-left: 1rem;"><input type="checkbox" id="pager_show_count"> Show result count</label>
+        </div>
+
+        <div id="includes-section">
+            <h4>Includes (Sub-queries)</h4>
+            <p class="form-item__description">Nest child query results into parent items. Each include runs a batched sub-query, matching child rows to parent rows by field.</p>
+            <div id="includes-container"></div>
+            <button type="button" id="add-include" class="button button--secondary">Add include</button>
+        </div>
+
+        <hr>
+        <h3>Preview</h3>
+        <div id="preview-panel">
+            <button type="button" id="preview-btn" class="button button--secondary">Load preview</button>
+            <div id="preview-results" style="margin-top: 1rem;"></div>
+        </div>
+
+        <hr>
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create query{% endif %}</button>
+            <a href="/admin/gather" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script src="/static/js/gather-builder.js"></script>
+{% endblock %}

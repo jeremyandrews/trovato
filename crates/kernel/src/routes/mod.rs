@@ -10,6 +10,7 @@ pub mod cron;
 pub mod file;
 pub mod front;
 pub mod gather;
+pub mod gather_admin;
 pub mod health;
 pub mod helpers;
 pub mod image_style;

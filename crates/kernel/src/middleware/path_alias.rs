@@ -2,6 +2,9 @@
 //!
 //! Rewrites incoming requests from alias paths to their source paths,
 //! enabling human-readable URLs like /about-us instead of /item/{uuid}.
+//!
+//! Stage-aware: reads `active_stage` from the session. Tries the active
+//! stage first, then falls back to `"live"`.
 
 use axum::{
     body::Body,
@@ -10,9 +13,11 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use tower_sessions::Session;
 
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::UrlAlias;
+use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
 
 /// Middleware to resolve path aliases to their source paths.
@@ -21,6 +26,10 @@ use crate::state::AppState;
 /// is rewritten to the source path (internal rewrite, no redirect).
 /// This allows the router to handle the request as if it came to the
 /// original source path.
+///
+/// Stage-aware: reads `active_stage` from the user session. Tries the
+/// active stage alias first; if not found, falls back to `"live"`.
+/// Anonymous users always resolve against `"live"`.
 ///
 /// System paths are skipped to avoid unnecessary database lookups:
 /// - /admin/* - Admin interface
@@ -32,6 +41,7 @@ use crate::state::AppState;
 /// - /item/* - Direct item access (source paths)
 pub async fn resolve_path_alias(
     State(state): State<AppState>,
+    session: Session,
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
@@ -57,25 +67,25 @@ pub async fn resolve_path_alias(
         .map(|l| l.0.as_str())
         .unwrap_or_else(|| state.default_language());
 
-    // Look up alias in database with language context.
-    // No default-language fallback: if the alias doesn't exist for the resolved
-    // language, let the request proceed unmodified (404 from the router is correct
-    // and avoids silently serving content in the wrong language).
-    tracing::debug!(path = %path, language = %language, "looking up path alias");
-    let alias_result =
-        match UrlAlias::find_by_alias_with_context(state.db(), path, "live", language).await {
-            Ok(Some(alias)) => Some(alias),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(path = %path, error = %e, "error looking up alias");
-                None
-            }
-        };
+    // Read active stage from session (default "live" for anonymous users)
+    let active_stage: String = session
+        .get::<String>(SESSION_ACTIVE_STAGE)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "live".to_string());
+
+    // Look up alias in database with language and stage context.
+    // Try the active stage first; fall back to "live" if not found.
+    tracing::debug!(path = %path, language = %language, stage = %active_stage, "looking up path alias");
+
+    let alias_result = lookup_alias(state.db(), path, &active_stage, language).await;
 
     if let Some(alias) = alias_result {
         tracing::debug!(
             alias = %alias.alias,
             source = %alias.source,
+            stage = %alias.stage_id,
             "found path alias, rewriting"
         );
         if let Ok(new_uri) = rewrite_uri(request.uri(), &alias.source) {
@@ -87,6 +97,36 @@ pub async fn resolve_path_alias(
     }
 
     next.run(request).await
+}
+
+/// Look up an alias, trying the active stage first then falling back to "live".
+async fn lookup_alias(
+    pool: &sqlx::PgPool,
+    path: &str,
+    stage_id: &str,
+    language: &str,
+) -> Option<UrlAlias> {
+    // Try active stage first
+    match UrlAlias::find_by_alias_with_context(pool, path, stage_id, language).await {
+        Ok(Some(alias)) => return Some(alias),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(path = %path, stage = %stage_id, error = %e, "error looking up alias");
+        }
+    }
+
+    // Fall back to "live" if we were looking in a different stage
+    if stage_id != "live" {
+        match UrlAlias::find_by_alias_with_context(pool, path, "live", language).await {
+            Ok(Some(alias)) => return Some(alias),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(path = %path, error = %e, "error looking up live alias fallback");
+            }
+        }
+    }
+
+    None
 }
 
 /// Rewrite a URI to a new path while preserving query string.

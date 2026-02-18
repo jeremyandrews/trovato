@@ -25,16 +25,29 @@ struct ItemTable;
 /// Query builder for Gather queries.
 pub struct GatherQueryBuilder {
     definition: QueryDefinition,
-    stage_id: String,
+    stage_ids: Vec<String>,
     extensions: Option<Arc<GatherExtensionRegistry>>,
 }
 
 impl GatherQueryBuilder {
-    /// Create a new query builder.
+    /// Create a new query builder targeting a single stage.
     pub fn new(definition: QueryDefinition, stage_id: &str) -> Self {
         Self {
             definition,
-            stage_id: stage_id.to_string(),
+            stage_ids: vec![stage_id.to_string()],
+            extensions: None,
+        }
+    }
+
+    /// Create a query builder with stage overlay (hierarchy).
+    ///
+    /// When multiple stages are provided (e.g., `["review", "draft", "live"]`),
+    /// the query will match items in ANY of those stages, enabling content
+    /// overlay where child stages inherit from parents.
+    pub fn new_with_stages(definition: QueryDefinition, stage_ids: Vec<String>) -> Self {
+        Self {
+            definition,
+            stage_ids,
             extensions: None,
         }
     }
@@ -61,14 +74,8 @@ impl GatherQueryBuilder {
         // WHERE conditions
         self.add_filters(&mut query);
 
-        // Always filter by stage
-        query.and_where(
-            Expr::col((
-                Alias::new(&self.definition.base_table),
-                Alias::new("stage_id"),
-            ))
-            .eq(&self.stage_id),
-        );
+        // Filter by stage (only for stage-aware tables like `item`)
+        self.add_stage_filter(&mut query);
 
         // Filter by item_type if specified
         if let Some(ref item_type) = self.definition.item_type {
@@ -105,14 +112,8 @@ impl GatherQueryBuilder {
         // WHERE conditions
         self.add_filters(&mut query);
 
-        // Stage filter
-        query.and_where(
-            Expr::col((
-                Alias::new(&self.definition.base_table),
-                Alias::new("stage_id"),
-            ))
-            .eq(&self.stage_id),
-        );
+        // Stage filter (only for stage-aware tables)
+        self.add_stage_filter(&mut query);
 
         // Item type filter
         if let Some(ref item_type) = self.definition.item_type {
@@ -123,6 +124,24 @@ impl GatherQueryBuilder {
         }
 
         query.to_string(PostgresQueryBuilder)
+    }
+
+    /// Add stage_id filter to the query if the definition is stage-aware.
+    ///
+    /// Uses `= $val` for a single stage, `IN (...)` for hierarchy overlay.
+    fn add_stage_filter(&self, query: &mut SelectStatement) {
+        if !self.definition.stage_aware {
+            return;
+        }
+        let col = Expr::col((
+            Alias::new(&self.definition.base_table),
+            Alias::new("stage_id"),
+        ));
+        if self.stage_ids.len() == 1 {
+            query.and_where(col.eq(&self.stage_ids[0]));
+        } else {
+            query.and_where(col.is_in(&self.stage_ids));
+        }
     }
 
     /// Add SELECT fields to the query.
@@ -202,15 +221,15 @@ impl GatherQueryBuilder {
             }
             FilterOperator::Contains => {
                 let value = filter.value.as_string()?;
-                Some(field_expr.like(format!("%{}%", value)))
+                Some(field_expr.like(format!("%{}%", escape_like_wildcards(&value))))
             }
             FilterOperator::StartsWith => {
                 let value = filter.value.as_string()?;
-                Some(field_expr.like(format!("{}%", value)))
+                Some(field_expr.like(format!("{}%", escape_like_wildcards(&value))))
             }
             FilterOperator::EndsWith => {
                 let value = filter.value.as_string()?;
-                Some(field_expr.like(format!("%{}", value)))
+                Some(field_expr.like(format!("%{}", escape_like_wildcards(&value))))
             }
             FilterOperator::GreaterThan => {
                 let value = filter.value.as_i64()?;
@@ -244,6 +263,37 @@ impl GatherQueryBuilder {
             }
             FilterOperator::IsNull => Some(field_expr.is_null()),
             FilterOperator::IsNotNull => Some(field_expr.is_not_null()),
+            // Full-text search using PostgreSQL tsvector
+            FilterOperator::FullTextSearch => {
+                let value = filter.value.as_string()?;
+                if value.is_empty() {
+                    return None;
+                }
+                // Sanitize: keep only alphanumeric + spaces, then join with &
+                let sanitized: String = value
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == ' ' {
+                            c
+                        } else {
+                            ' '
+                        }
+                    })
+                    .collect();
+                let terms: Vec<&str> = sanitized.split_whitespace().collect();
+                if terms.is_empty() {
+                    return None;
+                }
+                let tsquery = terms.join(" & ");
+                // Use parameterized query to prevent SQL injection
+                Some(Expr::cust_with_values(
+                    format!(
+                        "{}.search_vector @@ to_tsquery('english', $1)",
+                        self.definition.base_table
+                    ),
+                    [tsquery],
+                ))
+            }
             // Category operators - these need special handling with subqueries
             FilterOperator::HasTag => {
                 let uuid = filter.value.as_uuid()?;
@@ -280,7 +330,7 @@ impl GatherQueryBuilder {
                     if let Some((handler, config)) = extensions.get_filter(name) {
                         let ctx = FilterContext {
                             base_table: self.definition.base_table.clone(),
-                            stage_id: self.stage_id.clone(),
+                            stage_id: self.stage_ids.first().cloned().unwrap_or_default(),
                         };
                         match handler.build_condition(filter, config, &ctx) {
                             Ok(expr) => return expr,
@@ -414,6 +464,14 @@ impl GatherQueryBuilder {
             _ => Vec::new(),
         }
     }
+}
+
+/// Escape SQL LIKE wildcard characters (`%`, `_`, `\`) in a value.
+fn escape_like_wildcards(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Builder for creating category hierarchy subqueries.
@@ -557,5 +615,282 @@ mod tests {
 
         assert!(sql.contains("LIKE"));
         assert!(sql.contains("%rust%"));
+    }
+
+    #[test]
+    fn stage_aware_false_omits_stage_filter() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 20);
+
+        assert!(sql.contains("FROM \"users\""));
+        assert!(
+            !sql.contains("stage_id"),
+            "stage_id should not appear when stage_aware=false"
+        );
+        assert!(sql.contains("LIMIT 20"));
+    }
+
+    #[test]
+    fn stage_aware_false_count_omits_stage_filter() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build_count();
+
+        assert!(sql.contains("COUNT(*)"));
+        assert!(sql.contains("FROM \"users\""));
+        assert!(
+            !sql.contains("stage_id"),
+            "stage_id should not appear in count when stage_aware=false"
+        );
+    }
+
+    #[test]
+    fn stage_aware_default_true() {
+        let def = QueryDefinition::default();
+        assert!(def.stage_aware, "stage_aware should default to true");
+
+        let builder = GatherQueryBuilder::new(def, "preview");
+        let sql = builder.build(1, 10);
+        assert!(
+            sql.contains("stage_id"),
+            "stage_id should appear when stage_aware=true (default)"
+        );
+    }
+
+    #[test]
+    fn stage_aware_false_deserializes_from_json() {
+        let json = r#"{"base_table": "users", "stage_aware": false}"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert!(!def.stage_aware);
+        assert_eq!(def.base_table, "users");
+    }
+
+    #[test]
+    fn stage_aware_missing_defaults_true() {
+        let json = r#"{"base_table": "item"}"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert!(
+            def.stage_aware,
+            "stage_aware should default to true when not in JSON"
+        );
+    }
+
+    #[test]
+    fn stage_overlay_single_stage_uses_equals() {
+        let def = QueryDefinition::default();
+        let builder = GatherQueryBuilder::new_with_stages(def, vec!["live".to_string()]);
+        let sql = builder.build(1, 10);
+
+        // Single stage should use = 'live'
+        assert!(
+            sql.contains("\"stage_id\" = 'live'"),
+            "single stage should use =: {}",
+            sql
+        );
+        assert!(
+            !sql.contains("IN"),
+            "single stage should not use IN: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn stage_overlay_multiple_stages_uses_in() {
+        let def = QueryDefinition::default();
+        let stages = vec![
+            "review".to_string(),
+            "draft".to_string(),
+            "live".to_string(),
+        ];
+        let builder = GatherQueryBuilder::new_with_stages(def, stages);
+        let sql = builder.build(1, 10);
+
+        // Multiple stages should use IN
+        assert!(
+            sql.contains("IN"),
+            "multiple stages should use IN clause: {}",
+            sql
+        );
+        assert!(sql.contains("'review'"), "should contain review: {}", sql);
+        assert!(sql.contains("'draft'"), "should contain draft: {}", sql);
+        assert!(sql.contains("'live'"), "should contain live: {}", sql);
+    }
+
+    #[test]
+    fn stage_overlay_count_uses_in() {
+        let def = QueryDefinition::default();
+        let stages = vec!["review".to_string(), "live".to_string()];
+        let builder = GatherQueryBuilder::new_with_stages(def, stages);
+        let sql = builder.build_count();
+
+        assert!(
+            sql.contains("IN"),
+            "count with multiple stages should use IN: {}",
+            sql
+        );
+        assert!(
+            sql.contains("'review'"),
+            "count should contain review: {}",
+            sql
+        );
+        assert!(sql.contains("'live'"), "count should contain live: {}", sql);
+    }
+
+    #[test]
+    fn full_text_search_filter() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("rust programming".to_string()),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        assert!(
+            sql.contains("search_vector @@ to_tsquery"),
+            "should contain tsvector search: {}",
+            sql
+        );
+        // Parameterized: value appears as 'rust & programming' after Expr::cust_with_values
+        assert!(
+            sql.contains("rust & programming"),
+            "should AND terms: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn full_text_search_empty_value_skipped() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("".to_string()),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("search_vector"),
+            "empty search should be skipped: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn full_text_search_sanitizes_special_chars() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("rust's | ! & (test)".to_string()),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // Special chars should be stripped, only words remain
+        assert!(
+            sql.contains("search_vector @@ to_tsquery"),
+            "should contain search: {}",
+            sql
+        );
+        assert!(!sql.contains("|"), "pipe should be stripped: {}", sql);
+        assert!(!sql.contains("!"), "bang should be stripped: {}", sql);
+    }
+
+    #[test]
+    fn full_text_search_operator_serialization() {
+        let op = FilterOperator::FullTextSearch;
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, "\"full_text_search\"");
+        let parsed: FilterOperator = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, FilterOperator::FullTextSearch);
+    }
+
+    #[test]
+    fn like_wildcards_escaped() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "title".to_string(),
+                operator: FilterOperator::Contains,
+                value: FilterValue::String("100%_done".to_string()),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // SeaQuery renders with E prefix and double-backslash escaping
+        assert!(
+            sql.contains("100\\\\%\\\\_done") || sql.contains("100\\%\\_done"),
+            "LIKE wildcards should be escaped: {}",
+            sql
+        );
+        // The important thing: literal % and _ are escaped, not used as wildcards
+        assert!(
+            !sql.contains("%100%_done%"),
+            "raw wildcard chars should NOT appear unescaped: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn escape_like_wildcards_function() {
+        assert_eq!(super::escape_like_wildcards("hello"), "hello");
+        assert_eq!(super::escape_like_wildcards("100%"), "100\\%");
+        assert_eq!(super::escape_like_wildcards("a_b"), "a\\_b");
+        assert_eq!(super::escape_like_wildcards("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn stage_overlay_not_applied_when_not_stage_aware() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+        let stages = vec!["review".to_string(), "live".to_string()];
+        let builder = GatherQueryBuilder::new_with_stages(def, stages);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("stage_id"),
+            "stage_aware=false should skip stage filter even with overlay: {}",
+            sql
+        );
     }
 }

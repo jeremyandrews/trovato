@@ -23,7 +23,7 @@ pub use extension::{
     RelationshipHandler, SortContext, SortExtension, SortHandler,
 };
 #[allow(unused_imports)]
-pub use gather_service::GatherService;
+pub use gather_service::{GatherService, MAX_ITEMS_PER_PAGE};
 #[allow(unused_imports)]
 pub use handlers::{HierarchicalInFilterHandler, JsonbArrayContainsFilterHandler};
 #[allow(unused_imports)]

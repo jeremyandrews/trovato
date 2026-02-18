@@ -83,6 +83,7 @@ fn query_definition_serialization() {
     let def = QueryDefinition {
         base_table: "item".to_string(),
         item_type: Some("page".to_string()),
+        stage_aware: true,
         fields: vec![QueryField {
             field_name: "title".to_string(),
             table_alias: None,
@@ -457,6 +458,7 @@ fn gate_test_recent_articles_query_definition() {
         definition: QueryDefinition {
             base_table: "item".to_string(),
             item_type: Some("blog".to_string()),
+            stage_aware: true,
             fields: vec![
                 QueryField {
                     field_name: "id".to_string(),

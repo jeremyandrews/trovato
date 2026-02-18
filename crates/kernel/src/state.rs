@@ -339,6 +339,12 @@ impl AppState {
             .await
             .context("failed to load gather queries")?;
 
+        // Register core default gather views (only adds if not already in DB)
+        gather
+            .register_default_views()
+            .await
+            .context("failed to register default gather views")?;
+
         // Create theme engine
         let template_dir = Self::resolve_template_dir();
         info!(?template_dir, "loading templates from directory");

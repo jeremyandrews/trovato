@@ -296,15 +296,15 @@ development_status:
   # Epic 21: Complete Stage Workflow
   # v1.0: Interface contracts (21.1, 21.2, 21.7) - foundation for post-MVP staging
   # Post-MVP: Full config staging UI
-  epic-21: in-progress
+  epic-21: done
   21-1-config-storage-trait: done              # v1.0 REQUIRED - ConfigStorage trait, DirectConfigStorage, 8 tests
   21-2-config-revision-schema: done            # v1.0 Schema only - scaffolding for post-MVP
   21-3-stage-aware-content-types-fields: done         # Post-MVP Tier 1
   21-4-stage-aware-categories: done             # Post-MVP Tier 1
-  21-5-stage-aware-menus-aliases: backlog      # Post-MVP Tier 2 - needs menu DB storage (Story 15.5 done)
+  21-5-stage-aware-menus-aliases: done         # 2026-02-17 menu_link table, stage-aware alias middleware, publish phase 4
   21-6-conflict-detection-warn-only: done # Post-MVP - detect and warn, no merge UI
   21-7-atomic-publish-ordering: done           # v1.0 FRAMEWORK - phase callbacks for publish order
-  21-8-stage-hierarchy-support: backlog        # Post-MVP - child→parent→live workflows
+  21-8-stage-hierarchy-support: done           # 2026-02-17 stage table, hierarchy ancestry, overlay loading
   epic-21-retrospective: optional
 
   # Epic 22: Modern CMS Features - "Core Enables, Plugins Implement"
@@ -347,29 +347,29 @@ development_status:
 
   # Epic 23: Gather UI & Query Consolidation
   # Admin UI for managing Gather query definitions + migrating hardcoded queries
-  epic-23: backlog
-  23-1-gather-admin-list-page: backlog
-  23-2-gather-definition-form: backlog
-  23-3-display-config-sub-form: backlog
-  23-4-exposed-filter-config-ui: backlog
-  23-5-include-definitions-ui: backlog
-  23-6-contextual-filter-config-ui: backlog
-  23-7-live-preview-panel: backlog
-  23-8-gather-query-cloning: backlog
-  23-9-convert-hardcoded-queries-to-gather: backlog
-  23-10-gather-query-access-control: backlog
+  epic-23: done
+  23-1-gather-admin-list-page: done            # 2026-02-17 /admin/gather list with clone/delete
+  23-2-gather-query-builder-ui: done           # 2026-02-17 gather-form.html + gather-builder.js
+  23-3-live-preview-panel: done                # 2026-02-17 AJAX preview with debounce
+  23-4-relationship-editor: done               # 2026-02-17 relationship blocks in builder UI
+  23-5-display-configuration: done             # 2026-02-17 format, items_per_page, pager, empty text
+  23-6-performance-guardrails: done            # 2026-02-17 MAX_ITEMS_PER_PAGE, statement_timeout, join depth
+  23-7-core-content-gather-views: done         # 2026-02-17 4 default content views registered
+  23-8-admin-entity-gather-views: done         # 2026-02-17 5 admin entity views (stage_aware: false)
+  23-9-search-integration: done                # 2026-02-17 FullTextSearch filter operator
+  23-10-include-sub-query-editor: done         # 2026-02-17 includes UI in gather builder
   epic-23-retrospective: optional
 
   # Epic 24: Block Editor — Standard Plugin (Editor.js Integration)
   # Block-based content editing with Editor.js, storing structured JSON in Compound fields
-  epic-24: backlog
-  24-1-editor-js-asset-pipeline: backlog
-  24-2-block-editor-field-widget: backlog
-  24-3-core-block-plugins: backlog
-  24-4-image-block-with-media-library: backlog
-  24-5-embed-block-oembed: backlog
-  24-6-block-output-rendering: backlog
-  24-7-block-data-migration-helpers: backlog
-  24-8-custom-block-plugin-api: backlog
-  24-9-block-editor-ux-polish: backlog
+  epic-24: done
+  24-1-block-type-registry: done               # 2026-02-17 BlockTypeRegistry with 8 standard types
+  24-2-server-side-block-validation: done       # 2026-02-17 ammonia sanitization, type-specific validation
+  24-3-editor-js-field-widget: done            # 2026-02-17 block-editor.js with format mapping
+  24-4-image-upload-endpoint: done             # 2026-02-17 POST /api/block-editor/upload
+  24-5-server-side-block-rendering: done       # 2026-02-17 render_blocks() for 8 block types
+  24-6-code-block-syntax-highlighting: done    # 2026-02-17 syntect integration
+  24-7-embed-block-whitelist-rendering: done   # 2026-02-17 YouTube/Vimeo whitelist, safe fallback
+  24-8-read-only-mode-content-preview: done    # 2026-02-17 POST /api/block-editor/preview
+  24-9-block-editor-documentation: done        # 2026-02-17 docs/block-editor/ (3 files)
   epic-24-retrospective: optional
