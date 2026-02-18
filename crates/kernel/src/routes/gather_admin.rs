@@ -79,8 +79,11 @@ async fn list_queries(State(state): State<AppState>, session: Session) -> Respon
 
     let queries = state.gather().list_queries();
 
+    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+
     let mut context = tera::Context::new();
     context.insert("queries", &queries);
+    context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/gather");
     super::helpers::inject_site_context(&state, &session, &mut context).await;
 
