@@ -11,9 +11,11 @@
     <p>No tiles have been created yet.</p>
 </div>
 {% else %}
+{% set current_region = "" %}
 {% for tile in tiles %}
-{% if loop.first or tile.region != tiles[loop.index0 - 1].region %}
-{% if not loop.first %}</tbody></table></div>{% endif %}
+{% if tile.region != current_region %}
+{% if current_region != "" %}</tbody></table></div>{% endif %}
+{% set_global current_region = tile.region %}
 <div class="admin-card">
     <h3>Region: {{ tile.region }}</h3>
     <table class="table">
