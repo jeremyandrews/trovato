@@ -12,6 +12,7 @@
 pub mod cli;
 mod dependency;
 mod error;
+pub mod gate;
 mod info_parser;
 pub mod migration;
 pub mod runtime;

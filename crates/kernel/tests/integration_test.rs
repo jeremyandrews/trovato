@@ -2613,13 +2613,16 @@ async fn e2e_admin_reindex_content_type() {
 async fn e2e_admin_pages_require_login() {
     let app = TestApp::new().await;
 
-    // All these should redirect to login when not authenticated
+    // All these core admin routes should redirect to login when not authenticated.
+    // Only non-gated routes are listed here; plugin-gated routes (e.g. categories,
+    // comments) may return 404 if the plugin is disabled, which is correct but
+    // would make this test fragile.
     let admin_routes = vec![
         "/admin/people",
         "/admin/people/roles",
         "/admin/people/permissions",
         "/admin/content",
-        "/admin/structure/categories",
+        "/admin/structure/types",
         "/admin/content/files",
     ];
 
@@ -3637,4 +3640,292 @@ async fn e2e_installer_complete_page() {
     let body = response_text(response).await;
     assert!(body.contains("Congratulations"));
     assert!(body.contains("Installation Complete"));
+}
+
+// =============================================================================
+// Plugin Admin Tests
+// =============================================================================
+
+#[tokio::test]
+async fn e2e_admin_plugin_list_requires_admin() {
+    let app = TestApp::new().await;
+
+    // Non-admin user should get 403
+    let cookies = app
+        .create_and_login_user("plugin_user_1", "password123", "pluguser1@test.com")
+        .await;
+
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "Non-admin users should be denied access to plugin admin"
+    );
+}
+
+#[tokio::test]
+async fn e2e_admin_plugin_list_shows_plugins() {
+    let app = TestApp::new().await;
+
+    let cookies = app
+        .create_and_login_admin("plugin_admin_1", "password123", "plugadmin1@test.com")
+        .await;
+
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+    assert!(body.contains("Plugins"), "Page should have Plugins heading");
+    assert!(body.contains("blog"), "Should list the blog plugin");
+}
+
+#[tokio::test]
+async fn e2e_admin_plugin_toggle() {
+    let app = TestApp::new().await;
+
+    let cookies = app
+        .create_and_login_admin("plugin_admin_2", "password123", "plugadmin2@test.com")
+        .await;
+
+    // Load the plugin list page to get a CSRF token
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await;
+
+    // Extract CSRF token from the form
+    let csrf_token = body
+        .split("name=\"_token\" value=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("CSRF token");
+
+    // Disable the redirects plugin (safe to toggle — it has no gated routes)
+    let form_body = format!("_token={}&plugin_name=redirects&action=disable", csrf_token);
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/admin/plugins/toggle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    // Should redirect back to plugin list
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "Toggle should redirect"
+    );
+
+    // Follow the redirect to see the flash message
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+
+    let body = response_text(response).await;
+    assert!(
+        body.contains("disabled"),
+        "Flash message should confirm plugin was disabled"
+    );
+
+    // Re-enable so we leave clean state
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+
+    let body = response_text(response).await;
+    let csrf_token = body
+        .split("name=\"_token\" value=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("CSRF token for re-enable");
+
+    let form_body = format!("_token={}&plugin_name=redirects&action=enable", csrf_token);
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/admin/plugins/toggle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+}
+
+// =============================================================================
+// Runtime Plugin Gate Tests
+// =============================================================================
+
+/// Verify that POST /admin/plugins/toggle on a gated plugin immediately
+/// affects route availability (no restart needed).
+#[tokio::test]
+async fn e2e_toggle_gated_plugin_affects_routes() {
+    let app = TestApp::new().await;
+
+    let cookies = app
+        .create_and_login_admin("gate_toggle_admin", "password123", "gatetoggle@test.com")
+        .await;
+
+    // Ensure categories is enabled at the start
+    app.state.set_plugin_enabled("categories", true);
+
+    // Route should be reachable
+    let response = app
+        .request(Request::get("/api/categories").body(Body::empty()).unwrap())
+        .await;
+    assert_ne!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Route should be reachable when categories is enabled"
+    );
+
+    // Get CSRF token from plugin list page
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+    let body = response_text(response).await;
+    let csrf_token = body
+        .split("name=\"_token\" value=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("CSRF token");
+
+    // Disable categories via the admin UI toggle
+    let form_body = format!(
+        "_token={}&plugin_name=categories&action=disable",
+        csrf_token
+    );
+    let response = app
+        .request_with_cookies(
+            Request::post("/admin/plugins/toggle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+    // Gated route should now return 404
+    let response = app
+        .request(Request::get("/api/categories").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Gated route should return 404 after disabling via admin toggle"
+    );
+
+    // Re-enable via toggle
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+    let body = response_text(response).await;
+    let csrf_token = body
+        .split("name=\"_token\" value=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("CSRF token for re-enable");
+
+    let form_body = format!("_token={}&plugin_name=categories&action=enable", csrf_token);
+    let response = app
+        .request_with_cookies(
+            Request::post("/admin/plugins/toggle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+    // Route should be reachable again
+    let response = app
+        .request(Request::get("/api/categories").body(Body::empty()).unwrap())
+        .await;
+    assert_ne!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Gated route should be reachable again after re-enabling via admin toggle"
+    );
+}
+
+/// Verify that disabling a gated plugin at runtime makes its routes return 404,
+/// and re-enabling restores them — without a server restart.
+#[tokio::test]
+async fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
+    let app = TestApp::new().await;
+
+    // Ensure the categories plugin is enabled in memory for this test.
+    app.state.set_plugin_enabled("categories", true);
+
+    // With the plugin enabled, the gated API route should NOT be 404.
+    let response = app
+        .request(Request::get("/api/categories").body(Body::empty()).unwrap())
+        .await;
+    assert_ne!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Gated route should be reachable when plugin is enabled"
+    );
+
+    // Disable the plugin at runtime (in-memory only — no DB write needed).
+    app.state.set_plugin_enabled("categories", false);
+
+    // The same route should now return 404 from the gate middleware.
+    let response = app
+        .request(Request::get("/api/categories").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Gated route should return 404 when plugin is disabled"
+    );
+
+    // Re-enable and confirm the route is reachable again.
+    app.state.set_plugin_enabled("categories", true);
+
+    let response = app
+        .request(Request::get("/api/categories").body(Body::empty()).unwrap())
+        .await;
+    assert_ne!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Gated route should be reachable again after re-enabling"
+    );
 }

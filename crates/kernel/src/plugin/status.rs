@@ -89,20 +89,30 @@ pub async fn set_status(pool: &PgPool, name: &str, status: i16) -> Result<bool> 
 
 /// Auto-install any plugins found on disk but not yet in the plugin_status table.
 ///
-/// New plugins are inserted with status=enabled to preserve the current
-/// "load everything on first startup" behavior.
-pub async fn auto_install_new_plugins(pool: &PgPool, discovered: &[(&str, &str)]) -> Result<u64> {
+/// Each triple is (name, version, should_enable). New plugins are inserted with
+/// the appropriate status. `ON CONFLICT DO NOTHING` is preserved so existing
+/// installs are never touched.
+pub async fn auto_install_new_plugins(
+    pool: &PgPool,
+    discovered: &[(&str, &str, bool)],
+) -> Result<u64> {
     let now = chrono::Utc::now().timestamp();
     let mut count = 0u64;
 
-    for &(name, version) in discovered {
+    for &(name, version, should_enable) in discovered {
+        let status = if should_enable {
+            STATUS_ENABLED
+        } else {
+            STATUS_DISABLED
+        };
+
         let result = sqlx::query(
             "INSERT INTO plugin_status (name, status, version, installed_at, updated_at) \
              VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT (name) DO NOTHING",
         )
         .bind(name)
-        .bind(STATUS_ENABLED)
+        .bind(status)
         .bind(version)
         .bind(now)
         .bind(now)

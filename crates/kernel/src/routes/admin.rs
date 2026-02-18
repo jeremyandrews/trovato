@@ -17,8 +17,10 @@ use crate::models::{
     Role, Tag, UpdateCategory, UpdateComment, UpdateTag, UpdateUrlAlias, UpdateUser, UrlAlias,
     User,
 };
-use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
+use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
+
+use super::helpers::{html_escape, render_admin_template, require_login};
 
 /// Stage switch request.
 #[derive(Debug, Deserialize)]
@@ -96,24 +98,11 @@ async fn get_current_stage(
 // Admin Dashboard
 // =============================================================================
 
-/// Check if user is authenticated, return user or redirect to login.
-async fn require_auth(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    if let Some(id) = user_id {
-        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
-            return Ok(user);
-        }
-    }
-
-    Err(Redirect::to("/user/login").into_response())
-}
-
 /// Admin dashboard.
 ///
 /// GET /admin
 async fn dashboard(State(state): State<AppState>, session: Session) -> Response {
-    let user = match require_auth(&state, &session).await {
+    let user = match require_login(&state, &session).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -125,7 +114,7 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
     context.insert("path", "/admin");
     context.insert("user", &user);
 
-    render_admin_template(&state, "admin/dashboard.html", &context).await
+    render_admin_template(&state, "admin/dashboard.html", context).await
 }
 
 // =============================================================================
@@ -237,7 +226,7 @@ pub struct TagFormData {
 ///
 /// GET /admin/structure/types
 async fn list_content_types(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -247,14 +236,14 @@ async fn list_content_types(State(state): State<AppState>, session: Session) -> 
     context.insert("content_types", &content_types);
     context.insert("path", "/admin/structure/types");
 
-    render_admin_template(&state, "admin/content-types.html", &context).await
+    render_admin_template(&state, "admin/content-types.html", context).await
 }
 
 /// Show add content type form.
 ///
 /// GET /admin/structure/types/add
 async fn add_content_type_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -269,7 +258,7 @@ async fn add_content_type_form(State(state): State<AppState>, session: Session) 
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/types/add");
 
-    render_admin_template(&state, "admin/content-type-form.html", &context).await
+    render_admin_template(&state, "admin/content-type-form.html", context).await
 }
 
 /// Handle add content type form submission.
@@ -280,7 +269,7 @@ async fn add_content_type_submit(
     session: Session,
     Form(form): Form<ContentTypeFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -337,7 +326,7 @@ async fn add_content_type_submit(
         );
         context.insert("path", "/admin/structure/types/add");
 
-        return render_admin_template(&state, "admin/content-type-form.html", &context).await;
+        return render_admin_template(&state, "admin/content-type-form.html", context).await;
     }
 
     // Create the content type
@@ -376,7 +365,7 @@ async fn edit_content_type_form(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -411,7 +400,7 @@ async fn edit_content_type_form(
         &format!("/admin/structure/types/{}/edit", type_name),
     );
 
-    render_admin_template(&state, "admin/content-type-form.html", &context).await
+    render_admin_template(&state, "admin/content-type-form.html", context).await
 }
 
 /// Handle edit content type form submission.
@@ -423,7 +412,7 @@ async fn edit_content_type_submit(
     Path(type_name): Path<String>,
     Form(form): Form<ContentTypeFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -476,7 +465,7 @@ async fn edit_content_type_submit(
             &format!("/admin/structure/types/{}/edit", type_name),
         );
 
-        return render_admin_template(&state, "admin/content-type-form.html", &context).await;
+        return render_admin_template(&state, "admin/content-type-form.html", context).await;
     }
 
     // Update the content type
@@ -517,7 +506,7 @@ async fn manage_fields(
 ) -> Response {
     use crate::form::FormState;
 
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -548,7 +537,7 @@ async fn manage_fields(
         &format!("/admin/structure/types/{}/fields", type_name),
     );
 
-    render_admin_template(&state, "admin/field-list.html", &context).await
+    render_admin_template(&state, "admin/field-list.html", context).await
 }
 
 /// Add a field to a content type.
@@ -560,7 +549,7 @@ async fn add_field(
     Path(type_name): Path<String>,
     Form(form): Form<FieldFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -644,7 +633,7 @@ async fn manage_search_config(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -681,7 +670,7 @@ async fn manage_search_config(
         &format!("/admin/structure/types/{}/search", type_name),
     );
 
-    render_admin_template(&state, "admin/search-config.html", &context).await
+    render_admin_template(&state, "admin/search-config.html", context).await
 }
 
 /// Add or update a search field configuration.
@@ -693,7 +682,7 @@ async fn add_search_config(
     Path(type_name): Path<String>,
     Form(form): Form<SearchConfigFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -746,7 +735,7 @@ async fn remove_search_config(
     session: Session,
     Path((type_name, field_name)): Path<(String, String)>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -782,7 +771,7 @@ async fn reindex_content_type(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -814,7 +803,7 @@ async fn reindex_content_type(
 ///
 /// GET /admin/people
 async fn list_users(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -830,14 +819,14 @@ async fn list_users(State(state): State<AppState>, session: Session) -> Response
     context.insert("users", &users);
     context.insert("path", "/admin/people");
 
-    render_admin_template(&state, "admin/users.html", &context).await
+    render_admin_template(&state, "admin/users.html", context).await
 }
 
 /// Show add user form.
 ///
 /// GET /admin/people/add
 async fn add_user_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -852,7 +841,7 @@ async fn add_user_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/people/add");
 
-    render_admin_template(&state, "admin/user-form.html", &context).await
+    render_admin_template(&state, "admin/user-form.html", context).await
 }
 
 /// Handle add user form submission.
@@ -863,7 +852,7 @@ async fn add_user_submit(
     session: Session,
     Form(form): Form<UserFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -925,7 +914,7 @@ async fn add_user_submit(
         );
         context.insert("path", "/admin/people/add");
 
-        return render_admin_template(&state, "admin/user-form.html", &context).await;
+        return render_admin_template(&state, "admin/user-form.html", context).await;
     }
 
     // Create the user
@@ -956,7 +945,7 @@ async fn edit_user_form(
     session: Session,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -984,7 +973,7 @@ async fn edit_user_form(
     );
     context.insert("path", &format!("/admin/people/{}/edit", user_id));
 
-    render_admin_template(&state, "admin/user-form.html", &context).await
+    render_admin_template(&state, "admin/user-form.html", context).await
 }
 
 /// Handle edit user form submission.
@@ -996,7 +985,7 @@ async fn edit_user_submit(
     Path(user_id): Path<uuid::Uuid>,
     Form(form): Form<UserFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1067,7 +1056,7 @@ async fn edit_user_submit(
         );
         context.insert("path", &format!("/admin/people/{}/edit", user_id));
 
-        return render_admin_template(&state, "admin/user-form.html", &context).await;
+        return render_admin_template(&state, "admin/user-form.html", context).await;
     }
 
     // Update the user
@@ -1111,7 +1100,7 @@ async fn delete_user(
     session: Session,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Response {
-    let current_user = match require_auth(&state, &session).await {
+    let current_user = match require_login(&state, &session).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -1147,7 +1136,7 @@ async fn delete_user(
 ///
 /// GET /admin/people/roles
 async fn list_roles(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1165,14 +1154,14 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
     context.insert("authenticated_role_id", &AUTHENTICATED_ROLE_ID.to_string());
     context.insert("path", "/admin/people/roles");
 
-    render_admin_template(&state, "admin/roles.html", &context).await
+    render_admin_template(&state, "admin/roles.html", context).await
 }
 
 /// Show add role form.
 ///
 /// GET /admin/people/roles/add
 async fn add_role_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1187,7 +1176,7 @@ async fn add_role_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/people/roles/add");
 
-    render_admin_template(&state, "admin/role-form.html", &context).await
+    render_admin_template(&state, "admin/role-form.html", context).await
 }
 
 /// Handle add role form submission.
@@ -1198,7 +1187,7 @@ async fn add_role_submit(
     session: Session,
     Form(form): Form<RoleFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1241,7 +1230,7 @@ async fn add_role_submit(
         );
         context.insert("path", "/admin/people/roles/add");
 
-        return render_admin_template(&state, "admin/role-form.html", &context).await;
+        return render_admin_template(&state, "admin/role-form.html", context).await;
     }
 
     match Role::create(state.db(), &form.name).await {
@@ -1264,7 +1253,7 @@ async fn edit_role_form(
     session: Session,
     Path(role_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1294,7 +1283,7 @@ async fn edit_role_form(
     );
     context.insert("path", &format!("/admin/people/roles/{}/edit", role_id));
 
-    render_admin_template(&state, "admin/role-form.html", &context).await
+    render_admin_template(&state, "admin/role-form.html", context).await
 }
 
 /// Handle edit role form submission.
@@ -1306,7 +1295,7 @@ async fn edit_role_submit(
     Path(role_id): Path<uuid::Uuid>,
     Form(form): Form<RoleFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1360,7 +1349,7 @@ async fn edit_role_submit(
         );
         context.insert("path", &format!("/admin/people/roles/{}/edit", role_id));
 
-        return render_admin_template(&state, "admin/role-form.html", &context).await;
+        return render_admin_template(&state, "admin/role-form.html", context).await;
     }
 
     match Role::update(state.db(), role_id, &form.name).await {
@@ -1383,7 +1372,7 @@ async fn delete_role(
     session: Session,
     Path(role_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1409,7 +1398,7 @@ async fn delete_role(
 ///
 /// GET /admin/people/permissions
 async fn permissions_matrix(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1458,7 +1447,7 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
     context.insert("form_build_id", &form_build_id);
     context.insert("path", "/admin/people/permissions");
 
-    render_admin_template(&state, "admin/permissions.html", &context).await
+    render_admin_template(&state, "admin/permissions.html", context).await
 }
 
 /// Save permission matrix.
@@ -1469,7 +1458,7 @@ async fn save_permissions(
     session: Session,
     Form(form): Form<PermissionFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1544,7 +1533,7 @@ async fn list_content(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1583,14 +1572,14 @@ async fn list_content(
     );
     context.insert("path", "/admin/content");
 
-    render_admin_template(&state, "admin/content-list.html", &context).await
+    render_admin_template(&state, "admin/content-list.html", context).await
 }
 
 /// Select content type before adding.
 ///
 /// GET /admin/content/add
 async fn select_content_type(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1600,7 +1589,7 @@ async fn select_content_type(State(state): State<AppState>, session: Session) ->
     context.insert("content_types", &content_types);
     context.insert("path", "/admin/content/add");
 
-    render_admin_template(&state, "admin/content-add-select.html", &context).await
+    render_admin_template(&state, "admin/content-add-select.html", context).await
 }
 
 /// Show add content form.
@@ -1611,7 +1600,7 @@ async fn add_content_form(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1631,7 +1620,7 @@ async fn add_content_form(
     context.insert("values", &serde_json::json!({}));
     context.insert("path", &format!("/admin/content/add/{}", type_name));
 
-    render_admin_template(&state, "admin/content-form.html", &context).await
+    render_admin_template(&state, "admin/content-form.html", context).await
 }
 
 /// Handle add content form submission.
@@ -1644,7 +1633,7 @@ async fn add_content_submit(
     Path(type_name): Path<String>,
     Form(form): Form<ContentFormData>,
 ) -> Response {
-    let user = match require_auth(&state, &session).await {
+    let user = match require_login(&state, &session).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -1710,7 +1699,7 @@ async fn add_content_submit(
         );
         context.insert("path", &format!("/admin/content/add/{}", type_name));
 
-        return render_admin_template(&state, "admin/content-form.html", &context).await;
+        return render_admin_template(&state, "admin/content-form.html", context).await;
     }
 
     let input = CreateItem {
@@ -1750,7 +1739,7 @@ async fn edit_content_form(
     session: Session,
     Path(item_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1783,7 +1772,7 @@ async fn edit_content_form(
     );
     context.insert("path", &format!("/admin/content/{}/edit", item_id));
 
-    render_admin_template(&state, "admin/content-form.html", &context).await
+    render_admin_template(&state, "admin/content-form.html", context).await
 }
 
 /// Handle edit content form submission.
@@ -1795,7 +1784,7 @@ async fn edit_content_submit(
     Path(item_id): Path<uuid::Uuid>,
     Form(form): Form<ContentFormData>,
 ) -> Response {
-    let user = match require_auth(&state, &session).await {
+    let user = match require_login(&state, &session).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -1867,7 +1856,7 @@ async fn edit_content_submit(
         );
         context.insert("path", &format!("/admin/content/{}/edit", item_id));
 
-        return render_admin_template(&state, "admin/content-form.html", &context).await;
+        return render_admin_template(&state, "admin/content-form.html", context).await;
     }
 
     let input = crate::models::UpdateItem {
@@ -1899,7 +1888,7 @@ async fn delete_content(
     session: Session,
     Path(item_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1924,7 +1913,7 @@ async fn delete_content(
 ///
 /// GET /admin/structure/categories
 async fn list_categories(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1950,14 +1939,14 @@ async fn list_categories(State(state): State<AppState>, session: Session) -> Res
     context.insert("tag_counts", &tag_counts);
     context.insert("path", "/admin/structure/categories");
 
-    render_admin_template(&state, "admin/categories.html", &context).await
+    render_admin_template(&state, "admin/categories.html", context).await
 }
 
 /// Show add category form.
 ///
 /// GET /admin/structure/categories/add
 async fn add_category_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -1972,7 +1961,7 @@ async fn add_category_form(State(state): State<AppState>, session: Session) -> R
     context.insert("values", &serde_json::json!({"hierarchy": 0}));
     context.insert("path", "/admin/structure/categories/add");
 
-    render_admin_template(&state, "admin/category-form.html", &context).await
+    render_admin_template(&state, "admin/category-form.html", context).await
 }
 
 /// Handle add category form submission.
@@ -1983,7 +1972,7 @@ async fn add_category_submit(
     session: Session,
     Form(form): Form<CategoryFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2038,7 +2027,7 @@ async fn add_category_submit(
         );
         context.insert("path", "/admin/structure/categories/add");
 
-        return render_admin_template(&state, "admin/category-form.html", &context).await;
+        return render_admin_template(&state, "admin/category-form.html", context).await;
     }
 
     let input = CreateCategory {
@@ -2069,7 +2058,7 @@ async fn edit_category_form(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2107,7 +2096,7 @@ async fn edit_category_form(
         &format!("/admin/structure/categories/{}/edit", category_id),
     );
 
-    render_admin_template(&state, "admin/category-form.html", &context).await
+    render_admin_template(&state, "admin/category-form.html", context).await
 }
 
 /// Handle edit category form submission.
@@ -2119,7 +2108,7 @@ async fn edit_category_submit(
     Path(category_id): Path<String>,
     Form(form): Form<CategoryFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2174,7 +2163,7 @@ async fn edit_category_submit(
             &format!("/admin/structure/categories/{}/edit", category_id),
         );
 
-        return render_admin_template(&state, "admin/category-form.html", &context).await;
+        return render_admin_template(&state, "admin/category-form.html", context).await;
     }
 
     let input = UpdateCategory {
@@ -2204,7 +2193,7 @@ async fn delete_category(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2229,7 +2218,7 @@ async fn list_tags(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2257,7 +2246,7 @@ async fn list_tags(
         &format!("/admin/structure/categories/{}/tags", category_id),
     );
 
-    render_admin_template(&state, "admin/tags.html", &context).await
+    render_admin_template(&state, "admin/tags.html", context).await
 }
 
 /// Show add tag form.
@@ -2268,7 +2257,7 @@ async fn add_tag_form(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2304,7 +2293,7 @@ async fn add_tag_form(
         &format!("/admin/structure/categories/{}/tags/add", category_id),
     );
 
-    render_admin_template(&state, "admin/tag-form.html", &context).await
+    render_admin_template(&state, "admin/tag-form.html", context).await
 }
 
 /// Handle add tag form submission.
@@ -2316,7 +2305,7 @@ async fn add_tag_submit(
     Path(category_id): Path<String>,
     Form(form): Form<TagFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2376,7 +2365,7 @@ async fn add_tag_submit(
             &format!("/admin/structure/categories/{}/tags/add", category_id),
         );
 
-        return render_admin_template(&state, "admin/tag-form.html", &context).await;
+        return render_admin_template(&state, "admin/tag-form.html", context).await;
     }
 
     let parent_ids = match &form.parent_id {
@@ -2416,7 +2405,7 @@ async fn edit_tag_form(
     session: Session,
     Path(tag_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2468,7 +2457,7 @@ async fn edit_tag_form(
     );
     context.insert("path", &format!("/admin/structure/tags/{}/edit", tag_id));
 
-    render_admin_template(&state, "admin/tag-form.html", &context).await
+    render_admin_template(&state, "admin/tag-form.html", context).await
 }
 
 /// Handle edit tag form submission.
@@ -2480,7 +2469,7 @@ async fn edit_tag_submit(
     Path(tag_id): Path<uuid::Uuid>,
     Form(form): Form<TagFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2543,7 +2532,7 @@ async fn edit_tag_submit(
         );
         context.insert("path", &format!("/admin/structure/tags/{}/edit", tag_id));
 
-        return render_admin_template(&state, "admin/tag-form.html", &context).await;
+        return render_admin_template(&state, "admin/tag-form.html", context).await;
     }
 
     // Update tag
@@ -2589,7 +2578,7 @@ async fn delete_tag(
     session: Session,
     Path(tag_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2648,7 +2637,7 @@ async fn list_aliases(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2692,14 +2681,14 @@ async fn list_aliases(
     context.insert("total_pages", &total_pages);
     context.insert("path", "/admin/structure/aliases");
 
-    render_admin_template(&state, "admin/aliases.html", &context).await
+    render_admin_template(&state, "admin/aliases.html", context).await
 }
 
 /// Add URL alias form.
 ///
 /// GET /admin/structure/aliases/add
 async fn add_alias_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2712,7 +2701,7 @@ async fn add_alias_form(State(state): State<AppState>, session: Session) -> Resp
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/aliases/add");
 
-    render_admin_template(&state, "admin/alias-form.html", &context).await
+    render_admin_template(&state, "admin/alias-form.html", context).await
 }
 
 /// Add URL alias submit.
@@ -2723,7 +2712,7 @@ async fn add_alias_submit(
     session: Session,
     Form(form): Form<UrlAliasFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2776,7 +2765,7 @@ async fn edit_alias_form(
     session: Session,
     Path(alias_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2811,7 +2800,7 @@ async fn edit_alias_form(
         &format!("/admin/structure/aliases/{}/edit", alias_id),
     );
 
-    render_admin_template(&state, "admin/alias-form.html", &context).await
+    render_admin_template(&state, "admin/alias-form.html", context).await
 }
 
 /// Edit URL alias submit.
@@ -2823,7 +2812,7 @@ async fn edit_alias_submit(
     Path(alias_id): Path<uuid::Uuid>,
     Form(form): Form<UrlAliasFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2873,7 +2862,7 @@ async fn delete_alias(
     session: Session,
     Path(alias_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2902,7 +2891,7 @@ async fn list_files(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2936,7 +2925,7 @@ async fn list_files(
     context.insert("status_filter", &status_filter.map(|s| s as i16));
     context.insert("path", "/admin/content/files");
 
-    render_admin_template(&state, "admin/files.html", &context).await
+    render_admin_template(&state, "admin/files.html", context).await
 }
 
 /// Show file details.
@@ -2947,7 +2936,7 @@ async fn file_details(
     session: Session,
     Path(file_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -2967,7 +2956,7 @@ async fn file_details(
     context.insert("public_url", &public_url);
     context.insert("path", &format!("/admin/content/files/{}", file_id));
 
-    render_admin_template(&state, "admin/file-details.html", &context).await
+    render_admin_template(&state, "admin/file-details.html", context).await
 }
 
 /// Delete a file.
@@ -2978,7 +2967,7 @@ async fn delete_file(
     session: Session,
     Path(file_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -3011,7 +3000,7 @@ async fn ajax_callback(
     use crate::tap::{RequestState, UserContext};
 
     // Require authentication for AJAX requests
-    let user = match require_auth(&state, &session).await {
+    let user = match require_login(&state, &session).await {
         Ok(user) => user,
         Err(_) => {
             return (
@@ -3214,7 +3203,7 @@ async fn list_comments(
     session: Session,
     axum::extract::Query(query): axum::extract::Query<CommentListQuery>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -3268,7 +3257,7 @@ async fn list_comments(
     );
     context.insert("path", "/admin/content/comments");
 
-    render_admin_template(&state, "admin/comments.html", &context).await
+    render_admin_template(&state, "admin/comments.html", context).await
 }
 
 /// Edit a comment form.
@@ -3279,7 +3268,7 @@ async fn edit_comment_form(
     session: Session,
     Path(id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -3310,7 +3299,7 @@ async fn edit_comment_form(
     context.insert("item_title", &item_title);
     context.insert("path", "/admin/content/comments");
 
-    render_admin_template(&state, "admin/comment-form.html", &context).await
+    render_admin_template(&state, "admin/comment-form.html", context).await
 }
 
 /// Edit a comment submit.
@@ -3322,7 +3311,7 @@ async fn edit_comment_submit(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<EditCommentForm>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -3350,7 +3339,7 @@ async fn approve_comment(
     session: Session,
     Path(id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -3378,7 +3367,7 @@ async fn unpublish_comment(
     session: Session,
     Path(id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -3406,7 +3395,7 @@ async fn delete_comment_admin(
     session: Session,
     Path(id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_login(&state, &session).await {
         return redirect;
     }
 
@@ -3416,30 +3405,6 @@ async fn delete_comment_admin(
         Err(e) => {
             tracing::error!(error = %e, "failed to delete comment");
             render_error(&state, "Failed to delete comment").await
-        }
-    }
-}
-
-/// Render an admin template.
-async fn render_admin_template(
-    state: &AppState,
-    template: &str,
-    context: &tera::Context,
-) -> Response {
-    match state.theme().tera().render(template, context) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, template = %template, "failed to render template");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    r#"<!DOCTYPE html>
-<html><head><title>Error</title></head>
-<body><h1>Template Error</h1><pre>{}</pre></body></html>"#,
-                    html_escape(&e.to_string())
-                )),
-            )
-                .into_response()
         }
     }
 }
@@ -3481,16 +3446,8 @@ async fn render_not_found(_state: &AppState) -> Response {
     (StatusCode::NOT_FOUND, Html(html)).into_response()
 }
 
-/// Escape HTML characters.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
-
 /// Create the admin router.
+/// Core admin routes (always registered).
 pub fn router() -> Router<AppState> {
     Router::new()
         // Dashboard
@@ -3527,25 +3484,6 @@ pub fn router() -> Router<AppState> {
         .route("/admin/content/files", get(list_files))
         .route("/admin/content/files/{id}", get(file_details))
         .route("/admin/content/files/{id}/delete", post(delete_file))
-        // Comment moderation
-        .route("/admin/content/comments", get(list_comments))
-        .route("/admin/content/comments/{id}/edit", get(edit_comment_form))
-        .route(
-            "/admin/content/comments/{id}/edit",
-            post(edit_comment_submit),
-        )
-        .route(
-            "/admin/content/comments/{id}/approve",
-            post(approve_comment),
-        )
-        .route(
-            "/admin/content/comments/{id}/unpublish",
-            post(unpublish_comment),
-        )
-        .route(
-            "/admin/content/comments/{id}/delete",
-            post(delete_comment_admin),
-        )
         // Content type management
         .route("/admin/structure/types", get(list_content_types))
         .route("/admin/structure/types/add", get(add_content_type_form))
@@ -3577,7 +3515,23 @@ pub fn router() -> Router<AppState> {
             "/admin/structure/types/{type}/search/reindex",
             post(reindex_content_type),
         )
-        // Category management
+        // URL Alias management
+        .route("/admin/structure/aliases", get(list_aliases))
+        .route("/admin/structure/aliases/add", get(add_alias_form))
+        .route("/admin/structure/aliases/add", post(add_alias_submit))
+        .route("/admin/structure/aliases/{id}/edit", get(edit_alias_form))
+        .route(
+            "/admin/structure/aliases/{id}/edit",
+            post(edit_alias_submit),
+        )
+        .route("/admin/structure/aliases/{id}/delete", post(delete_alias))
+        // AJAX endpoint
+        .route("/system/ajax", post(ajax_callback))
+}
+
+/// Category and tag admin routes (registered when "categories" plugin is enabled).
+pub fn category_admin_router() -> Router<AppState> {
+    Router::new()
         .route("/admin/structure/categories", get(list_categories))
         .route("/admin/structure/categories/add", get(add_category_form))
         .route("/admin/structure/categories/add", post(add_category_submit))
@@ -3602,20 +3556,30 @@ pub fn router() -> Router<AppState> {
             "/admin/structure/categories/{id}/tags/add",
             post(add_tag_submit),
         )
-        // Tag management
         .route("/admin/structure/tags/{id}/edit", get(edit_tag_form))
         .route("/admin/structure/tags/{id}/edit", post(edit_tag_submit))
         .route("/admin/structure/tags/{id}/delete", post(delete_tag))
-        // URL Alias management
-        .route("/admin/structure/aliases", get(list_aliases))
-        .route("/admin/structure/aliases/add", get(add_alias_form))
-        .route("/admin/structure/aliases/add", post(add_alias_submit))
-        .route("/admin/structure/aliases/{id}/edit", get(edit_alias_form))
+}
+
+/// Comment moderation admin routes (registered when "comments" plugin is enabled).
+pub fn comment_admin_router() -> Router<AppState> {
+    Router::new()
+        .route("/admin/content/comments", get(list_comments))
+        .route("/admin/content/comments/{id}/edit", get(edit_comment_form))
         .route(
-            "/admin/structure/aliases/{id}/edit",
-            post(edit_alias_submit),
+            "/admin/content/comments/{id}/edit",
+            post(edit_comment_submit),
         )
-        .route("/admin/structure/aliases/{id}/delete", post(delete_alias))
-        // AJAX endpoint
-        .route("/system/ajax", post(ajax_callback))
+        .route(
+            "/admin/content/comments/{id}/approve",
+            post(approve_comment),
+        )
+        .route(
+            "/admin/content/comments/{id}/unpublish",
+            post(unpublish_comment),
+        )
+        .route(
+            "/admin/content/comments/{id}/delete",
+            post(delete_comment_admin),
+        )
 }

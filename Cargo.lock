@@ -5996,6 +5996,7 @@ dependencies = [
  "image",
  "jsonwebtoken",
  "moka",
+ "parking_lot",
  "prometheus-client",
  "rand 0.8.5",
  "redis",

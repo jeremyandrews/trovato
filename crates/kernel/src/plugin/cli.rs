@@ -25,10 +25,10 @@ pub async fn cmd_plugin_list(pool: &PgPool, plugins_dir: &Path) -> Result<()> {
     }
 
     println!(
-        "{:<20} {:<12} {:<12} {:<10}",
-        "PLUGIN", "VERSION", "STATUS", "MIGRATIONS"
+        "{:<20} {:<12} {:<14} {:<13} {:<10}",
+        "PLUGIN", "VERSION", "STATUS", "AUTO-ENABLE", "MIGRATIONS"
     );
-    println!("{}", "-".repeat(56));
+    println!("{}", "-".repeat(71));
 
     // Show all discovered plugins
     for (name, (info, _dir)) in &discovered {
@@ -38,11 +38,12 @@ pub async fn cmd_plugin_list(pool: &PgPool, plugins_dir: &Path) -> Result<()> {
             None => "not installed",
         };
 
+        let auto_enable = if info.default_enabled { "yes" } else { "no" };
         let migration_count = info.migrations.files.len();
 
         println!(
-            "{:<20} {:<12} {:<12} {}",
-            name, info.version, status_str, migration_count
+            "{:<20} {:<12} {:<14} {:<13} {}",
+            name, info.version, status_str, auto_enable, migration_count
         );
     }
 
@@ -55,8 +56,8 @@ pub async fn cmd_plugin_list(pool: &PgPool, plugins_dir: &Path) -> Result<()> {
                 "disabled"
             };
             println!(
-                "{:<20} {:<12} {:<12} {} (not on disk)",
-                ps.name, ps.version, status_str, "?"
+                "{:<20} {:<12} {:<14} {:<13} {} (not on disk)",
+                ps.name, ps.version, status_str, "?", "?"
             );
         }
     }
@@ -166,7 +167,11 @@ pub async fn cmd_plugin_migrate(
     Ok(())
 }
 
-/// Enable a plugin.
+/// Enable a plugin (database only).
+///
+/// CLI commands run in a separate process without access to the server's
+/// in-memory `AppState`. Changes take effect on the next server restart.
+/// For immediate effect, use the admin UI (`/admin/plugins`) instead.
 pub async fn cmd_plugin_enable(pool: &PgPool, name: &str) -> Result<()> {
     if !status::is_installed(pool, name).await? {
         bail!(
@@ -179,13 +184,18 @@ pub async fn cmd_plugin_enable(pool: &PgPool, name: &str) -> Result<()> {
     let updated = status::set_status(pool, name, status::STATUS_ENABLED).await?;
     if updated {
         println!("Plugin '{}' enabled.", name);
+        println!("Note: if the server is running, restart it for CLI changes to take effect.");
     } else {
         println!("Plugin '{}' not found.", name);
     }
     Ok(())
 }
 
-/// Disable a plugin.
+/// Disable a plugin (database only).
+///
+/// CLI commands run in a separate process without access to the server's
+/// in-memory `AppState`. Changes take effect on the next server restart.
+/// For immediate effect, use the admin UI (`/admin/plugins`) instead.
 pub async fn cmd_plugin_disable(pool: &PgPool, name: &str) -> Result<()> {
     if !status::is_installed(pool, name).await? {
         bail!("plugin '{}' is not installed.", name);
@@ -193,10 +203,8 @@ pub async fn cmd_plugin_disable(pool: &PgPool, name: &str) -> Result<()> {
 
     let updated = status::set_status(pool, name, status::STATUS_DISABLED).await?;
     if updated {
-        println!(
-            "Plugin '{}' disabled. Restart the server for changes to take effect.",
-            name
-        );
+        println!("Plugin '{}' disabled.", name);
+        println!("Note: if the server is running, restart it for CLI changes to take effect.");
     } else {
         println!("Plugin '{}' not found.", name);
     }

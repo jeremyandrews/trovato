@@ -1,0 +1,74 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Plugins</h2>
+</div>
+
+{% if flash %}
+<div class="messages">
+    <div class="message message--info">
+        {{ flash }}
+    </div>
+</div>
+{% endif %}
+
+<div class="admin-card">
+    {% if plugins | length > 0 %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Plugin</th>
+                <th>Description</th>
+                <th>Version</th>
+                <th>Dependencies</th>
+                <th>Status</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for plugin in plugins %}
+            <tr>
+                <td><code>{{ plugin.name }}</code></td>
+                <td>{{ plugin.description }}</td>
+                <td>{{ plugin.version }}</td>
+                <td>{{ plugin.dependencies }}</td>
+                <td>
+                    {% if plugin.status == "Enabled" %}
+                    <span style="color: var(--success, green); font-weight: 600;">Enabled</span>
+                    {% elif plugin.status == "Disabled" %}
+                    <span style="color: var(--warning, #b45309); font-weight: 600;">Disabled</span>
+                    {% else %}
+                    <span style="color: var(--gray-500, #6b7280);">Not installed</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if plugin.is_installed %}
+                        {% if plugin.status == "Enabled" %}
+                        <form method="post" action="/admin/plugins/toggle" style="display: inline;">
+                            <input type="hidden" name="_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
+                            <input type="hidden" name="action" value="disable">
+                            <button type="submit" class="link-button">Disable</button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="/admin/plugins/toggle" style="display: inline;">
+                            <input type="hidden" name="_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
+                            <input type="hidden" name="action" value="enable">
+                            <button type="submit" class="link-button">Enable</button>
+                        </form>
+                        {% endif %}
+                    {% else %}
+                    <span style="color: var(--gray-500, #6b7280); font-size: 0.875rem;">Use CLI to install</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No plugins found.</p>
+    {% endif %}
+</div>
+{% endblock %}

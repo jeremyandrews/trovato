@@ -23,6 +23,10 @@ pub struct PluginInfo {
     /// Semantic version (e.g., "1.0.0").
     pub version: String,
 
+    /// Whether this plugin should be auto-enabled on first install.
+    #[serde(default = "default_true")]
+    pub default_enabled: bool,
+
     /// Other plugins this one depends on (loaded first).
     #[serde(default)]
     pub dependencies: Vec<String>,
@@ -112,6 +116,10 @@ pub const KNOWN_TAPS: &[&str] = &[
     // Gather extensions
     "tap_gather_extend",
 ];
+
+fn default_true() -> bool {
+    true
+}
 
 impl PluginInfo {
     /// Parse a plugin info file from the given path.
@@ -353,5 +361,30 @@ files = ["migrations/001_create.txt"]
         let result = PluginInfo::parse_str(toml, Path::new("test.toml"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains(".sql"));
+    }
+
+    #[test]
+    fn parse_default_enabled_false() {
+        let toml = r#"
+name = "argus"
+description = "News intelligence"
+version = "1.0.0"
+default_enabled = false
+"#;
+
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        assert!(!info.default_enabled);
+    }
+
+    #[test]
+    fn default_enabled_is_true_when_omitted() {
+        let toml = r#"
+name = "blog"
+description = "Blog plugin"
+version = "1.0.0"
+"#;
+
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        assert!(info.default_enabled);
     }
 }

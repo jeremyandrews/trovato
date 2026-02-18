@@ -1,13 +1,50 @@
-//! Shared route helpers for public page rendering.
+//! Shared route helpers for page rendering.
 
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::models::SiteConfig;
+use crate::models::{SiteConfig, User};
 use crate::state::AppState;
 
 /// Session key for user ID.
 const SESSION_USER_ID: &str = "user_id";
+
+/// Require an authenticated user, or redirect to login.
+///
+/// Returns the [`User`] if one is logged in. Returns a redirect response if the
+/// session contains no valid user id.
+pub async fn require_login(state: &AppState, session: &Session) -> Result<User, Response> {
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+
+    if let Some(id) = user_id {
+        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
+            return Ok(user);
+        }
+    }
+
+    Err(Redirect::to("/user/login").into_response())
+}
+
+/// Require an authenticated **admin** user, or redirect/reject.
+///
+/// Returns the admin [`User`] on success. Redirects to `/user/login` if the
+/// session has no valid user. Returns 403 if the user exists but is not an admin.
+pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+
+    if let Some(id) = user_id {
+        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
+            if user.is_admin {
+                return Ok(user);
+            }
+            return Err((StatusCode::FORBIDDEN, Html("Access denied")).into_response());
+        }
+    }
+
+    Err(Redirect::to("/user/login").into_response())
+}
 
 /// Inject site-wide context variables into a Tera context.
 ///
@@ -43,6 +80,37 @@ pub async fn inject_site_context(state: &AppState, session: &Session, context: &
     // User authentication status
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     context.insert("user_authenticated", &user_id.is_some());
+}
+
+/// Render an admin template with common context (enabled_plugins).
+///
+/// This is the shared implementation used by all admin route modules
+/// (admin, gather_admin, plugin_admin). The `enabled_plugins` list is
+/// sorted for deterministic template output.
+pub async fn render_admin_template(
+    state: &AppState,
+    template: &str,
+    mut context: tera::Context,
+) -> Response {
+    let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
+    enabled.sort();
+    context.insert("enabled_plugins", &enabled);
+    match state.theme().tera().render(template, &context) {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, template = %template, "failed to render template");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    r#"<!DOCTYPE html>
+<html><head><title>Error</title></head>
+<body><h1>Template Error</h1><pre>{}</pre></body></html>"#,
+                    html_escape(&e.to_string())
+                )),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// HTML-escape a string for safe output.

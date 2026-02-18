@@ -65,23 +65,27 @@ impl TestApp {
         .await
         .expect("Failed to create session layer");
 
-        // Build the REAL router with all kernel routes
+        // Build the REAL router with all kernel routes (must match main.rs)
         let router = Router::new()
+            .merge(trovato_kernel::routes::front::router())
             .merge(trovato_kernel::routes::install::router())
             .merge(trovato_kernel::routes::auth::router())
             .merge(trovato_kernel::routes::admin::router())
             .merge(trovato_kernel::routes::password_reset::router())
             .merge(trovato_kernel::routes::health::router())
             .merge(trovato_kernel::routes::item::router())
-            .merge(trovato_kernel::routes::category::router())
-            .merge(trovato_kernel::routes::comment::router())
             .merge(trovato_kernel::routes::gather::router())
+            .merge(trovato_kernel::routes::gather_admin::router())
+            .merge(trovato_kernel::routes::plugin_admin::router())
             .merge(trovato_kernel::routes::search::router())
             .merge(trovato_kernel::routes::cron::router())
             .merge(trovato_kernel::routes::file::router())
             .merge(trovato_kernel::routes::metrics::router())
             .merge(trovato_kernel::routes::batch::router())
+            .merge(trovato_kernel::routes::api_token::router())
             .merge(trovato_kernel::routes::static_files::router())
+            // Plugin-gated routes — runtime middleware returns 404 when disabled
+            .merge(trovato_kernel::routes::gated_plugin_routes(&state))
             // Path alias middleware runs first (last added = first executed)
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
@@ -169,6 +173,49 @@ impl TestApp {
     ) -> String {
         self.create_test_user(username, password, email).await;
         self.login(username, password).await
+    }
+
+    /// Create a test admin user and return session cookies after logging in.
+    pub async fn create_and_login_admin(
+        &self,
+        username: &str,
+        password: &str,
+        email: &str,
+    ) -> String {
+        self.create_test_admin(username, password, email).await;
+        self.login(username, password).await
+    }
+
+    /// Create a test admin user directly in the database.
+    pub async fn create_test_admin(&self, username: &str, password: &str, email: &str) {
+        use argon2::{
+            Argon2,
+            password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+        };
+
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .expect("Failed to hash password")
+            .to_string();
+
+        let id = Uuid::now_v7();
+
+        sqlx::query(
+            r#"
+            INSERT INTO users (id, name, pass, mail, status, is_admin)
+            VALUES ($1, $2, $3, $4, 1, true)
+            ON CONFLICT (name) DO UPDATE SET pass = $3, is_admin = true
+            "#,
+        )
+        .bind(id)
+        .bind(username)
+        .bind(&password_hash)
+        .bind(email)
+        .execute(&self.db)
+        .await
+        .expect("Failed to create test admin");
     }
 
     /// Create a test user directly in the database.

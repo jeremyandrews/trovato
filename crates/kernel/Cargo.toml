@@ -62,6 +62,7 @@ base64 = { workspace = true }
 url = { workspace = true }
 ammonia = { workspace = true }
 syntect = { workspace = true }
+parking_lot = { workspace = true }
 
 # Optional S3 support (requires Rust 1.91+)
 aws-sdk-s3 = { workspace = true, optional = true }

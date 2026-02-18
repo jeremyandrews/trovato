@@ -1,6 +1,7 @@
 name = "goose"
 description = "Load testing: test runs, scenarios, endpoint results, sites, comparisons"
 version = "1.0.0"
+default_enabled = false
 dependencies = []
 
 [taps]

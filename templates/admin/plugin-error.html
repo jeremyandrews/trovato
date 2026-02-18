@@ -1,0 +1,12 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Error</h2>
+</div>
+
+<div class="admin-card">
+    <p>{{ error_message }}</p>
+    <p><a href="/admin/plugins">Return to plugins</a></p>
+</div>
+{% endblock %}

@@ -105,12 +105,12 @@
                 <div class="admin-nav-section">Content</div>
                 <li><a href="/admin/content" {% if path is starting_with("/admin/content") and not path is starting_with("/admin/content/files") and not path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Content</a></li>
                 <li><a href="/admin/content/add">Add content</a></li>
-                <li><a href="/admin/content/comments" {% if path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Comments</a></li>
+                {% if "comments" in enabled_plugins %}<li><a href="/admin/content/comments" {% if path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Comments</a></li>{% endif %}
                 <li><a href="/admin/content/files" {% if path is starting_with("/admin/content/files") %}class="active"{% endif %}>Files</a></li>
 
                 <div class="admin-nav-section">Structure</div>
                 <li><a href="/admin/structure/types" {% if path is starting_with("/admin/structure/types") %}class="active"{% endif %}>Content types</a></li>
-                <li><a href="/admin/structure/categories" {% if path is starting_with("/admin/structure/categories") or path is starting_with("/admin/structure/tags") %}class="active"{% endif %}>Categories</a></li>
+                {% if "categories" in enabled_plugins %}<li><a href="/admin/structure/categories" {% if path is starting_with("/admin/structure/categories") or path is starting_with("/admin/structure/tags") %}class="active"{% endif %}>Categories</a></li>{% endif %}
                 <li><a href="/admin/structure/aliases" {% if path is starting_with("/admin/structure/aliases") %}class="active"{% endif %}>URL aliases</a></li>
                 <li><a href="/admin/gather" {% if path is starting_with("/admin/gather") %}class="active"{% endif %}>Gather queries</a></li>
 
@@ -118,6 +118,9 @@
                 <li><a href="/admin/people" {% if path == "/admin/people" or path is starting_with("/admin/people/add") or (path is starting_with("/admin/people/") and not path is starting_with("/admin/people/roles") and not path is starting_with("/admin/people/permissions")) %}class="active"{% endif %}>Users</a></li>
                 <li><a href="/admin/people/roles" {% if path is starting_with("/admin/people/roles") %}class="active"{% endif %}>Roles</a></li>
                 <li><a href="/admin/people/permissions" {% if path is starting_with("/admin/people/permissions") %}class="active"{% endif %}>Permissions</a></li>
+
+                <div class="admin-nav-section">System</div>
+                <li><a href="/admin/plugins" {% if path is starting_with("/admin/plugins") %}class="active"{% endif %}>Plugins</a></li>
             </ul>
         </nav>
     </aside>

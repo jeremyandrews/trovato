@@ -51,6 +51,16 @@ struct AppStateInner {
     /// PostgreSQL connection pool.
     db: PgPool,
 
+    /// Path to plugins directory on disk.
+    plugins_dir: PathBuf,
+
+    /// Set of enabled plugin names (mutable via admin UI).
+    ///
+    /// Uses `parking_lot::RwLock` rather than `std::sync::RwLock` because:
+    /// - No poisoning: a panic in a writer won't permanently wedge every reader.
+    /// - Shorter critical sections avoid blocking Tokio worker threads.
+    enabled_plugins: parking_lot::RwLock<std::collections::HashSet<String>>,
+
     /// Redis client for sessions and caching.
     redis: RedisClient,
 
@@ -205,16 +215,48 @@ impl AppState {
         // Discover plugins on disk (parse info.toml without compiling WASM)
         let discovered = PluginRuntime::discover_plugins(&config.plugins_dir);
 
-        // Auto-install any new plugins into plugin_status table
-        let discovered_pairs: Vec<(&str, &str)> = discovered
+        // Auto-install any new plugins into plugin_status table.
+        // Compute per-plugin should_enable from default_enabled and DISABLED_PLUGINS.
+        let discovered_triples: Vec<(&str, &str, bool)> = discovered
             .iter()
-            .map(|(name, (info, _))| (name.as_str(), info.version.as_str()))
+            .map(|(name, (info, _))| {
+                let should_enable = crate::plugin::gate::should_auto_enable(
+                    info.default_enabled,
+                    &config.disabled_plugins,
+                    name,
+                );
+                (name.as_str(), info.version.as_str(), should_enable)
+            })
             .collect();
-        let new_count = plugin_status::auto_install_new_plugins(&db, &discovered_pairs)
+        let new_count = plugin_status::auto_install_new_plugins(&db, &discovered_triples)
             .await
             .context("failed to auto-install new plugins")?;
         if new_count > 0 {
             info!(count = new_count, "auto-installed new plugins");
+        }
+
+        // Warn per-entry about DISABLED_PLUGINS that were already installed
+        // (env var only affects first-time installs via ON CONFLICT DO NOTHING).
+        if !config.disabled_plugins.is_empty() {
+            let statuses = plugin_status::get_all_statuses(&db)
+                .await
+                .unwrap_or_default();
+            let installed: std::collections::HashSet<&str> =
+                statuses.iter().map(|s| s.name.as_str()).collect();
+            let stale: Vec<&str> = config
+                .disabled_plugins
+                .iter()
+                .filter(|p| installed.contains(p.as_str()))
+                .map(|s| s.as_str())
+                .collect();
+            if !stale.is_empty() {
+                info!(
+                    plugins = ?stale,
+                    "DISABLED_PLUGINS entries are already installed; \
+                     the env var only affects first-time installs. \
+                     Use the admin UI or CLI to change plugin status."
+                );
+            }
         }
 
         // Get enabled plugin set
@@ -544,6 +586,8 @@ impl AppState {
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
+                plugins_dir: config.plugins_dir.clone(),
+                enabled_plugins: parking_lot::RwLock::new(enabled_set.clone()),
                 redis,
                 cache,
                 config_storage,
@@ -596,6 +640,31 @@ impl AppState {
     /// Get the database pool.
     pub fn db(&self) -> &PgPool {
         &self.inner.db
+    }
+
+    /// Get the plugins directory path.
+    pub fn plugins_dir(&self) -> &std::path::Path {
+        &self.inner.plugins_dir
+    }
+
+    /// Check if a plugin is enabled at runtime.
+    pub fn is_plugin_enabled(&self, plugin: &str) -> bool {
+        self.inner.enabled_plugins.read().contains(plugin)
+    }
+
+    /// Get a snapshot of the enabled plugin names.
+    pub fn enabled_plugins(&self) -> std::collections::HashSet<String> {
+        self.inner.enabled_plugins.read().clone()
+    }
+
+    /// Update the in-memory enabled state for a plugin.
+    pub fn set_plugin_enabled(&self, plugin: &str, enabled: bool) {
+        let mut set = self.inner.enabled_plugins.write();
+        if enabled {
+            set.insert(plugin.to_string());
+        } else {
+            set.remove(plugin);
+        }
     }
 
     /// Get the Redis client.

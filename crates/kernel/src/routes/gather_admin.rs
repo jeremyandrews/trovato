@@ -12,30 +12,9 @@ use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
 use crate::gather::{
     GatherQuery, GatherService, MAX_ITEMS_PER_PAGE, QueryDefinition, QueryDisplay,
 };
-use crate::models::User;
-use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
-// =============================================================================
-// Auth helper
-// =============================================================================
-
-/// Check if user is authenticated AND is an admin, return user or redirect.
-async fn require_auth(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    if let Some(id) = user_id {
-        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
-            if user.is_admin {
-                return Ok(user);
-            }
-            // Logged in but not admin — return 403
-            return Err((StatusCode::FORBIDDEN, Html("Access denied")).into_response());
-        }
-    }
-
-    Err(Redirect::to("/user/login").into_response())
-}
+use super::helpers::{html_escape, render_admin_template, require_admin};
 
 // =============================================================================
 // Form data
@@ -73,7 +52,7 @@ struct GatherFormData {
 ///
 /// GET /admin/gather
 async fn list_queries(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
     }
 
@@ -87,14 +66,14 @@ async fn list_queries(State(state): State<AppState>, session: Session) -> Respon
     context.insert("path", "/admin/gather");
     super::helpers::inject_site_context(&state, &session, &mut context).await;
 
-    render_admin_template(&state, "admin/gather-list.html", &context).await
+    render_admin_template(&state, "admin/gather-list.html", context).await
 }
 
 /// Show create gather query form.
 ///
 /// GET /admin/gather/create
 async fn create_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
     }
 
@@ -125,7 +104,7 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
     context.insert("path", "/admin/gather/create");
     super::helpers::inject_site_context(&state, &session, &mut context).await;
 
-    render_admin_template(&state, "admin/gather-form.html", &context).await
+    render_admin_template(&state, "admin/gather-form.html", context).await
 }
 
 /// Handle create gather query form submission.
@@ -136,7 +115,7 @@ async fn create_submit(
     session: Session,
     Form(form): Form<GatherFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
     }
 
@@ -228,7 +207,7 @@ async fn create_submit(
         context.insert("path", "/admin/gather/create");
         super::helpers::inject_site_context(&state, &session, &mut context).await;
 
-        return render_admin_template(&state, "admin/gather-form.html", &context).await;
+        return render_admin_template(&state, "admin/gather-form.html", context).await;
     }
 
     // Build the query
@@ -264,7 +243,7 @@ async fn edit_form(
     session: Session,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
     }
 
@@ -297,7 +276,7 @@ async fn edit_form(
     context.insert("path", &format!("/admin/gather/{}/edit", id));
     super::helpers::inject_site_context(&state, &session, &mut context).await;
 
-    render_admin_template(&state, "admin/gather-form.html", &context).await
+    render_admin_template(&state, "admin/gather-form.html", context).await
 }
 
 /// Handle edit gather query form submission.
@@ -309,7 +288,7 @@ async fn save_submit(
     Path(id): Path<String>,
     Form(form): Form<GatherFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
     }
 
@@ -387,7 +366,7 @@ async fn save_submit(
         context.insert("path", &format!("/admin/gather/{}/edit", id));
         super::helpers::inject_site_context(&state, &session, &mut context).await;
 
-        return render_admin_template(&state, "admin/gather-form.html", &context).await;
+        return render_admin_template(&state, "admin/gather-form.html", context).await;
     }
 
     // Update the query (preserve original created timestamp and plugin)
@@ -424,7 +403,7 @@ async fn clone_query(
     Path(id): Path<String>,
     Form(form): Form<CsrfFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
     }
 
@@ -464,7 +443,7 @@ async fn delete_query(
     Path(id): Path<String>,
     Form(form): Form<CsrfFormData>,
 ) -> Response {
-    if let Err(redirect) = require_auth(&state, &session).await {
+    if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
     }
 
@@ -492,30 +471,6 @@ async fn delete_query(
 // =============================================================================
 // Helper functions
 // =============================================================================
-
-/// Render an admin template, falling back to an error page on failure.
-async fn render_admin_template(
-    state: &AppState,
-    template: &str,
-    context: &tera::Context,
-) -> Response {
-    match state.theme().tera().render(template, context) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, template = %template, "failed to render template");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    r#"<!DOCTYPE html>
-<html><head><title>Error</title></head>
-<body><h1>Template Error</h1><pre>{}</pre></body></html>"#,
-                    html_escape(&e.to_string())
-                )),
-            )
-                .into_response()
-        }
-    }
-}
 
 /// Render an error page.
 fn render_error(message: &str) -> Response {
@@ -574,15 +529,6 @@ fn is_valid_query_id(id: &str) -> bool {
     chars.all(|c| {
         c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.' || c == ':'
     })
-}
-
-/// Escape HTML characters.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
 // =============================================================================

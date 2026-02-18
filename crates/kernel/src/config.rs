@@ -34,6 +34,9 @@ pub struct Config {
 
     /// Cookie SameSite policy: "strict", "lax", or "none" (default: "strict").
     pub cookie_same_site: String,
+
+    /// Plugin names to force-disable on first install (from DISABLED_PLUGINS env var).
+    pub disabled_plugins: Vec<String>,
 }
 
 impl Config {
@@ -73,6 +76,15 @@ impl Config {
             .unwrap_or_else(|_| "strict".to_string())
             .to_lowercase();
 
+        let disabled_plugins = env::var("DISABLED_PLUGINS")
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(Self {
             port,
             database_url,
@@ -83,6 +95,7 @@ impl Config {
             files_url,
             cors_allowed_origins,
             cookie_same_site,
+            disabled_plugins,
         })
     }
 }

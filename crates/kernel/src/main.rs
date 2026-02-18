@@ -173,7 +173,7 @@ async fn run_server() -> Result<()> {
     // Build CORS layer from config
     let cors = build_cors_layer(&config);
 
-    // Build the router
+    // Build the router — core routes are always registered.
     let app = Router::new()
         .merge(routes::front::router())
         .merge(routes::install::router())
@@ -182,20 +182,18 @@ async fn run_server() -> Result<()> {
         .merge(routes::password_reset::router())
         .merge(routes::health::router())
         .merge(routes::item::router())
-        .merge(routes::category::router())
-        .merge(routes::comment::router())
         .merge(routes::gather::router())
         .merge(routes::gather_admin::router())
+        .merge(routes::plugin_admin::router())
         .merge(routes::search::router())
         .merge(routes::cron::router())
         .merge(routes::file::router())
         .merge(routes::metrics::router())
         .merge(routes::batch::router())
         .merge(routes::api_token::router())
-        .merge(routes::lock::router())
-        .merge(routes::image_style::router())
-        .merge(routes::oauth::router())
         .merge(routes::static_files::router())
+        // Plugin-gated routes — runtime middleware returns 404 when disabled.
+        .merge(routes::gated_plugin_routes(&state))
         // Middleware layers (last added = first executed in request flow):
         // TraceLayer → session → CORS → bearer_auth → api_token → install_check → negotiate_language → redirect → path_alias → routes
         .layer(axum::middleware::from_fn_with_state(
