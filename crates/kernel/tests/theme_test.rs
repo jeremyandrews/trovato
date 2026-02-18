@@ -44,7 +44,7 @@ fn test_page_suggestions_root() {
 
 #[test]
 fn test_render_tree_consumer_markup() {
-    let consumer = RenderTreeConsumer::new();
+    let _consumer = RenderTreeConsumer::new();
 
     let element = RenderElement {
         element_type: "markup".to_string(),

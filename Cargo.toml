@@ -6,7 +6,6 @@ members = [
     "crates/plugin-sdk-macros",
     "crates/test-utils",
     "benchmarks/phase0",
-    "benchmarks/phase0/guest",
     "benchmarks/load-test",
     "plugins/blog",
     "plugins/argus",

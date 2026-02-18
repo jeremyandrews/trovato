@@ -3,6 +3,8 @@
 //! This library exposes kernel internals for integration testing.
 //! The main entry point for running the server is the `trovato` binary.
 
+#![allow(dead_code)]
+
 pub mod batch;
 pub mod cache;
 pub mod config;

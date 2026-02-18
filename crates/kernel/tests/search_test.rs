@@ -2,7 +2,6 @@
 //!
 //! Tests for Phase 6A search functionality.
 
-use serde_json::json;
 use uuid::Uuid;
 
 // Unit tests that don't require database

@@ -2,7 +2,7 @@
 //!
 //! Tests for Phase 6A scheduled operations.
 
-use trovato_kernel::cron::{LastCronRun, Queue, RedisQueue};
+use trovato_kernel::cron::{LastCronRun, RedisQueue};
 
 #[test]
 fn test_last_cron_run_serde() {

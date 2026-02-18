@@ -174,7 +174,7 @@ mod tests {
 
         let translated = apply_translation_overlay(entity, &translation);
         match translated {
-            ConfigEntity::Variable { key, value } => {
+            ConfigEntity::Variable { key: _, value } => {
                 assert_eq!(value, serde_json::json!("My Site"));
             }
             _ => panic!("expected Variable"),

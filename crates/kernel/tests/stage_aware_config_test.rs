@@ -7,9 +7,9 @@ use uuid::Uuid;
 mod common;
 use common::TestApp;
 
+use trovato_kernel::ConfigEntity;
 use trovato_kernel::config_storage::entity_types;
 use trovato_kernel::models::ItemType;
-use trovato_kernel::{ConfigEntity, ConfigStorage};
 
 /// Test that live stage returns direct storage behavior.
 #[tokio::test]

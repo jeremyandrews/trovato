@@ -3,6 +3,8 @@
 //! This module provides test infrastructure that uses the REAL kernel code,
 //! not mock implementations. This ensures tests verify actual behavior.
 
+#![allow(dead_code)]
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, header};

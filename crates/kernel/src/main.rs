@@ -2,6 +2,11 @@
 //!
 //! HTTP server, plugin runtime, and core services.
 
+// Many models, services, and types expose APIs that are used by plugins, tests,
+// or routes not yet wired into the binary. Suppress dead_code and unused re-exports
+// for the binary target; the lib target (lib.rs) maintains stricter checking.
+#![allow(dead_code, unused_imports)]
+
 mod batch;
 mod cache;
 mod config;

@@ -149,11 +149,16 @@ pub enum FilterOperator {
 }
 
 /// Filter value types.
+///
+/// Variant order matters for `#[serde(untagged)]` — serde tries each in declaration
+/// order. `Null` must be first (matches JSON `null`). `Contextual` must come before
+/// `String` so that known contextual names like `"current_user"` are not consumed
+/// as plain strings. `String` is the catch-all last.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FilterValue {
-    /// String value.
-    String(String),
+    /// Null/empty value (for IsNull/IsNotNull operators, or unset exposed filters).
+    Null(()),
     /// Integer value.
     Integer(i64),
     /// Float value.
@@ -166,9 +171,16 @@ pub enum FilterValue {
     List(Vec<FilterValue>),
     /// Contextual value resolved at query time.
     Contextual(ContextualValue),
+    /// String value (catch-all for remaining string values).
+    String(String),
 }
 
 impl FilterValue {
+    /// Returns `true` if this is a `Null` variant.
+    pub fn is_null(&self) -> bool {
+        matches!(self, FilterValue::Null(()))
+    }
+
     /// Convert to string representation for SQL.
     pub fn as_string(&self) -> Option<String> {
         match self {
@@ -177,7 +189,7 @@ impl FilterValue {
             FilterValue::Float(f) => Some(f.to_string()),
             FilterValue::Boolean(b) => Some(b.to_string()),
             FilterValue::Uuid(u) => Some(u.to_string()),
-            _ => None,
+            FilterValue::Null(()) | FilterValue::List(_) | FilterValue::Contextual(_) => None,
         }
     }
 
@@ -551,6 +563,57 @@ mod tests {
         let uuid = Uuid::nil();
         let uuid_val = FilterValue::Uuid(uuid);
         assert_eq!(uuid_val.as_uuid(), Some(uuid));
+
+        let null_val = FilterValue::Null(());
+        assert!(null_val.is_null());
+        assert_eq!(null_val.as_string(), None);
+        assert_eq!(null_val.as_i64(), None);
+        assert_eq!(null_val.as_uuid(), None);
+        assert!(null_val.as_uuid_list().is_empty());
+    }
+
+    #[test]
+    fn filter_value_null_roundtrip() {
+        let null_val = FilterValue::Null(());
+        let json = serde_json::to_value(&null_val).unwrap();
+        assert!(json.is_null());
+        let parsed: FilterValue = serde_json::from_value(json).unwrap();
+        assert!(parsed.is_null());
+    }
+
+    #[test]
+    fn filter_value_null_in_filter_deserializes() {
+        // Matches the exact JSON from audit_log and comments plugin migrations
+        let json = r#"{
+            "field": "status",
+            "operator": "equals",
+            "value": null,
+            "exposed": true,
+            "exposed_label": "Status"
+        }"#;
+        let filter: QueryFilter = serde_json::from_str(json).unwrap();
+        assert!(filter.value.is_null());
+        assert!(filter.exposed);
+    }
+
+    #[test]
+    fn filter_value_contextual_roundtrip() {
+        // Contextual values must survive serialization round-trip
+        let val = FilterValue::Contextual(ContextualValue::CurrentUser);
+        let json = serde_json::to_value(&val).unwrap();
+        let parsed: FilterValue = serde_json::from_value(json).unwrap();
+        match parsed {
+            FilterValue::Contextual(ContextualValue::CurrentUser) => {}
+            other => panic!("expected Contextual(CurrentUser), got {:?}", other),
+        }
+
+        let val2 = FilterValue::Contextual(ContextualValue::UrlArg("cat".into()));
+        let json2 = serde_json::to_value(&val2).unwrap();
+        let parsed2: FilterValue = serde_json::from_value(json2).unwrap();
+        match parsed2 {
+            FilterValue::Contextual(ContextualValue::UrlArg(ref s)) if s == "cat" => {}
+            other => panic!("expected Contextual(UrlArg(\"cat\")), got {:?}", other),
+        }
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Phase 0: WASM Architecture Validation
 //!
 //! Extended benchmark suite with configurable parameters for:

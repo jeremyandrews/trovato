@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Trovato CMS Load Testing Tool
 //!
 //! Simulates concurrent users accessing the CMS to verify performance targets.
@@ -317,7 +318,7 @@ mod parking_lot {
             Self(std::sync::Mutex::new(value))
         }
 
-        pub fn lock(&self) -> std::sync::MutexGuard<T> {
+        pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
             self.0.lock().unwrap()
         }
     }

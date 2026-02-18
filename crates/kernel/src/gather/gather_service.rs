@@ -118,10 +118,13 @@ impl GatherService {
         .context("failed to load queries")?;
 
         for row in rows {
-            let definition: QueryDefinition = serde_json::from_value(row.definition)
-                .context("failed to parse query definition")?;
-            let display: QueryDisplay =
-                serde_json::from_value(row.display).context("failed to parse query display")?;
+            let definition: QueryDefinition = serde_json::from_value(row.definition).context(
+                format!("failed to parse query definition for '{}'", row.query_id),
+            )?;
+            let display: QueryDisplay = serde_json::from_value(row.display).context(format!(
+                "failed to parse query display for '{}'",
+                row.query_id
+            ))?;
 
             let query = GatherQuery {
                 query_id: row.query_id.clone(),
