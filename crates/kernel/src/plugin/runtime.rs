@@ -500,7 +500,7 @@ mod tests {
         let config = PluginConfig {
             max_instances: 500,
             max_memory_pages: 512,
-            async_support: false,
+            async_support: true,
         };
         let runtime = PluginRuntime::new(&config);
         assert!(runtime.is_ok());

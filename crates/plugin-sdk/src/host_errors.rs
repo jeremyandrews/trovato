@@ -121,3 +121,21 @@ pub const ERR_PARAM2_OR_OUTPUT: i32 = -3;
 /// Third parameter read failed (used by DB functions with extra params like
 /// `query-raw` and `insert`).
 pub const ERR_PARAM3_READ: i32 = -4;
+
+/// Services not available (tap executed without request context).
+pub const ERR_NO_SERVICES: i32 = -10;
+
+/// SQL statement rejected by DDL guard.
+pub const ERR_DDL_REJECTED: i32 = -11;
+
+/// SQL execution failed.
+pub const ERR_SQL_FAILED: i32 = -12;
+
+/// Result serialization failed.
+pub const ERR_SERIALIZE_FAILED: i32 = -13;
+
+/// JSON parameter deserialization failed.
+pub const ERR_PARAM_DESERIALIZE: i32 = -14;
+
+/// Invalid table or column name (must match `[a-zA-Z_][a-zA-Z0-9_]*`).
+pub const ERR_INVALID_IDENTIFIER: i32 = -15;

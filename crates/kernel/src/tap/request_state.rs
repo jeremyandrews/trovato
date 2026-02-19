@@ -151,6 +151,11 @@ impl RequestState {
         self.services.is_some()
     }
 
+    /// Get shared services (None in test mode or serviceless contexts).
+    pub fn services(&self) -> Option<&RequestServices> {
+        self.services.as_ref()
+    }
+
     /// Get a context value.
     pub fn get_context(&self, key: &str) -> Option<&str> {
         self.context.get(key).map(|s| s.as_str())
