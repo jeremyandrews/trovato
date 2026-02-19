@@ -15,3 +15,21 @@
 - CSRF verification — use `crate::routes::helpers::require_csrf`. Never inline the pattern.
 - New admin route handlers go in the appropriate `admin_*.rs` domain module, not `admin.rs`.
 - New admin list/form templates should use macros from `templates/admin/macros/`.
+
+## Coding Standards
+
+- All code must pass `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
+- See `docs/coding-standards.md` for the full reference
+- New `#[allow(clippy::...)]` annotations require an explanatory comment
+- All new public items must have `///` doc comments
+- All new `.rs` files must have `//!` module-level documentation
+- Use Trovato terminology: "category" not "taxonomy"/"vocabulary", "item" not "node", "tap" not "hook", "plugin" not "module", "gather" not "views", "tile" not "block"
+- Error responses: `render_error` (400 validation), `render_server_error` (500 DB/service), `render_not_found` (404)
+- `.unwrap()` forbidden in production code; use `.expect("reason")` or propagate errors
+- New admin routes go in `admin_*.rs` domain modules, not `admin.rs`
+
+## Before Committing Checklist
+
+1. `cargo fmt --all`
+2. `cargo clippy --all-targets -- -D warnings`
+3. `cargo test --all`
