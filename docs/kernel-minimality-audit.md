@@ -186,18 +186,18 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Pattern established:** This is the reference extraction for moving kernel cron tasks to plugin `tap_cron` handlers via DB host functions.
 
-### 2d. Translation Service → `content_translation` plugin
+### 2d. Translation Service → `content_translation` plugin — ✅ EXTRACTED
 
-**Current state:** `services/translation.rs` + `services/po_parser.rs` + `services/translated_config.rs`. The `content_translation` plugin only provides permissions and menus.
+**Previous state:** `services/translation.rs` + `services/po_parser.rs` + `services/translated_config.rs`. The `content_translation` plugin only provided permissions and menus.
 
-**Why extract:** Content translation is a feature. No kernel subsystem calls `TranslationService` (only translation routes do).
+**Extraction completed:**
+- ✅ Kernel-side `TranslationService` deleted (`services/translation.rs`)
+- ✅ Kernel-side `TranslatedConfigStorage` deleted (`services/translated_config.rs`)
+- ✅ Kernel-side PO parser deleted (`services/po_parser.rs`)
+- ✅ `AppStateInner` no longer carries `translation` field or accessor
+- ✅ No kernel routes, middleware, or cron tasks referenced these services (zero callers)
 
-**Extraction approach:**
-- Move service + PO parser to plugin
-- Plugin uses host function DB access for translation table queries
-- May need `tap_item_view` hook integration for field overlay at display time
-
-**Effort:** Medium — needs host function DB access patterns for CRUD.
+**Note:** The `content_translation` plugin already owns the `item_translation` table migration. Translation CRUD operations will be implemented in the plugin when admin routes are built via `tap_route` or host DB functions — that's a separate future task.
 
 ### 2e. Webhook Service → `webhooks` plugin
 
@@ -378,7 +378,7 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | **Redirect service** | **Feature** | **Keep (gated)** | Middleware + cache conditional ✅; hot-path prevents full WASM extraction |
 | **Image style service** | **Feature** | **Extract** | Routes already gated |
 | **Scheduled publishing** | **Feature** | **Extracted ✅** | Now plugin `tap_cron` handler via `host::execute_raw()` |
-| **Translation service** | **Feature** | **Extract** | Routes-only caller |
+| **Translation service** | **Feature** | **Extracted ✅** | Dead kernel code removed; plugin owns table + future CRUD |
 | **Webhook service** | **Feature** | **Extract** | Cron-only caller; `tap_cron` now active ✅ with timeout + `CronInput` type |
 | **Email service** | **Feature** | **Extract** | Single caller (password reset) |
 
@@ -392,5 +392,5 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | ~~2~~ | ~~Scheduled publishing~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Low~~ — **extracted** ✅ |
 | 3 | Image style service | File path host function | Medium |
 | 4 | Webhook service | ~~Activate tap_cron~~ ✅ resolved; event taps | Medium |
-| 5 | Translation service | Host function DB patterns | Medium |
+| ~~5~~ | ~~Translation service~~ | ~~Host function DB patterns~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | 6 | Email service | tap_send_email + auth fallback | Medium |

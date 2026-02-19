@@ -170,9 +170,6 @@ struct AppStateInner {
     /// Locale service.
     locale: Option<Arc<services::locale::LocaleService>>,
 
-    /// Content translation service.
-    translation: Option<Arc<services::translation::TranslationService>>,
-
     /// Redirect lookup cache (available when redirects plugin is enabled).
     redirect_cache: Option<Arc<services::redirect::RedirectCache>>,
 }
@@ -595,14 +592,6 @@ impl AppState {
             None
         };
 
-        let translation = if enabled_set.contains("content_translation") {
-            Some(Arc::new(services::translation::TranslationService::new(
-                db.clone(),
-            )))
-        } else {
-            None
-        };
-
         // Wire plugin services into cron
         cron.set_plugin_services(content_lock.clone(), webhooks.clone(), audit.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
@@ -646,7 +635,6 @@ impl AppState {
                 image_styles,
                 oauth,
                 locale,
-                translation,
                 redirect_cache: if enabled_set.contains("redirects") {
                     Some(Arc::new(services::redirect::RedirectCache::new()))
                 } else {
@@ -883,11 +871,6 @@ impl AppState {
     /// Get the locale service (if locale plugin is enabled).
     pub fn locale(&self) -> Option<&Arc<services::locale::LocaleService>> {
         self.inner.locale.as_ref()
-    }
-
-    /// Get the content translation service (if content_translation plugin is enabled).
-    pub fn translation(&self) -> Option<&Arc<services::translation::TranslationService>> {
-        self.inner.translation.as_ref()
     }
 
     /// Get the redirect cache (if redirects plugin is enabled).
