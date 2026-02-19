@@ -330,6 +330,20 @@ impl PermissionDefinition {
     }
 }
 
+/// Input for `tap_cron`.
+///
+/// Sent by the kernel during each cron cycle to plugins that implement
+/// the `tap_cron` hook. Plugins can use the timestamp to implement
+/// interval-based scheduling (e.g., "run only every 5 minutes").
+///
+/// SYNC: The kernel serializes this as `{"timestamp": <unix_ts>}` in
+/// `crates/kernel/src/cron/mod.rs`. Both sides must agree on the format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronInput {
+    /// Unix timestamp (seconds) when the cron cycle started.
+    pub timestamp: i64,
+}
+
 /// Log levels for structured logging from plugins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogLevel {
@@ -337,4 +351,31 @@ pub enum LogLevel {
     Info,
     Warning,
     Error,
+}
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cron_input_round_trip() {
+        let input = CronInput {
+            timestamp: 1_700_000_000,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert_eq!(json, r#"{"timestamp":1700000000}"#);
+
+        let parsed: CronInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn cron_input_deserializes_from_kernel_format() {
+        // The kernel serializes CronInput directly; plugins must be able to parse it
+        let kernel_json = r#"{"timestamp":1234567890}"#;
+        let input: CronInput = serde_json::from_str(kernel_json).unwrap();
+        assert_eq!(input.timestamp, 1_234_567_890);
+    }
 }

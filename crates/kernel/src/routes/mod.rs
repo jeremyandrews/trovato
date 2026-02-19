@@ -61,7 +61,6 @@ plugin_gate!(gate_comments, "comments");
 plugin_gate!(gate_content_locking, "content_locking");
 plugin_gate!(gate_image_styles, "image_styles");
 plugin_gate!(gate_oauth2, "oauth2");
-// "redirects" is gated via middleware (no kernel-side routes to gate here)
 
 /// Plugin names that are runtime-gated in [`gated_plugin_routes`].
 ///
@@ -73,7 +72,6 @@ pub(crate) const RUNTIME_GATED_NAMES: &[&str] = &[
     "content_locking",
     "image_styles",
     "oauth2",
-    "redirects",
 ];
 
 /// Build the router fragment for plugin-gated routes.

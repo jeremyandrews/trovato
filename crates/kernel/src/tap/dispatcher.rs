@@ -33,6 +33,11 @@ impl TapDispatcher {
         Self { runtime, registry }
     }
 
+    /// Get the tap registry for handler introspection.
+    pub fn registry(&self) -> &TapRegistry {
+        &self.registry
+    }
+
     /// Dispatch a tap to all implementing plugins.
     ///
     /// Calls each plugin's tap function in weight order, collecting results.
@@ -260,5 +265,18 @@ mod tests {
             .await;
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn registry_accessor_returns_same_registry() {
+        let runtime = Arc::new(PluginRuntime::new(&PluginConfig::default()).unwrap());
+        let registry = Arc::new(TapRegistry::from_plugins(&runtime));
+        let dispatcher = TapDispatcher::new(runtime, registry.clone());
+
+        assert_eq!(dispatcher.registry().tap_count(), registry.tap_count());
+        assert_eq!(
+            dispatcher.registry().handler_count("tap_cron"),
+            registry.handler_count("tap_cron")
+        );
     }
 }

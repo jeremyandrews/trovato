@@ -212,16 +212,45 @@ impl CronService {
 
         // Dispatch tap_cron to all plugins that implement it
         if let Some(ref dispatcher) = self.tap_dispatcher {
-            let cron_input = serde_json::json!({
-                "timestamp": chrono::Utc::now().timestamp(),
-            });
-            let state = RequestState::default();
-            let results = dispatcher
-                .dispatch("tap_cron", &cron_input.to_string(), state)
-                .await;
-            for result in &results {
-                info!(plugin = %result.plugin_name, "tap_cron completed");
-                tasks_run.push(format!("tap_cron:{}", result.plugin_name));
+            let expected = dispatcher.registry().handler_count("tap_cron");
+            if expected > 0 {
+                let cron_input = trovato_sdk::types::CronInput {
+                    timestamp: chrono::Utc::now().timestamp(),
+                };
+                // Infallible: CronInput is a flat struct with a single i64 field.
+                let input_json = serde_json::to_string(&cron_input)
+                    .unwrap_or_else(|_| r#"{"timestamp":0}"#.to_string());
+                let state = RequestState::default();
+                match tokio::time::timeout(
+                    Duration::from_secs(LOCK_TTL_SECS / 2),
+                    dispatcher.dispatch("tap_cron", &input_json, state),
+                )
+                .await
+                {
+                    Ok(results) => {
+                        let failed = expected - results.len();
+                        for result in &results {
+                            info!(plugin = %result.plugin_name, "tap_cron completed");
+                            tasks_run.push(format!("tap_cron:{}", result.plugin_name));
+                        }
+                        if failed > 0 {
+                            warn!(
+                                expected = expected,
+                                succeeded = results.len(),
+                                failed = failed,
+                                "some tap_cron handlers failed (see dispatcher errors above)"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        warn!(
+                            expected = expected,
+                            timeout_secs = LOCK_TTL_SECS / 2,
+                            "tap_cron dispatch timed out"
+                        );
+                        tasks_run.push("tap_cron:TIMEOUT".to_string());
+                    }
+                }
             }
         }
 
@@ -237,10 +266,16 @@ impl CronService {
         let duration_ms = start.elapsed().as_millis() as u64;
         info!(duration_ms = duration_ms, tasks = ?tasks_run, "cron completed");
 
-        CronResult::Completed {
+        let result = CronResult::Completed {
             tasks_run,
             duration_ms,
+        };
+
+        if let Err(e) = self.record_run(&result).await {
+            warn!(error = %e, "failed to record cron run");
         }
+
+        result
     }
 
     /// Acquire the distributed cron lock.

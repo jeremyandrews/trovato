@@ -45,7 +45,7 @@ Tera template engine with template suggestion resolution. Any plugin providing c
 
 **Verdict: Correctly placed — HTTP dispatch layer.**
 
-Route handlers translate HTTP requests into service calls. The `gated_plugin_routes()` function cleanly separates plugin-specific routes (categories, comments, content_locking, image_styles, oauth2, redirects) with request-time enablement checks. Core routes (auth, admin dashboard, item CRUD, gather, install, health) are always-on infrastructure.
+Route handlers translate HTTP requests into service calls. The `gated_plugin_routes()` function cleanly separates plugin-specific routes (categories, comments, content_locking, image_styles, oauth2) with request-time enablement checks. Core routes (auth, admin dashboard, item CRUD, gather, install, health) are always-on infrastructure.
 
 ### 1g. Models (`models/`, 15 files)
 
@@ -149,8 +149,7 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Completed (partial):**
 - ✅ `RedirectCache` is `Option<Arc<>>` in AppState, instantiated only when `is_plugin_enabled("redirects")`
-- ✅ Redirect middleware early-returns when cache is `None`
-- ✅ `"redirects"` added to `GATED_ROUTE_PLUGINS` and `RUNTIME_GATED_NAMES`
+- ✅ Redirect middleware early-returns when cache is `None` (before language extraction for efficiency)
 
 **Remaining extraction:**
 - Move `RedirectService` + redirect model to the `redirects` plugin
@@ -263,7 +262,10 @@ These subsystems implement feature logic that lives in the kernel but could be e
 **Changes made:**
 - `CronService` holds `Option<Arc<TapDispatcher>>` via `set_tap_dispatcher()`
 - After built-in tasks, dispatches `tap_cron` with `{"timestamp": <unix_ts>}` payload
+- Dispatch is wrapped in a timeout (half the lock TTL) to prevent runaway plugins
+- Handler count comparison detects and warns on per-plugin failures
 - Each plugin result is logged and added to the cron run task list
+- `CronInput` type added to `plugin-sdk/src/types.rs` documenting the input contract
 - Wired at startup in `AppState::new()` alongside `set_plugin_services()`
 
 ### 3c. Conditional Redirect Middleware — ✅ COMPLETED
@@ -273,8 +275,8 @@ These subsystems implement feature logic that lives in the kernel but could be e
 **Changes made:**
 - `redirect_cache` field in `AppStateInner` is `Option<Arc<RedirectCache>>`
 - Instantiated only when `enabled_set.contains("redirects")`
-- Redirect middleware early-returns when cache is `None`
-- `"redirects"` added to `GATED_ROUTE_PLUGINS` and `RUNTIME_GATED_NAMES`
+- Redirect middleware early-returns when cache is `None` (checked before language extraction for efficiency)
+- Conditionality follows the `Option<Arc<>>` pattern used by other optional services, not `GATED_ROUTE_PLUGINS` (redirects has no kernel-side routes to gate)
 
 ### 3d. File Path Host Function
 
@@ -373,13 +375,12 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | Category service | Infrastructure | Keep | GatherService dependency |
 | Audit service | Infrastructure | Keep | Compliance (revised) |
 | Content lock service | Infrastructure | Keep | Data integrity (gated) |
-| **Redirect service** | **Feature** | **Extract** | Middleware now conditional ✅; service remains in kernel |
+| **Redirect service** | **Feature** | **Extract** | Middleware + cache now conditional ✅ via `Option<Arc<>>`; service remains in kernel |
 | **Image style service** | **Feature** | **Extract** | Routes already gated |
-| **Scheduled publishing** | **Feature** | **Extract** | Cron-only caller; tap_cron now active ✅ |
+| **Scheduled publishing** | **Feature** | **Extract** | Cron-only caller; `tap_cron` now active ✅ with timeout + `CronInput` type |
 | **Translation service** | **Feature** | **Extract** | Routes-only caller |
-| **Webhook service** | **Feature** | **Extract** | Cron-only caller; tap_cron now active ✅ |
+| **Webhook service** | **Feature** | **Extract** | Cron-only caller; `tap_cron` now active ✅ with timeout + `CronInput` type |
 | **Email service** | **Feature** | **Extract** | Single caller (password reset) |
-| Redirect middleware | Infrastructure | **Done** ✅ | Conditional on plugin enablement |
 
 ---
 

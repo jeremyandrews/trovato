@@ -38,16 +38,16 @@ pub async fn check_redirect(
         return next.run(request).await;
     }
 
+    // Skip when the redirects plugin is disabled
+    let Some(cache) = state.redirect_cache() else {
+        return next.run(request).await;
+    };
+
     let language = request
         .extensions()
         .get::<ResolvedLanguage>()
         .map(|l| l.0.as_str())
         .unwrap_or_else(|| state.default_language());
-
-    // Skip redirect lookup when the redirects plugin is disabled
-    let Some(cache) = state.redirect_cache() else {
-        return next.run(request).await;
-    };
 
     // Look up redirect via cache (avoids DB hit on every request)
     let redirect = match cache.find(state.db(), path, language).await {
