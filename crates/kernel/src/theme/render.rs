@@ -94,6 +94,7 @@ impl RenderTreeConsumer {
         let mut html = String::new();
         for (_key, child) in children {
             let child_html = self.render_element(tera, child, context)?;
+            // SAFETY: write!() to String is infallible
             write!(html, "{child_html}").unwrap();
         }
 

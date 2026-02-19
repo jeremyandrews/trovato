@@ -995,6 +995,7 @@ fn is_valid_field_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
+    // SAFETY: non-empty string confirmed by is_empty() check above
     let first = name.chars().next().unwrap();
     if !first.is_ascii_alphabetic() && first != '_' {
         return false;

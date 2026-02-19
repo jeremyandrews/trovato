@@ -230,6 +230,7 @@ impl ThemeEngine {
 
         for (name, element) in elements {
             let element_html = self.render_form_element(name, element, context)?;
+            // SAFETY: write!() to String is infallible
             write!(html, "{element_html}").unwrap();
         }
 
@@ -291,6 +292,7 @@ impl ThemeEngine {
 
         for (name, child) in children {
             let child_html = self.render_form_element(name, child, context)?;
+            // SAFETY: write!() to String is infallible
             write!(html, "{child_html}").unwrap();
         }
 

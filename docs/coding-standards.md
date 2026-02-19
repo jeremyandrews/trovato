@@ -242,6 +242,30 @@ Never inline CSRF verification logic.
 - **Tests:** `.unwrap()` is acceptable — test failures already produce stack traces.
 - **Static guarantees:** `.unwrap()` is acceptable when the value is provably `Some`/`Ok` (e.g., a regex literal). Add a comment explaining why.
 
+### `.expect()` Policy
+
+- Permitted when the invariant is statically guaranteed (e.g., HKDF output size, built-in theme lookup).
+- Must include a `# Panics` doc section on the enclosing function or type.
+- Prefer error propagation with `?` when the caller can handle the error.
+
+### `let _ =` Policy
+
+- Acceptable for fire-and-forget operations where the caller cannot meaningfully handle the error.
+- **Security operations** (lockout recording, audit logging): log on failure with `tracing::warn!`.
+- Use `if let Err(e) = ... { tracing::warn!(...) }` instead of `let _ =` for security-relevant calls.
+
+### `write!` to `String`
+
+- `write!(string, ...).unwrap()` is safe — the `fmt::Write` impl for `String` is infallible.
+- Add an inline `// SAFETY: write!() to String is infallible` comment.
+
+### WASM Host Function Error Codes
+
+All WASM host functions follow a standard error code convention documented in
+`crates/plugin-sdk/src/host_errors.rs`. New host functions must follow the same pattern:
+`-1` for memory missing, `-2`/`-3`/`-4` for sequential parameter read failures,
+non-negative for success.
+
 ---
 
 ## Documentation

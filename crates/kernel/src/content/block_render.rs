@@ -145,6 +145,12 @@ fn render_quote(data: &Value) -> String {
 /// Uses the "InspiredGitHub" theme with a fallback to "base16-ocean.dark".
 /// If the language is unknown or not specified, the code is rendered as
 /// HTML-escaped plain text.
+///
+/// # Panics
+///
+/// Panics if syntect ships without any built-in themes. The function tries
+/// "InspiredGitHub" then "base16-ocean.dark"; both are included in the
+/// default `ThemeSet::load_defaults()`.
 fn render_code(data: &Value) -> String {
     let code = data.get("code").and_then(|v| v.as_str()).unwrap_or("");
     let lang = data

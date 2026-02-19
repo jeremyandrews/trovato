@@ -27,6 +27,16 @@
 - Error responses: `render_error` (400 validation), `render_server_error` (500 DB/service), `render_not_found` (404)
 - `.unwrap()` forbidden in production code; use `.expect("reason")` or propagate errors
 
+## Error Handling Rules
+
+- `.unwrap()` forbidden in non-test production code
+- `.expect("reason")` permitted with `# Panics` doc section on the enclosing function/type
+- `write!(string, ...).unwrap()` safe on `String` — add `// SAFETY: write!() to String is infallible`
+- `let _ = result` — log on failure for security operations (lockout, audit)
+- `Response::builder().unwrap()` safe with hard-coded valid inputs — add `// SAFETY:` comment
+- HashMap: prefer `if let Some(v) = map.get_mut(k)` over `.contains_key()` + `.unwrap()`
+- New WASM host functions: follow error code convention in `crates/plugin-sdk/src/host_errors.rs`
+
 ## Before Committing Checklist
 
 1. `cargo fmt --all`

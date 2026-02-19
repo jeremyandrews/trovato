@@ -209,6 +209,7 @@ impl TextFilter for UrlFilter {
     fn process(&self, input: &str) -> String {
         // Simple URL matching - we check context manually
         // Note: This is a simplified approach; a proper implementation would use a parser
+        // SAFETY: static regex literal, compile cannot fail
         let url_re = regex::Regex::new(r#"(https?://[^\s<>"']+)"#).unwrap();
 
         // We'll use a stateful replacement to avoid converting URLs that are already in href/src
@@ -216,6 +217,7 @@ impl TextFilter for UrlFilter {
         let mut last_end = 0;
 
         for caps in url_re.captures_iter(input) {
+            // SAFETY: capture group 0 always exists on a regex match
             let mat = caps.get(0).unwrap();
             let start = mat.start();
             let url = mat.as_str();

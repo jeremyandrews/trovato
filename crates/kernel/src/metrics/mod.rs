@@ -212,6 +212,12 @@ impl Metrics {
     }
 
     /// Encode metrics in Prometheus text format.
+    ///
+    /// # Panics
+    ///
+    /// Panics if Prometheus metric encoding to a `String` buffer fails.
+    /// Writing to `String` is infallible; the encoder only returns errors
+    /// for I/O failures which cannot occur with an in-memory buffer.
     pub fn encode(&self) -> String {
         let mut buffer = String::new();
         encode(&mut buffer, &self.registry).expect("encoding metrics");
