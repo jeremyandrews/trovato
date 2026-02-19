@@ -2626,6 +2626,7 @@ So that regressions can be detected.
 | 22 | Modern CMS Features | 9 | Selected D7+ features implemented and documented |
 | 23 | Gather UI & Query Consolidation | 9 | Admin UI for Gather definitions; hardcoded listings converted to Gather queries |
 | 24 | Block Editor (Editor.js) | 9 | Block-based content editing via Editor.js, structured JSON storage, server-side rendering |
+| 25 | Coding Standards & Enforcement | 10 | `.rustfmt.toml` + `clippy.toml` configured; zero violations in CI; `docs/coding-standards.md` published; all existing code compliant |
 
 ---
 
@@ -5428,6 +5429,298 @@ So that I can extend the editor for my domain-specific needs.
 - [ ] Write end-user editing guide
 - [ ] Write configuration reference
 - [ ] Add example: creating a "callout" custom block type
+
+---
+
+## Epic 25: Coding Standards & Enforcement
+
+**Goal:** Define, document, and enforce consistent coding standards across the entire Trovato codebase. Automate everything that can be automated so CI catches any deviation before it merges. A contributor can read one document and know exactly how to write Trovato code.
+
+**Scope:**
+- Phase 1: Define standards (rustfmt, Clippy lints, naming conventions, plugin conventions, error handling, documentation)
+- Phase 2: Write the standards document (`docs/coding-standards.md`)
+- Phase 3: Enforce via CI (GitHub Actions) and pre-commit hooks
+- Phase 4: Retrofit all existing code to 100% compliance
+
+**Gate:**
+- `.rustfmt.toml` and `clippy.toml` configured with project-specific settings
+- `docs/coding-standards.md` published with examples and rationale
+- CI pipeline runs `cargo fmt --check`, `cargo clippy` (warnings-as-errors), `cargo test`, and `cargo doc --no-deps` on every PR
+- Zero rustfmt violations, zero Clippy warnings, complete rustdoc on public API
+- Trovato terminology used consistently throughout (no Drupal terminology in code/comments/docs)
+
+**Design Philosophy:** Standards are only as good as their enforcement. Every rule that can be automated must be automated. Rules that cannot be automated get a manual review checklist. Pre-commit hooks ensure contributors never fail CI on formatting.
+
+**Cross-references:** Epic 19 (CI & Test Infrastructure — extends the existing pipeline)
+
+---
+
+### Story 25.1: Configure rustfmt
+
+As a **contributor**,
+I want a project-wide `.rustfmt.toml` configuration,
+So that all code is formatted consistently without manual decisions.
+
+**Acceptance Criteria:**
+
+1. `.rustfmt.toml` exists at the workspace root with project-specific settings
+2. Settings include: max width, import grouping (`group_imports = "StdExternalCrate"`), trailing commas, brace style
+3. `cargo fmt --check` passes on the entire codebase with the new config
+4. Decision rationale documented as comments in `.rustfmt.toml`
+
+**Tasks:**
+- [ ] Survey current formatting patterns in the codebase
+- [ ] Decide max line width (100 vs 120)
+- [ ] Configure `group_imports`, `imports_granularity`, `reorder_imports`
+- [ ] Configure trailing comma, brace style, match arm handling
+- [ ] Run `cargo fmt` and fix any resulting changes
+- [ ] Verify `cargo fmt --check` passes clean
+
+---
+
+### Story 25.2: Configure Clippy Lints
+
+As a **contributor**,
+I want a project-wide Clippy configuration that catches common mistakes,
+So that code quality is enforced automatically and consistently.
+
+**Acceptance Criteria:**
+
+1. `clippy.toml` exists at the workspace root (if needed for config values)
+2. Crate-level lint attributes set in `lib.rs` / `main.rs` files
+3. `clippy::unwrap_used` denied in non-test code
+4. `clippy::todo` and `clippy::unimplemented` denied
+5. `clippy::panic` denied in production code paths
+6. `cargo clippy --all -- -D warnings` passes clean
+7. Any `#[allow(...)]` annotations include a comment explaining why
+
+**Tasks:**
+- [ ] Decide baseline lint level (`clippy::all` + `clippy::pedantic` vs selective)
+- [ ] Identify lints that conflict with project patterns (document and allow)
+- [ ] Add crate-level `#![warn(...)]` / `#![deny(...)]` attributes
+- [ ] Fix all existing Clippy warnings
+- [ ] Verify clean `cargo clippy --all -- -D warnings`
+
+---
+
+### Story 25.3: Define Naming Conventions
+
+As a **contributor**,
+I want documented naming conventions for all Trovato code,
+So that code reads consistently and uses Trovato terminology throughout.
+
+**Acceptance Criteria:**
+
+1. Trovato terminology documented: Tap (not Hook), Item (not Node), Plugin (not Module), Gather (not Views), Tile (not Block/Region), Category (not Taxonomy/Vocabulary)
+2. Function naming patterns documented for Taps (`tap_item_view`, `tap_form_alter`, etc.)
+3. Module organization rules documented (when to split into separate files)
+4. Test naming convention documented (`test_<function>_<scenario>` or chosen pattern)
+5. All existing code audited for Drupal terminology in variable names, comments, and docs
+
+**Tasks:**
+- [ ] Define and document Trovato terminology mapping (Drupal 6 → Trovato)
+- [ ] Define function naming patterns for each subsystem
+- [ ] Define module organization rules
+- [ ] Define test naming convention
+- [ ] Grep codebase for Drupal terminology and fix all occurrences
+- [ ] Grep comments and docs for Drupal terminology and fix
+
+---
+
+### Story 25.4: Define Plugin Conventions
+
+As a **plugin developer**,
+I want documented conventions for writing Trovato plugins,
+So that all plugins follow the same patterns and are easy to understand.
+
+**Acceptance Criteria:**
+
+1. `.info.toml` structure and required fields documented with examples
+2. Tap registration patterns documented
+3. Plugin-side DB API usage patterns documented
+4. Plugin configuration exposure patterns documented
+5. Plugin documentation requirements documented (README per plugin, rustdoc on public types)
+6. All existing plugins audited against the conventions
+
+**Tasks:**
+- [ ] Document `.info.toml` format with all fields and their meaning
+- [ ] Document tap registration patterns (naming, weights, when to use which tap)
+- [ ] Document plugin DB access patterns and limitations
+- [ ] Document plugin configuration patterns
+- [ ] Document plugin README and rustdoc requirements
+- [ ] Audit all existing plugins for compliance
+
+---
+
+### Story 25.5: Define Error Handling Standards
+
+As a **contributor**,
+I want documented error handling conventions,
+So that errors are handled consistently with appropriate context and logging.
+
+**Acceptance Criteria:**
+
+1. Error type strategy documented (custom per-subsystem vs unified enum)
+2. `Result` vs `Option` usage guidelines documented
+3. Error context strategy documented (`thiserror` patterns)
+4. Logging level guidelines documented (which errors at which levels)
+5. `render_error` (400) vs `render_server_error` (500) usage documented
+6. All existing error handling audited for consistency
+
+**Tasks:**
+- [ ] Evaluate and decide on error type strategy
+- [ ] Document Result vs Option usage guidelines
+- [ ] Document error context and chaining patterns
+- [ ] Document logging level guidelines (error, warn, info, debug, trace)
+- [ ] Document HTTP error response guidelines (400 vs 500)
+- [ ] Audit existing code for error handling consistency
+
+---
+
+### Story 25.6: Define Documentation Standards
+
+As a **contributor**,
+I want documented requirements for code documentation,
+So that public APIs are consistently documented and code comments add value.
+
+**Acceptance Criteria:**
+
+1. Rustdoc requirements documented: all public types, all public functions, module-level docs
+2. Code comment standards documented: when to comment (why, not what), when not to
+3. `cargo doc --no-deps` passes with zero warnings
+4. All public types and functions have rustdoc
+
+**Tasks:**
+- [ ] Document rustdoc requirements
+- [ ] Document code comment standards with examples
+- [ ] Run `cargo doc --no-deps` and fix all warnings
+- [ ] Add missing rustdoc to all public types and functions
+- [ ] Verify zero doc warnings
+
+---
+
+### Story 25.7: Write Coding Standards Document
+
+As a **contributor**,
+I want a single reference document covering all coding standards,
+So that I can look up any convention quickly with examples.
+
+**Acceptance Criteria:**
+
+1. `docs/coding-standards.md` exists with all standards from stories 25.1-25.6
+2. Each rule includes examples of correct and incorrect code
+3. Decision rationale included (why we chose this, not just what)
+4. Quick Start section at the top with the 5 most important rules
+5. Links to relevant design docs for architectural decisions
+
+**Tasks:**
+- [ ] Write Quick Start section (top 5 rules)
+- [ ] Write rustfmt section with examples
+- [ ] Write Clippy section with lint rationale
+- [ ] Write naming conventions section with Trovato terminology
+- [ ] Write plugin conventions section
+- [ ] Write error handling section
+- [ ] Write documentation standards section
+- [ ] Write manual review checklist (things CI cannot catch)
+- [ ] Cross-reference from CLAUDE.md and CONTRIBUTING.md
+
+---
+
+### Story 25.8: Enforce in CI
+
+As a **maintainer**,
+I want CI to reject any PR that violates coding standards,
+So that standards are enforced automatically without manual review burden.
+
+**Acceptance Criteria:**
+
+1. GitHub Actions workflow runs `cargo fmt --check` (zero tolerance)
+2. GitHub Actions workflow runs `cargo clippy --all -- -D warnings`
+3. GitHub Actions workflow runs `cargo test --all`
+4. GitHub Actions workflow runs `cargo doc --no-deps` with no warnings
+5. Custom lint checks for Drupal terminology in code and comments
+6. All checks must pass before merge
+
+**Tasks:**
+- [ ] Update `.github/workflows/ci.yml` to add all checks
+- [ ] Add `cargo fmt --check` step
+- [ ] Add `cargo clippy --all -- -D warnings` step
+- [ ] Add `cargo doc --no-deps` step
+- [ ] Add custom terminology grep check
+- [ ] Verify all checks pass on current codebase
+
+---
+
+### Story 25.9: Pre-commit Hooks
+
+As a **contributor**,
+I want a pre-commit hook that auto-formats my code,
+So that I never fail CI on formatting issues.
+
+**Acceptance Criteria:**
+
+1. Pre-commit hook configuration provided (`.pre-commit-config.yaml` or shell script)
+2. Hook runs `cargo fmt` automatically on staged Rust files
+3. Hook optionally runs `cargo clippy` (configurable, off by default for speed)
+4. Setup instructions documented in `docs/coding-standards.md`
+
+**Tasks:**
+- [ ] Create pre-commit hook script or config
+- [ ] Test hook with staged Rust file changes
+- [ ] Document setup instructions
+- [ ] Add note about hook in Quick Start section of coding standards
+
+---
+
+### Story 25.10: Retrofit Existing Code
+
+As a **maintainer**,
+I want all existing code to comply with the new standards,
+So that the codebase is 100% consistent from day one.
+
+**Acceptance Criteria:**
+
+1. `cargo fmt` produces zero changes
+2. `cargo clippy --all -- -D warnings` passes clean
+3. All public types and functions have rustdoc
+4. No Drupal terminology in code, comments, or docs
+5. All `#[allow(...)]` annotations have explanatory comments
+6. All plugins comply with plugin conventions
+
+**Tasks:**
+- [ ] Run `cargo fmt` on entire codebase
+- [ ] Fix all Clippy warnings
+- [ ] Add missing rustdoc to all public API surface
+- [ ] Grep and fix Drupal terminology throughout
+- [ ] Review all `#[allow(...)]` annotations
+- [ ] Audit all plugins against conventions
+- [ ] Run full CI pipeline and verify green
+
+---
+
+### Story 25.11: Ongoing Maintenance Plan
+
+As a **maintainer**,
+I want a documented maintenance plan for coding standards,
+So that standards stay current and enforced over time.
+
+**Acceptance Criteria:**
+
+1. CLAUDE.md updated with enforceable coding standards section that all AI-assisted development must follow — this is the primary enforcement mechanism for Claude Code sessions
+2. CLAUDE.md rules cover: rustfmt compliance, Clippy lint compliance, Trovato terminology (never Drupal terms), `render_error` vs `render_server_error` usage, `require_admin` vs `require_login` usage, shared helper usage (html_escape, SESSION_USER_ID, is_valid_machine_name, require_csrf), plugin convention adherence, rustdoc on all new public API, new admin routes go in domain-specific `admin_*.rs` modules (not `admin.rs`), new admin templates use macros from `templates/admin/macros/`
+3. CLAUDE.md includes a "before committing" checklist: `cargo fmt`, `cargo clippy --all -- -D warnings`, `cargo test --all`, `cargo doc --no-deps`
+4. Standards doc versioning process documented (update in same PR as convention changes)
+5. Terminology enforcement periodic grep documented
+6. Annual review process documented
+
+**Tasks:**
+- [ ] Write CLAUDE.md coding standards section with all enforceable rules
+- [ ] Write CLAUDE.md "before committing" checklist
+- [ ] Add CLAUDE.md cross-reference to `docs/coding-standards.md` for full rationale
+- [ ] Document standards doc versioning process
+- [ ] Document periodic terminology enforcement procedure
+- [ ] Document annual review process
+- [ ] Add onboarding note: "Read docs/coding-standards.md first"
 
 ---
 

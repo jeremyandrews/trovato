@@ -373,3 +373,23 @@ development_status:
   24-8-read-only-mode-content-preview: done    # 2026-02-17 POST /api/block-editor/preview
   24-9-block-editor-documentation: done        # 2026-02-17 docs/block-editor/ (3 files)
   epic-24-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Phase 10: Code Quality & Standards
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 25: Coding Standards & Enforcement
+  # Define, document, and enforce consistent coding standards with automated tooling
+  epic-25: backlog
+  25-1-configure-rustfmt: backlog
+  25-2-configure-clippy-lints: backlog
+  25-3-define-naming-conventions: backlog
+  25-4-define-plugin-conventions: backlog
+  25-5-define-error-handling-standards: backlog
+  25-6-define-documentation-standards: backlog
+  25-7-write-coding-standards-document: backlog
+  25-8-enforce-in-ci: backlog
+  25-9-pre-commit-hooks: backlog
+  25-10-retrofit-existing-code: backlog
+  25-11-ongoing-maintenance-plan: backlog
+  epic-25-retrospective: optional
