@@ -621,6 +621,7 @@ impl AppState {
             webhooks.clone(),
             audit.clone(),
         );
+        cron.set_tap_dispatcher(tap_dispatcher.clone());
         let cron = Arc::new(cron);
 
         Ok(Self {

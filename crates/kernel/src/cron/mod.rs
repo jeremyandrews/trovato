@@ -19,6 +19,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::file::FileService;
+use crate::tap::{RequestState, TapDispatcher};
 
 /// Lock TTL in seconds (5 minutes).
 const LOCK_TTL_SECS: u64 = 300;
@@ -51,6 +52,7 @@ pub struct CronService {
     pool: PgPool,
     tasks: CronTasks,
     queue: Arc<RedisQueue>,
+    tap_dispatcher: Option<Arc<TapDispatcher>>,
 }
 
 impl CronService {
@@ -63,6 +65,7 @@ impl CronService {
             pool,
             tasks,
             queue,
+            tap_dispatcher: None,
         }
     }
 
@@ -75,7 +78,13 @@ impl CronService {
             pool,
             tasks,
             queue,
+            tap_dispatcher: None,
         }
+    }
+
+    /// Set the tap dispatcher for plugin cron hooks.
+    pub fn set_tap_dispatcher(&mut self, dispatcher: Arc<TapDispatcher>) {
+        self.tap_dispatcher = Some(dispatcher);
     }
 
     /// Set optional plugin services for cron tasks.
@@ -199,6 +208,21 @@ impl CronService {
             }
             Err(e) => warn!(error = %e, "failed to cleanup audit log"),
             _ => {}
+        }
+
+        // Dispatch tap_cron to all plugins that implement it
+        if let Some(ref dispatcher) = self.tap_dispatcher {
+            let cron_input = serde_json::json!({
+                "timestamp": chrono::Utc::now().timestamp(),
+            });
+            let state = RequestState::default();
+            let results = dispatcher
+                .dispatch("tap_cron", &cron_input.to_string(), state)
+                .await;
+            for result in &results {
+                info!(plugin = %result.plugin_name, "tap_cron completed");
+                tasks_run.push(format!("tap_cron:{}", result.plugin_name));
+            }
         }
 
         // Stop heartbeat
