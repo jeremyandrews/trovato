@@ -4,6 +4,7 @@
 //! Plugins depend on this crate and use its proc macros and builder APIs
 //! to interact with the Kernel across the WASM boundary.
 
+pub mod host;
 pub mod host_errors;
 pub mod render;
 pub mod types;
