@@ -1,2 +1,7 @@
+# Raised from default 7 — kernel route handlers and service constructors
+# commonly take (pool, state, session, config, ...) parameter sets.
 too-many-arguments-threshold = 8
+
+# Raised from default 250 — stage publishing uses complex closure types
+# (Box<dyn FnMut(&mut Transaction<Postgres>) -> Result<()> + Send + 'a>).
 type-complexity-threshold = 300

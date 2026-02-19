@@ -611,7 +611,7 @@ impl GatherService {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Register core default gather views.
+    /// Register core default gather queries.
     ///
     /// These provide standard queries that can replace hardcoded SQL
     /// throughout the admin interface and front-end.

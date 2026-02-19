@@ -40,7 +40,9 @@ repos:
 
       - id: terminology-check
         name: terminology check
-        entry: bash -c 'grep -rnE "\b(taxonomy|vocabulary)\b" --include="*.rs" crates/ benchmarks/ && echo "ERROR: Use Trovato terminology (see docs/coding-standards.md)" && exit 1 || exit 0'
+        # Checks the two unambiguous Drupal terms locally. CI runs a broader
+        # check covering node/module/views/hook_ with false-positive filtering.
+        entry: bash -c 'grep -rnE "\b(taxonomy|vocabulary|hook_)\b" --include="*.rs" crates/ benchmarks/ && echo "ERROR: Use Trovato terminology (see docs/coding-standards.md)" && exit 1 || exit 0'
         language: system
         types: [rust]
         pass_filenames: false

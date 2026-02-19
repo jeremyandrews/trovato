@@ -1,6 +1,6 @@
 //! Bearer token authentication middleware.
 //!
-//! Checks Authorization: Bearer <token> headers, verifies JWT,
+//! Checks `Authorization: Bearer <token>` headers, verifies JWT,
 //! checks Redis revocation blocklist, and sets user context.
 
 use axum::{

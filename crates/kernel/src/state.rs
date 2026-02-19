@@ -388,11 +388,11 @@ impl AppState {
             .await
             .context("failed to load gather queries")?;
 
-        // Register core default gather views (only adds if not already in DB)
+        // Register core default gather queries (only adds if not already in DB)
         gather
             .register_default_views()
             .await
-            .context("failed to register default gather views")?;
+            .context("failed to register default gather queries")?;
 
         // Create theme engine
         let template_dir = Self::resolve_template_dir();

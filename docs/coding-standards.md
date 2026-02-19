@@ -300,15 +300,15 @@ Admin route handlers live in domain-specific files:
 
 | File                    | Responsibility                         |
 |------------------------|----------------------------------------|
-| `admin.rs`             | Dashboard, stage management, file ops  |
-| `admin_items.rs`       | Item CRUD, revision management         |
+| `admin.rs`             | Dashboard, stage management, file ops, comment moderation |
+| `admin_content.rs`     | Item CRUD, revision management         |
+| `admin_content_type.rs`| Content type add/edit/delete           |
 | `admin_taxonomy.rs`    | Category and tag management            |
-| `admin_users.rs`       | User administration                    |
-| `admin_config.rs`      | Site configuration forms               |
-| `admin_plugins.rs`     | Plugin enable/disable                  |
-| `admin_tiles.rs`       | Tile (block) layout management         |
-| `admin_media.rs`       | Media library                          |
-| `admin_comments.rs`    | Comment moderation                     |
+| `admin_alias.rs`       | URL alias management                   |
+| `admin_user.rs`        | User administration                    |
+| `gather_admin.rs`      | Gather query management                |
+| `tile_admin.rs`        | Tile layout management                 |
+| `plugin_admin.rs`      | Plugin enable/disable                  |
 
 New admin functionality goes in the appropriate `admin_*.rs` file, or a new one if no existing file fits. Never add route handlers to `admin.rs` unless they are core dashboard functionality.
 
@@ -325,6 +325,7 @@ Common utilities live in `crate::routes::helpers`:
 - `require_csrf()` — CSRF token verification
 - `render_error()` / `render_server_error()` / `render_not_found()` — error responses
 - `is_valid_machine_name()` — machine name validation
+- `render_admin_template()` — render an admin page with standard layout and context
 - `inject_site_context()` — common Tera template context
 - `CsrfOnlyForm` — generic form struct for action-only POST endpoints
 
