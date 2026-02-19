@@ -360,6 +360,25 @@ Session constants live in `crate::routes::auth`:
 
 ---
 
+## Kernel Minimality
+
+New code in the kernel must justify its placement. See `docs/kernel-minimality-audit.md` for the full audit.
+
+**Decision framework:**
+
+1. **Is this infrastructure or a feature?** Infrastructure enables plugins. Features implement user-facing behavior.
+2. **Who calls this code?** If only gated routes or plugin-specific cron tasks, it's a feature → plugin.
+3. **What breaks if it's disabled?** If only that feature stops working → plugin. If other kernel subsystems break → kernel.
+
+**Patterns for plugin-optional kernel services:**
+
+- `Option<Arc<ServiceType>>` in `AppState` for conditional service instantiation
+- `plugin_gate!` macro + `GATED_ROUTE_PLUGINS` for conditional route gating
+- `set_plugin_services()` injection pattern for cron tasks
+- `if let Some(ref service) = self.service` guard in cron task implementations
+
+---
+
 ## Manual Review Checklist
 
 Things CI can't catch — reviewers should verify:
@@ -374,3 +393,4 @@ Things CI can't catch — reviewers should verify:
 8. **Security** — user input escaped, CSRF verified on all state-changing POST routes, no SQL concatenation
 9. **Plugin testing** — `__inner_*` functions tested, not just WASM exports
 10. **Machine names** — lowercase with underscores, validated with `is_valid_machine_name()`
+11. **Kernel minimality** — new kernel services justified; feature services go in plugins

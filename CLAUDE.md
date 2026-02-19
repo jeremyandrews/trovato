@@ -38,6 +38,18 @@
 - New WASM host functions: use constants from `crates/plugin-sdk/src/host_errors.rs`
 - `// SAFETY:` comments are reserved for `unsafe` blocks; use `// Infallible:` for safe-by-construction calls
 
+## Kernel Minimality Rules
+
+**Governing principle:** The core kernel enables. Plugins implement. If it's a feature, it's a plugin. If it's infrastructure that plugins depend on, it's Kernel.
+
+- See `docs/kernel-minimality-audit.md` for the full audit and extraction roadmap
+- **New services** in `crates/kernel/src/services/` must justify kernel placement — ask: "Does any other kernel subsystem depend on this, or only feature routes?"
+- **Feature services** belong in plugins, not the kernel. If the only callers are gated routes or cron tasks, it's a feature.
+- **New kernel services** that are plugin-optional must use the `Option<Arc<ServiceType>>` pattern in `AppState`
+- **New plugin-specific routes** must be gated via `plugin_gate!` macro in `routes/mod.rs` + `GATED_ROUTE_PLUGINS` in `plugin/gate.rs`
+- **New cron tasks** for plugin features should use `tap_cron` (when activated) rather than hardcoded kernel cron tasks
+- **Infrastructure services** (depended on by multiple kernel subsystems or all plugins) stay in kernel: content, gather, search, files, cache, forms, permissions, stages, auth
+
 ## Before Committing Checklist
 
 1. `cargo fmt --all`
