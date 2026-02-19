@@ -159,18 +159,23 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Verdict:** Current state is the final state. Service stays in kernel, gated behind plugin enablement.
 
-### 2b. Image Style Service → `image_styles` plugin
+### 2b. Image Style Service — keep in kernel (gated)
 
-**Current state:** `services/image_style.rs` + `routes/image_style.rs`. Routes are already gated behind `gate_image_styles`. The `image_styles` plugin only provides permissions and menus.
+**Current state:** `services/image_style.rs` + `routes/image_style.rs`. Routes are already gated behind `gate_image_styles`. The `image_styles` plugin only provides permissions and menus. `ImageStyleService` is `Option<Arc<>>` in AppState, instantiated only when the plugin is enabled.
 
-**Why extract:** Image transformation is a feature. No kernel subsystem calls `ImageStyleService`. The routes are already gated.
+**Previously classified as "Extract"** with blocker "File path host function." However, unlike the previous extractions (webhook, translation, scheduled publishing) — which were all dead code with zero kernel callers — the image style service has an **active HTTP route** at `GET /files/styles/{style_name}/{*path}` that serves image derivatives on demand.
 
-**Extraction approach:**
-- Move `ImageStyleService` to the plugin (may require host function for image storage access)
-- Routes already gated — remove the kernel service, plugin handles everything
-- May need a new host function: `trovato:file-api/get-file-path` for plugins to locate stored files
+**Why full extraction is not practical:**
+1. **No `tap_route` mechanism** — plugins cannot serve HTTP routes. The derivative endpoint must live in the kernel's route layer.
+2. **WASM can't do image processing** — the `image` crate requires std filesystem access and CPU-intensive pixel operations (resize, crop, scale). WASM's sandboxed linear memory and lack of std I/O make this infeasible.
+3. **WASM can't do filesystem I/O** — derivative caching requires reading source files and writing generated derivatives to disk. No host function exists for raw filesystem access, and adding one would violate the sandbox security model.
 
-**Effort:** Medium — requires host function for file path access.
+**Already properly gated:**
+- `ImageStyleService` is `Option<Arc<>>` in `AppStateInner`
+- Route is behind `plugin_gate!("image_styles")` middleware
+- Listed in `GATED_ROUTE_PLUGINS` in `plugin/gate.rs`
+
+**Verdict:** Current state is the final state. This matches the redirect service conclusion (Section 2a) — hot-path kernel functionality that can't move to WASM. Service stays in kernel, gated behind plugin enablement.
 
 ### 2c. Scheduled Publishing Service → `scheduled_publishing` plugin — ✅ EXTRACTED
 
@@ -278,14 +283,9 @@ These subsystems implement feature logic that lives in the kernel but could be e
 - Redirect middleware early-returns when cache is `None` (checked before language extraction for efficiency)
 - Conditionality follows the `Option<Arc<>>` pattern used by other optional services, not `GATED_ROUTE_PLUGINS` (redirects has no kernel-side routes to gate)
 
-### 3d. File Path Host Function
+### 3d. File Path Host Function — no longer needed
 
-For `image_styles` plugin extraction, plugins need to locate files on disk/S3.
-
-**Changes needed:**
-- New host function: `trovato:file-api/resolve-path(file_id) → file_path`
-- Returns the storage path for a managed file UUID
-- Respects storage backend (local path vs S3 URL)
+Previously planned for `image_styles` plugin extraction. Since image style service is now classified as **Keep (gated)** (Section 2b), this host function has no remaining use case. If a future plugin needs file path resolution, this can be revisited.
 
 ### 3e. Email Abstraction (if extracted)
 
@@ -376,7 +376,7 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | Audit service | Infrastructure | Keep | Compliance (revised) |
 | Content lock service | Infrastructure | Keep | Data integrity (gated) |
 | **Redirect service** | **Feature** | **Keep (gated)** | Middleware + cache conditional ✅; hot-path prevents full WASM extraction |
-| **Image style service** | **Feature** | **Extract** | Routes already gated |
+| **Image style service** | **Feature** | **Keep (gated)** | `Option<Arc<>>` + `plugin_gate!`; WASM can't do image processing or filesystem I/O |
 | **Scheduled publishing** | **Feature** | **Extracted ✅** | Now plugin `tap_cron` handler via `host::execute_raw()` |
 | **Translation service** | **Feature** | **Extracted ✅** | Dead kernel code removed; plugin owns table + future CRUD |
 | **Webhook service** | **Feature** | **Extracted ✅** | Dead kernel code removed; plugin owns tables + future event hooks |
@@ -390,7 +390,7 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 |----------|---------|-------------------|--------|
 | ~~1~~ | ~~Redirect service~~ | ~~Conditional middleware~~ ✅ resolved | ~~Low~~ — kept in kernel (hot-path) |
 | ~~2~~ | ~~Scheduled publishing~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Low~~ — **extracted** ✅ |
-| 3 | Image style service | File path host function | Medium |
+| ~~3~~ | ~~Image style service~~ | ~~File path host function~~ | ~~Medium~~ — kept in kernel (WASM can't do image processing/filesystem I/O) |
 | ~~4~~ | ~~Webhook service~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | ~~5~~ | ~~Translation service~~ | ~~Host function DB patterns~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | 6 | Email service | tap_send_email + auth fallback | Medium |
