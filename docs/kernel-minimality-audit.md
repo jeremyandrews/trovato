@@ -45,7 +45,7 @@ Tera template engine with template suggestion resolution. Any plugin providing c
 
 **Verdict: Correctly placed — HTTP dispatch layer.**
 
-Route handlers translate HTTP requests into service calls. The `gated_plugin_routes()` function cleanly separates plugin-specific routes (categories, comments, content_locking, image_styles, oauth2) with request-time enablement checks. Core routes (auth, admin dashboard, item CRUD, gather, install, health) are always-on infrastructure.
+Route handlers translate HTTP requests into service calls. The `gated_plugin_routes()` function cleanly separates plugin-specific routes (categories, comments, content_locking, image_styles, oauth2, redirects) with request-time enablement checks. Core routes (auth, admin dashboard, item CRUD, gather, install, health) are always-on infrastructure.
 
 ### 1g. Models (`models/`, 15 files)
 
@@ -65,7 +65,7 @@ WASM host functions provide the kernel API to plugins: database queries, item CR
 
 API token auth, bearer auth, install check, language negotiation, path alias resolution, rate limiting. These run on every request before route handlers.
 
-**Note on redirect middleware:** The redirect middleware (`middleware/redirect.rs`) uses the always-instantiated `RedirectCache`. This is discussed in Section 3d.
+**Note on redirect middleware:** The redirect middleware (`middleware/redirect.rs`) early-returns when the redirects plugin is disabled. The `RedirectCache` is conditionally instantiated (`Option<Arc<>>`) only when `is_plugin_enabled("redirects")`. See Section 3c (completed).
 
 ### 1j. Form System (`form/`, 5 files)
 
@@ -113,7 +113,7 @@ Atomic ordered-phase publishing with conflict detection. Stages affect items, co
 
 **Verdict: Correctly placed — background execution infrastructure.**
 
-Distributed cron with Redis-based locking. The cron runner uses `set_plugin_services()` injection to optionally include plugin-specific tasks (scheduled publishing, content lock cleanup, webhook delivery, audit log cleanup). Clean optional dependency pattern.
+Distributed cron with Redis-based locking. The cron runner uses `set_plugin_services()` injection to optionally include plugin-specific tasks (scheduled publishing, content lock cleanup, webhook delivery, audit log cleanup). After built-in tasks complete, the cron runner dispatches `tap_cron` via `TapDispatcher` to all plugins that implement the hook, enabling plugin-defined scheduled work. Clean optional dependency pattern.
 
 ### 1r. Menu System (`menu/`, 2 files)
 
@@ -145,15 +145,19 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 ### 2a. Redirect Service → `redirects` plugin
 
-**Current state:** `services/redirect.rs` + `middleware/redirect.rs` + `RedirectCache` in AppState (always instantiated). The `redirects` plugin only provides permissions and menu definitions.
+**Current state:** `services/redirect.rs` + `middleware/redirect.rs` + `RedirectCache` in AppState (conditional). The `redirects` plugin provides permissions and menu definitions. The middleware and cache are now conditional on plugin enablement.
 
-**Why extract:** URL redirects are an administrative feature, not infrastructure. The redirect middleware runs on every request even when the redirects plugin is disabled. No other kernel subsystem depends on redirect resolution.
+**Completed (partial):**
+- ✅ `RedirectCache` is `Option<Arc<>>` in AppState, instantiated only when `is_plugin_enabled("redirects")`
+- ✅ Redirect middleware early-returns when cache is `None`
+- ✅ `"redirects"` added to `GATED_ROUTE_PLUGINS` and `RUNTIME_GATED_NAMES`
 
-**Extraction approach:**
+**Remaining extraction:**
 - Move `RedirectService` + redirect model to the `redirects` plugin
-- Make `RedirectCache` conditional on plugin enablement (like other optional services)
-- Redirect middleware should no-op when plugin is disabled
-- Plugin registers its own middleware via a new `tap_middleware` or kernel checks `is_plugin_enabled("redirects")` before the middleware cache lookup
+- Plugin uses host function DB access for redirect table queries
+- Remove kernel-side `services/redirect.rs` once plugin owns the service
+
+**Why extract the rest:** URL redirects are an administrative feature, not infrastructure. No other kernel subsystem depends on redirect resolution.
 
 **Effort:** Low — no other kernel code depends on this service.
 
@@ -178,10 +182,10 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Extraction approach:**
 - Move service to plugin
-- Plugin implements `tap_cron` (currently declared but not invoked) to run its own scheduled task
-- Need to activate `tap_cron` dispatch in the cron runner
+- Plugin implements `tap_cron` to run its own scheduled task
+- ✅ `tap_cron` dispatch is now active in the cron runner (no longer a blocker)
 
-**Effort:** Low — `tap_cron` is already declared, just needs activation.
+**Effort:** Low — blocking dependency on `tap_cron` activation is resolved.
 
 ### 2d. Translation Service → `content_translation` plugin
 
@@ -206,9 +210,9 @@ These subsystems implement feature logic that lives in the kernel but could be e
 - Move service to plugin
 - Plugin implements `tap_item_insert`/`tap_item_update`/`tap_item_delete` to enqueue webhook deliveries
 - Plugin implements `tap_cron` for delivery processing
-- Requires activating `tap_cron` dispatch
+- ✅ `tap_cron` dispatch is now active (no longer a blocker)
 
-**Effort:** Medium — needs active tap_cron + event hooking.
+**Effort:** Medium — needs event hooking via item taps.
 
 ### 2f. Email Service → standalone utility or plugin
 
@@ -252,24 +256,25 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Recommendation:** Option 1 — CategoryService is infrastructure. The `categories` plugin provides UI/permissions; the kernel provides the query and storage layer. This matches the existing pattern where the plugin declares permissions and the kernel implements the service.
 
-### 3b. Activate `tap_cron` Dispatch
+### 3b. Activate `tap_cron` Dispatch — ✅ COMPLETED
 
-Currently declared in `KNOWN_TAPS` but not invoked. Activation enables plugins to register cron tasks, which is prerequisite for extracting scheduled_publishing and webhooks.
+`tap_cron` is now dispatched during each cron cycle, after all built-in tasks complete.
 
-**Changes needed:**
-- Add `tap_cron` dispatch in `cron/mod.rs` during the cron cycle
-- Define the tap input/output types in plugin-sdk (cron context, task results)
-- Each plugin's `tap_cron` handler runs with its own error boundary
+**Changes made:**
+- `CronService` holds `Option<Arc<TapDispatcher>>` via `set_tap_dispatcher()`
+- After built-in tasks, dispatches `tap_cron` with `{"timestamp": <unix_ts>}` payload
+- Each plugin result is logged and added to the cron run task list
+- Wired at startup in `AppState::new()` alongside `set_plugin_services()`
 
-### 3c. Conditional Redirect Middleware
+### 3c. Conditional Redirect Middleware — ✅ COMPLETED
 
-Currently `RedirectCache` is always instantiated. Middleware should check plugin enablement.
+`RedirectCache` is now conditional on redirects plugin enablement.
 
-**Changes needed:**
-- Make `redirect_cache` field in `AppStateInner` an `Option<Arc<RedirectCache>>`
-- Instantiate only when `is_plugin_enabled("redirects")`
+**Changes made:**
+- `redirect_cache` field in `AppStateInner` is `Option<Arc<RedirectCache>>`
+- Instantiated only when `enabled_set.contains("redirects")`
 - Redirect middleware early-returns when cache is `None`
-- Add `"redirects"` to `GATED_ROUTE_PLUGINS`
+- `"redirects"` added to `GATED_ROUTE_PLUGINS` and `RUNTIME_GATED_NAMES`
 
 ### 3d. File Path Host Function
 
@@ -368,15 +373,13 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | Category service | Infrastructure | Keep | GatherService dependency |
 | Audit service | Infrastructure | Keep | Compliance (revised) |
 | Content lock service | Infrastructure | Keep | Data integrity (gated) |
-| **Redirect service** | **Feature** | **Extract** | No kernel dependents |
+| **Redirect service** | **Feature** | **Extract** | Middleware now conditional ✅; service remains in kernel |
 | **Image style service** | **Feature** | **Extract** | Routes already gated |
-| **Scheduled publishing** | **Feature** | **Extract** | Cron-only caller |
+| **Scheduled publishing** | **Feature** | **Extract** | Cron-only caller; tap_cron now active ✅ |
 | **Translation service** | **Feature** | **Extract** | Routes-only caller |
-| **Webhook service** | **Feature** | **Extract** | Cron-only caller |
+| **Webhook service** | **Feature** | **Extract** | Cron-only caller; tap_cron now active ✅ |
 | **Email service** | **Feature** | **Extract** | Single caller (password reset) |
-| Redirect middleware | Infrastructure* | **Modify** | Should be conditional |
-
-*The redirect middleware is infrastructure in form but couples to a feature service. Making it conditional on plugin enablement resolves this.
+| Redirect middleware | Infrastructure | **Done** ✅ | Conditional on plugin enablement |
 
 ---
 
@@ -384,9 +387,9 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 
 | Priority | Service | Blocking Dependency | Effort |
 |----------|---------|-------------------|--------|
-| 1 | Redirect service | Conditional middleware | Low |
-| 2 | Scheduled publishing | Activate tap_cron | Low |
+| 1 | Redirect service | ~~Conditional middleware~~ ✅ resolved | Low |
+| 2 | Scheduled publishing | ~~Activate tap_cron~~ ✅ resolved | Low |
 | 3 | Image style service | File path host function | Medium |
-| 4 | Webhook service | Activate tap_cron + event taps | Medium |
+| 4 | Webhook service | ~~Activate tap_cron~~ ✅ resolved; event taps | Medium |
 | 5 | Translation service | Host function DB patterns | Medium |
 | 6 | Email service | tap_send_email + auth fallback | Medium |
