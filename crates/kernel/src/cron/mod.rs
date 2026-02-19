@@ -220,7 +220,10 @@ impl CronService {
                 // Infallible: CronInput is a flat struct with a single i64 field.
                 let input_json = serde_json::to_string(&cron_input)
                     .unwrap_or_else(|_| r#"{"timestamp":0}"#.to_string());
-                let state = RequestState::default();
+                let state = RequestState::new(
+                    crate::tap::UserContext::anonymous(),
+                    crate::tap::RequestServices::for_background(self.pool.clone()),
+                );
                 match tokio::time::timeout(
                     Duration::from_secs(LOCK_TTL_SECS / 2),
                     dispatcher.dispatch("tap_cron", &input_json, state),

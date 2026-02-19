@@ -65,16 +65,23 @@ impl Default for UserContext {
 pub struct RequestServices {
     /// Database connection pool.
     pub db: PgPool,
-    /// Lockout service for rate limiting.
-    pub lockout: Arc<LockoutService>,
+    /// Lockout service for rate limiting (None in background/cron contexts).
+    pub lockout: Option<Arc<LockoutService>>,
     // Future: Add cache, template engine, etc.
+}
+
+impl RequestServices {
+    /// Create services for background tasks (cron, batch) — no lockout needed.
+    pub fn for_background(db: PgPool) -> Self {
+        Self { db, lockout: None }
+    }
 }
 
 impl std::fmt::Debug for RequestServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RequestServices")
             .field("db", &"PgPool")
-            .field("lockout", &"LockoutService")
+            .field("lockout", &self.lockout.as_ref().map(|_| "LockoutService"))
             .finish()
     }
 }
@@ -132,18 +139,9 @@ impl RequestState {
         &self.services.as_ref().expect("services not initialized").db
     }
 
-    /// Get the lockout service.
-    ///
-    /// # Panics
-    ///
-    /// Panics if services were not provided (test mode).
-    #[allow(clippy::expect_used)]
-    pub fn lockout(&self) -> &LockoutService {
-        &self
-            .services
-            .as_ref()
-            .expect("services not initialized")
-            .lockout
+    /// Get the lockout service (None in background/cron contexts or test mode).
+    pub fn lockout(&self) -> Option<&LockoutService> {
+        self.services.as_ref().and_then(|s| s.lockout.as_deref())
     }
 
     /// Check if services are available.
