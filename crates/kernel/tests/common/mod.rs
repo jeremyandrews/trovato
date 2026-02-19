@@ -199,6 +199,17 @@ impl TestApp {
             .await;
     }
 
+    /// Ensure a plugin is installed in the DB and enabled in-memory.
+    ///
+    /// Tests that hit plugin-gated routes must call this to make the routes
+    /// accessible, since CI starts with a clean database (no plugins installed).
+    pub async fn ensure_plugin_enabled(&self, plugin_name: &str) {
+        trovato_kernel::plugin::status::install_plugin(&self.db, plugin_name, "1.0.0")
+            .await
+            .expect("Failed to install plugin in test DB");
+        self.state.set_plugin_enabled(plugin_name, true);
+    }
+
     async fn create_test_user_inner(
         &self,
         username: &str,

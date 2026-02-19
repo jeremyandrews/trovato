@@ -1443,8 +1443,9 @@ async fn e2e_admin_cannot_delete_builtin_roles() {
         .create_and_login_admin("admin_roles_4", "password123", "roles4@test.com")
         .await;
 
-    // Fetch CSRF token
-    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people/roles").await;
+    // Fetch CSRF token from the add-role page (the list page only has tokens
+    // on non-built-in role delete buttons, which may not exist in a clean DB).
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people/roles/add").await;
 
     // Try to delete anonymous role (UUID 1)
     let anonymous_role_id = uuid::Uuid::from_u128(1);
@@ -1833,6 +1834,7 @@ async fn e2e_admin_content_filter_by_type() {
 #[tokio::test]
 async fn e2e_admin_list_categories() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("categories").await;
 
     let cookies = app
         .create_and_login_admin("admin_cat_1", "password123", "cat1@test.com")
@@ -1867,6 +1869,7 @@ async fn e2e_admin_list_categories() {
 #[tokio::test]
 async fn e2e_admin_create_category() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let cat_id = format!("cat_{}", &unique_id[..16]);
@@ -1937,6 +1940,7 @@ async fn e2e_admin_create_category() {
 #[tokio::test]
 async fn e2e_admin_delete_category() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let cat_id = format!("delcat_{}", &unique_id[..16]);
@@ -1990,6 +1994,7 @@ async fn e2e_admin_delete_category() {
 #[tokio::test]
 async fn e2e_admin_list_tags() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let cat_id = format!("tagcat_{}", &unique_id[..16]);
@@ -2036,6 +2041,7 @@ async fn e2e_admin_list_tags() {
 #[tokio::test]
 async fn e2e_admin_create_tag() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let cat_id = format!("newtagcat_{}", &unique_id[..16]);
@@ -2114,6 +2120,7 @@ async fn e2e_admin_create_tag() {
 #[tokio::test]
 async fn e2e_admin_delete_tag() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let cat_id = format!("deltagcat_{}", &unique_id[..16]);
@@ -3162,6 +3169,7 @@ async fn e2e_api_list_comments_for_nonexistent_item() {
 #[tokio::test]
 async fn e2e_api_create_comment_requires_auth() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("comments").await;
 
     let fake_id = uuid::Uuid::now_v7();
     let response = app
@@ -3184,6 +3192,7 @@ async fn e2e_api_create_comment_requires_auth() {
 #[tokio::test]
 async fn e2e_api_comment_crud() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("comments").await;
 
     // Create a user and login
     let cookies = app
@@ -3355,6 +3364,7 @@ async fn e2e_api_comment_crud() {
 #[tokio::test]
 async fn e2e_api_comment_validation() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("comments").await;
 
     let cookies = app
         .create_and_login_user("comment_val_user", "password123", "commentval@test.com")
@@ -3430,6 +3440,7 @@ async fn e2e_api_comment_validation() {
 #[tokio::test]
 async fn e2e_admin_list_comments() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("comments").await;
 
     let cookies = app
         .create_and_login_admin("comment_admin", "password123", "commentadmin@test.com")
@@ -3452,6 +3463,7 @@ async fn e2e_admin_list_comments() {
 #[tokio::test]
 async fn e2e_admin_comment_moderation() {
     let app = TestApp::new().await;
+    app.ensure_plugin_enabled("comments").await;
 
     let cookies = app
         .create_and_login_admin("comment_mod", "password123", "commentmod@test.com")
@@ -3808,6 +3820,8 @@ async fn e2e_admin_plugin_list_shows_plugins() {
 #[tokio::test]
 async fn e2e_admin_plugin_toggle() {
     let app = TestApp::new().await;
+    // Ensure the redirects plugin is installed so the toggle form appears
+    app.ensure_plugin_enabled("redirects").await;
 
     let cookies = app
         .create_and_login_admin("plugin_admin_2", "password123", "plugadmin2@test.com")
@@ -3904,13 +3918,12 @@ async fn e2e_admin_plugin_toggle() {
 #[tokio::test]
 async fn e2e_toggle_gated_plugin_affects_routes() {
     let app = TestApp::new().await;
+    // Ensure categories is installed in DB and enabled in-memory
+    app.ensure_plugin_enabled("categories").await;
 
     let cookies = app
         .create_and_login_admin("gate_toggle_admin", "password123", "gatetoggle@test.com")
         .await;
-
-    // Ensure categories is enabled at the start
-    app.state.set_plugin_enabled("categories", true);
 
     // Route should be reachable
     let response = app
