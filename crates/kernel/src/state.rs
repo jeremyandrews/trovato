@@ -173,9 +173,6 @@ struct AppStateInner {
     /// Content translation service.
     translation: Option<Arc<services::translation::TranslationService>>,
 
-    /// Scheduled publishing service.
-    scheduled_publishing: Option<Arc<services::scheduled_publishing::ScheduledPublishingService>>,
-
     /// Redirect lookup cache (available when redirects plugin is enabled).
     redirect_cache: Option<Arc<services::redirect::RedirectCache>>,
 }
@@ -606,21 +603,8 @@ impl AppState {
             None
         };
 
-        let scheduled_publishing = if enabled_set.contains("scheduled_publishing") {
-            Some(Arc::new(
-                services::scheduled_publishing::ScheduledPublishingService::new(db.clone()),
-            ))
-        } else {
-            None
-        };
-
         // Wire plugin services into cron
-        cron.set_plugin_services(
-            scheduled_publishing.clone(),
-            content_lock.clone(),
-            webhooks.clone(),
-            audit.clone(),
-        );
+        cron.set_plugin_services(content_lock.clone(), webhooks.clone(), audit.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
         let cron = Arc::new(cron);
 
@@ -663,7 +647,6 @@ impl AppState {
                 oauth,
                 locale,
                 translation,
-                scheduled_publishing,
                 redirect_cache: if enabled_set.contains("redirects") {
                     Some(Arc::new(services::redirect::RedirectCache::new()))
                 } else {
@@ -905,13 +888,6 @@ impl AppState {
     /// Get the content translation service (if content_translation plugin is enabled).
     pub fn translation(&self) -> Option<&Arc<services::translation::TranslationService>> {
         self.inner.translation.as_ref()
-    }
-
-    /// Get the scheduled publishing service (if scheduled_publishing plugin is enabled).
-    pub fn scheduled_publishing(
-        &self,
-    ) -> Option<&Arc<services::scheduled_publishing::ScheduledPublishingService>> {
-        self.inner.scheduled_publishing.as_ref()
     }
 
     /// Get the redirect cache (if redirects plugin is enabled).

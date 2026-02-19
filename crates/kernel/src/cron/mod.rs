@@ -90,15 +90,12 @@ impl CronService {
     /// Set optional plugin services for cron tasks.
     pub fn set_plugin_services(
         &mut self,
-        scheduled_publishing: Option<
-            std::sync::Arc<crate::services::scheduled_publishing::ScheduledPublishingService>,
-        >,
         content_lock: Option<std::sync::Arc<crate::services::content_lock::ContentLockService>>,
         webhooks: Option<std::sync::Arc<crate::services::webhook::WebhookService>>,
         audit: Option<std::sync::Arc<crate::services::audit::AuditService>>,
     ) {
         self.tasks
-            .set_plugin_services(scheduled_publishing, content_lock, webhooks, audit);
+            .set_plugin_services(content_lock, webhooks, audit);
     }
 
     /// Run all cron tasks.
@@ -168,16 +165,6 @@ impl CronService {
                 tasks_run.push(format!("process_queues: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to process queues"),
-        }
-
-        // Process scheduled publishing
-        match self.tasks.process_scheduled_publishing().await {
-            Ok(count) if count > 0 => {
-                info!(count = count, "processed scheduled publishing");
-                tasks_run.push(format!("scheduled_publishing: {count}"));
-            }
-            Err(e) => warn!(error = %e, "failed to process scheduled publishing"),
-            _ => {}
         }
 
         // Cleanup expired content locks

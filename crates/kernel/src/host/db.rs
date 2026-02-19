@@ -140,11 +140,22 @@ async fn do_query_raw(
         return Err(host_errors::ERR_DDL_REJECTED);
     }
 
+    fetch_rows_as_json(pool, sql, params).await
+}
+
+/// Execute a SQL statement that returns rows and serialize them as JSON.
+///
+/// Shared implementation for `do_query_raw` (after guard) and `do_insert` (RETURNING *).
+async fn fetch_rows_as_json(
+    pool: &PgPool,
+    sql: &str,
+    params: &[serde_json::Value],
+) -> std::result::Result<String, i32> {
     let query = sqlx::query(sql);
     let query = bind_json_params(params, query);
 
     let rows = query.fetch_all(pool).await.map_err(|e| {
-        warn!(error = %e, sql = sql, "plugin query-raw failed");
+        warn!(error = %e, sql = sql, "plugin query failed");
         host_errors::ERR_SQL_FAILED
     })?;
 
@@ -283,7 +294,8 @@ async fn do_insert(
         placeholders.join(", ")
     );
 
-    do_query_raw(pool, &sql, &params).await
+    // Bypass read-only guard since INSERT RETURNING needs row results.
+    fetch_rows_as_json(pool, &sql, &params).await
 }
 
 /// Build and execute a structured UPDATE.
