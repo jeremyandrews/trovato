@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use sqlx::PgPool;
-use tracing::debug;
 use uuid::Uuid;
 
 /// Cache TTL in seconds.
@@ -305,43 +304,6 @@ impl Redirect {
 
         Ok(result.rows_affected() > 0)
     }
-}
-
-/// Create a redirect when a URL alias changes (old alias -> new alias).
-///
-/// If a `RedirectCache` is provided, the old alias entry is invalidated
-/// so the next request sees the new redirect immediately.
-pub async fn create_redirect_for_alias_change(
-    pool: &PgPool,
-    old_alias: &str,
-    new_alias: &str,
-    language: &str,
-    cache: Option<&RedirectCache>,
-) -> Result<()> {
-    // Don't create self-referencing redirects
-    if old_alias == new_alias {
-        return Ok(());
-    }
-
-    // Check for loops
-    if Redirect::detect_loop(pool, old_alias, new_alias, language).await? {
-        debug!(
-            old = %old_alias,
-            new = %new_alias,
-            "skipping redirect creation: would create loop"
-        );
-        return Ok(());
-    }
-
-    Redirect::create(pool, old_alias, new_alias, 301, language).await?;
-    debug!(old = %old_alias, new = %new_alias, "created redirect for alias change");
-
-    // Invalidate cache so the redirect takes effect immediately
-    if let Some(cache) = cache {
-        cache.invalidate(old_alias, language);
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

@@ -143,22 +143,21 @@ Prometheus counters/histograms for HTTP requests, tap durations, DB queries, cac
 
 These subsystems implement feature logic that lives in the kernel but could be extracted to plugins. Listed by extraction priority.
 
-### 2a. Redirect Service → `redirects` plugin
+### 2a. Redirect Service — partial extraction, remainder stays in kernel
 
-**Current state:** `services/redirect.rs` + `middleware/redirect.rs` + `RedirectCache` in AppState (conditional). The `redirects` plugin provides permissions and menu definitions. The middleware and cache are now conditional on plugin enablement.
+**Current state:** `services/redirect.rs` + `middleware/redirect.rs` + `RedirectCache` in AppState (conditional). The `redirects` plugin provides permissions and menu definitions. The middleware and cache are now conditional on plugin enablement. Dead code (`create_redirect_for_alias_change`) removed.
 
-**Completed (partial):**
+**Completed:**
 - ✅ `RedirectCache` is `Option<Arc<>>` in AppState, instantiated only when `is_plugin_enabled("redirects")`
 - ✅ Redirect middleware early-returns when cache is `None` (before language extraction for efficiency)
+- ✅ Removed dead `create_redirect_for_alias_change()` function (defined but never called)
 
-**Remaining extraction:**
-- Move `RedirectService` + redirect model to the `redirects` plugin
-- Plugin uses host function DB access for redirect table queries
-- Remove kernel-side `services/redirect.rs` once plugin owns the service
+**Why full extraction is not practical:**
+- Redirect middleware lookup is **hot-path** (every non-system request). WASM host function call overhead per request is unacceptable for this path.
+- Admin CRUD routes are small and already handled by kernel routes pointed to by the plugin's `tap_menu`.
+- No `tap_route` mechanism exists for plugins to handle their own HTTP routes yet.
 
-**Why extract the rest:** URL redirects are an administrative feature, not infrastructure. No other kernel subsystem depends on redirect resolution.
-
-**Effort:** Low — no other kernel code depends on this service.
+**Verdict:** Current state is the final state. Service stays in kernel, gated behind plugin enablement.
 
 ### 2b. Image Style Service → `image_styles` plugin
 
@@ -173,18 +172,19 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Effort:** Medium — requires host function for file path access.
 
-### 2c. Scheduled Publishing Service → `scheduled_publishing` plugin
+### 2c. Scheduled Publishing Service → `scheduled_publishing` plugin — ✅ EXTRACTED
 
-**Current state:** `services/scheduled_publishing.rs` + cron task. The service uses `field_publish_on`/`field_unpublish_on` JSONB fields on items.
+**Previous state:** `services/scheduled_publishing.rs` + hardcoded cron task. The service used `field_publish_on`/`field_unpublish_on` JSONB fields on items.
 
-**Why extract:** Scheduled publishing is a feature. Only the cron runner calls this service. No other kernel code depends on it.
+**Extraction completed:**
+- ✅ Kernel-side `ScheduledPublishingService` deleted (`services/scheduled_publishing.rs`)
+- ✅ Hardcoded cron task removed from `CronTasks` and `CronService::run()`
+- ✅ Plugin implements `tap_cron` using `host::execute_raw()` for publish/unpublish SQL
+- ✅ Plugin `.info.toml` updated to declare `tap_cron` in implements list
+- ✅ `set_plugin_services()` signature simplified (no longer takes scheduled_publishing arg)
+- ✅ `AppStateInner` no longer carries `scheduled_publishing` field or accessor
 
-**Extraction approach:**
-- Move service to plugin
-- Plugin implements `tap_cron` to run its own scheduled task
-- ✅ `tap_cron` dispatch is now active in the cron runner (no longer a blocker)
-
-**Effort:** Low — blocking dependency on `tap_cron` activation is resolved.
+**Pattern established:** This is the reference extraction for moving kernel cron tasks to plugin `tap_cron` handlers via DB host functions.
 
 ### 2d. Translation Service → `content_translation` plugin
 
@@ -375,9 +375,9 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | Category service | Infrastructure | Keep | GatherService dependency |
 | Audit service | Infrastructure | Keep | Compliance (revised) |
 | Content lock service | Infrastructure | Keep | Data integrity (gated) |
-| **Redirect service** | **Feature** | **Extract** | Middleware + cache now conditional ✅ via `Option<Arc<>>`; service remains in kernel |
+| **Redirect service** | **Feature** | **Keep (gated)** | Middleware + cache conditional ✅; hot-path prevents full WASM extraction |
 | **Image style service** | **Feature** | **Extract** | Routes already gated |
-| **Scheduled publishing** | **Feature** | **Extract** | Cron-only caller; `tap_cron` now active ✅ with timeout + `CronInput` type |
+| **Scheduled publishing** | **Feature** | **Extracted ✅** | Now plugin `tap_cron` handler via `host::execute_raw()` |
 | **Translation service** | **Feature** | **Extract** | Routes-only caller |
 | **Webhook service** | **Feature** | **Extract** | Cron-only caller; `tap_cron` now active ✅ with timeout + `CronInput` type |
 | **Email service** | **Feature** | **Extract** | Single caller (password reset) |
@@ -388,8 +388,8 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 
 | Priority | Service | Blocking Dependency | Effort |
 |----------|---------|-------------------|--------|
-| 1 | Redirect service | ~~Conditional middleware~~ ✅ resolved | Low |
-| 2 | Scheduled publishing | ~~Activate tap_cron~~ ✅ resolved | Low |
+| ~~1~~ | ~~Redirect service~~ | ~~Conditional middleware~~ ✅ resolved | ~~Low~~ — kept in kernel (hot-path) |
+| ~~2~~ | ~~Scheduled publishing~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Low~~ — **extracted** ✅ |
 | 3 | Image style service | File path host function | Medium |
 | 4 | Webhook service | ~~Activate tap_cron~~ ✅ resolved; event taps | Medium |
 | 5 | Translation service | Host function DB patterns | Medium |
