@@ -25,11 +25,10 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --all-targets -- -W clippy::all
+        entry: cargo clippy --all-targets -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
-        stages: [manual]
 
       - id: cargo-test
         name: cargo test
@@ -38,3 +37,10 @@ repos:
         types: [rust]
         pass_filenames: false
         stages: [manual]
+
+      - id: terminology-check
+        name: terminology check
+        entry: bash -c 'grep -rnE "\b(taxonomy|vocabulary)\b" --include="*.rs" crates/ benchmarks/ && echo "ERROR: Use Trovato terminology (see docs/coding-standards.md)" && exit 1 || exit 0'
+        language: system
+        types: [rust]
+        pass_filenames: false
