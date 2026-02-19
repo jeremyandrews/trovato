@@ -77,7 +77,7 @@ impl SearchService {
         // Split on whitespace and join with & for AND search
         let ts_query = query_clean
             .split_whitespace()
-            .map(|w| format!("{}:*", w)) // Prefix matching
+            .map(|w| format!("{w}:*")) // Prefix matching
             .collect::<Vec<_>>()
             .join(" & ");
 

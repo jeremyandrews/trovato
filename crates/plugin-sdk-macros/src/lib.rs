@@ -43,9 +43,13 @@ pub fn plugin_tap(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let (inner_fn, wrapper_body) = if has_input {
         // Extract the first parameter type
         let first_param = fn_inputs.first().unwrap();
-        let (param_name, param_type) = match first_param {
-            FnArg::Typed(PatType { pat, ty, .. }) => (pat, ty),
-            _ => panic!("plugin_tap functions cannot have self parameters"),
+        let FnArg::Typed(PatType {
+            pat: param_name,
+            ty: param_type,
+            ..
+        }) = first_param
+        else {
+            panic!("plugin_tap functions cannot have self parameters");
         };
 
         let inner = quote! {
@@ -142,9 +146,13 @@ pub fn plugin_tap_result(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let (inner_fn, wrapper_body) = if has_input {
         let first_param = fn_inputs.first().unwrap();
-        let (param_name, param_type) = match first_param {
-            FnArg::Typed(PatType { pat, ty, .. }) => (pat, ty),
-            _ => panic!("plugin_tap functions cannot have self parameters"),
+        let FnArg::Typed(PatType {
+            pat: param_name,
+            ty: param_type,
+            ..
+        }) = first_param
+        else {
+            panic!("plugin_tap functions cannot have self parameters");
         };
 
         let inner = quote! {

@@ -10,7 +10,7 @@
 //!
 //! - `item_type` - Content type definitions (includes field definitions in settings)
 //! - `search_field_config` - Search index configuration per content type/field
-//! - `category` - Category (vocabulary) definitions
+//! - `category` - Category definitions
 //! - `tag` - Tag (term) definitions within categories
 //! - `variable` - Site configuration variables
 //!
@@ -55,7 +55,7 @@ pub enum ConfigEntity {
     #[serde(rename = "search_field_config")]
     SearchFieldConfig(SearchFieldConfig),
 
-    /// Category (vocabulary) definition.
+    /// Category definition.
     #[serde(rename = "category")]
     Category(Category),
 
@@ -306,7 +306,7 @@ pub mod entity_types {
     /// Search field configuration per content type.
     pub const SEARCH_FIELD_CONFIG: &str = "search_field_config";
 
-    /// Category (vocabulary) definitions.
+    /// Category definitions.
     pub const CATEGORY: &str = "category";
 
     /// Tag (term) definitions within categories.
@@ -322,7 +322,7 @@ pub mod entity_types {
 /// Helper to parse a tag ID from a string (UUID format).
 pub fn parse_tag_id(id: &str) -> Result<Uuid> {
     id.parse::<Uuid>()
-        .map_err(|e| anyhow::anyhow!("invalid tag ID '{}': {}", id, e))
+        .map_err(|e| anyhow::anyhow!("invalid tag ID '{id}': {e}"))
 }
 
 #[cfg(test)]
@@ -381,12 +381,8 @@ mod tests {
         };
 
         let json = serde_json::to_string(&entity).unwrap();
-        assert!(
-            json.contains("variable"),
-            "Expected 'variable' in: {}",
-            json
-        );
-        assert!(json.contains("test"), "Expected 'test' in: {}", json);
+        assert!(json.contains("variable"), "Expected 'variable' in: {json}");
+        assert!(json.contains("test"), "Expected 'test' in: {json}");
 
         let parsed: ConfigEntity = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.entity_type(), "variable");
@@ -399,7 +395,7 @@ mod tests {
             value: serde_json::json!("Test"),
         };
 
-        assert_eq!(format!("{}", entity), "variable:site_name");
+        assert_eq!(format!("{entity}"), "variable:site_name");
     }
 
     #[test]
@@ -415,7 +411,7 @@ mod tests {
         assert_eq!(lang.entity_type(), "language");
         assert_eq!(lang.id(), "en");
         assert!(lang.as_language().is_some());
-        assert_eq!(format!("{}", lang), "language:en");
+        assert_eq!(format!("{lang}"), "language:en");
     }
 
     /// Verify ConfigEntity::Language survives JSON round-trip (the path

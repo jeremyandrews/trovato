@@ -133,7 +133,7 @@ async fn lookup_alias(
 fn rewrite_uri(original: &Uri, new_path: &str) -> Result<Uri, axum::http::uri::InvalidUri> {
     // Preserve query string if present
     if let Some(query) = original.query() {
-        format!("{}?{}", new_path, query).parse()
+        format!("{new_path}?{query}").parse()
     } else {
         new_path.parse()
     }

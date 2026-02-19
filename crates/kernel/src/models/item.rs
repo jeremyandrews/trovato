@@ -255,9 +255,8 @@ impl Item {
         let revision_id = Uuid::now_v7();
 
         // Fetch current item
-        let current = match Self::find_by_id(pool, id).await? {
-            Some(item) => item,
-            None => return Ok(None),
+        let Some(current) = Self::find_by_id(pool, id).await? else {
+            return Ok(None);
         };
 
         // Merge updates with current values
@@ -384,7 +383,7 @@ impl Item {
             promote: None,
             sticky: None,
             fields: Some(revision.fields),
-            log: Some(format!("Reverted to revision {}", revision_id)),
+            log: Some(format!("Reverted to revision {revision_id}")),
         };
 
         // Update creates a new revision with the old content
@@ -436,15 +435,15 @@ impl Item {
         let mut conditions = Vec::new();
 
         if item_type.is_some() {
-            conditions.push(format!(" AND type = ${}", param_idx));
+            conditions.push(format!(" AND type = ${param_idx}"));
             param_idx += 1;
         }
         if status.is_some() {
-            conditions.push(format!(" AND status = ${}", param_idx));
+            conditions.push(format!(" AND status = ${param_idx}"));
             param_idx += 1;
         }
         if author_id.is_some() {
-            conditions.push(format!(" AND author_id = ${}", param_idx));
+            conditions.push(format!(" AND author_id = ${param_idx}"));
             param_idx += 1;
         }
 
@@ -492,15 +491,15 @@ impl Item {
         let mut conditions = Vec::new();
 
         if item_type.is_some() {
-            conditions.push(format!(" AND type = ${}", param_idx));
+            conditions.push(format!(" AND type = ${param_idx}"));
             param_idx += 1;
         }
         if status.is_some() {
-            conditions.push(format!(" AND status = ${}", param_idx));
+            conditions.push(format!(" AND status = ${param_idx}"));
             param_idx += 1;
         }
         if author_id.is_some() {
-            conditions.push(format!(" AND author_id = ${}", param_idx));
+            conditions.push(format!(" AND author_id = ${param_idx}"));
         }
 
         for cond in conditions {

@@ -50,8 +50,7 @@ impl std::str::FromStr for PayloadSize {
             "large" | "l" | "50k" => Ok(PayloadSize::Large),
             "xlarge" | "xl" | "100k" => Ok(PayloadSize::XLarge),
             _ => Err(format!(
-                "Unknown payload size: {}. Use: small, medium, large, xlarge",
-                s
+                "Unknown payload size: {s}. Use: small, medium, large, xlarge"
             )),
         }
     }
@@ -153,7 +152,7 @@ pub fn synthetic_item_sized(size: PayloadSize) -> Value {
     };
     for i in 0..extra_field_count {
         fields.as_object_mut().unwrap().insert(
-            format!("field_extra_{}", i),
+            format!("field_extra_{i}"),
             json!({
                 "value": format!("Extra field value {} with some additional text to increase payload size", i),
                 "metadata": {

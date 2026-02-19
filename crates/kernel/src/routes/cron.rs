@@ -127,7 +127,7 @@ async fn cron_status(State(state): State<AppState>, session: Session) -> Respons
             let now = chrono::Utc::now().timestamp();
             let seconds_ago = now - run.timestamp;
             let time_ago = if seconds_ago < 60 {
-                format!("{} seconds ago", seconds_ago)
+                format!("{seconds_ago} seconds ago")
             } else if seconds_ago < 3600 {
                 format!("{} minutes ago", seconds_ago / 60)
             } else if seconds_ago < 86400 {

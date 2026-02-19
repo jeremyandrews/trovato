@@ -63,8 +63,7 @@ impl std::str::FromStr for BenchmarkType {
             "payload" | "payload-scaling" | "payloads" => Ok(BenchmarkType::PayloadScaling),
             "mutation" | "mutations" | "write" => Ok(BenchmarkType::Mutation),
             _ => Err(format!(
-                "Unknown benchmark: {}. Use: all, handle, serialize, concurrency, async, payload, mutation",
-                s
+                "Unknown benchmark: {s}. Use: all, handle, serialize, concurrency, async, payload, mutation"
             )),
         }
     }
@@ -91,7 +90,7 @@ fn parse_args() -> BenchConfig {
                 i += 1;
                 if i < args.len() {
                     config.benchmark = args[i].parse().unwrap_or_else(|e| {
-                        eprintln!("Error: {}", e);
+                        eprintln!("Error: {e}");
                         std::process::exit(1);
                     });
                 }
@@ -100,7 +99,7 @@ fn parse_args() -> BenchConfig {
                 i += 1;
                 if i < args.len() {
                     config.payload_size = args[i].parse().unwrap_or_else(|e| {
-                        eprintln!("Error: {}", e);
+                        eprintln!("Error: {e}");
                         std::process::exit(1);
                     });
                 }
@@ -210,10 +209,7 @@ async fn main() -> Result<()> {
 
     // Initialize benchmark host with higher instance limit for stress tests
     let max_instances = std::cmp::max(config.concurrency as u32 * 2, 2000);
-    println!(
-        "Initializing benchmark host (max {} instances)...",
-        max_instances
-    );
+    println!("Initializing benchmark host (max {max_instances} instances)...");
     let host_config = HostConfig {
         max_instances,
         max_memory_pages: 1024,
@@ -319,20 +315,14 @@ async fn run_gate_benchmarks(
         "  Full-serialization tap avg: {:?}",
         serialize_results.tap_only.per_call_avg
     );
-    println!("  Speedup ratio: {:.2}x", tap_speedup);
+    println!("  Speedup ratio: {tap_speedup:.2}x");
     println!();
 
     let gate1_passed = tap_speedup >= 5.0;
     if tap_speedup >= 5.0 {
-        println!(
-            "✓ GATE 1 PASSED: Handle-based is {:.1}x faster",
-            tap_speedup
-        );
+        println!("✓ GATE 1 PASSED: Handle-based is {tap_speedup:.1}x faster");
     } else if tap_speedup >= 1.0 {
-        println!(
-            "✗ GATE 1 FAILED: Handle-based is only {:.1}x faster (need 5x)",
-            tap_speedup
-        );
+        println!("✗ GATE 1 FAILED: Handle-based is only {tap_speedup:.1}x faster (need 5x)");
     } else {
         println!(
             "✗ GATE 1 FAILED: Full-serialization is {:.1}x faster",

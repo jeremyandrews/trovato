@@ -39,18 +39,18 @@ fn test_cron_result_format() {
         tasks_run: vec!["task1".to_string(), "task2".to_string()],
         duration_ms: 250,
     };
-    let debug_str = format!("{:?}", completed);
+    let debug_str = format!("{completed:?}");
     assert!(debug_str.contains("Completed"));
     assert!(debug_str.contains("task1"));
 
     // Test Skipped variant
     let skipped = CronResult::Skipped;
-    let debug_str = format!("{:?}", skipped);
+    let debug_str = format!("{skipped:?}");
     assert!(debug_str.contains("Skipped"));
 
     // Test Failed variant
     let failed = CronResult::Failed("connection error".to_string());
-    let debug_str = format!("{:?}", failed);
+    let debug_str = format!("{failed:?}");
     assert!(debug_str.contains("Failed"));
     assert!(debug_str.contains("connection error"));
 }

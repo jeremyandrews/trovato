@@ -473,16 +473,16 @@ async fn install_site_submit(
         return render_site_form_with_error("Failed to save configuration");
     }
 
-    if let Some(ref slogan) = form.site_slogan {
-        if let Err(e) = SiteConfig::set_site_slogan(state.db(), slogan.trim()).await {
-            tracing::error!(error = %e, "failed to set site slogan");
-        }
+    if let Some(ref slogan) = form.site_slogan
+        && let Err(e) = SiteConfig::set_site_slogan(state.db(), slogan.trim()).await
+    {
+        tracing::error!(error = %e, "failed to set site slogan");
     }
 
-    if let Some(ref mail) = form.site_mail {
-        if let Err(e) = SiteConfig::set_site_mail(state.db(), mail.trim()).await {
-            tracing::error!(error = %e, "failed to set site mail");
-        }
+    if let Some(ref mail) = form.site_mail
+        && let Err(e) = SiteConfig::set_site_mail(state.db(), mail.trim()).await
+    {
+        tracing::error!(error = %e, "failed to set site mail");
     }
 
     // Mark as installed

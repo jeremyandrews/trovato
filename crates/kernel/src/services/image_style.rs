@@ -303,13 +303,13 @@ mod tests {
         // Normal path stays under cache
         let good = PathBuf::from("/uploads/styles/thumbnail/photo.jpg");
         let base = PathBuf::from("/uploads/styles");
-        assert!(normalize_path(&good).starts_with(&normalize_path(&base)));
+        assert!(normalize_path(&good).starts_with(normalize_path(&base)));
 
         // Traversal path escapes cache after normalization
         let bad = PathBuf::from("/uploads/styles/../../etc/cron.d/pwned");
         let bad_normalized = normalize_path(&bad);
         assert_eq!(bad_normalized, PathBuf::from("/etc/cron.d/pwned"));
-        assert!(!bad_normalized.starts_with(&normalize_path(&base)));
+        assert!(!bad_normalized.starts_with(normalize_path(&base)));
     }
 
     #[test]

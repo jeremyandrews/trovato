@@ -326,23 +326,23 @@ impl GatherQueryBuilder {
                 self.build_category_filter(&filter.field, vec![uuid], true)
             }
             FilterOperator::Custom(name) => {
-                if let Some(ref extensions) = self.extensions {
-                    if let Some((handler, config)) = extensions.get_filter(name) {
-                        let ctx = FilterContext {
-                            base_table: self.definition.base_table.clone(),
-                            stage_id: self.stage_ids.first().cloned().unwrap_or_default(),
-                        };
-                        match handler.build_condition(filter, config, &ctx) {
-                            Ok(expr) => return expr,
-                            Err(e) => {
-                                tracing::error!(
-                                    filter = name,
-                                    error = %e,
-                                    "custom filter handler failed; restricting results"
-                                );
-                                // Return FALSE to restrict rather than widen query results
-                                return Some(Expr::cust("FALSE"));
-                            }
+                if let Some(ref extensions) = self.extensions
+                    && let Some((handler, config)) = extensions.get_filter(name)
+                {
+                    let ctx = FilterContext {
+                        base_table: self.definition.base_table.clone(),
+                        stage_id: self.stage_ids.first().cloned().unwrap_or_default(),
+                    };
+                    match handler.build_condition(filter, config, &ctx) {
+                        Ok(expr) => return expr,
+                        Err(e) => {
+                            tracing::error!(
+                                filter = name,
+                                error = %e,
+                                "custom filter handler failed; restricting results"
+                            );
+                            // Return FALSE to restrict rather than widen query results
+                            return Some(Expr::cust("FALSE"));
                         }
                     }
                 }
@@ -358,8 +358,7 @@ impl GatherQueryBuilder {
 
     /// Build expression for a field (handles JSONB paths).
     fn field_expr(&self, field: &str) -> SimpleExpr {
-        if field.starts_with("fields.") {
-            let jsonb_path = &field[7..];
+        if let Some(jsonb_path) = field.strip_prefix("fields.") {
             self.jsonb_extract_expr(&self.definition.base_table, jsonb_path)
         } else {
             Expr::col((Alias::new(&self.definition.base_table), Alias::new(field))).into()
@@ -373,17 +372,17 @@ impl GatherQueryBuilder {
         if path.contains('.') {
             // Nested path: fields->'nested'->>'field'
             let parts: Vec<&str> = path.split('.').collect();
-            let mut expr = format!("{}.fields", table);
+            let mut expr = format!("{table}.fields");
             for (i, part) in parts.iter().enumerate() {
                 if i == parts.len() - 1 {
-                    expr = format!("({}->>'{}')", expr, part);
+                    expr = format!("({expr}->>'{part}')");
                 } else {
-                    expr = format!("({}->'{}')", expr, part);
+                    expr = format!("({expr}->'{part}')");
                 }
             }
             Expr::cust(expr)
         } else {
-            Expr::cust(format!("{}.fields->>'{}'", table, path))
+            Expr::cust(format!("{table}.fields->>'{path}'"))
         }
     }
 
@@ -395,14 +394,10 @@ impl GatherQueryBuilder {
         tag_ids: Vec<uuid::Uuid>,
         include_descendants: bool,
     ) -> Option<SimpleExpr> {
-        let jsonb_path = if field.starts_with("fields.") {
-            &field[7..]
-        } else {
-            field
-        };
+        let jsonb_path = field.strip_prefix("fields.").unwrap_or(field);
 
         // Build the list of UUIDs to check
-        let uuid_list: Vec<String> = tag_ids.iter().map(|u| format!("'{}'", u)).collect();
+        let uuid_list: Vec<String> = tag_ids.iter().map(|u| format!("'{u}'")).collect();
 
         if include_descendants {
             // Use a subquery with recursive CTE to get all descendants
@@ -485,22 +480,18 @@ impl CategoryHierarchyQuery {
     pub fn descendants_cte(tag_id: uuid::Uuid) -> String {
         format!(
             r#"WITH RECURSIVE tag_descendants AS (
-    SELECT '{}'::uuid as id
+    SELECT '{tag_id}'::uuid as id
     UNION ALL
     SELECT h.tag_id
     FROM category_tag_hierarchy h
     INNER JOIN tag_descendants d ON h.parent_id = d.id
-)"#,
-            tag_id
+)"#
         )
     }
 
     /// Build a filter expression that checks if a JSONB field is in the descendants CTE.
     pub fn in_descendants_expr(field_path: &str) -> String {
-        format!(
-            "(fields->>'{}')::uuid IN (SELECT id FROM tag_descendants)",
-            field_path
-        )
+        format!("(fields->>'{field_path}')::uuid IN (SELECT id FROM tag_descendants)")
     }
 }
 
@@ -695,14 +686,9 @@ mod tests {
         // Single stage should use = 'live'
         assert!(
             sql.contains("\"stage_id\" = 'live'"),
-            "single stage should use =: {}",
-            sql
+            "single stage should use =: {sql}"
         );
-        assert!(
-            !sql.contains("IN"),
-            "single stage should not use IN: {}",
-            sql
-        );
+        assert!(!sql.contains("IN"), "single stage should not use IN: {sql}");
     }
 
     #[test]
@@ -719,12 +705,11 @@ mod tests {
         // Multiple stages should use IN
         assert!(
             sql.contains("IN"),
-            "multiple stages should use IN clause: {}",
-            sql
+            "multiple stages should use IN clause: {sql}"
         );
-        assert!(sql.contains("'review'"), "should contain review: {}", sql);
-        assert!(sql.contains("'draft'"), "should contain draft: {}", sql);
-        assert!(sql.contains("'live'"), "should contain live: {}", sql);
+        assert!(sql.contains("'review'"), "should contain review: {sql}");
+        assert!(sql.contains("'draft'"), "should contain draft: {sql}");
+        assert!(sql.contains("'live'"), "should contain live: {sql}");
     }
 
     #[test]
@@ -736,15 +721,13 @@ mod tests {
 
         assert!(
             sql.contains("IN"),
-            "count with multiple stages should use IN: {}",
-            sql
+            "count with multiple stages should use IN: {sql}"
         );
         assert!(
             sql.contains("'review'"),
-            "count should contain review: {}",
-            sql
+            "count should contain review: {sql}"
         );
-        assert!(sql.contains("'live'"), "count should contain live: {}", sql);
+        assert!(sql.contains("'live'"), "count should contain live: {sql}");
     }
 
     #[test]
@@ -766,14 +749,12 @@ mod tests {
 
         assert!(
             sql.contains("search_vector @@ to_tsquery"),
-            "should contain tsvector search: {}",
-            sql
+            "should contain tsvector search: {sql}"
         );
         // Parameterized: value appears as 'rust & programming' after Expr::cust_with_values
         assert!(
             sql.contains("rust & programming"),
-            "should AND terms: {}",
-            sql
+            "should AND terms: {sql}"
         );
     }
 
@@ -796,8 +777,7 @@ mod tests {
 
         assert!(
             !sql.contains("search_vector"),
-            "empty search should be skipped: {}",
-            sql
+            "empty search should be skipped: {sql}"
         );
     }
 
@@ -821,11 +801,10 @@ mod tests {
         // Special chars should be stripped, only words remain
         assert!(
             sql.contains("search_vector @@ to_tsquery"),
-            "should contain search: {}",
-            sql
+            "should contain search: {sql}"
         );
-        assert!(!sql.contains("|"), "pipe should be stripped: {}", sql);
-        assert!(!sql.contains("!"), "bang should be stripped: {}", sql);
+        assert!(!sql.contains("|"), "pipe should be stripped: {sql}");
+        assert!(!sql.contains("!"), "bang should be stripped: {sql}");
     }
 
     #[test]
@@ -857,14 +836,12 @@ mod tests {
         // SeaQuery renders with E prefix and double-backslash escaping
         assert!(
             sql.contains("100\\\\%\\\\_done") || sql.contains("100\\%\\_done"),
-            "LIKE wildcards should be escaped: {}",
-            sql
+            "LIKE wildcards should be escaped: {sql}"
         );
         // The important thing: literal % and _ are escaped, not used as wildcards
         assert!(
             !sql.contains("%100%_done%"),
-            "raw wildcard chars should NOT appear unescaped: {}",
-            sql
+            "raw wildcard chars should NOT appear unescaped: {sql}"
         );
     }
 
@@ -889,8 +866,7 @@ mod tests {
 
         assert!(
             !sql.contains("stage_id"),
-            "stage_aware=false should skip stage filter even with overlay: {}",
-            sql
+            "stage_aware=false should skip stage filter even with overlay: {sql}"
         );
     }
 }

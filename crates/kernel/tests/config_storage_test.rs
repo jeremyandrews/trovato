@@ -567,14 +567,14 @@ async fn config_storage_list_with_filter() {
 
     // Create test item types with a specific plugin (keep names short)
     let short_id = &Uuid::now_v7().simple().to_string()[..6];
-    let plugin_name = format!("filt{}", short_id);
-    let type1 = format!("ft1{}", short_id);
-    let type2 = format!("ft2{}", short_id);
+    let plugin_name = format!("filt{short_id}");
+    let type1 = format!("ft1{short_id}");
+    let type2 = format!("ft2{short_id}");
 
     for type_name in [&type1, &type2] {
         let item_type = ItemType {
             type_name: type_name.clone(),
-            label: format!("{} Label", type_name),
+            label: format!("{type_name} Label"),
             description: None,
             has_title: true,
             title_label: None,

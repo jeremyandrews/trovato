@@ -21,14 +21,12 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _id = match read_string_from_memory(&memory, &caller, id_ptr, id_len) {
-                Ok(id) => id,
-                Err(_) => return -2,
+            let Ok(_id) = read_string_from_memory(&memory, &caller, id_ptr, id_len) else {
+                return -2;
             };
 
             // TODO: Implement actual item lookup from database
@@ -51,14 +49,13 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let item_json = match read_string_from_memory(&memory, &caller, item_ptr, item_len) {
-                Ok(json) => json,
-                Err(_) => return -2,
+            let Ok(item_json) = read_string_from_memory(&memory, &caller, item_ptr, item_len)
+            else {
+                return -2;
             };
 
             // TODO: Implement actual item save to database
@@ -74,14 +71,12 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
         "trovato:kernel/item-api",
         "delete-item",
         |mut caller: wasmtime::Caller<'_, PluginState>, id_ptr: i32, id_len: i32| -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _id = match read_string_from_memory(&memory, &caller, id_ptr, id_len) {
-                Ok(id) => id,
-                Err(_) => return -2,
+            let Ok(_id) = read_string_from_memory(&memory, &caller, id_ptr, id_len) else {
+                return -2;
             };
 
             // TODO: Implement actual item deletion
@@ -101,14 +96,12 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _query = match read_string_from_memory(&memory, &caller, query_ptr, query_len) {
-                Ok(q) => q,
-                Err(_) => return -2,
+            let Ok(_query) = read_string_from_memory(&memory, &caller, query_ptr, query_len) else {
+                return -2;
             };
 
             // TODO: Implement actual item query

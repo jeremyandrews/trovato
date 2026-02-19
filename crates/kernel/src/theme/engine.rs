@@ -133,7 +133,7 @@ impl ThemeEngine {
 
         // Find first template that exists
         for suggestion in suggestions {
-            let template_name = format!("{}.html", suggestion);
+            let template_name = format!("{suggestion}.html");
             if self.tera.get_template(&template_name).is_ok() {
                 self.suggestion_cache
                     .insert(cache_key, template_name.clone());
@@ -230,7 +230,7 @@ impl ThemeEngine {
 
         for (name, element) in elements {
             let element_html = self.render_form_element(name, element, context)?;
-            write!(html, "{}", element_html).unwrap();
+            write!(html, "{element_html}").unwrap();
         }
 
         Ok(html)
@@ -274,7 +274,7 @@ impl ThemeEngine {
 
         self.tera
             .render(template_name, &el_context)
-            .with_context(|| format!("failed to render form element: {}", name))
+            .with_context(|| format!("failed to render form element: {name}"))
     }
 
     /// Render form element children.
@@ -291,7 +291,7 @@ impl ThemeEngine {
 
         for (name, child) in children {
             let child_html = self.render_form_element(name, child, context)?;
-            write!(html, "{}", child_html).unwrap();
+            write!(html, "{child_html}").unwrap();
         }
 
         Ok(html)
@@ -312,7 +312,7 @@ impl ThemeEngine {
         // /admin/structure/types -> page--admin--structure--types
         let normalized = path.trim_start_matches('/').replace('/', "--");
         if !normalized.is_empty() {
-            suggestions.push(format!("page--{}", normalized));
+            suggestions.push(format!("page--{normalized}"));
         }
 
         // Add admin base if it's an admin path

@@ -242,8 +242,7 @@ fn render_fallback_search(
             ));
             if let Some(snippet) = &result.snippet {
                 html.push_str(&format!(
-                    "    <div class=\"snippet\">{}</div>\n",
-                    snippet // Already contains safe HTML from ts_headline
+                    "    <div class=\"snippet\">{snippet}</div>\n" // Already contains safe HTML from ts_headline
                 ));
             }
             html.push_str("</div>\n");
@@ -259,7 +258,7 @@ fn render_fallback_search(
                     page - 1
                 ));
             }
-            html.push_str(&format!("    Page {} of {}\n", page, total_pages));
+            html.push_str(&format!("    Page {page} of {total_pages}\n"));
             if page < total_pages {
                 html.push_str(&format!(
                     "    <a href=\"/search?q={}&page={}\">Next &raquo;</a>\n",

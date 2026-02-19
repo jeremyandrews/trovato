@@ -129,9 +129,8 @@ impl ItemService {
         id: Uuid,
         user: &UserContext,
     ) -> Result<Option<(Item, Vec<String>)>> {
-        let item = match self.load(id).await? {
-            Some(i) => i,
-            None => return Ok(None),
+        let Some(item) = self.load(id).await? else {
+            return Ok(None);
         };
 
         // Check access
@@ -163,9 +162,8 @@ impl ItemService {
         user: &UserContext,
     ) -> Result<Option<Item>> {
         // Load existing item
-        let existing = match self.load(id).await? {
-            Some(i) => i,
-            None => return Ok(None),
+        let Some(existing) = self.load(id).await? else {
+            return Ok(None);
         };
 
         // Check access
@@ -201,9 +199,8 @@ impl ItemService {
     /// Delete an item with tap_item_delete invocation.
     pub async fn delete(&self, id: Uuid, user: &UserContext) -> Result<bool> {
         // Load item
-        let item = match self.load(id).await? {
-            Some(i) => i,
-            None => return Ok(false),
+        let Some(item) = self.load(id).await? else {
+            return Ok(false);
         };
 
         // Check access

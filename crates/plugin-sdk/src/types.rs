@@ -311,20 +311,20 @@ impl PermissionDefinition {
     pub fn crud_for_type(content_type: &str) -> Vec<Self> {
         vec![
             Self::new(
-                &format!("view {} content", content_type),
-                &format!("View unpublished {} items", content_type),
+                &format!("view {content_type} content"),
+                &format!("View unpublished {content_type} items"),
             ),
             Self::new(
-                &format!("create {} content", content_type),
-                &format!("Create new {} items", content_type),
+                &format!("create {content_type} content"),
+                &format!("Create new {content_type} items"),
             ),
             Self::new(
-                &format!("edit {} content", content_type),
-                &format!("Edit any {} item", content_type),
+                &format!("edit {content_type} content"),
+                &format!("Edit any {content_type} item"),
             ),
             Self::new(
-                &format!("delete {} content", content_type),
-                &format!("Delete any {} item", content_type),
+                &format!("delete {content_type} content"),
+                &format!("Delete any {content_type} item"),
             ),
         ]
     }

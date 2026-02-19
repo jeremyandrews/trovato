@@ -123,8 +123,7 @@ impl Config {
         let smtp_from_email =
             env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "noreply@localhost".to_string());
 
-        let site_url =
-            env::var("SITE_URL").unwrap_or_else(|_| format!("http://localhost:{}", port));
+        let site_url = env::var("SITE_URL").unwrap_or_else(|_| format!("http://localhost:{port}"));
 
         Ok(Self {
             port,

@@ -95,9 +95,8 @@ fn render_image(data: &Value) -> String {
     let escaped_url = html_escape(url);
     let escaped_caption = html_escape(caption);
     format!(
-        "<figure><img src=\"{}\" alt=\"{}\">\
-         <figcaption>{}</figcaption></figure>",
-        escaped_url, escaped_caption, escaped_caption
+        "<figure><img src=\"{escaped_url}\" alt=\"{escaped_caption}\">\
+         <figcaption>{escaped_caption}</figcaption></figure>"
     )
 }
 
@@ -134,12 +133,9 @@ fn render_quote(data: &Value) -> String {
     let clean_text = sanitize_text(text);
     let clean_caption = sanitize_text(caption);
     if clean_caption.is_empty() {
-        format!("<blockquote><p>{}</p></blockquote>", clean_text)
+        format!("<blockquote><p>{clean_text}</p></blockquote>")
     } else {
-        format!(
-            "<blockquote><p>{}</p><cite>{}</cite></blockquote>",
-            clean_text, clean_caption
-        )
+        format!("<blockquote><p>{clean_text}</p><cite>{clean_caption}</cite></blockquote>")
     }
 }
 
@@ -222,9 +218,8 @@ fn render_embed(data: &Value) -> String {
         let escaped_url = html_escape(embed_url);
         let mut html = format!(
             "<div class=\"embed-responsive\">\
-             <iframe src=\"{}\" frameborder=\"0\" allowfullscreen></iframe>\
-             </div>",
-            escaped_url
+             <iframe src=\"{escaped_url}\" frameborder=\"0\" allowfullscreen></iframe>\
+             </div>"
         );
         if !caption.is_empty() {
             html.push_str(&format!(
@@ -235,11 +230,11 @@ fn render_embed(data: &Value) -> String {
         html
     } else if is_safe_url(embed_url) {
         let escaped_url = html_escape(embed_url);
-        format!("<a href=\"{}\">{}</a>", escaped_url, escaped_url)
+        format!("<a href=\"{escaped_url}\">{escaped_url}</a>")
     } else {
         // Reject non-http(s) URLs (e.g., javascript:) — render as plain text only
         let escaped_url = html_escape(embed_url);
-        format!("<span>{}</span>", escaped_url)
+        format!("<span>{escaped_url}</span>")
     }
 }
 
@@ -454,14 +449,12 @@ mod tests {
         let html = render_blocks(&blocks);
         assert!(
             html.contains("<pre><code class=\"language-rust\">"),
-            "Expected language class in output, got: {}",
-            html
+            "Expected language class in output, got: {html}"
         );
         // syntect produces <span> tags for highlighted tokens
         assert!(
             html.contains("<span"),
-            "Expected highlighted spans in output, got: {}",
-            html
+            "Expected highlighted spans in output, got: {html}"
         );
     }
 
@@ -477,8 +470,7 @@ mod tests {
         let html = render_blocks(&blocks);
         assert!(
             html.contains("<pre><code>some code here</code></pre>"),
-            "Expected plain fallback, got: {}",
-            html
+            "Expected plain fallback, got: {html}"
         );
     }
 
@@ -491,8 +483,7 @@ mod tests {
         let html = render_blocks(&blocks);
         assert!(
             html.contains("<pre><code>plain text code</code></pre>"),
-            "Expected plain code block, got: {}",
-            html
+            "Expected plain code block, got: {html}"
         );
     }
 
@@ -529,8 +520,7 @@ mod tests {
         let html = render_blocks(&blocks);
         assert!(
             html.contains("<iframe"),
-            "YouTube embeds should produce an iframe, got: {}",
-            html
+            "YouTube embeds should produce an iframe, got: {html}"
         );
         assert!(html.contains("youtube.com/watch"));
         assert!(html.contains("allowfullscreen"));
@@ -578,13 +568,11 @@ mod tests {
         let html = render_blocks(&blocks);
         assert!(
             !html.contains("<iframe"),
-            "Non-whitelisted URLs must not produce an iframe, got: {}",
-            html
+            "Non-whitelisted URLs must not produce an iframe, got: {html}"
         );
         assert!(
             html.contains("<a href="),
-            "Non-whitelisted URLs should produce a safe link, got: {}",
-            html
+            "Non-whitelisted URLs should produce a safe link, got: {html}"
         );
         assert!(html.contains("evil.example.com/payload"));
     }
@@ -672,8 +660,7 @@ mod tests {
         let html = render_blocks(&blocks);
         assert!(
             !html.contains("href"),
-            "javascript: URIs must not produce href links, got: {}",
-            html
+            "javascript: URIs must not produce href links, got: {html}"
         );
         assert!(html.contains("<span>"));
     }

@@ -82,8 +82,7 @@ impl std::fmt::Display for ConflictType {
             } => {
                 write!(
                     f,
-                    "live was modified (at {}) after staging (at {})",
-                    live_changed, staged_at
+                    "live was modified (at {live_changed}) after staging (at {staged_at})"
                 )
             }
         }
@@ -156,7 +155,7 @@ impl ConflictResolution {
             ConflictResolution::SkipAll => Some(Resolution::Skip),
             ConflictResolution::OverwriteAll => Some(Resolution::Overwrite),
             ConflictResolution::PerEntity(map) => {
-                let key = format!("{}:{}", entity_type, entity_id);
+                let key = format!("{entity_type}:{entity_id}");
                 map.get(&key).copied()
             }
         }
@@ -266,16 +265,19 @@ impl PublishResult {
 ///
 /// In v1.0, this struct is not used - StageService::publish() handles
 /// phases directly. Post-MVP, this will enable custom phase logic.
+/// A boxed closure that runs a publish phase inside a transaction.
+type PublishPhaseFn<'a> = Box<dyn FnMut(&mut Transaction<'_, Postgres>) -> Result<()> + Send + 'a>;
+
 #[allow(dead_code)]
 pub struct PublishPhases<'a> {
     /// Phase 1: Publish config types (no-op in v1.0).
-    pub config_types: Box<dyn FnMut(&mut Transaction<'_, Postgres>) -> Result<()> + Send + 'a>,
+    pub config_types: PublishPhaseFn<'a>,
     /// Phase 2: Publish categories (no-op in v1.0).
-    pub categories: Box<dyn FnMut(&mut Transaction<'_, Postgres>) -> Result<()> + Send + 'a>,
+    pub categories: PublishPhaseFn<'a>,
     /// Phase 3: Publish items (active in v1.0).
-    pub items: Box<dyn FnMut(&mut Transaction<'_, Postgres>) -> Result<()> + Send + 'a>,
+    pub items: PublishPhaseFn<'a>,
     /// Phase 4: Publish dependents (no-op in v1.0).
-    pub dependents: Box<dyn FnMut(&mut Transaction<'_, Postgres>) -> Result<()> + Send + 'a>,
+    pub dependents: PublishPhaseFn<'a>,
 }
 
 impl<'a> PublishPhases<'a> {
@@ -496,7 +498,7 @@ impl StageService {
     async fn resolve_upstream(&self, stage_id: &str) -> Result<String> {
         let stage = Stage::find_by_id(&self.pool, stage_id)
             .await?
-            .with_context(|| format!("stage '{}' not found", stage_id))?;
+            .with_context(|| format!("stage '{stage_id}' not found"))?;
 
         Ok(stage
             .upstream_id
@@ -795,7 +797,7 @@ impl StageService {
                     &alias,
                     ConflictType::CrossStage { other_stages },
                 )
-                .with_label(format!("URL alias: {}", alias)),
+                .with_label(format!("URL alias: {alias}")),
             );
         }
 
@@ -1323,8 +1325,7 @@ mod tests {
             let s = phase.to_string();
             assert!(
                 !s.is_empty(),
-                "phase {:?} should have non-empty display",
-                phase
+                "phase {phase:?} should have non-empty display"
             );
         }
     }

@@ -422,15 +422,15 @@ async fn update_comment(
     }
 
     // Validate body if provided
-    if let Some(ref body) = request.body {
-        if body.trim().is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Comment body cannot be empty".to_string(),
-                }),
-            ));
-        }
+    if let Some(ref body) = request.body
+        && body.trim().is_empty()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Comment body cannot be empty".to_string(),
+            }),
+        ));
     }
 
     let input = UpdateComment {

@@ -55,7 +55,7 @@ impl RateLimiter {
     /// Returns Ok(()) if allowed, Err with retry-after seconds if limited.
     pub async fn check(&self, category: &str, identifier: &str) -> Result<(), u64> {
         let (limit, window) = self.get_limit(category);
-        let key = format!("rate:{}:{}", category, identifier);
+        let key = format!("rate:{category}:{identifier}");
         let window_secs = window.as_secs();
 
         let count = match self.increment(&key, window_secs).await {
@@ -114,7 +114,7 @@ impl RateLimiter {
         category: &str,
         identifier: &str,
     ) -> Result<i64, redis::RedisError> {
-        let key = format!("rate:{}:{}", category, identifier);
+        let key = format!("rate:{category}:{identifier}");
         let mut conn = self.redis.get_multiplexed_async_connection().await?;
         let count: Option<i64> = conn.get(&key).await?;
         Ok(count.unwrap_or(0))
@@ -122,7 +122,7 @@ impl RateLimiter {
 
     /// Reset the counter for a key (for testing).
     pub async fn reset(&self, category: &str, identifier: &str) -> Result<(), redis::RedisError> {
-        let key = format!("rate:{}:{}", category, identifier);
+        let key = format!("rate:{category}:{identifier}");
         let mut conn = self.redis.get_multiplexed_async_connection().await?;
         let _: () = conn.del(&key).await?;
         Ok(())
@@ -152,20 +152,20 @@ pub fn get_client_id(
     headers: &axum::http::HeaderMap,
 ) -> String {
     // Check X-Forwarded-For header first (for proxied requests)
-    if let Some(forwarded) = headers.get("x-forwarded-for") {
-        if let Ok(value) = forwarded.to_str() {
-            // Take the first IP in the chain
-            if let Some(ip) = value.split(',').next() {
-                return ip.trim().to_string();
-            }
+    if let Some(forwarded) = headers.get("x-forwarded-for")
+        && let Ok(value) = forwarded.to_str()
+    {
+        // Take the first IP in the chain
+        if let Some(ip) = value.split(',').next() {
+            return ip.trim().to_string();
         }
     }
 
     // Check X-Real-IP header
-    if let Some(real_ip) = headers.get("x-real-ip") {
-        if let Ok(value) = real_ip.to_str() {
-            return value.to_string();
-        }
+    if let Some(real_ip) = headers.get("x-real-ip")
+        && let Ok(value) = real_ip.to_str()
+    {
+        return value.to_string();
     }
 
     // Fall back to connection address
@@ -181,10 +181,7 @@ pub fn rate_limit_response(retry_after: u64) -> Response {
             ("retry-after", retry_after.to_string()),
             ("content-type", "application/json".to_string()),
         ],
-        format!(
-            r#"{{"error":"Rate limit exceeded","retry_after":{}}}"#,
-            retry_after
-        ),
+        format!(r#"{{"error":"Rate limit exceeded","retry_after":{retry_after}}}"#),
     )
         .into_response()
 }

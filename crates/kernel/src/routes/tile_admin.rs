@@ -172,10 +172,7 @@ async fn edit_tile_form(
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
 
     let mut context = tera::Context::new();
-    context.insert(
-        "action",
-        &format!("/admin/structure/tiles/{}/edit", tile_id),
-    );
+    context.insert("action", &format!("/admin/structure/tiles/{tile_id}/edit"));
     context.insert("csrf_token", &csrf_token);
     context.insert("editing", &true);
     context.insert("tile_id", &tile_id.to_string());
@@ -194,7 +191,7 @@ async fn edit_tile_form(
             "status": tile.status == 1,
         }),
     );
-    context.insert("path", &format!("/admin/structure/tiles/{}/edit", tile_id));
+    context.insert("path", &format!("/admin/structure/tiles/{tile_id}/edit"));
 
     render_admin_template(&state, "admin/tile-form.html", context).await
 }

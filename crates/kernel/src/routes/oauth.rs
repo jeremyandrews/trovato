@@ -107,9 +107,8 @@ async fn authorize(
         return (StatusCode::BAD_REQUEST, "response_type must be 'code'").into_response();
     }
 
-    let user_id = match session.get::<Uuid>("user_id").await.ok().flatten() {
-        Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Authentication required").into_response(),
+    let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
+        return (StatusCode::UNAUTHORIZED, "Authentication required").into_response();
     };
 
     let client_id = params.get("client_id").map(|s| s.as_str()).unwrap_or("");
@@ -323,23 +322,16 @@ async fn token(
         }
         "refresh_token" => {
             // Verify the refresh token (must be token_type=refresh)
-            let claims = match oauth.verify_refresh_token(&payload.refresh_token) {
-                Ok(c) => c,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "Invalid refresh token").into_response();
-                }
+            let Ok(claims) = oauth.verify_refresh_token(&payload.refresh_token) else {
+                return (StatusCode::BAD_REQUEST, "Invalid refresh token").into_response();
             };
 
             // Authenticate client (must match the client that got the token)
-            let client = match oauth
+            let Ok(client) = oauth
                 .authenticate_client(&payload.client_id, &payload.client_secret)
                 .await
-            {
-                Ok(c) => c,
-                Err(_) => {
-                    return (StatusCode::UNAUTHORIZED, "Client authentication failed")
-                        .into_response();
-                }
+            else {
+                return (StatusCode::UNAUTHORIZED, "Client authentication failed").into_response();
             };
 
             // Verify token was issued to this client
@@ -377,11 +369,8 @@ async fn token(
                 }
             }
 
-            let user_id: Uuid = match claims.sub.parse() {
-                Ok(id) => id,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "Invalid token subject").into_response();
-                }
+            let Ok(user_id) = claims.sub.parse::<Uuid>() else {
+                return (StatusCode::BAD_REQUEST, "Invalid token subject").into_response();
             };
 
             // Re-filter scope against current client restrictions.
@@ -435,12 +424,9 @@ async fn revoke(
     };
 
     // Decode the token to get JTI and verify ownership
-    let claims = match oauth.verify_token(&payload.token) {
-        Ok(c) => c,
-        Err(_) => {
-            // Per RFC 7009 §2.2, return 200 even for invalid tokens
-            return StatusCode::OK.into_response();
-        }
+    let Ok(claims) = oauth.verify_token(&payload.token) else {
+        // Per RFC 7009 §2.2, return 200 even for invalid tokens
+        return StatusCode::OK.into_response();
     };
 
     // Verify client identity (RFC 7009 §2.1)

@@ -59,7 +59,7 @@ fn validate_direction(direction: &str) -> Result<()> {
     if VALID_DIRECTIONS.contains(&direction) {
         Ok(())
     } else {
-        anyhow::bail!("invalid direction '{}': must be 'ltr' or 'rtl'", direction)
+        anyhow::bail!("invalid direction '{direction}': must be 'ltr' or 'rtl'")
     }
 }
 
@@ -69,7 +69,7 @@ fn validate_direction(direction: &str) -> Result<()> {
 /// alphanumeric subtags (e.g., "en", "fr", "pt-br", "zh-hans").
 fn validate_language_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 12 {
-        anyhow::bail!("language ID must be 1-12 characters, got '{}'", id);
+        anyhow::bail!("language ID must be 1-12 characters, got '{id}'");
     }
 
     let mut parts = id.split('-');
@@ -78,17 +78,11 @@ fn validate_language_id(id: &str) -> Result<()> {
     match parts.next() {
         Some(primary) if (2..=3).contains(&primary.len()) => {
             if !primary.bytes().all(|b| b.is_ascii_lowercase()) {
-                anyhow::bail!(
-                    "language ID primary subtag must be lowercase letters, got '{}'",
-                    id
-                );
+                anyhow::bail!("language ID primary subtag must be lowercase letters, got '{id}'");
             }
         }
         _ => {
-            anyhow::bail!(
-                "language ID must start with a 2-3 letter primary subtag, got '{}'",
-                id
-            );
+            anyhow::bail!("language ID must start with a 2-3 letter primary subtag, got '{id}'");
         }
     }
 
@@ -99,9 +93,7 @@ fn validate_language_id(id: &str) -> Result<()> {
             || !subtag.bytes().all(|b| b.is_ascii_alphanumeric())
         {
             anyhow::bail!(
-                "language ID subtag must be 1-8 alphanumeric characters, got '{}' in '{}'",
-                subtag,
-                id
+                "language ID subtag must be 1-8 alphanumeric characters, got '{subtag}' in '{id}'"
             );
         }
     }
@@ -188,8 +180,7 @@ impl Language {
 
             if is_currently_default == Some(true) && current_default.is_none() {
                 anyhow::bail!(
-                    "cannot remove default flag from language '{}': no other default language exists",
-                    id
+                    "cannot remove default flag from language '{id}': no other default language exists"
                 );
             }
         }
@@ -262,11 +253,7 @@ impl Language {
             .context("failed to count items referencing language")?;
 
         if item_count > 0 {
-            anyhow::bail!(
-                "cannot delete language '{}': {} item(s) still reference it",
-                id,
-                item_count
-            );
+            anyhow::bail!("cannot delete language '{id}': {item_count} item(s) still reference it");
         }
 
         // Check for referencing URL aliases
@@ -279,9 +266,7 @@ impl Language {
 
         if alias_count > 0 {
             anyhow::bail!(
-                "cannot delete language '{}': {} URL alias(es) still reference it",
-                id,
-                alias_count
+                "cannot delete language '{id}': {alias_count} URL alias(es) still reference it"
             );
         }
 

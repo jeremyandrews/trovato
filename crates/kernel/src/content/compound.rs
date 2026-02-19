@@ -148,8 +148,7 @@ fn validate_sub_field(
                 // Use char count (not byte count) to match HTML maxlength behavior
                 if text.chars().count() > *max {
                     errors.push(format!(
-                        "{}: section {} '{}' exceeds max length of {}",
-                        field_label, section_pos, label, max
+                        "{field_label}: section {section_pos} '{label}' exceeds max length of {max}"
                     ));
                 }
             }
@@ -163,8 +162,7 @@ fn validate_sub_field(
                     extract_str(value).is_some_and(|s| !s.is_empty() && s.parse::<i64>().is_err());
                 if is_invalid {
                     errors.push(format!(
-                        "{}: section {} '{}' must be an integer",
-                        field_label, section_pos, label
+                        "{field_label}: section {section_pos} '{label}' must be an integer"
                     ));
                 }
             }
@@ -178,8 +176,7 @@ fn validate_sub_field(
                     extract_str(value).is_some_and(|s| !s.is_empty() && s.parse::<f64>().is_err());
                 if is_invalid {
                     errors.push(format!(
-                        "{}: section {} '{}' must be a number",
-                        field_label, section_pos, label
+                        "{field_label}: section {section_pos} '{label}' must be a number"
                     ));
                 }
             }
@@ -187,16 +184,14 @@ fn validate_sub_field(
         FieldType::Email => {
             if extract_str(value).is_some_and(|s| !s.is_empty() && !is_valid_email(s)) {
                 errors.push(format!(
-                    "{}: section {} '{}' must be a valid email address",
-                    field_label, section_pos, label
+                    "{field_label}: section {section_pos} '{label}' must be a valid email address"
                 ));
             }
         }
         FieldType::Date => {
             if extract_str(value).is_some_and(|s| !s.is_empty() && !is_valid_date(s)) {
                 errors.push(format!(
-                    "{}: section {} '{}' must be a valid date (YYYY-MM-DD)",
-                    field_label, section_pos, label
+                    "{field_label}: section {section_pos} '{label}' must be a valid date (YYYY-MM-DD)"
                 ));
             }
         }
@@ -218,8 +213,7 @@ fn validate_sub_field(
     {
         let fmt = value.get("format").and_then(|f| f.as_str()).unwrap_or("");
         errors.push(format!(
-            "{}: section {} '{}' has unsupported format '{}'",
-            field_label, section_pos, label, fmt
+            "{field_label}: section {section_pos} '{label}' has unsupported format '{fmt}'"
         ));
     }
 }
@@ -574,7 +568,7 @@ mod tests {
             },
         ];
         let errors = validate_compound_field("body", &sections, &field_def);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -700,7 +694,7 @@ mod tests {
             data: serde_json::json!({"body": {"value": "Hello", "format": "plain_text"}}),
         }];
         let errors = validate_compound_field("body", &sections, &field_def);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -728,8 +722,7 @@ mod tests {
         let errors = validate_compound_field("body", &sections, &field_def);
         assert!(
             errors.is_empty(),
-            "Expected no errors for 5-char string, got: {:?}",
-            errors
+            "Expected no errors for 5-char string, got: {errors:?}"
         );
     }
 
@@ -775,7 +768,7 @@ mod tests {
             data: serde_json::json!({"value": "3.14"}),
         }];
         let errors = validate_compound_field("body", &sections, &field_def);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -835,7 +828,7 @@ mod tests {
         let mut fields = serde_json::Map::new();
         fields.insert("summary".to_string(), serde_json::json!("A summary"));
         let errors = validate_required_fields(&fields, &field_defs);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -962,7 +955,7 @@ mod tests {
             ),
         );
         let errors = process_compound_fields(&mut fields, &field_defs);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         // The raw string should have been replaced with parsed JSON
         assert!(fields["body"].is_object(), "Should be parsed JSON object");
     }
@@ -1055,9 +1048,7 @@ mod tests {
             let errors = validate_compound_field("body", &sections, &field_def);
             assert!(
                 errors.is_empty(),
-                "Expected no errors for format '{}', got: {:?}",
-                fmt,
-                errors
+                "Expected no errors for format '{fmt}', got: {errors:?}"
             );
         }
     }
@@ -1084,8 +1075,7 @@ mod tests {
         assert_eq!(
             errors.len(),
             1,
-            "Expected only max_items error, got: {:?}",
-            errors
+            "Expected only max_items error, got: {errors:?}"
         );
         assert!(errors[0].contains("at most 1"));
     }

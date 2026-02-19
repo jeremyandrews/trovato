@@ -23,10 +23,10 @@ pub fn router() -> Router<AppState> {
 /// Otherwise, shows promoted content or a welcome message.
 async fn front_page(State(state): State<AppState>, session: Session) -> Html<String> {
     // Check for configured front page item
-    if let Ok(Some(front_path)) = SiteConfig::front_page(state.db()).await {
-        if let Some(html) = render_configured_front_page(&state, &session, &front_path).await {
-            return Html(html);
-        }
+    if let Ok(Some(front_path)) = SiteConfig::front_page(state.db()).await
+        && let Some(html) = render_configured_front_page(&state, &session, &front_path).await
+    {
+        return Html(html);
     }
 
     // Fall back to promoted items listing
@@ -38,7 +38,7 @@ async fn front_page(State(state): State<AppState>, session: Session) -> Html<Str
     let html = state
         .theme()
         .render_page("/front", "Home", &content, &mut context)
-        .unwrap_or_else(|_| format!("<html><body>{}</body></html>", content));
+        .unwrap_or_else(|_| format!("<html><body>{content}</body></html>"));
 
     Html(html)
 }
@@ -69,7 +69,7 @@ async fn render_configured_front_page(
     }
 
     // Resolve item template
-    let suggestions = vec![
+    let suggestions = [
         format!("elements/item--{}--{}", item.item_type, item.id),
         format!("elements/item--{}", item.item_type),
         "elements/item".to_string(),
@@ -122,8 +122,7 @@ async fn render_promoted_listing(state: &AppState) -> String {
             .unwrap_or_default();
         if !date.is_empty() {
             html.push_str(&format!(
-                "<div class=\"blog-teaser__meta\"><time>{}</time></div>",
-                date
+                "<div class=\"blog-teaser__meta\"><time>{date}</time></div>"
             ));
         }
 
@@ -144,13 +143,12 @@ async fn render_promoted_listing(state: &AppState) -> String {
             // Truncate for teaser (char-boundary safe)
             let summary = if filtered.chars().count() > 200 {
                 let truncated: String = filtered.chars().take(200).collect();
-                format!("{}...", truncated)
+                format!("{truncated}...")
             } else {
                 filtered
             };
             html.push_str(&format!(
-                "<div class=\"blog-teaser__summary\">{}</div>",
-                summary
+                "<div class=\"blog-teaser__summary\">{summary}</div>"
             ));
         }
 
@@ -178,8 +176,7 @@ fn render_item_fields(item: &Item) -> String {
                     .unwrap_or("plain_text");
                 let filtered = FilterPipeline::for_format(format).process(text_val);
                 html.push_str(&format!(
-                    "<div class=\"field field-{}\">{}</div>",
-                    name, filtered
+                    "<div class=\"field field-{name}\">{filtered}</div>"
                 ));
             }
         }

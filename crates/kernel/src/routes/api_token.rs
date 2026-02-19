@@ -93,7 +93,7 @@ async fn create_token(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("Maximum of {} tokens per user", MAX_TOKENS_PER_USER),
+                error: format!("Maximum of {MAX_TOKENS_PER_USER} tokens per user"),
             }),
         ));
     }

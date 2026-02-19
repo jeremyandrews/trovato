@@ -128,7 +128,7 @@ pub fn verify_handle_access(host: &BenchHost, module: &Module) -> Result<()> {
         computed.is_some(),
         "field_computed should have been set by the plugin"
     );
-    println!("  Computed field: {:?}", computed);
+    println!("  Computed field: {computed:?}");
 
     Ok(())
 }

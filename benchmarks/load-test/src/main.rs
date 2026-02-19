@@ -170,7 +170,7 @@ async fn main() {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("Failed to connect to server: {}", e);
+            eprintln!("Failed to connect to server: {e}");
             std::process::exit(1);
         }
     }
@@ -281,14 +281,14 @@ async fn run_user(
         let url = if roll < read_pct {
             // Read request
             let endpoint = READ_ENDPOINTS.choose(&mut rng).unwrap();
-            format!("{}{}", base_url, endpoint)
+            format!("{base_url}{endpoint}")
         } else if roll < read_pct + search_pct {
             // Search request
             let query = SEARCH_QUERIES.choose(&mut rng).unwrap();
-            format!("{}/api/search?q={}", base_url, query)
+            format!("{base_url}/api/search?q={query}")
         } else {
             // Write request (just hit health for now - actual writes need auth)
-            format!("{}/health", base_url)
+            format!("{base_url}/health")
         };
 
         // Make request and record latency

@@ -24,9 +24,8 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return 0,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return 0;
             };
 
             // Read variable name (for logging/future use)
@@ -57,9 +56,8 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
          value_ptr: i32,
          value_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
             let _name =

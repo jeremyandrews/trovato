@@ -126,12 +126,11 @@ impl FormBuilder {
             r#"
             <div class="form-group">
                 <label>
-                    <input type="checkbox" name="status" value="1" {}>
+                    <input type="checkbox" name="status" value="1" {checked}>
                     Published
                 </label>
             </div>
-            "#,
-            checked
+            "#
         ));
 
         // Revision log
@@ -165,7 +164,7 @@ impl FormBuilder {
         match &field.field_type {
             FieldType::Text { max_length } => {
                 let max = max_length
-                    .map(|m| format!(r#"maxlength="{}""#, m))
+                    .map(|m| format!(r#"maxlength="{m}""#))
                     .unwrap_or_default();
                 let val = extract_text_value(value);
                 format!(

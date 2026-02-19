@@ -470,7 +470,7 @@ impl AppState {
         language_negotiators.sort_by_key(|n| std::cmp::Reverse(n.priority()));
 
         // Initialize email service (conditionally, when SMTP_HOST is set)
-        let email = config.smtp_host.as_ref().map(|host| {
+        let email = config.smtp_host.as_ref().and_then(|host| {
             match services::email::EmailService::new(
                 host,
                 config.smtp_port,
@@ -489,7 +489,7 @@ impl AppState {
                     None
                 }
             }
-        }).flatten();
+        });
 
         // Initialize optional services based on enabled plugins
         let audit = if enabled_set.contains("audit_log") {

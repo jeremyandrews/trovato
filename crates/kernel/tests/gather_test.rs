@@ -187,6 +187,7 @@ fn filter_value_types() {
     assert_eq!(int_val.as_i64(), Some(42));
 
     // Float
+    #[allow(clippy::approx_constant)] // intentionally testing with approximate pi
     let float_val = FilterValue::Float(3.14);
     assert!(float_val.as_i64().is_none());
 

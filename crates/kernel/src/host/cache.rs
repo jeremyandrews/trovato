@@ -23,9 +23,8 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
          _out_ptr: i32,
          _out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
             let _bin =
@@ -52,9 +51,8 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
          value_len: i32,
          tags_ptr: i32,
          tags_len: i32| {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return;
             };
 
             let _bin =
@@ -76,9 +74,8 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
         "trovato:kernel/cache-api",
         "invalidate-tag",
         |mut caller: wasmtime::Caller<'_, PluginState>, tag_ptr: i32, tag_len: i32| {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return;
             };
 
             let _tag =

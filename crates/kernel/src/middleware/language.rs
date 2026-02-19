@@ -189,10 +189,10 @@ impl LanguageNegotiator for AcceptLanguageNegotiator {
                 return Some(lang);
             }
             // Check primary subtag (e.g., "en-US" → "en")
-            if let Some(primary) = lang.split('-').next() {
-                if self.known_languages.contains(primary) {
-                    return Some(primary.to_string());
-                }
+            if let Some(primary) = lang.split('-').next()
+                && self.known_languages.contains(primary)
+            {
+                return Some(primary.to_string());
             }
         }
 
@@ -250,23 +250,23 @@ pub async fn negotiate_language(
     //    handled later in select_language via negotiate().
     let mut url_language: Option<String> = None;
     for negotiator in negotiators {
-        if let Some((lang, rewritten)) = negotiator.negotiate_with_rewrite(&request) {
-            if let Some(rewritten) = rewritten {
-                url_language = Some(lang);
-                if let Ok(new_uri) = rewrite_uri_path(request.uri(), &rewritten) {
-                    tracing::debug!(
-                        original = %request.uri(),
-                        new_uri = %new_uri,
-                        url_language = ?url_language,
-                        "stripped language prefix from URI"
-                    );
-                    *request.uri_mut() = new_uri;
-                }
-                break;
+        if let Some((lang, rewritten)) = negotiator.negotiate_with_rewrite(&request)
+            && let Some(rewritten) = rewritten
+        {
+            url_language = Some(lang);
+            if let Ok(new_uri) = rewrite_uri_path(request.uri(), &rewritten) {
+                tracing::debug!(
+                    original = %request.uri(),
+                    new_uri = %new_uri,
+                    url_language = ?url_language,
+                    "stripped language prefix from URI"
+                );
+                *request.uri_mut() = new_uri;
             }
-            // Non-rewriting negotiator matched but doesn't set url_language;
-            // it will be consulted again via negotiate() in select_language.
+            break;
         }
+        // Non-rewriting negotiator matched but doesn't set url_language;
+        // it will be consulted again via negotiate() in select_language.
     }
 
     // 2. Read session language (async) then select language (sync, testable).
@@ -352,7 +352,7 @@ fn select_language(
 /// Rewrite a URI to a new path while preserving query string.
 fn rewrite_uri_path(original: &Uri, new_path: &str) -> Result<Uri, axum::http::uri::InvalidUri> {
     if let Some(query) = original.query() {
-        format!("{}?{}", new_path, query).parse()
+        format!("{new_path}?{query}").parse()
     } else {
         new_path.parse()
     }

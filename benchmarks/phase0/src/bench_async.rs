@@ -85,29 +85,25 @@ impl AsyncBenchHost {
                     let result = b"[]";
 
                     // Get memory and write result
-                    let memory = match caller.get_export("memory") {
-                        Some(wasmtime::Extern::Memory(mem)) => mem,
-                        _ => return 0i64,
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return 0i64;
                     };
 
                     // Get alloc function to allocate space for result
-                    let alloc_fn = match caller.get_export("alloc") {
-                        Some(wasmtime::Extern::Func(f)) => f,
-                        _ => return 0i64,
+                    let Some(wasmtime::Extern::Func(alloc_fn)) = caller.get_export("alloc") else {
+                        return 0i64;
                     };
 
                     // Allocate space for result
-                    let alloc_typed = match alloc_fn.typed::<i32, i32>(&caller) {
-                        Ok(f) => f,
-                        Err(_) => return 0i64,
+                    let Ok(alloc_typed) = alloc_fn.typed::<i32, i32>(&caller) else {
+                        return 0i64;
                     };
 
-                    let ptr = match alloc_typed
+                    let Ok(ptr) = alloc_typed
                         .call_async(&mut caller, result.len() as i32)
                         .await
-                    {
-                        Ok(p) => p,
-                        Err(_) => return 0i64,
+                    else {
+                        return 0i64;
                     };
 
                     // Write result to memory
@@ -137,14 +133,12 @@ impl AsyncBenchHost {
              buf_ptr: i32,
              buf_len: i32|
              -> i32 {
-                let title = match caller.data().get_title(handle) {
-                    Some(t) => t,
-                    None => return -1,
+                let Some(title) = caller.data().get_title(handle) else {
+                    return -1;
                 };
 
-                let memory = match caller.get_export("memory") {
-                    Some(wasmtime::Extern::Memory(mem)) => mem,
-                    _ => return -1,
+                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return -1;
                 };
 
                 let bytes = title.as_bytes();
@@ -172,9 +166,8 @@ impl AsyncBenchHost {
              buf_ptr: i32,
              buf_len: i32|
              -> i32 {
-                let memory = match caller.get_export("memory") {
-                    Some(wasmtime::Extern::Memory(mem)) => mem,
-                    _ => return -1,
+                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return -1;
                 };
 
                 // Read field name
@@ -189,9 +182,8 @@ impl AsyncBenchHost {
                     Err(_) => return -1,
                 };
 
-                let value = match caller.data().get_field_string(handle, &field_name) {
-                    Some(v) => v,
-                    None => return -1,
+                let Some(value) = caller.data().get_field_string(handle, &field_name) else {
+                    return -1;
                 };
 
                 let bytes = value.as_bytes();
@@ -218,9 +210,8 @@ impl AsyncBenchHost {
              field_len: i32,
              value_ptr: i32,
              value_len: i32| {
-                let memory = match caller.get_export("memory") {
-                    Some(wasmtime::Extern::Memory(mem)) => mem,
-                    _ => return,
+                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return;
                 };
 
                 let data = memory.data(&caller);
@@ -258,9 +249,8 @@ impl AsyncBenchHost {
             "env",
             "memcmp",
             |mut caller: wasmtime::Caller<'_, StubHostState>, a: i32, b: i32, n: i32| -> i32 {
-                let memory = match caller.get_export("memory") {
-                    Some(wasmtime::Extern::Memory(mem)) => mem,
-                    _ => return 0,
+                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return 0;
                 };
                 let data = memory.data(&caller);
                 let slice_a = &data[a as usize..(a + n) as usize];

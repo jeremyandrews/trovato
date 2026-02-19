@@ -25,7 +25,7 @@ pub async fn generate_csrf_token(session: &Session) -> Result<String> {
 
     // Hash the random bytes with timestamp
     let mut hasher = Sha256::new();
-    hasher.update(&random_bytes);
+    hasher.update(random_bytes);
     hasher.update(timestamp.to_le_bytes());
     let hash = hasher.finalize();
 
@@ -33,7 +33,7 @@ pub async fn generate_csrf_token(session: &Session) -> Result<String> {
     let token = hex::encode(hash);
 
     // Store in session with timestamp
-    let token_data = format!("{}:{}", token, timestamp);
+    let token_data = format!("{token}:{timestamp}");
 
     // Get existing tokens
     let mut tokens: Vec<String> = session
@@ -55,7 +55,7 @@ pub async fn generate_csrf_token(session: &Session) -> Result<String> {
     session
         .insert(CSRF_SESSION_KEY, tokens)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to store CSRF token: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to store CSRF token: {e}"))?;
 
     Ok(token)
 }
@@ -123,7 +123,7 @@ pub async fn verify_csrf_token(session: &Session, submitted: &str) -> Result<boo
         session
             .insert(CSRF_SESSION_KEY, tokens)
             .await
-            .map_err(|e| anyhow::anyhow!("failed to update CSRF tokens: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to update CSRF tokens: {e}"))?;
 
         return Ok(true);
     }
@@ -136,7 +136,7 @@ pub async fn clear_csrf_tokens(session: &Session) -> Result<()> {
     session
         .remove::<Vec<String>>(CSRF_SESSION_KEY)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to clear CSRF tokens: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to clear CSRF tokens: {e}"))?;
     Ok(())
 }
 

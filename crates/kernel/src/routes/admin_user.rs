@@ -245,7 +245,7 @@ async fn edit_user_form(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/people/{}/edit", user_id));
+    context.insert("action", &format!("/admin/people/{user_id}/edit"));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
@@ -259,7 +259,7 @@ async fn edit_user_form(
             "status": user.status == 1,
         }),
     );
-    context.insert("path", &format!("/admin/people/{}/edit", user_id));
+    context.insert("path", &format!("/admin/people/{user_id}/edit"));
 
     render_admin_template(&state, "admin/user-form.html", context).await
 }
@@ -299,24 +299,25 @@ async fn edit_user_submit(
     }
 
     // Check if new username is taken by someone else
-    if form.name != existing_user.name {
-        if let Ok(Some(_)) = User::find_by_name(state.db(), &form.name).await {
-            errors.push(format!("Username '{}' is already taken.", form.name));
-        }
+    if form.name != existing_user.name
+        && let Ok(Some(_)) = User::find_by_name(state.db(), &form.name).await
+    {
+        errors.push(format!("Username '{}' is already taken.", form.name));
     }
 
     // Check if new email is taken by someone else
-    if form.mail != existing_user.mail {
-        if let Ok(Some(_)) = User::find_by_mail(state.db(), &form.mail).await {
-            errors.push(format!("Email '{}' is already in use.", form.mail));
-        }
+    if form.mail != existing_user.mail
+        && let Ok(Some(_)) = User::find_by_mail(state.db(), &form.mail).await
+    {
+        errors.push(format!("Email '{}' is already in use.", form.mail));
     }
 
     // Validate password if provided
-    if let Some(ref password) = form.password {
-        if !password.is_empty() && password.len() < 8 {
-            errors.push("Password must be at least 8 characters.".to_string());
-        }
+    if let Some(ref password) = form.password
+        && !password.is_empty()
+        && password.len() < 8
+    {
+        errors.push("Password must be at least 8 characters.".to_string());
     }
 
     if !errors.is_empty() {
@@ -324,7 +325,7 @@ async fn edit_user_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/people/{}/edit", user_id));
+        context.insert("action", &format!("/admin/people/{user_id}/edit"));
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
@@ -339,7 +340,7 @@ async fn edit_user_submit(
                 "status": form.status.is_some(),
             }),
         );
-        context.insert("path", &format!("/admin/people/{}/edit", user_id));
+        context.insert("path", &format!("/admin/people/{user_id}/edit"));
 
         return render_admin_template(&state, "admin/user-form.html", context).await;
     }
@@ -358,13 +359,12 @@ async fn edit_user_submit(
     match User::update(state.db(), user_id, input).await {
         Ok(_) => {
             // Update password if provided
-            if let Some(ref password) = form.password {
-                if !password.is_empty() {
-                    if let Err(e) = User::update_password(state.db(), user_id, password).await {
-                        tracing::error!(error = %e, "failed to update user password");
-                        return render_server_error("Failed to update password.");
-                    }
-                }
+            if let Some(ref password) = form.password
+                && !password.is_empty()
+                && let Err(e) = User::update_password(state.db(), user_id, password).await
+            {
+                tracing::error!(error = %e, "failed to update user password");
+                return render_server_error("Failed to update password.");
             }
 
             // Dispatch tap_user_update
@@ -578,7 +578,7 @@ async fn edit_role_form(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/people/roles/{}/edit", role_id));
+    context.insert("action", &format!("/admin/people/roles/{role_id}/edit"));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
@@ -590,7 +590,7 @@ async fn edit_role_form(
             "name": role.name,
         }),
     );
-    context.insert("path", &format!("/admin/people/roles/{}/edit", role_id));
+    context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
 
     render_admin_template(&state, "admin/role-form.html", context).await
 }
@@ -625,10 +625,10 @@ async fn edit_role_submit(
     }
 
     // Check if new name is taken by someone else
-    if form.name != existing_role.name {
-        if let Ok(Some(_)) = Role::find_by_name(state.db(), &form.name).await {
-            errors.push(format!("A role named '{}' already exists.", form.name));
-        }
+    if form.name != existing_role.name
+        && let Ok(Some(_)) = Role::find_by_name(state.db(), &form.name).await
+    {
+        errors.push(format!("A role named '{}' already exists.", form.name));
     }
 
     if !errors.is_empty() {
@@ -639,7 +639,7 @@ async fn edit_role_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/people/roles/{}/edit", role_id));
+        context.insert("action", &format!("/admin/people/roles/{role_id}/edit"));
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
@@ -652,7 +652,7 @@ async fn edit_role_submit(
                 "name": form.name,
             }),
         );
-        context.insert("path", &format!("/admin/people/roles/{}/edit", role_id));
+        context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
 
         return render_admin_template(&state, "admin/role-form.html", context).await;
     }
@@ -784,10 +784,11 @@ async fn save_permissions(
                 if let Err(e) = Role::add_permission(state.db(), role.id, permission).await {
                     tracing::error!(error = %e, role_id = %role.id, permission = %permission, "failed to add permission");
                 }
-            } else if !should_have && has_now {
-                if let Err(e) = Role::remove_permission(state.db(), role.id, permission).await {
-                    tracing::error!(error = %e, role_id = %role.id, permission = %permission, "failed to remove permission");
-                }
+            } else if !should_have
+                && has_now
+                && let Err(e) = Role::remove_permission(state.db(), role.id, permission).await
+            {
+                tracing::error!(error = %e, role_id = %role.id, permission = %permission, "failed to remove permission");
             }
         }
     }

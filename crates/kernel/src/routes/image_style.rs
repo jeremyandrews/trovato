@@ -113,15 +113,12 @@ async fn serve_derivative(
     };
 
     // Acquire processing permit to limit concurrent CPU-intensive operations
-    let _permit = match image_service.acquire_processing_permit().await {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Image processing unavailable",
-            )
-                .into_response();
-        }
+    let Ok(_permit) = image_service.acquire_processing_permit().await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Image processing unavailable",
+        )
+            .into_response();
     };
 
     // Process through style effects on a blocking thread to avoid starving

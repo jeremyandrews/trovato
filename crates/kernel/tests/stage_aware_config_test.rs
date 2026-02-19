@@ -217,13 +217,13 @@ async fn stage_aware_list_merges_stage_and_live() {
 
     // Create unique plugin name for this test
     let short_id = &Uuid::now_v7().simple().to_string()[..6];
-    let plugin_name = format!("lp{}", short_id);
+    let plugin_name = format!("lp{short_id}");
 
     // Create two types in live
     for i in 1..=2 {
         let item_type = ItemType {
-            type_name: format!("lt{}_{}", short_id, i),
-            label: format!("Live Type {}", i),
+            type_name: format!("lt{short_id}_{i}"),
+            label: format!("Live Type {i}"),
             description: None,
             has_title: true,
             title_label: None,
@@ -239,7 +239,7 @@ async fn stage_aware_list_merges_stage_and_live() {
 
     // Create a type only in stage
     let staged_type = ItemType {
-        type_name: format!("lt{}_staged", short_id),
+        type_name: format!("lt{short_id}_staged"),
         label: "Staged Only".to_string(),
         description: None,
         has_title: true,
@@ -277,13 +277,13 @@ async fn stage_aware_list_merges_stage_and_live() {
 
     assert_eq!(stage_types.len(), 2, "should have 2 types in stage view");
     assert!(stage_types.contains(&format!("lt{}_{}", short_id, 2)));
-    assert!(stage_types.contains(&format!("lt{}_staged", short_id)));
+    assert!(stage_types.contains(&format!("lt{short_id}_staged")));
     assert!(!stage_types.contains(&format!("lt{}_{}", short_id, 1)));
 
     // Clean up
     for i in 1..=2 {
         live_storage
-            .delete(entity_types::ITEM_TYPE, &format!("lt{}_{}", short_id, i))
+            .delete(entity_types::ITEM_TYPE, &format!("lt{short_id}_{i}"))
             .await
             .ok();
     }

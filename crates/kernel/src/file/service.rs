@@ -143,7 +143,7 @@ impl FileService {
 
         // Validate MIME type
         if !ALLOWED_MIME_TYPES.contains(&mime_type) {
-            bail!("file type not allowed: {}", mime_type);
+            bail!("file type not allowed: {mime_type}");
         }
 
         // Generate storage URI
@@ -174,7 +174,7 @@ impl FileService {
                     safe_name
                 )
             }
-            scheme => bail!("unsupported storage scheme: {}", scheme),
+            scheme => bail!("unsupported storage scheme: {scheme}"),
         };
 
         // Write to storage

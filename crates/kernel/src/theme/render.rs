@@ -94,7 +94,7 @@ impl RenderTreeConsumer {
         let mut html = String::new();
         for (_key, child) in children {
             let child_html = self.render_element(tera, child, context)?;
-            write!(html, "{}", child_html).unwrap();
+            write!(html, "{child_html}").unwrap();
         }
 
         Ok(html)
@@ -122,7 +122,7 @@ impl RenderTreeConsumer {
 
     /// Get the template name for an element type.
     fn template_for_type(&self, element_type: &str) -> String {
-        format!("elements/{}.html", element_type)
+        format!("elements/{element_type}.html")
     }
 
     /// Render an element inline when no template is available.
@@ -139,7 +139,7 @@ impl RenderTreeConsumer {
                     if class.is_empty() {
                         String::new()
                     } else {
-                        format!(" {}", class)
+                        format!(" {class}")
                     },
                     children
                 ))
@@ -157,7 +157,7 @@ impl RenderTreeConsumer {
             if class.is_empty() {
                 String::new()
             } else {
-                format!(" {}", class)
+                format!(" {class}")
             },
             attrs,
             children
@@ -185,7 +185,7 @@ impl RenderTreeConsumer {
                 if class.is_empty() {
                     String::new()
                 } else {
-                    format!(" class=\"{}\"", class)
+                    format!(" class=\"{class}\"")
                 },
                 attrs
             ));
@@ -197,7 +197,7 @@ impl RenderTreeConsumer {
             if class.is_empty() {
                 String::new()
             } else {
-                format!(" class=\"{}\"", class)
+                format!(" class=\"{class}\"")
             },
             attrs,
             value,
@@ -232,14 +232,14 @@ impl RenderTreeConsumer {
                     Value::String(s) => html_escape(s),
                     Value::Bool(b) => {
                         if *b {
-                            return format!(" {}", k);
+                            return format!(" {k}");
                         } else {
                             return String::new();
                         }
                     }
                     _ => v.to_string(),
                 };
-                format!(" {}=\"{}\"", k, value)
+                format!(" {k}=\"{value}\"")
             })
             .collect()
     }

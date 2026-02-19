@@ -56,8 +56,8 @@ pub async fn cmd_plugin_list(pool: &PgPool, plugins_dir: &Path) -> Result<()> {
                 "disabled"
             };
             println!(
-                "{:<20} {:<12} {:<14} {:<13} {} (not on disk)",
-                ps.name, ps.version, status_str, "?", "?"
+                "{:<20} {:<12} {:<14} {:<13} ? (not on disk)",
+                ps.name, ps.version, status_str, "?"
             );
         }
     }
@@ -74,7 +74,7 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
         .with_context(|| format!("plugin '{}' not found in {}", name, plugins_dir.display()))?;
 
     if status::is_installed(pool, name).await? {
-        bail!("plugin '{}' is already installed", name);
+        bail!("plugin '{name}' is already installed");
     }
 
     // Check that all declared dependencies are installed before proceeding
@@ -84,12 +84,8 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
     for dep in &info.dependencies {
         if !installed_set.contains(dep) {
             bail!(
-                "plugin '{}' depends on '{}' which is not installed. \
-                 Install '{}' first with: trovato plugin install {}",
-                name,
-                dep,
-                dep,
-                dep,
+                "plugin '{name}' depends on '{dep}' which is not installed. \
+                 Install '{dep}' first with: trovato plugin install {dep}",
             );
         }
     }
@@ -97,12 +93,8 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
     for dep in &info.migrations.depends_on {
         if !installed_set.contains(dep) {
             bail!(
-                "plugin '{}' migration depends on '{}' which is not installed. \
-                 Install '{}' first with: trovato plugin install {}",
-                name,
-                dep,
-                dep,
-                dep,
+                "plugin '{name}' migration depends on '{dep}' which is not installed. \
+                 Install '{dep}' first with: trovato plugin install {dep}",
             );
         }
     }
@@ -111,10 +103,10 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
     if !info.migrations.files.is_empty() {
         let applied = migration::run_plugin_migrations(pool, name, info, dir).await?;
         if applied.is_empty() {
-            println!("No pending migrations for '{}'.", name);
+            println!("No pending migrations for '{name}'.");
         } else {
             for m in &applied {
-                println!("  applied: {}", m);
+                println!("  applied: {m}");
             }
         }
     }
@@ -142,11 +134,11 @@ pub async fn cmd_plugin_migrate(
 
         let applied = migration::run_plugin_migrations(pool, name, info, dir).await?;
         if applied.is_empty() {
-            println!("No pending migrations for '{}'.", name);
+            println!("No pending migrations for '{name}'.");
         } else {
             println!("Applied {} migration(s) for '{}':", applied.len(), name);
             for m in &applied {
-                println!("  {}", m);
+                println!("  {m}");
             }
         }
     } else {
@@ -156,9 +148,9 @@ pub async fn cmd_plugin_migrate(
             println!("No pending migrations.");
         } else {
             for (plugin, applied) in &results {
-                println!("{}:", plugin);
+                println!("{plugin}:");
                 for m in applied {
-                    println!("  {}", m);
+                    println!("  {m}");
                 }
             }
         }
@@ -174,19 +166,15 @@ pub async fn cmd_plugin_migrate(
 /// For immediate effect, use the admin UI (`/admin/plugins`) instead.
 pub async fn cmd_plugin_enable(pool: &PgPool, name: &str) -> Result<()> {
     if !status::is_installed(pool, name).await? {
-        bail!(
-            "plugin '{}' is not installed. Run `trovato plugin install {}` first.",
-            name,
-            name
-        );
+        bail!("plugin '{name}' is not installed. Run `trovato plugin install {name}` first.");
     }
 
     let updated = status::set_status(pool, name, status::STATUS_ENABLED).await?;
     if updated {
-        println!("Plugin '{}' enabled.", name);
+        println!("Plugin '{name}' enabled.");
         println!("Note: if the server is running, restart it for CLI changes to take effect.");
     } else {
-        println!("Plugin '{}' not found.", name);
+        println!("Plugin '{name}' not found.");
     }
     Ok(())
 }
@@ -198,15 +186,15 @@ pub async fn cmd_plugin_enable(pool: &PgPool, name: &str) -> Result<()> {
 /// For immediate effect, use the admin UI (`/admin/plugins`) instead.
 pub async fn cmd_plugin_disable(pool: &PgPool, name: &str) -> Result<()> {
     if !status::is_installed(pool, name).await? {
-        bail!("plugin '{}' is not installed.", name);
+        bail!("plugin '{name}' is not installed.");
     }
 
     let updated = status::set_status(pool, name, status::STATUS_DISABLED).await?;
     if updated {
-        println!("Plugin '{}' disabled.", name);
+        println!("Plugin '{name}' disabled.");
         println!("Note: if the server is running, restart it for CLI changes to take effect.");
     } else {
-        println!("Plugin '{}' not found.", name);
+        println!("Plugin '{name}' not found.");
     }
     Ok(())
 }

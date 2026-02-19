@@ -290,7 +290,7 @@ async fn create_test_author(app: &TestApp) -> Uuid {
     )
     .bind(author_id)
     .bind(&username)
-    .bind(format!("{}@test.com", username))
+    .bind(format!("{username}@test.com"))
     .execute(&app.db)
     .await
     .expect("failed to create author");

@@ -264,9 +264,8 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
          plugin_len: i32,
          message_ptr: i32,
          message_len: i32| {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(mem)) => mem,
-                _ => return,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return;
             };
 
             let level = read_string(&memory, &caller, level_ptr, level_len).unwrap_or_default();
@@ -291,9 +290,8 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
          default_ptr: i32,
          default_len: i32|
          -> i64 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(mem)) => mem,
-                _ => return 0,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return 0;
             };
 
             let name = read_string(&memory, &caller, name_ptr, name_len).unwrap_or_default();
@@ -319,14 +317,12 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
          buf_ptr: i32,
          buf_len: i32|
          -> i32 {
-            let title = match caller.data().get_title(handle) {
-                Some(t) => t,
-                None => return -1,
+            let Some(title) = caller.data().get_title(handle) else {
+                return -1;
             };
 
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(mem)) => mem,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
             write_string_to_memory(&memory, &mut caller, buf_ptr, buf_len, &title)
@@ -345,19 +341,16 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
          buf_ptr: i32,
          buf_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(mem)) => mem,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let field_name = match read_string(&memory, &caller, field_ptr, field_len) {
-                Some(s) => s,
-                None => return -1,
+            let Some(field_name) = read_string(&memory, &caller, field_ptr, field_len) else {
+                return -1;
             };
 
-            let value = match caller.data().get_field_string(handle, &field_name) {
-                Some(v) => v,
-                None => return -1,
+            let Some(value) = caller.data().get_field_string(handle, &field_name) else {
+                return -1;
             };
 
             write_string_to_memory(&memory, &mut caller, buf_ptr, buf_len, &value)
@@ -374,19 +367,16 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
          field_len: i32,
          value_ptr: i32,
          value_len: i32| {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(mem)) => mem,
-                _ => return,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return;
             };
 
-            let field_name = match read_string(&memory, &caller, field_ptr, field_len) {
-                Some(s) => s,
-                None => return,
+            let Some(field_name) = read_string(&memory, &caller, field_ptr, field_len) else {
+                return;
             };
 
-            let value = match read_string(&memory, &caller, value_ptr, value_len) {
-                Some(s) => s,
-                None => return,
+            let Some(value) = read_string(&memory, &caller, value_ptr, value_len) else {
+                return;
             };
 
             caller
@@ -404,9 +394,8 @@ pub fn create_linker(engine: &Engine) -> Result<Linker<StubHostState>> {
         "env",
         "memcmp",
         |mut caller: wasmtime::Caller<'_, StubHostState>, a: i32, b: i32, n: i32| -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(mem)) => mem,
-                _ => return 0,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return 0;
             };
             let data = memory.data(&caller);
             let slice_a = &data[a as usize..(a + n) as usize];

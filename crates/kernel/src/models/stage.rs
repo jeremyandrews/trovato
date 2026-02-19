@@ -110,9 +110,7 @@ impl Stage {
 
             let stage = Self::find_by_id(pool, &current_id)
                 .await?
-                .with_context(|| {
-                    format!("stage '{}' not found during ancestry walk", current_id)
-                })?;
+                .with_context(|| format!("stage '{current_id}' not found during ancestry walk"))?;
 
             ancestry.push(stage.id.clone());
 

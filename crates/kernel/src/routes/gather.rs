@@ -300,7 +300,7 @@ async fn render_query_html(
         .unwrap_or_else(|| render_gather_content_html(&gather_query, &result, &filter_values));
 
     // Wrap in page layout with site context
-    let gather_path = format!("/gather/{}", query_id);
+    let gather_path = format!("/gather/{query_id}");
     let mut context = tera::Context::new();
     super::helpers::inject_site_context(&state, &session, &mut context, &gather_path).await;
 
@@ -397,10 +397,8 @@ fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Some(FilterValue::Integer(i))
-            } else if let Some(f) = n.as_f64() {
-                Some(FilterValue::Float(f))
             } else {
-                None
+                n.as_f64().map(FilterValue::Float)
             }
         }
         serde_json::Value::Bool(b) => Some(FilterValue::Boolean(b)),
@@ -509,30 +507,30 @@ fn render_gather_content_html(
     } else {
         html.push_str("<table class=\"table\">\n<thead>\n<tr>\n");
 
-        if let Some(first) = result.items.first() {
-            if let Some(obj) = first.as_object() {
-                for key in obj.keys() {
-                    html.push_str(&format!("<th>{}</th>\n", escape_html(key)));
-                }
-                html.push_str("</tr>\n</thead>\n<tbody>\n");
+        if let Some(first) = result.items.first()
+            && let Some(obj) = first.as_object()
+        {
+            for key in obj.keys() {
+                html.push_str(&format!("<th>{}</th>\n", escape_html(key)));
+            }
+            html.push_str("</tr>\n</thead>\n<tbody>\n");
 
-                for item in &result.items {
-                    html.push_str("<tr>\n");
-                    if let Some(obj) = item.as_object() {
-                        for key in obj.keys() {
-                            let value = obj
-                                .get(key)
-                                .map(|v| match v {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    serde_json::Value::Null => "".to_string(),
-                                    other => other.to_string(),
-                                })
-                                .unwrap_or_default();
-                            html.push_str(&format!("<td>{}</td>\n", escape_html(&value)));
-                        }
+            for item in &result.items {
+                html.push_str("<tr>\n");
+                if let Some(obj) = item.as_object() {
+                    for key in obj.keys() {
+                        let value = obj
+                            .get(key)
+                            .map(|v| match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                serde_json::Value::Null => "".to_string(),
+                                other => other.to_string(),
+                            })
+                            .unwrap_or_default();
+                        html.push_str(&format!("<td>{}</td>\n", escape_html(&value)));
                     }
-                    html.push_str("</tr>\n");
                 }
+                html.push_str("</tr>\n");
             }
         }
 

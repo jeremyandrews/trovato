@@ -417,9 +417,8 @@ pub async fn import_config(
     let mut tag_parents: Vec<(Uuid, Vec<Uuid>)> = Vec::new();
 
     for &entity_type in ENTITY_TYPE_ORDER {
-        let entities = match parsed.get(entity_type) {
-            Some(e) => e,
-            None => continue,
+        let Some(entities) = parsed.get(entity_type) else {
+            continue;
         };
 
         let mut count = 0usize;
@@ -606,9 +605,8 @@ async fn read_and_validate_files(
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
 
-        let os_name = match path.file_name() {
-            Some(n) => n,
-            None => continue,
+        let Some(os_name) = path.file_name() else {
+            continue;
         };
         let filename = match os_name.to_str() {
             Some(n) if !n.starts_with('.') && (n.ends_with(".yml") || n.ends_with(".yaml")) => {
@@ -647,12 +645,9 @@ async fn read_and_validate_files(
             continue;
         }
 
-        let (entity_type, filename_id) = match parse_config_filename(&filename) {
-            Some(parsed) => parsed,
-            None => {
-                warnings.push(format!("skipping unrecognized file: {filename}"));
-                continue;
-            }
+        let Some((entity_type, filename_id)) = parse_config_filename(&filename) else {
+            warnings.push(format!("skipping unrecognized file: {filename}"));
+            continue;
         };
         let entity_type = entity_type.to_string();
         let filename_id = filename_id.to_string();
@@ -1391,7 +1386,7 @@ parents:
         let mut warnings = Vec::new();
         let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
 
-        assert!(parsed.get("variable").is_none() || parsed["variable"].is_empty());
+        assert!(!parsed.contains_key("variable") || parsed["variable"].is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("failed to parse"));
     }

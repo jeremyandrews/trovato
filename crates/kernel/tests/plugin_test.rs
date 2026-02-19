@@ -152,8 +152,7 @@ version = "1.0.0"
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("WASM file not found") || err.contains("wasm"),
-        "Expected WASM error, got: {}",
-        err
+        "Expected WASM error, got: {err}"
     );
 
     // Cleanup
@@ -179,8 +178,7 @@ fn invalid_info_toml_error() {
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("parse") || err.contains("TOML"),
-        "Expected parse error, got: {}",
-        err
+        "Expected parse error, got: {err}"
     );
 
     // Cleanup
@@ -213,8 +211,7 @@ implements = ["tap_unknown_function"]
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("unknown tap"),
-        "Expected unknown tap error, got: {}",
-        err
+        "Expected unknown tap error, got: {err}"
     );
 
     // Cleanup

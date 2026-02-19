@@ -56,10 +56,10 @@ async fn list_content(
     // Get authors for display
     let mut authors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for item in &items {
-        if !authors.contains_key(&item.author_id.to_string()) {
-            if let Ok(Some(user)) = User::find_by_id(state.db(), item.author_id).await {
-                authors.insert(item.author_id.to_string(), user.name);
-            }
+        if !authors.contains_key(&item.author_id.to_string())
+            && let Ok(Some(user)) = User::find_by_id(state.db(), item.author_id).await
+        {
+            authors.insert(item.author_id.to_string(), user.name);
         }
     }
 
@@ -119,13 +119,13 @@ async fn add_content_form(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/content/add/{}", type_name));
+    context.insert("action", &format!("/admin/content/add/{type_name}"));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
     context.insert("content_type", &content_type);
     context.insert("values", &serde_json::json!({}));
-    context.insert("path", &format!("/admin/content/add/{}", type_name));
+    context.insert("path", &format!("/admin/content/add/{type_name}"));
 
     render_admin_template(&state, "admin/content-form.html", context).await
 }
@@ -186,7 +186,7 @@ async fn add_content_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/content/add/{}", type_name));
+        context.insert("action", &format!("/admin/content/add/{type_name}"));
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
@@ -200,7 +200,7 @@ async fn add_content_submit(
                 "fields": fields_json,
             }),
         );
-        context.insert("path", &format!("/admin/content/add/{}", type_name));
+        context.insert("path", &format!("/admin/content/add/{type_name}"));
 
         return render_admin_template(&state, "admin/content-form.html", context).await;
     }
@@ -258,7 +258,7 @@ async fn edit_content_form(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/content/{}/edit", item_id));
+    context.insert("action", &format!("/admin/content/{item_id}/edit"));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
@@ -273,7 +273,7 @@ async fn edit_content_form(
             "fields": item.fields,
         }),
     );
-    context.insert("path", &format!("/admin/content/{}/edit", item_id));
+    context.insert("path", &format!("/admin/content/{item_id}/edit"));
 
     render_admin_template(&state, "admin/content-form.html", context).await
 }
@@ -337,7 +337,7 @@ async fn edit_content_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/content/{}/edit", item_id));
+        context.insert("action", &format!("/admin/content/{item_id}/edit"));
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
@@ -353,7 +353,7 @@ async fn edit_content_submit(
                 "fields": fields_json,
             }),
         );
-        context.insert("path", &format!("/admin/content/{}/edit", item_id));
+        context.insert("path", &format!("/admin/content/{item_id}/edit"));
 
         return render_admin_template(&state, "admin/content-form.html", context).await;
     }

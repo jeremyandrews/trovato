@@ -36,7 +36,7 @@ impl RedisQueue {
 
     /// Get the full queue key with prefix.
     fn queue_key(&self, queue: &str) -> String {
-        format!("queue:{}", queue)
+        format!("queue:{queue}")
     }
 }
 

@@ -150,7 +150,7 @@ async fn upload_file(
             Json(UploadResponse {
                 success: false,
                 file: None,
-                error: Some(format!("File type not allowed: {}", mime_type)),
+                error: Some(format!("File type not allowed: {mime_type}")),
             }),
         )
             .into_response();

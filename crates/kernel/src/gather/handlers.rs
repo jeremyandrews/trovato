@@ -59,17 +59,16 @@ impl FilterHandler for HierarchicalInFilterHandler {
             return Ok(None);
         }
 
-        let jsonb_path = if filter.field.starts_with("fields.") {
-            &filter.field[7..]
-        } else {
-            &filter.field
-        };
+        let jsonb_path = filter
+            .field
+            .strip_prefix("fields.")
+            .unwrap_or(&filter.field);
 
         if !is_safe_jsonb_path(jsonb_path) {
-            bail!("unsafe JSONB field path: '{}'", jsonb_path);
+            bail!("unsafe JSONB field path: '{jsonb_path}'");
         }
 
-        let uuid_list: Vec<String> = uuids.iter().map(|u| format!("'{}'", u)).collect();
+        let uuid_list: Vec<String> = uuids.iter().map(|u| format!("'{u}'")).collect();
         let expr = format!(
             "{}.fields->>'{}' IN ({})",
             ctx.base_table,
@@ -111,13 +110,13 @@ impl FilterHandler for HierarchicalInFilterHandler {
 
             // Validate identifier safety
             if !is_safe_identifier(hierarchy_table) {
-                bail!("unsafe hierarchy_table name: '{}'", hierarchy_table);
+                bail!("unsafe hierarchy_table name: '{hierarchy_table}'");
             }
             if !is_safe_identifier(id_column) {
-                bail!("unsafe id_column name: '{}'", id_column);
+                bail!("unsafe id_column name: '{id_column}'");
             }
             if !is_safe_identifier(parent_column) {
-                bail!("unsafe parent_column name: '{}'", parent_column);
+                bail!("unsafe parent_column name: '{parent_column}'");
             }
 
             // Extract root UUIDs — supports single UUID or List of UUIDs
@@ -152,10 +151,6 @@ impl FilterHandler for HierarchicalInFilterHandler {
     WHERE d.depth < {max_depth}
 )
 SELECT DISTINCT id FROM descendants"#,
-                id_column = id_column,
-                hierarchy_table = hierarchy_table,
-                parent_column = parent_column,
-                max_depth = max_depth,
             );
 
             let rows: Vec<Uuid> = sqlx::query_scalar(&sql)
@@ -192,19 +187,17 @@ impl FilterHandler for JsonbArrayContainsFilterHandler {
         _config: &serde_json::Value,
         ctx: &FilterContext,
     ) -> Result<Option<SimpleExpr>> {
-        let value_str = match filter.value.as_string() {
-            Some(s) => s,
-            None => return Ok(None),
+        let Some(value_str) = filter.value.as_string() else {
+            return Ok(None);
         };
 
-        let jsonb_path = if filter.field.starts_with("fields.") {
-            &filter.field[7..]
-        } else {
-            &filter.field
-        };
+        let jsonb_path = filter
+            .field
+            .strip_prefix("fields.")
+            .unwrap_or(&filter.field);
 
         if !is_safe_jsonb_path(jsonb_path) {
-            bail!("unsafe JSONB field path: '{}'", jsonb_path);
+            bail!("unsafe JSONB field path: '{jsonb_path}'");
         }
 
         // Use serde_json for correct escaping of all JSON special characters
@@ -410,14 +403,12 @@ mod tests {
 
         // The legacy code generates: item.fields->>'category' IN ('00000000-0000-0000-0000-000000000000')
         // Our handler generates the same format
-        let expected_fragment = format!("item.fields->>'category' IN ('{}')", uuid);
+        let expected_fragment = format!("item.fields->>'category' IN ('{uuid}')");
         let expr_debug = format!("{:?}", result.unwrap());
         // Both use Expr::cust with the same SQL pattern
         assert!(
             expr_debug.contains(&expected_fragment),
-            "expected SQL fragment '{}' in expression debug: {}",
-            expected_fragment,
-            expr_debug
+            "expected SQL fragment '{expected_fragment}' in expression debug: {expr_debug}"
         );
     }
 }

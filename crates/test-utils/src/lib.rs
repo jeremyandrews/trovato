@@ -171,9 +171,7 @@ pub mod assert {
     pub fn has_key(value: &Value, key: &str) {
         assert!(
             value.get(key).is_some(),
-            "Expected JSON to have key '{}', got: {}",
-            key,
-            value
+            "Expected JSON to have key '{key}', got: {value}"
         );
     }
 
@@ -192,9 +190,7 @@ pub mod assert {
     pub fn contains(haystack: &str, needle: &str) {
         assert!(
             haystack.contains(needle),
-            "Expected string to contain '{}'\nActual: {}",
-            needle,
-            haystack
+            "Expected string to contain '{needle}'\nActual: {haystack}"
         );
     }
 
@@ -202,9 +198,7 @@ pub mod assert {
     pub fn not_contains(haystack: &str, needle: &str) {
         assert!(
             !haystack.contains(needle),
-            "Expected string to NOT contain '{}'\nActual: {}",
-            needle,
-            haystack
+            "Expected string to NOT contain '{needle}'\nActual: {haystack}"
         );
     }
 }

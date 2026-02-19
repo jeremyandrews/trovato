@@ -1,8 +1,8 @@
-//! Category models: categories and tags with hierarchical taxonomy.
+//! Category models: categories and tags with hierarchical category system.
 //!
-//! Categories provide flexible taxonomies with:
+//! Categories provide flexible classification with:
 //! - Category: Named collections of tags (e.g., "Topics", "Regions")
-//! - Tag: Individual taxonomy entries with labels and descriptions
+//! - Tag: Individual category entries with labels and descriptions
 //! - Hierarchy: DAG structure supporting multiple parents per tag
 
 use anyhow::{Context, Result};
@@ -166,9 +166,8 @@ impl Category {
 
     /// Update a category.
     pub async fn update(pool: &PgPool, id: &str, input: UpdateCategory) -> Result<Option<Self>> {
-        let current = match Self::find_by_id(pool, id).await? {
-            Some(c) => c,
-            None => return Ok(None),
+        let Some(current) = Self::find_by_id(pool, id).await? else {
+            return Ok(None);
         };
 
         let label = input.label.unwrap_or(current.label);
@@ -315,9 +314,8 @@ impl Tag {
     pub async fn update(pool: &PgPool, id: Uuid, input: UpdateTag) -> Result<Option<Self>> {
         let now = chrono::Utc::now().timestamp();
 
-        let current = match Self::find_by_id(pool, id).await? {
-            Some(t) => t,
-            None => return Ok(None),
+        let Some(current) = Self::find_by_id(pool, id).await? else {
+            return Ok(None);
         };
 
         let label = input.label.unwrap_or(current.label);

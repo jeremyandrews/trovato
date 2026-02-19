@@ -194,7 +194,7 @@ async fn edit_alias_form(
     context.insert("csrf_token", &csrf_token);
     context.insert(
         "action",
-        &format!("/admin/structure/aliases/{}/edit", alias_id),
+        &format!("/admin/structure/aliases/{alias_id}/edit"),
     );
     context.insert("editing", &true);
     context.insert(
@@ -205,10 +205,7 @@ async fn edit_alias_form(
             "language": alias.language,
         }),
     );
-    context.insert(
-        "path",
-        &format!("/admin/structure/aliases/{}/edit", alias_id),
-    );
+    context.insert("path", &format!("/admin/structure/aliases/{alias_id}/edit"));
 
     render_admin_template(&state, "admin/alias-form.html", context).await
 }

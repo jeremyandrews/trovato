@@ -88,12 +88,9 @@ pub async fn authenticate_bearer_token(
     }
 
     // Parse user ID from claims
-    let user_id = match claims.sub.parse::<Uuid>() {
-        Ok(id) => id,
-        Err(_) => {
-            debug!(sub = %claims.sub, "invalid user ID in token");
-            return (StatusCode::UNAUTHORIZED, "Invalid token subject").into_response();
-        }
+    let Ok(user_id) = claims.sub.parse::<Uuid>() else {
+        debug!(sub = %claims.sub, "invalid user ID in token");
+        return (StatusCode::UNAUTHORIZED, "Invalid token subject").into_response();
     };
 
     // Detect client_credentials tokens (machine-to-machine, no real user).

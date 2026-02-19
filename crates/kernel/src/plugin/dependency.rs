@@ -41,11 +41,7 @@ pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<S
         for dep in &info.dependencies {
             // Check if dependency exists
             if !plugins.contains_key(dep) {
-                bail!(
-                    "plugin '{}' depends on '{}' which is not installed",
-                    name,
-                    dep
-                );
+                bail!("plugin '{name}' depends on '{dep}' which is not installed");
             }
 
             // name depends on dep, so dep must load first
@@ -128,7 +124,7 @@ mod tests {
     fn make_plugin(name: &str, deps: Vec<&str>) -> PluginInfo {
         PluginInfo {
             name: name.to_string(),
-            description: format!("{} plugin", name),
+            description: format!("{name} plugin"),
             version: "1.0.0".to_string(),
             default_enabled: true,
             dependencies: deps.into_iter().map(String::from).collect(),

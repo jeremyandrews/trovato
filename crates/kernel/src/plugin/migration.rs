@@ -84,7 +84,7 @@ pub async fn run_plugin_migrations(
         let sql = std::fs::read_to_string(&sql_path).map_err(|e| PluginError::MigrationFailed {
             plugin: plugin_name.to_string(),
             migration: migration_file.to_string(),
-            details: format!("failed to read file: {}", e),
+            details: format!("failed to read file: {e}"),
         })?;
 
         debug!(
@@ -151,21 +151,13 @@ pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<
         let mut all_deps: HashSet<&str> = HashSet::new();
         for dep in &info.dependencies {
             if !plugins.contains_key(dep) {
-                bail!(
-                    "plugin '{}': depends on '{}' which is not in the enabled plugin set",
-                    name,
-                    dep
-                );
+                bail!("plugin '{name}': depends on '{dep}' which is not in the enabled plugin set");
             }
             all_deps.insert(dep);
         }
         for dep in &info.migrations.depends_on {
             if !plugins.contains_key(dep) {
-                bail!(
-                    "plugin '{}': migration depends_on '{}' which is not available",
-                    name,
-                    dep
-                );
+                bail!("plugin '{name}': migration depends_on '{dep}' which is not available");
             }
             all_deps.insert(dep);
         }
@@ -272,7 +264,7 @@ mod tests {
     fn make_plugin(name: &str, deps: Vec<&str>, migration_deps: Vec<&str>) -> PluginInfo {
         PluginInfo {
             name: name.to_string(),
-            description: format!("{} plugin", name),
+            description: format!("{name} plugin"),
             version: "1.0.0".to_string(),
             default_enabled: true,
             dependencies: deps.into_iter().map(String::from).collect(),
@@ -373,8 +365,7 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("missing_plugin"),
-            "error should name the missing dep: {}",
-            msg
+            "error should name the missing dep: {msg}"
         );
     }
 }

@@ -155,7 +155,7 @@ fn get_tap_function(
     // Use tap name directly as export name (e.g., "tap_item_view" stays "tap_item_view")
     instance
         .get_typed_func::<(i32, i32), i64>(&mut *store, tap_name)
-        .with_context(|| format!("tap '{}' not exported", tap_name))
+        .with_context(|| format!("tap '{tap_name}' not exported"))
 }
 
 /// Call a tap function with JSON input.
@@ -200,7 +200,7 @@ async fn call_tap_function(
     let output_len = (result & 0xFFFFFFFF) as i32;
 
     if output_len < 0 {
-        anyhow::bail!("tap returned error code: {}", output_len);
+        anyhow::bail!("tap returned error code: {output_len}");
     }
 
     // Read output from memory
@@ -209,7 +209,7 @@ async fn call_tap_function(
         let start = output_ptr as usize;
         let end = start + output_len as usize;
         if end > data.len() {
-            anyhow::bail!("output out of bounds: {}..{}", start, end);
+            anyhow::bail!("output out of bounds: {start}..{end}");
         }
         String::from_utf8(data[start..end].to_vec()).context("invalid UTF-8 in tap output")?
     };

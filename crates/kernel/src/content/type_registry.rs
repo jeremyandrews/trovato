@@ -322,8 +322,7 @@ impl ContentTypeRegistry {
 mod tests {
     #[test]
     fn content_type_registry_placeholder() {
-        // Full tests require database connection
-        // See tests/item_test.rs for ContentTypeDefinition tests
-        assert!(true);
+        // Full tests require database connection.
+        // See tests/item_test.rs for ContentTypeDefinition tests.
     }
 }

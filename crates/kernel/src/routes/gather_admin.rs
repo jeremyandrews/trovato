@@ -147,8 +147,7 @@ async fn create_submit(
     // Check if query ID already exists
     if state.gather().get_query(&query_id).is_some() {
         errors.push(format!(
-            "A gather query with ID '{}' already exists.",
-            query_id
+            "A gather query with ID '{query_id}' already exists."
         ));
     }
 
@@ -156,7 +155,7 @@ async fn create_submit(
     let definition: QueryDefinition = match serde_json::from_str(&form.definition_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid definition JSON: {}", e));
+            errors.push(format!("Invalid definition JSON: {e}"));
             QueryDefinition::default()
         }
     };
@@ -165,7 +164,7 @@ async fn create_submit(
     let display: QueryDisplay = match serde_json::from_str(&form.display_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid display JSON: {}", e));
+            errors.push(format!("Invalid display JSON: {e}"));
             QueryDisplay::default()
         }
     };
@@ -255,7 +254,7 @@ async fn edit_form(
     let display_json = serde_json::to_string(&query.display).unwrap_or_default();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/gather/{}/save", id));
+    context.insert("action", &format!("/admin/gather/{id}/save"));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
@@ -270,7 +269,7 @@ async fn edit_form(
             "description": query.description.unwrap_or_default(),
         }),
     );
-    context.insert("path", &format!("/admin/gather/{}/edit", id));
+    context.insert("path", &format!("/admin/gather/{id}/edit"));
     super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
     render_admin_template(&state, "admin/gather-form.html", context).await
@@ -311,7 +310,7 @@ async fn save_submit(
     let definition: QueryDefinition = match serde_json::from_str(&form.definition_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid definition JSON: {}", e));
+            errors.push(format!("Invalid definition JSON: {e}"));
             QueryDefinition::default()
         }
     };
@@ -320,7 +319,7 @@ async fn save_submit(
     let display: QueryDisplay = match serde_json::from_str(&form.display_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid display JSON: {}", e));
+            errors.push(format!("Invalid display JSON: {e}"));
             QueryDisplay::default()
         }
     };
@@ -340,7 +339,7 @@ async fn save_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/gather/{}/save", id));
+        context.insert("action", &format!("/admin/gather/{id}/save"));
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
@@ -356,7 +355,7 @@ async fn save_submit(
                 "description": form.description,
             }),
         );
-        context.insert("path", &format!("/admin/gather/{}/edit", id));
+        context.insert("path", &format!("/admin/gather/{id}/edit"));
         super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
         return render_admin_template(&state, "admin/gather-form.html", context).await;
@@ -410,7 +409,7 @@ async fn clone_query(
     }
 
     let timestamp = chrono::Utc::now().timestamp();
-    let new_id = format!("{}-copy-{}", id, timestamp);
+    let new_id = format!("{id}-copy-{timestamp}");
 
     match state.gather().clone_query(&id, &new_id).await {
         Ok(_) => {

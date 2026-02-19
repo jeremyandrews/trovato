@@ -28,6 +28,7 @@ impl FilterPipeline {
     }
 
     /// Add a filter to the pipeline.
+    #[allow(clippy::should_implement_trait)] // builder pattern, not arithmetic
     pub fn add<F: TextFilter + 'static>(mut self, filter: F) -> Self {
         self.filters.push(Box::new(filter));
         self
@@ -234,8 +235,7 @@ impl TextFilter for UrlFilter {
             } else {
                 // Convert to link
                 result.push_str(&format!(
-                    r#"<a href="{}" target="_blank" rel="noopener">{}</a>"#,
-                    url, url
+                    r#"<a href="{url}" target="_blank" rel="noopener">{url}</a>"#
                 ));
             }
 

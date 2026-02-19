@@ -21,14 +21,12 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _query = match read_string_from_memory(&memory, &caller, query_ptr, query_len) {
-                Ok(q) => q,
-                Err(_) => return -2,
+            let Ok(_query) = read_string_from_memory(&memory, &caller, query_ptr, query_len) else {
+                return -2;
             };
 
             // TODO: Implement actual database select
@@ -52,19 +50,16 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _table = match read_string_from_memory(&memory, &caller, table_ptr, table_len) {
-                Ok(t) => t,
-                Err(_) => return -2,
+            let Ok(_table) = read_string_from_memory(&memory, &caller, table_ptr, table_len) else {
+                return -2;
             };
 
-            let _data = match read_string_from_memory(&memory, &caller, data_ptr, data_len) {
-                Ok(d) => d,
-                Err(_) => return -3,
+            let Ok(_data) = read_string_from_memory(&memory, &caller, data_ptr, data_len) else {
+                return -3;
             };
 
             // TODO: Implement actual database insert
@@ -88,26 +83,22 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          where_ptr: i32,
          where_len: i32|
          -> i64 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _table = match read_string_from_memory(&memory, &caller, table_ptr, table_len) {
-                Ok(t) => t,
-                Err(_) => return -2,
+            let Ok(_table) = read_string_from_memory(&memory, &caller, table_ptr, table_len) else {
+                return -2;
             };
 
-            let _data = match read_string_from_memory(&memory, &caller, data_ptr, data_len) {
-                Ok(d) => d,
-                Err(_) => return -3,
+            let Ok(_data) = read_string_from_memory(&memory, &caller, data_ptr, data_len) else {
+                return -3;
             };
 
-            let _where_clause =
-                match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
-                    Ok(w) => w,
-                    Err(_) => return -4,
-                };
+            let Ok(_where_clause) = read_string_from_memory(&memory, &caller, where_ptr, where_len)
+            else {
+                return -4;
+            };
 
             // TODO: Implement actual database update
             // Returns rows affected
@@ -125,21 +116,18 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          where_ptr: i32,
          where_len: i32|
          -> i64 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _table = match read_string_from_memory(&memory, &caller, table_ptr, table_len) {
-                Ok(t) => t,
-                Err(_) => return -2,
+            let Ok(_table) = read_string_from_memory(&memory, &caller, table_ptr, table_len) else {
+                return -2;
             };
 
-            let _where_clause =
-                match read_string_from_memory(&memory, &caller, where_ptr, where_len) {
-                    Ok(w) => w,
-                    Err(_) => return -3,
-                };
+            let Ok(_where_clause) = read_string_from_memory(&memory, &caller, where_ptr, where_len)
+            else {
+                return -3;
+            };
 
             // TODO: Implement actual database delete
             // Returns rows affected
@@ -160,19 +148,17 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _sql = match read_string_from_memory(&memory, &caller, sql_ptr, sql_len) {
-                Ok(s) => s,
-                Err(_) => return -2,
+            let Ok(_sql) = read_string_from_memory(&memory, &caller, sql_ptr, sql_len) else {
+                return -2;
             };
 
-            let _params = match read_string_from_memory(&memory, &caller, params_ptr, params_len) {
-                Ok(p) => p,
-                Err(_) => return -3,
+            let Ok(_params) = read_string_from_memory(&memory, &caller, params_ptr, params_len)
+            else {
+                return -3;
             };
 
             // TODO: Implement actual raw query execution with proper sandboxing
@@ -193,19 +179,17 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
          params_ptr: i32,
          params_len: i32|
          -> i64 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let _sql = match read_string_from_memory(&memory, &caller, sql_ptr, sql_len) {
-                Ok(s) => s,
-                Err(_) => return -2,
+            let Ok(_sql) = read_string_from_memory(&memory, &caller, sql_ptr, sql_len) else {
+                return -2;
             };
 
-            let _params = match read_string_from_memory(&memory, &caller, params_ptr, params_len) {
-                Ok(p) => p,
-                Err(_) => return -3,
+            let Ok(_params) = read_string_from_memory(&memory, &caller, params_ptr, params_len)
+            else {
+                return -3;
             };
 
             // TODO: Implement actual raw execute with proper sandboxing

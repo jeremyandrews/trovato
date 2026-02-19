@@ -93,7 +93,7 @@ impl DirectConfigStorage {
     async fn load_search_field_config(&self, id: &str) -> Result<Option<ConfigEntity>> {
         let uuid = id
             .parse::<Uuid>()
-            .map_err(|e| anyhow::anyhow!("invalid search field config ID '{}': {}", id, e))?;
+            .map_err(|e| anyhow::anyhow!("invalid search field config ID '{id}': {e}"))?;
 
         let config = sqlx::query_as::<_, SearchFieldConfig>(
             "SELECT id, bundle, field_name, weight FROM search_field_config WHERE id = $1",
@@ -131,7 +131,7 @@ impl DirectConfigStorage {
     async fn delete_search_field_config(&self, id: &str) -> Result<bool> {
         let uuid = id
             .parse::<Uuid>()
-            .map_err(|e| anyhow::anyhow!("invalid search field config ID '{}': {}", id, e))?;
+            .map_err(|e| anyhow::anyhow!("invalid search field config ID '{id}': {e}"))?;
 
         let result = sqlx::query("DELETE FROM search_field_config WHERE id = $1")
             .bind(uuid)
@@ -511,7 +511,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TAG => self.load_tag(id).await,
             entity_types::VARIABLE => self.load_variable(id).await,
             entity_types::LANGUAGE => self.load_language(id).await,
-            _ => Err(anyhow::anyhow!("unknown entity type: {}", entity_type)),
+            _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
 
@@ -534,7 +534,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TAG => self.delete_tag(id).await,
             entity_types::VARIABLE => self.delete_variable(id).await,
             entity_types::LANGUAGE => self.delete_language(id).await,
-            _ => Err(anyhow::anyhow!("unknown entity type: {}", entity_type)),
+            _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
 
@@ -550,7 +550,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TAG => self.list_tags(filter).await,
             entity_types::VARIABLE => self.list_variables(filter).await,
             entity_types::LANGUAGE => self.list_languages(filter).await,
-            _ => Err(anyhow::anyhow!("unknown entity type: {}", entity_type)),
+            _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
 }

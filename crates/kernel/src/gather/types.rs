@@ -604,7 +604,7 @@ mod tests {
         let parsed: FilterValue = serde_json::from_value(json).unwrap();
         match parsed {
             FilterValue::Contextual(ContextualValue::CurrentUser) => {}
-            other => panic!("expected Contextual(CurrentUser), got {:?}", other),
+            other => panic!("expected Contextual(CurrentUser), got {other:?}"),
         }
 
         let val2 = FilterValue::Contextual(ContextualValue::UrlArg("cat".into()));
@@ -612,7 +612,7 @@ mod tests {
         let parsed2: FilterValue = serde_json::from_value(json2).unwrap();
         match parsed2 {
             FilterValue::Contextual(ContextualValue::UrlArg(ref s)) if s == "cat" => {}
-            other => panic!("expected Contextual(UrlArg(\"cat\")), got {:?}", other),
+            other => panic!("expected Contextual(UrlArg(\"cat\")), got {other:?}"),
         }
     }
 

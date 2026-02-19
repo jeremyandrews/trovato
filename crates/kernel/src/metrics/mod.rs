@@ -239,12 +239,10 @@ fn normalize_path(path: &str) -> String {
     let normalized: Vec<String> = segments
         .into_iter()
         .map(|s| {
-            // Replace UUIDs
-            if uuid::Uuid::parse_str(s).is_ok() {
-                "{id}".to_string()
-            }
-            // Replace numeric IDs
-            else if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
+            // Replace UUIDs and numeric IDs with a placeholder to limit cardinality
+            if uuid::Uuid::parse_str(s).is_ok()
+                || (!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+            {
                 "{id}".to_string()
             } else {
                 s.to_string()

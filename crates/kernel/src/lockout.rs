@@ -131,9 +131,9 @@ impl LockoutService {
 }
 
 fn attempts_key(username: &str) -> String {
-    format!("lockout:attempts:{}", username)
+    format!("lockout:attempts:{username}")
 }
 
 fn lockout_key(username: &str) -> String {
-    format!("lockout:locked:{}", username)
+    format!("lockout:locked:{username}")
 }

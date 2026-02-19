@@ -255,7 +255,7 @@ impl FormService {
         state: &mut FormState,
     ) -> Result<AjaxResponse> {
         // Increment item count
-        let count_key = format!("{}_count", field_name);
+        let count_key = format!("{field_name}_count");
         let current_count = state
             .extra
             .get(&count_key)
@@ -271,7 +271,7 @@ impl FormService {
         let new_item_html = self.render_multi_value_item(field_name, new_count - 1)?;
 
         Ok(AjaxResponse::new()
-            .append(format!("#{}-wrapper", field_name), new_item_html)
+            .append(format!("#{field_name}-wrapper"), new_item_html)
             .invoke(
                 "Trovato.updateFieldDelta",
                 serde_json::json!({
@@ -289,7 +289,7 @@ impl FormService {
         state: &mut FormState,
     ) -> Result<AjaxResponse> {
         // Decrement item count
-        let count_key = format!("{}_count", field_name);
+        let count_key = format!("{field_name}_count");
         let current_count = state
             .extra
             .get(&count_key)
@@ -302,7 +302,7 @@ impl FormService {
                 .insert(count_key, Value::Number((current_count - 1).into()));
         }
 
-        Ok(AjaxResponse::new().remove(format!("#{}-{}", field_name, index)))
+        Ok(AjaxResponse::new().remove(format!("#{field_name}-{index}")))
     }
 
     /// Render a multi-value field item.
@@ -310,7 +310,7 @@ impl FormService {
         let element = FormElement::textfield().title(format!("Item {}", index + 1));
 
         let mut context = tera::Context::new();
-        context.insert("name", &format!("{}[{}]", field_name, index));
+        context.insert("name", &format!("{field_name}[{index}]"));
         context.insert("element", &element);
         context.insert("index", &index);
         context.insert("field_name", field_name);
@@ -324,9 +324,7 @@ impl FormService {
                     r#"<div id="{field_name}-{index}" class="multi-value-item">
                         <input type="text" name="{field_name}[{index}]" class="form-text" />
                         <button type="button" class="remove-item" data-ajax-trigger="remove_{field_name}_{index}">Remove</button>
-                    </div>"#,
-                    field_name = field_name,
-                    index = index
+                    </div>"#
                 ))
             })
     }
@@ -452,7 +450,7 @@ pub enum FormResult {
     ValidationFailed(Vec<ValidationError>),
 
     /// Rebuild form (e.g., after AJAX update).
-    Rebuild(Form),
+    Rebuild(Box<Form>),
 
     /// AJAX response.
     Ajax(AjaxResponse),

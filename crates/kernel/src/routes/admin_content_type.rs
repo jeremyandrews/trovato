@@ -214,7 +214,7 @@ async fn edit_content_type_form(
     let mut context = tera::Context::new();
     context.insert(
         "action",
-        &format!("/admin/structure/types/{}/edit", type_name),
+        &format!("/admin/structure/types/{type_name}/edit"),
     );
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
@@ -250,10 +250,7 @@ async fn edit_content_type_form(
             "revision_default": revision_default,
         }),
     );
-    context.insert(
-        "path",
-        &format!("/admin/structure/types/{}/edit", type_name),
-    );
+    context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
     render_admin_template(&state, "admin/content-type-form.html", context).await
 }
@@ -294,7 +291,7 @@ async fn edit_content_type_submit(
         let mut context = tera::Context::new();
         context.insert(
             "action",
-            &format!("/admin/structure/types/{}/edit", type_name),
+            &format!("/admin/structure/types/{type_name}/edit"),
         );
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
@@ -311,10 +308,7 @@ async fn edit_content_type_submit(
                 "revision_default": form.revision_default.is_some(),
             }),
         );
-        context.insert(
-            "path",
-            &format!("/admin/structure/types/{}/edit", type_name),
-        );
+        context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
         return render_admin_template(&state, "admin/content-type-form.html", context).await;
     }
@@ -369,10 +363,7 @@ async fn manage_fields(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     // Save initial form state for AJAX callbacks
-    let form_state = FormState::new(
-        format!("manage_fields_{}", type_name),
-        form_build_id.clone(),
-    );
+    let form_state = FormState::new(format!("manage_fields_{type_name}"), form_build_id.clone());
 
     if let Err(e) = state.forms().save_state(&form_build_id, &form_state).await {
         tracing::warn!(error = %e, "failed to save initial form state");
@@ -385,7 +376,7 @@ async fn manage_fields(
     context.insert("form_build_id", &form_build_id);
     context.insert(
         "path",
-        &format!("/admin/structure/types/{}/fields", type_name),
+        &format!("/admin/structure/types/{type_name}/fields"),
     );
 
     render_admin_template(&state, "admin/field-list.html", context).await
@@ -439,7 +430,7 @@ async fn add_field(
 
         // Save form state for AJAX callbacks
         let form_state = crate::form::FormState::new(
-            format!("manage_fields_{}", type_name),
+            format!("manage_fields_{type_name}"),
             form_build_id.clone(),
         );
         if let Err(e) = state.forms().save_state(&form_build_id, &form_state).await {
@@ -462,7 +453,7 @@ async fn add_field(
         );
         context.insert(
             "path",
-            &format!("/admin/structure/types/{}/fields", type_name),
+            &format!("/admin/structure/types/{type_name}/fields"),
         );
 
         return render_admin_template(&state, "admin/field-list.html", context).await;
@@ -480,7 +471,7 @@ async fn add_field(
                 field = %form.name,
                 "field added"
             );
-            Redirect::to(&format!("/admin/structure/types/{}/fields", type_name)).into_response()
+            Redirect::to(&format!("/admin/structure/types/{type_name}/fields")).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to add field");
@@ -535,7 +526,7 @@ async fn manage_search_config(
     context.insert("form_build_id", &form_build_id);
     context.insert(
         "path",
-        &format!("/admin/structure/types/{}/search", type_name),
+        &format!("/admin/structure/types/{type_name}/search"),
     );
 
     render_admin_template(&state, "admin/search-config.html", context).await
@@ -582,7 +573,7 @@ async fn add_search_config(
                 weight = %weight,
                 "search field configured"
             );
-            Redirect::to(&format!("/admin/structure/types/{}/search", type_name)).into_response()
+            Redirect::to(&format!("/admin/structure/types/{type_name}/search")).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to configure search field");
@@ -623,7 +614,7 @@ async fn remove_search_config(
                 field = %field_name,
                 "search field config removed"
             );
-            Redirect::to(&format!("/admin/structure/types/{}/search", type_name)).into_response()
+            Redirect::to(&format!("/admin/structure/types/{type_name}/search")).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to remove search field config");
@@ -660,7 +651,7 @@ async fn reindex_content_type(
                 count = %count,
                 "content type reindexed"
             );
-            Redirect::to(&format!("/admin/structure/types/{}/search", type_name)).into_response()
+            Redirect::to(&format!("/admin/structure/types/{type_name}/search")).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to reindex content type");

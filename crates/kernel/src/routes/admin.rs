@@ -182,10 +182,10 @@ async fn list_files(
     // Get owners for display
     let mut owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for file in &files {
-        if !owners.contains_key(&file.owner_id.to_string()) {
-            if let Ok(Some(user)) = User::find_by_id(state.db(), file.owner_id).await {
-                owners.insert(file.owner_id.to_string(), user.name);
-            }
+        if !owners.contains_key(&file.owner_id.to_string())
+            && let Ok(Some(user)) = User::find_by_id(state.db(), file.owner_id).await
+        {
+            owners.insert(file.owner_id.to_string(), user.name);
         }
     }
 
@@ -227,7 +227,7 @@ async fn file_details(
     context.insert("file", &file);
     context.insert("owner", &owner);
     context.insert("public_url", &public_url);
-    context.insert("path", &format!("/admin/content/files/{}", file_id));
+    context.insert("path", &format!("/admin/content/files/{file_id}"));
 
     render_admin_template(&state, "admin/file-details.html", context).await
 }
@@ -278,15 +278,12 @@ async fn ajax_callback(
     use crate::tap::{RequestState, UserContext};
 
     // Require authentication for AJAX requests
-    let user = match require_admin(&state, &session).await {
-        Ok(user) => user,
-        Err(_) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(AjaxResponse::new().alert("Session expired. Please log in again.")),
-            )
-                .into_response();
-        }
+    let Ok(user) = require_admin(&state, &session).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(AjaxResponse::new().alert("Session expired. Please log in again.")),
+        )
+            .into_response();
     };
 
     // Handle admin-specific AJAX triggers
@@ -372,20 +369,20 @@ async fn list_comments(
     let mut authors: std::collections::HashMap<uuid::Uuid, String> =
         std::collections::HashMap::new();
     for comment in &comments {
-        if !authors.contains_key(&comment.author_id) {
-            if let Ok(Some(user)) = User::find_by_id(state.db(), comment.author_id).await {
-                authors.insert(comment.author_id, user.name);
-            }
+        if !authors.contains_key(&comment.author_id)
+            && let Ok(Some(user)) = User::find_by_id(state.db(), comment.author_id).await
+        {
+            authors.insert(comment.author_id, user.name);
         }
     }
 
     // Get item titles
     let mut items: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
     for comment in &comments {
-        if !items.contains_key(&comment.item_id) {
-            if let Ok(Some(item)) = Item::find_by_id(state.db(), comment.item_id).await {
-                items.insert(comment.item_id, item.title);
-            }
+        if !items.contains_key(&comment.item_id)
+            && let Ok(Some(item)) = Item::find_by_id(state.db(), comment.item_id).await
+        {
+            items.insert(comment.item_id, item.title);
         }
     }
 

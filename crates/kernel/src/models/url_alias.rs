@@ -183,7 +183,7 @@ impl UrlAlias {
     /// Get the canonical URL for an item.
     /// Returns the alias path if found, otherwise `/item/{id}`.
     pub async fn get_canonical_url(pool: &PgPool, item_id: Uuid) -> Result<String> {
-        let source = format!("/item/{}", item_id);
+        let source = format!("/item/{item_id}");
         if let Some(alias) = Self::get_canonical_alias(pool, &source).await? {
             Ok(alias)
         } else {

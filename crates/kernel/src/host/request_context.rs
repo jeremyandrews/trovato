@@ -21,14 +21,12 @@ pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> R
          out_ptr: i32,
          out_max_len: i32|
          -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return -1,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -1;
             };
 
-            let key = match read_string_from_memory(&memory, &caller, key_ptr, key_len) {
-                Ok(k) => k,
-                Err(_) => return -1,
+            let Ok(key) = read_string_from_memory(&memory, &caller, key_ptr, key_len) else {
+                return -1;
             };
 
             // Get the value and clone it to avoid borrow issues
@@ -55,19 +53,16 @@ pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> R
          key_len: i32,
          value_ptr: i32,
          value_len: i32| {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return,
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return;
             };
 
-            let key = match read_string_from_memory(&memory, &caller, key_ptr, key_len) {
-                Ok(k) => k,
-                Err(_) => return,
+            let Ok(key) = read_string_from_memory(&memory, &caller, key_ptr, key_len) else {
+                return;
             };
 
-            let value = match read_string_from_memory(&memory, &caller, value_ptr, value_len) {
-                Ok(v) => v,
-                Err(_) => return,
+            let Ok(value) = read_string_from_memory(&memory, &caller, value_ptr, value_len) else {
+                return;
             };
 
             caller.data_mut().request.set_context(key, value);

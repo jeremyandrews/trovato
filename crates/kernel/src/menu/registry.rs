@@ -147,13 +147,13 @@ impl MenuRegistry {
     /// Match a request path against registered routes.
     pub fn match_path(&self, path: &str) -> Option<RouteMatch> {
         for (pattern, menu_path) in &self.routes {
-            if let Some(params) = match_pattern(pattern, path) {
-                if let Some(menu) = self.menus.get(menu_path) {
-                    return Some(RouteMatch {
-                        menu: menu.clone(),
-                        params,
-                    });
-                }
+            if let Some(params) = match_pattern(pattern, path)
+                && let Some(menu) = self.menus.get(menu_path)
+            {
+                return Some(RouteMatch {
+                    menu: menu.clone(),
+                    params,
+                });
             }
         }
         None
@@ -218,9 +218,8 @@ fn match_pattern(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
     let mut params = HashMap::new();
 
     for (pat, actual) in pattern_parts.iter().zip(path_parts.iter()) {
-        if pat.starts_with(':') {
+        if let Some(param_name) = pat.strip_prefix(':') {
             // Parameter segment
-            let param_name = &pat[1..];
             params.insert(param_name.to_string(), actual.to_string());
         } else if pat != actual {
             // Literal segment doesn't match

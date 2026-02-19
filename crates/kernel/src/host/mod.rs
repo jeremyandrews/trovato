@@ -61,7 +61,7 @@ pub fn read_string_from_memory(
 
     let bytes = &data[ptr..ptr + len];
     String::from_utf8(bytes.to_vec())
-        .map_err(|e| anyhow::anyhow!("invalid UTF-8 in WASM string: {}", e))
+        .map_err(|e| anyhow::anyhow!("invalid UTF-8 in WASM string: {e}"))
 }
 
 /// Helper to write a string to WASM memory at the given location.

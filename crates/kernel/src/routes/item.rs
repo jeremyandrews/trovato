@@ -275,7 +275,7 @@ async fn view_item(
 
                     // Try to resolve section template using sanitized type
                     let suggestions = [
-                        format!("elements/compound-section--{}", safe_type),
+                        format!("elements/compound-section--{safe_type}"),
                         "elements/compound-section".to_string(),
                     ];
                     let suggestion_refs: Vec<&str> =
@@ -359,7 +359,7 @@ async fn view_item(
     }
 
     // Resolve item template via theme engine
-    let suggestions = vec![
+    let suggestions = [
         format!("elements/item--{}--{}", item.item_type, item.id),
         format!("elements/item--{}", item.item_type),
         "elements/item".to_string(),
@@ -384,13 +384,13 @@ async fn view_item(
         });
 
     // Wrap in page layout with site context
-    let item_path = format!("/item/{}", id);
+    let item_path = format!("/item/{id}");
     super::helpers::inject_site_context(&state, &session, &mut context, &item_path).await;
 
     let page_html = state
         .theme()
         .render_page(&item_path, &item.title, &item_html, &mut context)
-        .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{}</body></html>", item_html));
+        .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{item_html}</body></html>"));
 
     Ok(Html(page_html))
 }
@@ -404,7 +404,7 @@ async fn add_item_form(
     let user = get_user_context(&session, &state).await;
 
     // Check permission
-    let permission = format!("create {} content", item_type);
+    let permission = format!("create {item_type} content");
     if !user.has_permission(&permission) && !user.is_admin() {
         return Err((
             StatusCode::FORBIDDEN,
@@ -419,7 +419,7 @@ async fn add_item_form(
         (
             StatusCode::NOT_FOUND,
             Json(ItemError {
-                error: format!("Content type '{}' not found", item_type),
+                error: format!("Content type '{item_type}' not found"),
             }),
         )
     })?;
@@ -428,7 +428,7 @@ async fn add_item_form(
     let permitted_formats = permitted_text_formats(&user);
     let form_builder =
         FormBuilder::new(content_type.clone()).with_permitted_formats(permitted_formats);
-    let form_html = form_builder.build_add_form(&format!("/item/add/{}", item_type));
+    let form_html = form_builder.build_add_form(&format!("/item/add/{item_type}"));
 
     let html = format!(
         r#"<!DOCTYPE html><html><head>
@@ -466,7 +466,7 @@ async fn create_item(
     let user = get_user_context(&session, &state).await;
 
     // Check permission
-    let permission = format!("create {} content", item_type);
+    let permission = format!("create {item_type} content");
     if !user.has_permission(&permission) && !user.is_admin() {
         return Err((
             StatusCode::FORBIDDEN,
@@ -481,7 +481,7 @@ async fn create_item(
         return Err((
             StatusCode::NOT_FOUND,
             Json(ItemError {
-                error: format!("Content type '{}' not found", item_type),
+                error: format!("Content type '{item_type}' not found"),
             }),
         ));
     }
@@ -581,10 +581,10 @@ async fn edit_item_form(
     let permitted_formats = permitted_text_formats(&user);
     let form_builder =
         FormBuilder::new(content_type.clone()).with_permitted_formats(permitted_formats);
-    let form_html = form_builder.build_edit_form(&item, &format!("/item/{}/edit", id));
+    let form_html = form_builder.build_edit_form(&item, &format!("/item/{id}/edit"));
 
     // Get current URL alias for this item
-    let source = format!("/item/{}", id);
+    let source = format!("/item/{id}");
     let current_alias = UrlAlias::get_canonical_alias(state.db(), &source)
         .await
         .unwrap_or(None)
@@ -650,7 +650,7 @@ async fn update_item(
         Ok(Some(item)) => {
             // Handle URL alias update if provided
             if let Some(alias_path) = request.url_alias {
-                let source = format!("/item/{}", id);
+                let source = format!("/item/{id}");
                 let alias_path = alias_path.trim();
 
                 if alias_path.is_empty() {
@@ -663,7 +663,7 @@ async fn update_item(
                     let alias_path = if alias_path.starts_with('/') {
                         alias_path.to_string()
                     } else {
-                        format!("/{}", alias_path)
+                        format!("/{alias_path}")
                     };
 
                     // Create or update alias
@@ -802,8 +802,7 @@ async fn list_revisions(
 
     html.push_str(&format!("<h1>Revisions: {}</h1>", html_escape(&item.title)));
     html.push_str(&format!(
-        r#"<p><a href="/item/{}">← Back to item</a></p>"#,
-        id
+        r#"<p><a href="/item/{id}">← Back to item</a></p>"#
     ));
 
     html.push_str("<table><thead><tr><th>Date</th><th>Title</th><th>Log</th><th>Actions</th></tr></thead><tbody>");
@@ -851,7 +850,7 @@ async fn revert_revision(
     let user = get_user_context(&session, &state).await;
 
     match state.items().revert_to_revision(id, rev_id, &user).await {
-        Ok(_) => Ok(Redirect::to(&format!("/item/{}/revisions", id))),
+        Ok(_) => Ok(Redirect::to(&format!("/item/{id}/revisions"))),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("access denied") {
@@ -1022,16 +1021,16 @@ async fn list_items_api(
     if include_author {
         let author_ids: Vec<Uuid> = items.iter().map(|i| i.author_id).collect();
         for author_id in author_ids {
-            if !author_cache.contains_key(&author_id) {
-                if let Ok(Some(user)) = User::find_by_id(state.db(), author_id).await {
-                    author_cache.insert(
-                        author_id,
-                        AuthorResponse {
-                            id: user.id,
-                            name: user.name,
-                        },
-                    );
-                }
+            if !author_cache.contains_key(&author_id)
+                && let Ok(Some(user)) = User::find_by_id(state.db(), author_id).await
+            {
+                author_cache.insert(
+                    author_id,
+                    AuthorResponse {
+                        id: user.id,
+                        name: user.name,
+                    },
+                );
             }
         }
     }

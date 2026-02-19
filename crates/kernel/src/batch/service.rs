@@ -211,7 +211,7 @@ impl BatchService {
 
     /// Generate the Redis key for an operation.
     fn operation_key(&self, id: Uuid) -> String {
-        format!("{}{}", BATCH_KEY_PREFIX, id)
+        format!("{BATCH_KEY_PREFIX}{id}")
     }
 }
 

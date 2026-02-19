@@ -213,6 +213,12 @@ pub struct GatherExtensionRegistry {
     sort_extensions: HashMap<String, SortRegistration>,
 }
 
+impl Default for GatherExtensionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GatherExtensionRegistry {
     /// Create a new registry with built-in handlers pre-registered.
     pub fn new() -> Self {

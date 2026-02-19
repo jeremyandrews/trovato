@@ -21,12 +21,9 @@ pub fn register_logging_functions(linker: &mut Linker<PluginState>) -> Result<()
          plugin_len: i32,
          message_ptr: i32,
          message_len: i32| {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => {
-                    error!("plugin missing memory export");
-                    return;
-                }
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                error!("plugin missing memory export");
+                return;
             };
 
             let level = read_string_from_memory(&memory, &caller, level_ptr, level_len)

@@ -437,9 +437,8 @@ fn validate_webhook_url(url_str: &str) -> Result<()> {
         );
     }
 
-    let host = match parsed.host() {
-        Some(h) => h,
-        None => anyhow::bail!("webhook URL has no host"),
+    let Some(host) = parsed.host() else {
+        anyhow::bail!("webhook URL has no host");
     };
 
     match host {
@@ -542,7 +541,7 @@ async fn validate_resolved_ips(url_str: &str) -> Result<()> {
     }
 
     if !found_any {
-        anyhow::bail!("webhook URL '{}' did not resolve to any address", host);
+        anyhow::bail!("webhook URL '{host}' did not resolve to any address");
     }
 
     Ok(())

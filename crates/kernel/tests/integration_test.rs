@@ -75,8 +75,7 @@ async fn login_with_invalid_credentials_returns_401() {
     // Accept either 401 (unauthorized) or 429 (rate limited) - both mean login failed
     assert!(
         status == StatusCode::UNAUTHORIZED || status == StatusCode::TOO_MANY_REQUESTS,
-        "Expected 401 or 429, got {}",
-        status
+        "Expected 401 or 429, got {status}"
     );
 }
 
@@ -292,8 +291,7 @@ async fn e2e_create_content_type() {
 
     // Submit the form to create a new content type
     let form_data = format!(
-        "_token={}&_form_build_id={}&label=Test+Blog&machine_name={}&description=A+test+blog+type",
-        csrf_token, form_build_id, machine_name
+        "_token={csrf_token}&_form_build_id={form_build_id}&label=Test+Blog&machine_name={machine_name}&description=A+test+blog+type"
     );
 
     // Use request_with_cookies to maintain session
@@ -320,8 +318,7 @@ async fn e2e_create_content_type() {
 
     // Verify the content type exists in the database
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM item_type WHERE type = '{}')",
-        machine_name
+        "SELECT EXISTS(SELECT 1 FROM item_type WHERE type = '{machine_name}')"
     ))
     .fetch_one(&app.db)
     .await
@@ -329,8 +326,7 @@ async fn e2e_create_content_type() {
 
     assert!(
         exists,
-        "Content type '{}' should exist in database",
-        machine_name
+        "Content type '{machine_name}' should exist in database"
     );
 }
 
@@ -375,8 +371,7 @@ async fn e2e_add_field_to_content_type() {
 
     // Create the content type
     let form_data = format!(
-        "_token={}&_form_build_id={}&label=Field+Test&machine_name={}&description=For+testing",
-        csrf_token, form_build_id, type_name
+        "_token={csrf_token}&_form_build_id={form_build_id}&label=Field+Test&machine_name={type_name}&description=For+testing"
     );
     let _ = app
         .request_with_cookies(
@@ -391,7 +386,7 @@ async fn e2e_add_field_to_content_type() {
     // Get the fields page to get CSRF token
     let fields_response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/structure/types/{}/fields", type_name))
+            Request::get(format!("/admin/structure/types/{type_name}/fields"))
                 .body(Body::empty())
                 .unwrap(),
             &login_cookies,
@@ -421,14 +416,13 @@ async fn e2e_add_field_to_content_type() {
 
     // Add a field
     let form_data = format!(
-        "_token={}&_form_build_id={}&label=Test+Field&name={}&field_type=text",
-        csrf_token, form_build_id, field_name
+        "_token={csrf_token}&_form_build_id={form_build_id}&label=Test+Field&name={field_name}&field_type=text"
     );
 
     // Use request_with_cookies to maintain session
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/structure/types/{}/fields/add", type_name))
+            Request::post(format!("/admin/structure/types/{type_name}/fields/add"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_data))
                 .unwrap(),
@@ -449,8 +443,7 @@ async fn e2e_add_field_to_content_type() {
 
     // Verify the field was added (check settings JSON)
     let settings: serde_json::Value = sqlx::query_scalar(&format!(
-        "SELECT settings FROM item_type WHERE type = '{}'",
-        type_name
+        "SELECT settings FROM item_type WHERE type = '{type_name}'"
     ))
     .fetch_one(&app.db)
     .await
@@ -460,12 +453,10 @@ async fn e2e_add_field_to_content_type() {
     assert!(
         fields
             .map(|f| f.iter().any(|field| {
-                field.get("field_name").and_then(|n| n.as_str()) == Some(&field_name.as_str())
+                field.get("field_name").and_then(|n| n.as_str()) == Some(field_name.as_str())
             }))
             .unwrap_or(false),
-        "Field '{}' should exist in settings. Got: {:?}",
-        field_name,
-        settings
+        "Field '{field_name}' should exist in settings. Got: {settings:?}"
     );
 }
 
@@ -493,7 +484,7 @@ async fn e2e_search_returns_results() {
         "#
     )
     .bind(item_id)
-    .bind(&format!("Test Page {}", search_term))
+    .bind(format!("Test Page {search_term}"))
     .bind(uuid::Uuid::nil()) // System user
     .execute(&app.db)
     .await
@@ -502,7 +493,7 @@ async fn e2e_search_returns_results() {
     // Search for the item via API
     let response = app
         .request(
-            Request::get(&format!("/api/search?q={}", search_term))
+            Request::get(format!("/api/search?q={search_term}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -524,8 +515,7 @@ async fn e2e_search_returns_results() {
         .any(|r| r["id"].as_str() == Some(&item_id.to_string()));
     assert!(
         found,
-        "Search should find our test item. Results: {:?}",
-        results
+        "Search should find our test item. Results: {results:?}"
     );
 }
 
@@ -618,8 +608,7 @@ async fn e2e_cron_valid_key_runs() {
     assert_eq!(status, StatusCode::OK, "Cron should succeed with valid key");
     assert!(
         body["status"] == "completed" || body["status"] == "skipped",
-        "Cron status should be completed or skipped, got: {:?}",
-        body
+        "Cron status should be completed or skipped, got: {body:?}"
     );
 }
 
@@ -664,7 +653,7 @@ Hello, World!\r\n\
             Request::post("/file/upload")
                 .header(
                     "content-type",
-                    format!("multipart/form-data; boundary={}", boundary),
+                    format!("multipart/form-data; boundary={boundary}"),
                 )
                 .body(Body::from(body))
                 .unwrap(),
@@ -705,7 +694,7 @@ Content-Type: text/plain\r\n\
             Request::post("/file/upload")
                 .header(
                     "content-type",
-                    format!("multipart/form-data; boundary={}", boundary),
+                    format!("multipart/form-data; boundary={boundary}"),
                 )
                 .body(Body::from(body))
                 .unwrap(),
@@ -720,9 +709,7 @@ Content-Type: text/plain\r\n\
     assert_eq!(
         status,
         StatusCode::OK,
-        "Expected 200 OK, got {}. Body: {:?}",
-        status,
-        body
+        "Expected 200 OK, got {status}. Body: {body:?}"
     );
 
     assert_eq!(body["success"], true, "Upload should succeed");
@@ -760,7 +747,7 @@ Test file content\r\n\
             Request::post("/file/upload")
                 .header(
                     "content-type",
-                    format!("multipart/form-data; boundary={}", boundary),
+                    format!("multipart/form-data; boundary={boundary}"),
                 )
                 .body(Body::from(body))
                 .unwrap(),
@@ -770,14 +757,13 @@ Test file content\r\n\
 
     if upload_response.status() != StatusCode::OK {
         let body = response_text(upload_response).await;
-        panic!("Upload failed: {}", body);
+        panic!("Upload failed: {body}");
     }
 
     let upload_body = response_json(upload_response).await;
     assert_eq!(
         upload_body["success"], true,
-        "Upload should succeed: {:?}",
-        upload_body
+        "Upload should succeed: {upload_body:?}"
     );
     let file_id = upload_body["file"]["id"]
         .as_str()
@@ -786,7 +772,7 @@ Test file content\r\n\
     // Now retrieve file info
     let info_response = app
         .request_with_cookies(
-            Request::get(&format!("/file/{}", file_id))
+            Request::get(format!("/file/{file_id}"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -799,9 +785,7 @@ Test file content\r\n\
     assert_eq!(
         status,
         StatusCode::OK,
-        "Expected 200 OK for file info, got {}. Body: {:?}",
-        status,
-        info_body
+        "Expected 200 OK for file info, got {status}. Body: {info_body:?}"
     );
 
     assert_eq!(info_body["id"], file_id);
@@ -834,7 +818,7 @@ MZ...\r\n\
             Request::post("/file/upload")
                 .header(
                     "content-type",
-                    format!("multipart/form-data; boundary={}", boundary),
+                    format!("multipart/form-data; boundary={boundary}"),
                 )
                 .body(Body::from(body))
                 .unwrap(),
@@ -846,8 +830,7 @@ MZ...\r\n\
     // Should reject invalid MIME type (415 Unsupported Media Type or 400 Bad Request)
     assert!(
         status == StatusCode::UNSUPPORTED_MEDIA_TYPE || status == StatusCode::BAD_REQUEST,
-        "Should reject executable MIME type, got: {}",
-        status
+        "Should reject executable MIME type, got: {status}"
     );
 }
 
@@ -1040,7 +1023,7 @@ async fn e2e_admin_create_user() {
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let new_username = format!("newuser_{}", &unique_id[..16]);
-    let new_email = format!("{}@test.com", new_username);
+    let new_email = format!("{new_username}@test.com");
 
     let cookies = app
         .create_and_login_admin("admin_users_3", "password123", "users3@test.com")
@@ -1069,8 +1052,7 @@ async fn e2e_admin_create_user() {
 
     // Submit the form
     let form_data = format!(
-        "_token={}&_form_build_id={}&name={}&mail={}&password=testpass123&status=1",
-        csrf_token, form_build_id, new_username, new_email
+        "_token={csrf_token}&_form_build_id={form_build_id}&name={new_username}&mail={new_email}&password=testpass123&status=1"
     );
 
     let response = app
@@ -1088,20 +1070,18 @@ async fn e2e_admin_create_user() {
     // Should redirect on success
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify user was created
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE name = '{}')",
-        new_username
+        "SELECT EXISTS(SELECT 1 FROM users WHERE name = '{new_username}')"
     ))
     .fetch_one(&app.db)
     .await
     .unwrap();
 
-    assert!(exists, "User '{}' should exist in database", new_username);
+    assert!(exists, "User '{new_username}' should exist in database");
 }
 
 #[tokio::test]
@@ -1110,14 +1090,14 @@ async fn e2e_admin_edit_user() {
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("edituser_{}", &unique_id[..16]);
-    let email = format!("{}@test.com", username);
+    let email = format!("{username}@test.com");
 
     // Create user to edit
     app.create_test_user(&username, "testpass123", &email).await;
 
     // Get the user ID
     let user_id: uuid::Uuid =
-        sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{}'", username))
+        sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{username}'"))
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -1129,7 +1109,7 @@ async fn e2e_admin_edit_user() {
     // Get the edit form
     let form_response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/people/{}/edit", user_id))
+            Request::get(format!("/admin/people/{user_id}/edit"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -1153,13 +1133,12 @@ async fn e2e_admin_edit_user() {
     // Update the user
     let new_email = format!("updated_{}@test.com", &unique_id[..16]);
     let form_data = format!(
-        "_token={}&_form_build_id={}&name={}&mail={}&status=1",
-        csrf_token, form_build_id, username, new_email
+        "_token={csrf_token}&_form_build_id={form_build_id}&name={username}&mail={new_email}&status=1"
     );
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/people/{}/edit", user_id))
+            Request::post(format!("/admin/people/{user_id}/edit"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_data))
                 .unwrap(),
@@ -1170,13 +1149,12 @@ async fn e2e_admin_edit_user() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify email was updated
     let updated_email: String =
-        sqlx::query_scalar(&format!("SELECT mail FROM users WHERE id = '{}'", user_id))
+        sqlx::query_scalar(&format!("SELECT mail FROM users WHERE id = '{user_id}'"))
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -1192,11 +1170,11 @@ async fn e2e_admin_delete_user() {
     let username = format!("deluser_{}", &unique_id[..16]);
 
     // Create user to delete
-    app.create_test_user(&username, "testpass123", &format!("{}@test.com", username))
+    app.create_test_user(&username, "testpass123", &format!("{username}@test.com"))
         .await;
 
     let user_id: uuid::Uuid =
-        sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{}'", username))
+        sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{username}'"))
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -1210,7 +1188,7 @@ async fn e2e_admin_delete_user() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/people/{}/delete", user_id))
+            Request::post(format!("/admin/people/{user_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -1221,14 +1199,12 @@ async fn e2e_admin_delete_user() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify user was deleted
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE id = '{}')",
-        user_id
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = '{user_id}')"
     ))
     .fetch_one(&app.db)
     .await
@@ -1245,11 +1221,11 @@ async fn e2e_admin_cannot_delete_self() {
     let username = format!("selfuser_{}", &unique_id[..16]);
 
     // Must be admin to reach delete handler (require_admin check)
-    app.create_test_admin(&username, "testpass123", &format!("{}@test.com", username))
+    app.create_test_admin(&username, "testpass123", &format!("{username}@test.com"))
         .await;
 
     let user_id: uuid::Uuid =
-        sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{}'", username))
+        sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{username}'"))
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -1262,7 +1238,7 @@ async fn e2e_admin_cannot_delete_self() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/people/{}/delete", user_id))
+            Request::post(format!("/admin/people/{user_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -1349,10 +1325,7 @@ async fn e2e_admin_create_role() {
     let csrf_token = extract_csrf_token(&form_html).expect("CSRF token");
     let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
 
-    let form_data = format!(
-        "_token={}&_form_build_id={}&name={}",
-        csrf_token, form_build_id, role_name
-    );
+    let form_data = format!("_token={csrf_token}&_form_build_id={form_build_id}&name={role_name}");
 
     let response = app
         .request_with_cookies(
@@ -1367,20 +1340,18 @@ async fn e2e_admin_create_role() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify role was created
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM roles WHERE name = '{}')",
-        role_name
+        "SELECT EXISTS(SELECT 1 FROM roles WHERE name = '{role_name}')"
     ))
     .fetch_one(&app.db)
     .await
     .unwrap();
 
-    assert!(exists, "Role '{}' should exist", role_name);
+    assert!(exists, "Role '{role_name}' should exist");
 }
 
 #[tokio::test]
@@ -1408,7 +1379,7 @@ async fn e2e_admin_delete_role() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/people/roles/{}/delete", role_id))
+            Request::post(format!("/admin/people/roles/{role_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -1419,14 +1390,12 @@ async fn e2e_admin_delete_role() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify role was deleted
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM roles WHERE id = '{}')",
-        role_id
+        "SELECT EXISTS(SELECT 1 FROM roles WHERE id = '{role_id}')"
     ))
     .fetch_one(&app.db)
     .await
@@ -1452,7 +1421,7 @@ async fn e2e_admin_cannot_delete_builtin_roles() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/people/roles/{}/delete", anonymous_role_id))
+            Request::post(format!("/admin/people/roles/{anonymous_role_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -1614,10 +1583,12 @@ async fn e2e_admin_create_content() {
         &form_html[..form_html.len().min(2000)]
     );
 
-    let csrf_token = extract_csrf_token(&form_html).expect(&format!(
-        "CSRF token not found. HTML: {}",
-        &form_html[..form_html.len().min(2000)]
-    ));
+    let csrf_token = extract_csrf_token(&form_html).unwrap_or_else(|| {
+        panic!(
+            "CSRF token not found. HTML: {}",
+            &form_html[..form_html.len().min(2000)]
+        )
+    });
     let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
 
     let form_data = format!(
@@ -1640,20 +1611,18 @@ async fn e2e_admin_create_content() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify content was created
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM item WHERE title = '{}')",
-        title
+        "SELECT EXISTS(SELECT 1 FROM item WHERE title = '{title}')"
     ))
     .fetch_one(&app.db)
     .await
     .unwrap();
 
-    assert!(exists, "Content '{}' should exist", title);
+    assert!(exists, "Content '{title}' should exist");
 }
 
 #[tokio::test]
@@ -1687,7 +1656,7 @@ async fn e2e_admin_edit_content() {
     // Get edit form
     let form_response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/content/{}/edit", item_id))
+            Request::get(format!("/admin/content/{item_id}/edit"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -1714,7 +1683,7 @@ async fn e2e_admin_edit_content() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/content/{}/edit", item_id))
+            Request::post(format!("/admin/content/{item_id}/edit"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_data))
                 .unwrap(),
@@ -1725,13 +1694,12 @@ async fn e2e_admin_edit_content() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify title was updated
     let updated_title: String =
-        sqlx::query_scalar(&format!("SELECT title FROM item WHERE id = '{}'", item_id))
+        sqlx::query_scalar(&format!("SELECT title FROM item WHERE id = '{item_id}'"))
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -1771,7 +1739,7 @@ async fn e2e_admin_delete_content() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/content/{}/delete", item_id))
+            Request::post(format!("/admin/content/{item_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -1782,14 +1750,12 @@ async fn e2e_admin_delete_content() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify content was deleted
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM item WHERE id = '{}')",
-        item_id
+        "SELECT EXISTS(SELECT 1 FROM item WHERE id = '{item_id}')"
     ))
     .fetch_one(&app.db)
     .await
@@ -1921,20 +1887,18 @@ async fn e2e_admin_create_category() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify category was created
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM category WHERE id = '{}')",
-        cat_id
+        "SELECT EXISTS(SELECT 1 FROM category WHERE id = '{cat_id}')"
     ))
     .fetch_one(&app.db)
     .await
     .unwrap();
 
-    assert!(exists, "Category '{}' should exist", cat_id);
+    assert!(exists, "Category '{cat_id}' should exist");
 }
 
 #[tokio::test]
@@ -1964,7 +1928,7 @@ async fn e2e_admin_delete_category() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/structure/categories/{}/delete", cat_id))
+            Request::post(format!("/admin/structure/categories/{cat_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -1975,14 +1939,12 @@ async fn e2e_admin_delete_category() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify category was deleted
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM category WHERE id = '{}')",
-        cat_id
+        "SELECT EXISTS(SELECT 1 FROM category WHERE id = '{cat_id}')"
     ))
     .fetch_one(&app.db)
     .await
@@ -2014,7 +1976,7 @@ async fn e2e_admin_list_tags() {
 
     let response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/structure/categories/{}/tags", cat_id))
+            Request::get(format!("/admin/structure/categories/{cat_id}/tags"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -2063,7 +2025,7 @@ async fn e2e_admin_create_tag() {
     // Get form
     let form_response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/structure/categories/{}/tags/add", cat_id))
+            Request::get(format!("/admin/structure/categories/{cat_id}/tags/add"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -2090,7 +2052,7 @@ async fn e2e_admin_create_tag() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/structure/categories/{}/tags/add", cat_id))
+            Request::post(format!("/admin/structure/categories/{cat_id}/tags/add"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_data))
                 .unwrap(),
@@ -2101,20 +2063,18 @@ async fn e2e_admin_create_tag() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify tag was created
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM category_tag WHERE label = '{}')",
-        tag_label
+        "SELECT EXISTS(SELECT 1 FROM category_tag WHERE label = '{tag_label}')"
     ))
     .fetch_one(&app.db)
     .await
     .unwrap();
 
-    assert!(exists, "Tag '{}' should exist", tag_label);
+    assert!(exists, "Tag '{tag_label}' should exist");
 }
 
 #[tokio::test]
@@ -2162,7 +2122,7 @@ async fn e2e_admin_delete_tag() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/structure/tags/{}/delete", tag_id))
+            Request::post(format!("/admin/structure/tags/{tag_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -2173,14 +2133,12 @@ async fn e2e_admin_delete_tag() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify tag was deleted
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM category_tag WHERE id = '{}')",
-        tag_id
+        "SELECT EXISTS(SELECT 1 FROM category_tag WHERE id = '{tag_id}')"
     ))
     .fetch_one(&app.db)
     .await
@@ -2237,7 +2195,7 @@ async fn e2e_admin_file_details() {
     let owner_id = uuid::Uuid::nil();
     let now = Utc::now().timestamp();
     let filename = format!("test_{}.txt", &unique_id[..16]);
-    let uri = format!("local://{}", filename);
+    let uri = format!("local://{filename}");
     sqlx::query(
         "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed) VALUES ($1, $2, $3, $4, 'text/plain', 100, 0, $5, $6)"
     )
@@ -2257,7 +2215,7 @@ async fn e2e_admin_file_details() {
 
     let response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/content/files/{}", file_id))
+            Request::get(format!("/admin/content/files/{file_id}"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -2277,8 +2235,7 @@ async fn e2e_admin_file_details() {
 
     assert!(
         body.contains(&filename),
-        "Response should show file details for {}",
-        filename
+        "Response should show file details for {filename}"
     );
 }
 
@@ -2312,7 +2269,7 @@ async fn e2e_admin_delete_file() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/content/files/{}/delete", file_id))
+            Request::post(format!("/admin/content/files/{file_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -2323,14 +2280,12 @@ async fn e2e_admin_delete_file() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify file was deleted
     let exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM file_managed WHERE id = '{}')",
-        file_id
+        "SELECT EXISTS(SELECT 1 FROM file_managed WHERE id = '{file_id}')"
     ))
     .fetch_one(&app.db)
     .await
@@ -2361,8 +2316,7 @@ async fn e2e_admin_files_filter_by_status() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "Expected 200 OK for filtered files, got {}",
-        status
+        "Expected 200 OK for filtered files, got {status}"
     );
 
     // Filter for permanent files
@@ -2379,8 +2333,7 @@ async fn e2e_admin_files_filter_by_status() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "Expected 200 OK for filtered files, got {}",
-        status
+        "Expected 200 OK for filtered files, got {status}"
     );
 }
 
@@ -2443,7 +2396,7 @@ async fn e2e_admin_add_search_config() {
     // This updates both the database AND the in-memory cache
     let fields_response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/structure/types/{}/fields", type_name))
+            Request::get(format!("/admin/structure/types/{type_name}/fields"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -2469,7 +2422,7 @@ async fn e2e_admin_add_search_config() {
 
     let add_field_response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/structure/types/{}/fields/add", type_name))
+            Request::post(format!("/admin/structure/types/{type_name}/fields/add"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(add_field_data))
                 .unwrap(),
@@ -2487,7 +2440,7 @@ async fn e2e_admin_add_search_config() {
     // STEP 2: Now get the search config form (field should be available)
     let form_response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/structure/types/{}/search", type_name))
+            Request::get(format!("/admin/structure/types/{type_name}/search"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -2518,20 +2471,21 @@ async fn e2e_admin_add_search_config() {
         "Search config page should show the new field"
     );
 
-    let csrf_token = extract_csrf_token(&form_html).expect(&format!(
-        "CSRF token not found. HTML: {}",
-        &form_html[..form_html.len().min(2000)]
-    ));
+    let csrf_token = extract_csrf_token(&form_html).unwrap_or_else(|| {
+        panic!(
+            "CSRF token not found. HTML: {}",
+            &form_html[..form_html.len().min(2000)]
+        )
+    });
     let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
 
     let form_data = format!(
-        "_token={}&_form_build_id={}&field_name={}&weight=B",
-        csrf_token, form_build_id, field_name
+        "_token={csrf_token}&_form_build_id={form_build_id}&field_name={field_name}&weight=B"
     );
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/structure/types/{}/search/add", type_name))
+            Request::post(format!("/admin/structure/types/{type_name}/search/add"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_data))
                 .unwrap(),
@@ -2542,23 +2496,18 @@ async fn e2e_admin_add_search_config() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify search config was created
     let exists: bool = sqlx::query_scalar(
-        &format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{}' AND field_name = '{}')", type_name, field_name)
+        &format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{type_name}' AND field_name = '{field_name}')")
     )
     .fetch_one(&app.db)
     .await
     .unwrap();
 
-    assert!(
-        exists,
-        "Search config should exist for field {}",
-        field_name
-    );
+    assert!(exists, "Search config should exist for field {field_name}");
 
     // Clean up
     sqlx::query("DELETE FROM search_field_config WHERE bundle = $1 AND field_name = $2")
@@ -2597,9 +2546,8 @@ async fn e2e_admin_remove_search_config() {
 
     let response = app
         .request_with_cookies(
-            Request::post(&format!(
-                "/admin/structure/types/{}/search/{}/delete",
-                type_name, field_name
+            Request::post(format!(
+                "/admin/structure/types/{type_name}/search/{field_name}/delete"
             ))
             .header("content-type", "application/x-www-form-urlencoded")
             .body(csrf_form_body(&csrf_token))
@@ -2611,13 +2559,12 @@ async fn e2e_admin_remove_search_config() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 
     // Verify search config was deleted
     let exists: bool = sqlx::query_scalar(
-        &format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{}' AND field_name = '{}')", type_name, field_name)
+        &format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{type_name}' AND field_name = '{field_name}')")
     )
     .fetch_one(&app.db)
     .await
@@ -2651,8 +2598,7 @@ async fn e2e_admin_reindex_content_type() {
     let resp_status = response.status();
     assert!(
         resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
-        "Expected redirect or success, got {}",
-        resp_status
+        "Expected redirect or success, got {resp_status}"
     );
 }
 
@@ -2685,8 +2631,7 @@ async fn e2e_admin_pages_require_login() {
         assert_eq!(
             response.status(),
             StatusCode::SEE_OTHER,
-            "Route {} should redirect when not logged in",
-            route
+            "Route {route} should redirect when not logged in"
         );
     }
 }
@@ -2711,8 +2656,7 @@ async fn e2e_static_file_serves_js() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "Expected 200 OK for static JS file, got {}",
-        status
+        "Expected 200 OK for static JS file, got {status}"
     );
 
     let content_type = response
@@ -2722,8 +2666,7 @@ async fn e2e_static_file_serves_js() {
         .unwrap_or("");
     assert!(
         content_type.contains("javascript"),
-        "Content-Type should be JavaScript, got {}",
-        content_type
+        "Content-Type should be JavaScript, got {content_type}"
     );
 }
 
@@ -2812,7 +2755,7 @@ async fn e2e_batch_get_operation() {
     // Get the operation status
     let response = app
         .request(
-            Request::get(&format!("/api/batch/{}", batch_id))
+            Request::get(format!("/api/batch/{batch_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2836,7 +2779,7 @@ async fn e2e_batch_get_nonexistent_returns_404() {
     let fake_id = uuid::Uuid::now_v7();
     let response = app
         .request(
-            Request::get(&format!("/api/batch/{}", fake_id))
+            Request::get(format!("/api/batch/{fake_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2871,7 +2814,7 @@ async fn e2e_batch_cancel_operation() {
     // Cancel the operation
     let response = app
         .request(
-            Request::post(&format!("/api/batch/{}/cancel", batch_id))
+            Request::post(format!("/api/batch/{batch_id}/cancel"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2911,7 +2854,7 @@ async fn e2e_batch_delete_operation() {
         .request(
             Request::builder()
                 .method("DELETE")
-                .uri(&format!("/api/batch/{}", batch_id))
+                .uri(format!("/api/batch/{batch_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2922,7 +2865,7 @@ async fn e2e_batch_delete_operation() {
     // Verify it's gone
     let get_response = app
         .request(
-            Request::get(&format!("/api/batch/{}", batch_id))
+            Request::get(format!("/api/batch/{batch_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2940,7 +2883,7 @@ async fn e2e_batch_delete_nonexistent_returns_404() {
         .request(
             Request::builder()
                 .method("DELETE")
-                .uri(&format!("/api/batch/{}", fake_id))
+                .uri(format!("/api/batch/{fake_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2957,7 +2900,7 @@ async fn response_json(response: axum::response::Response) -> Value {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&body).unwrap_or_else(|_| {
         let text = String::from_utf8_lossy(&body);
-        panic!("Failed to parse JSON: {}", text);
+        panic!("Failed to parse JSON: {text}");
     })
 }
 
@@ -3038,7 +2981,7 @@ fn url_encode(value: &str) -> String {
                 result.push(byte as char);
             }
             _ => {
-                result.push_str(&format!("%{:02X}", byte));
+                result.push_str(&format!("%{byte:02X}"));
             }
         }
     }
@@ -3137,7 +3080,7 @@ async fn e2e_api_get_item_not_found() {
     let fake_id = uuid::Uuid::now_v7();
     let response = app
         .request(
-            Request::get(&format!("/api/item/{}", fake_id))
+            Request::get(format!("/api/item/{fake_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3157,7 +3100,7 @@ async fn e2e_api_list_comments_for_nonexistent_item() {
     let fake_id = uuid::Uuid::now_v7();
     let response = app
         .request(
-            Request::get(&format!("/api/item/{}/comments", fake_id))
+            Request::get(format!("/api/item/{fake_id}/comments"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3174,7 +3117,7 @@ async fn e2e_api_create_comment_requires_auth() {
     let fake_id = uuid::Uuid::now_v7();
     let response = app
         .request(
-            Request::post(&format!("/api/item/{}/comments", fake_id))
+            Request::post(format!("/api/item/{fake_id}/comments"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&json!({
@@ -3207,10 +3150,7 @@ async fn e2e_api_comment_crud() {
             .expect("User should exist");
 
     // Ensure content type exists
-    let type_name = format!(
-        "commenttest_{}",
-        uuid::Uuid::now_v7().to_string()[..8].to_string()
-    );
+    let type_name = format!("commenttest_{}", &uuid::Uuid::now_v7().to_string()[..8]);
     sqlx::query(
         "INSERT INTO item_type (type, label, description, plugin, settings)
          VALUES ($1, 'Comment Test', 'For testing', 'test', '{}'::jsonb)
@@ -3240,7 +3180,7 @@ async fn e2e_api_comment_crud() {
     // Test 1: List comments (should be empty)
     let list_response = app
         .request(
-            Request::get(&format!("/api/item/{}/comments", item_id))
+            Request::get(format!("/api/item/{item_id}/comments"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3253,7 +3193,7 @@ async fn e2e_api_comment_crud() {
     // Test 2: Create a comment
     let create_response = app
         .request_with_cookies(
-            Request::post(&format!("/api/item/{}/comments", item_id))
+            Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&json!({
@@ -3275,7 +3215,7 @@ async fn e2e_api_comment_crud() {
     // Test 3: List comments (should have one)
     let list_response = app
         .request(
-            Request::get(&format!("/api/item/{}/comments", item_id))
+            Request::get(format!("/api/item/{item_id}/comments"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3287,7 +3227,7 @@ async fn e2e_api_comment_crud() {
     // Test 4: Get single comment
     let get_response = app
         .request(
-            Request::get(&format!("/api/comment/{}?include=author", comment_id))
+            Request::get(format!("/api/comment/{comment_id}?include=author"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3300,7 +3240,7 @@ async fn e2e_api_comment_crud() {
     // Test 5: Update comment
     let update_response = app
         .request_with_cookies(
-            Request::put(&format!("/api/comment/{}", comment_id))
+            Request::put(format!("/api/comment/{comment_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&json!({
@@ -3319,7 +3259,7 @@ async fn e2e_api_comment_crud() {
     // Test 6: Create a reply
     let reply_response = app
         .request_with_cookies(
-            Request::post(&format!("/api/item/{}/comments", item_id))
+            Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&json!({
@@ -3340,7 +3280,7 @@ async fn e2e_api_comment_crud() {
     // Test 7: Delete comment
     let delete_response = app
         .request_with_cookies(
-            Request::delete(&format!("/api/comment/{}", reply_id))
+            Request::delete(format!("/api/comment/{reply_id}"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -3378,10 +3318,7 @@ async fn e2e_api_comment_validation() {
             .expect("User should exist");
 
     // Ensure content type exists
-    let type_name = format!(
-        "commentval_{}",
-        uuid::Uuid::now_v7().to_string()[..8].to_string()
-    );
+    let type_name = format!("commentval_{}", &uuid::Uuid::now_v7().to_string()[..8]);
     sqlx::query(
         "INSERT INTO item_type (type, label, description, plugin, settings)
          VALUES ($1, 'Comment Val', 'For testing', 'test', '{}'::jsonb)
@@ -3411,7 +3348,7 @@ async fn e2e_api_comment_validation() {
     // Test: Empty body should fail
     let empty_response = app
         .request_with_cookies(
-            Request::post(&format!("/api/item/{}/comments", item_id))
+            Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&json!({
@@ -3477,10 +3414,7 @@ async fn e2e_admin_comment_moderation() {
             .expect("User should exist");
 
     // Create content type and item
-    let type_name = format!(
-        "commentmod_{}",
-        uuid::Uuid::now_v7().to_string()[..8].to_string()
-    );
+    let type_name = format!("commentmod_{}", &uuid::Uuid::now_v7().to_string()[..8]);
     sqlx::query(
         "INSERT INTO item_type (type, label, description, plugin, settings)
          VALUES ($1, 'Comment Mod', 'For testing', 'test', '{}'::jsonb)
@@ -3509,7 +3443,7 @@ async fn e2e_admin_comment_moderation() {
     // Create a comment via API
     let create_response = app
         .request_with_cookies(
-            Request::post(&format!("/api/item/{}/comments", item_id))
+            Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_string(&json!({
@@ -3541,7 +3475,7 @@ async fn e2e_admin_comment_moderation() {
     // Test: Edit comment form (also extracts CSRF token for subsequent POSTs)
     let edit_form_response = app
         .request_with_cookies(
-            Request::get(&format!("/admin/content/comments/{}/edit", comment_id))
+            Request::get(format!("/admin/content/comments/{comment_id}/edit"))
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -3561,7 +3495,7 @@ async fn e2e_admin_comment_moderation() {
     // Test: Edit comment submit (includes CSRF token)
     let edit_response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/content/comments/{}/edit", comment_id))
+            Request::post(format!("/admin/content/comments/{comment_id}/edit"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body_with(
                     &csrf_token,
@@ -3579,7 +3513,7 @@ async fn e2e_admin_comment_moderation() {
     // Test: Unpublish comment
     let unpublish_response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/content/comments/{}/unpublish", comment_id))
+            Request::post(format!("/admin/content/comments/{comment_id}/unpublish"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -3602,7 +3536,7 @@ async fn e2e_admin_comment_moderation() {
     // Test: Approve comment
     let approve_response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/content/comments/{}/approve", comment_id))
+            Request::post(format!("/admin/content/comments/{comment_id}/approve"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -3625,7 +3559,7 @@ async fn e2e_admin_comment_moderation() {
     // Test: Delete comment
     let delete_response = app
         .request_with_cookies(
-            Request::post(&format!("/admin/content/comments/{}/delete", comment_id))
+            Request::post(format!("/admin/content/comments/{comment_id}/delete"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(csrf_form_body(&csrf_token))
                 .unwrap(),
@@ -3681,8 +3615,7 @@ async fn e2e_installer_redirects_when_installed() {
     // Valid destinations: "/" (installed), "/install/admin" (no admin), "/install/site" (has admin)
     assert!(
         location == "/" || location == "/install/admin" || location == "/install/site",
-        "Unexpected redirect location: {}",
-        location
+        "Unexpected redirect location: {location}"
     );
 }
 
@@ -3846,7 +3779,7 @@ async fn e2e_admin_plugin_toggle() {
         .expect("CSRF token");
 
     // Disable the redirects plugin (safe to toggle — it has no gated routes)
-    let form_body = format!("_token={}&plugin_name=redirects&action=disable", csrf_token);
+    let form_body = format!("_token={csrf_token}&plugin_name=redirects&action=disable");
 
     let response = app
         .request_with_cookies(
@@ -3894,7 +3827,7 @@ async fn e2e_admin_plugin_toggle() {
         .and_then(|s| s.split('"').next())
         .expect("CSRF token for re-enable");
 
-    let form_body = format!("_token={}&plugin_name=redirects&action=enable", csrf_token);
+    let form_body = format!("_token={csrf_token}&plugin_name=redirects&action=enable");
 
     let response = app
         .request_with_cookies(
@@ -3950,10 +3883,7 @@ async fn e2e_toggle_gated_plugin_affects_routes() {
         .expect("CSRF token");
 
     // Disable categories via the admin UI toggle
-    let form_body = format!(
-        "_token={}&plugin_name=categories&action=disable",
-        csrf_token
-    );
+    let form_body = format!("_token={csrf_token}&plugin_name=categories&action=disable");
     let response = app
         .request_with_cookies(
             Request::post("/admin/plugins/toggle")
@@ -3989,7 +3919,7 @@ async fn e2e_toggle_gated_plugin_affects_routes() {
         .and_then(|s| s.split('"').next())
         .expect("CSRF token for re-enable");
 
-    let form_body = format!("_token={}&plugin_name=categories&action=enable", csrf_token);
+    let form_body = format!("_token={csrf_token}&plugin_name=categories&action=enable");
     let response = app
         .request_with_cookies(
             Request::post("/admin/plugins/toggle")

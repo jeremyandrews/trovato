@@ -177,7 +177,7 @@ impl GatherService {
         let query = self
             .queries
             .get(query_id)
-            .ok_or_else(|| anyhow::anyhow!("query not found: {}", query_id))?;
+            .ok_or_else(|| anyhow::anyhow!("query not found: {query_id}"))?;
 
         self.execute_definition_with_stages(
             &query.definition,
@@ -294,7 +294,7 @@ impl GatherService {
 
         let main_sql = builder.build(page, per_page);
         let mut rows: Vec<serde_json::Value> =
-            sqlx::query_scalar(&format!("SELECT row_to_json(t) FROM ({}) t", main_sql))
+            sqlx::query_scalar(&format!("SELECT row_to_json(t) FROM ({main_sql}) t"))
                 .fetch_all(&mut *tx)
                 .await
                 .context("failed to execute main query")?;
@@ -320,10 +320,10 @@ impl GatherService {
         exposed_values: HashMap<String, FilterValue>,
     ) -> Result<QueryDefinition> {
         for filter in &mut definition.filters {
-            if filter.exposed {
-                if let Some(value) = exposed_values.get(&filter.field) {
-                    filter.value = value.clone();
-                }
+            if filter.exposed
+                && let Some(value) = exposed_values.get(&filter.field)
+            {
+                filter.value = value.clone();
             }
         }
         Ok(definition)
@@ -379,7 +379,7 @@ impl GatherService {
                     let resolved = handler
                         .resolve(filter, config, &self.pool)
                         .await
-                        .context(format!("failed to resolve custom filter '{}'", name))?;
+                        .context(format!("failed to resolve custom filter '{name}'"))?;
                     resolved_filters.push(resolved);
                 } else {
                     resolved_filters.push(filter);
@@ -515,7 +515,7 @@ impl GatherService {
                         context,
                     )
                     .await
-                    .context(format!("failed to execute include '{}'", include_name))?;
+                    .context(format!("failed to execute include '{include_name}'"))?;
 
                 if child_result.total > child_result.items.len() as u64 {
                     tracing::warn!(
@@ -580,7 +580,7 @@ impl GatherService {
         let source = self
             .queries
             .get(source_id)
-            .ok_or_else(|| anyhow::anyhow!("query not found: {}", source_id))?
+            .ok_or_else(|| anyhow::anyhow!("query not found: {source_id}"))?
             .clone();
 
         let cloned = GatherQuery {
@@ -900,7 +900,7 @@ impl GatherService {
             if self.queries.get(&query_id).is_none() {
                 self.register_query(query)
                     .await
-                    .context(format!("failed to register default view '{}'", query_id))?;
+                    .context(format!("failed to register default view '{query_id}'"))?;
             }
         }
 
@@ -1012,9 +1012,9 @@ pub const MAX_ITEMS_PER_PAGE: u32 = 100;
 /// and nested JSONB paths (`"fields.nested.deep"`). Returns `None` for null or
 /// missing values to prevent false matches.
 pub fn extract_field_value(item: &serde_json::Value, field_path: &str) -> Option<String> {
-    if field_path.starts_with("fields.") {
+    if let Some(jsonb_path) = field_path.strip_prefix("fields.") {
         // JSONB path — the row_to_json result has a "fields" key with a JSON object
-        let jsonb_path = &field_path[7..]; // strip "fields."
+        // strip "fields."
         let fields = item.get("fields")?;
 
         // Parse fields if it's a JSON string (some drivers return JSONB as text)
@@ -1215,7 +1215,7 @@ mod tests {
         let resolved = GatherService::resolve_contextual_values(def, &context);
         match &resolved.filters[0].value {
             FilterValue::Uuid(u) => assert_eq!(*u, user_id),
-            other => panic!("expected Uuid, got {:?}", other),
+            other => panic!("expected Uuid, got {other:?}"),
         }
     }
 
@@ -1237,7 +1237,7 @@ mod tests {
         let resolved = GatherService::resolve_contextual_values(def, &context);
         match &resolved.filters[0].value {
             FilterValue::Uuid(u) => assert_eq!(*u, Uuid::nil()),
-            other => panic!("expected nil Uuid, got {:?}", other),
+            other => panic!("expected nil Uuid, got {other:?}"),
         }
     }
 
@@ -1264,7 +1264,7 @@ mod tests {
             FilterValue::Integer(ts) => {
                 assert!(*ts >= before && *ts <= after);
             }
-            other => panic!("expected Integer, got {:?}", other),
+            other => panic!("expected Integer, got {other:?}"),
         }
     }
 
@@ -1291,7 +1291,7 @@ mod tests {
         let resolved = GatherService::resolve_contextual_values(def, &context);
         match &resolved.filters[0].value {
             FilterValue::String(s) => assert_eq!(s, "tech"),
-            other => panic!("expected String, got {:?}", other),
+            other => panic!("expected String, got {other:?}"),
         }
     }
 
@@ -1301,8 +1301,7 @@ mod tests {
         let errors = GatherService::validate_definition(&def);
         assert!(
             errors.is_empty(),
-            "default definition should be valid: {:?}",
-            errors
+            "default definition should be valid: {errors:?}"
         );
     }
 
@@ -1332,8 +1331,8 @@ mod tests {
         let def = QueryDefinition {
             relationships: (0..4)
                 .map(|i| QueryRelationship {
-                    name: format!("rel_{}", i),
-                    target_table: format!("table_{}", i),
+                    name: format!("rel_{i}"),
+                    target_table: format!("table_{i}"),
                     join_type: JoinType::Inner,
                     local_field: "id".to_string(),
                     foreign_field: "fk_id".to_string(),
@@ -1400,8 +1399,7 @@ mod tests {
         let errors = GatherService::validate_definition(&def);
         assert!(
             errors.iter().any(|e| e.contains("Filter field")),
-            "should reject invalid filter field: {:?}",
-            errors
+            "should reject invalid filter field: {errors:?}"
         );
     }
 
@@ -1418,8 +1416,7 @@ mod tests {
         let errors = GatherService::validate_definition(&def);
         assert!(
             errors.iter().any(|e| e.contains("Sort field")),
-            "should reject invalid sort field: {:?}",
-            errors
+            "should reject invalid sort field: {errors:?}"
         );
     }
 }

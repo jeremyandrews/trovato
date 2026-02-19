@@ -129,7 +129,7 @@ impl CronService {
         match self.tasks.cleanup_temp_files().await {
             Ok(count) => {
                 info!(deleted = count, "cleaned up temporary files");
-                tasks_run.push(format!("cleanup_temp_files: {}", count));
+                tasks_run.push(format!("cleanup_temp_files: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup temp files"),
         }
@@ -138,7 +138,7 @@ impl CronService {
         match self.tasks.cleanup_expired_sessions().await {
             Ok(count) => {
                 info!(deleted = count, "cleaned up expired sessions");
-                tasks_run.push(format!("cleanup_expired_sessions: {}", count));
+                tasks_run.push(format!("cleanup_expired_sessions: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup sessions"),
         }
@@ -147,7 +147,7 @@ impl CronService {
         match self.tasks.cleanup_form_state_cache().await {
             Ok(count) => {
                 info!(deleted = count, "cleaned up form state cache");
-                tasks_run.push(format!("cleanup_form_state_cache: {}", count));
+                tasks_run.push(format!("cleanup_form_state_cache: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup form state"),
         }
@@ -156,7 +156,7 @@ impl CronService {
         match self.tasks.process_queues().await {
             Ok(count) => {
                 info!(processed = count, "processed queue items");
-                tasks_run.push(format!("process_queues: {}", count));
+                tasks_run.push(format!("process_queues: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to process queues"),
         }
@@ -165,7 +165,7 @@ impl CronService {
         match self.tasks.process_scheduled_publishing().await {
             Ok(count) if count > 0 => {
                 info!(count = count, "processed scheduled publishing");
-                tasks_run.push(format!("scheduled_publishing: {}", count));
+                tasks_run.push(format!("scheduled_publishing: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to process scheduled publishing"),
             _ => {}
@@ -175,7 +175,7 @@ impl CronService {
         match self.tasks.cleanup_expired_locks().await {
             Ok(count) if count > 0 => {
                 info!(count = count, "cleaned up expired locks");
-                tasks_run.push(format!("cleanup_expired_locks: {}", count));
+                tasks_run.push(format!("cleanup_expired_locks: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup locks"),
             _ => {}
@@ -185,7 +185,7 @@ impl CronService {
         match self.tasks.process_webhook_deliveries().await {
             Ok(count) if count > 0 => {
                 info!(count = count, "processed webhook deliveries");
-                tasks_run.push(format!("webhook_deliveries: {}", count));
+                tasks_run.push(format!("webhook_deliveries: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to process webhooks"),
             _ => {}
@@ -195,7 +195,7 @@ impl CronService {
         match self.tasks.cleanup_audit_log().await {
             Ok(count) if count > 0 => {
                 info!(count = count, "cleaned up old audit log entries");
-                tasks_run.push(format!("cleanup_audit_log: {}", count));
+                tasks_run.push(format!("cleanup_audit_log: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup audit log"),
             _ => {}
@@ -301,7 +301,7 @@ impl CronService {
         let run = LastCronRun {
             timestamp: chrono::Utc::now().timestamp(),
             hostname: hostname(),
-            result: format!("{:?}", result),
+            result: format!("{result:?}"),
         };
 
         let mut conn = self

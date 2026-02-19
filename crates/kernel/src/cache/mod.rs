@@ -103,7 +103,7 @@ impl CacheLayer {
 
         // Register key with each tag
         for tag in tags {
-            let tag_key = format!("tag:{}", tag);
+            let tag_key = format!("tag:{tag}");
             if let Err(e) = conn.sadd::<_, _, ()>(&tag_key, key).await {
                 warn!(error = %e, tag = %tag, "failed to register cache key with tag");
             }
@@ -134,7 +134,7 @@ impl CacheLayer {
     ///
     /// Uses Lua script for atomic operation.
     pub async fn invalidate_tag(&self, tag: &str) {
-        let tag_key = format!("tag:{}", tag);
+        let tag_key = format!("tag:{tag}");
 
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for tag invalidation");
@@ -172,7 +172,7 @@ impl CacheLayer {
     pub fn stage_key(key: &str, stage_id: Option<&str>) -> String {
         match stage_id {
             None | Some("live") => key.to_string(),
-            Some(st) => format!("st:{}:{}", st, key),
+            Some(st) => format!("st:{st}:{key}"),
         }
     }
 
@@ -185,7 +185,7 @@ impl CacheLayer {
             return;
         }
 
-        let pattern = format!("st:{}:*", stage_id);
+        let pattern = format!("st:{stage_id}:*");
 
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for stage invalidation");

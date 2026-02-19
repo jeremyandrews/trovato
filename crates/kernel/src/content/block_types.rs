@@ -230,7 +230,7 @@ impl BlockTypeRegistry {
 
         // Check block type is registered
         if !self.contains(type_name) {
-            errors.push(format!("unknown block type '{}'", type_name));
+            errors.push(format!("unknown block type '{type_name}'"));
             return errors;
         }
 
@@ -244,8 +244,7 @@ impl BlockTypeRegistry {
                 if let Some(level) = data.get("level") {
                     if let Some(n) = level.as_i64() {
                         if !(1..=6).contains(&n) {
-                            errors
-                                .push(format!("heading: level must be between 1 and 6, got {}", n));
+                            errors.push(format!("heading: level must be between 1 and 6, got {n}"));
                         }
                     } else {
                         errors.push("heading: level must be an integer".to_string());
@@ -266,8 +265,7 @@ impl BlockTypeRegistry {
                             let sanitized = sanitize_html(text);
                             if sanitized != text {
                                 errors.push(format!(
-                                    "list: item {} contains disallowed HTML that was sanitized",
-                                    i
+                                    "list: item {i} contains disallowed HTML that was sanitized"
                                 ));
                             }
                         }
@@ -280,7 +278,7 @@ impl BlockTypeRegistry {
                     .and_then(|f| f.get("url"))
                     .and_then(|u| u.as_str());
                 match url {
-                    Some(u) if u.is_empty() => {
+                    Some("") => {
                         errors.push("image: file.url must not be empty".to_string());
                     }
                     Some(_) => {} // valid
@@ -321,9 +319,8 @@ impl BlockTypeRegistry {
                 .unwrap_or("")
                 .to_string();
 
-            let data = match block.get_mut("data") {
-                Some(d) => d,
-                None => continue,
+            let Some(data) = block.get_mut("data") else {
+                continue;
             };
 
             match type_name.as_str() {
@@ -337,7 +334,7 @@ impl BlockTypeRegistry {
                 "list" => {
                     if let Some(items) = data.get_mut("items").and_then(|v| v.as_array_mut()) {
                         for item in items.iter_mut() {
-                            if let Some(text) = item.as_str().map(|s| sanitize_html(s)) {
+                            if let Some(text) = item.as_str().map(sanitize_html) {
                                 *item = Value::String(text);
                             }
                         }
@@ -357,8 +354,7 @@ fn validate_text_field(data: &Value, field: &str, block_type: &str, errors: &mut
             let sanitized = sanitize_html(text);
             if sanitized != text {
                 errors.push(format!(
-                    "{}: '{}' contains disallowed HTML that was sanitized",
-                    block_type, field
+                    "{block_type}: '{field}' contains disallowed HTML that was sanitized"
                 ));
             }
         }
@@ -371,10 +367,10 @@ fn validate_text_field(data: &Value, field: &str, block_type: &str, errors: &mut
 
 /// Sanitize a string field inside a JSON object in-place using ammonia.
 fn sanitize_value_field(data: &mut Value, field: &str) {
-    if let Some(text) = data.get(field).and_then(|v| v.as_str()).map(sanitize_html) {
-        data.as_object_mut()
-            .and_then(|obj| obj.get_mut(field))
-            .map(|v| *v = Value::String(text));
+    if let Some(text) = data.get(field).and_then(|v| v.as_str()).map(sanitize_html)
+        && let Some(v) = data.as_object_mut().and_then(|obj| obj.get_mut(field))
+    {
+        *v = Value::String(text);
     }
 }
 
@@ -408,8 +404,7 @@ mod tests {
         for name in &expected {
             assert!(
                 registry.contains(name),
-                "expected block type '{}' to be registered",
-                name
+                "expected block type '{name}' to be registered"
             );
         }
     }
@@ -432,7 +427,7 @@ mod tests {
         let registry = BlockTypeRegistry::with_standard_types();
         let data = serde_json::json!({ "text": "Hello world" });
         let errors = registry.validate_block("paragraph", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -440,7 +435,7 @@ mod tests {
         let registry = BlockTypeRegistry::with_standard_types();
         let data = serde_json::json!({ "text": "Title", "level": 2 });
         let errors = registry.validate_block("heading", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -452,7 +447,7 @@ mod tests {
             "alt": "Photo alt text"
         });
         let errors = registry.validate_block("image", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -463,7 +458,7 @@ mod tests {
             "items": ["First", "Second", "Third"]
         });
         let errors = registry.validate_block("list", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -471,7 +466,7 @@ mod tests {
         let registry = BlockTypeRegistry::with_standard_types();
         let data = serde_json::json!({ "text": "To be or not to be", "caption": "Shakespeare" });
         let errors = registry.validate_block("quote", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -479,7 +474,7 @@ mod tests {
         let registry = BlockTypeRegistry::with_standard_types();
         let data = serde_json::json!({ "code": "fn main() {}", "language": "rust" });
         let errors = registry.validate_block("code", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -487,7 +482,7 @@ mod tests {
         let registry = BlockTypeRegistry::with_standard_types();
         let data = serde_json::json!({});
         let errors = registry.validate_block("delimiter", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]
@@ -498,7 +493,7 @@ mod tests {
             "source": "https://www.youtube.com/watch?v=abc123"
         });
         let errors = registry.validate_block("embed", &data);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
     #[test]

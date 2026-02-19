@@ -216,7 +216,7 @@ async fn edit_category_form(
     let mut context = tera::Context::new();
     context.insert(
         "action",
-        &format!("/admin/structure/categories/{}/edit", category_id),
+        &format!("/admin/structure/categories/{category_id}/edit"),
     );
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
@@ -233,7 +233,7 @@ async fn edit_category_form(
     );
     context.insert(
         "path",
-        &format!("/admin/structure/categories/{}/edit", category_id),
+        &format!("/admin/structure/categories/{category_id}/edit"),
     );
 
     render_admin_template(&state, "admin/category-form.html", context).await
@@ -278,7 +278,7 @@ async fn edit_category_submit(
         let mut context = tera::Context::new();
         context.insert(
             "action",
-            &format!("/admin/structure/categories/{}/edit", category_id),
+            &format!("/admin/structure/categories/{category_id}/edit"),
         );
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
@@ -296,7 +296,7 @@ async fn edit_category_submit(
         );
         context.insert(
             "path",
-            &format!("/admin/structure/categories/{}/edit", category_id),
+            &format!("/admin/structure/categories/{category_id}/edit"),
         );
 
         return render_admin_template(&state, "admin/category-form.html", context).await;
@@ -391,7 +391,7 @@ async fn list_tags(
     context.insert("csrf_token", &csrf_token);
     context.insert(
         "path",
-        &format!("/admin/structure/categories/{}/tags", category_id),
+        &format!("/admin/structure/categories/{category_id}/tags"),
     );
 
     render_admin_template(&state, "admin/tags.html", context).await
@@ -428,7 +428,7 @@ async fn add_tag_form(
     let mut context = tera::Context::new();
     context.insert(
         "action",
-        &format!("/admin/structure/categories/{}/tags/add", category_id),
+        &format!("/admin/structure/categories/{category_id}/tags/add"),
     );
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
@@ -438,7 +438,7 @@ async fn add_tag_form(
     context.insert("values", &serde_json::json!({}));
     context.insert(
         "path",
-        &format!("/admin/structure/categories/{}/tags/add", category_id),
+        &format!("/admin/structure/categories/{category_id}/tags/add"),
     );
 
     render_admin_template(&state, "admin/tag-form.html", context).await
@@ -487,7 +487,7 @@ async fn add_tag_submit(
         let mut context = tera::Context::new();
         context.insert(
             "action",
-            &format!("/admin/structure/categories/{}/tags/add", category_id),
+            &format!("/admin/structure/categories/{category_id}/tags/add"),
         );
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
@@ -506,7 +506,7 @@ async fn add_tag_submit(
         );
         context.insert(
             "path",
-            &format!("/admin/structure/categories/{}/tags/add", category_id),
+            &format!("/admin/structure/categories/{category_id}/tags/add"),
         );
 
         return render_admin_template(&state, "admin/tag-form.html", context).await;
@@ -531,8 +531,7 @@ async fn add_tag_submit(
     match Tag::create(state.db(), input).await {
         Ok(_) => {
             tracing::info!(category = %category_id, label = %form.label, "tag created");
-            Redirect::to(&format!("/admin/structure/categories/{}/tags", category_id))
-                .into_response()
+            Redirect::to(&format!("/admin/structure/categories/{category_id}/tags")).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to create tag");
@@ -583,7 +582,7 @@ async fn edit_tag_form(
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/structure/tags/{}/edit", tag_id));
+    context.insert("action", &format!("/admin/structure/tags/{tag_id}/edit"));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
@@ -599,7 +598,7 @@ async fn edit_tag_form(
             "parent_id": current_parent_id,
         }),
     );
-    context.insert("path", &format!("/admin/structure/tags/{}/edit", tag_id));
+    context.insert("path", &format!("/admin/structure/tags/{tag_id}/edit"));
 
     render_admin_template(&state, "admin/tag-form.html", context).await
 }
@@ -653,7 +652,7 @@ async fn edit_tag_submit(
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/structure/tags/{}/edit", tag_id));
+        context.insert("action", &format!("/admin/structure/tags/{tag_id}/edit"));
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
@@ -670,7 +669,7 @@ async fn edit_tag_submit(
                 "parent_id": form.parent_id,
             }),
         );
-        context.insert("path", &format!("/admin/structure/tags/{}/edit", tag_id));
+        context.insert("path", &format!("/admin/structure/tags/{tag_id}/edit"));
 
         return render_admin_template(&state, "admin/tag-form.html", context).await;
     }
@@ -738,7 +737,7 @@ async fn delete_tag(
         Ok(true) => {
             tracing::info!(tag_id = %tag_id, "tag deleted");
             let redirect_url = category_id
-                .map(|id| format!("/admin/structure/categories/{}/tags", id))
+                .map(|id| format!("/admin/structure/categories/{id}/tags"))
                 .unwrap_or_else(|| "/admin/structure/categories".to_string());
             Redirect::to(&redirect_url).into_response()
         }

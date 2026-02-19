@@ -45,9 +45,8 @@ async fn heartbeat(
         return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
     }
 
-    let user_id = match session.get::<Uuid>("user_id").await.ok().flatten() {
-        Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response(),
+    let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
+        return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
     };
 
     let Some(lock_service) = state.content_lock() else {
@@ -84,9 +83,8 @@ async fn break_lock(
         return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
     }
 
-    let user_id = match session.get::<Uuid>("user_id").await.ok().flatten() {
-        Some(id) => id,
-        None => return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response(),
+    let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
+        return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
     };
 
     // Check permission - load user to check against their roles

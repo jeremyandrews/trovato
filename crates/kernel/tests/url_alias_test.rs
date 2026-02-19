@@ -260,7 +260,7 @@ async fn test_alias_list_and_count() {
 
     // Count should be at least 2 (our aliases exist)
     let count = UrlAlias::count_all(&app.db).await.unwrap();
-    assert!(count >= 2, "expected at least 2 aliases, got {}", count);
+    assert!(count >= 2, "expected at least 2 aliases, got {count}");
 
     // List should include our aliases
     let all = UrlAlias::list_all(&app.db, 100, 0).await.unwrap();
@@ -307,7 +307,7 @@ async fn test_e2e_middleware_rewrites_alias_to_source() {
 
     // Create an alias for this item
     let alias_path = format!("/test-alias-page-{}", uuid::Uuid::new_v4());
-    let source_path = format!("/item/{}", item_id);
+    let source_path = format!("/item/{item_id}");
     let alias = UrlAlias::create(
         &app.db,
         CreateUrlAlias {
@@ -429,7 +429,7 @@ async fn test_e2e_middleware_preserves_query_string() {
 
     // Create an alias
     let alias_path = format!("/query-test-{}", uuid::Uuid::new_v4());
-    let source_path = format!("/item/{}", item_id);
+    let source_path = format!("/item/{item_id}");
     let alias = UrlAlias::create(
         &app.db,
         CreateUrlAlias {
@@ -445,7 +445,7 @@ async fn test_e2e_middleware_preserves_query_string() {
     // Request source path with query string to get baseline
     let direct_response = app
         .request(
-            Request::get(&format!("{}?foo=bar&baz=qux", source_path))
+            Request::get(format!("{source_path}?foo=bar&baz=qux"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -455,7 +455,7 @@ async fn test_e2e_middleware_preserves_query_string() {
     // Request alias with query string
     let alias_response = app
         .request(
-            Request::get(&format!("{}?foo=bar&baz=qux", alias_path))
+            Request::get(format!("{alias_path}?foo=bar&baz=qux"))
                 .body(Body::empty())
                 .unwrap(),
         )

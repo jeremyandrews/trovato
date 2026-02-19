@@ -162,7 +162,7 @@ impl PluginRuntime {
         let plugin_name = info.name.clone();
 
         // Find and compile WASM module
-        let wasm_path = plugin_dir.join(format!("{}.wasm", plugin_name));
+        let wasm_path = plugin_dir.join(format!("{plugin_name}.wasm"));
         if !wasm_path.exists() {
             anyhow::bail!(
                 "plugin '{}' WASM file not found at {}",
@@ -174,9 +174,8 @@ impl PluginRuntime {
         let wasm_bytes = std::fs::read(&wasm_path)
             .with_context(|| format!("failed to read WASM file: {}", wasm_path.display()))?;
 
-        let module = Module::new(&self.engine, &wasm_bytes).with_context(|| {
-            format!("failed to compile WASM module for plugin '{}'", plugin_name)
-        })?;
+        let module = Module::new(&self.engine, &wasm_bytes)
+            .with_context(|| format!("failed to compile WASM module for plugin '{plugin_name}'"))?;
 
         debug!(
             plugin = %plugin_name,
@@ -426,9 +425,8 @@ fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
         "wasi_snapshot_preview1",
         "random_get",
         |mut caller: wasmtime::Caller<'_, PluginState>, buf: i32, buf_len: i32| -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return 8, // EBADF
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return 8; // EBADF
             };
             let data = memory.data_mut(&mut caller);
             let buf = buf as usize;
@@ -460,9 +458,8 @@ fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
         "wasi_snapshot_preview1",
         "environ_sizes_get",
         |mut caller: wasmtime::Caller<'_, PluginState>, count_ptr: i32, size_ptr: i32| -> i32 {
-            let memory = match caller.get_export("memory") {
-                Some(wasmtime::Extern::Memory(m)) => m,
-                _ => return 8, // EBADF
+            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                return 8; // EBADF
             };
             let data = memory.data_mut(&mut caller);
             let count_ptr = count_ptr as usize;

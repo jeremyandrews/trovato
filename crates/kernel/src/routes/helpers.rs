@@ -27,10 +27,10 @@ pub struct CsrfOnlyForm {
 pub async fn require_login(state: &AppState, session: &Session) -> Result<User, Response> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
-    if let Some(id) = user_id {
-        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
-            return Ok(user);
-        }
+    if let Some(id) = user_id
+        && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+    {
+        return Ok(user);
     }
 
     Err(Redirect::to("/user/login").into_response())
@@ -43,13 +43,13 @@ pub async fn require_login(state: &AppState, session: &Session) -> Result<User, 
 pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
-    if let Some(id) = user_id {
-        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
-            if user.is_admin {
-                return Ok(user);
-            }
-            return Err((StatusCode::FORBIDDEN, Html("Access denied")).into_response());
+    if let Some(id) = user_id
+        && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+    {
+        if user.is_admin {
+            return Ok(user);
         }
+        return Err((StatusCode::FORBIDDEN, Html("Access denied")).into_response());
     }
 
     Err(Redirect::to("/user/login").into_response())
@@ -101,10 +101,10 @@ pub async fn inject_site_context(
     let mut user_roles = vec!["anonymous user".to_string()];
     if let Some(id) = user_id {
         user_roles.push("authenticated user".to_string());
-        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
-            if user.is_admin {
-                user_roles.push("administrator".to_string());
-            }
+        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+            && user.is_admin
+        {
+            user_roles.push("administrator".to_string());
         }
     }
 

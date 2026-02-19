@@ -205,8 +205,8 @@ mod tests {
     #[test]
     fn max_absolute_lifetime_is_24_hours() {
         assert_eq!(MAX_ABSOLUTE_LOCK_LIFETIME_SECS, 86400);
-        // Max lifetime should be much larger than single lock duration
-        assert!(MAX_ABSOLUTE_LOCK_LIFETIME_SECS > DEFAULT_LOCK_DURATION_SECS * 10);
+        // Static check: max lifetime must be much larger than single lock duration.
+        const _: () = assert!(MAX_ABSOLUTE_LOCK_LIFETIME_SECS > DEFAULT_LOCK_DURATION_SECS * 10);
     }
 
     #[test]
