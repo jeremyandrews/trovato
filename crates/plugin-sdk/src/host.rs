@@ -13,7 +13,7 @@ const MAX_OUTPUT_BUFFER: usize = 256 * 1024;
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "trovato:kernel/db")]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "execute-raw"]
     fn __db_execute_raw(sql_ptr: i32, sql_len: i32, params_ptr: i32, params_len: i32) -> i64;
 
