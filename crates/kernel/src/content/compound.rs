@@ -475,6 +475,7 @@ pub fn process_compound_fields(
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

@@ -201,7 +201,11 @@ async fn set_password(
         })?;
 
     // Invalidate any other tokens for this user
-    let _ = PasswordResetToken::invalidate_user_tokens(state.db(), reset_token.user_id).await;
+    if let Err(e) =
+        PasswordResetToken::invalidate_user_tokens(state.db(), reset_token.user_id).await
+    {
+        tracing::warn!(error = %e, user_id = %reset_token.user_id, "failed to invalidate password reset tokens");
+    }
 
     info!(user_id = %reset_token.user_id, "password reset completed");
 

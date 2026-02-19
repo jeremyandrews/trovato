@@ -94,7 +94,7 @@ impl RenderTreeConsumer {
         let mut html = String::new();
         for (_key, child) in children {
             let child_html = self.render_element(tera, child, context)?;
-            // SAFETY: write!() to String is infallible
+            // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{child_html}").unwrap();
         }
@@ -254,6 +254,7 @@ impl Default for RenderTreeConsumer {
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

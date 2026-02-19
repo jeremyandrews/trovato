@@ -178,14 +178,15 @@ SELECT DISTINCT id FROM descendants"#,
 /// Generates: `base_table.fields->'field' @> '["value"]'::jsonb`
 ///
 /// No resolve phase needed.
-///
-/// # Panics
-///
-/// Panics if `serde_json` fails to serialize a single-element string array.
-/// This is infallible for valid string values.
 pub struct JsonbArrayContainsFilterHandler;
 
 impl FilterHandler for JsonbArrayContainsFilterHandler {
+    /// Build a JSONB array containment condition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `serde_json` fails to serialize a single-element string array.
+    /// This is infallible for valid string values.
     fn build_condition(
         &self,
         filter: &QueryFilter,
@@ -220,6 +221,7 @@ impl FilterHandler for JsonbArrayContainsFilterHandler {
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

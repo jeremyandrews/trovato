@@ -30,12 +30,13 @@
 ## Error Handling Rules
 
 - `.unwrap()` forbidden in non-test production code
-- `.expect("reason")` permitted with `# Panics` doc section on the enclosing function/type
-- `write!(string, ...).unwrap()` safe on `String` — add `// SAFETY: write!() to String is infallible`
-- `let _ = result` — log on failure for security operations (lockout, audit)
-- `Response::builder().unwrap()` safe with hard-coded valid inputs — add `// SAFETY:` comment
-- HashMap: prefer `if let Some(v) = map.get_mut(k)` over `.contains_key()` + `.unwrap()`
-- New WASM host functions: follow error code convention in `crates/plugin-sdk/src/host_errors.rs`
+- `.expect("reason")` permitted with `# Panics` doc section on the enclosing function
+- `write!(string, ...).unwrap()` safe on `String` — add `// Infallible:` comment
+- `let _ = result` — log on failure for security operations (lockout, audit, token invalidation)
+- `Response::builder().unwrap()` safe with hard-coded valid inputs — add `// Infallible:` comment
+- HashMap invariant lookups: use `.expect("reason")` with `# Panics` doc, not silent `if let`
+- New WASM host functions: use constants from `crates/plugin-sdk/src/host_errors.rs`
+- `// SAFETY:` comments are reserved for `unsafe` blocks; use `// Infallible:` for safe-by-construction calls
 
 ## Before Committing Checklist
 

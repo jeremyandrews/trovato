@@ -328,7 +328,7 @@ impl UrlAlias {
             )
             .await?;
             Ok(updated.ok_or_else(|| {
-                anyhow::anyhow!("url_alias update returned None for id={}", first.id)
+                anyhow::anyhow!("url_alias update returned None for existing record")
             })?)
         } else {
             // Create new alias

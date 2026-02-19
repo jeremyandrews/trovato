@@ -995,7 +995,7 @@ fn is_valid_field_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    // SAFETY: non-empty string confirmed by is_empty() check above
+    // Infallible: non-empty string confirmed by is_empty() check above
     #[allow(clippy::unwrap_used)]
     let first = name.chars().next().unwrap();
     if !first.is_ascii_alphabetic() && first != '_' {
@@ -1058,6 +1058,7 @@ fn json_value_to_string(v: &serde_json::Value) -> Option<String> {
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

@@ -216,8 +216,9 @@ impl Metrics {
     /// # Panics
     ///
     /// Panics if Prometheus metric encoding to a `String` buffer fails.
-    /// Writing to `String` is infallible; the encoder only returns errors
-    /// for I/O failures which cannot occur with an in-memory buffer.
+    /// The `fmt::Write` impl for `String` is infallible, and all metric
+    /// labels use derived `Display`/`EncodeLabelSet` impls that do not
+    /// produce `fmt::Error`.
     pub fn encode(&self) -> String {
         let mut buffer = String::new();
         // Prometheus encoding to String buffer is infallible
@@ -261,6 +262,7 @@ fn normalize_path(path: &str) -> String {
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

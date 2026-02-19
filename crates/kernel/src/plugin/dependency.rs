@@ -24,6 +24,12 @@ use super::info_parser::PluginInfo;
 /// Returns error if:
 /// - A plugin declares a dependency that doesn't exist
 /// - There is a circular dependency
+///
+/// # Panics
+///
+/// Panics if a plugin key is missing from the `in_degree` map. This cannot
+/// happen because every key from `plugins` is inserted during initialization
+/// before the graph-building loop.
 pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<String>> {
     // Build dependency graph
     // in_degree[p] = number of plugins that p depends on (that must load first)
@@ -46,8 +52,12 @@ pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<S
 
             // name depends on dep, so dep must load first
             // This means name has in_degree +1 from dep
-            if let Some(degree) = in_degree.get_mut(name.as_str()) {
-                *degree += 1;
+            // Key guaranteed present: inserted in initialization loop above
+            #[allow(clippy::expect_used)]
+            {
+                *in_degree
+                    .get_mut(name.as_str())
+                    .expect("plugin key missing from in_degree map") += 1;
             }
             dependents.entry(dep.as_str()).or_default().push(name);
         }
@@ -74,11 +84,14 @@ pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<S
         if let Some(deps) = dependents.get(plugin) {
             let mut newly_ready: Vec<&str> = Vec::new();
             for dependent in deps {
-                if let Some(degree) = in_degree.get_mut(*dependent) {
-                    *degree -= 1;
-                    if *degree == 0 {
-                        newly_ready.push(*dependent);
-                    }
+                // Key guaranteed present: inserted in initialization loop above
+                #[allow(clippy::expect_used)]
+                let degree = in_degree
+                    .get_mut(*dependent)
+                    .expect("dependent key missing from in_degree map");
+                *degree -= 1;
+                if *degree == 0 {
+                    newly_ready.push(*dependent);
                 }
             }
             newly_ready.sort();
@@ -120,6 +133,7 @@ pub fn check_dependencies(plugin: &PluginInfo, available: &HashSet<String>) -> R
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

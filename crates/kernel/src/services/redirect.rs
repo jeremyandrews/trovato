@@ -345,6 +345,7 @@ pub async fn create_redirect_for_alias_change(
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

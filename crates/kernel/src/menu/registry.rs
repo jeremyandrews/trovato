@@ -231,6 +231,7 @@ fn match_pattern(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

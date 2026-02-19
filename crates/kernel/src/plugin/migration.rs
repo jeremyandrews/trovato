@@ -133,6 +133,12 @@ pub async fn run_plugin_migrations(
 ///
 /// Uses Kahn's algorithm, ordering by `migrations.depends_on` merged with
 /// plugin `dependencies`.
+///
+/// # Panics
+///
+/// Panics if a plugin key is missing from the `in_degree` map. This cannot
+/// happen because every key from `plugins` is inserted during initialization
+/// before the graph-building loop.
 pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<String>> {
     // Build combined dependency graph: for migration ordering, a plugin's
     // migration depends on both its `dependencies` and `migrations.depends_on`.
@@ -163,8 +169,12 @@ pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<
         }
 
         for dep in all_deps {
-            if let Some(degree) = in_degree.get_mut(name.as_str()) {
-                *degree += 1;
+            // Key guaranteed present: inserted in initialization loop above
+            #[allow(clippy::expect_used)]
+            {
+                *in_degree
+                    .get_mut(name.as_str())
+                    .expect("plugin key missing from in_degree map") += 1;
             }
             dependents.entry(dep).or_default().push(name);
         }
@@ -192,11 +202,14 @@ pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<
             // Collect newly-unblocked dependents and sort for determinism
             let mut newly_ready: Vec<&str> = Vec::new();
             for dependent in deps {
-                if let Some(degree) = in_degree.get_mut(*dependent) {
-                    *degree -= 1;
-                    if *degree == 0 {
-                        newly_ready.push(*dependent);
-                    }
+                // Key guaranteed present: inserted in initialization loop above
+                #[allow(clippy::expect_used)]
+                let degree = in_degree
+                    .get_mut(*dependent)
+                    .expect("dependent key missing from in_degree map");
+                *degree -= 1;
+                if *degree == 0 {
+                    newly_ready.push(*dependent);
                 }
             }
             newly_ready.sort();
@@ -260,6 +273,7 @@ pub async fn run_all_pending_migrations(
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

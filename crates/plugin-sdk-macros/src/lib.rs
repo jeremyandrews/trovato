@@ -1,5 +1,3 @@
-// Proc macros are build-time code, not production runtime.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Proc macros for Trovato plugin SDK.
 //!
 //! Provides `#[plugin_tap]` attribute macro that generates WASM export
@@ -43,7 +41,8 @@ pub fn plugin_tap(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate different code based on whether there's an input parameter
     let (inner_fn, wrapper_body) = if has_input {
-        // Extract the first parameter type
+        // Infallible: has_input is true only when fn_inputs is non-empty
+        #[allow(clippy::unwrap_used)]
         let first_param = fn_inputs.first().unwrap();
         let FnArg::Typed(PatType {
             pat: param_name,
@@ -147,6 +146,8 @@ pub fn plugin_tap_result(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let has_input = !fn_inputs.is_empty();
 
     let (inner_fn, wrapper_body) = if has_input {
+        // Infallible: has_input is true only when fn_inputs is non-empty
+        #[allow(clippy::unwrap_used)]
         let first_param = fn_inputs.first().unwrap();
         let FnArg::Typed(PatType {
             pat: param_name,

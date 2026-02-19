@@ -278,6 +278,7 @@ impl std::fmt::Debug for CronTasks {
 }
 
 #[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     #[test]

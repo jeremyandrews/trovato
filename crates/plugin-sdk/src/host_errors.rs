@@ -4,15 +4,18 @@
 //! for their `i32` (or `i64`) return values. Negative values indicate errors;
 //! non-negative values indicate success.
 //!
+//! Use the constants below instead of raw integer literals when implementing
+//! or consuming host functions.
+//!
 //! # Standard Error Codes
 //!
-//! | Code | Meaning |
-//! |------|---------|
-//! | `-1` | Memory export not found — the WASM module does not export `"memory"` |
-//! | `-2` | First parameter read failed — UTF-8 error or out-of-bounds slice |
-//! | `-3` | Second parameter or output write failed — buffer too small or OOB |
-//! | `-4` | Third parameter read failed (DB functions with extra params) |
-//! | `≥ 0` | Success — value is bytes written, rows affected, or a boolean flag |
+//! | Code | Constant | Meaning |
+//! |------|----------|---------|
+//! | `-1` | [`ERR_MEMORY_MISSING`] | WASM module does not export `"memory"` |
+//! | `-2` | [`ERR_PARAM1_READ`] | First parameter read failed (UTF-8 / OOB) |
+//! | `-3` | [`ERR_PARAM2_OR_OUTPUT`] | Second param or output write failed |
+//! | `-4` | [`ERR_PARAM3_READ`] | Third parameter read failed (DB extra params) |
+//! | `≥ 0` | — | Success: bytes written, rows affected, or boolean flag |
 //!
 //! # Per-API Details
 //!
@@ -105,3 +108,16 @@
 //!
 //! - **`log(level_ptr, level_len, plugin_ptr, plugin_len, msg_ptr, msg_len) → void`**
 //!   - No return value. Falls back to `info` level on parse failure.
+
+/// Memory export not found — the WASM module does not export `"memory"`.
+pub const ERR_MEMORY_MISSING: i32 = -1;
+
+/// First parameter read failed — UTF-8 decoding error or out-of-bounds slice.
+pub const ERR_PARAM1_READ: i32 = -2;
+
+/// Second parameter or output write failed — buffer too small or out of bounds.
+pub const ERR_PARAM2_OR_OUTPUT: i32 = -3;
+
+/// Third parameter read failed (used by DB functions with extra params like
+/// `query-raw` and `insert`).
+pub const ERR_PARAM3_READ: i32 = -4;

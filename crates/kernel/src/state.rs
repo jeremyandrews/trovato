@@ -185,8 +185,9 @@ impl AppState {
     ///
     /// # Panics
     ///
-    /// Panics if HKDF-SHA256 expansion to 32 bytes fails. This cannot happen
-    /// because the output length (32) is well within the HKDF limit of 255 × HashLen.
+    /// Panics if HKDF-SHA256 expansion to 32 bytes fails during webhook
+    /// encryption key derivation. This cannot happen because the output
+    /// length (32) is well within the HKDF limit of 255 × HashLen.
     pub async fn new(config: &Config) -> Result<Self> {
         // Create PostgreSQL pool
         let db = db::create_pool(config)
