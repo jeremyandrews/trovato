@@ -1,5 +1,6 @@
 // Load-test scenarios and metrics types are conditionally used depending on CLI flags.
 #![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Trovato CMS Load Testing Tool
 //!
 //! Simulates concurrent users accessing the CMS to verify performance targets.

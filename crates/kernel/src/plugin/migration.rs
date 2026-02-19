@@ -260,6 +260,7 @@ pub async fn run_all_pending_migrations(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::plugin::info_parser::{MigrationConfig, TapConfig};

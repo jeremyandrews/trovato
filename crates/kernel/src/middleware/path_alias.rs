@@ -140,6 +140,7 @@ fn rewrite_uri(original: &Uri, new_path: &str) -> Result<Uri, axum::http::uri::I
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Common test utilities for integration tests.
 //!
 //! This module provides test infrastructure that uses the REAL kernel code,

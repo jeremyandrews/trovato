@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for Item CRUD operations.
 //!
 //! These tests verify the Item model, ItemService, and related functionality.

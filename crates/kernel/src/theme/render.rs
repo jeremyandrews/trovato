@@ -95,6 +95,7 @@ impl RenderTreeConsumer {
         for (_key, child) in children {
             let child_html = self.render_element(tera, child, context)?;
             // SAFETY: write!() to String is infallible
+            #[allow(clippy::unwrap_used)]
             write!(html, "{child_html}").unwrap();
         }
 
@@ -253,6 +254,7 @@ impl Default for RenderTreeConsumer {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;

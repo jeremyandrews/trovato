@@ -1,3 +1,5 @@
+// Proc macros are build-time code, not production runtime.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Proc macros for Trovato plugin SDK.
 //!
 //! Provides `#[plugin_tap]` attribute macro that generates WASM export

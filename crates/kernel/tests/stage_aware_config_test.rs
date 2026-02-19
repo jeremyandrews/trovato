@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for StageAwareConfigStorage.
 //!
 //! Tests the stage-aware config storage implementation against a real database.

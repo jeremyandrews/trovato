@@ -752,6 +752,7 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity,
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

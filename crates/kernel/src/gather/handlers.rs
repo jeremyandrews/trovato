@@ -206,6 +206,8 @@ impl FilterHandler for JsonbArrayContainsFilterHandler {
         }
 
         // Use serde_json for correct escaping of all JSON special characters
+        // Serializing a string array to JSON cannot fail
+        #[allow(clippy::expect_used)]
         let json_array = serde_json::to_string(&serde_json::json!([value_str]))
             .expect("serializing a string array to JSON cannot fail");
         let expr = format!(
@@ -218,6 +220,7 @@ impl FilterHandler for JsonbArrayContainsFilterHandler {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::gather::types::{FilterOperator, FilterValue, QueryFilter};

@@ -319,6 +319,7 @@ impl ContentTypeRegistry {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     #[test]
     fn content_type_registry_placeholder() {

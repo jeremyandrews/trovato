@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Cache layer tests.
 //!
 //! Tests for Phase 6A two-tier cache functionality.

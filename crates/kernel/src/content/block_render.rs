@@ -176,6 +176,8 @@ fn render_code(data: &Value) -> String {
         return format!("<pre><code>{}</code></pre>", html_escape(code));
     };
 
+    // syntect ships built-in themes; falls back through known names
+    #[allow(clippy::expect_used)]
     let theme = ts
         .themes
         .get("InspiredGitHub")
@@ -275,6 +277,7 @@ fn is_whitelisted_embed(url: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serde_json::json;

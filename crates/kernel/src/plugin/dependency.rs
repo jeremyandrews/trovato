@@ -120,6 +120,7 @@ pub fn check_dependencies(plugin: &PluginInfo, available: &HashSet<String>) -> R
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::plugin::info_parser::{MigrationConfig, TapConfig};

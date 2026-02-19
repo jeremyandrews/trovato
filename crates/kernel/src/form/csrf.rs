@@ -141,6 +141,7 @@ pub async fn clear_csrf_tokens(session: &Session) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

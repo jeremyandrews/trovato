@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Category system integration tests.
 //!
 //! Tests for categories, tags, and hierarchical queries.

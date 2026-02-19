@@ -278,6 +278,7 @@ impl std::fmt::Debug for CronTasks {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     #[test]
     fn test_cutoff_calculation() {

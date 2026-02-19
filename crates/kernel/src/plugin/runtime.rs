@@ -484,6 +484,7 @@ fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

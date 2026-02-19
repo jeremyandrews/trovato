@@ -231,6 +231,7 @@ impl ThemeEngine {
         for (name, element) in elements {
             let element_html = self.render_form_element(name, element, context)?;
             // SAFETY: write!() to String is infallible
+            #[allow(clippy::unwrap_used)]
             write!(html, "{element_html}").unwrap();
         }
 
@@ -293,6 +294,7 @@ impl ThemeEngine {
         for (name, child) in children {
             let child_html = self.render_form_element(name, child, context)?;
             // SAFETY: write!() to String is infallible
+            #[allow(clippy::unwrap_used)]
             write!(html, "{child_html}").unwrap();
         }
 
@@ -380,6 +382,7 @@ impl std::fmt::Debug for ThemeEngine {
 pub type SharedThemeEngine = Arc<ThemeEngine>;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

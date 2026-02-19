@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Form API tests.
 
 use trovato_kernel::form::{AjaxCommand, AjaxResponse, ElementType, Form, FormElement};

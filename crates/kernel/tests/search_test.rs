@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Search service tests.
 //!
 //! Tests for Phase 6A search functionality.

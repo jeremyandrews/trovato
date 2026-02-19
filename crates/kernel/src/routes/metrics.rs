@@ -28,6 +28,7 @@ async fn metrics(State(state): State<AppState>) -> Response {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     #[test]
     fn test_metrics_content_type() {

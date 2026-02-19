@@ -1,3 +1,5 @@
+// Test utilities — unwrap/expect are acceptable in test infrastructure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Trovato test utilities.
 //!
 //! Helpers for integration testing: test fixtures, mock builders,

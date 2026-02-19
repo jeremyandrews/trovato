@@ -94,6 +94,7 @@ impl std::fmt::Debug for ScheduledPublishingService {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     #[test]
     fn timestamp_comparison() {

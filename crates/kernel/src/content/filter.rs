@@ -210,6 +210,7 @@ impl TextFilter for UrlFilter {
         // Simple URL matching - we check context manually
         // Note: This is a simplified approach; a proper implementation would use a parser
         // SAFETY: static regex literal, compile cannot fail
+        #[allow(clippy::unwrap_used)]
         let url_re = regex::Regex::new(r#"(https?://[^\s<>"']+)"#).unwrap();
 
         // We'll use a stateful replacement to avoid converting URLs that are already in href/src
@@ -218,6 +219,7 @@ impl TextFilter for UrlFilter {
 
         for caps in url_re.captures_iter(input) {
             // SAFETY: capture group 0 always exists on a regex match
+            #[allow(clippy::unwrap_used)]
             let mat = caps.get(0).unwrap();
             let start = mat.start();
             let url = mat.as_str();
@@ -250,6 +252,7 @@ impl TextFilter for UrlFilter {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

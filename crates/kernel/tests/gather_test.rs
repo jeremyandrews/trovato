@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Gather query engine integration tests.
 //!
 //! Tests for QueryDefinition, QueryDisplay, query building, and results.

@@ -525,6 +525,8 @@ impl AppState {
                 use sha2::Sha256;
                 let hkdf = Hkdf::<Sha256>::new(None, k.as_bytes());
                 let mut key = [0u8; 32];
+                // HKDF-SHA256 expand to 32 bytes can't fail (output ≤ 255×HashLen)
+                #[allow(clippy::expect_used)]
                 hkdf.expand(b"trovato-webhook-encryption", &mut key)
                     .expect("HKDF expansion failed for webhook encryption key");
                 Some(key)

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for the Trovato kernel.
 //!
 //! These tests use the REAL kernel code - no mocks, no reimplementations.

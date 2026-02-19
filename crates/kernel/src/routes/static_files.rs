@@ -48,6 +48,7 @@ async fn serve_static(Path(path): Path<String>) -> Response<Body> {
     let content_type = mime_from_path(&file_path);
 
     // SAFETY: Response::builder() with hard-coded valid status and headers cannot fail
+    #[allow(clippy::unwrap_used)]
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
@@ -58,6 +59,7 @@ async fn serve_static(Path(path): Path<String>) -> Response<Body> {
 
 fn not_found() -> Response<Body> {
     // SAFETY: Response::builder() with hard-coded valid status cannot fail
+    #[allow(clippy::unwrap_used)]
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::from("Not found"))

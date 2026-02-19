@@ -220,6 +220,8 @@ impl Metrics {
     /// for I/O failures which cannot occur with an in-memory buffer.
     pub fn encode(&self) -> String {
         let mut buffer = String::new();
+        // Prometheus encoding to String buffer is infallible
+        #[allow(clippy::expect_used)]
         encode(&mut buffer, &self.registry).expect("encoding metrics");
         buffer
     }
@@ -259,6 +261,7 @@ fn normalize_path(path: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

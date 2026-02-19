@@ -345,6 +345,7 @@ pub async fn create_redirect_for_alias_change(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

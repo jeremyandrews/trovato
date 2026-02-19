@@ -1,5 +1,6 @@
 // Benchmark helpers and payload types are conditionally used depending on CLI flags.
 #![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Phase 0: WASM Architecture Validation
 //!
 //! Extended benchmark suite with configurable parameters for:

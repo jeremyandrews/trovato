@@ -75,6 +75,7 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use wasmtime::Engine;

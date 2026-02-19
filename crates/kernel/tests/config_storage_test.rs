@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for ConfigStorage trait.
 //!
 //! Tests the DirectConfigStorage implementation against a real database.

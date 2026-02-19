@@ -127,6 +127,7 @@ impl RequestState {
     /// # Panics
     ///
     /// Panics if services were not provided (test mode).
+    #[allow(clippy::expect_used)]
     pub fn db(&self) -> &PgPool {
         &self.services.as_ref().expect("services not initialized").db
     }
@@ -136,6 +137,7 @@ impl RequestState {
     /// # Panics
     ///
     /// Panics if services were not provided (test mode).
+    #[allow(clippy::expect_used)]
     pub fn lockout(&self) -> &LockoutService {
         &self
             .services
@@ -172,6 +174,7 @@ impl Default for RequestState {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
