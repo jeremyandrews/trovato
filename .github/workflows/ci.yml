@@ -25,8 +25,6 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    # Allow clippy warnings for now - working toward fixing them
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +32,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Run clippy
-        run: cargo clippy --all-targets -- -W clippy::all
+        run: cargo clippy --all-targets -- -D warnings
 
   test:
     name: Test
@@ -165,3 +163,53 @@ jobs:
 
       - name: Build plugins
         run: cargo build -p blog --target wasm32-wasip1 --release
+
+  doc:
+    name: Doc Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --document-private-items
+
+  terminology:
+    name: Terminology Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for Drupal terminology in Rust sources
+        run: |
+          # Search for Drupal terms that should use Trovato equivalents
+          FOUND=0
+          for term in '\bnode\b' '\btaxonomy\b' '\bvocabulary\b' '\bhook_' '\bmodule\b' '\bviews\b'; do
+            # Skip false positives: "node" in dependency/URL contexts, "module" in Rust module keyword
+            case "$term" in
+              '\bnode\b')
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -vi 'node_modules\|nodejs\|tree node\|ast node\|xml node\|html node\|mod \|module path\|pub mod\|use ' || true)
+                ;;
+              '\bmodule\b')
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -vi 'mod \|pub mod\|use \|module path\|wasm module\|Module for' || true)
+                ;;
+              '\bviews\b')
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -vi 'database views\|sql views\|materialized view' || true)
+                ;;
+              *)
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ || true)
+                ;;
+            esac
+            if [ -n "$MATCHES" ]; then
+              echo "::warning::Found Drupal terminology '$term' in source files:"
+              echo "$MATCHES"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 1 ]; then
+            echo "::warning::Drupal terminology found. See docs/coding-standards.md for Trovato equivalents."
+          fi
