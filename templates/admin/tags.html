@@ -1,10 +1,8 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>{{ category.label }} - Tags</h2>
-    <a href="/admin/structure/categories/{{ category.id }}/tags/add" class="button button--primary">Add tag</a>
-</div>
+{{ list::header(title=category.label ~ " - Tags", add_url="/admin/structure/categories/" ~ category.id ~ "/tags/add", add_label="Add tag") }}
 
 <nav class="breadcrumb">
     <a href="/admin/structure/categories">Categories</a>
@@ -30,16 +28,14 @@
                 <td>
                     <a href="/admin/structure/tags/{{ tag.id }}/edit">Edit</a>
                     &middot;
-                    <form method="post" action="/admin/structure/tags/{{ tag.id }}/delete" style="display: inline;">
-                        <button type="submit" class="link-button" onclick="return confirm('Are you sure you want to delete this tag?')">Delete</button>
-                    </form>
+                    {{ list::delete_button(action="/admin/structure/tags/" ~ tag.id ~ "/delete", confirm_text="Are you sure you want to delete this tag?", csrf_token=csrf_token) }}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
     {% else %}
-    <p>No tags in this category. <a href="/admin/structure/categories/{{ category.id }}/tags/add">Add one now</a>.</p>
+    {{ list::empty(message="No tags in this category.", add_url="/admin/structure/categories/" ~ category.id ~ "/tags/add", add_label="Add one now") }}
     {% endif %}
 </div>
 
@@ -50,17 +46,6 @@
     }
     .breadcrumb a {
         color: var(--primary);
-    }
-    .link-button {
-        background: none;
-        border: none;
-        color: var(--primary);
-        cursor: pointer;
-        padding: 0;
-        font: inherit;
-    }
-    .link-button:hover {
-        text-decoration: underline;
     }
 </style>
 {% endblock %}

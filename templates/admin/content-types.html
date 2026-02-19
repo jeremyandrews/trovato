@@ -1,10 +1,8 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Content Types</h2>
-    <a href="/admin/structure/types/add" class="button button--primary">Add content type</a>
-</div>
+{{ list::header(title="Content Types", add_url="/admin/structure/types/add", add_label="Add content type") }}
 
 <div class="admin-card">
     {% if content_types %}
@@ -35,7 +33,7 @@
         </tbody>
     </table>
     {% else %}
-    <p>No content types defined. <a href="/admin/structure/types/add">Create one now</a>.</p>
+    {{ list::empty(message="No content types defined.", add_url="/admin/structure/types/add") }}
     {% endif %}
 </div>
 {% endblock %}

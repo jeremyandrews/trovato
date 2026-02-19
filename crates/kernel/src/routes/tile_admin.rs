@@ -8,25 +8,14 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
+use crate::form::csrf::generate_csrf_token;
 use crate::models::tile::{CreateTile, Tile, UpdateTile};
 use crate::state::AppState;
 
-use super::helpers::{render_admin_template, require_admin};
-
-/// Render error helper (reuses admin template).
-async fn render_error(_state: &AppState, message: &str) -> Response {
-    use axum::http::StatusCode;
-    use axum::response::{Html, IntoResponse};
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Html(format!(
-            "<h1>Error</h1><p>{}</p>",
-            super::helpers::html_escape(message)
-        )),
-    )
-        .into_response()
-}
+use super::helpers::{
+    is_valid_machine_name, render_admin_template, render_error, render_not_found,
+    render_server_error, require_admin, require_csrf,
+};
 
 // -------------------------------------------------------------------------
 // Form data
@@ -131,19 +120,14 @@ async fn add_tile_submit(
         return redirect;
     }
 
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-    if !token_valid {
-        return render_error(&state, "Invalid or expired form token. Please try again.").await;
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     if !is_valid_machine_name(&form.machine_name) {
         return render_error(
-            &state,
             "Invalid machine name. Use only lowercase letters, numbers, and underscores.",
-        )
-        .await;
+        );
     }
 
     let config = form.build_config();
@@ -164,7 +148,7 @@ async fn add_tile_submit(
         Ok(_) => Redirect::to("/admin/structure/tiles").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to create tile");
-            render_error(&state, "Failed to create tile.").await
+            render_server_error("Failed to create tile.")
         }
     }
 }
@@ -182,7 +166,7 @@ async fn edit_tile_form(
     }
 
     let Some(tile) = Tile::find_by_id(state.db(), tile_id).await.ok().flatten() else {
-        return render_error(&state, "Tile not found.").await;
+        return render_not_found();
     };
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
@@ -228,11 +212,8 @@ async fn edit_tile_submit(
         return redirect;
     }
 
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-    if !token_valid {
-        return render_error(&state, "Invalid or expired form token. Please try again.").await;
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     let config = form.build_config();
@@ -252,7 +233,7 @@ async fn edit_tile_submit(
         Ok(_) => Redirect::to("/admin/structure/tiles").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update tile");
-            render_error(&state, "Failed to update tile.").await
+            render_server_error("Failed to update tile.")
         }
     }
 }
@@ -277,29 +258,18 @@ async fn delete_tile(
         return redirect;
     }
 
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-    if !token_valid {
-        return render_error(&state, "Invalid or expired form token. Please try again.").await;
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     match Tile::delete(state.db(), tile_id).await {
         Ok(true) => Redirect::to("/admin/structure/tiles").into_response(),
-        Ok(false) => render_error(&state, "Tile not found.").await,
+        Ok(false) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to delete tile");
-            render_error(&state, "Failed to delete tile.").await
+            render_server_error("Failed to delete tile.")
         }
     }
-}
-
-/// Validate that a machine name contains only lowercase letters, digits, and underscores.
-fn is_valid_machine_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// Create the tile admin router.

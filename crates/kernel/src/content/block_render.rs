@@ -8,6 +8,8 @@
 use serde_json::Value;
 use std::sync::LazyLock;
 
+use crate::routes::helpers::html_escape;
+
 /// Sanitize user-provided rich text, allowing only safe inline HTML.
 ///
 /// Uses ammonia to strip dangerous tags/attributes while preserving
@@ -265,20 +267,6 @@ fn is_whitelisted_embed(url: &str) -> bool {
     EMBED_WHITELIST
         .iter()
         .any(|pattern| normalised.starts_with(pattern))
-}
-
-// ---------------------------------------------------------------------------
-// HTML escaping helper
-// ---------------------------------------------------------------------------
-
-/// Escape characters that are special in HTML to prevent injection.
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
 // ---------------------------------------------------------------------------

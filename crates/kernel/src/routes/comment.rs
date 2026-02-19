@@ -14,10 +14,8 @@ use uuid::Uuid;
 
 use crate::content::FilterPipeline;
 use crate::models::{Comment, CreateComment, Item, UpdateComment, User};
+use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
-
-/// Session key for user ID.
-const SESSION_USER_ID: &str = "user_id";
 
 // =============================================================================
 // Response Types

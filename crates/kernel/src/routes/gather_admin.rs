@@ -1,20 +1,21 @@
 //! Admin routes for gather query management.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
 use serde::Deserialize;
 use tower_sessions::Session;
 
-use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
+use crate::form::csrf::generate_csrf_token;
 use crate::gather::{
     GatherQuery, GatherService, MAX_ITEMS_PER_PAGE, QueryDefinition, QueryDisplay,
 };
 use crate::state::AppState;
 
-use super::helpers::{html_escape, render_admin_template, require_admin};
+use super::helpers::{
+    render_admin_template, render_not_found, render_server_error, require_admin, require_csrf,
+};
 
 // =============================================================================
 // Form data
@@ -120,12 +121,8 @@ async fn create_submit(
     }
 
     // Verify CSRF token
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-
-    if !token_valid {
-        return render_error("Invalid or expired form token. Please try again.");
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     // Validate basic fields
@@ -230,7 +227,7 @@ async fn create_submit(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to create gather query");
-            render_error("Failed to create gather query.")
+            render_server_error("Failed to create gather query.")
         }
     }
 }
@@ -298,12 +295,8 @@ async fn save_submit(
     };
 
     // Verify CSRF token
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-
-    if !token_valid {
-        return render_error("Invalid or expired form token. Please try again.");
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     // Validate
@@ -389,7 +382,7 @@ async fn save_submit(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to update gather query");
-            render_error("Failed to update gather query.")
+            render_server_error("Failed to update gather query.")
         }
     }
 }
@@ -408,11 +401,8 @@ async fn clone_query(
     }
 
     // Verify CSRF token
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-    if !token_valid {
-        return render_error("Invalid or expired form token. Please try again.");
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     if state.gather().get_query(&id).is_none() {
@@ -429,7 +419,7 @@ async fn clone_query(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to clone gather query");
-            render_error("Failed to clone gather query.")
+            render_server_error("Failed to clone gather query.")
         }
     }
 }
@@ -448,11 +438,8 @@ async fn delete_query(
     }
 
     // Verify CSRF token
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-    if !token_valid {
-        return render_error("Invalid or expired form token. Please try again.");
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     match state.gather().delete_query(&id).await {
@@ -463,46 +450,9 @@ async fn delete_query(
         Ok(false) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to delete gather query");
-            render_error("Failed to delete gather query.")
+            render_server_error("Failed to delete gather query.")
         }
     }
-}
-
-// =============================================================================
-// Helper functions
-// =============================================================================
-
-/// Render an error page.
-fn render_error(message: &str) -> Response {
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html><head><title>Error</title></head>
-<body>
-<div style="max-width: 600px; margin: 100px auto; text-align: center;">
-<h1>Error</h1>
-<p>{}</p>
-<p><a href="javascript:history.back()">Go back</a></p>
-</div>
-</body></html>"#,
-        html_escape(message)
-    );
-
-    (StatusCode::BAD_REQUEST, Html(html)).into_response()
-}
-
-/// Render a 404 page.
-fn render_not_found() -> Response {
-    let html = r#"<!DOCTYPE html>
-<html><head><title>Not Found</title></head>
-<body>
-<div style="max-width: 600px; margin: 100px auto; text-align: center;">
-<h1>Not Found</h1>
-<p>The requested gather query could not be found.</p>
-<p><a href="/admin/gather">Return to gather queries</a></p>
-</div>
-</body></html>"#;
-
-    (StatusCode::NOT_FOUND, Html(html)).into_response()
 }
 
 /// Validate a query ID format.

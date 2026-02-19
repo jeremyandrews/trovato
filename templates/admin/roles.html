@@ -1,10 +1,8 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Roles</h2>
-    <a href="/admin/people/roles/add" class="button button--primary">Add role</a>
-</div>
+{{ list::header(title="Roles", add_url="/admin/people/roles/add", add_label="Add role") }}
 
 <div class="admin-card">
     {% if roles %}
@@ -28,9 +26,7 @@
                     <a href="/admin/people/roles/{{ role.id }}/edit">Edit</a>
                     {% if role.id != anonymous_role_id and role.id != authenticated_role_id %}
                     &middot;
-                    <form method="post" action="/admin/people/roles/{{ role.id }}/delete" style="display: inline;">
-                        <button type="submit" class="link-button" onclick="return confirm('Are you sure you want to delete this role?')">Delete</button>
-                    </form>
+                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", confirm_text="Are you sure you want to delete this role?", csrf_token=csrf_token) }}
                     {% endif %}
                 </td>
             </tr>
@@ -38,7 +34,7 @@
         </tbody>
     </table>
     {% else %}
-    <p>No roles found. <a href="/admin/people/roles/add">Create one now</a>.</p>
+    {{ list::empty(message="No roles found.", add_url="/admin/people/roles/add") }}
     {% endif %}
 </div>
 
@@ -57,17 +53,6 @@
     .badge--system {
         background: #e2e3e5;
         color: #383d41;
-    }
-    .link-button {
-        background: none;
-        border: none;
-        color: var(--primary);
-        cursor: pointer;
-        padding: 0;
-        font: inherit;
-    }
-    .link-button:hover {
-        text-decoration: underline;
     }
 </style>
 {% endblock %}

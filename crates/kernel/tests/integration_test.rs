@@ -119,7 +119,7 @@ async fn admin_content_types_list_returns_html() {
 
     // Login first
     let cookies = app
-        .create_and_login_user("admin_test_1", "password123", "admin1@test.com")
+        .create_and_login_admin("admin_test_1", "password123", "admin1@test.com")
         .await;
 
     let response = app
@@ -155,7 +155,7 @@ async fn admin_add_content_type_form_returns_html() {
 
     // Login first
     let cookies = app
-        .create_and_login_user("admin_test_2", "password123", "admin2@test.com")
+        .create_and_login_admin("admin_test_2", "password123", "admin2@test.com")
         .await;
 
     let response = app
@@ -191,7 +191,7 @@ async fn admin_manage_fields_returns_html() {
 
     // Login first
     let cookies = app
-        .create_and_login_user("admin_test_3", "password123", "admin3@test.com")
+        .create_and_login_admin("admin_test_3", "password123", "admin3@test.com")
         .await;
 
     let response = app
@@ -226,7 +226,7 @@ async fn admin_nonexistent_content_type_returns_404() {
 
     // Login first
     let cookies = app
-        .create_and_login_user("admin_test_4", "password123", "admin4@test.com")
+        .create_and_login_admin("admin_test_4", "password123", "admin4@test.com")
         .await;
 
     let response = app
@@ -255,7 +255,7 @@ async fn e2e_create_content_type() {
 
     // Login first
     let login_cookies = app
-        .create_and_login_user("admin_e2e_1", "password123", "e2e1@test.com")
+        .create_and_login_admin("admin_e2e_1", "password123", "e2e1@test.com")
         .await;
 
     // Get the add form to extract CSRF token
@@ -349,7 +349,7 @@ async fn e2e_add_field_to_content_type() {
 
     // Login first
     let login_cookies = app
-        .create_and_login_user("admin_e2e_2", "password123", "e2e2@test.com")
+        .create_and_login_admin("admin_e2e_2", "password123", "e2e2@test.com")
         .await;
 
     // First create a test content type via the UI to ensure the registry is updated
@@ -535,7 +535,7 @@ async fn e2e_search_html_page_works() {
 
     // Login first (search requires session for user context)
     let cookies = app
-        .create_and_login_user("search_test", "password123", "search@test.com")
+        .create_and_login_admin("search_test", "password123", "search@test.com")
         .await;
 
     let response = app
@@ -685,7 +685,7 @@ async fn e2e_file_upload_with_auth() {
 
     // Login first
     let cookies = app
-        .create_and_login_user("upload_test", "password123", "upload@test.com")
+        .create_and_login_admin("upload_test", "password123", "upload@test.com")
         .await;
 
     // Create a simple multipart body for a .txt file (allowed MIME type)
@@ -742,7 +742,7 @@ async fn e2e_file_get_info() {
 
     // Login and upload a file first
     let cookies = app
-        .create_and_login_user("file_info_test", "password123", "fileinfo@test.com")
+        .create_and_login_admin("file_info_test", "password123", "fileinfo@test.com")
         .await;
 
     let boundary = "----TestBoundary99999";
@@ -815,7 +815,7 @@ async fn e2e_file_invalid_mime_type_rejected() {
 
     // Login first
     let cookies = app
-        .create_and_login_user("mime_test", "password123", "mime@test.com")
+        .create_and_login_admin("mime_test", "password123", "mime@test.com")
         .await;
 
     // Try to upload an executable (not allowed)
@@ -968,7 +968,7 @@ async fn e2e_admin_list_users() {
 
     // Login first
     let cookies = app
-        .create_and_login_user("admin_users_1", "password123", "users1@test.com")
+        .create_and_login_admin("admin_users_1", "password123", "users1@test.com")
         .await;
 
     let response = app
@@ -1004,7 +1004,7 @@ async fn e2e_admin_add_user_form() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_users_2", "password123", "users2@test.com")
+        .create_and_login_admin("admin_users_2", "password123", "users2@test.com")
         .await;
 
     let response = app
@@ -1043,7 +1043,7 @@ async fn e2e_admin_create_user() {
     let new_email = format!("{}@test.com", new_username);
 
     let cookies = app
-        .create_and_login_user("admin_users_3", "password123", "users3@test.com")
+        .create_and_login_admin("admin_users_3", "password123", "users3@test.com")
         .await;
 
     // Get the form to extract CSRF token
@@ -1123,7 +1123,7 @@ async fn e2e_admin_edit_user() {
             .unwrap();
 
     let cookies = app
-        .create_and_login_user("admin_users_4", "password123", "users4@test.com")
+        .create_and_login_admin("admin_users_4", "password123", "users4@test.com")
         .await;
 
     // Get the edit form
@@ -1202,13 +1202,17 @@ async fn e2e_admin_delete_user() {
             .unwrap();
 
     let cookies = app
-        .create_and_login_user("admin_users_5", "password123", "users5@test.com")
+        .create_and_login_admin("admin_users_5", "password123", "users5@test.com")
         .await;
+
+    // Fetch CSRF token from user list page
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people").await;
 
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/people/{}/delete", user_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -1240,7 +1244,8 @@ async fn e2e_admin_cannot_delete_self() {
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("selfuser_{}", &unique_id[..16]);
 
-    app.create_test_user(&username, "testpass123", &format!("{}@test.com", username))
+    // Must be admin to reach delete handler (require_admin check)
+    app.create_test_admin(&username, "testpass123", &format!("{}@test.com", username))
         .await;
 
     let user_id: uuid::Uuid =
@@ -1249,13 +1254,17 @@ async fn e2e_admin_cannot_delete_self() {
             .await
             .unwrap();
 
-    // Login as the same user we're trying to delete
+    // Login as the same admin user we're trying to delete
     let cookies = app.login(&username, "testpass123").await;
+
+    // Fetch CSRF token
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people").await;
 
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/people/{}/delete", user_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -1279,7 +1288,7 @@ async fn e2e_admin_list_roles() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_roles_1", "password123", "roles1@test.com")
+        .create_and_login_admin("admin_roles_1", "password123", "roles1@test.com")
         .await;
 
     let response = app
@@ -1316,7 +1325,7 @@ async fn e2e_admin_create_role() {
     let role_name = format!("TestRole_{}", &unique_id[..16]);
 
     let cookies = app
-        .create_and_login_user("admin_roles_2", "password123", "roles2@test.com")
+        .create_and_login_admin("admin_roles_2", "password123", "roles2@test.com")
         .await;
 
     // Get form
@@ -1391,13 +1400,17 @@ async fn e2e_admin_delete_role() {
         .expect("Failed to create test role");
 
     let cookies = app
-        .create_and_login_user("admin_roles_3", "password123", "roles3@test.com")
+        .create_and_login_admin("admin_roles_3", "password123", "roles3@test.com")
         .await;
+
+    // Fetch CSRF token from roles list page
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people/roles").await;
 
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/people/roles/{}/delete", role_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -1427,8 +1440,11 @@ async fn e2e_admin_cannot_delete_builtin_roles() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_roles_4", "password123", "roles4@test.com")
+        .create_and_login_admin("admin_roles_4", "password123", "roles4@test.com")
         .await;
+
+    // Fetch CSRF token
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people/roles").await;
 
     // Try to delete anonymous role (UUID 1)
     let anonymous_role_id = uuid::Uuid::from_u128(1);
@@ -1436,7 +1452,8 @@ async fn e2e_admin_cannot_delete_builtin_roles() {
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/people/roles/{}/delete", anonymous_role_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -1455,7 +1472,7 @@ async fn e2e_admin_permissions_matrix() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_roles_5", "password123", "roles5@test.com")
+        .create_and_login_admin("admin_roles_5", "password123", "roles5@test.com")
         .await;
 
     let response = app
@@ -1497,7 +1514,7 @@ async fn e2e_admin_list_content() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_content_1", "password123", "content1@test.com")
+        .create_and_login_admin("admin_content_1", "password123", "content1@test.com")
         .await;
 
     let response = app
@@ -1529,7 +1546,7 @@ async fn e2e_admin_select_content_type() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_content_2", "password123", "content2@test.com")
+        .create_and_login_admin("admin_content_2", "password123", "content2@test.com")
         .await;
 
     let response = app
@@ -1566,7 +1583,7 @@ async fn e2e_admin_create_content() {
     let title = format!("Test Content {}", &unique_id[..16]);
 
     let cookies = app
-        .create_and_login_user("admin_content_3", "password123", "content3@test.com")
+        .create_and_login_admin("admin_content_3", "password123", "content3@test.com")
         .await;
 
     // Get form for page content type
@@ -1663,7 +1680,7 @@ async fn e2e_admin_edit_content() {
     .expect("Failed to create test content");
 
     let cookies = app
-        .create_and_login_user("admin_content_4", "password123", "content4@test.com")
+        .create_and_login_admin("admin_content_4", "password123", "content4@test.com")
         .await;
 
     // Get edit form
@@ -1745,13 +1762,17 @@ async fn e2e_admin_delete_content() {
     .expect("Failed to create test content");
 
     let cookies = app
-        .create_and_login_user("admin_content_5", "password123", "content5@test.com")
+        .create_and_login_admin("admin_content_5", "password123", "content5@test.com")
         .await;
+
+    // Fetch CSRF token from content list page
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/content").await;
 
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/content/{}/delete", item_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -1781,7 +1802,7 @@ async fn e2e_admin_content_filter_by_type() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_content_6", "password123", "content6@test.com")
+        .create_and_login_admin("admin_content_6", "password123", "content6@test.com")
         .await;
 
     let response = app
@@ -1814,7 +1835,7 @@ async fn e2e_admin_list_categories() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_cat_1", "password123", "cat1@test.com")
+        .create_and_login_admin("admin_cat_1", "password123", "cat1@test.com")
         .await;
 
     let response = app
@@ -1852,7 +1873,7 @@ async fn e2e_admin_create_category() {
     let cat_label = format!("Test Category {}", &unique_id[..16]);
 
     let cookies = app
-        .create_and_login_user("admin_cat_2", "password123", "cat2@test.com")
+        .create_and_login_admin("admin_cat_2", "password123", "cat2@test.com")
         .await;
 
     // Get form
@@ -1930,13 +1951,18 @@ async fn e2e_admin_delete_category() {
     .expect("Failed to create test category");
 
     let cookies = app
-        .create_and_login_user("admin_cat_3", "password123", "cat3@test.com")
+        .create_and_login_admin("admin_cat_3", "password123", "cat3@test.com")
         .await;
+
+    // Fetch CSRF token from categories list page
+    let (cookies, csrf_token) =
+        fetch_csrf_token(&app, &cookies, "/admin/structure/categories").await;
 
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/structure/categories/{}/delete", cat_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -1978,7 +2004,7 @@ async fn e2e_admin_list_tags() {
     .expect("Failed to create test category");
 
     let cookies = app
-        .create_and_login_user("admin_cat_4", "password123", "cat4@test.com")
+        .create_and_login_admin("admin_cat_4", "password123", "cat4@test.com")
         .await;
 
     let response = app
@@ -2025,7 +2051,7 @@ async fn e2e_admin_create_tag() {
     .expect("Failed to create test category");
 
     let cookies = app
-        .create_and_login_user("admin_cat_5", "password123", "cat5@test.com")
+        .create_and_login_admin("admin_cat_5", "password123", "cat5@test.com")
         .await;
 
     // Get form
@@ -2121,13 +2147,17 @@ async fn e2e_admin_delete_tag() {
         .expect("Failed to create tag hierarchy");
 
     let cookies = app
-        .create_and_login_user("admin_cat_6", "password123", "cat6@test.com")
+        .create_and_login_admin("admin_cat_6", "password123", "cat6@test.com")
         .await;
+
+    // Fetch CSRF token (use /admin/people which always has CSRF tokens)
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people").await;
 
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/structure/tags/{}/delete", tag_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -2161,7 +2191,7 @@ async fn e2e_admin_list_files() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_files_1", "password123", "files1@test.com")
+        .create_and_login_admin("admin_files_1", "password123", "files1@test.com")
         .await;
 
     let response = app
@@ -2215,7 +2245,7 @@ async fn e2e_admin_file_details() {
     .expect("Failed to create test file");
 
     let cookies = app
-        .create_and_login_user("admin_files_2", "password123", "files2@test.com")
+        .create_and_login_admin("admin_files_2", "password123", "files2@test.com")
         .await;
 
     let response = app
@@ -2249,29 +2279,35 @@ async fn e2e_admin_file_details() {
 async fn e2e_admin_delete_file() {
     let app = TestApp::new().await;
 
-    // Create a test file record
+    // Create a test file record with unique URI
     let file_id = uuid::Uuid::now_v7();
     let owner_id = uuid::Uuid::nil();
     let now = Utc::now().timestamp();
+    let unique_uri = format!("local://delete_me_{}.txt", file_id.simple());
     sqlx::query(
-        "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed) VALUES ($1, $2, 'delete_me.txt', 'local://delete_me.txt', 'text/plain', 100, 0, $3, $4)"
+        "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed) VALUES ($1, $2, 'delete_me.txt', $5, 'text/plain', 100, 0, $3, $4)"
     )
     .bind(file_id)
     .bind(owner_id)
     .bind(now)
     .bind(now)
+    .bind(&unique_uri)
     .execute(&app.db)
     .await
     .expect("Failed to create test file");
 
     let cookies = app
-        .create_and_login_user("admin_files_3", "password123", "files3@test.com")
+        .create_and_login_admin("admin_files_3", "password123", "files3@test.com")
         .await;
+
+    // Fetch CSRF token from files list page
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/content/files").await;
 
     let response = app
         .request_with_cookies(
             Request::post(&format!("/admin/content/files/{}/delete", file_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -2301,7 +2337,7 @@ async fn e2e_admin_files_filter_by_status() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_files_4", "password123", "files4@test.com")
+        .create_and_login_admin("admin_files_4", "password123", "files4@test.com")
         .await;
 
     // Filter for temporary files
@@ -2350,7 +2386,7 @@ async fn e2e_admin_search_config_page() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_search_1", "password123", "search1@test.com")
+        .create_and_login_admin("admin_search_1", "password123", "search1@test.com")
         .await;
 
     // Access search config for the 'page' content type
@@ -2393,7 +2429,7 @@ async fn e2e_admin_add_search_config() {
     let field_name = "search_test_field";
 
     let cookies = app
-        .create_and_login_user("admin_search_2", "password123", "search2@test.com")
+        .create_and_login_admin("admin_search_2", "password123", "search2@test.com")
         .await;
 
     // STEP 1: First add a field to the content type via the admin UI
@@ -2546,8 +2582,11 @@ async fn e2e_admin_remove_search_config() {
     .expect("Failed to create search config");
 
     let cookies = app
-        .create_and_login_user("admin_search_3", "password123", "search3@test.com")
+        .create_and_login_admin("admin_search_3", "password123", "search3@test.com")
         .await;
+
+    // Fetch CSRF token (use /admin/people which always has CSRF tokens)
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people").await;
 
     let response = app
         .request_with_cookies(
@@ -2555,7 +2594,8 @@ async fn e2e_admin_remove_search_config() {
                 "/admin/structure/types/{}/search/{}/delete",
                 type_name, field_name
             ))
-            .body(Body::empty())
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(csrf_form_body(&csrf_token))
             .unwrap(),
             &cookies,
         )
@@ -2584,14 +2624,18 @@ async fn e2e_admin_reindex_content_type() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("admin_search_4", "password123", "search4@test.com")
+        .create_and_login_admin("admin_search_4", "password123", "search4@test.com")
         .await;
+
+    // Fetch CSRF token (use /admin/people which always has CSRF tokens)
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/people").await;
 
     // Test reindex for 'page' content type (always exists)
     let response = app
         .request_with_cookies(
             Request::post("/admin/structure/types/page/search/reindex")
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -2958,6 +3002,54 @@ fn extract_form_build_id(html: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Fetch a CSRF token from an admin page. Returns (updated cookies, csrf token).
+///
+/// GETs the given page, extracts session cookies and the CSRF token from the HTML.
+async fn fetch_csrf_token(app: &TestApp, cookies: &str, page: &str) -> (String, String) {
+    let response = app
+        .request_with_cookies(Request::get(page).body(Body::empty()).unwrap(), cookies)
+        .await;
+    let new_cookies = extract_cookies(&response);
+    let cookies = if new_cookies.is_empty() {
+        cookies.to_string()
+    } else {
+        new_cookies
+    };
+    let html = response_text(response).await;
+    let csrf_token = extract_csrf_token(&html).expect("CSRF token should be present on admin page");
+    (cookies, csrf_token)
+}
+
+/// Percent-encode a value for use in form-urlencoded bodies.
+fn url_encode(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
+}
+
+/// Build a form-urlencoded POST body with the given CSRF token.
+fn csrf_form_body(csrf_token: &str) -> Body {
+    Body::from(format!("_token={}", url_encode(csrf_token)))
+}
+
+/// Build a form-urlencoded POST body with CSRF token and extra fields.
+fn csrf_form_body_with(csrf_token: &str, extra_fields: &str) -> Body {
+    Body::from(format!(
+        "_token={}&{}",
+        url_encode(csrf_token),
+        extra_fields
+    ))
 }
 
 // =============================================================================
@@ -3340,7 +3432,7 @@ async fn e2e_admin_list_comments() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("comment_admin", "password123", "commentadmin@test.com")
+        .create_and_login_admin("comment_admin", "password123", "commentadmin@test.com")
         .await;
 
     let response = app
@@ -3362,7 +3454,7 @@ async fn e2e_admin_comment_moderation() {
     let app = TestApp::new().await;
 
     let cookies = app
-        .create_and_login_user("comment_mod", "password123", "commentmod@test.com")
+        .create_and_login_admin("comment_mod", "password123", "commentmod@test.com")
         .await;
 
     // Get user ID
@@ -3434,7 +3526,7 @@ async fn e2e_admin_comment_moderation() {
     let body = response_text(list_response).await;
     assert!(body.contains("Comment for moderation"));
 
-    // Test: Edit comment form
+    // Test: Edit comment form (also extracts CSRF token for subsequent POSTs)
     let edit_form_response = app
         .request_with_cookies(
             Request::get(&format!("/admin/content/comments/{}/edit", comment_id))
@@ -3444,26 +3536,40 @@ async fn e2e_admin_comment_moderation() {
         )
         .await;
     assert_eq!(edit_form_response.status(), StatusCode::OK);
+    let form_cookies = extract_cookies(&edit_form_response);
+    let cookies = if form_cookies.is_empty() {
+        cookies
+    } else {
+        form_cookies
+    };
     let body = response_text(edit_form_response).await;
     assert!(body.contains("Edit Comment"));
+    let csrf_token = extract_csrf_token(&body).expect("CSRF token");
 
-    // Test: Edit comment submit
+    // Test: Edit comment submit (includes CSRF token)
     let edit_response = app
         .request_with_cookies(
             Request::post(&format!("/admin/content/comments/{}/edit", comment_id))
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from("body=Updated+comment+body&status=1"))
+                .body(csrf_form_body_with(
+                    &csrf_token,
+                    "body=Updated+comment+body&status=1",
+                ))
                 .unwrap(),
             &cookies,
         )
         .await;
     assert!(edit_response.status().is_redirection());
 
+    // Fetch fresh CSRF token for action buttons
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/content/comments").await;
+
     // Test: Unpublish comment
     let unpublish_response = app
         .request_with_cookies(
             Request::post(&format!("/admin/content/comments/{}/unpublish", comment_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -3478,11 +3584,15 @@ async fn e2e_admin_comment_moderation() {
         .expect("Comment should exist");
     assert_eq!(comment_status, 0);
 
+    // Fetch fresh CSRF token for approve
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/content/comments").await;
+
     // Test: Approve comment
     let approve_response = app
         .request_with_cookies(
             Request::post(&format!("/admin/content/comments/{}/approve", comment_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )
@@ -3497,11 +3607,15 @@ async fn e2e_admin_comment_moderation() {
         .expect("Comment should exist");
     assert_eq!(comment_status, 1);
 
+    // Fetch fresh CSRF token for delete
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin/content/comments").await;
+
     // Test: Delete comment
     let delete_response = app
         .request_with_cookies(
             Request::post(&format!("/admin/content/comments/{}/delete", comment_id))
-                .body(Body::empty())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(csrf_form_body(&csrf_token))
                 .unwrap(),
             &cookies,
         )

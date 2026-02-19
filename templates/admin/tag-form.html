@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 
 {% block content %}
 <div class="admin-header">
@@ -15,18 +16,9 @@
 
 <div class="admin-card">
     <form id="tag-form" method="post" action="{{ action }}">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
-        {% if errors %}
-        <div class="form__errors">
-            <ul>
-                {% for error in errors %}
-                <li>{{ error }}</li>
-                {% endfor %}
-            </ul>
-        </div>
-        {% endif %}
+        {{ form::errors(errors=errors) }}
 
         <div class="form-item">
             <label for="label" class="form-item__label form-item__label--required">Name</label>
@@ -61,10 +53,11 @@
             <p class="form-item__description">Lower weights appear first in listings.</p>
         </div>
 
-        <div class="form-actions">
-            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create tag{% endif %}</button>
-            <a href="/admin/structure/categories/{{ category.id }}/tags" class="button button--secondary">Cancel</a>
-        </div>
+        {% if editing %}
+        {{ form::actions(submit_label="Save changes", cancel_url="/admin/structure/categories/" ~ category.id ~ "/tags") }}
+        {% else %}
+        {{ form::actions(submit_label="Create tag", cancel_url="/admin/structure/categories/" ~ category.id ~ "/tags") }}
+        {% endif %}
     </form>
 </div>
 

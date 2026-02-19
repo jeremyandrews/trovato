@@ -7,6 +7,7 @@
 
 <div class="admin-card">
     <form method="post" action="/admin/content/comments/{{ comment.id }}/edit">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label for="body">Comment Body</label>
             <textarea id="body" name="body" rows="6" class="form-control" required>{{ comment.body }}</textarea>

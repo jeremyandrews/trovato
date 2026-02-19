@@ -57,7 +57,7 @@
 
     <div class="form-actions">
         <form method="post" action="/admin/content/files/{{ file.id }}/delete" style="display: inline;">
-            <button type="submit" class="button button--danger" onclick="return confirm('Are you sure you want to delete this file?')">Delete file</button>
+            <button type="submit" class="button button--danger" data-confirm="Are you sure you want to delete this file?">Delete file</button>
         </form>
         <a href="/admin/content/files" class="button button--secondary">Back to list</a>
     </div>

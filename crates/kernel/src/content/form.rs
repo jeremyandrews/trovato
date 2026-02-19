@@ -4,6 +4,7 @@
 //! This is a temporary solution until the full Form API is built in Epic 9.
 
 use crate::models::Item;
+use crate::routes::helpers::html_escape;
 use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 
 /// Builder for auto-generated forms.
@@ -396,15 +397,6 @@ fn extract_format_value(value: Option<&serde_json::Value>) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("filtered_html")
         .to_string()
-}
-
-/// HTML-escape a string for safe output.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
 #[cfg(test)]

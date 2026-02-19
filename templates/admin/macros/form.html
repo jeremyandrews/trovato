@@ -1,0 +1,35 @@
+{#- Admin form macros — shared structure for admin form pages. -#}
+
+{#- Form error list display. -#}
+{% macro errors(errors) %}
+{% if errors is defined and errors %}
+<div class="form__errors">
+    <ul>
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+{% endmacro errors %}
+
+{#- Hidden CSRF token field. -#}
+{% macro csrf(csrf_token) %}
+<input type="hidden" name="_token" value="{{ csrf_token }}">
+{% endmacro csrf %}
+
+{#- Hidden CSRF and form build ID fields. -#}
+{% macro hidden_fields(csrf_token, form_build_id="") %}
+<input type="hidden" name="_token" value="{{ csrf_token }}">
+{% if form_build_id %}
+<input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+{% endif %}
+{% endmacro hidden_fields %}
+
+{#- Form action buttons (submit + cancel). -#}
+{% macro actions(submit_label, cancel_url) %}
+<div class="form-actions">
+    <button type="submit" class="button button--primary">{{ submit_label }}</button>
+    <a href="{{ cancel_url }}" class="button button--secondary">Cancel</a>
+</div>
+{% endmacro actions %}

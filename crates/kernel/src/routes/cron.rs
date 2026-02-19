@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Serialize;
@@ -12,9 +12,9 @@ use tower_sessions::Session;
 use tracing::info;
 
 use crate::cron::CronResult;
-use crate::models::User;
-use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
+
+use super::helpers::require_admin;
 
 /// Create the cron router.
 pub fn router() -> Router<AppState> {
@@ -112,23 +112,6 @@ pub struct LastRunInfo {
 pub struct QueueLengths {
     pub email_send: u64,
     pub search_reindex: u64,
-}
-
-/// Check if user is admin, return user or redirect to login.
-async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    if let Some(id) = user_id {
-        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await {
-            if user.is_admin {
-                return Ok(user);
-            }
-            // User exists but is not admin
-            return Err((StatusCode::FORBIDDEN, "Admin access required").into_response());
-        }
-    }
-
-    Err(Redirect::to("/user/login").into_response())
 }
 
 /// Get cron status (admin only).

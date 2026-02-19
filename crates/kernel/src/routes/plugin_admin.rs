@@ -7,12 +7,12 @@ use axum::{Form, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
+use crate::form::csrf::generate_csrf_token;
 use crate::plugin::runtime::PluginRuntime;
 use crate::plugin::status::{self, STATUS_DISABLED, STATUS_ENABLED};
 use crate::state::AppState;
 
-use super::helpers::{render_admin_template, require_admin};
+use super::helpers::{render_admin_template, require_admin, require_csrf};
 
 const FLASH_KEY: &str = "plugin_admin_flash";
 
@@ -56,7 +56,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "failed to get plugin statuses");
-            return render_error(&state, "Failed to load plugin statuses.").await;
+            return render_plugin_error(&state, "Failed to load plugin statuses.").await;
         }
     };
     let status_map: std::collections::HashMap<String, &status::PluginStatus> =
@@ -140,11 +140,8 @@ async fn toggle_plugin(
     }
 
     // Verify CSRF token
-    let token_valid = verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-    if !token_valid {
-        return render_error(&state, "Invalid or expired form token. Please try again.").await;
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     // Validate plugin name (alphanumeric + underscore only)
@@ -153,7 +150,7 @@ async fn toggle_plugin(
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
-        return render_error(&state, "Invalid plugin name.").await;
+        return render_plugin_error(&state, "Invalid plugin name.").await;
     }
 
     // Check plugin is installed
@@ -161,12 +158,12 @@ async fn toggle_plugin(
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "failed to check plugin install status");
-            return render_error(&state, "Failed to check plugin status.").await;
+            return render_plugin_error(&state, "Failed to check plugin status.").await;
         }
     };
 
     if !installed {
-        return render_error(
+        return render_plugin_error(
             &state,
             "Plugin is not installed. Use the CLI to install it first: trovato plugin install",
         )
@@ -176,7 +173,7 @@ async fn toggle_plugin(
     let (new_status, action_word) = match form.action.as_str() {
         "enable" => (STATUS_ENABLED, "enabled"),
         "disable" => (STATUS_DISABLED, "disabled"),
-        _ => return render_error(&state, "Invalid action.").await,
+        _ => return render_plugin_error(&state, "Invalid action.").await,
     };
 
     let want_enabled = new_status == STATUS_ENABLED;
@@ -241,10 +238,13 @@ async fn toggle_plugin(
 
 /// Render an error within the admin layout.
 ///
+/// Unlike `helpers::render_error` (bare 400 page) this renders the error
+/// inside the full admin chrome using the `admin/plugin-error.html` template.
+///
 /// The message is inserted raw into the Tera context because the template uses
 /// Tera's default autoescape for `.html` files. Pre-escaping would cause
 /// double-escaped output (e.g. `&amp;amp;`).
-async fn render_error(state: &AppState, message: &str) -> Response {
+async fn render_plugin_error(state: &AppState, message: &str) -> Response {
     let mut context = tera::Context::new();
     context.insert("error_message", message);
     context.insert("path", "/admin/plugins");

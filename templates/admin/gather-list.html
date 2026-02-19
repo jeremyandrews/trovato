@@ -1,10 +1,8 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Gather Queries</h2>
-    <a href="/admin/gather/create" class="button button--primary">Create query</a>
-</div>
+{{ list::header(title="Gather Queries", add_url="/admin/gather/create", add_label="Create query") }}
 
 <div class="admin-card">
     {% if queries | length > 0 %}
@@ -33,17 +31,14 @@
                         <button type="submit" class="link-button">Clone</button>
                     </form>
                     &middot;
-                    <form method="post" action="/admin/gather/{{ query.query_id }}/delete" style="display: inline;">
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="link-button" onclick="return confirm('Delete this query?')">Delete</button>
-                    </form>
+                    {{ list::delete_button(action="/admin/gather/" ~ query.query_id ~ "/delete", confirm_text="Delete this query?", csrf_token=csrf_token) }}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
     {% else %}
-    <p>No gather queries found. <a href="/admin/gather/create">Create one now</a>.</p>
+    {{ list::empty(message="No gather queries found.", add_url="/admin/gather/create") }}
     {% endif %}
 </div>
 {% endblock %}

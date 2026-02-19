@@ -6,6 +6,7 @@ use anyhow::Result;
 use sqlx::PgPool;
 
 use crate::models::tile::Tile;
+use crate::routes::helpers::html_escape;
 
 /// Service for loading and rendering tiles.
 pub struct TileService {
@@ -120,14 +121,6 @@ fn render_tile_html(tile: &Tile) -> String {
     html.push_str("</div>\n</div>\n");
 
     html
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
 #[cfg(test)]

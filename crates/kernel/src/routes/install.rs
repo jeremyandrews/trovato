@@ -15,6 +15,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::models::{CreateUser, SiteConfig, User};
+use crate::routes::helpers::html_escape;
 use crate::state::AppState;
 
 // =============================================================================
@@ -233,15 +234,6 @@ fn render_installer(
     );
 
     Html(html).into_response()
-}
-
-/// Escape HTML characters.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
 // =============================================================================

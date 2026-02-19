@@ -39,7 +39,7 @@
                     <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/edit">Edit</a>
                     &middot;
                     <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/delete"
-                       onclick="return confirm('Are you sure you want to delete this field?')">Delete</a>
+                       data-confirm="Are you sure you want to delete this field?">Delete</a>
                 </td>
             </tr>
             {% endfor %}

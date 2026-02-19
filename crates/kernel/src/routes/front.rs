@@ -9,10 +9,8 @@ use crate::models::{Item, SiteConfig};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
+use super::auth::SESSION_USER_ID;
 use super::helpers::{html_escape, inject_site_context};
-
-/// Session key for user ID.
-const SESSION_USER_ID: &str = "user_id";
 
 /// Create the front page router.
 pub fn router() -> Router<AppState> {

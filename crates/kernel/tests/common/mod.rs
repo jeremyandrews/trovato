@@ -189,38 +189,23 @@ impl TestApp {
 
     /// Create a test admin user directly in the database.
     pub async fn create_test_admin(&self, username: &str, password: &str, email: &str) {
-        use argon2::{
-            Argon2,
-            password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-        };
-
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)
-            .expect("Failed to hash password")
-            .to_string();
-
-        let id = Uuid::now_v7();
-
-        sqlx::query(
-            r#"
-            INSERT INTO users (id, name, pass, mail, status, is_admin)
-            VALUES ($1, $2, $3, $4, 1, true)
-            ON CONFLICT (name) DO UPDATE SET pass = $3, is_admin = true
-            "#,
-        )
-        .bind(id)
-        .bind(username)
-        .bind(&password_hash)
-        .bind(email)
-        .execute(&self.db)
-        .await
-        .expect("Failed to create test admin");
+        self.create_test_user_inner(username, password, email, true)
+            .await;
     }
 
     /// Create a test user directly in the database.
     pub async fn create_test_user(&self, username: &str, password: &str, email: &str) {
+        self.create_test_user_inner(username, password, email, false)
+            .await;
+    }
+
+    async fn create_test_user_inner(
+        &self,
+        username: &str,
+        password: &str,
+        email: &str,
+        is_admin: bool,
+    ) {
         use argon2::{
             Argon2,
             password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
@@ -238,14 +223,15 @@ impl TestApp {
         sqlx::query(
             r#"
             INSERT INTO users (id, name, pass, mail, status, is_admin)
-            VALUES ($1, $2, $3, $4, 1, false)
-            ON CONFLICT (name) DO UPDATE SET pass = $3
+            VALUES ($1, $2, $3, $4, 1, $5)
+            ON CONFLICT (name) DO UPDATE SET pass = $3, is_admin = $5
             "#,
         )
         .bind(id)
         .bind(username)
         .bind(&password_hash)
         .bind(email)
+        .bind(is_admin)
         .execute(&self.db)
         .await
         .expect("Failed to create test user");

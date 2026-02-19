@@ -52,6 +52,7 @@
                 <td>
                     {% if search_configs[field.field_name] %}
                         <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" style="display: inline;">
+                            <input type="hidden" name="_token" value="{{ csrf_token }}">
                             <button type="submit" class="link-button">Remove</button>
                         </form>
                     {% else %}
@@ -109,7 +110,8 @@
     <h3 style="margin-top: 0;">Reindex content</h3>
     <p>After changing search configuration, reindex all content of this type to apply the changes.</p>
     <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/reindex">
-        <button type="submit" class="button button--secondary" onclick="return confirm('This will update the search index for all {{ content_type.label }} content. Continue?')">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <button type="submit" class="button button--secondary" data-confirm="This will update the search index for all {{ content_type.label }} content. Continue?">
             Reindex all {{ content_type.label }} content
         </button>
     </form>

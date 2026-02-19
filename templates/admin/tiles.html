@@ -41,7 +41,7 @@
                     <a href="/admin/structure/tiles/{{ tile.id }}/edit">Edit</a>
                     <form method="post" action="/admin/structure/tiles/{{ tile.id }}/delete" style="display:inline">
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="btn-link" onclick="return confirm('Delete this tile?')">Delete</button>
+                        <button type="submit" class="btn-link" data-confirm="Delete this tile?">Delete</button>
                     </form>
                 </td>
             </tr>

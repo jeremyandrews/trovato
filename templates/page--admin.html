@@ -91,6 +91,21 @@
     .admin-card + .admin-card {
         margin-top: 1rem;
     }
+
+    .link-button {
+        background: none;
+        border: none;
+        color: var(--primary);
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+    }
+    .link-button:hover {
+        text-decoration: underline;
+    }
+    .link-button--danger {
+        color: #dc3545;
+    }
 </style>
 {% endblock %}
 
@@ -149,4 +164,15 @@
 {% block scripts %}
 {{ super() }}
 <script src="/static/js/file-upload.js"></script>
+<script>
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-confirm]');
+    if (btn) {
+        var msg = btn.getAttribute('data-confirm');
+        if (!confirm(msg)) {
+            e.preventDefault();
+        }
+    }
+});
+</script>
 {% endblock %}

@@ -1,0 +1,26 @@
+{#- Admin list macros — shared structure for admin list pages. -#}
+
+{#- Admin page header with title and optional add button. -#}
+{% macro header(title, add_url="", add_label="") %}
+<div class="admin-header">
+    <h2>{{ title }}</h2>
+    {% if add_url %}
+    <a href="{{ add_url }}" class="button button--primary">{{ add_label }}</a>
+    {% endif %}
+</div>
+{% endmacro header %}
+
+{#- Empty state message with optional link. -#}
+{% macro empty(message, add_url="", add_label="Create one now") %}
+<p>{{ message }}{% if add_url %} <a href="{{ add_url }}">{{ add_label }}</a>.{% endif %}</p>
+{% endmacro empty %}
+
+{#- Inline delete button with confirmation dialog.
+    Uses a data-confirm attribute so Tera's HTML autoescape keeps the value safe.
+    A delegated JS handler on the document reads the attribute at click time. -#}
+{% macro delete_button(action, confirm_text="Are you sure?", btn_class="link-button", csrf_token="") %}
+<form method="post" action="{{ action }}" style="display: inline;">
+    <input type="hidden" name="_token" value="{{ csrf_token }}">
+    <button type="submit" class="{{ btn_class }}" data-confirm="{{ confirm_text }}">Delete</button>
+</form>
+{% endmacro delete_button %}

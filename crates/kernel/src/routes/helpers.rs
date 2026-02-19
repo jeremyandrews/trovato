@@ -5,11 +5,20 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use serde::Deserialize;
+
 use crate::models::{SiteConfig, User};
+use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
-/// Session key for user ID.
-const SESSION_USER_ID: &str = "user_id";
+/// Generic form struct for POST endpoints that only need a CSRF token.
+///
+/// Used by delete, approve, unpublish, and similar action-only endpoints.
+#[derive(Debug, Deserialize)]
+pub struct CsrfOnlyForm {
+    #[serde(rename = "_token")]
+    pub token: String,
+}
 
 /// Require an authenticated user, or redirect to login.
 ///
@@ -121,6 +130,11 @@ pub async fn render_admin_template(
     let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
     enabled.sort();
     context.insert("enabled_plugins", &enabled);
+    // Ensure "errors" is always available for form templates that use form::errors().
+    if context.get("errors").is_none() {
+        let empty: Vec<String> = Vec::new();
+        context.insert("errors", &empty);
+    }
     match state.theme().tera().render(template, &context) {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -137,6 +151,103 @@ pub async fn render_admin_template(
                 .into_response()
         }
     }
+}
+
+/// Verify a CSRF token, returning an error response on failure.
+///
+/// Call sites use this as:
+/// ```ignore
+/// if let Err(resp) = require_csrf(&session, &form.token).await {
+///     return resp;
+/// }
+/// ```
+pub async fn require_csrf(session: &Session, token: &str) -> Result<(), Response> {
+    let valid = crate::form::csrf::verify_csrf_token(session, token)
+        .await
+        .unwrap_or(false);
+    if !valid {
+        Err(render_error(
+            "Invalid or expired form token. Please try again.",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Validate that a machine name starts with a lowercase letter and contains
+/// only lowercase letters, digits, and underscores.
+pub fn is_valid_machine_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    let mut chars = name.chars();
+
+    // First character must be lowercase letter
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+
+    // Rest must be lowercase letters, digits, or underscores
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Render a simple error page with the given message.
+///
+/// Returns a `400 Bad Request` response with escaped HTML content.
+pub fn render_error(message: &str) -> Response {
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><title>Error</title></head>
+<body>
+<div style="max-width: 600px; margin: 100px auto; text-align: center;">
+<h1>Error</h1>
+<p>{}</p>
+<p><a href="javascript:history.back()">Go back</a></p>
+</div>
+</body></html>"#,
+        html_escape(message)
+    );
+
+    (StatusCode::BAD_REQUEST, Html(html)).into_response()
+}
+
+/// Render a simple error page for server-side failures.
+///
+/// Returns a `500 Internal Server Error` response with escaped HTML content.
+pub fn render_server_error(message: &str) -> Response {
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><title>Error</title></head>
+<body>
+<div style="max-width: 600px; margin: 100px auto; text-align: center;">
+<h1>Error</h1>
+<p>{}</p>
+<p><a href="javascript:history.back()">Go back</a></p>
+</div>
+</body></html>"#,
+        html_escape(message)
+    );
+
+    (StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response()
+}
+
+/// Render a simple 404 page.
+pub fn render_not_found() -> Response {
+    let html = r#"<!DOCTYPE html>
+<html><head><title>Not Found</title></head>
+<body>
+<div style="max-width: 600px; margin: 100px auto; text-align: center;">
+<h1>Not Found</h1>
+<p>The requested page could not be found.</p>
+<p><a href="/admin">Return to admin</a></p>
+</div>
+</body></html>"#;
+
+    (StatusCode::NOT_FOUND, Html(html)).into_response()
 }
 
 /// HTML-escape a string for safe output.

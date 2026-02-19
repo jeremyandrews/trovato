@@ -14,6 +14,7 @@ use uuid::Uuid;
 use tower_sessions::Session;
 
 use crate::routes::auth::SESSION_USER_ID;
+use crate::routes::helpers::html_escape;
 use crate::state::AppState;
 
 /// Create the search router.
@@ -272,12 +273,4 @@ fn render_fallback_search(
 
     html.push_str("</body></html>");
     html
-}
-
-/// Simple HTML escaping.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }

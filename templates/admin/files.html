@@ -1,9 +1,8 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Files</h2>
-</div>
+{{ list::header(title="Files") }}
 
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/content/files">
@@ -57,9 +56,7 @@
                 <td>
                     <a href="/admin/content/files/{{ file.id }}">View</a>
                     &middot;
-                    <form method="post" action="/admin/content/files/{{ file.id }}/delete" style="display: inline;">
-                        <button type="submit" class="link-button" onclick="return confirm('Are you sure you want to delete this file?')">Delete</button>
-                    </form>
+                    {{ list::delete_button(action="/admin/content/files/" ~ file.id ~ "/delete", confirm_text="Are you sure you want to delete this file?", csrf_token=csrf_token) }}
                 </td>
             </tr>
             {% endfor %}
@@ -106,17 +103,6 @@
     .status--temporary {
         background: #fff3cd;
         color: #856404;
-    }
-    .link-button {
-        background: none;
-        border: none;
-        color: var(--primary);
-        cursor: pointer;
-        padding: 0;
-        font: inherit;
-    }
-    .link-button:hover {
-        text-decoration: underline;
     }
 </style>
 {% endblock %}

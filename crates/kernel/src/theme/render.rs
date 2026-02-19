@@ -5,6 +5,7 @@ use serde_json::Value;
 use tera::{Context as TeraContext, Tera};
 
 use crate::content::FilterPipeline;
+use crate::routes::helpers::html_escape;
 use trovato_sdk::render::RenderElement;
 
 /// Consumer that converts RenderElement trees to HTML.
@@ -248,15 +249,6 @@ impl Default for RenderTreeConsumer {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Escape HTML attribute values.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
 #[cfg(test)]
