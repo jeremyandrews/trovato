@@ -44,12 +44,13 @@ pub async fn check_redirect(
         .map(|l| l.0.as_str())
         .unwrap_or_else(|| state.default_language());
 
+    // Skip redirect lookup when the redirects plugin is disabled
+    let Some(cache) = state.redirect_cache() else {
+        return next.run(request).await;
+    };
+
     // Look up redirect via cache (avoids DB hit on every request)
-    let redirect = match state
-        .redirect_cache()
-        .find(state.db(), path, language)
-        .await
-    {
+    let redirect = match cache.find(state.db(), path, language).await {
         Ok(Some(r)) => r,
         Ok(None) => return next.run(request).await,
         Err(e) => {

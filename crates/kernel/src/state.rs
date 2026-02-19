@@ -176,8 +176,8 @@ struct AppStateInner {
     /// Scheduled publishing service.
     scheduled_publishing: Option<Arc<services::scheduled_publishing::ScheduledPublishingService>>,
 
-    /// Redirect lookup cache.
-    redirect_cache: Arc<services::redirect::RedirectCache>,
+    /// Redirect lookup cache (available when redirects plugin is enabled).
+    redirect_cache: Option<Arc<services::redirect::RedirectCache>>,
 }
 
 impl AppState {
@@ -663,7 +663,11 @@ impl AppState {
                 locale,
                 translation,
                 scheduled_publishing,
-                redirect_cache: Arc::new(services::redirect::RedirectCache::new()),
+                redirect_cache: if enabled_set.contains("redirects") {
+                    Some(Arc::new(services::redirect::RedirectCache::new()))
+                } else {
+                    None
+                },
             }),
         })
     }
@@ -909,9 +913,9 @@ impl AppState {
         self.inner.scheduled_publishing.as_ref()
     }
 
-    /// Get the redirect cache.
-    pub fn redirect_cache(&self) -> &Arc<services::redirect::RedirectCache> {
-        &self.inner.redirect_cache
+    /// Get the redirect cache (if redirects plugin is enabled).
+    pub fn redirect_cache(&self) -> Option<&Arc<services::redirect::RedirectCache>> {
+        self.inner.redirect_cache.as_ref()
     }
 
     /// Check if PostgreSQL is healthy.

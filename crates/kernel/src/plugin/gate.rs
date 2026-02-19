@@ -48,6 +48,10 @@ pub const GATED_ROUTE_PLUGINS: &[GatedPlugin] = &[
         name: "oauth2",
         description: "OAuth2 authorization routes",
     },
+    GatedPlugin {
+        name: "redirects",
+        description: "Redirect middleware and admin routes",
+    },
 ];
 
 /// A plugin whose kernel routes are runtime-gated.
