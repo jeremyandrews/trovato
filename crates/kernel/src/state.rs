@@ -158,9 +158,6 @@ struct AppStateInner {
     /// Content lock service.
     content_lock: Option<Arc<services::content_lock::ContentLockService>>,
 
-    /// Webhook service.
-    webhooks: Option<Arc<services::webhook::WebhookService>>,
-
     /// Image style service.
     image_styles: Option<Arc<services::image_style::ImageStyleService>>,
 
@@ -177,11 +174,6 @@ struct AppStateInner {
 impl AppState {
     /// Create new application state with database connections.
     ///
-    /// # Panics
-    ///
-    /// Panics if HKDF-SHA256 expansion to 32 bytes fails during webhook
-    /// encryption key derivation. This cannot happen because the output
-    /// length (32) is well within the HKDF limit of 255 × HashLen.
     pub async fn new(config: &Config) -> Result<Self> {
         // Create PostgreSQL pool
         let db = db::create_pool(config)
@@ -506,40 +498,6 @@ impl AppState {
             None
         };
 
-        let webhooks = if enabled_set.contains("webhooks") {
-            let encryption_key = std::env::var("WEBHOOK_ENCRYPTION_KEY").ok().and_then(|k| {
-                if k.len() < 32 {
-                    tracing::error!(
-                        len = k.len(),
-                        "WEBHOOK_ENCRYPTION_KEY must be at least 32 bytes; \
-                             webhook encryption disabled"
-                    );
-                    return None;
-                }
-                use hkdf::Hkdf;
-                use sha2::Sha256;
-                let hkdf = Hkdf::<Sha256>::new(None, k.as_bytes());
-                let mut key = [0u8; 32];
-                // HKDF-SHA256 expand to 32 bytes can't fail (output ≤ 255×HashLen)
-                #[allow(clippy::expect_used)]
-                hkdf.expand(b"trovato-webhook-encryption", &mut key)
-                    .expect("HKDF expansion failed for webhook encryption key");
-                Some(key)
-            });
-            if encryption_key.is_none() {
-                tracing::warn!(
-                    "WEBHOOK_ENCRYPTION_KEY not set or too short; \
-                     webhook secrets will be stored as plaintext"
-                );
-            }
-            Some(Arc::new(services::webhook::WebhookService::new(
-                db.clone(),
-                encryption_key,
-            )))
-        } else {
-            None
-        };
-
         let image_styles = if enabled_set.contains("image_styles") {
             Some(Arc::new(services::image_style::ImageStyleService::new(
                 db.clone(),
@@ -593,7 +551,7 @@ impl AppState {
         };
 
         // Wire plugin services into cron
-        cron.set_plugin_services(content_lock.clone(), webhooks.clone(), audit.clone());
+        cron.set_plugin_services(content_lock.clone(), audit.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
         let cron = Arc::new(cron);
 
@@ -631,7 +589,6 @@ impl AppState {
                 email,
                 audit,
                 content_lock,
-                webhooks,
                 image_styles,
                 oauth,
                 locale,
@@ -851,11 +808,6 @@ impl AppState {
     /// Get the content lock service (if content_locking plugin is enabled).
     pub fn content_lock(&self) -> Option<&Arc<services::content_lock::ContentLockService>> {
         self.inner.content_lock.as_ref()
-    }
-
-    /// Get the webhook service (if webhooks plugin is enabled).
-    pub fn webhooks(&self) -> Option<&Arc<services::webhook::WebhookService>> {
-        self.inner.webhooks.as_ref()
     }
 
     /// Get the image style service (if image_styles plugin is enabled).

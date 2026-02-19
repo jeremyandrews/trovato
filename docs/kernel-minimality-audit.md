@@ -113,7 +113,7 @@ Atomic ordered-phase publishing with conflict detection. Stages affect items, co
 
 **Verdict: Correctly placed — background execution infrastructure.**
 
-Distributed cron with Redis-based locking. The cron runner uses `set_plugin_services()` injection to optionally include plugin-specific tasks (scheduled publishing, content lock cleanup, webhook delivery, audit log cleanup). After built-in tasks complete, the cron runner dispatches `tap_cron` via `TapDispatcher` to all plugins that implement the hook, enabling plugin-defined scheduled work. Clean optional dependency pattern.
+Distributed cron with Redis-based locking. The cron runner uses `set_plugin_services()` injection to optionally include plugin-specific tasks (content lock cleanup, audit log cleanup). After built-in tasks complete, the cron runner dispatches `tap_cron` via `TapDispatcher` to all plugins that implement the hook, enabling plugin-defined scheduled work. Clean optional dependency pattern.
 
 ### 1r. Menu System (`menu/`, 2 files)
 
@@ -199,19 +199,19 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Note:** The `content_translation` plugin already owns the `item_translation` table migration. Translation CRUD operations will be implemented in the plugin when admin routes are built via `tap_route` or host DB functions — that's a separate future task.
 
-### 2e. Webhook Service → `webhooks` plugin
+### 2e. Webhook Service → `webhooks` plugin — ✅ EXTRACTED
 
-**Current state:** `services/webhook.rs` + cron task for delivery. The service dispatches events on item changes. No kernel code calls webhook dispatch directly — it's invoked from cron.
+**Previous state:** `services/webhook.rs` + hardcoded cron task for delivery processing. The service provided webhook CRUD, HMAC-signed delivery, SSRF prevention, exponential-backoff retry, and AES-256-GCM secret encryption.
 
-**Why extract:** Webhooks are a notification feature. Only cron calls the service.
+**Extraction completed:**
+- ✅ Kernel-side `WebhookService` deleted (`services/webhook.rs`)
+- ✅ Hardcoded cron task removed from `CronTasks` and `CronService::run()`
+- ✅ `set_plugin_services()` signature simplified (no longer takes webhooks arg)
+- ✅ `AppStateInner` no longer carries `webhooks` field, instantiation block, or accessor
+- ✅ HKDF key derivation block and `# Panics` doc removed from `AppState::new()`
+- ✅ Zero callers existed in kernel — `state.webhooks()` was never called, `dispatch()` was never invoked, delivery queue was always empty
 
-**Extraction approach:**
-- Move service to plugin
-- Plugin implements `tap_item_insert`/`tap_item_update`/`tap_item_delete` to enqueue webhook deliveries
-- Plugin implements `tap_cron` for delivery processing
-- ✅ `tap_cron` dispatch is now active (no longer a blocker)
-
-**Effort:** Medium — needs event hooking via item taps.
+**Note:** The `webhooks` plugin already owns the `webhook` and `webhook_delivery` table migrations. When webhook functionality is needed, the plugin will implement it via `tap_item_*` hooks (to queue events) and `tap_cron` (to process deliveries).
 
 ### 2f. Email Service → standalone utility or plugin
 
@@ -379,7 +379,7 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | **Image style service** | **Feature** | **Extract** | Routes already gated |
 | **Scheduled publishing** | **Feature** | **Extracted ✅** | Now plugin `tap_cron` handler via `host::execute_raw()` |
 | **Translation service** | **Feature** | **Extracted ✅** | Dead kernel code removed; plugin owns table + future CRUD |
-| **Webhook service** | **Feature** | **Extract** | Cron-only caller; `tap_cron` now active ✅ with timeout + `CronInput` type |
+| **Webhook service** | **Feature** | **Extracted ✅** | Dead kernel code removed; plugin owns tables + future event hooks |
 | **Email service** | **Feature** | **Extract** | Single caller (password reset) |
 
 ---
@@ -391,6 +391,6 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | ~~1~~ | ~~Redirect service~~ | ~~Conditional middleware~~ ✅ resolved | ~~Low~~ — kept in kernel (hot-path) |
 | ~~2~~ | ~~Scheduled publishing~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Low~~ — **extracted** ✅ |
 | 3 | Image style service | File path host function | Medium |
-| 4 | Webhook service | ~~Activate tap_cron~~ ✅ resolved; event taps | Medium |
+| ~~4~~ | ~~Webhook service~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | ~~5~~ | ~~Translation service~~ | ~~Host function DB patterns~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | 6 | Email service | tap_send_email + auth fallback | Medium |

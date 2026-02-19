@@ -54,9 +54,6 @@ trovato-sdk = { path = "../plugin-sdk" }
 image = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
-hmac = { workspace = true }
-aes-gcm = { workspace = true }
-hkdf = { workspace = true }
 subtle = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }

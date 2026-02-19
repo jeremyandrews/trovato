@@ -19,7 +19,6 @@ pub struct CronTasks {
     queue: Arc<RedisQueue>,
     files: Option<Arc<FileService>>,
     content_lock: Option<Arc<services::content_lock::ContentLockService>>,
-    webhooks: Option<Arc<services::webhook::WebhookService>>,
     audit: Option<Arc<services::audit::AuditService>>,
 }
 
@@ -31,7 +30,6 @@ impl CronTasks {
             queue,
             files: None,
             content_lock: None,
-            webhooks: None,
             audit: None,
         }
     }
@@ -47,7 +45,6 @@ impl CronTasks {
             queue,
             files: Some(files),
             content_lock: None,
-            webhooks: None,
             audit: None,
         }
     }
@@ -56,11 +53,9 @@ impl CronTasks {
     pub fn set_plugin_services(
         &mut self,
         content_lock: Option<Arc<services::content_lock::ContentLockService>>,
-        webhooks: Option<Arc<services::webhook::WebhookService>>,
         audit: Option<Arc<services::audit::AuditService>>,
     ) {
         self.content_lock = content_lock;
-        self.webhooks = webhooks;
         self.audit = audit;
     }
 
@@ -197,15 +192,6 @@ impl CronTasks {
     pub async fn cleanup_expired_locks(&self) -> Result<u64> {
         if let Some(ref service) = self.content_lock {
             service.cleanup_expired().await
-        } else {
-            Ok(0)
-        }
-    }
-
-    /// Process pending webhook deliveries.
-    pub async fn process_webhook_deliveries(&self) -> Result<u64> {
-        if let Some(ref service) = self.webhooks {
-            service.process_deliveries().await
         } else {
             Ok(0)
         }

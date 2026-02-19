@@ -12,4 +12,3 @@ pub mod locale;
 pub mod oauth;
 pub mod redirect;
 pub mod tile;
-pub mod webhook;

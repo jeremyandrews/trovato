@@ -91,11 +91,9 @@ impl CronService {
     pub fn set_plugin_services(
         &mut self,
         content_lock: Option<std::sync::Arc<crate::services::content_lock::ContentLockService>>,
-        webhooks: Option<std::sync::Arc<crate::services::webhook::WebhookService>>,
         audit: Option<std::sync::Arc<crate::services::audit::AuditService>>,
     ) {
-        self.tasks
-            .set_plugin_services(content_lock, webhooks, audit);
+        self.tasks.set_plugin_services(content_lock, audit);
     }
 
     /// Run all cron tasks.
@@ -174,16 +172,6 @@ impl CronService {
                 tasks_run.push(format!("cleanup_expired_locks: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup locks"),
-            _ => {}
-        }
-
-        // Process webhook deliveries
-        match self.tasks.process_webhook_deliveries().await {
-            Ok(count) if count > 0 => {
-                info!(count = count, "processed webhook deliveries");
-                tasks_run.push(format!("webhook_deliveries: {count}"));
-            }
-            Err(e) => warn!(error = %e, "failed to process webhooks"),
             _ => {}
         }
 
