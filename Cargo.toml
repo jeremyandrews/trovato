@@ -93,3 +93,9 @@ ammonia = "4"
 syntect = "5"
 parking_lot = "0.12"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+[workspace.lints.clippy]
+all = "warn"
+manual_let_else = "warn"
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"

@@ -1,3 +1,4 @@
+// Benchmark helpers and payload types are conditionally used depending on CLI flags.
 #![allow(dead_code)]
 //! Phase 0: WASM Architecture Validation
 //!

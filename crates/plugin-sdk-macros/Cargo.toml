@@ -8,6 +8,9 @@ description = "Proc macros for Trovato plugin development"
 [lib]
 proc-macro = true
 
+[lints]
+workspace = true
+
 [dependencies]
 proc-macro2 = "1"
 quote = "1"

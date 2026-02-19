@@ -9,6 +9,9 @@ description = "Phase 0 spike: WASM architecture validation benchmarks"
 name = "phase0"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }

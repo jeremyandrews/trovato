@@ -73,6 +73,9 @@ aws-config = { workspace = true, optional = true }
 default = []
 s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 http-body-util = "0.1"
 uuid = { workspace = true }

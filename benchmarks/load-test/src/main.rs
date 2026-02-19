@@ -1,3 +1,4 @@
+// Load-test scenarios and metrics types are conditionally used depending on CLI flags.
 #![allow(dead_code)]
 //! Trovato CMS Load Testing Tool
 //!

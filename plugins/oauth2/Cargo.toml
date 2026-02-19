@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "OAuth2 provider plugin for Trovato"
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib"]
 
