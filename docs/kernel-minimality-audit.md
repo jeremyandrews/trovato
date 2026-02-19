@@ -218,17 +218,22 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Note:** The `webhooks` plugin already owns the `webhook` and `webhook_delivery` table migrations. When webhook functionality is needed, the plugin will implement it via `tap_item_*` hooks (to queue events) and `tap_cron` (to process deliveries).
 
-### 2f. Email Service → standalone utility or plugin
+### 2f. Email Service — keep in kernel
 
-**Current state:** `services/email.rs`. Only called from `password_reset.rs`.
+**Current state:** `services/email.rs`. Called from `routes/password_reset.rs`. `EmailService` is `Option<Arc<>>` in `AppStateInner`, instantiated only when `SMTP_HOST` environment variable is set. Password reset gracefully handles `None` (logs warning, returns success to avoid user enumeration).
 
-**Why extract:** Email delivery is a feature. Currently only one caller (password reset). However, password reset is core auth infrastructure.
+**Previously classified as "Extract"** with a `tap_send_email` approach. However, the same WASM sandbox constraint that blocks image styles (Section 2b) also blocks email:
 
-**Extraction nuance:** Email is borderline. Password reset emails are part of auth infrastructure. Extracting email would require either:
-1. A kernel email abstraction trait, or
-2. The password reset flow invoking a tap (`tap_send_email`) that the email plugin handles
+1. **WASM can't do network I/O** — SMTP requires TCP connections with TLS negotiation. WASM's sandboxed environment has no socket API. Unlike HTTP webhooks (which could theoretically use a host function), SMTP is a stateful multi-step protocol unsuitable for host function wrapping.
+2. **Active caller** — unlike webhook, translation, and scheduled publishing (all dead code with zero callers that were simply deleted), email has an active caller in `routes/password_reset.rs`.
+3. **No plugin to extract to** — email is configuration-conditional (`SMTP_HOST` env var), not plugin-gated. There is no "email" plugin, and creating one would add complexity without benefit.
 
-**Effort:** Medium — tight coupling to auth flow makes this more complex than other extractions.
+**Already properly conditional:**
+- `EmailService` is `Option<Arc<>>` in `AppStateInner`
+- Created only when `SMTP_HOST` is set (config-conditional, not plugin-gated)
+- Password reset handles `None` gracefully
+
+**Verdict:** Keep as configuration-conditional auth infrastructure. This is not "Keep (gated)" — there is no plugin gate because email is not a plugin feature. It's infrastructure for password reset, which is core auth.
 
 ### 2g. Audit Service — keep in kernel
 
@@ -287,13 +292,9 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 Previously planned for `image_styles` plugin extraction. Since image style service is now classified as **Keep (gated)** (Section 2b), this host function has no remaining use case. If a future plugin needs file path resolution, this can be revisited.
 
-### 3e. Email Abstraction (if extracted)
+### 3e. Email Abstraction — no longer needed
 
-**Changes needed:**
-- New tap: `tap_send_email` with input `{ to, subject, body, html_body }`
-- Kernel's password reset flow invokes the tap
-- Email plugin implements the tap
-- Fallback: kernel logs a warning if no plugin handles the tap (email not configured)
+Previously planned `tap_send_email` tap for email plugin extraction. Since email service is now classified as **Keep** (Section 2f), this tap has no remaining use case. WASM cannot perform SMTP network I/O, and email is configuration-conditional auth infrastructure with no plugin to extract to.
 
 ---
 
@@ -311,8 +312,8 @@ The plugin-SDK crate version (`trovato-sdk`) should follow semantic versioning w
 - `#[plugin_tap]` / `#[plugin_tap_result]` macro behavior
 
 **Semi-stable (covered by semver MINOR):**
-- New tap points (adding `tap_cron`, `tap_send_email`, etc.)
-- New host functions (adding `file-api/resolve-path`)
+- New tap points (adding `tap_cron`, etc.)
+- New host functions
 - New SDK types
 - New fields on existing types (additive only)
 - New `FieldType` variants
@@ -339,8 +340,7 @@ trovato-sdk 1.MINOR.PATCH
 | SDK Version | Kernel Version | Status |
 |-------------|---------------|--------|
 | 1.0.x | Current | Baseline |
-| 1.1.x | +tap_cron, +file-api/resolve-path | Additive |
-| 1.2.x | +tap_send_email | Additive |
+| 1.1.x | +tap_cron | Additive |
 | 2.0.x | Breaking host function change | Major bump |
 
 Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compatibility at plugin load time and refuses to load plugins compiled against an incompatible SDK major version.
@@ -380,7 +380,7 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | **Scheduled publishing** | **Feature** | **Extracted ✅** | Now plugin `tap_cron` handler via `host::execute_raw()` |
 | **Translation service** | **Feature** | **Extracted ✅** | Dead kernel code removed; plugin owns table + future CRUD |
 | **Webhook service** | **Feature** | **Extracted ✅** | Dead kernel code removed; plugin owns tables + future event hooks |
-| **Email service** | **Feature** | **Extract** | Single caller (password reset) |
+| **Email service** | **Infrastructure** | **Keep** | Configuration-conditional auth infrastructure; WASM can't do SMTP |
 
 ---
 
@@ -393,4 +393,4 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | ~~3~~ | ~~Image style service~~ | ~~File path host function~~ | ~~Medium~~ — kept in kernel (WASM can't do image processing/filesystem I/O) |
 | ~~4~~ | ~~Webhook service~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | ~~5~~ | ~~Translation service~~ | ~~Host function DB patterns~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
-| 6 | Email service | tap_send_email + auth fallback | Medium |
+| ~~6~~ | ~~Email service~~ | ~~tap_send_email + auth fallback~~ | ~~Medium~~ — kept in kernel (WASM can't do SMTP) |
