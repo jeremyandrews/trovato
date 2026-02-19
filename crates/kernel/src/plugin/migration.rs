@@ -163,7 +163,9 @@ pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<
         }
 
         for dep in all_deps {
-            *in_degree.get_mut(name.as_str()).unwrap() += 1;
+            if let Some(degree) = in_degree.get_mut(name.as_str()) {
+                *degree += 1;
+            }
             dependents.entry(dep).or_default().push(name);
         }
     }
@@ -190,10 +192,11 @@ pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<
             // Collect newly-unblocked dependents and sort for determinism
             let mut newly_ready: Vec<&str> = Vec::new();
             for dependent in deps {
-                let degree = in_degree.get_mut(*dependent).unwrap();
-                *degree -= 1;
-                if *degree == 0 {
-                    newly_ready.push(*dependent);
+                if let Some(degree) = in_degree.get_mut(*dependent) {
+                    *degree -= 1;
+                    if *degree == 0 {
+                        newly_ready.push(*dependent);
+                    }
                 }
             }
             newly_ready.sort();

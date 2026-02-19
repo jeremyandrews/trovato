@@ -46,7 +46,9 @@ pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<S
 
             // name depends on dep, so dep must load first
             // This means name has in_degree +1 from dep
-            *in_degree.get_mut(name.as_str()).unwrap() += 1;
+            if let Some(degree) = in_degree.get_mut(name.as_str()) {
+                *degree += 1;
+            }
             dependents.entry(dep.as_str()).or_default().push(name);
         }
     }
@@ -72,10 +74,11 @@ pub fn resolve_load_order(plugins: &HashMap<String, PluginInfo>) -> Result<Vec<S
         if let Some(deps) = dependents.get(plugin) {
             let mut newly_ready: Vec<&str> = Vec::new();
             for dependent in deps {
-                let degree = in_degree.get_mut(*dependent).unwrap();
-                *degree -= 1;
-                if *degree == 0 {
-                    newly_ready.push(*dependent);
+                if let Some(degree) = in_degree.get_mut(*dependent) {
+                    *degree -= 1;
+                    if *degree == 0 {
+                        newly_ready.push(*dependent);
+                    }
                 }
             }
             newly_ready.sort();

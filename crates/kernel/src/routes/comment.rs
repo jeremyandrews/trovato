@@ -230,17 +230,17 @@ async fn create_comment(
                 )
             })?;
 
-        if parent.is_none() {
+        let Some(parent) = parent else {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: "Parent comment not found".to_string(),
                 }),
             ));
-        }
+        };
 
         // Verify parent is on the same item
-        if parent.unwrap().item_id != item_id {
+        if parent.item_id != item_id {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {

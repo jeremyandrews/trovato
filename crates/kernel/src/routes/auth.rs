@@ -277,10 +277,13 @@ async fn do_login(
     let user = match User::find_by_name(state.db(), &request.username).await {
         Ok(Some(user)) => user,
         Ok(None) => {
-            let _ = state
+            if let Err(e) = state
                 .lockout()
                 .record_failed_attempt(&request.username)
-                .await;
+                .await
+            {
+                tracing::warn!(error = %e, username = %request.username, "failed to record failed login attempt");
+            }
             return Err(LoginError::InvalidCredentials);
         }
         Err(e) => {
@@ -291,10 +294,13 @@ async fn do_login(
 
     // Check if user is active
     if !user.is_active() {
-        let _ = state
+        if let Err(e) = state
             .lockout()
             .record_failed_attempt(&request.username)
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, username = %request.username, "failed to record failed login attempt");
+        }
         return Err(LoginError::InvalidCredentials);
     }
 
@@ -320,7 +326,9 @@ async fn do_login(
     }
 
     // Successful login - clear any failed attempts
-    let _ = state.lockout().clear_attempts(&request.username).await;
+    if let Err(e) = state.lockout().clear_attempts(&request.username).await {
+        tracing::warn!(error = %e, username = %request.username, "failed to clear login attempts");
+    }
 
     // Update login timestamp
     if let Err(e) = User::touch_login(state.db(), user.id).await {

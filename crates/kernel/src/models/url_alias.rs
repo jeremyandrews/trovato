@@ -193,11 +193,9 @@ impl UrlAlias {
 
     /// Update a URL alias.
     pub async fn update(pool: &PgPool, id: Uuid, input: UpdateUrlAlias) -> Result<Option<Self>> {
-        let existing = Self::find_by_id(pool, id).await?;
-        if existing.is_none() {
+        let Some(existing) = Self::find_by_id(pool, id).await? else {
             return Ok(None);
-        }
-        let existing = existing.unwrap();
+        };
 
         let source = input.source.unwrap_or(existing.source);
         let alias = input.alias.unwrap_or(existing.alias);
@@ -329,7 +327,9 @@ impl UrlAlias {
                 },
             )
             .await?;
-            Ok(updated.expect("update should succeed for existing record"))
+            Ok(updated.ok_or_else(|| {
+                anyhow::anyhow!("url_alias update returned None for id={}", first.id)
+            })?)
         } else {
             // Create new alias
             Self::create(

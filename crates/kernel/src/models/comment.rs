@@ -233,11 +233,9 @@ impl Comment {
 
     /// Update a comment.
     pub async fn update(pool: &PgPool, id: Uuid, input: UpdateComment) -> Result<Option<Self>> {
-        let existing = Self::find_by_id(pool, id).await?;
-        if existing.is_none() {
+        let Some(existing) = Self::find_by_id(pool, id).await? else {
             return Ok(None);
-        }
-        let existing = existing.unwrap();
+        };
 
         let now = chrono::Utc::now().timestamp();
         let body = input.body.unwrap_or(existing.body);
