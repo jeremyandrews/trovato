@@ -2,8 +2,9 @@
 //!
 //! Provides trait and implementations for storing files locally or in S3.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use crate::file::service::sanitize_filename;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::fs;
@@ -135,27 +136,6 @@ impl FileStorage for LocalFileStorage {
     fn scheme(&self) -> &'static str {
         "local"
     }
-}
-
-/// Sanitize a filename for safe storage.
-fn sanitize_filename(filename: &str) -> String {
-    // Get just the filename part (no path)
-    let name = Path::new(filename)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(filename);
-
-    // Replace unsafe characters
-    name.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
-            ' ' => '_',
-            _ => '_',
-        })
-        .collect::<String>()
-        .chars()
-        .take(200) // Limit length
-        .collect()
 }
 
 impl std::fmt::Debug for LocalFileStorage {

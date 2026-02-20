@@ -146,6 +146,10 @@ impl FileService {
             bail!("file type not allowed: {mime_type}");
         }
 
+        // Validate file content matches declared MIME type (magic byte check).
+        // This prevents uploading executables disguised as images, etc.
+        validate_magic_bytes(data, mime_type)?;
+
         // Generate storage URI
         let uri = match self.storage.scheme() {
             "local" => {
@@ -446,8 +450,59 @@ impl FileService {
     }
 }
 
+/// Validate that file content matches the declared MIME type using magic bytes.
+///
+/// For file types with well-known magic byte signatures (images, PDF, ZIP, GZIP),
+/// this verifies the actual content matches. For document types without reliable
+/// magic bytes (CSV, plain text, Office XML), validation is skipped since these
+/// are inherently safe (non-executable).
+fn validate_magic_bytes(data: &[u8], declared_mime: &str) -> Result<()> {
+    // Types that require magic byte validation
+    let expected_mimes: &[&str] = match declared_mime {
+        "image/jpeg" => &["image/jpeg"],
+        "image/png" => &["image/png"],
+        "image/gif" => &["image/gif"],
+        "image/webp" => &["image/webp"],
+        "application/pdf" => &["application/pdf"],
+        "application/zip" => &["application/zip"],
+        "application/gzip" => &["application/gzip"],
+        // Office formats (docx/xlsx) are ZIP archives internally.
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+            &["application/zip"]
+        }
+        // Legacy Office formats have OLE magic bytes detected as application/x-ole-storage
+        "application/msword" | "application/vnd.ms-excel" => return Ok(()),
+        // Text-based formats have no reliable magic bytes
+        "text/plain" | "text/csv" => return Ok(()),
+        _ => return Ok(()),
+    };
+
+    let detected = infer::get(data);
+    match detected {
+        Some(kind) => {
+            if expected_mimes.contains(&kind.mime_type()) {
+                Ok(())
+            } else {
+                bail!(
+                    "file content does not match declared type: declared {declared_mime}, detected {}",
+                    kind.mime_type()
+                );
+            }
+        }
+        None => {
+            // infer couldn't detect the type. For types that should have detectable magic
+            // bytes (images, PDF, archives), this is suspicious.
+            match declared_mime {
+                "text/plain" | "text/csv" => Ok(()),
+                _ => bail!("could not verify file content for declared type {declared_mime}"),
+            }
+        }
+    }
+}
+
 /// Sanitize a filename for safe storage.
-fn sanitize_filename(filename: &str) -> String {
+pub(crate) fn sanitize_filename(filename: &str) -> String {
     use std::path::Path;
 
     // Get just the filename part (no path)
@@ -495,5 +550,32 @@ mod tests {
         assert!(!ALLOWED_MIME_TYPES.contains(&"application/x-executable"));
         // SVG excluded to prevent stored XSS
         assert!(!ALLOWED_MIME_TYPES.contains(&"image/svg+xml"));
+    }
+
+    #[test]
+    fn magic_bytes_valid_png() {
+        // PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
+        let png_data = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+        assert!(validate_magic_bytes(&png_data, "image/png").is_ok());
+    }
+
+    #[test]
+    fn magic_bytes_mismatch_rejects() {
+        // PNG magic bytes declared as JPEG should fail
+        let png_data = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+        assert!(validate_magic_bytes(&png_data, "image/jpeg").is_err());
+    }
+
+    #[test]
+    fn magic_bytes_text_skips_validation() {
+        // Plain text has no magic bytes, should pass
+        assert!(validate_magic_bytes(b"Hello, world!", "text/plain").is_ok());
+        assert!(validate_magic_bytes(b"col1,col2\nval1,val2", "text/csv").is_ok());
+    }
+
+    #[test]
+    fn magic_bytes_empty_rejects_binary_types() {
+        // Empty data declared as image should fail
+        assert!(validate_magic_bytes(&[], "image/jpeg").is_err());
     }
 }

@@ -70,6 +70,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 anyhow = "1"
 dotenvy = "0.15"
 hex = "0.4"
+infer = "0.19"
 rand = "0.8"
 regex = "1"
 sha2 = "0.10"
