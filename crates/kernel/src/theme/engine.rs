@@ -70,7 +70,7 @@ impl ThemeEngine {
                     .and_then(|v| v.as_str())
                     .unwrap_or("plain_text");
 
-                let pipeline = FilterPipeline::for_format(format);
+                let pipeline = FilterPipeline::for_format_safe(format);
                 Ok(tera::Value::String(pipeline.process(&text)))
             },
         );

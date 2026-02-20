@@ -248,13 +248,7 @@ async fn view_item(
                                 val.get("value").and_then(|v| v.as_str()),
                                 val.get("format").and_then(|v| v.as_str()),
                             ) {
-                                // Only allow known safe formats; reject user-supplied
-                                // values like "full_html" which bypass sanitization
-                                let safe_fmt = match fmt {
-                                    "plain_text" | "filtered_html" => fmt,
-                                    _ => "plain_text",
-                                };
-                                let filtered = FilterPipeline::for_format(safe_fmt).process(text);
+                                let filtered = FilterPipeline::for_format_safe(fmt).process(text);
                                 section_fields_html.push_str(&filtered);
                             } else if let Some(text) = val.as_str() {
                                 let filtered =
@@ -337,13 +331,7 @@ async fn view_item(
                     .get("format")
                     .and_then(|v| v.as_str())
                     .unwrap_or("plain_text");
-                // Only allow known safe formats; reject user-supplied
-                // values like "full_html" which bypass sanitization
-                let safe_fmt = match raw_fmt {
-                    "plain_text" | "filtered_html" => raw_fmt,
-                    _ => "plain_text",
-                };
-                let filtered = FilterPipeline::for_format(safe_fmt).process(text_val);
+                let filtered = FilterPipeline::for_format_safe(raw_fmt).process(text_val);
                 children_html.push_str(&format!(
                     "<div class=\"field field-{}\">{}</div>",
                     html_escape(name),

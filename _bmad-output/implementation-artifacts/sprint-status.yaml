@@ -411,3 +411,21 @@ development_status:
   26-8-create-kernel-line-count-tracking-script: done
   26-9-document-quarterly-boundary-review-process: done
   epic-26-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Phase 12: Security
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 27: Security Hardening Review
+  # Deep-dive audit of XSS, SQL injection, CSRF, auth, WASM sandbox, file uploads
+  epic-27: in-progress
+  27-1-xss-audit-and-hardening: done
+  27-2-sql-injection-audit: backlog
+  27-3-csrf-audit: backlog
+  27-4-authentication-and-session-security-audit: backlog
+  27-5-wasm-plugin-sandbox-audit: backlog
+  27-6-file-upload-security-audit: backlog
+  27-7-security-regression-tests: backlog
+  27-8-add-cargo-audit-to-ci: backlog
+  27-9-update-claude-md-with-security-rules: backlog
+  epic-27-retrospective: optional

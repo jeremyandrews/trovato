@@ -5962,3 +5962,247 @@ So that kernel minimality is maintained over time and extraction debt doesn't ac
 
 ---
 
+## Epic 27: Security Hardening Review
+
+**Goal:** Deep-dive audit of the most critical security concerns for a CMS: XSS, SQL injection, CSRF, authentication, WASM sandbox, and file uploads. Fix all findings and establish ongoing security practices.
+
+**Scope:**
+- Phase 1: Audit each attack surface area, document findings with severity ratings
+- Phase 2: Fix all Critical and High findings in-place during each audit
+- Phase 3: Write security regression tests for every finding
+- Phase 4: Establish ongoing security tooling and processes (cargo-audit, CLAUDE.md rules)
+
+**Gate:**
+- Every audit area reviewed with findings documented
+- All Critical and High severity findings fixed
+- Security regression tests written for every finding
+- `cargo audit` running in CI
+- CLAUDE.md updated with security review rules
+- `docs/security-audit.md` published with full findings and confirmations
+
+**Design Philosophy:** A CMS is an attack surface. It accepts user input, renders it to HTML, stores it in a database, and serves it to other users. Every step in that chain is an injection opportunity. Trovato's architecture has strong foundations (structured DB API, JSON Render Tree, Argon2id), but we must verify these foundations hold everywhere.
+
+**Cross-references:** Epic 2 (Authentication), Epic 3 (Plugin Platform), Epic 9 (Form API), Epic 11 (File Management), Epic 19 (CI)
+
+---
+
+### Story 27.1: XSS Audit and Hardening
+
+As a **security reviewer**,
+I want every code path that renders user input to HTML audited for XSS,
+So that no unsanitized user content can reach the browser.
+
+**Acceptance Criteria:**
+
+1. Tera template engine autoescape configuration verified (globally enabled)
+2. All uses of `| safe` or `| raw` filters in templates audited — each justified or removed
+3. Render Tree sanitization confirmed — no code path bypasses sanitizer for user content
+4. JSONB field content sanitization verified (on output, on input, or both — documented)
+5. Admin-entered content that renders to non-admin users verified as sanitized
+6. All findings documented with severity ratings
+7. All Critical/High findings fixed
+
+**Tasks:**
+- [ ] Verify Tera autoescape is enabled globally
+- [ ] Audit all templates for `| safe` / `| raw` filter usage
+- [ ] Trace Render Element rendering — verify sanitization on all user-content paths
+- [ ] Audit JSONB field content handling (storage vs rendering sanitization)
+- [ ] Audit admin form inputs that render to public-facing pages
+- [ ] Document findings and fix Critical/High issues
+
+---
+
+### Story 27.2: SQL Injection Audit
+
+As a **security reviewer**,
+I want every SQL query in the kernel audited for injection vulnerabilities,
+So that no user input can be used to construct arbitrary SQL.
+
+**Acceptance Criteria:**
+
+1. Every SQL query in kernel verified as parameterized (no string interpolation)
+2. SeaQuery usage audited — no `Expr::cust()` or raw expressions with user input
+3. Plugin DB API host functions verified — plugins cannot inject through field/table/column names
+4. Gather engine verified — filter values, sort directions, contextual arguments all parameterized
+5. Migration/schema operations verified — no DDL with interpolated user input
+6. All findings documented with severity ratings
+7. All Critical/High findings fixed
+
+**Tasks:**
+- [ ] Grep for string interpolation in SQL (`format!` near query contexts)
+- [ ] Audit SeaQuery usage for raw expression methods with user input
+- [ ] Audit WASM host function DB API for injection vectors
+- [ ] Audit Gather engine query building with user-supplied filters/sorts
+- [ ] Audit migration and schema operations
+- [ ] Document findings and fix Critical/High issues
+
+---
+
+### Story 27.3: CSRF Audit
+
+As a **security reviewer**,
+I want every state-changing endpoint verified for CSRF protection,
+So that attackers cannot forge requests on behalf of authenticated users.
+
+**Acceptance Criteria:**
+
+1. Every state-changing form verified to include and validate a CSRF token
+2. All AJAX endpoints that modify state verified as CSRF-protected
+3. API endpoints using cookie auth verified as CSRF-protected (or using non-cookie auth)
+4. SameSite cookie policy verified as enforced (SameSite=Strict or Lax)
+5. All findings documented with severity ratings
+6. All Critical/High findings fixed
+
+**Tasks:**
+- [ ] List all POST/PUT/DELETE routes in the application
+- [ ] Verify each uses `require_csrf` or equivalent protection
+- [ ] Audit AJAX endpoints for CSRF token handling
+- [ ] Verify session cookie SameSite attribute
+- [ ] Document findings and fix Critical/High issues
+
+---
+
+### Story 27.4: Authentication and Session Security Audit
+
+As a **security reviewer**,
+I want authentication and session management audited for security weaknesses,
+So that user accounts and sessions are protected from attack.
+
+**Acceptance Criteria:**
+
+1. Argon2id usage verified with appropriate parameters (memory, iterations, parallelism)
+2. Session ID rotation on login verified (prevents session fixation)
+3. Session cookie flags verified (HttpOnly, Secure, SameSite=Strict)
+4. Rate limiting on login attempts verified (brute force protection)
+5. All authenticated routes verified — no routes accidentally public
+6. Stage access control verified — users cannot access stages they lack permission for
+7. Password reset flow verified for security (token expiry, no user enumeration)
+8. All findings documented with severity ratings
+9. All Critical/High findings fixed
+
+**Tasks:**
+- [ ] Verify Argon2id configuration parameters
+- [ ] Verify session ID rotation on login
+- [ ] Verify session cookie flags (HttpOnly, Secure, SameSite)
+- [ ] Verify login rate limiting / account lockout
+- [ ] Audit all routes for authentication requirements
+- [ ] Verify stage-based access control enforcement
+- [ ] Audit password reset flow for security
+- [ ] Document findings and fix Critical/High issues
+
+---
+
+### Story 27.5: WASM Plugin Sandbox Audit
+
+As a **security reviewer**,
+I want the WASM plugin sandbox boundaries verified,
+So that plugins cannot escape their sandbox to access the host system.
+
+**Acceptance Criteria:**
+
+1. Verified plugins cannot access host filesystem
+2. Verified plugins cannot make outbound network calls
+3. Resource limits (memory, CPU/fuel) on plugin execution verified or documented if absent
+4. Every host function in the WIT interface audited for abuse potential
+5. Inter-plugin isolation verified — one plugin cannot affect another's state
+6. All findings documented with severity ratings
+7. All Critical/High findings fixed
+
+**Tasks:**
+- [ ] Verify WASM runtime configuration denies filesystem access
+- [ ] Verify WASM runtime configuration denies network access
+- [ ] Check for memory/fuel limits on plugin execution
+- [ ] Audit each host function for abuse potential (data exfiltration, DoS, privilege escalation)
+- [ ] Verify per-request plugin isolation
+- [ ] Document findings and fix Critical/High issues
+
+---
+
+### Story 27.6: File Upload Security Audit
+
+As a **security reviewer**,
+I want file upload handling audited for security vulnerabilities,
+So that uploaded files cannot be used to compromise the server or other users.
+
+**Acceptance Criteria:**
+
+1. File type validation verified — content-based (magic bytes), not just extension
+2. Path traversal prevention verified — crafted filenames cannot escape upload directory
+3. Executable file blocking verified — dangerous extensions (.php, .sh, .exe, etc.) rejected
+4. Upload size limits verified — enforced before full file receipt
+5. All findings documented with severity ratings
+6. All Critical/High findings fixed
+
+**Tasks:**
+- [ ] Audit file upload validation logic (extension vs content-type vs magic bytes)
+- [ ] Test path traversal with crafted filenames (../, null bytes, etc.)
+- [ ] Verify executable file extension blocking
+- [ ] Verify upload size limit enforcement
+- [ ] Document findings and fix Critical/High issues
+
+---
+
+### Story 27.7: Security Regression Tests
+
+As a **maintainer**,
+I want every security finding converted to a regression test,
+So that fixed vulnerabilities can never be reintroduced.
+
+**Acceptance Criteria:**
+
+1. Every Critical/High finding from stories 27.1-27.6 has a corresponding test
+2. Tests verify the vulnerability is blocked (not just that the happy path works)
+3. Tests are clearly labeled as security regression tests
+4. Tests must never be removed without security review
+
+**Tasks:**
+- [ ] Write regression tests for XSS findings
+- [ ] Write regression tests for SQL injection findings
+- [ ] Write regression tests for CSRF findings
+- [ ] Write regression tests for auth/session findings
+- [ ] Write regression tests for WASM sandbox findings
+- [ ] Write regression tests for file upload findings
+- [ ] Add comment markers identifying security regression tests
+
+---
+
+### Story 27.8: Add cargo-audit to CI
+
+As a **maintainer**,
+I want automated dependency vulnerability scanning in CI,
+So that known vulnerabilities in dependencies are caught before they reach production.
+
+**Acceptance Criteria:**
+
+1. `cargo audit` runs in CI on every PR and push to main
+2. Build fails on any known vulnerability in the RustSec advisory database
+3. Process documented for handling advisories (update within 1 week for security-critical crates)
+
+**Tasks:**
+- [ ] Add `cargo-audit` job to `.github/workflows/ci.yml`
+- [ ] Verify it catches known test vulnerabilities (dry run)
+- [ ] Document dependency update cadence in security audit doc
+
+---
+
+### Story 27.9: Update CLAUDE.md with Security Rules
+
+As a **maintainer**,
+I want CLAUDE.md to enforce security practices during AI-assisted development,
+So that new code follows security best practices automatically.
+
+**Acceptance Criteria:**
+
+1. Security review requirements documented for PRs touching: user input handling, authentication, SQL queries, template rendering, WASM boundary, file uploads
+2. Prohibited patterns documented (raw SQL interpolation, `| safe` without justification, `.unwrap()` on user input)
+3. Required patterns documented (parameterized queries, `require_csrf` on state-changing endpoints, `html_escape` for user content)
+4. Reference to `docs/security-audit.md` for full findings and rationale
+
+**Tasks:**
+- [ ] Add "Security Rules" section to CLAUDE.md
+- [ ] Document security review requirements for sensitive PRs
+- [ ] Document prohibited and required patterns
+- [ ] Cross-reference security audit document
+
+---
+

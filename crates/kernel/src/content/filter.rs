@@ -44,6 +44,19 @@ impl FilterPipeline {
         }
     }
 
+    /// Create pipeline for a format, rejecting unsafe formats.
+    ///
+    /// Only `plain_text` and `filtered_html` are permitted. Any other format
+    /// (including `full_html`) is downgraded to `plain_text`. Use this at
+    /// every view-time rendering site where the format string originates from
+    /// stored data or plugin input.
+    pub fn for_format_safe(format: &str) -> Self {
+        match format {
+            "plain_text" | "filtered_html" => Self::for_format(format),
+            _ => Self::plain_text(),
+        }
+    }
+
     /// Create pipeline with permission check.
     ///
     /// If `has_full_html` is false and format is "full_html", downgrades to
@@ -520,6 +533,40 @@ mod tests {
     #[test]
     fn for_format_checked_plain_text_unaffected() {
         let pipeline = FilterPipeline::for_format_checked("plain_text", false);
+        let input = "<b>bold</b>";
+        let output = pipeline.process(input);
+        assert!(output.contains("&lt;b&gt;"));
+    }
+
+    #[test]
+    fn for_format_safe_rejects_full_html() {
+        let pipeline = FilterPipeline::for_format_safe("full_html");
+        let input = "<script>alert('xss')</script>";
+        let output = pipeline.process(input);
+        assert!(!output.contains("<script>"));
+        assert!(output.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn for_format_safe_allows_plain_text() {
+        let pipeline = FilterPipeline::for_format_safe("plain_text");
+        let input = "<b>bold</b>";
+        let output = pipeline.process(input);
+        assert!(output.contains("&lt;b&gt;"));
+    }
+
+    #[test]
+    fn for_format_safe_allows_filtered_html() {
+        let pipeline = FilterPipeline::for_format_safe("filtered_html");
+        let input = "<p>Hello</p><script>bad</script>";
+        let output = pipeline.process(input);
+        assert!(output.contains("<p>Hello</p>"));
+        assert!(!output.contains("script"));
+    }
+
+    #[test]
+    fn for_format_safe_rejects_unknown() {
+        let pipeline = FilterPipeline::for_format_safe("evil_format");
         let input = "<b>bold</b>";
         let output = pipeline.process(input);
         assert!(output.contains("&lt;b&gt;"));

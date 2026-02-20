@@ -17,6 +17,22 @@ use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::html_escape;
 use crate::state::AppState;
 
+/// Sanitize a search snippet from PostgreSQL `ts_headline`.
+///
+/// `ts_headline` HTML-escapes content and inserts highlight tags (configured as
+/// `<mark>`/`</mark>` in our query). This function provides defense-in-depth by
+/// escaping the entire snippet and then restoring only the expected highlight
+/// tags, ensuring no other HTML can pass through.
+///
+/// Note: if indexed content literally contains `<mark>`, it will be restored as
+/// an HTML `<mark>` tag. This is acceptable because `<mark>` is a purely
+/// presentational highlight tag with no script-execution capability.
+fn sanitize_snippet(snippet: &str) -> String {
+    html_escape(snippet)
+        .replace("&lt;mark&gt;", "<mark>")
+        .replace("&lt;/mark&gt;", "</mark>")
+}
+
 /// Create the search router.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -98,11 +114,22 @@ async fn search_html(
     // Calculate pagination
     let total_pages = (results.total + limit - 1) / limit;
 
+    // Sanitize snippets — defense-in-depth for ts_headline output
+    let sanitized_results: Vec<_> = results
+        .results
+        .into_iter()
+        .map(|mut r| {
+            r.snippet = r.snippet.map(|s| sanitize_snippet(&s));
+            r
+        })
+        .collect();
+
     // Build template context
     let mut context = Context::new();
     context.insert("query", &query);
-    context.insert("results", &results.results);
-    context.insert("total", &results.total);
+    context.insert("results", &sanitized_results);
+    let total = results.total;
+    context.insert("total", &total);
     context.insert("page", &page);
     context.insert("limit", &limit);
     context.insert("total_pages", &total_pages);
@@ -116,9 +143,8 @@ async fn search_html(
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to render search template");
-            // Fallback to simple HTML
-            let html =
-                render_fallback_search(&query, &results.results, results.total, page, total_pages);
+            // Fallback to simple HTML (snippets already sanitized)
+            let html = render_fallback_search(&query, &sanitized_results, total, page, total_pages);
             Html(html).into_response()
         }
     }
@@ -156,7 +182,7 @@ async fn search_json(
     // Calculate pagination
     let total_pages = (results.total + limit - 1) / limit;
 
-    // Build response
+    // Build response (sanitize snippets for consumers that render as HTML)
     let response = SearchJsonResponse {
         query,
         results: results
@@ -168,7 +194,7 @@ async fn search_json(
                 item_type: r.item_type,
                 title: r.title,
                 rank: r.rank,
-                snippet: r.snippet,
+                snippet: r.snippet.map(|s| sanitize_snippet(&s)),
             })
             .collect(),
         total: results.total,
@@ -238,12 +264,11 @@ fn render_fallback_search(
             ));
             html.push_str(&format!(
                 "    <div class=\"meta\">{}</div>\n",
-                result.item_type
+                html_escape(&result.item_type)
             ));
             if let Some(snippet) = &result.snippet {
-                html.push_str(&format!(
-                    "    <div class=\"snippet\">{snippet}</div>\n" // Already contains safe HTML from ts_headline
-                ));
+                // Snippet pre-sanitized by sanitize_snippet() — only <mark> tags remain
+                html.push_str(&format!("    <div class=\"snippet\">{snippet}</div>\n"));
             }
             html.push_str("</div>\n");
         }
@@ -272,4 +297,44 @@ fn render_fallback_search(
 
     html.push_str("</body></html>");
     html
+}
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_snippet_preserves_mark_tags() {
+        let input = "This is a <mark>search</mark> result";
+        let result = sanitize_snippet(input);
+        assert_eq!(result, "This is a <mark>search</mark> result");
+    }
+
+    #[test]
+    fn sanitize_snippet_escapes_script_tags() {
+        let input = "<script>alert('xss')</script><mark>word</mark>";
+        let result = sanitize_snippet(input);
+        assert!(result.contains("&lt;script&gt;"));
+        assert!(result.contains("<mark>word</mark>"));
+        assert!(!result.contains("<script>"));
+    }
+
+    #[test]
+    fn sanitize_snippet_escapes_all_non_mark_html() {
+        let input = "<b>bold</b> and <mark>highlighted</mark>";
+        let result = sanitize_snippet(input);
+        assert_eq!(
+            result,
+            "&lt;b&gt;bold&lt;/b&gt; and <mark>highlighted</mark>"
+        );
+    }
+
+    #[test]
+    fn sanitize_snippet_handles_plain_text() {
+        let input = "just plain text";
+        let result = sanitize_snippet(input);
+        assert_eq!(result, "just plain text");
+    }
 }

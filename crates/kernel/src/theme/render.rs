@@ -103,21 +103,26 @@ impl RenderTreeConsumer {
     }
 
     /// Process a value through the appropriate filter pipeline.
+    ///
+    /// Uses `for_format_safe()` to reject unsafe formats like `full_html`
+    /// that plugins might request.
     fn process_value(&self, value: &str, format: Option<&str>) -> String {
-        let format_name = format.unwrap_or("plain_text");
-        let pipeline = FilterPipeline::for_format(format_name);
-        pipeline.process(value)
+        FilterPipeline::for_format_safe(format.unwrap_or("plain_text")).process(value)
     }
 
-    /// Convert a classes value (array or string) to a space-separated string.
+    /// Convert a classes value (array or string) to a safe, space-separated string.
+    ///
+    /// Each class value is escaped to prevent attribute injection from
+    /// plugin-supplied `RenderElement` data.
     fn classes_to_string(&self, classes: &Value) -> String {
         match classes {
             Value::Array(arr) => arr
                 .iter()
                 .filter_map(|v| v.as_str())
+                .map(html_escape)
                 .collect::<Vec<_>>()
                 .join(" "),
-            Value::String(s) => s.clone(),
+            Value::String(s) => html_escape(s),
             _ => String::new(),
         }
     }
@@ -133,11 +138,12 @@ impl RenderTreeConsumer {
             "container" => self.render_container(element, children),
             "markup" => self.render_markup(element),
             _ => {
-                // Unknown type - wrap in a div
+                // Unknown type - wrap in a div with escaped element type
                 let class = self.get_class_string(element);
+                let safe_type = html_escape(&element.element_type);
                 Ok(format!(
                     "<div class=\"element element--{}{}\">{}</div>",
-                    element.element_type,
+                    safe_type,
                     if class.is_empty() {
                         String::new()
                     } else {
@@ -166,9 +172,97 @@ impl RenderTreeConsumer {
         ))
     }
 
+    /// Safe HTML tags allowed in markup elements.
+    ///
+    /// Plugins specify tag names via `RenderElement.tag`. Only tags in this
+    /// allowlist are permitted; unknown tags fall back to `span`.
+    ///
+    /// Excluded dangerous tags:
+    /// - `input`: clickjacking via hidden fields
+    /// - `link`: CSS injection via external stylesheets
+    /// - `meta`: open redirects via `http-equiv="refresh"`
+    /// - `script`, `iframe`, `object`, `embed`, `form`, `style`: obvious XSS/phishing
+    const SAFE_TAGS: &[&str] = &[
+        "a",
+        "abbr",
+        "address",
+        "article",
+        "aside",
+        "b",
+        "bdi",
+        "bdo",
+        "blockquote",
+        "br",
+        "caption",
+        "cite",
+        "code",
+        "col",
+        "colgroup",
+        "dd",
+        "del",
+        "details",
+        "dfn",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "i",
+        "img",
+        "ins",
+        "kbd",
+        "li",
+        "main",
+        "mark",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "q",
+        "rp",
+        "rt",
+        "ruby",
+        "s",
+        "samp",
+        "section",
+        "small",
+        "span",
+        "strong",
+        "sub",
+        "summary",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "time",
+        "tr",
+        "u",
+        "ul",
+        "var",
+        "wbr",
+    ];
+
     /// Render a markup element.
     fn render_markup(&self, element: &RenderElement) -> Result<String> {
-        let tag = element.tag.as_deref().unwrap_or("span");
+        let requested_tag = element.tag.as_deref().unwrap_or("span");
+        let tag = if Self::SAFE_TAGS.contains(&requested_tag) {
+            requested_tag
+        } else {
+            "span"
+        };
         let value = element
             .value
             .as_ref()
@@ -179,7 +273,7 @@ impl RenderTreeConsumer {
         let attrs = self.get_extra_attrs(element);
 
         // Void elements (no closing tag)
-        let void_elements = ["br", "hr", "img", "input", "meta", "link"];
+        let void_elements = ["br", "hr", "img", "col", "wbr"];
         if void_elements.contains(&tag) {
             return Ok(format!(
                 "<{}{}{} />",
@@ -218,6 +312,10 @@ impl RenderTreeConsumer {
     }
 
     /// Get extra attributes (excluding class) as a string.
+    ///
+    /// Attribute keys are validated to contain only safe characters
+    /// (`[a-zA-Z0-9-_]`) to prevent attribute injection from plugin-sourced
+    /// `RenderElement` data. Keys failing validation are silently skipped.
     fn get_extra_attrs(&self, element: &RenderElement) -> String {
         let Some(attrs) = &element.attributes else {
             return String::new();
@@ -229,6 +327,7 @@ impl RenderTreeConsumer {
 
         obj.iter()
             .filter(|(k, _)| *k != "class")
+            .filter(|(k, _)| Self::is_valid_attr_key(k))
             .map(|(k, v)| {
                 let value = match v {
                     Value::String(s) => html_escape(s),
@@ -239,11 +338,24 @@ impl RenderTreeConsumer {
                             return String::new();
                         }
                     }
-                    _ => v.to_string(),
+                    _ => html_escape(&v.to_string()),
                 };
                 format!(" {k}=\"{value}\"")
             })
             .collect()
+    }
+
+    /// Check if an attribute key contains only safe characters.
+    ///
+    /// Valid keys match `[a-zA-Z][a-zA-Z0-9-_]*` — must start with a letter
+    /// and contain only alphanumerics, hyphens, and underscores.
+    fn is_valid_attr_key(key: &str) -> bool {
+        let mut chars = key.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_alphabetic() => {}
+            _ => return false,
+        }
+        chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     }
 }
 
@@ -349,5 +461,115 @@ mod tests {
     #[test]
     fn test_html_escape() {
         assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#x27;");
+    }
+
+    #[test]
+    fn test_valid_attr_keys() {
+        assert!(RenderTreeConsumer::is_valid_attr_key("id"));
+        assert!(RenderTreeConsumer::is_valid_attr_key("data-id"));
+        assert!(RenderTreeConsumer::is_valid_attr_key("aria-label"));
+        assert!(RenderTreeConsumer::is_valid_attr_key("data_custom"));
+        assert!(RenderTreeConsumer::is_valid_attr_key("X"));
+    }
+
+    #[test]
+    fn test_invalid_attr_keys() {
+        assert!(!RenderTreeConsumer::is_valid_attr_key(""));
+        assert!(!RenderTreeConsumer::is_valid_attr_key("1data"));
+        assert!(!RenderTreeConsumer::is_valid_attr_key("on\"click"));
+        assert!(!RenderTreeConsumer::is_valid_attr_key("x>y"));
+        assert!(!RenderTreeConsumer::is_valid_attr_key("a b"));
+        assert!(!RenderTreeConsumer::is_valid_attr_key("-start"));
+    }
+
+    #[test]
+    fn test_get_extra_attrs_skips_invalid_keys() {
+        let consumer = RenderTreeConsumer::new();
+
+        let mut attrs = serde_json::Map::new();
+        attrs.insert("data-id".to_string(), Value::String("safe".to_string()));
+        attrs.insert("on\"click".to_string(), Value::String("evil".to_string()));
+
+        let element = RenderElement {
+            element_type: "markup".to_string(),
+            weight: None,
+            tag: Some("div".to_string()),
+            value: None,
+            format: None,
+            attributes: Some(Value::Object(attrs)),
+            children: BTreeMap::new(),
+        };
+
+        let result = consumer.get_extra_attrs(&element);
+        assert!(result.contains("data-id=\"safe\""));
+        assert!(!result.contains("evil"));
+    }
+
+    #[test]
+    fn test_render_markup_rejects_unsafe_tag() {
+        let consumer = RenderTreeConsumer::new();
+
+        for tag in &[
+            "script", "iframe", "object", "embed", "form", "style", "input", "link", "meta",
+        ] {
+            let element = RenderElement {
+                element_type: "markup".to_string(),
+                weight: None,
+                tag: Some(tag.to_string()),
+                value: Some("test".to_string()),
+                format: Some("plain_text".to_string()),
+                attributes: None,
+                children: BTreeMap::new(),
+            };
+            let result = consumer.render_markup(&element).unwrap();
+            assert!(
+                result.starts_with("<span"),
+                "unsafe tag '{tag}' should fall back to <span>, got: {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_render_markup_allows_safe_tags() {
+        let consumer = RenderTreeConsumer::new();
+
+        for tag in &[
+            "p", "div", "span", "h1", "strong", "em", "a", "ul", "li", "table",
+        ] {
+            let element = RenderElement {
+                element_type: "markup".to_string(),
+                weight: None,
+                tag: Some(tag.to_string()),
+                value: Some("content".to_string()),
+                format: Some("plain_text".to_string()),
+                attributes: None,
+                children: BTreeMap::new(),
+            };
+            let result = consumer.render_markup(&element).unwrap();
+            assert!(
+                result.starts_with(&format!("<{tag}")),
+                "safe tag '{tag}' should be allowed, got: {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_classes_to_string_escapes_quotes() {
+        let consumer = RenderTreeConsumer::new();
+        let classes = Value::Array(vec![
+            Value::String("safe".to_string()),
+            Value::String("x\" onload=\"alert(1)".to_string()),
+        ]);
+        let result = consumer.classes_to_string(&classes);
+        assert!(!result.contains('"'));
+        assert!(result.contains("&quot;"));
+    }
+
+    #[test]
+    fn test_process_value_rejects_full_html() {
+        let consumer = RenderTreeConsumer::new();
+        let result = consumer.process_value("<script>alert('xss')</script>", Some("full_html"));
+        assert!(!result.contains("<script>"));
+        assert!(result.contains("&lt;script&gt;"));
     }
 }

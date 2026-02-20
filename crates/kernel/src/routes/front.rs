@@ -139,7 +139,7 @@ async fn render_promoted_listing(state: &AppState) -> String {
                 .and_then(|f| f.get("format"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("plain_text");
-            let filtered = FilterPipeline::for_format(format).process(body);
+            let filtered = FilterPipeline::for_format_safe(format).process(body);
             // Truncate for teaser (char-boundary safe)
             let summary = if filtered.chars().count() > 200 {
                 let truncated: String = filtered.chars().take(200).collect();
@@ -174,9 +174,10 @@ fn render_item_fields(item: &Item) -> String {
                     .get("format")
                     .and_then(|v| v.as_str())
                     .unwrap_or("plain_text");
-                let filtered = FilterPipeline::for_format(format).process(text_val);
+                let filtered = FilterPipeline::for_format_safe(format).process(text_val);
+                let safe_name = html_escape(name);
                 html.push_str(&format!(
-                    "<div class=\"field field-{name}\">{filtered}</div>"
+                    "<div class=\"field field-{safe_name}\">{filtered}</div>"
                 ));
             }
         }

@@ -17,6 +17,11 @@ use crate::models::{Comment, CreateComment, Item, UpdateComment, User};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
+/// Render a comment body to HTML with safe format whitelisting.
+fn render_comment_body(comment: &Comment) -> String {
+    FilterPipeline::for_format_safe(&comment.body_format).process(&comment.body)
+}
+
 // =============================================================================
 // Response Types
 // =============================================================================
@@ -153,7 +158,7 @@ async fn list_item_comments(
             None
         };
 
-        let body_html = FilterPipeline::for_format(&comment.body_format).process(&comment.body);
+        let body_html = render_comment_body(&comment);
 
         comment_responses.push(CommentResponse {
             id: comment.id,
@@ -290,7 +295,7 @@ async fn create_comment(
             name: u.name,
         });
 
-    let body_html = FilterPipeline::for_format(&comment.body_format).process(&comment.body);
+    let body_html = render_comment_body(&comment);
 
     Ok(Json(CommentResponse {
         id: comment.id,
@@ -353,7 +358,7 @@ async fn get_comment(
         None
     };
 
-    let body_html = FilterPipeline::for_format(&comment.body_format).process(&comment.body);
+    let body_html = render_comment_body(&comment);
 
     Ok(Json(CommentResponse {
         id: comment.id,
@@ -468,7 +473,7 @@ async fn update_comment(
             name: u.name,
         });
 
-    let body_html = FilterPipeline::for_format(&comment.body_format).process(&comment.body);
+    let body_html = render_comment_body(&comment);
 
     Ok(Json(CommentResponse {
         id: comment.id,
