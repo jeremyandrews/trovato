@@ -5,7 +5,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{delete, get, post, put},
 };
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::content::FilterPipeline;
 use crate::models::{Comment, CreateComment, Item, UpdateComment, User};
 use crate::routes::auth::SESSION_USER_ID;
+use crate::routes::helpers::require_csrf_header;
 use crate::state::AppState;
 
 /// Render a comment body to HTML with safe format whitelisting.
@@ -187,6 +188,7 @@ async fn list_item_comments(
 async fn create_comment(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(item_id): Path<Uuid>,
     Json(request): Json<CreateCommentRequest>,
 ) -> Result<Json<CommentResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -200,6 +202,18 @@ async fn create_comment(
             }),
         )
     })?;
+
+    // Verify CSRF token from header
+    require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ErrorResponse {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
 
     // Verify item exists
     let item = Item::find_by_id(state.db(), item_id).await.map_err(|e| {
@@ -381,6 +395,7 @@ async fn get_comment(
 async fn update_comment(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(request): Json<UpdateCommentRequest>,
 ) -> Result<Json<CommentResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -394,6 +409,18 @@ async fn update_comment(
             }),
         )
     })?;
+
+    // Verify CSRF token from header
+    require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ErrorResponse {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
 
     // Load existing comment
     let existing = Comment::find_by_id(state.db(), id).await.map_err(|e| {
@@ -496,6 +523,7 @@ async fn update_comment(
 async fn delete_comment(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     // Check authentication
@@ -508,6 +536,18 @@ async fn delete_comment(
             }),
         )
     })?;
+
+    // Verify CSRF token from header
+    require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ErrorResponse {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
 
     // Load existing comment
     let existing = Comment::find_by_id(state.db(), id).await.map_err(|e| {

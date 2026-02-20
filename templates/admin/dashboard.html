@@ -39,7 +39,10 @@
                 </p>
             </li>
             <li style="padding: 0.5rem 0;">
-                <a href="/user/logout">Log out</a>
+                <form method="post" action="/user/logout" style="display:inline">
+                    <input type="hidden" name="_token" value="{{ csrf_token }}">
+                    <button type="submit" style="background:none;border:none;cursor:pointer;font:inherit;color:inherit;padding:0;text-decoration:underline;">Log out</button>
+                </form>
             </li>
         </ul>
     </div>

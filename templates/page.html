@@ -135,7 +135,10 @@
             <div class="site-nav__divider"></div>
             {% if user_authenticated %}
             <a href="/admin" class="site-nav__link">Admin</a>
-            <a href="/user/logout" class="site-nav__link">Logout</a>
+            <form method="post" action="/user/logout" style="display:inline">
+                <input type="hidden" name="_token" value="{{ csrf_token }}">
+                <button type="submit" class="site-nav__link" style="background:none;border:none;cursor:pointer;font:inherit;color:inherit;padding:0;">Logout</button>
+            </form>
             {% else %}
             <a href="/user/login" class="site-nav__link">Login</a>
             {% endif %}

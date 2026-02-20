@@ -3,7 +3,7 @@
 use axum::{
     Json, Router,
     extract::{Multipart, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -48,6 +48,7 @@ pub struct UploadResponse {
 async fn upload_file(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
     // Require authentication
@@ -63,6 +64,13 @@ async fn upload_file(
         )
             .into_response();
     };
+
+    // Verify CSRF token from header
+    if let Err((status, json)) =
+        crate::routes::helpers::require_csrf_header(&session, &headers).await
+    {
+        return (status, json).into_response();
+    }
 
     // Process multipart form
     let mut filename: Option<String> = None;
@@ -232,6 +240,7 @@ async fn get_file_info(State(state): State<AppState>, Path(id): Path<Uuid>) -> R
 async fn block_editor_upload(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
     // Require authentication
@@ -243,6 +252,13 @@ async fn block_editor_upload(
         )
             .into_response();
     };
+
+    // Verify CSRF token from header
+    if let Err((status, json)) =
+        crate::routes::helpers::require_csrf_header(&session, &headers).await
+    {
+        return (status, json).into_response();
+    }
 
     // Process multipart form
     let mut filename: Option<String> = None;
@@ -346,12 +362,20 @@ async fn block_editor_upload(
 async fn block_editor_preview(
     State(_state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     // Require authentication
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     if user_id.is_none() {
         return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // Verify CSRF token from header
+    if let Err((status, json)) =
+        crate::routes::helpers::require_csrf_header(&session, &headers).await
+    {
+        return (status, json).into_response();
     }
 
     let blocks = body

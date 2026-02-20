@@ -5,7 +5,7 @@
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
 };
@@ -447,6 +447,7 @@ async fn add_item_form(
 async fn create_item(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     resolved_lang: Option<Extension<crate::middleware::language::ResolvedLanguage>>,
     Path(item_type): Path<String>,
     Json(request): Json<CreateItemRequest>,
@@ -463,6 +464,18 @@ async fn create_item(
             }),
         ));
     }
+
+    // Verify CSRF token from header
+    crate::routes::helpers::require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ItemError {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
 
     // Check content type exists
     if !state.content_types().exists(&item_type) {
@@ -620,10 +633,23 @@ async fn edit_item_form(
 async fn update_item(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(request): Json<UpdateItemRequest>,
 ) -> Result<Json<ItemResponse>, (StatusCode, Json<ItemError>)> {
     let user = get_user_context(&session, &state).await;
+
+    // Verify CSRF token from header
+    crate::routes::helpers::require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ItemError {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
 
     let input = UpdateItem {
         title: request.title,
@@ -703,9 +729,22 @@ async fn update_item(
 async fn delete_item(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ItemError>)> {
     let user = get_user_context(&session, &state).await;
+
+    // Verify CSRF token from header
+    crate::routes::helpers::require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ItemError {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
 
     match state.items().delete(id, &user).await {
         Ok(true) => Ok(Json(serde_json::json!({"deleted": true}))),
@@ -833,9 +872,22 @@ async fn list_revisions(
 async fn revert_revision(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path((id, rev_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ItemError>)> {
     let user = get_user_context(&session, &state).await;
+
+    // Verify CSRF token from header
+    crate::routes::helpers::require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ItemError {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
 
     match state.items().revert_to_revision(id, rev_id, &user).await {
         Ok(_) => Ok(Redirect::to(&format!("/item/{id}/revisions"))),

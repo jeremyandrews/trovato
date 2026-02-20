@@ -2,7 +2,13 @@
 //!
 //! Provides API endpoints for content lock heartbeat and break operations.
 
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+    Router,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::post,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -36,6 +42,7 @@ pub fn router() -> Router<AppState> {
 async fn heartbeat(
     State(state): State<AppState>,
     session: tower_sessions::Session,
+    headers: HeaderMap,
     axum::Json(payload): axum::Json<LockRequest>,
 ) -> impl IntoResponse {
     if !ALLOWED_ENTITY_TYPES.contains(&payload.entity_type.as_str()) {
@@ -48,6 +55,13 @@ async fn heartbeat(
     let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
         return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
     };
+
+    // Verify CSRF token from header
+    if let Err((status, json)) =
+        crate::routes::helpers::require_csrf_header(&session, &headers).await
+    {
+        return (status, json).into_response();
+    }
 
     let Some(lock_service) = state.content_lock() else {
         return (
@@ -74,6 +88,7 @@ async fn heartbeat(
 async fn break_lock(
     State(state): State<AppState>,
     session: tower_sessions::Session,
+    headers: HeaderMap,
     axum::Json(payload): axum::Json<LockRequest>,
 ) -> impl IntoResponse {
     if !ALLOWED_ENTITY_TYPES.contains(&payload.entity_type.as_str()) {
@@ -86,6 +101,13 @@ async fn break_lock(
     let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
         return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
     };
+
+    // Verify CSRF token from header
+    if let Err((status, json)) =
+        crate::routes::helpers::require_csrf_header(&session, &headers).await
+    {
+        return (status, json).into_response();
+    }
 
     // Check permission - load user to check against their roles
     let user = match User::find_by_id(state.db(), user_id).await {

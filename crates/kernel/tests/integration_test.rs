@@ -678,6 +678,9 @@ async fn e2e_file_upload_with_auth() {
         .create_and_login_admin("upload_test", "password123", "upload@test.com")
         .await;
 
+    // Fetch CSRF token
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin").await;
+
     // Create a simple multipart body for a .txt file (allowed MIME type)
     let boundary = "----TestBoundary67890";
     let file_content = "Hello, this is a test file!";
@@ -697,6 +700,7 @@ Content-Type: text/plain\r\n\
                     "content-type",
                     format!("multipart/form-data; boundary={boundary}"),
                 )
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(body))
                 .unwrap(),
             &cookies,
@@ -733,6 +737,9 @@ async fn e2e_file_get_info() {
         .create_and_login_admin("file_info_test", "password123", "fileinfo@test.com")
         .await;
 
+    // Fetch CSRF token
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin").await;
+
     let boundary = "----TestBoundary99999";
     let body = format!(
         "--{boundary}\r\n\
@@ -750,6 +757,7 @@ Test file content\r\n\
                     "content-type",
                     format!("multipart/form-data; boundary={boundary}"),
                 )
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(body))
                 .unwrap(),
             &cookies,
@@ -803,6 +811,9 @@ async fn e2e_file_invalid_mime_type_rejected() {
         .create_and_login_admin("mime_test", "password123", "mime@test.com")
         .await;
 
+    // Fetch CSRF token
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin").await;
+
     // Try to upload an executable (not allowed)
     let boundary = "----TestBoundaryMime";
     let body = format!(
@@ -821,6 +832,7 @@ MZ...\r\n\
                     "content-type",
                     format!("multipart/form-data; boundary={boundary}"),
                 )
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(body))
                 .unwrap(),
             &cookies,
@@ -3191,11 +3203,15 @@ async fn e2e_api_comment_crud() {
     assert_eq!(body["total"], 0);
     assert!(body["comments"].as_array().unwrap().is_empty());
 
+    // Fetch CSRF token for API requests
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/").await;
+
     // Test 2: Create a comment
     let create_response = app
         .request_with_cookies(
             Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(
                     serde_json::to_string(&json!({
                         "body": "This is a test comment"
@@ -3238,11 +3254,15 @@ async fn e2e_api_comment_crud() {
     assert_eq!(comment["body"], "This is a test comment");
     assert!(comment["author"].is_object());
 
+    // Fetch fresh CSRF token for update
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/").await;
+
     // Test 5: Update comment
     let update_response = app
         .request_with_cookies(
             Request::put(format!("/api/comment/{comment_id}"))
                 .header("content-type", "application/json")
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(
                     serde_json::to_string(&json!({
                         "body": "Updated comment text"
@@ -3257,11 +3277,15 @@ async fn e2e_api_comment_crud() {
     let updated = response_json(update_response).await;
     assert_eq!(updated["body"], "Updated comment text");
 
+    // Fetch fresh CSRF token for reply
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/").await;
+
     // Test 6: Create a reply
     let reply_response = app
         .request_with_cookies(
             Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(
                     serde_json::to_string(&json!({
                         "body": "This is a reply",
@@ -3278,10 +3302,14 @@ async fn e2e_api_comment_crud() {
     assert_eq!(reply["depth"], 1);
     let reply_id = reply["id"].as_str().expect("Reply should have id");
 
+    // Fetch fresh CSRF token for delete
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/").await;
+
     // Test 7: Delete comment
     let delete_response = app
         .request_with_cookies(
             Request::delete(format!("/api/comment/{reply_id}"))
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::empty())
                 .unwrap(),
             &cookies,
@@ -3346,11 +3374,15 @@ async fn e2e_api_comment_validation() {
     .await
     .expect("Failed to create item");
 
+    // Fetch CSRF token
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/").await;
+
     // Test: Empty body should fail
     let empty_response = app
         .request_with_cookies(
             Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(
                     serde_json::to_string(&json!({
                         "body": "   "
@@ -3441,11 +3473,15 @@ async fn e2e_admin_comment_moderation() {
     .await
     .expect("Failed to create item");
 
+    // Fetch CSRF token for API request
+    let (cookies, csrf_token) = fetch_csrf_token(&app, &cookies, "/admin").await;
+
     // Create a comment via API
     let create_response = app
         .request_with_cookies(
             Request::post(format!("/api/item/{item_id}/comments"))
                 .header("content-type", "application/json")
+                .header("X-CSRF-Token", &csrf_token)
                 .body(Body::from(
                     serde_json::to_string(&json!({
                         "body": "Comment for moderation test"

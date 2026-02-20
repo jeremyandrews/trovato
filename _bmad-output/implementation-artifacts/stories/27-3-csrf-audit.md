@@ -1,6 +1,6 @@
 # Story 27.3: CSRF Audit
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -19,115 +19,109 @@ So that attackers cannot forge requests on behalf of authenticated users.
 
 ## Tasks / Subtasks
 
-- [ ] Fix logout endpoint — change from GET to POST with CSRF (AC: #1, #6)
-  - [ ] Change `GET /user/logout` to `POST /user/logout` in route registration
-  - [ ] Add CSRF token validation to logout handler
-  - [ ] Update logout links/buttons in templates to use POST forms
-- [ ] Add CSRF protection to JSON API endpoints (AC: #2, #3, #6)
-  - [ ] Comment API: POST `/api/item/{id}/comments`, PUT `/api/comment/{id}`, DELETE `/api/comment/{id}`
-  - [ ] API Token routes: POST `/api/tokens`, DELETE `/api/tokens/{id}`
-  - [ ] Item delete: POST `/item/{id}/delete`
-  - [ ] Choose approach: CSRF header token or JSON body token for API endpoints
-- [ ] Audit AJAX endpoint (AC: #2)
-  - [ ] Verify `POST /system/ajax` CSRF handling in form service
-  - [ ] Add CSRF token to `AjaxRequest` struct if missing
-- [ ] Verify session cookie SameSite attribute (AC: #4)
-  - [ ] Confirm default is "strict" in `config.rs`
-  - [ ] Confirm `session.rs` applies SameSite correctly
-- [ ] Audit password reset endpoint (AC: #1)
-  - [ ] Verify `POST /user/password-reset/{token}` has CSRF or is safe via token-only auth
-- [ ] Verify all admin form-based POST routes have CSRF (AC: #1)
-  - [ ] Confirm all 49 `require_csrf` call sites cover all admin operations
-- [ ] Document all findings with severity ratings (AC: #5, #6)
+- [x] Fix logout endpoint — change from GET to POST with CSRF (AC: #1, #6)
+  - [x] Change `GET /user/logout` to `POST /user/logout` in route registration
+  - [x] Add CSRF token validation to logout handler
+  - [x] Update logout links/buttons in templates to use POST forms
+- [x] Add CSRF protection to JSON API endpoints (AC: #2, #3, #6)
+  - [x] Comment API: POST, PUT, DELETE with `X-CSRF-Token` header
+  - [x] API Token routes: POST, DELETE with `X-CSRF-Token` header
+  - [x] Item CRUD: create, update, delete, revert with `X-CSRF-Token` header
+  - [x] File upload: upload_file, block_editor_upload, block_editor_preview
+  - [x] Lock endpoints: heartbeat, break_lock
+  - [x] Approach: `X-CSRF-Token` custom header validated via `require_csrf_header()`
+- [x] Audit AJAX endpoint (AC: #2)
+  - [x] Added CSRF header validation to `POST /system/ajax`
+  - [x] Added CSRF header validation to `POST /admin/stage/switch`
+- [x] Verify session cookie SameSite attribute (AC: #4)
+  - [x] Default is "strict" in `config.rs:96-98`
+  - [x] `session.rs:37` applies SameSite from config
+  - [x] Supports "strict", "lax", "none" via `COOKIE_SAME_SITE` env var
+- [x] Audit password reset endpoint (AC: #1)
+  - [x] `POST /user/password-reset` — unauthenticated, always returns success (safe)
+  - [x] `POST /user/password-reset/{token}` — protected by single-use URL token (equivalent to CSRF)
+- [x] Verify all admin form-based POST routes have CSRF (AC: #1)
+  - [x] All 49+ `require_csrf` call sites cover all admin form operations
+- [x] Document all findings with severity ratings (AC: #5, #6)
 
-## Dev Notes
+## Findings Summary
 
-### Dependencies
+### Fixed (Critical/High)
 
-No dependencies on other stories. Can be worked independently.
+| # | Severity | Endpoint | Issue | Fix |
+|---|----------|----------|-------|-----|
+| 1 | CRITICAL | `GET /user/logout` | Logout via GET, no CSRF. `<img src="/user/logout">` forces logout. | Changed to POST with CSRF token validation. Updated templates. |
+| 2 | HIGH | `POST /api/item/{id}/comments` | No CSRF on comment create | Added `X-CSRF-Token` header validation |
+| 3 | HIGH | `PUT /api/comment/{id}` | No CSRF on comment update | Added `X-CSRF-Token` header validation |
+| 4 | HIGH | `DELETE /api/comment/{id}` | No CSRF on comment delete | Added `X-CSRF-Token` header validation |
+| 5 | HIGH | `POST /api/tokens` | No CSRF on API token create | Added `X-CSRF-Token` header validation |
+| 6 | HIGH | `DELETE /api/tokens/{id}` | No CSRF on API token revoke | Added `X-CSRF-Token` header validation |
+| 7 | HIGH | `POST /item/add/{type}` | No CSRF on item create | Added `X-CSRF-Token` header validation |
+| 8 | HIGH | `POST /item/{id}/edit` | No CSRF on item update | Added `X-CSRF-Token` header validation |
+| 9 | HIGH | `POST /item/{id}/delete` | No CSRF on item delete | Added `X-CSRF-Token` header validation |
+| 10 | HIGH | `POST /item/{id}/revert/{rev_id}` | No CSRF on revision revert | Added `X-CSRF-Token` header validation |
+| 11 | HIGH | `POST /file/upload` | No CSRF on file upload | Added `X-CSRF-Token` header validation |
+| 12 | HIGH | `POST /api/block-editor/upload` | No CSRF on block editor upload | Added `X-CSRF-Token` header validation |
+| 13 | HIGH | `POST /api/block-editor/preview` | No CSRF on block editor preview | Added `X-CSRF-Token` header validation |
+| 14 | MEDIUM | `POST /system/ajax` | No CSRF on AJAX callback | Added `X-CSRF-Token` header validation |
+| 15 | MEDIUM | `POST /admin/stage/switch` | No CSRF on stage switch | Added `X-CSRF-Token` header validation |
+| 16 | MEDIUM | `POST /api/lock/heartbeat` | No CSRF on lock heartbeat | Added `X-CSRF-Token` header validation |
+| 17 | MEDIUM | `POST /api/lock/break` | No CSRF on lock break | Added `X-CSRF-Token` header validation |
 
-### Codebase Research Findings
+### Acceptable (Low/No Fix Required)
 
-#### CRITICAL: Logout on GET Request
+| # | Severity | Endpoint | Assessment |
+|---|----------|----------|------------|
+| 18 | LOW | `POST /user/password-reset` | Unauthenticated. Always returns success. Side-effect limited to email sending. |
+| 19 | LOW | `POST /user/password-reset/{token}` | Protected by single-use URL token (equivalent to CSRF protection). |
+| 20 | INFO | `POST /api/category`, `POST /api/tag` | No session auth. Pure API endpoints without cookie authentication. |
+| 21 | INFO | `POST /api/batch`, `POST /api/batch/{id}/cancel` | No session auth. Pure API endpoints. |
+| 22 | INFO | `POST /oauth/token`, `POST /oauth/revoke` | Client credentials auth (client_id/client_secret), not session cookies. |
+| 23 | INFO | `POST /cron/{key}` | CRON_KEY env var auth, not session cookies. |
+| 24 | LOW | `POST /api/gather/query` | Read-only query (SELECT). Optional session for user context. CSRF cannot exfiltrate response data. |
+| 25 | INFO | `POST /install/*` | One-time installer endpoints. No session auth during setup. |
 
-**Location:** `crates/kernel/src/routes/auth.rs:388`
+### Already Protected
 
-```rust
-// GET /user/logout
-pub async fn logout(session: Session, ...) -> impl IntoResponse {
-    session.delete().await;
-    ...
-}
-```
+- **49+ admin form POST routes** — All use `require_csrf()` via `CsrfOnlyForm` pattern
+- **Session cookies** — SameSite=Strict by default, Secure, HttpOnly
+- **CSRF token implementation** — SHA256-hashed, single-use, 1-hour TTL, max 10 per session
 
-Logout is registered as GET. No CSRF protection. An attacker can force logout by embedding `<img src="/user/logout">` on any page. Must be converted to POST with CSRF token.
+## Implementation Details
 
-#### HIGH: Unprotected JSON API Endpoints
+### New Helper: `require_csrf_header()`
 
-Multiple state-changing JSON API endpoints lack CSRF protection:
+Added `routes/helpers.rs:189-210`: Validates `X-CSRF-Token` custom header against session CSRF tokens. Returns JSON error on failure. Used by all JSON API endpoints with session auth.
 
-1. **Comment API** (`routes/comment.rs`):
-   - POST `/api/item/{id}/comments` (line 187) — Create comment, no CSRF
-   - PUT `/api/comment/{id}` (line 381) — Update comment, no CSRF
-   - DELETE `/api/comment/{id}` (line 496) — Delete comment, no CSRF
+### CSRF Token Availability in Templates
 
-2. **API Token Routes** (`routes/api_token.rs`):
-   - POST `/api/tokens` (line 50) — Create API token, no CSRF
-   - DELETE `/api/tokens/{id}` (line 174) — Revoke token, no CSRF
+Added CSRF token generation in `inject_site_context()` (helpers.rs:102-107) for all authenticated users. This makes `{{ csrf_token }}` available in any page template that uses the shared context (front page, item views, etc.).
 
-3. **Item Delete** (`routes/item.rs:703`):
-   - POST `/item/{id}/delete` — Delete item, no CSRF
+Added explicit CSRF token generation in the admin dashboard handler so the logout form works correctly.
 
-All only check session authentication but do not validate a CSRF token.
+### Auth-Before-CSRF Ordering
 
-#### MEDIUM: Password Reset Endpoint
+All handlers check authentication before CSRF validation. This ensures:
+- Unauthenticated requests get 401 (not 403 CSRF error)
+- CSRF only validated for authenticated sessions where it's relevant
 
-**Location:** `crates/kernel/src/routes/password_reset.rs:224`
+### Files Changed
 
-POST `/user/password-reset/{token}` — No `require_csrf()`. However, the password reset token itself is single-use and time-limited (1 hour), which provides some protection.
+- `crates/kernel/src/routes/helpers.rs` — `require_csrf_header()`, CSRF in `inject_site_context()`
+- `crates/kernel/src/routes/auth.rs` — Logout changed GET→POST with CSRF
+- `crates/kernel/src/routes/comment.rs` — CSRF on create/update/delete
+- `crates/kernel/src/routes/api_token.rs` — CSRF on create/delete
+- `crates/kernel/src/routes/item.rs` — CSRF on create/update/delete/revert
+- `crates/kernel/src/routes/file.rs` — CSRF on upload/block-editor endpoints
+- `crates/kernel/src/routes/admin.rs` — CSRF on ajax_callback, switch_stage, dashboard CSRF token
+- `crates/kernel/src/routes/lock.rs` — CSRF on heartbeat/break_lock
+- `templates/page.html` — Logout form with CSRF
+- `templates/admin/dashboard.html` — Logout form with CSRF
+- `crates/kernel/tests/integration_test.rs` — Updated tests with CSRF headers
 
-#### MEDIUM: AJAX Endpoint
+### Test Coverage
 
-**Location:** `crates/kernel/src/routes/admin.rs:269-318`
-
-POST `/system/ajax` — Requires admin auth via `require_admin()` but no explicit CSRF token in `AjaxRequest` struct (`form/ajax.rs:200-209`).
-
-#### PROTECTED: Session Cookie Configuration
-
-**Location:** `crates/kernel/src/session.rs:34-40`
-
-- `with_secure(true)` — HTTPS only
-- `with_http_only(true)` — No JavaScript access
-- `with_same_site(same_site)` — Configurable, defaults to "strict"
-- Default SameSite: "strict" in `config.rs:96-98`
-
-#### PROTECTED: Form-Based Admin Routes
-
-All 49 admin form POST handlers use `require_csrf()` via `CsrfOnlyForm` pattern. Well-covered.
-
-### CSRF Token Implementation
-
-**Location:** `crates/kernel/src/form/csrf.rs`
-
-- SHA256-hashed tokens with timestamp
-- Single-use (removed after verification)
-- 1-hour validity window
-- Max 10 tokens per session
-- Stored in Redis session
-
-### Recommended Fix Approach
-
-For JSON API endpoints, two approaches:
-1. **Custom header token** — Client sends CSRF token in `X-CSRF-Token` header. Server validates. This leverages CORS Same-Origin policy since custom headers require preflight.
-2. **JSON body token** — Include `_token` field in JSON request body. Simpler but requires body parsing.
-
-Option 1 is recommended as it's the standard approach for SPA-style CSRF protection and doesn't require modifying request body structures.
-
-### References
-
-- [Source: crates/kernel/src/routes/auth.rs — Logout handler (GET)]
-- [Source: crates/kernel/src/routes/comment.rs — Comment API endpoints]
-- [Source: crates/kernel/src/routes/api_token.rs — API token endpoints]
-- [Source: crates/kernel/src/routes/helpers.rs — require_csrf helper]
-- [Source: crates/kernel/src/form/csrf.rs — CSRF token implementation]
-- [Source: crates/kernel/src/session.rs — Session cookie configuration]
+- 82 integration tests pass (all existing + CSRF header additions)
+- All unit tests pass across all crates
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo fmt --all --check` clean

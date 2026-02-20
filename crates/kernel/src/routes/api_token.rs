@@ -5,7 +5,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{delete, post},
 };
 use chrono::{Duration, Utc};
@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::models::api_token::{ApiToken, MAX_TOKENS_PER_USER};
 use crate::routes::auth::SESSION_USER_ID;
+use crate::routes::helpers::require_csrf_header;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +51,7 @@ pub struct ErrorResponse {
 async fn create_token(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Json(body): Json<CreateTokenRequest>,
 ) -> Result<(StatusCode, Json<CreateTokenResponse>), (StatusCode, Json<ErrorResponse>)> {
     let user_id: Uuid = session
@@ -62,6 +64,18 @@ async fn create_token(
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
                     error: "Authentication required".to_string(),
+                }),
+            )
+        })?;
+
+    // Verify CSRF token from header
+    require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ErrorResponse {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
         })?;
@@ -174,6 +188,7 @@ async fn list_tokens(
 async fn delete_token(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let user_id: Uuid = session
@@ -186,6 +201,18 @@ async fn delete_token(
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
                     error: "Authentication required".to_string(),
+                }),
+            )
+        })?;
+
+    // Verify CSRF token from header
+    require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(ErrorResponse {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
         })?;

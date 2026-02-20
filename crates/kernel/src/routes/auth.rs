@@ -12,6 +12,7 @@ use tracing::info;
 use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
 use crate::models::User;
+use crate::routes::helpers::CsrfOnlyForm;
 use crate::state::AppState;
 
 /// Session key for storing the authenticated user ID.
@@ -381,14 +382,29 @@ async fn login(
 
 /// Logout handler.
 ///
-/// GET /user/logout
+/// POST /user/logout
+/// - Validates CSRF token
 /// - Dispatches tap_user_logout before destroying session
 /// - Deletes session from Redis
 /// - Clears session cookie
 async fn logout(
     State(state): State<AppState>,
     session: Session,
+    Form(form): Form<CsrfOnlyForm>,
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+    // Verify CSRF token
+    let valid = crate::form::csrf::verify_csrf_token(&session, &form.token)
+        .await
+        .unwrap_or(false);
+    if !valid {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(AuthError {
+                error: "Invalid or expired form token. Please try again.".to_string(),
+            }),
+        ));
+    }
+
     // Extract user_id before deleting the session
     let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
@@ -425,5 +441,5 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/user/login", get(login_form).post(login_form_submit))
         .route("/user/login/json", post(login))
-        .route("/user/logout", get(logout))
+        .route("/user/logout", post(logout))
 }

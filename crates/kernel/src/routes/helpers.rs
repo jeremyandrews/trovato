@@ -98,6 +98,14 @@ pub async fn inject_site_context(
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     context.insert("user_authenticated", &user_id.is_some());
 
+    // Generate CSRF token for authenticated users (used by logout form in page.html)
+    if user_id.is_some() {
+        let csrf_token = crate::form::csrf::generate_csrf_token(session)
+            .await
+            .unwrap_or_default();
+        context.insert("csrf_token", &csrf_token);
+    }
+
     let mut user_roles = vec!["anonymous user".to_string()];
     if let Some(id) = user_id {
         user_roles.push("authenticated user".to_string());
@@ -168,6 +176,33 @@ pub async fn require_csrf(session: &Session, token: &str) -> Result<(), Response
     if !valid {
         Err(render_error(
             "Invalid or expired form token. Please try again.",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Verify a CSRF token from the `X-CSRF-Token` header, returning a JSON error on failure.
+///
+/// For use with JSON API endpoints that use cookie-based session auth.
+/// The client must include the token in a custom header rather than a form field.
+pub async fn require_csrf_header(
+    session: &Session,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+    let token = headers
+        .get("X-CSRF-Token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let valid = crate::form::csrf::verify_csrf_token(session, token)
+        .await
+        .unwrap_or(false);
+    if !valid {
+        Err((
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "Invalid or missing CSRF token. Include X-CSRF-Token header."
+            })),
         ))
     } else {
         Ok(())

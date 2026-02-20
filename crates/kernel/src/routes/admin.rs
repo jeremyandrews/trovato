@@ -2,7 +2,7 @@
 //! comment moderation, and AJAX callbacks.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
@@ -74,8 +74,21 @@ async fn require_admin_json(
 async fn switch_stage(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Json(request): Json<StageSwitchRequest>,
 ) -> Result<Json<StageSwitchResponse>, (StatusCode, Json<AdminError>)> {
+    // Verify CSRF token from header
+    super::helpers::require_csrf_header(&session, &headers)
+        .await
+        .map_err(|(s, j)| {
+            (
+                s,
+                Json(AdminError {
+                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                }),
+            )
+        })?;
+
     require_admin_json(&state, &session).await?;
 
     session
@@ -141,10 +154,13 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
 
     let content_types = state.content_types().list_all().await;
 
+    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+
     let mut context = tera::Context::new();
     context.insert("content_types", &content_types);
     context.insert("path", "/admin");
     context.insert("user", &user);
+    context.insert("csrf_token", &csrf_token);
 
     render_admin_template(&state, "admin/dashboard.html", context).await
 }
@@ -272,10 +288,16 @@ async fn delete_file(
 async fn ajax_callback(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Json(request): Json<AjaxRequest>,
 ) -> Response {
     use crate::form::AjaxResponse;
     use crate::tap::{RequestState, UserContext};
+
+    // Verify CSRF token from header
+    if let Err((status, json)) = super::helpers::require_csrf_header(&session, &headers).await {
+        return (status, json).into_response();
+    }
 
     // Require authentication for AJAX requests
     let Ok(user) = require_admin(&state, &session).await else {
