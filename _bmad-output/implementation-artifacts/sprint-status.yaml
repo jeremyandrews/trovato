@@ -438,7 +438,7 @@ development_status:
   # Public registration, self-service account management, pathauto, admin tabs, doc updates
   epic-28: in-progress
   28-1-public-user-registration: done
-  28-2-user-self-service-account-management: ready-for-dev
+  28-2-user-self-service-account-management: done
   28-3-automatic-path-alias-generation: ready-for-dev
   28-4-admin-local-tasks: ready-for-dev
   28-5-update-alignment-documentation: done

@@ -866,6 +866,387 @@ async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) 
     }
 }
 
+// ─── Profile & Password Management ──────────────────────────────────────────
+
+/// Profile edit form request.
+#[derive(Debug, Deserialize)]
+struct ProfileFormRequest {
+    name: String,
+    mail: String,
+    #[serde(default)]
+    timezone: String,
+    #[serde(default)]
+    current_password: String,
+    #[serde(rename = "_token")]
+    csrf_token: Option<String>,
+}
+
+/// Password change form request.
+#[derive(Debug, Deserialize)]
+struct PasswordChangeRequest {
+    current_password: String,
+    new_password: String,
+    confirm_password: String,
+    #[serde(rename = "_token")]
+    csrf_token: Option<String>,
+}
+
+/// Get the current user from session, or redirect to login.
+async fn get_current_user(state: &AppState, session: &Session) -> Result<User, Response> {
+    let user_id: uuid::Uuid = session
+        .get(SESSION_USER_ID)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| Redirect::to("/user/login").into_response())?;
+
+    User::find_by_id(state.db(), user_id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| Redirect::to("/user/login").into_response())
+}
+
+/// Render the profile page with context.
+async fn render_profile(
+    state: &AppState,
+    csrf_token: &str,
+    user: &User,
+    errors: Option<&[String]>,
+    success: Option<&str>,
+    error: Option<&str>,
+) -> Response {
+    let mut context = tera::Context::new();
+    context.insert("csrf_token", csrf_token);
+    context.insert(
+        "user",
+        &serde_json::json!({
+            "name": user.name,
+            "mail": user.mail,
+            "timezone": user.timezone,
+        }),
+    );
+    if let Some(errors) = errors {
+        context.insert("errors", errors);
+    }
+    if let Some(success) = success {
+        context.insert("success", success);
+    }
+    if let Some(error) = error {
+        context.insert("error", error);
+    }
+
+    match state.theme().tera().render("user/profile.html", &context) {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render profile form");
+            Html("<h1>Error</h1><p>Failed to render profile page</p>".to_string()).into_response()
+        }
+    }
+}
+
+/// Profile view/edit form handler.
+///
+/// GET /user/profile
+async fn profile_form(State(state): State<AppState>, session: Session) -> Response {
+    let user = match get_current_user(&state, &session).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+
+    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    render_profile(&state, &csrf_token, &user, None, None, None).await
+}
+
+/// Profile update handler.
+///
+/// POST /user/profile
+async fn profile_update(
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<ProfileFormRequest>,
+) -> Response {
+    let user = match get_current_user(&state, &session).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+
+    // Verify CSRF token
+    match &form.csrf_token {
+        Some(token) => match verify_csrf_token(&session, token).await {
+            Ok(true) => {}
+            _ => {
+                let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+                return render_profile(
+                    &state,
+                    &csrf_token,
+                    &user,
+                    None,
+                    None,
+                    Some("Invalid form token. Please try again."),
+                )
+                .await;
+            }
+        },
+        None => {
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            return render_profile(
+                &state,
+                &csrf_token,
+                &user,
+                None,
+                None,
+                Some("Missing form token. Please try again."),
+            )
+            .await;
+        }
+    }
+
+    let name = form.name.trim();
+    let mail = form.mail.trim();
+    let timezone = form.timezone.trim();
+    let email_changing = mail != user.mail;
+
+    let mut errors = Vec::new();
+
+    if name.is_empty() {
+        errors.push("Username is required.".to_string());
+    } else if name.len() > 60 {
+        errors.push("Username must be 60 characters or fewer.".to_string());
+    }
+
+    if mail.is_empty() {
+        errors.push("Email address is required.".to_string());
+    } else if !mail.contains('@') || !mail.contains('.') {
+        errors.push("Please enter a valid email address.".to_string());
+    }
+
+    // If email is changing, require current password
+    if email_changing {
+        if form.current_password.is_empty() {
+            errors.push("Current password is required to change your email.".to_string());
+        } else if !user.verify_password(&form.current_password) {
+            errors.push("Current password is incorrect.".to_string());
+        }
+    }
+
+    // Check uniqueness for name changes
+    if name != user.name
+        && !name.is_empty()
+        && let Ok(Some(_)) = User::find_by_name(state.db(), name).await
+    {
+        errors.push(format!(
+            "Username '{}' is already taken.",
+            html_escape(name)
+        ));
+    }
+
+    // Check uniqueness for email changes
+    if email_changing
+        && !mail.is_empty()
+        && let Ok(Some(_)) = User::find_by_mail(state.db(), mail).await
+    {
+        errors.push("An account with that email address already exists.".to_string());
+    }
+
+    if !errors.is_empty() {
+        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        return render_profile(&state, &csrf_token, &user, Some(&errors), None, None).await;
+    }
+
+    // Build update
+    let update = crate::models::UpdateUser {
+        name: if name != user.name {
+            Some(name.to_string())
+        } else {
+            None
+        },
+        mail: if email_changing {
+            Some(mail.to_string())
+        } else {
+            None
+        },
+        timezone: if timezone != user.timezone.as_deref().unwrap_or("") {
+            Some(timezone.to_string())
+        } else {
+            None
+        },
+        ..Default::default()
+    };
+
+    match User::update(state.db(), user.id, update).await {
+        Ok(Some(updated_user)) => {
+            // Send notification email if email changed
+            if email_changing {
+                let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
+                if let Some(email_service) = state.email() {
+                    let body = format!(
+                        "Your email address at {site_name} has been changed to this address.\n\n\
+                         If you did not make this change, please contact the site administrator."
+                    );
+                    if let Err(e) = email_service
+                        .send(mail, &format!("Email changed at {site_name}"), &body)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to send email change notification");
+                    }
+                }
+            }
+
+            // Dispatch tap_user_update
+            let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
+            let tap_state = crate::tap::RequestState::without_services(
+                crate::tap::UserContext::authenticated(user.id, vec![]),
+            );
+            state
+                .tap_dispatcher()
+                .dispatch("tap_user_update", &tap_input.to_string(), tap_state)
+                .await;
+
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            render_profile(
+                &state,
+                &csrf_token,
+                &updated_user,
+                None,
+                Some("Profile updated successfully."),
+                None,
+            )
+            .await
+        }
+        Ok(None) => {
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            render_profile(
+                &state,
+                &csrf_token,
+                &user,
+                None,
+                None,
+                Some("User not found."),
+            )
+            .await
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to update profile");
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            render_profile(
+                &state,
+                &csrf_token,
+                &user,
+                None,
+                None,
+                Some("An error occurred while saving your profile."),
+            )
+            .await
+        }
+    }
+}
+
+/// Password change handler.
+///
+/// POST /user/password
+async fn password_change(
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<PasswordChangeRequest>,
+) -> Response {
+    let user = match get_current_user(&state, &session).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+
+    // Verify CSRF token
+    match &form.csrf_token {
+        Some(token) => match verify_csrf_token(&session, token).await {
+            Ok(true) => {}
+            _ => {
+                let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+                return render_profile(
+                    &state,
+                    &csrf_token,
+                    &user,
+                    None,
+                    None,
+                    Some("Invalid form token. Please try again."),
+                )
+                .await;
+            }
+        },
+        None => {
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            return render_profile(
+                &state,
+                &csrf_token,
+                &user,
+                None,
+                None,
+                Some("Missing form token. Please try again."),
+            )
+            .await;
+        }
+    }
+
+    let mut errors = Vec::new();
+
+    if form.current_password.is_empty() {
+        errors.push("Current password is required.".to_string());
+    } else if !user.verify_password(&form.current_password) {
+        errors.push("Current password is incorrect.".to_string());
+    }
+
+    if form.new_password.len() < 8 {
+        errors.push("New password must be at least 8 characters.".to_string());
+    }
+
+    if form.new_password != form.confirm_password {
+        errors.push("New passwords do not match.".to_string());
+    }
+
+    if !errors.is_empty() {
+        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        return render_profile(&state, &csrf_token, &user, Some(&errors), None, None).await;
+    }
+
+    match User::update_password(state.db(), user.id, &form.new_password).await {
+        Ok(true) => {
+            // Dispatch tap_user_update
+            let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
+            let tap_state = crate::tap::RequestState::without_services(
+                crate::tap::UserContext::authenticated(user.id, vec![]),
+            );
+            state
+                .tap_dispatcher()
+                .dispatch("tap_user_update", &tap_input.to_string(), tap_state)
+                .await;
+
+            info!(user_id = %user.id, "password changed via self-service");
+
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            render_profile(
+                &state,
+                &csrf_token,
+                &user,
+                None,
+                Some("Password changed successfully."),
+                None,
+            )
+            .await
+        }
+        _ => {
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            render_profile(
+                &state,
+                &csrf_token,
+                &user,
+                None,
+                None,
+                Some("An error occurred while changing your password."),
+            )
+            .await
+        }
+    }
+}
+
 /// Create the auth router.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -878,4 +1259,6 @@ pub fn router() -> Router<AppState> {
         )
         .route("/user/register/json", post(register_json))
         .route("/user/verify/{token}", get(verify_email))
+        .route("/user/profile", get(profile_form).post(profile_update))
+        .route("/user/password", post(password_change))
 }

@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}My account{% endblock %}
+
+{% block content %}
+<div style="max-width: 500px; margin: 60px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 1.5rem;">My account</h1>
+
+    {% if success %}
+    <div style="background: #efe; border: 1px solid #0a0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        {{ success }}
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    {% if errors %}
+    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        <ul style="margin: 0; padding-left: 1.5rem;">
+        {% for err in errors %}
+            <li>{{ err }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <h2 style="margin-top: 2rem;">Profile</h2>
+    <form method="post" action="/user/profile">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="name" class="form-item__label">Username</label>
+            <input type="text" id="name" name="name" class="form-text"
+                   value="{{ user.name }}"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="mail" class="form-item__label">Email address</label>
+            <input type="email" id="mail" name="mail" class="form-text"
+                   value="{{ user.mail }}"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="timezone" class="form-item__label">Timezone</label>
+            <input type="text" id="timezone" name="timezone" class="form-text"
+                   value="{{ user.timezone | default(value='') }}"
+                   placeholder="e.g., America/New_York"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;">
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1.5rem;">
+            <label for="current_password_profile" class="form-item__label">Current password</label>
+            <input type="password" id="current_password_profile" name="current_password" class="form-text"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;"
+                   placeholder="Required to change email">
+            <small style="color: #666;">Required when changing your email address.</small>
+        </div>
+
+        <button type="submit" class="button button--primary"
+                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer;">
+            Save profile
+        </button>
+    </form>
+
+    <h2 style="margin-top: 2.5rem;">Change password</h2>
+    <form method="post" action="/user/password">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="current_password" class="form-item__label">Current password</label>
+            <input type="password" id="current_password" name="current_password" class="form-text"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="new_password" class="form-item__label">New password</label>
+            <input type="password" id="new_password" name="new_password" class="form-text"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required
+                   minlength="8">
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1.5rem;">
+            <label for="confirm_password" class="form-item__label">Confirm new password</label>
+            <input type="password" id="confirm_password" name="confirm_password" class="form-text"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required
+                   minlength="8">
+        </div>
+
+        <button type="submit" class="button button--primary"
+                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer;">
+            Change password
+        </button>
+    </form>
+</div>
+{% endblock %}
