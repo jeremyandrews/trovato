@@ -1,6 +1,6 @@
 # Story 27.4: Authentication and Session Security Audit
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -22,124 +22,104 @@ So that user accounts and sessions are protected from attack.
 
 ## Tasks / Subtasks
 
-- [ ] Verify Argon2id configuration parameters (AC: #1)
-  - [ ] Check if `Argon2::default()` parameters meet RFC 9106 recommendations
-  - [ ] If not, configure explicit parameters (46-64 MiB memory, 1-3 iterations, parallelism 4)
-- [ ] Verify session ID rotation on login (AC: #2)
-  - [ ] Check `setup_session()` in `auth.rs:192-243` for session rotation call
-  - [ ] If missing, add `session.cycle_id().await` before storing user data
-- [ ] Verify session cookie flags (AC: #3)
-  - [ ] Confirm HttpOnly, Secure, SameSite settings in `session.rs:34-40`
-- [ ] Verify login rate limiting / account lockout (AC: #4)
-  - [ ] Confirm `lockout.rs` parameters (5 attempts, 15-minute window)
-  - [ ] Confirm lockout check before password verification in `auth.rs`
-  - [ ] Verify timing-attack prevention (non-existent user still records attempt)
-- [ ] Audit all routes for authentication requirements (AC: #5)
-  - [ ] Verify install routes are gated post-installation via `check_installed()` middleware
-  - [ ] Verify admin routes all use `require_admin()`
-  - [ ] Check for any routes that should require auth but don't
-  - [ ] Verify file metadata endpoint `GET /file/{id}` access control
-- [ ] Verify stage-based access control enforcement (AC: #6)
-  - [ ] Verify stage ancestry chain with cycle detection (`stage.rs:91-110`)
-  - [ ] Verify stage permissions are checked on content access
-- [ ] Audit password reset flow for security (AC: #7)
-  - [ ] Verify token is SHA-256 hashed before storage (not stored in plaintext)
-  - [ ] Verify 1-hour token expiry
-  - [ ] Verify single-use tokens (marked used after consumption)
-  - [ ] Verify user enumeration prevention (always returns success)
-  - [ ] Verify all user tokens invalidated after successful reset
-- [ ] Check password strength validation (AC: #1)
-  - [ ] Determine if password policy enforcement exists
-  - [ ] If not, document as finding and recommend minimum requirements
-- [ ] Document all findings with severity ratings (AC: #8, #9)
+- [x] Verify Argon2id configuration parameters (AC: #1)
+  - [x] Check if `Argon2::default()` parameters meet RFC 9106 recommendations
+  - [x] Configure explicit parameters: 64 MiB memory, 3 iterations, parallelism 4
+- [x] Verify session ID rotation on login (AC: #2)
+  - [x] `setup_session()` was missing `session.cycle_id()`
+  - [x] Added `session.cycle_id().await` before storing user data
+- [x] Verify session cookie flags (AC: #3)
+  - [x] Confirmed HttpOnly, Secure, SameSite=Strict in `session.rs:34-40`
+- [x] Verify login rate limiting / account lockout (AC: #4)
+  - [x] Confirmed 5 attempts, 15-minute window in `lockout.rs`
+  - [x] Confirmed lockout check before password verification in `auth.rs`
+  - [x] Verified timing-attack prevention (non-existent user still records attempt)
+- [x] Audit all routes for authentication requirements (AC: #5)
+  - [x] Verified install routes double-gated: middleware + per-handler `check_installed()`
+  - [x] Verified all 62+ admin routes use `require_admin()`
+  - [x] Verified plugin-gated routes protected via `plugin_gate!()` macros
+  - [x] Assessed file metadata endpoint `GET /file/{id}` (documented as LOW)
+- [x] Verify stage-based access control enforcement (AC: #6)
+  - [x] Verified stage ancestry chain with cycle detection (HashSet + max 10 iterations)
+  - [x] Verified stage permissions checked at handler level via `require_admin()`
+- [x] Audit password reset flow for security (AC: #7)
+  - [x] Token: SHA-256 hashed before storage
+  - [x] 1-hour token expiry
+  - [x] Single-use (marked used after consumption)
+  - [x] User enumeration prevention (always returns success)
+  - [x] All user tokens invalidated after successful reset
+  - [x] Added missing password length validation (8 char minimum)
+- [x] Check password strength validation (AC: #1)
+  - [x] Install form enforces 8 chars minimum
+  - [x] Admin user create/edit enforces 8 chars minimum
+  - [x] Password reset was missing validation — fixed
+- [x] Document all findings with severity ratings (AC: #8, #9)
 
-## Dev Notes
+## Findings Summary
 
-### Dependencies
+### Fixed (Critical/High)
 
-No dependencies on other stories. Can be worked independently.
+| # | Severity | Location | Issue | Fix |
+|---|----------|----------|-------|-----|
+| 1 | HIGH | `user.rs:hash_password()` | Argon2id using crate defaults (19 MiB, 2 iter, 1 thread) below RFC 9106 recommendations | Configured explicit `argon2_instance()` with 64 MiB, 3 iterations, 4 parallelism lanes |
+| 2 | HIGH | `auth.rs:setup_session()` | No session ID rotation on login. Vulnerable to session fixation. | Added `session.cycle_id().await` before storing user data |
+| 3 | HIGH | `user.rs:verify_password()` | Using `Argon2::default()` for verification (worked but inconsistent) | Updated to use `argon2_instance()` for consistent RFC 9106 params |
 
-### Codebase Research Findings
+### Fixed (Medium)
 
-#### HIGH: Argon2id Uses Default Parameters
+| # | Severity | Location | Issue | Fix |
+|---|----------|----------|-------|-----|
+| 4 | MEDIUM | `password_reset.rs:set_password()` | No password length validation on reset. User could set 1-char password bypassing other forms' 8-char minimum. | Added 8-char minimum validation before password update |
 
-**Location:** `crates/kernel/src/models/user.rs:303-311`
+### Acceptable (Low/No Fix Required)
 
-```rust
-Argon2::default()
-```
+| # | Severity | Location | Assessment |
+|---|----------|----------|------------|
+| 5 | LOW | `GET /file/{id}` | Returns file metadata without auth. UUIDs prevent enumeration. Files are already publicly accessible via storage URL. Requiring auth would break headless CMS API patterns. |
+| 6 | LOW | Password policy | 8-char minimum enforced at all entry points (install, admin, reset). No complexity requirements (uppercase, digits, special chars). Acceptable for v1.0 with account lockout protection. |
 
-Uses argon2 crate v0.5.3 defaults without explicit configuration. RFC 9106 recommends: 46-64 MiB memory, 1-3 iterations, parallelism 4. The crate defaults (19 MiB, 2 iterations, 1 thread) are functional but below recommended security levels.
+### Already Protected
 
-#### HIGH: No Session ID Rotation on Login
+| # | Aspect | Status | Details |
+|---|--------|--------|---------|
+| 7 | Session cookies | PROTECTED | HttpOnly, Secure, SameSite=Strict by default |
+| 8 | Account lockout | PROTECTED | 5 failed attempts, 15-min lockout, timing-attack safe |
+| 9 | Password reset tokens | PROTECTED | SHA-256 hashed, 1-hour expiry, single-use, no enumeration |
+| 10 | Admin routes | PROTECTED | All 62+ routes use `require_admin()` |
+| 11 | Install routes | PROTECTED | Double-gated: middleware redirect + per-handler `check_installed()` |
+| 12 | Stage access control | PROTECTED | Cycle detection (HashSet + iteration limit), handler-level permissions |
+| 13 | Plugin-gated routes | PROTECTED | `plugin_gate!()` macros with middleware-level protection |
 
-**Location:** `crates/kernel/src/routes/auth.rs:192-243`
+## Implementation Details
 
-The `setup_session()` function stores user data in the session but does not call `session.cycle_id()` or equivalent to rotate the session ID. This makes the application vulnerable to session fixation attacks — if an attacker can set a session cookie before login, they retain access after authentication.
+### Argon2id RFC 9106 Configuration
 
-#### PROTECTED: Session Cookie Flags
+Added `argon2_instance()` function in `models/user.rs` that creates an Argon2id hasher with:
+- **Algorithm:** Argon2id (v0x13)
+- **Memory:** 64 MiB (64 * 1024 KiB)
+- **Iterations:** 3 (time cost)
+- **Parallelism:** 4 lanes
 
-**Location:** `crates/kernel/src/session.rs:34-40`
+Both `hash_password()` and `verify_password()` now use `argon2_instance()` instead of `Argon2::default()`. Existing password hashes remain compatible because argon2 verification reads parameters from the hash string itself.
 
-All three critical flags are set:
-- `with_http_only(true)` — Prevents XSS-based cookie theft
-- `with_secure(true)` — HTTPS only
-- `with_same_site(same_site)` — Default "strict"
+### Session Fixation Prevention
 
-#### PROTECTED: Login Rate Limiting
+Added `session.cycle_id().await` as the first operation in `setup_session()`, before any user data is stored. This rotates the session ID on every successful login, preventing session fixation attacks where an attacker sets a known session cookie before the victim authenticates.
 
-**Location:** `crates/kernel/src/lockout.rs`
+### Password Reset Validation
 
-- 5 failed attempts trigger 15-minute lockout
-- Returns 429 Too Many Requests
-- Timing-attack prevention: non-existent users also record failed attempts (`auth.rs:280-286`)
-- Inactive users also record failed attempts (`auth.rs:297-305`)
-- Attempts cleared on successful login
+Added 8-character minimum password length check to `set_password()` in `password_reset.rs`, matching the validation enforced by the installer and admin user forms.
 
-#### PROTECTED: Password Reset Flow
+### Files Changed
 
-**Location:** `crates/kernel/src/models/password_reset.rs`
+- `crates/kernel/src/models/user.rs` — `argon2_instance()` with RFC 9106 params, updated test
+- `crates/kernel/src/routes/auth.rs` — `session.cycle_id()` in `setup_session()`
+- `crates/kernel/src/routes/password_reset.rs` — Password length validation in `set_password()`
 
-Strong implementation:
-- Token: 32 random bytes, hex-encoded (64 chars)
-- Storage: SHA-256 hash stored, not plaintext
-- Expiry: 1 hour
-- Single-use: `used_at` timestamp set after consumption
-- User enumeration prevention: `request_reset()` always returns success (`password_reset.rs:108`)
-- Post-reset: all other tokens for user invalidated
+### Test Coverage
 
-#### NEEDS REVIEW: Install Route Gating
-
-**Location:** `crates/kernel/src/routes/install.rs`
-
-Install routes (`/install`, `/install/welcome`, `/install/admin`, `/install/site`, `/install/complete`) are gated by `check_installed()` helper (lines 46-49). The `check_installation` middleware in `main.rs:212-214` should prevent access post-install, but needs verification.
-
-#### NEEDS REVIEW: File Metadata Endpoint
-
-**Location:** `crates/kernel/src/routes/file.rs:200-223`
-
-`GET /file/{id}` returns file metadata as JSON without authentication. Potentially allows enumeration of uploaded file metadata (filenames, MIME types, sizes, URLs).
-
-#### NEEDS REVIEW: Password Strength Policy
-
-No password strength validation detected in the codebase. Users can set arbitrarily weak passwords. Consider minimum length, complexity requirements.
-
-### Key Files
-
-- `crates/kernel/src/models/user.rs` — Argon2id hashing
-- `crates/kernel/src/routes/auth.rs` — Login/logout/session setup
-- `crates/kernel/src/session.rs` — Session layer configuration
-- `crates/kernel/src/lockout.rs` — Account lockout logic
-- `crates/kernel/src/models/password_reset.rs` — Password reset tokens
-- `crates/kernel/src/permissions.rs` — Permission service with DashMap cache
-- `crates/kernel/src/models/role.rs` — Role model with well-known roles
-- `crates/kernel/src/models/stage.rs` — Stage hierarchy with cycle detection
-- `crates/kernel/src/routes/install.rs` — Installation routes
-
-### References
-
-- [Source: crates/kernel/src/models/user.rs — Argon2id password hashing]
-- [Source: crates/kernel/src/routes/auth.rs — Login/session setup]
-- [Source: crates/kernel/src/session.rs — Session cookie configuration]
-- [Source: crates/kernel/src/lockout.rs — Account lockout parameters]
-- [Source: crates/kernel/src/models/password_reset.rs — Password reset flow]
+- Password hashing unit test updated to verify Argon2id algorithm identifier and use configured instance
+- All 82 integration tests pass
+- All unit tests pass across all crates
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo fmt --all --check` clean

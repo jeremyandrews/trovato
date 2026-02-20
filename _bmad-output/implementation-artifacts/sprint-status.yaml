@@ -422,7 +422,7 @@ development_status:
   27-1-xss-audit-and-hardening: done
   27-2-sql-injection-audit: review
   27-3-csrf-audit: review
-  27-4-authentication-and-session-security-audit: ready-for-dev
+  27-4-authentication-and-session-security-audit: review
   27-5-wasm-plugin-sandbox-audit: ready-for-dev
   27-6-file-upload-security-audit: ready-for-dev
   27-7-security-regression-tests: ready-for-dev

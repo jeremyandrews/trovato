@@ -153,6 +153,16 @@ async fn set_password(
     Path(token): Path<String>,
     Json(input): Json<SetPasswordInput>,
 ) -> Result<Json<ResetResponse>, (StatusCode, Json<ResetError>)> {
+    // Validate password length
+    if input.password.len() < 8 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ResetError {
+                error: "Password must be at least 8 characters".to_string(),
+            }),
+        ));
+    }
+
     // Find and validate token
     let reset_token = PasswordResetToken::find_valid(state.db(), &token)
         .await

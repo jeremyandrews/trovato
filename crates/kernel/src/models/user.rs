@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use argon2::password_hash::SaltString;
 use argon2::password_hash::rand_core::OsRng;
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -293,16 +293,36 @@ impl User {
             return false;
         };
 
-        Argon2::default()
+        argon2_instance()
             .verify_password(password.as_bytes(), &parsed_hash)
             .is_ok()
     }
 }
 
+/// Create an Argon2id instance with RFC 9106 recommended parameters.
+///
+/// Parameters: 64 MiB memory, 3 iterations, 4 lanes of parallelism.
+///
+/// # Panics
+///
+/// Panics if the hardcoded Argon2 parameters are invalid (should never happen).
+#[allow(clippy::expect_used)] // Infallible: hardcoded params are within valid ranges.
+fn argon2_instance() -> Argon2<'static> {
+    let params = Params::new(
+        64 * 1024, // 64 MiB memory cost (in KiB)
+        3,         // 3 iterations (time cost)
+        4,         // 4 lanes of parallelism
+        None,      // default output length (32 bytes)
+    )
+    .expect("hardcoded Argon2 params are valid");
+
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+}
+
 /// Hash a password using Argon2id.
 fn hash_password(password: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
+    let argon2 = argon2_instance();
 
     let hash = argon2
         .hash_password(password.as_bytes(), &salt)
@@ -327,20 +347,20 @@ mod tests {
         let password = "test_password_123";
         let hash = hash_password(password).unwrap();
 
-        // Hash should start with Argon2 identifier
-        assert!(hash.starts_with("$argon2"));
+        // Hash should use Argon2id
+        assert!(hash.starts_with("$argon2id"));
 
-        // Verify should work
+        // Verify should work with our configured instance
         let parsed = PasswordHash::new(&hash).unwrap();
         assert!(
-            Argon2::default()
+            argon2_instance()
                 .verify_password(password.as_bytes(), &parsed)
                 .is_ok()
         );
 
         // Wrong password should fail
         assert!(
-            Argon2::default()
+            argon2_instance()
                 .verify_password(b"wrong_password", &parsed)
                 .is_err()
         );

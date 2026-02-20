@@ -196,6 +196,12 @@ async fn setup_session(
     user_id: uuid::Uuid,
     remember_me: bool,
 ) -> Result<(), LoginError> {
+    // Rotate session ID to prevent session fixation attacks.
+    session.cycle_id().await.map_err(|e| {
+        tracing::error!(error = %e, "failed to rotate session ID");
+        LoginError::Internal("Internal server error".to_string())
+    })?;
+
     session
         .insert(SESSION_USER_ID, user_id)
         .await
