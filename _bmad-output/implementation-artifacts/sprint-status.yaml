@@ -429,3 +429,17 @@ development_status:
   27-8-add-cargo-audit-to-ci: done
   27-9-update-claude-md-with-security-rules: done
   epic-27-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Phase 13: User Self-Service & v1.0 Polish
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 28: User Self-Service & v1.0 Polish
+  # Public registration, self-service account management, pathauto, admin tabs, doc updates
+  epic-28: backlog
+  28-1-public-user-registration: backlog
+  28-2-user-self-service-account-management: backlog
+  28-3-automatic-path-alias-generation: backlog
+  28-4-admin-local-tasks: backlog
+  28-5-update-alignment-documentation: backlog
+  epic-28-retrospective: optional

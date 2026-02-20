@@ -6206,3 +6206,153 @@ So that new code follows security best practices automatically.
 
 ---
 
+## Epic 28: User Self-Service & v1.0 Polish
+
+**Goal:** Add public user registration with email verification, self-service account management, automatic URL alias generation, admin tab navigation, and update stale alignment documentation to reflect current state.
+
+**Scope:**
+- Phase 1: Public user registration endpoint with email verification
+- Phase 2: User self-service account management (profile, password)
+- Phase 3: Automatic path alias generation (Pathauto equivalent)
+- Phase 4: Admin local tasks (tab navigation), stale doc updates
+
+**Gate:**
+- Users can self-register via `/user/register` with email verification
+- Logged-in users can change their password and edit their profile
+- Items get automatic URL aliases from configurable patterns
+- Admin pages have tab-style navigation (View/Edit/Revisions)
+- Gap analysis and roadmap documentation updated to reflect Epic 1-27 completions
+
+**Design Philosophy:** Trovato's kernel infrastructure is complete. This epic focuses on the user-facing polish that transforms a developer tool into a production CMS. Registration, self-service, and pathauto are table-stakes features for any multi-user CMS deployment.
+
+**Cross-references:** Epic 2 (Authentication), Epic 15 (Path Aliases), Epic 16 (Admin UI), Epic 22 (Email Service)
+
+---
+
+### Story 28.1: Public User Registration
+
+As a **visitor**,
+I want to create an account on the site,
+So that I can access authenticated features without admin intervention.
+
+**Acceptance Criteria:**
+
+1. GET `/user/register` renders a registration form (username, email, password, confirm password)
+2. POST `/user/register` creates a new user with `active=false` (pending verification)
+3. Registration sends a verification email with a time-limited token
+4. GET `/user/verify/{token}` activates the user account
+5. Registration rate-limited (prevent mass account creation)
+6. `tap_user_register` dispatched on successful registration
+7. CSRF protection on the registration form
+8. JSON API endpoint at POST `/user/register/json` for headless use
+
+**Tasks:**
+- [ ] Add registration form handler (GET `/user/register`)
+- [ ] Add registration submit handler (POST `/user/register`)
+- [ ] Create email verification token model and migration
+- [ ] Send verification email via EmailService
+- [ ] Add verification endpoint (GET `/user/verify/{token}`)
+- [ ] Add rate limiting on registration
+- [ ] Dispatch `tap_user_register` on success
+- [ ] Add JSON API endpoint for headless registration
+- [ ] Write integration tests
+
+---
+
+### Story 28.2: User Self-Service Account Management
+
+As an **authenticated user**,
+I want to change my password and edit my profile,
+So that I can manage my own account without admin help.
+
+**Acceptance Criteria:**
+
+1. GET `/user/profile` renders the current user's profile with edit form
+2. POST `/user/profile` updates display name and email (requires current password confirmation)
+3. POST `/user/password` changes password (requires current password, new password + confirm)
+4. Email change triggers verification email to new address
+5. `tap_user_update` dispatched on profile changes
+6. CSRF protection on all forms
+
+**Tasks:**
+- [ ] Add profile view/edit handler (GET/POST `/user/profile`)
+- [ ] Add password change handler (POST `/user/password`)
+- [ ] Email change verification flow
+- [ ] Dispatch `tap_user_update` on profile changes
+- [ ] Write integration tests
+
+---
+
+### Story 28.3: Automatic Path Alias Generation (Pathauto)
+
+As a **content editor**,
+I want URL aliases automatically generated from configurable patterns,
+So that every item gets a human-readable URL without manual entry.
+
+**Acceptance Criteria:**
+
+1. Pattern configuration per content type (e.g., `blog/[title]`, `news/[yyyy]/[mm]/[title]`)
+2. Aliases auto-generated on item create and update (unless manually overridden)
+3. Title tokens sanitized to URL-safe slugs (lowercase, hyphens, no special chars)
+4. Date tokens supported: `[yyyy]`, `[mm]`, `[dd]`
+5. Duplicate aliases get numeric suffixes (e.g., `blog/my-post-1`)
+6. Existing manual aliases are not overwritten
+7. Pattern management via site config (no admin UI needed for v1.0)
+
+**Tasks:**
+- [ ] Define pattern token system with `[title]`, `[type]`, `[yyyy]`, `[mm]`, `[dd]`
+- [ ] Implement slug generation (transliterate, lowercase, hyphenate)
+- [ ] Integrate auto-generation into item create/update pipeline
+- [ ] Handle duplicate alias resolution with numeric suffixes
+- [ ] Respect manual alias overrides
+- [ ] Store patterns in site config
+- [ ] Write unit and integration tests
+
+---
+
+### Story 28.4: Admin Local Tasks (Tab Navigation)
+
+As an **admin user**,
+I want tab-style navigation on admin pages,
+So that I can quickly switch between related views (View/Edit/Revisions/Translate).
+
+**Acceptance Criteria:**
+
+1. `MenuDefinition` supports `local_task` flag for tab-style items
+2. Admin templates render local tasks as a horizontal tab bar
+3. Active tab highlighted based on current path
+4. Item pages show: View | Edit | Revisions tabs
+5. User pages show: View | Edit tabs
+6. Plugin-registered tabs display correctly
+
+**Tasks:**
+- [ ] Add `local_task` support to MenuDefinition
+- [ ] Create admin tab bar template macro
+- [ ] Register local tasks for item view/edit/revisions
+- [ ] Register local tasks for user view/edit
+- [ ] Style tab bar in admin theme
+- [ ] Write tests
+
+---
+
+### Story 28.5: Update Alignment Documentation
+
+As a **maintainer**,
+I want the gap analysis and roadmap documentation to reflect current state,
+So that contributors can trust the docs as an accurate picture of what's done and what remains.
+
+**Acceptance Criteria:**
+
+1. `docs/alignment/gap-analysis.md` updated: gaps #1, #2, #3, #5, #6 marked as resolved with implementation references
+2. `docs/alignment/roadmap.md` updated: success criteria table reflects actual subsystem status
+3. Roadmap "near-term" section updated to remove already-implemented items
+4. Any new gaps discovered during Epic 28 documented
+
+**Tasks:**
+- [ ] Update gap-analysis.md with resolution status for each gap
+- [ ] Update roadmap.md success criteria table
+- [ ] Update roadmap.md near-term recommendations
+- [ ] Review and update intentional-divergences.md if needed
+
+---
+
