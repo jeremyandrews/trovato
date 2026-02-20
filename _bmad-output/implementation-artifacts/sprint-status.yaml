@@ -427,5 +427,5 @@ development_status:
   27-6-file-upload-security-audit: review
   27-7-security-regression-tests: review
   27-8-add-cargo-audit-to-ci: review
-  27-9-update-claude-md-with-security-rules: ready-for-dev
+  27-9-update-claude-md-with-security-rules: review
   epic-27-retrospective: optional

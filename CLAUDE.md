@@ -38,6 +38,60 @@
 - New WASM host functions: use constants from `crates/plugin-sdk/src/host_errors.rs`
 - `// SAFETY:` comments are reserved for `unsafe` blocks; use `// Infallible:` for safe-by-construction calls
 
+## Security Rules
+
+See `docs/security-audit.md` for the full dependency audit policy and Epic 27 story files for detailed findings.
+
+### Format Processing
+
+- **Always** use `FilterPipeline::for_format_safe()` for user/plugin content — never `for_format()` with untrusted format strings
+- Every `| safe` usage in Tera templates requires a `{# SAFE: reason #}` comment justifying pre-sanitization
+
+### HTML & XSS Prevention
+
+- All user content interpolated into HTML must use `html_escape()` or Tera autoescape
+- Plugin-supplied tag names must be validated against `SAFE_TAGS` in `theme/render.rs`
+- Plugin-supplied attribute keys must pass `is_valid_attr_key()` in `theme/render.rs`
+- Never build HTML strings with unescaped user content — use `html_escape()` from `crate::routes::helpers`
+
+### SQL Injection Prevention
+
+- Never use `format!()` to build SQL — always use SeaQuery parameterized queries
+- JSONB path expressions: validate with `is_valid_field_name()` before interpolation
+- LIKE patterns: escape `%` and `_` with `escape_like_pattern()`
+
+### CSRF Protection
+
+- All state-changing endpoints (POST/PUT/DELETE) must use `require_csrf` from `crate::routes::helpers`
+- Logout must be POST, never GET
+
+### Authentication & Sessions
+
+- Password hashing: Argon2id with RFC 9106 params (m=65536, t=3, p=4) — do not weaken
+- Session fixation: always call `session.cycle_id()` after authentication state changes
+- Password minimum length: 12 characters — do not reduce
+
+### WASM Plugin Boundary
+
+- All plugin-supplied data must be validated/escaped before HTML interpolation
+- Plugin database queries must use `statement_timeout` (5s) and epoch interruption (10 ticks)
+- Plugin request context keys must be namespaced by plugin name
+
+### File Upload Security
+
+- Validate magic bytes against declared MIME type using `validate_magic_bytes()`
+- Sanitize filenames with `sanitize_filename()` — never use raw user-supplied filenames in paths
+- Block executable MIME types via `ALLOWED_MIME_TYPES` allowlist
+- Reject disguised executables (ELF/PE with image MIME types)
+
+### Prohibited Patterns
+
+- `format!()` with SQL fragments
+- `FilterPipeline::for_format()` with user/plugin-supplied format strings
+- `| safe` without justification comment
+- Unescaped user content in `write!()` / `format!()` producing HTML
+- Trusting plugin-supplied tag names, class names, or attribute keys without validation
+
 ## Kernel Minimality Rules
 
 **Governing principle:** The core kernel enables. Plugins implement. If it's a feature, it's a plugin. If it's infrastructure that plugins depend on, it's Kernel.
