@@ -5724,3 +5724,241 @@ So that standards stay current and enforced over time.
 
 ---
 
+## Epic 26: Kernel Minimality Audit
+
+**Goal:** Audit every Kernel subsystem to ensure no feature logic has crept in. The core kernel enables; plugins implement. Extract anything that could be a plugin, then establish ongoing maintenance processes to prevent kernel bloat from recurring.
+
+**Scope:**
+- Phase 1: Audit all kernel components and classify as infrastructure (Keep) or feature (Extract)
+- Phase 2: Plan and execute extractions for feature services
+- Phase 3: Resolve kernel interface modifications needed to support extractions
+- Phase 4: Define plugin SDK versioning scheme for API stability
+- Phase 5: Establish ongoing maintenance processes (PR gates, line-count tracking, quarterly reviews)
+
+**Gate:**
+- `docs/kernel-minimality-audit.md` published with full classification of every kernel subsystem
+- All viable extractions executed (scheduled publishing, translation, webhooks)
+- CLAUDE.md updated with kernel minimality rules
+- PR template with kernel justification checklist
+- Kernel line-count tracking automated
+- Quarterly boundary review process documented
+
+**Design Philosophy:** A bloated kernel is harder to maintain, harder to reason about, and harder to secure. Every kernel addition must justify why it can't be a plugin. Automated tracking catches drift before it becomes debt.
+
+**Cross-references:** Epic 22 (Modern CMS Features — plugin extractions), Epic 25 (Coding Standards — CLAUDE.md enforcement)
+
+---
+
+### Story 26.1: Audit and Classify All Kernel Subsystems
+
+As a **maintainer**,
+I want every kernel subsystem audited and classified as infrastructure or feature,
+So that we have a clear baseline of what belongs in the kernel and what doesn't.
+
+**Acceptance Criteria:**
+
+1. Every directory and file under `crates/kernel/src/` is examined
+2. Each subsystem classified as Infrastructure (Keep) or Feature (Extract candidate)
+3. Classification includes reasoning for each decision
+4. Summary table with all subsystems, classifications, and verdicts
+5. Results documented in `docs/kernel-minimality-audit.md`
+
+**Tasks:**
+- [x] Enumerate all kernel subsystems (plugin, tap, content, gather, theme, routes, models, host, middleware, form, config_storage, cache, batch, file, search, stage, cron, menu, permissions, metrics, session, auth, db, state, error)
+- [x] Classify each as infrastructure or feature with reasoning
+- [x] Document in `docs/kernel-minimality-audit.md` Section 1
+- [x] Create summary table (Section 5)
+
+---
+
+### Story 26.2: Identify Extraction Candidates with Plans
+
+As a **maintainer**,
+I want extraction candidates identified with concrete plans,
+So that we know exactly what to move and how.
+
+**Acceptance Criteria:**
+
+1. Each feature service evaluated for extraction feasibility
+2. Blocking dependencies identified (e.g., missing host functions, WASM limitations)
+3. Extraction plan documented for each viable candidate
+4. Non-viable extractions documented with reasoning (WASM constraints, hot-path, etc.)
+
+**Tasks:**
+- [x] Evaluate redirect service (kept — hot-path middleware)
+- [x] Evaluate image style service (kept — WASM can't do image processing/filesystem I/O)
+- [x] Evaluate scheduled publishing (extracted via tap_cron)
+- [x] Evaluate translation service (extracted — dead kernel code removed)
+- [x] Evaluate webhook service (extracted — dead kernel code removed)
+- [x] Evaluate email service (kept — WASM can't do SMTP)
+- [x] Evaluate audit service (kept — compliance infrastructure)
+- [x] Evaluate content lock service (kept — data integrity, already gated)
+- [x] Document in `docs/kernel-minimality-audit.md` Section 2
+
+---
+
+### Story 26.3: Execute Service Extractions
+
+As a **maintainer**,
+I want feature services extracted from the kernel to plugins,
+So that the kernel contains only infrastructure.
+
+**Acceptance Criteria:**
+
+1. Scheduled publishing service removed from kernel, implemented as plugin `tap_cron` handler
+2. Translation service removed from kernel (service, PO parser, translated config)
+3. Webhook service removed from kernel (service, cron task, HKDF key block)
+4. `AppStateInner` no longer carries extracted service fields or accessors
+5. `set_plugin_services()` signature simplified
+6. Zero kernel callers remain for extracted services
+
+**Tasks:**
+- [x] Extract scheduled publishing to plugin tap_cron
+- [x] Extract translation service (delete kernel service, PO parser, translated config)
+- [x] Extract webhook service (delete kernel service, cron task, state fields)
+- [x] Verify zero remaining kernel callers for all extracted services
+- [x] Clean up `AppState::new()` (remove instantiation blocks, HKDF key derivation)
+
+---
+
+### Story 26.4: Resolve Kernel Interface Modifications
+
+As a **maintainer**,
+I want kernel interfaces updated to support the new plugin boundary,
+So that plugins can provide functionality previously hardcoded in the kernel.
+
+**Acceptance Criteria:**
+
+1. CategoryService coupling with GatherService resolved (decision: keep in kernel)
+2. `tap_cron` dispatch activated in cron runner
+3. Redirect middleware made conditional on plugin enablement
+4. File path host function evaluated (no longer needed)
+5. Email abstraction evaluated (no longer needed)
+
+**Tasks:**
+- [x] Resolve CategoryService/GatherService coupling (keep CategoryService in kernel)
+- [x] Activate tap_cron dispatch with timeout and per-plugin failure logging
+- [x] Make RedirectCache conditional (`Option<Arc<>>`, early-return when None)
+- [x] Close file path host function (not needed — image styles kept in kernel)
+- [x] Close email abstraction (not needed — WASM can't do SMTP)
+- [x] Document in `docs/kernel-minimality-audit.md` Section 3
+
+---
+
+### Story 26.5: Define Plugin SDK Versioning Scheme
+
+As a **plugin developer**,
+I want a clear versioning contract for the plugin SDK,
+So that I know when my plugin will break and when it won't.
+
+**Acceptance Criteria:**
+
+1. Semver stability tiers defined (Stable/MAJOR, Semi-stable/MINOR, Internal)
+2. Each tier lists exactly what's covered (host functions, types, taps, etc.)
+3. Compatibility matrix with examples
+4. Plugin `.info.toml` declares `sdk_version` for load-time compatibility check
+5. Documented in `docs/kernel-minimality-audit.md` Section 4
+
+**Tasks:**
+- [x] Define Stable tier (host function signatures, error codes, SDK types, tap signatures, proc macros)
+- [x] Define Semi-stable tier (new taps, new host functions, new types, additive fields)
+- [x] Define Internal tier (service implementations, DB schema, routes, middleware, cron)
+- [x] Create compatibility matrix
+- [x] Document in `docs/kernel-minimality-audit.md` Section 4
+
+---
+
+### Story 26.6: Update CLAUDE.md with Kernel Minimality Rules
+
+As a **maintainer**,
+I want CLAUDE.md to enforce kernel minimality during AI-assisted development,
+So that new code follows the kernel boundary rules automatically.
+
+**Acceptance Criteria:**
+
+1. Governing principle stated: "The core kernel enables. Plugins implement."
+2. Decision framework for new services: "Does any other kernel subsystem depend on this?"
+3. Feature service placement rule: "If only callers are gated routes or cron tasks, it's a feature"
+4. `Option<Arc<>>` pattern documented for plugin-optional services
+5. `plugin_gate!` macro usage documented for plugin-specific routes
+6. `tap_cron` preference documented for plugin cron tasks
+7. Infrastructure services listed explicitly
+
+**Tasks:**
+- [x] Add "Kernel Minimality Rules" section to CLAUDE.md
+- [x] Document governing principle
+- [x] Document decision framework for new services
+- [x] Document feature service placement rule
+- [x] Document `Option<Arc<>>` pattern, `plugin_gate!` macro, `tap_cron` preference
+- [x] List infrastructure services that stay in kernel
+
+---
+
+### Story 26.7: Create PR Template with Kernel Justification Checklist
+
+As a **maintainer**,
+I want every PR that touches kernel code to include a kernel justification,
+So that feature logic doesn't creep into the kernel during code review.
+
+**Acceptance Criteria:**
+
+1. `.github/PULL_REQUEST_TEMPLATE.md` exists with standard PR sections
+2. Template includes a "Kernel Boundary" checklist section that activates when kernel files are modified
+3. Checklist asks: "Why can't this be a plugin?", "Does this contain CMS-specific business logic?", "Could a plugin provide this through an existing Tap or trait?"
+4. Template includes sections for: summary, changes, test plan, kernel boundary justification
+
+**Tasks:**
+- [ ] Create `.github/PULL_REQUEST_TEMPLATE.md`
+- [ ] Add summary and changes sections
+- [ ] Add test plan section
+- [ ] Add kernel boundary checklist (conditional guidance for kernel PRs)
+- [ ] Verify template renders correctly on GitHub
+
+---
+
+### Story 26.8: Create Kernel Line-Count Tracking Script
+
+As a **maintainer**,
+I want automated tracking of kernel lines of code,
+So that I can detect kernel bloat trends before they become problems.
+
+**Acceptance Criteria:**
+
+1. Script counts lines of Rust code in `crates/kernel/src/` (excluding tests, blanks, comments)
+2. Script counts lines in plugin SDK (`crates/plugin-sdk/src/`)
+3. Script outputs kernel LOC, SDK LOC, and ratio
+4. Baseline measurement recorded in `docs/kernel-minimality-audit.md`
+5. Script can be run manually or in CI to compare against baseline
+
+**Tasks:**
+- [ ] Create `scripts/kernel-loc.sh` (or similar) using `tokei` or `scc` or plain `wc`
+- [ ] Count kernel LOC, SDK LOC, compute ratio
+- [ ] Record baseline measurement in audit doc
+- [ ] Add instructions for running in `docs/kernel-minimality-audit.md`
+- [ ] Optionally add as CI informational step (non-blocking)
+
+---
+
+### Story 26.9: Document Quarterly Boundary Review Process
+
+As a **maintainer**,
+I want a documented process for periodic kernel boundary reviews,
+So that kernel minimality is maintained over time and extraction debt doesn't accumulate.
+
+**Acceptance Criteria:**
+
+1. Quarterly review process documented in `docs/kernel-minimality-audit.md`
+2. Process includes: re-run audit checklist against new kernel code, compare LOC trends, review plugin extraction backlog
+3. Plugin extraction backlog section added to audit doc for tracking candidates
+4. New subsystem rule documented: any proposed kernel subsystem requires justification for why it can't be a plugin or trait
+5. Review cadence tied to major releases or quarterly, whichever comes first
+
+**Tasks:**
+- [ ] Add "Ongoing Maintenance" section to `docs/kernel-minimality-audit.md`
+- [ ] Document quarterly review process steps
+- [ ] Document new subsystem justification rule
+- [ ] Add plugin extraction backlog section (running list of "things in kernel that maybe shouldn't be")
+- [ ] Cross-reference from CLAUDE.md
+
+---
+

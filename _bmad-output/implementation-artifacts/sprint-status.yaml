@@ -380,16 +380,34 @@ development_status:
 
   # Epic 25: Coding Standards & Enforcement
   # Define, document, and enforce consistent coding standards with automated tooling
-  epic-25: backlog
-  25-1-configure-rustfmt: backlog
-  25-2-configure-clippy-lints: backlog
-  25-3-define-naming-conventions: backlog
-  25-4-define-plugin-conventions: backlog
-  25-5-define-error-handling-standards: backlog
-  25-6-define-documentation-standards: backlog
-  25-7-write-coding-standards-document: backlog
-  25-8-enforce-in-ci: backlog
-  25-9-pre-commit-hooks: backlog
-  25-10-retrofit-existing-code: backlog
-  25-11-ongoing-maintenance-plan: backlog
+  epic-25: done
+  25-1-configure-rustfmt: done
+  25-2-configure-clippy-lints: done
+  25-3-define-naming-conventions: done
+  25-4-define-plugin-conventions: done
+  25-5-define-error-handling-standards: done
+  25-6-define-documentation-standards: done
+  25-7-write-coding-standards-document: done
+  25-8-enforce-in-ci: done
+  25-9-pre-commit-hooks: done
+  25-10-retrofit-existing-code: done
+  25-11-ongoing-maintenance-plan: done
   epic-25-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Phase 11: Kernel Governance
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 26: Kernel Minimality Audit
+  # Audit kernel boundary, extract feature services, establish ongoing governance
+  epic-26: in-progress
+  26-1-audit-and-classify-kernel-subsystems: done
+  26-2-identify-extraction-candidates-with-plans: done
+  26-3-execute-service-extractions: done
+  26-4-resolve-kernel-interface-modifications: done
+  26-5-define-plugin-sdk-versioning-scheme: done
+  26-6-update-claude-md-with-kernel-minimality-rules: done
+  26-7-create-pr-template-with-kernel-justification-checklist: done
+  26-8-create-kernel-line-count-tracking-script: backlog
+  26-9-document-quarterly-boundary-review-process: backlog
+  epic-26-retrospective: optional
