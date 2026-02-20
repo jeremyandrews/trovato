@@ -394,3 +394,53 @@ Plugins declare `sdk_version = "1.0"` in `.info.toml`. The kernel checks compati
 | ~~4~~ | ~~Webhook service~~ | ~~Activate tap_cron~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | ~~5~~ | ~~Translation service~~ | ~~Host function DB patterns~~ ✅ resolved | ~~Medium~~ — **extracted** ✅ |
 | ~~6~~ | ~~Email service~~ | ~~tap_send_email + auth fallback~~ | ~~Medium~~ — kept in kernel (WASM can't do SMTP) |
+
+---
+
+## 7. Kernel Line-Count Baseline
+
+Measured 2026-02-20 using `scripts/kernel-loc.sh`. Code lines exclude blanks and comment-only lines.
+
+| Component | Code Lines | Total Lines | Files |
+|-----------|-----------|-------------|-------|
+| Kernel (`crates/kernel/src/`) | 34,785 | 45,734 | 134 |
+| Plugin SDK (`crates/plugin-sdk/src/`) | 481 | 810 | 5 |
+| **Ratio** | **72.3:1** | | |
+
+Run `./scripts/kernel-loc.sh` to compare current counts against this baseline. If the kernel grows significantly faster than the SDK surface area, investigate whether feature logic has crept in.
+
+---
+
+## 8. Ongoing Maintenance
+
+### Quarterly Boundary Review
+
+Re-run the audit checklist every quarter or before each major release, whichever comes first.
+
+**Review steps:**
+
+1. Run `./scripts/kernel-loc.sh` and compare against the Section 7 baseline. Investigate if kernel code lines grew more than 10% without a corresponding SDK surface increase.
+2. List all files added to `crates/kernel/src/` since the last review. For each new file, ask: "Is this infrastructure or feature?"
+3. List all new services in `crates/kernel/src/services/`. For each, verify at least one other kernel subsystem depends on it (not just gated routes or cron tasks).
+4. Review the plugin extraction backlog (Section 8.2). Evaluate whether any items are now feasible to extract.
+5. Update the baseline in Section 7 after each review.
+
+### Plugin Extraction Backlog
+
+Items that are in the kernel but could potentially be extracted if the infrastructure evolves (e.g., `tap_route` for plugin-served HTTP routes, WASM capability expansion):
+
+| Item | Blocker | Notes |
+|------|---------|-------|
+| Redirect service | Hot-path middleware; no `tap_route` | Would need sub-microsecond plugin dispatch |
+| Image style service | WASM can't do image processing or filesystem I/O | Would need native plugin support or host function for image ops |
+| Email service | WASM can't do SMTP network I/O | Would need host function for network access |
+
+### New Subsystem Rule
+
+Any proposed new kernel subsystem (new directory or service under `crates/kernel/src/`) requires a justification answering:
+
+1. Why can't this be a plugin?
+2. Which other kernel subsystem depends on this?
+3. What breaks if this is removed from the kernel?
+
+This justification should be included in the PR description (see `.github/PULL_REQUEST_TEMPLATE.md`).

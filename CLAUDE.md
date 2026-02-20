@@ -42,7 +42,7 @@
 
 **Governing principle:** The core kernel enables. Plugins implement. If it's a feature, it's a plugin. If it's infrastructure that plugins depend on, it's Kernel.
 
-- See `docs/kernel-minimality-audit.md` for the full audit and extraction roadmap
+- See `docs/kernel-minimality-audit.md` for the full audit, extraction roadmap, LOC baseline, and quarterly review process
 - **New services** in `crates/kernel/src/services/` must justify kernel placement — ask: "Does any other kernel subsystem depend on this, or only feature routes?"
 - **Feature services** belong in plugins, not the kernel. If the only callers are gated routes or cron tasks, it's a feature.
 - **New kernel services** that are plugin-optional must use the `Option<Arc<ServiceType>>` pattern in `AppState`

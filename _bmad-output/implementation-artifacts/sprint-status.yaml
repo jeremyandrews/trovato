@@ -400,7 +400,7 @@ development_status:
 
   # Epic 26: Kernel Minimality Audit
   # Audit kernel boundary, extract feature services, establish ongoing governance
-  epic-26: in-progress
+  epic-26: done
   26-1-audit-and-classify-kernel-subsystems: done
   26-2-identify-extraction-candidates-with-plans: done
   26-3-execute-service-extractions: done
@@ -408,6 +408,6 @@ development_status:
   26-5-define-plugin-sdk-versioning-scheme: done
   26-6-update-claude-md-with-kernel-minimality-rules: done
   26-7-create-pr-template-with-kernel-justification-checklist: done
-  26-8-create-kernel-line-count-tracking-script: backlog
-  26-9-document-quarterly-boundary-review-process: backlog
+  26-8-create-kernel-line-count-tracking-script: done
+  26-9-document-quarterly-boundary-review-process: done
   epic-26-retrospective: optional
