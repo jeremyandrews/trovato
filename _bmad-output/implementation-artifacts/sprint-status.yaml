@@ -436,10 +436,10 @@ development_status:
 
   # Epic 28: User Self-Service & v1.0 Polish
   # Public registration, self-service account management, pathauto, admin tabs, doc updates
-  epic-28: backlog
-  28-1-public-user-registration: backlog
-  28-2-user-self-service-account-management: backlog
-  28-3-automatic-path-alias-generation: backlog
-  28-4-admin-local-tasks: backlog
-  28-5-update-alignment-documentation: backlog
+  epic-28: in-progress
+  28-1-public-user-registration: ready-for-dev
+  28-2-user-self-service-account-management: ready-for-dev
+  28-3-automatic-path-alias-generation: ready-for-dev
+  28-4-admin-local-tasks: ready-for-dev
+  28-5-update-alignment-documentation: in-progress
   epic-28-retrospective: optional

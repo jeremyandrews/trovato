@@ -26,6 +26,15 @@ These gaps have already been resolved:
 | Stage-aware content types/categories | Epic 21, Stories 21.3-21.4 | Done |
 | Config storage trait | Epic 21, Story 21.1 | Done |
 | Conflict detection | Epic 21, Story 21.6 | Done |
+| Stage-aware menus/aliases | Epic 21, Story 21.5 | Done |
+| Stage hierarchy support | Epic 21, Story 21.8 | Done |
+| HTML filter (ammonia allowlist) | Epic 24, Story 24.2 | Done |
+| Email delivery (SMTP) | Epic 22 (EmailService) | Done |
+| Text format per-role permissions | Epic 16 / item routes | Done |
+| User lifecycle taps (all 5) | Epic 22 / admin routes | Done |
+| Gather admin UI | Epic 23, Stories 23.1-23.10 | Done |
+| Block editor (Editor.js) | Epic 24, Stories 24.1-24.9 | Done |
+| Security hardening review | Epic 27, Stories 27.1-27.9 | Done |
 
 ---
 
@@ -54,40 +63,39 @@ Not a D6 alignment gap (D6 had no block editor), but a modern CMS expectation.
 
 ## Gaps Recommended for Near-Term Implementation
 
-These should be addressed before v1.0 production deployment:
+~~Items 1-4 have been resolved. See below for remaining near-term work.~~
 
-### 1. HTML Filter Upgrade (HIGH)
+### ~~1. HTML Filter Upgrade~~ RESOLVED
 
-Replace regex-based `FilteredHtmlFilter` with `ammonia` crate for proper HTML allowlist parsing.
+Resolved in Epic 24. `FilteredHtmlFilter` uses `ammonia` v4 with tag/attribute allowlists.
+
+### ~~2. Email Delivery Infrastructure~~ RESOLVED
+
+Resolved in Epic 22. `EmailService` with full SMTP support via `lettre` crate.
+
+### ~~3. Text Format Per-Role Permissions~~ RESOLVED
+
+Resolved. `"use filtered_html"` and `"use full_html"` permissions enforced per role.
+
+### ~~4. User Lifecycle Taps~~ RESOLVED
+
+Resolved. All five `tap_user_*` taps implemented (login, logout, register, update, delete).
+
+### 5. Public User Registration (Epic 28)
+
+Add self-service user registration at `/user/register` with email verification. Currently users can only be created by administrators.
 
 **Effort:** M (2-3 days)
-**Rationale:** Security gap. Regex HTML filtering is unreliable.
-**File:** `crates/kernel/src/content/filter.rs`
-**Suggested epic:** Standalone security hardening task, no epic needed.
+**Rationale:** Multi-user CMS deployments need self-service signup.
+**Epic:** 28, Story 28.1
 
-### 2. Email Delivery Infrastructure (HIGH)
+### 6. Automatic Path Alias Generation (Epic 28)
 
-Add SMTP/email sending capability. Password reset routes exist (`crates/kernel/src/routes/password_reset.rs`) but currently log tokens to the console instead of emailing them.
+Add pattern-based URL alias generation (Pathauto equivalent) for items.
 
 **Effort:** M (2-3 days)
-**Rationale:** Password reset, registration notifications, and any user-facing communication requires email delivery.
-**Files:** New `crates/kernel/src/services/mail.rs`, update `crates/kernel/src/routes/password_reset.rs`
-
-### 3. Text Format Per-Role Permissions (MEDIUM)
-
-Add format-level permission checks so `full_html` can be restricted to trusted roles.
-
-**Effort:** S (1 day)
-**Rationale:** Multi-author sites need this to prevent untrusted editors from using unfiltered HTML.
-**File:** `crates/kernel/src/content/filter.rs`
-
-### 4. User Lifecycle Taps (MEDIUM)
-
-Add `tap_user_logout`, `tap_user_register`, `tap_user_update`, `tap_user_delete`.
-
-**Effort:** S (1 day)
-**Rationale:** Plugins need to react to user lifecycle events for audit logging, notifications, cleanup.
-**Files:** `crates/kernel/src/tap/registry.rs`, `crates/kernel/src/routes/auth.rs`
+**Rationale:** Editorial friction without automatic URL alias generation.
+**Epic:** 28, Story 28.3
 
 ---
 
@@ -95,14 +103,14 @@ Add `tap_user_logout`, `tap_user_register`, `tap_user_update`, `tap_user_delete`
 
 | Gap | Rationale |
 |---|---|
-| Automatic path alias generation (Pathauto) | Infrastructure ready (url_alias table, middleware). Pattern-based generation is an enhancement, not a blocker. Pathauto was a D6 contrib module, not core. |
+| ~~Automatic path alias generation (Pathauto)~~ | Being addressed in Epic 28, Story 28.3 |
 | File usage reference counting | Current behavior (permanent = stays, temporary = cleaned) is acceptable. Implement when storage management matters. |
 | Tile/Block placement UI | Page layout handled via templates. Admin UI is a product concern for post-v1.0. |
 | Sub-theme inheritance | Single-theme sites don't need it. Add when the theming ecosystem matures. |
 | Free-tagging autocomplete | Standard term selection works. Autocomplete is a UX enhancement. |
-| Local tasks (admin tabs) | Can be added incrementally to the menu system. |
-| Stage-aware menus/aliases (Epic 21, Story 21.5) | Requires menu DB storage. Post-MVP. |
-| Stage hierarchy support (Epic 21, Story 21.8) | Child-parent-live workflows are an advanced use case. |
+| ~~Local tasks (admin tabs)~~ | Being addressed in Epic 28, Story 28.4 |
+| ~~Stage-aware menus/aliases (Epic 21, Story 21.5)~~ | Resolved in Epic 21 |
+| ~~Stage hierarchy support (Epic 21, Story 21.8)~~ | Resolved in Epic 21 |
 
 ---
 
@@ -133,20 +141,20 @@ Trovato reaches D6 core + CCK + Views functional parity when these 14 subsystems
 | # | Subsystem | Status | Blocking Gaps |
 |---|---|---|---|
 | 1 | Content modeling (types, fields, CRUD, revisions) | Done | -- |
-| 2 | Content listings (Gather query engine) | Partial | No admin UI (Epic 23) |
+| 2 | Content listings (Gather query engine) | Done | -- |
 | 3 | Categorization (vocabularies, terms, hierarchy) | Done | -- |
-| 4 | User management (auth, roles, permissions, access) | Partial | Email delivery needed for password reset |
+| 4 | User management (auth, roles, permissions, access) | Done | -- |
 | 5 | Forms (declarative build, validate, submit, AJAX) | Done | -- |
 | 6 | Theming (templates, suggestions, preprocess, render) | Done | -- |
 | 7 | Files (upload, managed tracking, cleanup, images) | Done | -- |
 | 8 | Search (full-text, field weights, ranking) | Done | -- |
 | 9 | Cron/Queue (scheduled tasks, distributed locking) | Done | -- |
 | 10 | URL aliases (human-readable URLs, stage/language aware) | Done | -- |
-| 11 | Text formats (filter pipelines, HTML sanitization) | Partial | Regex filter, no per-role permissions |
+| 11 | Text formats (filter pipelines, HTML sanitization) | Done | -- |
 | 12 | Comments (threading, moderation) | Done | -- |
 | 13 | Multilingual (UI strings, content, config translation) | Done | -- |
-| 14 | Blocks/Tiles (renderable content regions) | Missing | No data model or code exists |
+| 14 | Blocks/Tiles (renderable content regions) | Deferred | Post-v1.0 — page layout handled via Tera templates |
 
-**Summary:** 10 of 14 subsystems are fully operational. The 4 remaining gaps are: Gather admin UI (L effort, Epic 23), email delivery infrastructure (M), HTML filter upgrade (M), and tile/block subsystem (L). Text format per-role permissions (S) and user lifecycle taps (S) are smaller items.
+**Summary:** 13 of 14 subsystems are fully operational. The only remaining gap is the Tile/Block subsystem (#14), which is intentionally deferred to post-v1.0 — page layout is handled through Tera templates. Epic 28 adds public user registration (self-service signup) and automatic path alias generation (Pathauto).
 
-Trovato significantly exceeds D6 in: content staging (Stages), security (WASM sandbox, RenderElements, Argon2id, CSRF, rate limiting), performance (JSONB, two-tier cache, async runtime), and modern features (OAuth2, webhooks, image styles, scheduled publishing, content locking, audit logging, config export/import). It is also PostgreSQL-only, which is the primary migration barrier for D6 sites running MySQL.
+Trovato significantly exceeds D6 in: content staging (Stages), security (WASM sandbox, RenderElements, Argon2id, CSRF, rate limiting, cargo-audit CI), performance (JSONB, two-tier cache, async runtime), and modern features (OAuth2, webhooks, image styles, scheduled publishing, content locking, audit logging, config export/import, block editor). It is PostgreSQL-only, which is the primary migration barrier for D6 sites running MySQL.

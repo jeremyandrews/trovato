@@ -12,49 +12,27 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 
 ## HIGH Priority
 
-### 1. HTML Filter Uses Regex Instead of Allowlist Parser
+### 1. ~~HTML Filter Uses Regex Instead of Allowlist Parser~~ RESOLVED
 
-**Gap:** `FilteredHtmlFilter` strips dangerous tags/attributes via regex patterns rather than parsing HTML with an allowlist. Regex-based HTML filtering is fundamentally unreliable -- edge cases in HTML parsing can bypass blocklist patterns.
-
-**D6 equivalent:** `filter_xss()` used a character-by-character parser with a tag allowlist. It had multiple CVEs over its lifetime and was far from bulletproof, but its allowlist approach was structurally more defensible than a regex blocklist.
-
-**Impact:** Security risk. A sufficiently crafted HTML payload could potentially bypass the regex blocklist and achieve XSS in `filtered_html` format content. This is the most significant open security gap.
-
-**Effort:** M (2-3 days). Replace regex with `ammonia` crate (HTML sanitizer built on `html5ever`) or equivalent Rust HTML parser. Define tag/attribute allowlists per format.
-
-**Resolution:** Implement. This should be addressed before any production deployment.
+**Status:** Resolved in Epic 24 (Story 24.2). `FilteredHtmlFilter` now uses the `ammonia` crate (v4) with explicit tag/attribute allowlists. Regex-based filtering was fully replaced. Security regression tests cover 11 XSS vectors.
 
 **File:** `crates/kernel/src/content/filter.rs`
 
 ---
 
-### 2. No Gather Admin UI
+### 2. ~~No Gather Admin UI~~ RESOLVED
 
-**Gap:** Gather (the Views equivalent) works programmatically and via config, but there is no admin UI for building query definitions. Content administrators cannot create or modify listings without developer intervention.
+**Status:** Resolved in Epic 23 (Stories 23.1-23.10). Full admin UI with query builder, live preview, relationship editor, display configuration, and performance guardrails. Admin and content gather views registered.
 
-**D6 equivalent:** Views provided a full drag-and-drop admin UI for building queries, including field selection, filter configuration, sort ordering, and live preview.
-
-**Impact:** Major usability gap. One of D6's most valued features was the ability for non-developers to build content listings. Without the Gather UI, Trovato requires developer involvement for every new listing.
-
-**Effort:** L (Epic 23 -- 10 stories). This is a substantial UI project covering form builder, display config, exposed filters, includes, contextual filters, live preview, cloning, and access control.
-
-**Resolution:** Defer to Epic 23 (planned). Programmatic/config-driven query creation works for v1.0.
+**Files:** `crates/kernel/src/routes/admin_gather.rs`, `templates/admin/gather-form.html`
 
 ---
 
-### 3. No Email Delivery Infrastructure
+### 3. ~~No Email Delivery Infrastructure~~ RESOLVED
 
-**Gap:** Trovato has no SMTP or email-sending capability. Password reset tokens are logged to the console rather than emailed. User registration cannot send welcome emails. Comment notifications, webhook failure alerts, and any other email-dependent feature cannot function.
+**Status:** Resolved in Epic 22. `EmailService` in `crates/kernel/src/services/email.rs` provides full SMTP support via `lettre` crate with STARTTLS/TLS/plain modes, optional authentication, and pre-built password reset email method. Wired into password reset flow.
 
-**D6 equivalent:** `drupal_mail()` provided a composable email pipeline with `hook_mail` for message building and `hook_mail_alter` for modification. Default transport was PHP's `mail()` function; SMTP modules provided authenticated sending.
-
-**Impact:** Any feature that needs to communicate with users outside the browser (password reset, notifications, alerts) is non-functional in a production deployment.
-
-**Effort:** M (2-3 days). Add `lettre` crate for SMTP, create a `MailService` with configurable transport (SMTP, sendmail, or log-only for dev), wire into password reset and registration routes.
-
-**Resolution:** Implement. Required before any multi-user production deployment.
-
-**File:** New `crates/kernel/src/services/mail.rs`
+**File:** `crates/kernel/src/services/email.rs`
 
 ---
 
@@ -74,35 +52,24 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 
 ---
 
-### 5. Text Format Per-Role Permissions
+### 5. ~~Text Format Per-Role Permissions~~ RESOLVED
 
-**Gap:** All authenticated users can use any text format. There is no per-format permission assignment (e.g., "use filtered_html", "use full_html").
+**Status:** Resolved. `permitted_text_formats()` in `crates/kernel/src/routes/item.rs` checks `"use filtered_html"` and `"use full_html"` permissions per user role. `FilterPipeline::for_format_checked()` downgrades `full_html` to `filtered_html` when the user lacks permission. Permissions available in the admin permissions matrix.
 
-**D6 equivalent:** Administrators assigned text format permissions per role. The `full_html` format was restricted to trusted roles, while `filtered_html` was available to all authenticated users.
-
-**Impact:** Security concern for multi-author sites. Untrusted editors could use `full_html` to inject arbitrary HTML/JS (bypassing the filter pipeline entirely since `full_html` passes content through unmodified).
-
-**Effort:** S (1 day). Add `format_permission` map to filter configuration. Check permission in `FilterPipeline::process()`. Add format selection to item edit form.
-
-**Resolution:** Implement when prioritized. Low effort, meaningful security improvement.
-
-**File:** `crates/kernel/src/content/filter.rs`
+**Files:** `crates/kernel/src/routes/item.rs`, `crates/kernel/src/content/filter.rs`
 
 ---
 
-### 6. Missing `tap_user_*` Lifecycle Hooks
+### 6. ~~Missing `tap_user_*` Lifecycle Hooks~~ RESOLVED
 
-**Gap:** Only `tap_user_login` exists. There are no taps for user logout, registration, profile update, or deletion.
+**Status:** Resolved. All five user lifecycle taps are declared in KNOWN_TAPS and dispatched from route handlers:
+- `tap_user_login` — dispatched in `auth.rs` login handler
+- `tap_user_logout` — dispatched in `auth.rs` logout handler
+- `tap_user_register` — dispatched in `admin_user.rs` user create handler
+- `tap_user_update` — dispatched in `admin_user.rs` user update handler
+- `tap_user_delete` — dispatched in `admin_user.rs` user delete handler
 
-**D6 equivalent:** `hook_user` was a multi-operation hook covering: login, logout, insert (register), update, delete, view, validate, form.
-
-**Impact:** Plugins cannot react to user lifecycle events beyond login. For example: audit logging of user changes, welcome emails on registration, cleanup on deletion.
-
-**Effort:** S (1 day). Add `tap_user_logout`, `tap_user_register`, `tap_user_update`, `tap_user_delete` to the tap registry and invoke from appropriate route handlers.
-
-**Resolution:** Implement when prioritized. The infrastructure exists; these are straightforward additions.
-
-**Files:** `crates/kernel/src/tap/registry.rs`, `crates/kernel/src/routes/auth.rs`
+**Files:** `crates/kernel/src/routes/auth.rs`, `crates/kernel/src/routes/admin_user.rs`
 
 ---
 
