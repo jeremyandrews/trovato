@@ -75,6 +75,26 @@ impl EmailService {
         Ok(())
     }
 
+    /// Send an email verification link for new account registration.
+    pub async fn send_verification_email(
+        &self,
+        to: &str,
+        token: &str,
+        site_name: &str,
+    ) -> Result<()> {
+        let verify_url = format!("{}/user/verify/{}", self.site_url, token);
+        let subject = format!("Verify your account at {site_name}");
+        let body = format!(
+            "Welcome to {site_name}!\n\n\
+             To activate your account, visit the following link:\n\
+             {verify_url}\n\n\
+             If you did not register for an account, you can safely ignore this email.\n\n\
+             This link will expire in 24 hours."
+        );
+
+        self.send(to, &subject, &body).await
+    }
+
     /// Send a password reset email with a tokenized link.
     pub async fn send_password_reset(&self, to: &str, token: &str, site_name: &str) -> Result<()> {
         let reset_url = format!("{}/user/password-reset/{}", self.site_url, token);

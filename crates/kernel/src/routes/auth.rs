@@ -1,6 +1,6 @@
-//! Authentication routes (login, logout).
+//! Authentication routes (login, logout, registration, email verification).
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -11,7 +11,8 @@ use tracing::info;
 
 use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
-use crate::models::User;
+use crate::models::email_verification::EmailVerificationToken;
+use crate::models::{CreateUser, SiteConfig, User};
 use crate::routes::helpers::{CsrfOnlyForm, html_escape};
 use crate::state::AppState;
 
@@ -447,10 +448,434 @@ async fn logout(
     }))
 }
 
+// ─── Registration ────────────────────────────────────────────────────────────
+
+/// Registration form request (deserialized from form POST).
+#[derive(Debug, Deserialize)]
+struct RegisterFormRequest {
+    username: String,
+    mail: String,
+    password: String,
+    confirm_password: String,
+    #[serde(rename = "_token")]
+    csrf_token: Option<String>,
+}
+
+/// JSON registration request body.
+#[derive(Debug, Deserialize)]
+struct RegisterJsonRequest {
+    username: String,
+    mail: String,
+    password: String,
+}
+
+/// Check whether user registration is enabled via site config.
+async fn is_registration_enabled(state: &AppState) -> bool {
+    SiteConfig::get(state.db(), "allow_user_registration")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Registration form handler.
+///
+/// GET /user/register
+/// - Renders registration form with CSRF token
+/// - Returns 404 if registration is disabled
+async fn register_form(State(state): State<AppState>, session: Session) -> Response {
+    // Check if already logged in
+    if session
+        .get::<uuid::Uuid>(SESSION_USER_ID)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return Redirect::to("/admin").into_response();
+    }
+
+    if !is_registration_enabled(&state).await {
+        return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
+    }
+
+    let csrf_token = match generate_csrf_token(&session).await {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to generate CSRF token");
+            return Html("<h1>Error</h1><p>Failed to generate form token</p>".to_string())
+                .into_response();
+        }
+    };
+
+    render_register_form(&state, &csrf_token, None, None, None).await
+}
+
+/// Render the registration form with optional context.
+async fn render_register_form(
+    state: &AppState,
+    csrf_token: &str,
+    errors: Option<&[String]>,
+    success: Option<&str>,
+    values: Option<&serde_json::Value>,
+) -> Response {
+    let mut context = tera::Context::new();
+    context.insert("csrf_token", csrf_token);
+    if let Some(errors) = errors {
+        context.insert("errors", errors);
+    }
+    if let Some(success) = success {
+        context.insert("success", success);
+    }
+    if let Some(values) = values {
+        context.insert("values", values);
+    }
+
+    match state.theme().tera().render("user/register.html", &context) {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render register form");
+            Html("<h1>Error</h1><p>Failed to render registration form</p>".to_string())
+                .into_response()
+        }
+    }
+}
+
+/// Registration form submit handler.
+///
+/// POST /user/register
+/// - Validates CSRF token, form input, uniqueness
+/// - Creates inactive user, sends verification email
+async fn register_form_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<RegisterFormRequest>,
+) -> Response {
+    if !is_registration_enabled(&state).await {
+        return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
+    }
+
+    // Verify CSRF token
+    match &form.csrf_token {
+        Some(token) => match verify_csrf_token(&session, token).await {
+            Ok(true) => {}
+            _ => {
+                let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+                let errors = vec!["Invalid form token. Please try again.".to_string()];
+                return render_register_form(&state, &csrf_token, Some(&errors), None, None).await;
+            }
+        },
+        None => {
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let errors = vec!["Missing form token. Please try again.".to_string()];
+            return render_register_form(&state, &csrf_token, Some(&errors), None, None).await;
+        }
+    }
+
+    let values = serde_json::json!({
+        "username": form.username,
+        "mail": form.mail,
+    });
+
+    // Validate input
+    let mut errors = Vec::new();
+    validate_registration_input(
+        &state,
+        &form.username,
+        &form.mail,
+        &form.password,
+        &mut errors,
+    )
+    .await;
+
+    if form.password != form.confirm_password {
+        errors.push("Passwords do not match.".to_string());
+    }
+
+    if !errors.is_empty() {
+        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        return render_register_form(&state, &csrf_token, Some(&errors), None, Some(&values)).await;
+    }
+
+    // Create inactive user
+    match do_register(&state, &form.username, &form.mail, &form.password).await {
+        Ok(_) => {
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            render_register_form(
+                &state,
+                &csrf_token,
+                None,
+                Some(
+                    "Registration successful! Check your email for a verification link \
+                     to activate your account.",
+                ),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "registration failed");
+            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let errors = vec!["An unexpected error occurred. Please try again later.".to_string()];
+            render_register_form(&state, &csrf_token, Some(&errors), None, Some(&values)).await
+        }
+    }
+}
+
+/// Validate registration input fields.
+async fn validate_registration_input(
+    state: &AppState,
+    username: &str,
+    mail: &str,
+    password: &str,
+    errors: &mut Vec<String>,
+) {
+    let username = username.trim();
+    let mail = mail.trim();
+
+    if username.is_empty() {
+        errors.push("Username is required.".to_string());
+    } else if username.len() > 60 {
+        errors.push("Username must be 60 characters or fewer.".to_string());
+    }
+
+    if mail.is_empty() {
+        errors.push("Email address is required.".to_string());
+    } else if !mail.contains('@') || !mail.contains('.') {
+        errors.push("Please enter a valid email address.".to_string());
+    }
+
+    if password.len() < 8 {
+        errors.push("Password must be at least 8 characters.".to_string());
+    }
+
+    // Check username uniqueness
+    if !username.is_empty()
+        && let Ok(Some(_)) = User::find_by_name(state.db(), username).await
+    {
+        errors.push(format!(
+            "Username '{}' is already taken.",
+            html_escape(username)
+        ));
+    }
+
+    // Check email uniqueness
+    if !mail.is_empty()
+        && mail.contains('@')
+        && let Ok(Some(_)) = User::find_by_mail(state.db(), mail).await
+    {
+        errors.push("An account with that email address already exists.".to_string());
+    }
+}
+
+/// Core registration logic shared by form and JSON handlers.
+async fn do_register(
+    state: &AppState,
+    username: &str,
+    mail: &str,
+    password: &str,
+) -> anyhow::Result<uuid::Uuid> {
+    let input = CreateUser {
+        name: username.trim().to_string(),
+        password: password.to_string(),
+        mail: mail.trim().to_string(),
+        is_admin: false,
+    };
+
+    // Create user with status=0 (inactive, pending email verification)
+    let user = User::create_with_status(state.db(), input, 0).await?;
+
+    // Create verification token
+    let (_, plain_token) = EmailVerificationToken::create(state.db(), user.id).await?;
+
+    // Send verification email
+    let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
+    if let Some(email_service) = state.email() {
+        if let Err(e) = email_service
+            .send_verification_email(mail.trim(), &plain_token, &site_name)
+            .await
+        {
+            tracing::error!(error = %e, "failed to send verification email");
+            // Log the URL as fallback for dev environments
+            tracing::debug!(
+                verify_url = format!("/user/verify/{}", plain_token),
+                "Verification URL (email send failed)"
+            );
+        } else {
+            info!(user_id = %user.id, email = %mail.trim(), "verification email sent");
+        }
+    } else {
+        // SMTP not configured — log the token for development
+        tracing::debug!(
+            user_id = %user.id,
+            email = %mail.trim(),
+            token = %plain_token,
+            "Registration verification (SMTP not configured, token logged)"
+        );
+        tracing::debug!(
+            verify_url = format!("/user/verify/{}", plain_token),
+            "Verification URL for testing"
+        );
+    }
+
+    // Dispatch tap_user_register
+    let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
+    let tap_state =
+        crate::tap::RequestState::without_services(crate::tap::UserContext::anonymous());
+    state
+        .tap_dispatcher()
+        .dispatch("tap_user_register", &tap_input.to_string(), tap_state)
+        .await;
+
+    info!(user_id = %user.id, name = %username.trim(), "user registered (pending verification)");
+    Ok(user.id)
+}
+
+/// JSON registration handler.
+///
+/// POST /user/register/json
+/// - Creates inactive user, sends verification email
+/// - Returns JSON response
+async fn register_json(
+    State(state): State<AppState>,
+    Json(request): Json<RegisterJsonRequest>,
+) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+    if !is_registration_enabled(&state).await {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(AuthError {
+                error: "Registration is not enabled.".to_string(),
+            }),
+        ));
+    }
+
+    // Validate
+    let mut errors = Vec::new();
+    validate_registration_input(
+        &state,
+        &request.username,
+        &request.mail,
+        &request.password,
+        &mut errors,
+    )
+    .await;
+
+    if !errors.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(AuthError {
+                error: errors.join(" "),
+            }),
+        ));
+    }
+
+    match do_register(&state, &request.username, &request.mail, &request.password).await {
+        Ok(_) => Ok(Json(LoginResponse {
+            success: true,
+            message: "Registration successful. Check your email for a verification link."
+                .to_string(),
+        })),
+        Err(e) => {
+            tracing::error!(error = %e, "JSON registration failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AuthError {
+                    error: "Registration failed. Please try again later.".to_string(),
+                }),
+            ))
+        }
+    }
+}
+
+/// Email verification handler.
+///
+/// GET /user/verify/{token}
+/// - Validates the token, activates the user, redirects to login
+async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+    let verification = match EmailVerificationToken::find_valid(state.db(), &token).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            let mut context = tera::Context::new();
+            context.insert("csrf_token", "");
+            context.insert(
+                "error",
+                "Invalid or expired verification link. Please register again.",
+            );
+            return match state.theme().tera().render("user/register.html", &context) {
+                Ok(html) => Html(html).into_response(),
+                Err(_) => Html(
+                    "<h1>Verification Failed</h1>\
+                     <p>Invalid or expired verification link.</p>\
+                     <p><a href=\"/user/register\">Register again</a></p>"
+                        .to_string(),
+                )
+                .into_response(),
+            };
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "database error during email verification");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+        }
+    };
+
+    // Activate the user (status=1)
+    if let Err(e) = User::update(
+        state.db(),
+        verification.user_id,
+        crate::models::UpdateUser {
+            status: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        tracing::error!(error = %e, user_id = %verification.user_id, "failed to activate user");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to activate account",
+        )
+            .into_response();
+    }
+
+    // Mark token as used
+    if let Err(e) = EmailVerificationToken::mark_used(state.db(), verification.id).await {
+        tracing::warn!(error = %e, "failed to mark verification token as used");
+    }
+
+    // Invalidate any other verification tokens for this user
+    if let Err(e) =
+        EmailVerificationToken::invalidate_user_tokens(state.db(), verification.user_id).await
+    {
+        tracing::warn!(error = %e, "failed to invalidate remaining verification tokens");
+    }
+
+    info!(user_id = %verification.user_id, "email verified, account activated");
+
+    // Render login page with success message
+    let mut context = tera::Context::new();
+    context.insert("csrf_token", "");
+    context.insert(
+        "success",
+        "Your account has been verified! You can now log in.",
+    );
+
+    match state.theme().tera().render("user/login.html", &context) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => Redirect::to("/user/login").into_response(),
+    }
+}
+
 /// Create the auth router.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/user/login", get(login_form).post(login_form_submit))
         .route("/user/login/json", post(login))
         .route("/user/logout", post(logout))
+        .route(
+            "/user/register",
+            get(register_form).post(register_form_submit),
+        )
+        .route("/user/register/json", post(register_json))
+        .route("/user/verify/{token}", get(verify_email))
 }

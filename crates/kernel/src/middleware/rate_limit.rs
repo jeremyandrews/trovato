@@ -131,7 +131,7 @@ impl RateLimiter {
 
 /// Categorize a request path for rate limiting.
 pub fn categorize_path(path: &str, method: &str) -> &'static str {
-    if path.starts_with("/user/login") && method == "POST" {
+    if (path.starts_with("/user/login") || path.starts_with("/user/register")) && method == "POST" {
         "login"
     } else if path.starts_with("/file/upload") {
         "uploads"
@@ -204,6 +204,8 @@ mod tests {
     fn test_categorize_path() {
         assert_eq!(categorize_path("/user/login", "POST"), "login");
         assert_eq!(categorize_path("/user/login/json", "POST"), "login");
+        assert_eq!(categorize_path("/user/register", "POST"), "login");
+        assert_eq!(categorize_path("/user/register/json", "POST"), "login");
         assert_eq!(categorize_path("/file/upload", "POST"), "uploads");
         assert_eq!(categorize_path("/search", "GET"), "search");
         assert_eq!(categorize_path("/api/search", "GET"), "search");

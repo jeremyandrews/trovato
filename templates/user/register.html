@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Create new account{% endblock %}
+
+{% block content %}
+<div style="max-width: 400px; margin: 100px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 1.5rem;">Create new account</h1>
+
+    {% if success %}
+    <div style="background: #efe; border: 1px solid #0a0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        {{ success }}
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    {% if errors %}
+    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        <ul style="margin: 0; padding-left: 1.5rem;">
+        {% for err in errors %}
+            <li>{{ err }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if not success %}
+    <form method="post" action="/user/register">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="username" class="form-item__label">Username</label>
+            <input type="text" id="username" name="username" class="form-text"
+                   value="{{ values.username | default(value='') }}"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required autofocus>
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="mail" class="form-item__label">Email address</label>
+            <input type="email" id="mail" name="mail" class="form-text"
+                   value="{{ values.mail | default(value='') }}"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="password" class="form-item__label">Password</label>
+            <input type="password" id="password" name="password" class="form-text"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required
+                   minlength="8">
+        </div>
+
+        <div class="form-item" style="margin-bottom: 1.5rem;">
+            <label for="confirm_password" class="form-item__label">Confirm password</label>
+            <input type="password" id="confirm_password" name="confirm_password" class="form-text"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required
+                   minlength="8">
+        </div>
+
+        <button type="submit" class="button button--primary"
+                style="width: 100%; padding: 0.75rem; font-size: 1rem; cursor: pointer;">
+            Create new account
+        </button>
+    </form>
+    {% endif %}
+
+    <p style="margin-top: 1.5rem; text-align: center;">
+        Already have an account? <a href="/user/login">Log in</a>
+    </p>
+</div>
+{% endblock %}

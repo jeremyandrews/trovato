@@ -40,7 +40,7 @@ pub struct CreateUser {
 }
 
 /// Input for updating a user.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct UpdateUser {
     pub name: Option<String>,
     pub mail: Option<String>,
@@ -95,7 +95,7 @@ impl User {
         Ok(user)
     }
 
-    /// Create a new user.
+    /// Create a new user (active by default).
     pub async fn create(pool: &PgPool, input: CreateUser) -> Result<Self> {
         let id = Uuid::now_v7();
         let pass = hash_password(&input.password)?;
@@ -112,6 +112,33 @@ impl User {
         .bind(&pass)
         .bind(&input.mail)
         .bind(input.is_admin)
+        .fetch_one(pool)
+        .await
+        .context("failed to create user")?;
+
+        Ok(user)
+    }
+
+    /// Create a new user with a specific status.
+    ///
+    /// Use `status = 0` for inactive accounts pending email verification.
+    pub async fn create_with_status(pool: &PgPool, input: CreateUser, status: i16) -> Result<Self> {
+        let id = Uuid::now_v7();
+        let pass = hash_password(&input.password)?;
+
+        let user = sqlx::query_as::<_, User>(
+            r#"
+            INSERT INTO users (id, name, pass, mail, is_admin, status)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+            "#,
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(&pass)
+        .bind(&input.mail)
+        .bind(input.is_admin)
+        .bind(status)
         .fetch_one(pool)
         .await
         .context("failed to create user")?;

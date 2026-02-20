@@ -6,6 +6,12 @@
 <div style="max-width: 400px; margin: 100px auto; padding: 2rem;">
     <h1 style="margin-bottom: 1.5rem;">Log in</h1>
 
+    {% if success %}
+    <div style="background: #efe; border: 1px solid #0a0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        {{ success }}
+    </div>
+    {% endif %}
+
     {% if error %}
     <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
         {{ error }}
@@ -42,6 +48,9 @@
 
     <p style="margin-top: 1.5rem; text-align: center;">
         <a href="/user/password-reset">Forgot your password?</a>
+    </p>
+    <p style="text-align: center;">
+        <a href="/user/register">Create new account</a>
     </p>
 </div>
 {% endblock %}
