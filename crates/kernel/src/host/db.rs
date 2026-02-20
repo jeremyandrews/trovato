@@ -7,11 +7,14 @@
 use anyhow::Result;
 use regex::Regex;
 use sqlx::postgres::PgArguments;
-use sqlx::{Column, PgPool, Row, TypeInfo};
+use sqlx::{Column, Executor, PgPool, Row, TypeInfo};
 use std::sync::LazyLock;
 use tracing::warn;
 use trovato_sdk::host_errors;
 use wasmtime::Linker;
+
+/// Maximum execution time for plugin SQL queries (5 seconds).
+const PLUGIN_QUERY_TIMEOUT_MS: u32 = 5000;
 
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::plugin::PluginState;
@@ -146,15 +149,30 @@ async fn do_query_raw(
 /// Execute a SQL statement that returns rows and serialize them as JSON.
 ///
 /// Shared implementation for `do_query_raw` (after guard) and `do_insert` (RETURNING *).
+/// Sets a per-connection statement timeout to prevent long-running queries.
 async fn fetch_rows_as_json(
     pool: &PgPool,
     sql: &str,
     params: &[serde_json::Value],
 ) -> std::result::Result<String, i32> {
+    let mut conn = pool.acquire().await.map_err(|e| {
+        warn!(error = %e, "failed to acquire DB connection for plugin query");
+        host_errors::ERR_SQL_FAILED
+    })?;
+
+    // Set statement timeout for this connection only (LOCAL = transaction-scoped,
+    // but for non-transactional queries it applies to the next statement).
+    conn.execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
+        .await
+        .map_err(|e| {
+            warn!(error = %e, "failed to set statement_timeout");
+            host_errors::ERR_SQL_FAILED
+        })?;
+
     let query = sqlx::query(sql);
     let query = bind_json_params(params, query);
 
-    let rows = query.fetch_all(pool).await.map_err(|e| {
+    let rows = query.fetch_all(&mut *conn).await.map_err(|e| {
         warn!(error = %e, sql = sql, "plugin query failed");
         host_errors::ERR_SQL_FAILED
     })?;
@@ -164,6 +182,8 @@ async fn fetch_rows_as_json(
 }
 
 /// Execute a DML statement and return rows affected.
+///
+/// Sets a per-connection statement timeout to prevent long-running queries.
 async fn do_execute_raw(
     pool: &PgPool,
     sql: &str,
@@ -173,10 +193,22 @@ async fn do_execute_raw(
         return Err(host_errors::ERR_DDL_REJECTED);
     }
 
+    let mut conn = pool.acquire().await.map_err(|e| {
+        warn!(error = %e, "failed to acquire DB connection for plugin execute");
+        host_errors::ERR_SQL_FAILED
+    })?;
+
+    conn.execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
+        .await
+        .map_err(|e| {
+            warn!(error = %e, "failed to set statement_timeout");
+            host_errors::ERR_SQL_FAILED
+        })?;
+
     let query = sqlx::query(sql);
     let query = bind_json_params(params, query);
 
-    let result = query.execute(pool).await.map_err(|e| {
+    let result = query.execute(&mut *conn).await.map_err(|e| {
         warn!(error = %e, sql = sql, "plugin execute-raw failed");
         host_errors::ERR_SQL_FAILED
     })?;

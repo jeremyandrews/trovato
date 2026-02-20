@@ -128,10 +128,14 @@ impl TapDispatcher {
         let engine = self.runtime.engine();
 
         // Create combined plugin state with WASI and request state
-        let plugin_state = PluginState::new(state);
+        let plugin_state = PluginState::new(state, plugin.info.name.clone());
 
         // Create a new Store with plugin state
         let mut store = Store::new(engine, plugin_state);
+
+        // Set epoch deadline to prevent infinite loops (10 seconds of CPU time).
+        // The engine's epoch is incremented by a background thread every second.
+        store.set_epoch_deadline(10);
 
         // Instantiate the module
         let instance = self

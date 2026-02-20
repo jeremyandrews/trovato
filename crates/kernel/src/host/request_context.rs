@@ -29,11 +29,12 @@ pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> R
                 return -1;
             };
 
-            // Get the value and clone it to avoid borrow issues
+            // Namespace key by plugin name for isolation between plugins.
+            let namespaced_key = format!("{}:{key}", caller.data().plugin_name);
             let value = caller
                 .data()
                 .request
-                .get_context(&key)
+                .get_context(&namespaced_key)
                 .map(|s| s.to_string());
 
             match value {
@@ -65,7 +66,9 @@ pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> R
                 return;
             };
 
-            caller.data_mut().request.set_context(key, value);
+            // Namespace key by plugin name for isolation between plugins.
+            let namespaced_key = format!("{}:{key}", caller.data().plugin_name);
+            caller.data_mut().request.set_context(namespaced_key, value);
         },
     )?;
 

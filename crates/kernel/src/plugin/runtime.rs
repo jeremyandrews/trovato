@@ -19,12 +19,17 @@ use wasmtime::{
 pub struct PluginState {
     /// Request-specific state (user context, services).
     pub request: RequestState,
+    /// Plugin name (used to namespace per-plugin context keys).
+    pub plugin_name: String,
 }
 
 impl PluginState {
     /// Create a new plugin state.
-    pub fn new(request: RequestState) -> Self {
-        Self { request }
+    pub fn new(request: RequestState, plugin_name: String) -> Self {
+        Self {
+            request,
+            plugin_name,
+        }
     }
 }
 
@@ -73,6 +78,20 @@ impl PluginRuntime {
     pub fn new(config: &PluginConfig) -> Result<Self> {
         let engine = create_engine(config)?;
         let linker = create_linker(&engine)?;
+
+        // Spawn background thread to increment the engine epoch once per second.
+        // This drives epoch-based interruption: plugins with a deadline of N
+        // are interrupted after ~N seconds of CPU time.
+        let epoch_engine = engine.clone();
+        std::thread::Builder::new()
+            .name("wasm-epoch".to_string())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    epoch_engine.increment_epoch();
+                }
+            })
+            .context("failed to spawn epoch increment thread")?;
 
         Ok(Self {
             engine,
@@ -385,6 +404,10 @@ fn create_engine(config: &PluginConfig) -> Result<Engine> {
 
     wasmtime_config.allocation_strategy(InstanceAllocationStrategy::Pooling(pooling_config));
 
+    // Enable epoch-based interruption to prevent infinite loops.
+    // Plugins get a deadline set per invocation in the dispatcher.
+    wasmtime_config.epoch_interruption(true);
+
     // Optimize for speed
     wasmtime_config.cranelift_opt_level(wasmtime::OptLevel::Speed);
 
@@ -420,11 +443,13 @@ fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
     )?;
 
     // random_get(buf, buf_len) -> errno
-    // Stub that fills buffer with pseudo-random bytes
+    // Fills buffer with cryptographically secure random bytes.
     linker.func_wrap(
         "wasi_snapshot_preview1",
         "random_get",
         |mut caller: wasmtime::Caller<'_, PluginState>, buf: i32, buf_len: i32| -> i32 {
+            use rand::RngCore;
+
             let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                 return 8; // EBADF
             };
@@ -434,10 +459,7 @@ fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
             if buf + len > data.len() {
                 return 21; // EFAULT
             }
-            // Simple pseudo-random fill
-            for i in 0..len {
-                data[buf + i] = ((buf + i) as u8).wrapping_mul(31);
-            }
+            rand::thread_rng().fill_bytes(&mut data[buf..buf + len]);
             0 // Success
         },
     )?;

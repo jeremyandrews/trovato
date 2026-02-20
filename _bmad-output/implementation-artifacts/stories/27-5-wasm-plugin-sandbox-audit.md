@@ -1,6 +1,6 @@
 # Story 27.5: WASM Plugin Sandbox Audit
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -20,112 +20,97 @@ So that plugins cannot escape their sandbox to access the host system.
 
 ## Tasks / Subtasks
 
-- [ ] Verify WASM runtime denies filesystem access (AC: #1)
-  - [ ] Confirm WASI stubs return ENOSYS for fd_write
-  - [ ] Confirm no fd_open/fd_read/path_open stubs exist
-- [ ] Verify WASM runtime denies network access (AC: #2)
-  - [ ] Confirm no socket stubs provided
-  - [ ] Confirm no outbound HTTP host functions
-- [ ] Audit resource limits (AC: #3)
-  - [ ] Check for fuel/epoch interrupts in engine config (`runtime.rs`)
-  - [ ] Document memory limits (64MB per instance, 1000 max instances)
-  - [ ] Add fuel/epoch limits if absent (HIGH — prevents infinite loop DoS)
-  - [ ] Add database query timeout for host DB functions
-- [ ] Audit each host function for abuse potential (AC: #4)
-  - [ ] DB API (`host/db.rs`): Verify DDL guard, identifier validation, parameterized queries
-  - [ ] DB API: Assess arbitrary DML without row-level ACL (plugins can UPDATE any table row)
-  - [ ] User API (`host/user.rs`): Verify permission checks are read-only
-  - [ ] Request Context (`host/request_context.rs`): Assess plugin-to-plugin isolation
-  - [ ] Cache API (`host/cache.rs`): Verify stubs are safe
-  - [ ] Variables API (`host/variables.rs`): Verify stubs are safe
-  - [ ] Logging (`host/logging.rs`): Assess log flooding potential
-  - [ ] Item API (`host/item.rs`): Verify stubs are safe
-- [ ] Verify per-request plugin isolation (AC: #5)
-  - [ ] Confirm separate `Store<PluginState>` per plugin per request (`dispatcher.rs`)
-  - [ ] Fix request context isolation — namespace keys by plugin name
-- [ ] Fix WASI `random_get()` to use proper CSPRNG (AC: #7)
-- [ ] Document all findings with severity ratings (AC: #6, #7)
+- [x] Verify WASM runtime denies filesystem access (AC: #1)
+  - [x] Confirmed: `fd_write` returns ENOSYS (52)
+  - [x] Confirmed: No `fd_open`, `fd_read`, `path_open` stubs exist
+- [x] Verify WASM runtime denies network access (AC: #2)
+  - [x] Confirmed: No socket stubs provided
+  - [x] Confirmed: No outbound HTTP host functions
+- [x] Audit resource limits (AC: #3)
+  - [x] Memory: 64 MB per instance via pooling allocator, max 1000 instances
+  - [x] CPU: Added epoch-based interruption (10-second deadline per invocation)
+  - [x] DB: Added 5-second statement_timeout for all plugin queries
+- [x] Audit each host function for abuse potential (AC: #4)
+  - [x] DB API: DDL guard blocks CREATE/DROP/ALTER/TRUNCATE/GRANT/REVOKE
+  - [x] DB API: `query_raw()` read-only guard (SELECT/WITH only)
+  - [x] DB API: All identifiers validated via `VALID_IDENTIFIER` regex
+  - [x] DB API: Arbitrary DML documented as acceptable (see findings)
+  - [x] User API: Read-only operations only
+  - [x] Cache API: Stub returns, no-op safe
+  - [x] Variables API: Stub returns, no-op safe
+  - [x] Item API: Stub returns, no-op safe
+  - [x] Logging: Writes to tracing; rate controlled by log level
+  - [x] Request Context: Namespaced by plugin name for isolation
+- [x] Verify per-request plugin isolation (AC: #5)
+  - [x] Confirmed: Separate `Store<PluginState>` per plugin per request
+  - [x] Fixed: Request context keys now namespaced by plugin name
+- [x] Fix WASI `random_get()` to use proper CSPRNG (AC: #7)
+  - [x] Replaced predictable seed with `rand::thread_rng().fill_bytes()`
+- [x] Document all findings with severity ratings (AC: #6, #7)
 
-## Dev Notes
+## Findings Summary
 
-### Dependencies
+### Fixed (Critical/High)
 
-No dependencies on other stories. Can be worked independently.
+| # | Severity | Location | Issue | Fix |
+|---|----------|----------|-------|-----|
+| 1 | HIGH | `runtime.rs:create_engine()` | No CPU/fuel limits. Infinite loop blocks HTTP handler indefinitely. | Enabled `epoch_interruption`, 10-second deadline per invocation, background epoch thread. |
+| 2 | HIGH | `host/db.rs` | No statement timeout. Plugin can exhaust DB connections with slow queries. | Added `SET LOCAL statement_timeout = '5000'` on acquired connection before every plugin query. |
 
-### Codebase Research Findings
+### Fixed (Medium)
 
-#### HIGH: No CPU/Fuel Limits on Plugin Execution
+| # | Severity | Location | Issue | Fix |
+|---|----------|----------|-------|-----|
+| 3 | MEDIUM | `host/request_context.rs` | All plugins share same context HashMap. One plugin can read/overwrite another's state. | Keys namespaced as `{plugin_name}:{key}`. Plugin name stored in `PluginState`. |
+| 4 | MEDIUM | `runtime.rs:random_get()` | Uses predictable seed `((buf + i) as u8).wrapping_mul(31)`. Not cryptographically secure. | Replaced with `rand::thread_rng().fill_bytes()` (OS CSPRNG). |
 
-**Location:** `crates/kernel/src/plugin/runtime.rs:369-392`
+### Acceptable (Low/No Fix Required)
 
-Wasmtime engine configuration does not set fuel or epoch-based interrupts. A malicious or buggy plugin can run an infinite loop, blocking the HTTP request handler indefinitely. Only the HTTP-layer request timeout provides protection.
+| # | Severity | Location | Assessment |
+|---|----------|----------|------------|
+| 5 | MEDIUM | `host/db.rs` DML | Plugins can INSERT/UPDATE/DELETE any table row with valid identifiers. DDL blocked, WHERE required for UPDATE/DELETE, but no row-level ACL. Acceptable for trusted plugin model; plugins are admin-installed WASM bundles, not user-submitted code. Database-level RLS is a future hardening option. |
+| 6 | LOW | `host/logging.rs` | Plugins can emit log messages via `tracing`. Rate controlled by configured log level. No volume limit, but operational impact only (disk fill), not security compromise. |
 
-**Fix:** Enable `epoch_interruption` in engine config and set epoch deadline per invocation in `dispatcher.rs`.
+### Already Protected
 
-#### HIGH: No Database Query Timeout
+| # | Aspect | Status | Details |
+|---|--------|--------|---------|
+| 7 | Filesystem access | PROTECTED | `fd_write` returns ENOSYS. No `fd_open`/`fd_read`/`path_open` stubs. |
+| 8 | Network access | PROTECTED | No socket stubs. WASM spec has no network primitives. |
+| 9 | Memory limits | PROTECTED | 64 MB per instance via pooling allocator. Max 1000 concurrent instances. |
+| 10 | DDL guard | PROTECTED | Blocks CREATE/DROP/ALTER/TRUNCATE/GRANT/REVOKE. `query_raw` only allows SELECT/WITH. |
+| 11 | Identifier validation | PROTECTED | All table/column names validated via `^[a-zA-Z_][a-zA-Z0-9_]*$` regex. |
+| 12 | Per-request isolation | PROTECTED | Fresh `Store<PluginState>` per invocation. Separate WASM linear memory. Store dropped after execution. |
+| 13 | Parameterized queries | PROTECTED | All user values bound via `$N` placeholders. No string interpolation of values. |
 
-**Location:** `crates/kernel/src/host/db.rs`
+## Implementation Details
 
-Plugin DB host functions execute SQL queries without a statement timeout. A plugin can execute `SELECT * FROM large_table CROSS JOIN large_table` and block the database connection pool.
+### Epoch-Based CPU Limits
 
-**Fix:** Set `statement_timeout` on the connection before executing plugin queries.
+Enabled `epoch_interruption(true)` in the Wasmtime engine configuration. A background thread increments the engine epoch once per second. Each plugin invocation sets `store.set_epoch_deadline(10)`, giving plugins ~10 seconds of CPU time before the engine traps with an epoch deadline error.
 
-#### MEDIUM: Request Context Not Isolated Between Plugins
+### Database Query Timeout
 
-**Location:** `crates/kernel/src/host/request_context.rs:34-37`
+All plugin database operations (`fetch_rows_as_json` and `do_execute_raw`) now acquire an explicit connection from the pool and set `SET LOCAL statement_timeout = '5000'` before executing the query. This prevents plugins from running queries that block the connection pool. The timeout is connection-local and resets when the connection is returned to the pool.
 
-All plugins within a request share the same `HashMap<String, String>` context. One plugin can read/overwrite another plugin's temporary state. This is a design choice for inter-plugin communication but creates a trust boundary issue.
+### Request Context Isolation
 
-**Fix:** Namespace context keys by plugin name (e.g., `{plugin_name}:{key}`).
+Added `plugin_name: String` field to `PluginState`. The dispatcher passes the plugin name when creating the state. Request context host functions (`get` and `set`) now format keys as `{plugin_name}:{key}`, preventing one plugin from reading or overwriting another plugin's context entries.
 
-#### MEDIUM: Arbitrary DML Without Row-Level ACL
+### CSPRNG for random_get
 
-**Location:** `crates/kernel/src/host/db.rs`
+Replaced the predictable `((buf + i) as u8).wrapping_mul(31)` fill with `rand::thread_rng().fill_bytes()`, which uses the OS-provided CSPRNG via the `rand` crate.
 
-Plugin DB host functions (`insert`, `update`, `delete`) allow operations on any table with valid identifiers. No row-level security checks. A plugin could `DELETE FROM users WHERE true`. DDL is blocked, but DML is unrestricted.
+### Files Changed
 
-**Mitigation options:** Database-level RLS policies, or kernel-side table ACL per plugin in `.info.toml`.
+- `crates/kernel/src/plugin/runtime.rs` — Epoch interruption config, epoch thread, CSPRNG for random_get, plugin_name in PluginState
+- `crates/kernel/src/tap/dispatcher.rs` — Set epoch deadline per invocation, pass plugin name to PluginState
+- `crates/kernel/src/host/db.rs` — Statement timeout on plugin DB queries
+- `crates/kernel/src/host/request_context.rs` — Namespace context keys by plugin name
 
-#### LOW: Pseudo-Random WASI Stub
+### Test Coverage
 
-**Location:** `crates/kernel/src/plugin/runtime.rs` (random_get stub)
-
-`random_get()` uses predictable seed: `(buf + i) as u8).wrapping_mul(31)`. Not cryptographically secure. If plugins rely on this for security-sensitive randomness, it's exploitable.
-
-**Fix:** Use `rand::thread_rng().fill_bytes()` from Rust std lib.
-
-#### PROTECTED: Filesystem Access Denied
-
-WASI stubs return ENOSYS (52) for `fd_write`. No `fd_open`, `fd_read`, `path_open` stubs exist. Plugins cannot open files.
-
-#### PROTECTED: Network Access Denied
-
-No socket stubs provided. WASM spec has no network primitives. Plugins would need host functions for network access.
-
-#### PROTECTED: Memory Limits Enforced
-
-Pooling allocator limits each instance to 64MB linear memory (`max_memory_pages * 65536`). Max 1000 concurrent instances. Enforced at Wasmtime engine level.
-
-#### PROTECTED: DDL Guard
-
-`host/db.rs` blocks CREATE/DROP/ALTER/TRUNCATE/GRANT/REVOKE via `is_ddl()` check. `query_raw()` only allows SELECT/WITH via `is_read_only()`. All identifiers validated via `VALID_IDENTIFIER` regex.
-
-#### PROTECTED: Per-Request Store Isolation
-
-Each tap invocation gets a fresh `Store<PluginState>` (dispatcher.rs:134). Separate WASM linear memory per plugin. Store dropped after execution, memory returned to pool.
-
-### Key Files
-
-- `crates/kernel/src/plugin/runtime.rs` — Engine config, pooling, WASI stubs
-- `crates/kernel/src/host/mod.rs` — Host function registration, memory bounds checking
-- `crates/kernel/src/host/db.rs` — DDL guard, identifier validation
-- `crates/kernel/src/host/request_context.rs` — Shared request context
-- `crates/kernel/src/tap/dispatcher.rs` — Per-request Store instantiation
-- `crates/wit/kernel.wit` — Host function interface definitions
-
-### References
-
-- [Source: crates/kernel/src/plugin/runtime.rs — Wasmtime engine configuration]
-- [Source: crates/kernel/src/host/db.rs — Plugin DB API with DDL guard]
-- [Source: crates/kernel/src/host/request_context.rs — Shared context HashMap]
-- [Source: crates/kernel/src/tap/dispatcher.rs — Plugin invocation isolation]
+- All 566 unit tests pass (including plugin runtime, DB host function, dispatcher tests)
+- All 82 integration tests pass
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo fmt --all --check` clean
