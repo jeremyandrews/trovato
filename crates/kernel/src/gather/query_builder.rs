@@ -542,6 +542,9 @@ impl CategoryHierarchyQuery {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
     use super::*;
     use crate::gather::types::{QueryField, QueryFilter, QuerySort};
 
@@ -861,6 +864,7 @@ mod tests {
         assert_eq!(parsed, FilterOperator::FullTextSearch);
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: LIKE wildcards in user input escaped
     #[test]
     fn like_wildcards_escaped() {
         let def = QueryDefinition {
@@ -915,9 +919,10 @@ mod tests {
         );
     }
 
-    // ── Security regression tests ──
+    // ── Security regression tests (Story 27.2 — SQL Injection) ──
     // Note: is_safe_identifier() is tested in handlers::tests
 
+    // SECURITY REGRESSION TEST — Story 27.2: JSONB path injection neutralized to NULL
     #[test]
     fn jsonb_path_injection_returns_null() {
         let def = QueryDefinition {
@@ -944,6 +949,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: nested JSONB path injection neutralized
     #[test]
     fn jsonb_nested_path_injection_returns_null() {
         let def = QueryDefinition {
@@ -969,6 +975,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: unsafe table name neutralized to NULL
     #[test]
     fn jsonb_table_injection_returns_null() {
         // When base_table contains injection, jsonb_extract_expr returns NULL.
@@ -999,6 +1006,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: category UUID values parameterized
     #[test]
     fn category_filter_uses_parameterized_values() {
         let tag_id = uuid::Uuid::nil();
@@ -1029,6 +1037,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: category field injection neutralized to NULL
     #[test]
     fn category_filter_field_injection_blocked() {
         let def = QueryDefinition {
@@ -1056,6 +1065,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: FTS with unsafe table returns FALSE
     #[test]
     fn fts_unsafe_base_table_returns_false() {
         // When base_table contains injection, FTS filter returns FALSE.
@@ -1087,6 +1097,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: sort field injection neutralized to NULL
     #[test]
     fn sort_field_injection_returns_null() {
         let def = QueryDefinition {
@@ -1119,6 +1130,7 @@ mod tests {
         q.to_string(PostgresQueryBuilder)
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: descendants expression injection returns FALSE
     #[test]
     fn descendants_expr_injection_returns_false() {
         let result = CategoryHierarchyQuery::in_descendants_expr("cat'; DROP TABLE item;--");

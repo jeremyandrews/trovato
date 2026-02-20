@@ -303,8 +303,13 @@ fn render_fallback_search(
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! All tests in this module are security regression tests for Story 27.1
+    //! (XSS) Finding A: search snippet sanitization. Do not remove without
+    //! security review.
+
     use super::*;
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding A: <mark> tags preserved
     #[test]
     fn sanitize_snippet_preserves_mark_tags() {
         let input = "This is a <mark>search</mark> result";
@@ -312,6 +317,7 @@ mod tests {
         assert_eq!(result, "This is a <mark>search</mark> result");
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding A: <script> tags escaped
     #[test]
     fn sanitize_snippet_escapes_script_tags() {
         let input = "<script>alert('xss')</script><mark>word</mark>";
@@ -321,6 +327,7 @@ mod tests {
         assert!(!result.contains("<script>"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding A: all non-<mark> HTML escaped
     #[test]
     fn sanitize_snippet_escapes_all_non_mark_html() {
         let input = "<b>bold</b> and <mark>highlighted</mark>";
@@ -331,6 +338,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding A: plain text unmodified
     #[test]
     fn sanitize_snippet_handles_plain_text() {
         let input = "just plain text";

@@ -345,14 +345,35 @@ impl std::fmt::Debug for S3FileStorage {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
     use super::*;
 
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #2: path traversal prevention
     #[test]
     fn test_sanitize_filename() {
         assert_eq!(sanitize_filename("test.jpg"), "test.jpg");
         assert_eq!(sanitize_filename("my file.jpg"), "my_file.jpg");
         assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
         assert_eq!(sanitize_filename("test<script>.jpg"), "test_script_.jpg");
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #2: path traversal attack vectors
+    #[test]
+    fn test_sanitize_filename_traversal_vectors() {
+        // Unix-style traversal
+        assert_eq!(sanitize_filename("../../../etc/shadow"), "shadow");
+        // Windows-style backslash traversal (backslashes replaced with underscores on Unix)
+        let result = sanitize_filename("..\\..\\windows\\system32\\config");
+        assert!(!result.contains('\\'), "backslashes should be sanitized");
+        // Null byte injection (stripped by Path::file_name)
+        let result = sanitize_filename("shell.php\0.jpg");
+        assert!(!result.contains('\0'));
+        // Double encoding attempt: % is not in the allowed charset, replaced with _
+        let result = sanitize_filename("..%2F..%2Fetc%2Fpasswd");
+        assert!(!result.contains('%'), "percent signs should be sanitized");
+        assert!(!result.contains('/'), "slashes should not appear");
     }
 
     #[test]

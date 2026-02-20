@@ -1090,6 +1090,9 @@ fn json_value_to_string(v: &serde_json::Value) -> Option<String> {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
     use super::*;
     use crate::gather::types::{PagerConfig, PagerStyle, QuerySort, SortDirection};
 
@@ -1348,6 +1351,7 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("Base table is required")));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: SQL injection in table name rejected
     #[test]
     fn validate_definition_invalid_table_name() {
         let def = QueryDefinition {
@@ -1377,6 +1381,7 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("Too many relationships")));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: invalid relationship table rejected
     #[test]
     fn validate_definition_invalid_relationship_table() {
         use crate::gather::types::{JoinType, QueryRelationship};
@@ -1408,6 +1413,7 @@ mod tests {
         assert!(super::is_valid_field_name("search_vector"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: SQL injection in field names rejected
     #[test]
     fn is_valid_field_name_rejects_invalid() {
         assert!(!super::is_valid_field_name(""));
@@ -1417,6 +1423,7 @@ mod tests {
         assert!(!super::is_valid_field_name("field name"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: SQL injection in filter field rejected
     #[test]
     fn validate_definition_invalid_filter_field() {
         let def = QueryDefinition {
@@ -1436,6 +1443,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: invalid sort field rejected
     #[test]
     fn validate_definition_invalid_sort_field() {
         let def = QueryDefinition {
@@ -1453,6 +1461,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: SQL injection in select field rejected
     #[test]
     fn validate_definition_invalid_select_field() {
         use crate::gather::types::QueryField;
@@ -1471,6 +1480,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: invalid table alias rejected
     #[test]
     fn validate_definition_invalid_table_alias() {
         use crate::gather::types::QueryField;
@@ -1489,6 +1499,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: Unicode table alias rejected (ASCII-only)
     #[test]
     fn validate_definition_unicode_table_alias_rejected() {
         use crate::gather::types::QueryField;
@@ -1507,6 +1518,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: base table starting with digit rejected
     #[test]
     fn validate_definition_base_table_starts_with_digit() {
         let def = QueryDefinition {
@@ -1520,6 +1532,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: invalid relationship alias rejected
     #[test]
     fn validate_definition_invalid_rel_name() {
         use crate::gather::types::QueryRelationship;
@@ -1540,6 +1553,7 @@ mod tests {
         );
     }
 
+    // SECURITY REGRESSION TEST — Story 27.2: table alias exceeding 63 chars rejected
     #[test]
     fn validate_definition_long_table_alias_rejected() {
         use crate::gather::types::QueryField;

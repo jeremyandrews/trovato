@@ -369,6 +369,9 @@ impl Default for RenderTreeConsumer {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -463,6 +466,7 @@ mod tests {
         assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#x27;");
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding B: attr key validation
     #[test]
     fn test_valid_attr_keys() {
         assert!(RenderTreeConsumer::is_valid_attr_key("id"));
@@ -472,6 +476,7 @@ mod tests {
         assert!(RenderTreeConsumer::is_valid_attr_key("X"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding B: invalid attr keys rejected
     #[test]
     fn test_invalid_attr_keys() {
         assert!(!RenderTreeConsumer::is_valid_attr_key(""));
@@ -482,6 +487,7 @@ mod tests {
         assert!(!RenderTreeConsumer::is_valid_attr_key("-start"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding B: invalid keys silently skipped
     #[test]
     fn test_get_extra_attrs_skips_invalid_keys() {
         let consumer = RenderTreeConsumer::new();
@@ -505,6 +511,7 @@ mod tests {
         assert!(!result.contains("evil"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-3/R2-4: unsafe tags fall back to <span>
     #[test]
     fn test_render_markup_rejects_unsafe_tag() {
         let consumer = RenderTreeConsumer::new();
@@ -529,6 +536,7 @@ mod tests {
         }
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-3: safe tags allowed
     #[test]
     fn test_render_markup_allows_safe_tags() {
         let consumer = RenderTreeConsumer::new();
@@ -553,6 +561,7 @@ mod tests {
         }
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-2: class attribute injection prevented
     #[test]
     fn test_classes_to_string_escapes_quotes() {
         let consumer = RenderTreeConsumer::new();
@@ -565,6 +574,7 @@ mod tests {
         assert!(result.contains("&quot;"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding H1: process_value whitelists format
     #[test]
     fn test_process_value_rejects_full_html() {
         let consumer = RenderTreeConsumer::new();

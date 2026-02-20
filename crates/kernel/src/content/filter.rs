@@ -268,8 +268,12 @@ impl TextFilter for UrlFilter {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
     use super::*;
 
+    // SECURITY REGRESSION TEST — Story 27.1 (XSS): HTML escaping prevents script injection
     #[test]
     fn html_escape_filter() {
         let filter = HtmlEscapeFilter;
@@ -285,6 +289,7 @@ mod tests {
         assert_eq!(filter.process("line1\nline2"), "line1<br>\nline2");
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 (XSS): ammonia strips <script> tags
     #[test]
     fn filtered_html_removes_scripts() {
         let filter = FilteredHtmlFilter;
@@ -294,6 +299,7 @@ mod tests {
         assert!(output.contains("<p>Safe</p>"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 (XSS): ammonia strips event handlers
     #[test]
     fn filtered_html_removes_event_handlers() {
         let filter = FilteredHtmlFilter;
@@ -302,6 +308,7 @@ mod tests {
         assert!(!output.contains("onclick"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 (XSS): ammonia blocks javascript: URIs
     #[test]
     fn filtered_html_removes_javascript_urls() {
         let filter = FilteredHtmlFilter;
@@ -429,6 +436,7 @@ mod tests {
         assert!(output.contains("<p>Text</p>"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 (XSS): ammonia strips iframe and div
     #[test]
     fn filtered_html_strips_disallowed_tags() {
         let filter = FilteredHtmlFilter;
@@ -439,6 +447,7 @@ mod tests {
         assert!(!output.contains("div"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 (XSS): complex XSS vectors (SVG, data URI)
     #[test]
     fn filtered_html_complex_xss_payloads() {
         let filter = FilteredHtmlFilter;
@@ -496,6 +505,7 @@ mod tests {
         assert!(output.contains(r#"rowspan="3""#));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 (XSS): ammonia strips <style> tags
     #[test]
     fn filtered_html_removes_style_tags() {
         let filter = FilteredHtmlFilter;
@@ -538,6 +548,7 @@ mod tests {
         assert!(output.contains("&lt;b&gt;"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: full_html downgraded to plain_text
     #[test]
     fn for_format_safe_rejects_full_html() {
         let pipeline = FilterPipeline::for_format_safe("full_html");
@@ -547,6 +558,7 @@ mod tests {
         assert!(output.contains("&lt;script&gt;"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: plain_text allowed
     #[test]
     fn for_format_safe_allows_plain_text() {
         let pipeline = FilterPipeline::for_format_safe("plain_text");
@@ -555,6 +567,7 @@ mod tests {
         assert!(output.contains("&lt;b&gt;"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: filtered_html allowed
     #[test]
     fn for_format_safe_allows_filtered_html() {
         let pipeline = FilterPipeline::for_format_safe("filtered_html");
@@ -564,6 +577,7 @@ mod tests {
         assert!(!output.contains("script"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: unknown formats downgraded
     #[test]
     fn for_format_safe_rejects_unknown() {
         let pipeline = FilterPipeline::for_format_safe("evil_format");

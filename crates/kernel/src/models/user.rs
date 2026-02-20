@@ -335,6 +335,9 @@ fn hash_password(password: &str) -> Result<String> {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
     use super::*;
 
     #[test]
@@ -342,13 +345,29 @@ mod tests {
         assert_eq!(ANONYMOUS_USER_ID, Uuid::nil());
     }
 
+    // SECURITY REGRESSION TEST — Story 27.4 Finding #1: Argon2id with RFC 9106 params
     #[test]
     fn test_password_hashing() {
         let password = "test_password_123";
         let hash = hash_password(password).unwrap();
 
-        // Hash should use Argon2id
-        assert!(hash.starts_with("$argon2id"));
+        // Hash should use Argon2id (not Argon2i or Argon2d)
+        assert!(hash.starts_with("$argon2id$"));
+
+        // Verify params are RFC 9106 recommended, not crate defaults.
+        // Hash format: $argon2id$v=19$m=65536,t=3,p=4$...
+        assert!(
+            hash.contains("m=65536"),
+            "memory cost should be 64 MiB (65536 KiB), got: {hash}"
+        );
+        assert!(
+            hash.contains("t=3"),
+            "time cost should be 3 iterations, got: {hash}"
+        );
+        assert!(
+            hash.contains("p=4"),
+            "parallelism should be 4 lanes, got: {hash}"
+        );
 
         // Verify should work with our configured instance
         let parsed = PasswordHash::new(&hash).unwrap();

@@ -534,6 +534,9 @@ impl std::fmt::Debug for FileService {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
     use super::*;
 
     #[test]
@@ -543,15 +546,19 @@ mod tests {
         assert_eq!(FileStatus::from(99), FileStatus::Temporary);
     }
 
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: MIME allowlist blocks executables and SVG
     #[test]
     fn test_allowed_mime_types() {
         assert!(ALLOWED_MIME_TYPES.contains(&"image/jpeg"));
         assert!(ALLOWED_MIME_TYPES.contains(&"application/pdf"));
         assert!(!ALLOWED_MIME_TYPES.contains(&"application/x-executable"));
+        assert!(!ALLOWED_MIME_TYPES.contains(&"application/x-sharedlib"));
+        assert!(!ALLOWED_MIME_TYPES.contains(&"application/x-mach-binary"));
         // SVG excluded to prevent stored XSS
         assert!(!ALLOWED_MIME_TYPES.contains(&"image/svg+xml"));
     }
 
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: valid PNG passes magic byte check
     #[test]
     fn magic_bytes_valid_png() {
         // PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
@@ -559,6 +566,7 @@ mod tests {
         assert!(validate_magic_bytes(&png_data, "image/png").is_ok());
     }
 
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: PNG content declared as JPEG rejected
     #[test]
     fn magic_bytes_mismatch_rejects() {
         // PNG magic bytes declared as JPEG should fail
@@ -566,6 +574,7 @@ mod tests {
         assert!(validate_magic_bytes(&png_data, "image/jpeg").is_err());
     }
 
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: text formats skip validation
     #[test]
     fn magic_bytes_text_skips_validation() {
         // Plain text has no magic bytes, should pass
@@ -573,9 +582,44 @@ mod tests {
         assert!(validate_magic_bytes(b"col1,col2\nval1,val2", "text/csv").is_ok());
     }
 
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: empty data rejected for binary types
     #[test]
     fn magic_bytes_empty_rejects_binary_types() {
         // Empty data declared as image should fail
         assert!(validate_magic_bytes(&[], "image/jpeg").is_err());
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: ELF binary disguised as JPEG rejected
+    #[test]
+    fn magic_bytes_elf_disguised_as_image() {
+        // ELF magic bytes (Linux executable): 7F 45 4C 46
+        let elf_data = [0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00];
+        assert!(
+            validate_magic_bytes(&elf_data, "image/jpeg").is_err(),
+            "ELF binary declared as image/jpeg should be rejected"
+        );
+        assert!(
+            validate_magic_bytes(&elf_data, "image/png").is_err(),
+            "ELF binary declared as image/png should be rejected"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: PE executable disguised as image rejected
+    #[test]
+    fn magic_bytes_pe_disguised_as_image() {
+        // PE/MZ magic bytes (Windows executable): 4D 5A
+        let pe_data = [0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00];
+        assert!(
+            validate_magic_bytes(&pe_data, "image/jpeg").is_err(),
+            "PE executable declared as image/jpeg should be rejected"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.6 Finding #1: valid JPEG passes magic byte check
+    #[test]
+    fn magic_bytes_valid_jpeg() {
+        // JPEG magic bytes: FF D8 FF
+        let jpeg_data = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+        assert!(validate_magic_bytes(&jpeg_data, "image/jpeg").is_ok());
     }
 }
