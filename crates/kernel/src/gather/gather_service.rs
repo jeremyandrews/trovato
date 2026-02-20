@@ -928,25 +928,24 @@ impl GatherService {
             errors.push("Base table is required".to_string());
         }
 
-        // Validate base table name (alphanumeric + underscore only)
-        if !definition
-            .base_table
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_')
-        {
+        // Validate base table name (ASCII alphanumeric + underscore, must start
+        // with letter or underscore, max 63 chars — matching is_safe_identifier)
+        if !is_safe_table_name(&definition.base_table) {
             errors.push("Base table name contains invalid characters".to_string());
         }
 
-        // Validate relationship table names and field names
+        // Validate relationship table names, aliases, and field names
         for rel in &definition.relationships {
-            if !rel
-                .target_table
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_')
-            {
+            if !is_safe_table_name(&rel.target_table) {
                 errors.push(format!(
                     "Relationship target table '{}' contains invalid characters",
                     rel.target_table
+                ));
+            }
+            if !is_safe_table_name(&rel.name) {
+                errors.push(format!(
+                    "Relationship alias '{}' contains invalid characters",
+                    rel.name
                 ));
             }
             if !is_valid_field_name(&rel.local_field) {
@@ -959,6 +958,23 @@ impl GatherService {
                 errors.push(format!(
                     "Relationship foreign field '{}' contains invalid characters",
                     rel.foreign_field
+                ));
+            }
+        }
+
+        // Validate select field names and table aliases
+        for field in &definition.fields {
+            if !is_valid_field_name(&field.field_name) {
+                errors.push(format!(
+                    "Select field '{}' contains invalid characters",
+                    field.field_name
+                ));
+            }
+            if let Some(ref alias) = field.table_alias
+                && !is_safe_table_name(alias)
+            {
+                errors.push(format!(
+                    "Select field table alias '{alias}' contains invalid characters"
                 ));
             }
         }
@@ -985,6 +1001,19 @@ impl GatherService {
 
         errors
     }
+}
+
+/// Validate a table/alias name for use in queries.
+///
+/// ASCII alphanumeric + underscore only, must start with a letter or
+/// underscore, max 63 chars (PostgreSQL identifier limit). Mirrors
+/// `is_safe_identifier()` in `handlers.rs` for defense-in-depth at the
+/// service-validation layer.
+fn is_safe_table_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Validate a field name for use in queries.
@@ -1421,6 +1450,111 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("Sort field")),
             "should reject invalid sort field: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_invalid_select_field() {
+        use crate::gather::types::QueryField;
+        let def = QueryDefinition {
+            fields: vec![QueryField {
+                field_name: "fields.body'; DROP TABLE".to_string(),
+                table_alias: None,
+                label: None,
+            }],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("Select field")),
+            "should reject invalid select field: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_invalid_table_alias() {
+        use crate::gather::types::QueryField;
+        let def = QueryDefinition {
+            fields: vec![QueryField {
+                field_name: "id".to_string(),
+                table_alias: Some("bad table!".to_string()),
+                label: None,
+            }],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("table alias")),
+            "should reject invalid table alias: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_unicode_table_alias_rejected() {
+        use crate::gather::types::QueryField;
+        let def = QueryDefinition {
+            fields: vec![QueryField {
+                field_name: "id".to_string(),
+                table_alias: Some("café".to_string()),
+                label: None,
+            }],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("table alias")),
+            "should reject unicode table alias: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_base_table_starts_with_digit() {
+        let def = QueryDefinition {
+            base_table: "123table".to_string(),
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("Base table")),
+            "should reject base table starting with digit: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_invalid_rel_name() {
+        use crate::gather::types::QueryRelationship;
+        let def = QueryDefinition {
+            relationships: vec![QueryRelationship {
+                name: "bad alias!".to_string(),
+                target_table: "users".to_string(),
+                join_type: crate::gather::types::JoinType::Inner,
+                local_field: "user_id".to_string(),
+                foreign_field: "id".to_string(),
+            }],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("Relationship alias")),
+            "should reject invalid relationship name: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_long_table_alias_rejected() {
+        use crate::gather::types::QueryField;
+        let def = QueryDefinition {
+            fields: vec![QueryField {
+                field_name: "id".to_string(),
+                table_alias: Some("a".repeat(64)),
+                label: None,
+            }],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("table alias")),
+            "should reject table alias exceeding 63 chars: {errors:?}"
         );
     }
 }

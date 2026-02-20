@@ -18,7 +18,7 @@ const MAX_CTE_DEPTH: i64 = 100;
 
 /// Validate a SQL identifier name (table/column names).
 /// Allows only `[a-zA-Z_][a-zA-Z0-9_]*` with max 63 chars (PostgreSQL limit).
-fn is_safe_identifier(name: &str) -> bool {
+pub(super) fn is_safe_identifier(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')

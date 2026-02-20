@@ -7,6 +7,7 @@
 //! - Pagination
 
 use super::extension::{FilterContext, GatherExtensionRegistry};
+use super::handlers::is_safe_identifier;
 use super::types::{
     FilterOperator, FilterValue, JoinType, QueryDefinition, QueryFilter, SortDirection,
 };
@@ -269,6 +270,15 @@ impl GatherQueryBuilder {
                 if value.is_empty() {
                     return None;
                 }
+                // Defense-in-depth: validate base_table before interpolation
+                if !is_safe_identifier(&self.definition.base_table) {
+                    tracing::error!(
+                        base_table =
+                            &self.definition.base_table[..self.definition.base_table.len().min(64)],
+                        "unsafe base table in FTS expression; restricting results"
+                    );
+                    return Some(Expr::cust("FALSE"));
+                }
                 // Sanitize: keep only alphanumeric + spaces, then join with &
                 let sanitized: String = value
                     .chars()
@@ -366,12 +376,33 @@ impl GatherQueryBuilder {
     }
 
     /// Extract a value from a JSONB column.
+    ///
+    /// Validates table and path components against SQL identifier rules
+    /// (defense-in-depth). Returns NULL expression if validation fails.
     fn jsonb_extract_expr(&self, table: &str, path: &str) -> SimpleExpr {
+        // Defense-in-depth: validate table name before interpolation
+        if !is_safe_identifier(table) {
+            tracing::error!(
+                table = &table[..table.len().min(64)],
+                "unsafe table name in JSONB expression; returning NULL"
+            );
+            return Expr::cust("NULL");
+        }
+
         // Use ->> for text extraction from JSONB
         // e.g., fields->>'body' for fields.body
         if path.contains('.') {
             // Nested path: fields->'nested'->>'field'
             let parts: Vec<&str> = path.split('.').collect();
+            for part in &parts {
+                if !is_safe_identifier(part) {
+                    tracing::error!(
+                        path = &path[..path.len().min(64)],
+                        "unsafe JSONB path component; returning NULL"
+                    );
+                    return Expr::cust("NULL");
+                }
+            }
             let mut expr = format!("{table}.fields");
             for (i, part) in parts.iter().enumerate() {
                 if i == parts.len() - 1 {
@@ -382,45 +413,40 @@ impl GatherQueryBuilder {
             }
             Expr::cust(expr)
         } else {
+            if !is_safe_identifier(path) {
+                tracing::error!(
+                    path = &path[..path.len().min(64)],
+                    "unsafe JSONB path; returning NULL"
+                );
+                return Expr::cust("NULL");
+            }
             Expr::cust(format!("{table}.fields->>'{path}'"))
         }
     }
 
     /// Build a category filter condition.
-    /// If `include_descendants` is true, matches the tag or any of its descendants.
+    ///
+    /// Uses `jsonb_extract_expr()` for validated JSONB path extraction and
+    /// SeaQuery's `is_in()` for parameterized UUID values.
+    ///
+    /// **Note:** `include_descendants` is accepted but not yet implemented —
+    /// `HasTagOrDescendants` currently behaves identically to `HasTag`.
+    /// TODO: Implement recursive CTE expansion for descendant tag matching.
     fn build_category_filter(
         &self,
         field: &str,
         tag_ids: Vec<uuid::Uuid>,
         include_descendants: bool,
     ) -> Option<SimpleExpr> {
-        let jsonb_path = field.strip_prefix("fields.").unwrap_or(field);
-
-        // Build the list of UUIDs to check
-        let uuid_list: Vec<String> = tag_ids.iter().map(|u| format!("'{u}'")).collect();
-
         if include_descendants {
-            // Use a subquery with recursive CTE to get all descendants
-            // For simplicity, we'll use a parameterized IN clause that the caller
-            // must expand with actual descendant IDs
-            // In practice, this would be resolved before query building
-            let expr = format!(
-                "{}.fields->>'{}' IN ({})",
-                self.definition.base_table,
-                jsonb_path,
-                uuid_list.join(", ")
+            tracing::warn!(
+                "include_descendants is not yet implemented; falling back to exact match"
             );
-            Some(Expr::cust(expr))
-        } else {
-            // Simple IN check
-            let expr = format!(
-                "{}.fields->>'{}' IN ({})",
-                self.definition.base_table,
-                jsonb_path,
-                uuid_list.join(", ")
-            );
-            Some(Expr::cust(expr))
         }
+        let jsonb_path = field.strip_prefix("fields.").unwrap_or(field);
+        let jsonb_expr = self.jsonb_extract_expr(&self.definition.base_table, jsonb_path);
+        let uuid_strings: Vec<String> = tag_ids.iter().map(|u| u.to_string()).collect();
+        Some(jsonb_expr.is_in(uuid_strings))
     }
 
     /// Add ORDER BY clauses.
@@ -477,6 +503,11 @@ pub struct CategoryHierarchyQuery;
 impl CategoryHierarchyQuery {
     /// Build a recursive CTE to get a tag and all its descendants.
     /// Returns the SQL for the WITH clause that can be prepended to the main query.
+    ///
+    /// # Safety (SQL)
+    ///
+    /// `tag_id` is `uuid::Uuid` whose `Display` impl only produces hex digits
+    /// and hyphens — safe for direct interpolation into SQL literals.
     pub fn descendants_cte(tag_id: uuid::Uuid) -> String {
         format!(
             r#"WITH RECURSIVE tag_descendants AS (
@@ -490,8 +521,20 @@ impl CategoryHierarchyQuery {
     }
 
     /// Build a filter expression that checks if a JSONB field is in the descendants CTE.
-    pub fn in_descendants_expr(field_path: &str) -> String {
-        format!("(fields->>'{field_path}')::uuid IN (SELECT id FROM tag_descendants)")
+    ///
+    /// Validates `field_path` against SQL identifier rules (defense-in-depth).
+    /// Returns `FALSE` expression if validation fails.
+    pub fn in_descendants_expr(field_path: &str) -> SimpleExpr {
+        if !is_safe_identifier(field_path) {
+            tracing::error!(
+                field_path = &field_path[..field_path.len().min(64)],
+                "unsafe field path in descendants expression"
+            );
+            return Expr::cust("FALSE");
+        }
+        Expr::cust(format!(
+            "(fields->>'{field_path}')::uuid IN (SELECT id FROM tag_descendants)"
+        ))
     }
 }
 
@@ -869,6 +912,235 @@ mod tests {
         assert!(
             !sql.contains("stage_id"),
             "stage_aware=false should skip stage filter even with overlay: {sql}"
+        );
+    }
+
+    // ── Security regression tests ──
+    // Note: is_safe_identifier() is tested in handlers::tests
+
+    #[test]
+    fn jsonb_path_injection_returns_null() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            fields: vec![QueryField {
+                field_name: "fields.body'; DROP TABLE item; --".to_string(),
+                table_alias: None,
+                label: Some("injected".to_string()),
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // The unsafe path is neutralized to a bare NULL expression.
+        // Check that no JSONB extraction operator appears with the injection payload.
+        assert!(
+            sql.contains("NULL AS"),
+            "unsafe path should produce NULL alias expression: {sql}"
+        );
+        assert!(
+            !sql.contains("->>"),
+            "should not generate JSONB extraction for unsafe path: {sql}"
+        );
+    }
+
+    #[test]
+    fn jsonb_nested_path_injection_returns_null() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            fields: vec![QueryField {
+                field_name: "fields.meta.source'; DROP TABLE item;--".to_string(),
+                table_alias: None,
+                label: Some("injected".to_string()),
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // Nested path with injection should also be neutralized to NULL.
+        assert!(
+            sql.contains("NULL AS"),
+            "unsafe nested path should produce NULL alias expression: {sql}"
+        );
+        assert!(
+            !sql.contains("->>"),
+            "should not generate JSONB extraction for unsafe nested path: {sql}"
+        );
+    }
+
+    #[test]
+    fn jsonb_table_injection_returns_null() {
+        // When base_table contains injection, jsonb_extract_expr returns NULL.
+        // SeaQuery safely quotes the base_table in FROM via Alias::new(),
+        // so it appears as a quoted identifier (harmless at SQL level).
+        let def = QueryDefinition {
+            base_table: "item; DROP TABLE users".to_string(),
+            fields: vec![QueryField {
+                field_name: "fields.body".to_string(),
+                table_alias: None,
+                label: Some("body".to_string()),
+            }],
+            stage_aware: false,
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // JSONB expression neutralized to NULL (not the raw interpolation).
+        // The unsafe table name should not appear before a JSONB operator.
+        assert!(
+            sql.contains("NULL AS"),
+            "unsafe base table should yield NULL expression: {sql}"
+        );
+        assert!(
+            !sql.contains(".fields->>"),
+            "should not interpolate unsafe table into JSONB expression: {sql}"
+        );
+    }
+
+    #[test]
+    fn category_filter_uses_parameterized_values() {
+        let tag_id = uuid::Uuid::nil();
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "fields.category".to_string(),
+                operator: FilterOperator::HasTag,
+                value: FilterValue::Uuid(tag_id),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // UUID should appear as a SeaQuery-parameterized value, not a format! interpolation.
+        // The expression should use JSONB extraction via ->> and an IN clause.
+        assert!(
+            sql.contains("->>"),
+            "should use JSONB extraction for category field: {sql}"
+        );
+        assert!(sql.contains("IN"), "should use IN clause: {sql}");
+        assert!(
+            sql.contains(&tag_id.to_string()),
+            "should contain UUID value: {sql}"
+        );
+    }
+
+    #[test]
+    fn category_filter_field_injection_blocked() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "fields.cat' OR '1'='1".to_string(),
+                operator: FilterOperator::HasTag,
+                value: FilterValue::Uuid(uuid::Uuid::nil()),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // Injection payload should be neutralized to (NULL) IN (...), not executed.
+        assert!(
+            sql.contains("(NULL) IN"),
+            "unsafe field should produce NULL expression: {sql}"
+        );
+        assert!(
+            !sql.contains("'1'='1'"),
+            "SQL injection payload should not appear in output: {sql}"
+        );
+    }
+
+    #[test]
+    fn fts_unsafe_base_table_returns_false() {
+        // When base_table contains injection, FTS filter returns FALSE.
+        // SeaQuery safely quotes the base_table in FROM via Alias::new().
+        let def = QueryDefinition {
+            base_table: "item; DROP TABLE users".to_string(),
+            stage_aware: false,
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("test".to_string()),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // FTS expression neutralized to FALSE (not interpolated into search_vector).
+        // The WHERE clause should contain FALSE, and no @@ operator should appear.
+        assert!(
+            sql.contains("FALSE"),
+            "should return FALSE for unsafe base table: {sql}"
+        );
+        assert!(
+            !sql.contains("@@"),
+            "should not generate FTS operator for unsafe base table: {sql}"
+        );
+    }
+
+    #[test]
+    fn sort_field_injection_returns_null() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            sorts: vec![QuerySort {
+                field: "fields.x'; DROP TABLE item;--".to_string(),
+                direction: SortDirection::Asc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, "live");
+        let sql = builder.build(1, 10);
+
+        // Sort expression should be neutralized to NULL ORDER BY, not raw injection.
+        assert!(
+            !sql.contains("->>"),
+            "should not generate JSONB extraction for unsafe sort field: {sql}"
+        );
+        assert!(
+            sql.contains("NULL"),
+            "unsafe sort field should produce NULL expression: {sql}"
+        );
+    }
+
+    /// Helper: render a SimpleExpr to SQL string via a dummy SELECT.
+    fn expr_to_sql(expr: SimpleExpr) -> String {
+        let mut q = Query::select();
+        q.expr(expr);
+        q.to_string(PostgresQueryBuilder)
+    }
+
+    #[test]
+    fn descendants_expr_injection_returns_false() {
+        let result = CategoryHierarchyQuery::in_descendants_expr("cat'; DROP TABLE item;--");
+        let sql = expr_to_sql(result);
+        assert!(
+            sql.contains("FALSE"),
+            "unsafe field path should produce FALSE: {sql}"
+        );
+        assert!(
+            !sql.contains("fields"),
+            "should not generate JSONB extraction for unsafe path: {sql}"
+        );
+    }
+
+    #[test]
+    fn descendants_expr_valid_path() {
+        let result = CategoryHierarchyQuery::in_descendants_expr("category");
+        let sql = expr_to_sql(result);
+        assert!(sql.contains("category"), "should contain field path: {sql}");
+        assert!(
+            sql.contains("tag_descendants"),
+            "should reference descendants CTE: {sql}"
         );
     }
 }

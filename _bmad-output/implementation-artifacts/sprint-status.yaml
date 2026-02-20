@@ -420,7 +420,7 @@ development_status:
   # Deep-dive audit of XSS, SQL injection, CSRF, auth, WASM sandbox, file uploads
   epic-27: in-progress
   27-1-xss-audit-and-hardening: done
-  27-2-sql-injection-audit: ready-for-dev
+  27-2-sql-injection-audit: review
   27-3-csrf-audit: ready-for-dev
   27-4-authentication-and-session-security-audit: ready-for-dev
   27-5-wasm-plugin-sandbox-audit: ready-for-dev
