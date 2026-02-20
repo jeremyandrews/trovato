@@ -1,6 +1,6 @@
 # Story 27.4: Authentication and Session Security Audit
 
-Status: review
+Status: done
 
 ## Story
 

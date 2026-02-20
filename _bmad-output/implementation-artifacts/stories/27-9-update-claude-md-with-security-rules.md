@@ -1,6 +1,6 @@
 # Story 27.9: Update CLAUDE.md with Security Rules
 
-Status: review
+Status: done
 
 ## Story
 

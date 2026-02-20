@@ -1,6 +1,6 @@
 # Story 27.2: SQL Injection Audit
 
-Status: review
+Status: done
 
 ## Story
 

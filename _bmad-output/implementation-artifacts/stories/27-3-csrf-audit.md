@@ -1,6 +1,6 @@
 # Story 27.3: CSRF Audit
 
-Status: review
+Status: done
 
 ## Story
 

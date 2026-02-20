@@ -1,6 +1,6 @@
 # Story 27.6: File Upload Security Audit
 
-Status: review
+Status: done
 
 ## Story
 

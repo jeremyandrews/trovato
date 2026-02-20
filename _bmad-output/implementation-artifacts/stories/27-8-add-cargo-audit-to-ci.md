@@ -1,6 +1,6 @@
 # Story 27.8: Add cargo-audit to CI
 
-Status: review
+Status: done
 
 ## Story
 

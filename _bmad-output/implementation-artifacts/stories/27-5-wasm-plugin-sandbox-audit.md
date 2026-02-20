@@ -1,6 +1,6 @@
 # Story 27.5: WASM Plugin Sandbox Audit
 
-Status: review
+Status: done
 
 ## Story
 

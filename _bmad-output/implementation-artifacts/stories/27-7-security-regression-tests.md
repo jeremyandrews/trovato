@@ -1,6 +1,6 @@
 # Story 27.7: Security Regression Tests
 
-Status: review
+Status: done
 
 ## Story
 
