@@ -151,14 +151,14 @@
 {% if sidebar_tiles is defined and sidebar_tiles %}
 <div class="page-layout">
     <div class="page-layout__main">
-        {{ content | safe }}
+        {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
     </div>
     <aside class="page-layout__sidebar">
-        {{ sidebar_tiles | safe }}
+        {{ sidebar_tiles | safe }} {# SAFE: kernel render pipeline output — sidebar tiles already rendered and sanitized #}
     </aside>
 </div>
 {% else %}
-{{ content | safe }}
+{{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
 {% endif %}
 {% endblock %}
 

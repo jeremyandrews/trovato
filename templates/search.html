@@ -21,7 +21,7 @@
                     <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
                     <div class="result-meta">{{ result.type }}</div>
                     {% if result.snippet %}
-                        <div class="result-snippet">{{ result.snippet | safe }}</div>
+                        <div class="result-snippet">{{ result.snippet | safe }}</div> {# SAFE: kernel search service generates snippets with <mark> tags from indexed text #}
                     {% endif %}
                 </article>
                 {% endfor %}

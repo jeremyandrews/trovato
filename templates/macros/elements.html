@@ -19,7 +19,7 @@ class="{{ class_list }}"
 {# Render a container element #}
 {% macro container(element, children="") %}
 <div {{ self::classes(class=element.class) }} {{ self::attributes(attrs=element.attributes) }}>
-    {{ children | safe }}
+    {{ children | safe }} {# SAFE: kernel render pipeline output — child elements already rendered and sanitized #}
 </div>
 {% endmacro %}
 

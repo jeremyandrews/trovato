@@ -404,6 +404,10 @@ fn create_engine(config: &PluginConfig) -> Result<Engine> {
 
     wasmtime_config.allocation_strategy(InstanceAllocationStrategy::Pooling(pooling_config));
 
+    // Disable WASM threads — plugins run single-threaded and shared memory
+    // is not needed. This also avoids RUSTSEC-2025-0118 (shared memory unsoundness).
+    wasmtime_config.wasm_threads(false);
+
     // Enable epoch-based interruption to prevent infinite loops.
     // Plugins get a deadline set per invocation in the dispatcher.
     wasmtime_config.epoch_interruption(true);

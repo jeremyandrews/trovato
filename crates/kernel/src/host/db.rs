@@ -31,18 +31,43 @@ static VALID_IDENTIFIER: LazyLock<Regex> =
 /// DDL keywords that `execute-raw` must reject.
 const DDL_KEYWORDS: &[&str] = &["CREATE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE"];
 
-/// Check if SQL starts with one of the DDL keywords (after trimming whitespace).
+/// Extract the first SQL keyword, skipping leading comments and whitespace.
+///
+/// Handles `-- line comments` and `/* block comments */` that could be
+/// used to disguise the true first keyword.
+fn first_sql_keyword(sql: &str) -> &str {
+    let mut s = sql.trim();
+    loop {
+        if s.starts_with("--") {
+            // Line comment — skip to end of line
+            s = s.find('\n').map_or("", |i| &s[i + 1..]).trim();
+        } else if s.starts_with("/*") {
+            // Block comment — skip to closing */
+            s = s.find("*/").map_or("", |i| &s[i + 2..]).trim();
+        } else {
+            break;
+        }
+    }
+    s.split_whitespace().next().unwrap_or("")
+}
+
+/// Check if SQL starts with one of the DDL keywords (after stripping comments).
 fn is_ddl(sql: &str) -> bool {
-    let first_word = sql.split_whitespace().next().unwrap_or("");
+    let first_word = first_sql_keyword(sql);
     DDL_KEYWORDS
         .iter()
         .any(|kw| first_word.eq_ignore_ascii_case(kw))
 }
 
-/// Check if SQL is a read-only statement (SELECT or WITH).
+/// Check if SQL is a read-only statement (SELECT or WITH), after stripping comments.
 fn is_read_only(sql: &str) -> bool {
-    let first_word = sql.split_whitespace().next().unwrap_or("");
+    let first_word = first_sql_keyword(sql);
     first_word.eq_ignore_ascii_case("SELECT") || first_word.eq_ignore_ascii_case("WITH")
+}
+
+/// Check if SQL contains semicolons (potential multi-statement injection).
+fn has_semicolons(sql: &str) -> bool {
+    sql.contains(';')
 }
 
 /// Bind JSON parameter values to a sqlx query dynamically.
@@ -142,6 +167,9 @@ async fn do_query_raw(
     if !is_read_only(sql) {
         return Err(host_errors::ERR_DDL_REJECTED);
     }
+    if has_semicolons(sql) {
+        return Err(host_errors::ERR_DDL_REJECTED);
+    }
 
     fetch_rows_as_json(pool, sql, params).await
 }
@@ -149,7 +177,8 @@ async fn do_query_raw(
 /// Execute a SQL statement that returns rows and serialize them as JSON.
 ///
 /// Shared implementation for `do_query_raw` (after guard) and `do_insert` (RETURNING *).
-/// Sets a per-connection statement timeout to prevent long-running queries.
+/// Wraps the query in an explicit transaction so `SET LOCAL statement_timeout`
+/// is scoped correctly (it has no effect outside a transaction).
 async fn fetch_rows_as_json(
     pool: &PgPool,
     sql: &str,
@@ -160,22 +189,35 @@ async fn fetch_rows_as_json(
         host_errors::ERR_SQL_FAILED
     })?;
 
-    // Set statement timeout for this connection only (LOCAL = transaction-scoped,
-    // but for non-transactional queries it applies to the next statement).
-    conn.execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
-        .await
-        .map_err(|e| {
-            warn!(error = %e, "failed to set statement_timeout");
-            host_errors::ERR_SQL_FAILED
-        })?;
+    // Wrap in explicit transaction so SET LOCAL is properly scoped.
+    conn.execute("BEGIN").await.map_err(|e| {
+        warn!(error = %e, "failed to begin transaction for plugin query");
+        host_errors::ERR_SQL_FAILED
+    })?;
+
+    // Set statement timeout scoped to this transaction.
+    let timeout_result = conn
+        .execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
+        .await;
+    if let Err(e) = timeout_result {
+        warn!(error = %e, "failed to set statement_timeout");
+        let _ = conn.execute("ROLLBACK").await;
+        return Err(host_errors::ERR_SQL_FAILED);
+    }
 
     let query = sqlx::query(sql);
     let query = bind_json_params(params, query);
 
-    let rows = query.fetch_all(&mut *conn).await.map_err(|e| {
-        warn!(error = %e, sql = sql, "plugin query failed");
-        host_errors::ERR_SQL_FAILED
-    })?;
+    let rows = match query.fetch_all(&mut *conn).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(error = %e, sql = sql, "plugin query failed");
+            let _ = conn.execute("ROLLBACK").await;
+            return Err(host_errors::ERR_SQL_FAILED);
+        }
+    };
+
+    let _ = conn.execute("COMMIT").await;
 
     let json_rows: Vec<serde_json::Value> = rows.iter().map(row_to_json).collect();
     serde_json::to_string(&json_rows).map_err(|_| host_errors::ERR_SERIALIZE_FAILED)
@@ -183,7 +225,8 @@ async fn fetch_rows_as_json(
 
 /// Execute a DML statement and return rows affected.
 ///
-/// Sets a per-connection statement timeout to prevent long-running queries.
+/// Wraps the statement in an explicit transaction so `SET LOCAL statement_timeout`
+/// is scoped correctly. Rejects DDL keywords and semicolons (multi-statement).
 async fn do_execute_raw(
     pool: &PgPool,
     sql: &str,
@@ -192,26 +235,43 @@ async fn do_execute_raw(
     if is_ddl(sql) {
         return Err(host_errors::ERR_DDL_REJECTED);
     }
+    if has_semicolons(sql) {
+        return Err(host_errors::ERR_DDL_REJECTED);
+    }
 
     let mut conn = pool.acquire().await.map_err(|e| {
         warn!(error = %e, "failed to acquire DB connection for plugin execute");
         host_errors::ERR_SQL_FAILED
     })?;
 
-    conn.execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
-        .await
-        .map_err(|e| {
-            warn!(error = %e, "failed to set statement_timeout");
-            host_errors::ERR_SQL_FAILED
-        })?;
+    // Wrap in explicit transaction so SET LOCAL is properly scoped.
+    conn.execute("BEGIN").await.map_err(|e| {
+        warn!(error = %e, "failed to begin transaction for plugin execute");
+        host_errors::ERR_SQL_FAILED
+    })?;
+
+    let timeout_result = conn
+        .execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
+        .await;
+    if let Err(e) = timeout_result {
+        warn!(error = %e, "failed to set statement_timeout");
+        let _ = conn.execute("ROLLBACK").await;
+        return Err(host_errors::ERR_SQL_FAILED);
+    }
 
     let query = sqlx::query(sql);
     let query = bind_json_params(params, query);
 
-    let result = query.execute(&mut *conn).await.map_err(|e| {
-        warn!(error = %e, sql = sql, "plugin execute-raw failed");
-        host_errors::ERR_SQL_FAILED
-    })?;
+    let result = match query.execute(&mut *conn).await {
+        Ok(result) => result,
+        Err(e) => {
+            warn!(error = %e, sql = sql, "plugin execute-raw failed");
+            let _ = conn.execute("ROLLBACK").await;
+            return Err(host_errors::ERR_SQL_FAILED);
+        }
+    };
+
+    let _ = conn.execute("COMMIT").await;
 
     Ok(result.rows_affected())
 }

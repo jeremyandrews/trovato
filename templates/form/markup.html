@@ -1,3 +1,3 @@
 <div class="form-item form-item--markup"{% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}>
-    {{ element.element_type.value | safe }}
+    {{ element.element_type.value | safe }} {# SAFE: kernel FormBuilder markup element — value is kernel-controlled raw HTML #}
 </div>

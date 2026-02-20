@@ -68,6 +68,14 @@ impl FilterHandler for HierarchicalInFilterHandler {
             bail!("unsafe JSONB field path: '{jsonb_path}'");
         }
 
+        // Defense-in-depth: validate base_table before interpolation
+        if !is_safe_identifier(&ctx.base_table) {
+            bail!(
+                "unsafe base_table name: '{}'",
+                &ctx.base_table[..ctx.base_table.len().min(64)]
+            );
+        }
+
         let uuid_list: Vec<String> = uuids.iter().map(|u| format!("'{u}'")).collect();
         let expr = format!(
             "{}.fields->>'{}' IN ({})",
@@ -204,6 +212,14 @@ impl FilterHandler for JsonbArrayContainsFilterHandler {
 
         if !is_safe_jsonb_path(jsonb_path) {
             bail!("unsafe JSONB field path: '{jsonb_path}'");
+        }
+
+        // Defense-in-depth: validate base_table before interpolation
+        if !is_safe_identifier(&ctx.base_table) {
+            bail!(
+                "unsafe base_table name: '{}'",
+                &ctx.base_table[..ctx.base_table.len().min(64)]
+            );
         }
 
         // Use serde_json for correct escaping of all JSON special characters

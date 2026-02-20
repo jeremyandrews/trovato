@@ -11,7 +11,7 @@
                 <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
             </header>
             <div class="comment__body">
-                {{ comment.body_html | safe }}
+                {{ comment.body_html | safe }} {# SAFE: stored HTML from sanitized input pipeline — body_html is pre-sanitized on save #}
             </div>
             <footer class="comment__footer">
                 {% if can_reply %}

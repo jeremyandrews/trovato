@@ -155,7 +155,7 @@
         {% endblock %}
 
         {% block content %}
-        {{ content | safe }}
+        {{ content | safe }} {# SAFE: kernel render pipeline output — admin page content already rendered and sanitized #}
         {% endblock %}
     </main>
 </div>

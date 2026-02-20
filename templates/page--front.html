@@ -2,7 +2,7 @@
 
 {% block content %}
 {% if content %}
-{{ content | safe }}
+{{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
 {% else %}
 <div class="front-welcome">
     <h1>Welcome to {{ site_name | default(value="Trovato") }}</h1>

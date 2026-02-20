@@ -12,7 +12,7 @@ use tracing::info;
 use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
 use crate::models::User;
-use crate::routes::helpers::CsrfOnlyForm;
+use crate::routes::helpers::{CsrfOnlyForm, html_escape};
 use crate::state::AppState;
 
 /// Session key for storing the authenticated user ID.
@@ -144,9 +144,9 @@ async fn login_form_submit(
     session: Session,
     Form(form): Form<LoginFormRequest>,
 ) -> Response {
-    // Verify CSRF token
-    if let Some(token) = &form.csrf_token {
-        match verify_csrf_token(&session, token).await {
+    // Verify CSRF token — always required, reject if missing
+    match &form.csrf_token {
+        Some(token) => match verify_csrf_token(&session, token).await {
             Ok(true) => {}
             _ => {
                 return render_login_error(
@@ -156,6 +156,10 @@ async fn login_form_submit(
                 )
                 .await;
             }
+        },
+        None => {
+            return render_login_error(&state, &session, "Missing form token. Please try again.")
+                .await;
         }
     }
 
@@ -184,7 +188,8 @@ async fn render_login_error(state: &AppState, session: &Session, error: &str) ->
     match state.theme().tera().render("user/login.html", &context) {
         Ok(html) => Html(html).into_response(),
         Err(_) => Html(format!(
-            "<h1>Login Error</h1><p>{error}</p><p><a href=\"/user/login\">Try again</a></p>"
+            "<h1>Login Error</h1><p>{}</p><p><a href=\"/user/login\">Try again</a></p>",
+            html_escape(error)
         ))
         .into_response(),
     }

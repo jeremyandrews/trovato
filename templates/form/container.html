@@ -12,5 +12,5 @@
     <p class="form-item__description">{{ element.description }}</p>
     {% endif %}
 
-    {{ children | safe }}
+    {{ children | safe }} {# SAFE: kernel FormBuilder-generated HTML — child elements already rendered by the kernel #}
 </div>

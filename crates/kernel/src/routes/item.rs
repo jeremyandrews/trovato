@@ -3,7 +3,7 @@
 //! Provides endpoints for viewing, creating, editing, and deleting content items.
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Form, Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
@@ -14,12 +14,13 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::{FilterPipeline, FormBuilder};
+use crate::form::csrf::generate_csrf_token;
 use crate::models::{CreateItem, UpdateItem, UrlAlias, User};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
 use super::auth::SESSION_USER_ID;
-use super::helpers::html_escape;
+use super::helpers::{CsrfOnlyForm, html_escape};
 
 /// Error response for item operations.
 #[derive(Debug, Serialize)]
@@ -832,6 +833,9 @@ async fn list_revisions(
         r#"<p><a href="/item/{id}">← Back to item</a></p>"#
     ));
 
+    // Generate CSRF token for revert forms
+    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+
     html.push_str("<table><thead><tr><th>Date</th><th>Title</th><th>Log</th><th>Actions</th></tr></thead><tbody>");
 
     for rev in revisions {
@@ -846,8 +850,10 @@ async fn list_revisions(
         let log = rev.log.as_deref().unwrap_or("-");
         let revert_btn = if Some(rev.id) != item.current_revision_id {
             format!(
-                r#"<form method="post" action="/item/{}/revert/{}" style="display:inline"><button type="submit" class="btn">Revert</button></form>"#,
-                id, rev.id
+                r#"<form method="post" action="/item/{}/revert/{}" style="display:inline"><input type="hidden" name="_token" value="{}"><button type="submit" class="btn">Revert</button></form>"#,
+                id,
+                rev.id,
+                html_escape(&csrf_token)
             )
         } else {
             String::new()
@@ -872,19 +878,19 @@ async fn list_revisions(
 async fn revert_revision(
     State(state): State<AppState>,
     session: Session,
-    headers: HeaderMap,
     Path((id, rev_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<CsrfOnlyForm>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ItemError>)> {
     let user = get_user_context(&session, &state).await;
 
-    // Verify CSRF token from header
-    crate::routes::helpers::require_csrf_header(&session, &headers)
+    // Verify CSRF token from form body
+    crate::routes::helpers::require_csrf(&session, &form.token)
         .await
-        .map_err(|(s, j)| {
+        .map_err(|_| {
             (
-                s,
+                StatusCode::FORBIDDEN,
                 Json(ItemError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
+                    error: "Invalid or expired form token. Please try again.".to_string(),
                 }),
             )
         })?;

@@ -58,7 +58,7 @@ See `docs/security-audit.md` for the full dependency audit policy and Epic 27 st
 
 - Never use `format!()` to build SQL — always use SeaQuery parameterized queries
 - JSONB path expressions: validate with `is_valid_field_name()` before interpolation
-- LIKE patterns: escape `%` and `_` with `escape_like_pattern()`
+- LIKE patterns: escape `%` and `_` with `escape_like_wildcards()`
 
 ### CSRF Protection
 

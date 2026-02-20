@@ -20,7 +20,7 @@
     </div>
     {% endif %}
 
-    {{ elements | safe }}
+    {{ elements | safe }} {# SAFE: kernel FormBuilder-generated HTML — form elements already rendered by the kernel #}
 </form>
 
 <style>

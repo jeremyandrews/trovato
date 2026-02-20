@@ -4,6 +4,6 @@
     </header>
 
     <div class="item__content">
-        {{ children | safe }}
+        {{ children | safe }} {# SAFE: kernel render pipeline output — child elements already rendered and sanitized #}
     </div>
 </article>

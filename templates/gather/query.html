@@ -25,7 +25,7 @@
 
     <div class="gather-query__content">
         {% block query_content %}
-        {{ content | safe }}
+        {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
         {% endblock %}
     </div>
 

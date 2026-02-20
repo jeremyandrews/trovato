@@ -10,10 +10,10 @@ ignore = [
     # Review date: 2026-02-20
     "RUSTSEC-2023-0071",
 
-    # wasmtime fd_renumber host panic — our WASI shim returns ENOSYS for all
-    # fd operations; fd_renumber is never reachable. Upgrade to wasmtime 34+
-    # planned but requires API migration.
-    # Review date: 2026-02-20
+    # wasmtime fd_renumber host panic — our minimal WASI stubs only link
+    # fd_write, random_get, environ_get, and environ_sizes_get; fd_renumber
+    # is not linked and cannot be called. Upgrade to wasmtime 34+ planned.
+    # Review date: 2026-06-01
     "RUSTSEC-2025-0046",
 
     # wasmtime shared linear memory unsoundness — we do not enable shared

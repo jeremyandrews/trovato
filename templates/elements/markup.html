@@ -1,2 +1,3 @@
 {%- set tag = element.tag | default(value="span") -%}
+{# SAFE: kernel render pipeline output — value rendered with validated tag/attributes via SAFE_TAGS #}
 <{{ tag }}{% if class %} class="{{ class }}"{% endif %}{% if attributes %}{% for key, value in attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>{{ value | safe }}</{{ tag }}>

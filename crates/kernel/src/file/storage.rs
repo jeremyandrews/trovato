@@ -51,10 +51,18 @@ impl LocalFileStorage {
     }
 
     /// Parse a local:// URI to get the relative path.
+    ///
+    /// Rejects paths containing `..` components to prevent directory traversal.
     fn parse_uri(&self, uri: &str) -> Result<PathBuf> {
         let path = uri
             .strip_prefix("local://")
             .context("invalid local URI, must start with local://")?;
+        // Reject directory traversal attempts
+        for component in std::path::Path::new(path).components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                anyhow::bail!("directory traversal not allowed in storage URI");
+            }
+        }
         Ok(self.base_path.join(path))
     }
 

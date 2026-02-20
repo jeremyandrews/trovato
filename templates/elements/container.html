@@ -1,3 +1,3 @@
 <div{% if class %} class="{{ class }}"{% endif %}{% if attributes %}{% for key, value in attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>
-{{ children | safe }}
+{{ children | safe }} {# SAFE: kernel render pipeline output — child elements already rendered and sanitized #}
 </div>
