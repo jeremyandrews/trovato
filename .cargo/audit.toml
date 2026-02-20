@@ -1,0 +1,23 @@
+# cargo-audit configuration
+# See: https://docs.rs/cargo-audit/
+
+[advisories]
+# Advisories to ignore (with justification and review date)
+ignore = [
+    # rsa timing sidechannel (Marvin Attack) — transitive via sqlx-mysql.
+    # We only use sqlx with PostgreSQL; sqlx-mysql is an unused compile-time
+    # feature dependency. No fix available upstream.
+    # Review date: 2026-02-20
+    "RUSTSEC-2023-0071",
+
+    # wasmtime fd_renumber host panic — our WASI shim returns ENOSYS for all
+    # fd operations; fd_renumber is never reachable. Upgrade to wasmtime 34+
+    # planned but requires API migration.
+    # Review date: 2026-02-20
+    "RUSTSEC-2025-0046",
+
+    # wasmtime shared linear memory unsoundness — we do not enable shared
+    # memory for any WASM instances. Upgrade to wasmtime 38+ planned.
+    # Review date: 2026-02-20
+    "RUSTSEC-2025-0118",
+]

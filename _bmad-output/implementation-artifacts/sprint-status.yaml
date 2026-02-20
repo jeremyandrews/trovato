@@ -426,6 +426,6 @@ development_status:
   27-5-wasm-plugin-sandbox-audit: review
   27-6-file-upload-security-audit: review
   27-7-security-regression-tests: review
-  27-8-add-cargo-audit-to-ci: ready-for-dev
+  27-8-add-cargo-audit-to-ci: review
   27-9-update-claude-md-with-security-rules: ready-for-dev
   epic-27-retrospective: optional
