@@ -4023,3 +4023,373 @@ async fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
         "Gated route should be reachable again after re-enabling"
     );
 }
+
+// =============================================================================
+// User Registration Tests (Story 28.1)
+// =============================================================================
+
+#[tokio::test]
+async fn registration_form_returns_404_when_disabled() {
+    let app = TestApp::new().await;
+
+    // Ensure registration is disabled (default)
+    trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(false))
+        .await
+        .unwrap();
+
+    let response = app
+        .request(Request::get("/user/register").body(Body::empty()).unwrap())
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Registration form should return 404 when disabled"
+    );
+}
+
+#[tokio::test]
+async fn registration_form_renders_when_enabled() {
+    let app = TestApp::new().await;
+
+    // Enable registration
+    trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(true))
+        .await
+        .unwrap();
+
+    let response = app
+        .request(Request::get("/user/register").body(Body::empty()).unwrap())
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+    assert!(body.contains("username"), "Form should have username field");
+    assert!(body.contains("mail"), "Form should have email field");
+    assert!(body.contains("password"), "Form should have password field");
+    assert!(
+        body.contains("confirm_password"),
+        "Form should have confirm password field"
+    );
+    assert!(body.contains("_token"), "Form should have CSRF token field");
+}
+
+#[tokio::test]
+async fn json_registration_creates_inactive_user() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("regtest_{}", &unique_id[..12]);
+    let email = format!("{username}@test.example.com");
+
+    // Enable registration
+    trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(true))
+        .await
+        .unwrap();
+
+    let response = app
+        .request(
+            Request::post("/user/register/json")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": username,
+                        "mail": email,
+                        "password": "TestPassword123!",
+                        "confirm_password": "TestPassword123!"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+    let status = response.status();
+    // Accept 200 (success) or 429 (rate limited)
+    assert!(
+        status == StatusCode::OK || status == StatusCode::TOO_MANY_REQUESTS,
+        "Expected 200 or 429, got {status}"
+    );
+
+    if status == StatusCode::OK {
+        let body = response_json(response).await;
+        assert_eq!(body["success"], true);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("verification"),
+            "Success message should mention verification"
+        );
+
+        // Verify user was created with inactive status
+        let user = sqlx::query_as::<_, (i16,)>("SELECT status FROM users WHERE name = $1")
+            .bind(&username)
+            .fetch_optional(&app.db)
+            .await
+            .unwrap();
+
+        assert!(user.is_some(), "User should exist in database");
+        assert_eq!(
+            user.unwrap().0,
+            0,
+            "User should be inactive (status=0) pending verification"
+        );
+
+        // Verify a verification token was created
+        let token_exists = sqlx::query_as::<_, (i64,)>(
+            "SELECT COUNT(*) FROM email_verification_tokens WHERE user_id = (SELECT id FROM users WHERE name = $1)",
+        )
+        .bind(&username)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        assert!(
+            token_exists.0 > 0,
+            "Verification token should exist for the new user"
+        );
+    }
+
+    // Cleanup
+    sqlx::query("DELETE FROM users WHERE name = $1")
+        .bind(&username)
+        .execute(&app.db)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn json_registration_validates_password_mismatch() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("regval_{}", &unique_id[..12]);
+
+    // Enable registration
+    trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(true))
+        .await
+        .unwrap();
+
+    let response = app
+        .request(
+            Request::post("/user/register/json")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": username,
+                        "mail": format!("{username}@test.example.com"),
+                        "password": "TestPassword123!",
+                        "confirm_password": "DifferentPassword!"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+    let status = response.status();
+    // Accept 400 (validation error) or 429 (rate limited)
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::TOO_MANY_REQUESTS,
+        "Expected 400 or 429, got {status}"
+    );
+
+    if status == StatusCode::BAD_REQUEST {
+        let body = response_json(response).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("do not match"),
+            "Error should mention password mismatch"
+        );
+    }
+}
+
+#[tokio::test]
+async fn json_registration_validates_missing_fields() {
+    let app = TestApp::new().await;
+
+    // Enable registration
+    trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(true))
+        .await
+        .unwrap();
+
+    let response = app
+        .request(
+            Request::post("/user/register/json")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": "",
+                        "mail": "",
+                        "password": "short"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+    let status = response.status();
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::TOO_MANY_REQUESTS,
+        "Expected 400 or 429, got {status}"
+    );
+
+    if status == StatusCode::BAD_REQUEST {
+        let body = response_json(response).await;
+        let error = body["error"].as_str().unwrap_or("");
+        assert!(
+            error.contains("Username is required"),
+            "Should report missing username"
+        );
+        assert!(
+            error.contains("Email address is required"),
+            "Should report missing email"
+        );
+        assert!(
+            error.contains("Password must be at least 8"),
+            "Should report short password"
+        );
+    }
+}
+
+#[tokio::test]
+async fn json_registration_returns_404_when_disabled() {
+    let app = TestApp::new().await;
+
+    // Ensure registration is disabled
+    trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(false))
+        .await
+        .unwrap();
+
+    let response = app
+        .request(
+            Request::post("/user/register/json")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": "disabled_test",
+                        "mail": "disabled@test.example.com",
+                        "password": "TestPassword123!"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "JSON registration should return 404 when disabled"
+    );
+}
+
+#[tokio::test]
+async fn email_verification_activates_user() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("verify_{}", &unique_id[..12]);
+    let email = format!("{username}@test.example.com");
+
+    // Create an inactive user directly
+    let user_id = uuid::Uuid::now_v7();
+    let pass = argon2::password_hash::PasswordHasher::hash_password(
+        &argon2::Argon2::default(),
+        b"TestPassword123!",
+        &argon2::password_hash::SaltString::generate(&mut argon2::password_hash::rand_core::OsRng),
+    )
+    .unwrap()
+    .to_string();
+
+    sqlx::query("INSERT INTO users (id, name, pass, mail, status) VALUES ($1, $2, $3, $4, 0)")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&pass)
+        .bind(&email)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    // Create a verification token
+    let (_, plain_token) = trovato_kernel::models::EmailVerificationToken::create(&app.db, user_id)
+        .await
+        .unwrap();
+
+    // Verify the token activates the user
+    let response = app
+        .request(
+            Request::get(format!("/user/verify/{plain_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Verification should return 200"
+    );
+
+    let body = response_text(response).await;
+    assert!(
+        body.contains("verified") || body.contains("log in"),
+        "Should show verification success message"
+    );
+
+    // Check user is now active
+    let user_status = sqlx::query_as::<_, (i16,)>("SELECT status FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        user_status.0, 1,
+        "User should be active (status=1) after verification"
+    );
+
+    // Check token is marked as used
+    let token_used = sqlx::query_as::<_, (bool,)>(
+        "SELECT used_at IS NOT NULL FROM email_verification_tokens WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+
+    assert!(token_used.0, "Token should be marked as used");
+
+    // Cleanup
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&app.db)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn email_verification_rejects_invalid_token() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(
+            Request::get("/user/verify/invalid_token_that_does_not_exist")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Invalid token should render the form page (not a redirect)"
+    );
+
+    let body = response_text(response).await;
+    assert!(
+        body.contains("Invalid") || body.contains("expired"),
+        "Should show invalid/expired message"
+    );
+}

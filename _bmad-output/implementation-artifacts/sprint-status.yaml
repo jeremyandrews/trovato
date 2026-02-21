@@ -437,7 +437,7 @@ development_status:
   # Epic 28: User Self-Service & v1.0 Polish
   # Public registration, self-service account management, pathauto, admin tabs, doc updates
   epic-28: done
-  28-1-public-user-registration: done
+  28-1-public-user-registration: review
   28-2-user-self-service-account-management: done
   28-3-automatic-path-alias-generation: done
   28-4-admin-local-tasks: done
