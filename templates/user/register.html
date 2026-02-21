@@ -22,7 +22,7 @@
     <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
         <ul style="margin: 0; padding-left: 1.5rem;">
         {% for err in errors %}
-            <li>{{ err }}</li>
+            <li>{{ err | escape }}</li>
         {% endfor %}
         </ul>
     </div>

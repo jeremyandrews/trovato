@@ -165,6 +165,26 @@ impl CronService {
             Err(e) => warn!(error = %e, "failed to process queues"),
         }
 
+        // Cleanup expired verification tokens
+        match self.tasks.cleanup_verification_tokens().await {
+            Ok(count) if count > 0 => {
+                info!(count = count, "cleaned up expired verification tokens");
+                tasks_run.push(format!("cleanup_verification_tokens: {count}"));
+            }
+            Err(e) => warn!(error = %e, "failed to cleanup verification tokens"),
+            _ => {}
+        }
+
+        // Cleanup expired password reset tokens
+        match self.tasks.cleanup_password_reset_tokens().await {
+            Ok(count) if count > 0 => {
+                info!(count = count, "cleaned up expired password reset tokens");
+                tasks_run.push(format!("cleanup_password_reset_tokens: {count}"));
+            }
+            Err(e) => warn!(error = %e, "failed to cleanup password reset tokens"),
+            _ => {}
+        }
+
         // Cleanup expired content locks
         match self.tasks.cleanup_expired_locks().await {
             Ok(count) if count > 0 => {

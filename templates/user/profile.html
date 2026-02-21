@@ -22,7 +22,7 @@
     <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
         <ul style="margin: 0; padding-left: 1.5rem;">
         {% for err in errors %}
-            <li>{{ err }}</li>
+            <li>{{ err | escape }}</li>
         {% endfor %}
         </ul>
     </div>
@@ -70,7 +70,7 @@
 
     <h2 style="margin-top: 2.5rem;">Change password</h2>
     <form method="post" action="/user/password">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_token" value="{{ password_csrf_token }}">
 
         <div class="form-item" style="margin-bottom: 1rem;">
             <label for="current_password" class="form-item__label">Current password</label>

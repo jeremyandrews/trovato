@@ -184,14 +184,14 @@ pub async fn auto_alias_item(
     Ok(Some(alias))
 }
 
-/// Update the auto-generated alias for an item after title changes.
+/// Generate alias for an item on update if none exists yet.
 ///
 /// Does nothing if:
 /// - No pattern configured for this content type
-/// - No existing alias for this item (item may not have had pathauto on create)
+/// - An alias already exists for this item (preserves manual overrides)
 ///
-/// If an alias exists, regenerates from the pattern and updates it.
-/// If no alias exists, creates one (same as `auto_alias_item`).
+/// This ensures manually-set aliases are never overwritten. If the item
+/// was created before pathauto was configured, this creates the initial alias.
 pub async fn update_alias_item(
     pool: &PgPool,
     item_id: Uuid,
@@ -199,45 +199,9 @@ pub async fn update_alias_item(
     item_type: &str,
     created_ts: i64,
 ) -> Result<Option<String>> {
-    let created = DateTime::from_timestamp(created_ts, 0).unwrap_or_else(Utc::now);
-    let Some(pattern) = get_pattern(pool, item_type).await? else {
-        return Ok(None);
-    };
-
-    let source = format!("/item/{item_id}");
-    let existing = UrlAlias::find_by_source(pool, &source).await?;
-
-    // Expand the pattern and generate a unique alias
-    let expanded = expand_pattern(&pattern, title, item_type, created);
-    let alias = generate_unique_alias(pool, &expanded).await?;
-
-    if existing.is_empty() {
-        // No alias yet — create one
-        UrlAlias::create(
-            pool,
-            CreateUrlAlias {
-                source,
-                alias: alias.clone(),
-                language: None,
-                stage_id: None,
-            },
-        )
-        .await
-        .context("failed to create auto-generated alias")?;
-    } else {
-        // Update existing alias
-        UrlAlias::upsert_for_source(pool, &source, &alias, "live", "en")
-            .await
-            .context("failed to update auto-generated alias")?;
-    }
-
-    tracing::info!(
-        item_id = %item_id,
-        alias = %alias,
-        "updated auto-generated path alias"
-    );
-
-    Ok(Some(alias))
+    // Delegate to auto_alias_item — it already checks for existing aliases
+    // and skips if any exist (preserving manual overrides).
+    auto_alias_item(pool, item_id, title, item_type, created_ts).await
 }
 
 #[cfg(test)]

@@ -383,11 +383,15 @@ async fn edit_content_submit(
         context.insert("path", &format!("/admin/content/{item_id}/edit"));
         context.insert(
             "local_tasks",
-            &serde_json::json!([
-                {"title": "View", "path": format!("/item/{item_id}"), "active": false},
-                {"title": "Edit", "path": format!("/admin/content/{item_id}/edit"), "active": true},
-                {"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false},
-            ]),
+            &build_local_tasks(
+                &state,
+                "/admin/content/:id",
+                vec![
+                    serde_json::json!({"title": "View", "path": format!("/item/{item_id}"), "active": false}),
+                    serde_json::json!({"title": "Edit", "path": format!("/admin/content/{item_id}/edit"), "active": true}),
+                    serde_json::json!({"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false}),
+                ],
+            ),
         );
 
         return render_admin_template(&state, "admin/content-form.html", context).await;

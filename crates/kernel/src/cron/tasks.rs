@@ -197,6 +197,16 @@ impl CronTasks {
         }
     }
 
+    /// Cleanup expired email verification tokens.
+    pub async fn cleanup_verification_tokens(&self) -> Result<u64> {
+        crate::models::email_verification::EmailVerificationToken::cleanup_expired(&self.pool).await
+    }
+
+    /// Cleanup expired password reset tokens.
+    pub async fn cleanup_password_reset_tokens(&self) -> Result<u64> {
+        crate::models::password_reset::PasswordResetToken::cleanup_expired(&self.pool).await
+    }
+
     /// Cleanup old audit log entries (90 day retention).
     pub async fn cleanup_audit_log(&self) -> Result<u64> {
         if let Some(ref service) = self.audit {

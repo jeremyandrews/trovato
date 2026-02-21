@@ -285,7 +285,6 @@ pub fn render_not_found() -> Response {
     (StatusCode::NOT_FOUND, Html(html)).into_response()
 }
 
-/// HTML-escape a string for safe output.
 /// Build local task tab data from the menu registry, merged with hardcoded tabs.
 ///
 /// Looks up plugin-registered local tasks for the given `parent_path` and
@@ -316,6 +315,40 @@ pub fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#x27;")
+}
+
+/// Basic email format validation.
+///
+/// Checks that the address has the structure `local@domain.tld` where:
+/// - Local part is non-empty
+/// - Domain contains at least one dot
+/// - Domain labels are non-empty
+/// - Total length is within RFC 5321 limits (254 chars)
+///
+/// This is deliberately lenient — full RFC 5322 compliance is not
+/// attempted. The goal is to reject obviously invalid addresses while
+/// accepting the vast majority of real-world addresses.
+pub fn is_valid_email(email: &str) -> bool {
+    if email.len() > 254 {
+        return false;
+    }
+
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+
+    // Local part must be non-empty and <= 64 chars
+    if local.is_empty() || local.len() > 64 {
+        return false;
+    }
+
+    // Domain must contain at least one dot with non-empty labels
+    if !domain.contains('.') {
+        return false;
+    }
+
+    // All domain labels must be non-empty
+    domain.split('.').all(|label| !label.is_empty())
 }
 
 #[cfg(test)]
@@ -350,5 +383,27 @@ mod tests {
     #[test]
     fn test_html_escape_empty() {
         assert_eq!(html_escape(""), "");
+    }
+
+    #[test]
+    fn test_is_valid_email_valid() {
+        assert!(is_valid_email("user@example.com"));
+        assert!(is_valid_email("user@sub.domain.co.uk"));
+        assert!(is_valid_email("a@b.c"));
+        assert!(is_valid_email("user+tag@example.com"));
+    }
+
+    #[test]
+    fn test_is_valid_email_invalid() {
+        assert!(!is_valid_email(""));
+        assert!(!is_valid_email("user"));
+        assert!(!is_valid_email("@."));
+        assert!(!is_valid_email(".@"));
+        assert!(!is_valid_email("user@"));
+        assert!(!is_valid_email("@domain.com"));
+        assert!(!is_valid_email("user@domain"));
+        assert!(!is_valid_email("user@.com"));
+        assert!(!is_valid_email("user@domain."));
+        assert!(!is_valid_email("user@domain..com"));
     }
 }

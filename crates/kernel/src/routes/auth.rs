@@ -13,7 +13,7 @@ use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
 use crate::models::email_verification::EmailVerificationToken;
 use crate::models::{CreateUser, SiteConfig, User};
-use crate::routes::helpers::{CsrfOnlyForm, html_escape};
+use crate::routes::helpers::{CsrfOnlyForm, html_escape, is_valid_email};
 use crate::state::AppState;
 
 /// Session key for storing the authenticated user ID.
@@ -559,9 +559,9 @@ async fn register_form_submit(
         return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
     }
 
-    // Rate limit registration attempts
+    // Rate limit registration attempts (separate bucket from login)
     let client_id = crate::middleware::get_client_id(None, &headers);
-    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
+    if let Err(retry_after) = state.rate_limiter().check("register", &client_id).await {
         return crate::middleware::rate_limit_response(retry_after);
     }
 
@@ -651,7 +651,7 @@ async fn validate_registration_input(
 
     if mail.is_empty() {
         errors.push("Email address is required.".to_string());
-    } else if !mail.contains('@') || !mail.contains('.') {
+    } else if !is_valid_email(mail) {
         errors.push("Please enter a valid email address.".to_string());
     }
 
@@ -659,21 +659,23 @@ async fn validate_registration_input(
         errors.push("Password must be at least 8 characters.".to_string());
     }
 
-    // Check username uniqueness
+    // Check username and email uniqueness — use generic message to prevent enumeration
+    let mut uniqueness_conflict = false;
+
     if !username.is_empty()
         && let Ok(Some(_)) = User::find_by_name(state.db(), username).await
     {
-        errors.push(format!(
-            "Username '{}' is already taken.",
-            html_escape(username)
-        ));
+        uniqueness_conflict = true;
     }
 
-    // Check email uniqueness — use generic message to prevent email enumeration
     if !mail.is_empty()
-        && mail.contains('@')
+        && is_valid_email(mail)
         && let Ok(Some(_)) = User::find_by_mail(state.db(), mail).await
     {
+        uniqueness_conflict = true;
+    }
+
+    if uniqueness_conflict {
         errors.push("Username or email is already in use.".to_string());
     }
 }
@@ -741,9 +743,9 @@ async fn register_json(
     headers: axum::http::HeaderMap,
     Json(request): Json<RegisterJsonRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
-    // Rate limit registration attempts
+    // Rate limit registration attempts (separate bucket from login)
     let client_id = crate::middleware::get_client_id(None, &headers);
-    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
+    if let Err(retry_after) = state.rate_limiter().check("register", &client_id).await {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(AuthError {
@@ -931,6 +933,21 @@ async fn verify_email_change(State(state): State<AppState>, Path(token): Path<St
         .into_response();
     };
 
+    // Re-check email uniqueness at verification time to prevent race condition
+    // (another user may have registered with this email since the change was requested)
+    if let Ok(Some(_)) = User::find_by_mail(state.db(), &new_email).await {
+        // Mark token as used since the change can't proceed
+        let _ = EmailVerificationToken::mark_used(state.db(), verification.id).await;
+        return Html(
+            "<h1>Email Change Failed</h1>\
+             <p>This email address is now in use by another account. \
+             Please update your profile with a different email address.</p>\
+             <p><a href=\"/user/profile\">Return to profile</a></p>"
+                .to_string(),
+        )
+        .into_response();
+    }
+
     // Update the user's email and clear pending_email from data
     let mut data = user.data.clone();
     if let Some(obj) = data.as_object_mut() {
@@ -1027,9 +1044,13 @@ async fn get_current_user(state: &AppState, session: &Session) -> Result<User, R
 ///
 /// When `values` is provided, those values override the user's stored values
 /// (used to preserve submitted form data on validation errors).
+///
+/// Uses separate CSRF tokens for the profile and password forms since
+/// tokens are single-use (consumed on verification).
 async fn render_profile(
     state: &AppState,
-    csrf_token: &str,
+    profile_csrf: &str,
+    password_csrf: &str,
     user: &User,
     errors: Option<&[String]>,
     success: Option<&str>,
@@ -1037,7 +1058,8 @@ async fn render_profile(
     values: Option<&serde_json::Value>,
 ) -> Response {
     let mut context = tera::Context::new();
-    context.insert("csrf_token", csrf_token);
+    context.insert("csrf_token", profile_csrf);
+    context.insert("password_csrf_token", password_csrf);
     context.insert(
         "user",
         values.unwrap_or(&serde_json::json!({
@@ -1065,6 +1087,13 @@ async fn render_profile(
     }
 }
 
+/// Generate a pair of CSRF tokens for the profile page (one per form).
+async fn profile_csrf_pair(session: &Session) -> (String, String) {
+    let profile = generate_csrf_token(session).await.unwrap_or_default();
+    let password = generate_csrf_token(session).await.unwrap_or_default();
+    (profile, password)
+}
+
 /// Profile view/edit form handler.
 ///
 /// GET /user/profile
@@ -1074,8 +1103,18 @@ async fn profile_form(State(state): State<AppState>, session: Session) -> Respon
         Err(resp) => return resp,
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-    render_profile(&state, &csrf_token, &user, None, None, None, None).await
+    let (profile_csrf, password_csrf) = profile_csrf_pair(&session).await;
+    render_profile(
+        &state,
+        &profile_csrf,
+        &password_csrf,
+        &user,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Profile update handler.
@@ -1091,15 +1130,25 @@ async fn profile_update(
         Err(resp) => return resp,
     };
 
+    // Rate limit profile updates per user
+    if let Err(retry_after) = state
+        .rate_limiter()
+        .check("profile", &user.id.to_string())
+        .await
+    {
+        return crate::middleware::rate_limit_response(retry_after);
+    }
+
     // Verify CSRF token
     match &form.csrf_token {
         Some(token) => match verify_csrf_token(&session, token).await {
             Ok(true) => {}
             _ => {
-                let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+                let (pc, pwc) = profile_csrf_pair(&session).await;
                 return render_profile(
                     &state,
-                    &csrf_token,
+                    &pc,
+                    &pwc,
                     &user,
                     None,
                     None,
@@ -1110,10 +1159,11 @@ async fn profile_update(
             }
         },
         None => {
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let (pc, pwc) = profile_csrf_pair(&session).await;
             return render_profile(
                 &state,
-                &csrf_token,
+                &pc,
+                &pwc,
                 &user,
                 None,
                 None,
@@ -1146,7 +1196,7 @@ async fn profile_update(
 
     if mail.is_empty() {
         errors.push("Email address is required.".to_string());
-    } else if !mail.contains('@') || !mail.contains('.') {
+    } else if !is_valid_email(mail) {
         errors.push("Please enter a valid email address.".to_string());
     }
 
@@ -1159,30 +1209,33 @@ async fn profile_update(
         }
     }
 
-    // Check uniqueness for name changes
+    // Check uniqueness — use generic message to prevent enumeration
+    let mut uniqueness_conflict = false;
+
     if name != user.name
         && !name.is_empty()
         && let Ok(Some(_)) = User::find_by_name(state.db(), name).await
     {
-        errors.push(format!(
-            "Username '{}' is already taken.",
-            html_escape(name)
-        ));
+        uniqueness_conflict = true;
     }
 
-    // Check uniqueness for email changes
     if email_changing
         && !mail.is_empty()
         && let Ok(Some(_)) = User::find_by_mail(state.db(), mail).await
     {
-        errors.push("An account with that email address already exists.".to_string());
+        uniqueness_conflict = true;
+    }
+
+    if uniqueness_conflict {
+        errors.push("Username or email is already in use.".to_string());
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let (pc, pwc) = profile_csrf_pair(&session).await;
         return render_profile(
             &state,
-            &csrf_token,
+            &pc,
+            &pwc,
             &user,
             Some(&errors),
             None,
@@ -1279,7 +1332,7 @@ async fn profile_update(
                 .dispatch("tap_user_update", &tap_input.to_string(), tap_state)
                 .await;
 
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let (pc, pwc) = profile_csrf_pair(&session).await;
             let success_msg = if email_changing {
                 "Profile updated. A verification email has been sent to your new address. \
                  Your email will be updated after you confirm the change."
@@ -1288,7 +1341,8 @@ async fn profile_update(
             };
             render_profile(
                 &state,
-                &csrf_token,
+                &pc,
+                &pwc,
                 &updated_user,
                 None,
                 Some(success_msg),
@@ -1298,10 +1352,11 @@ async fn profile_update(
             .await
         }
         Ok(None) => {
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
-                &csrf_token,
+                &pc,
+                &pwc,
                 &user,
                 None,
                 None,
@@ -1312,10 +1367,11 @@ async fn profile_update(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to update profile");
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
-                &csrf_token,
+                &pc,
+                &pwc,
                 &user,
                 None,
                 None,
@@ -1340,15 +1396,25 @@ async fn password_change(
         Err(resp) => return resp,
     };
 
+    // Rate limit password changes per user
+    if let Err(retry_after) = state
+        .rate_limiter()
+        .check("password", &user.id.to_string())
+        .await
+    {
+        return crate::middleware::rate_limit_response(retry_after);
+    }
+
     // Verify CSRF token
     match &form.csrf_token {
         Some(token) => match verify_csrf_token(&session, token).await {
             Ok(true) => {}
             _ => {
-                let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+                let (pc, pwc) = profile_csrf_pair(&session).await;
                 return render_profile(
                     &state,
-                    &csrf_token,
+                    &pc,
+                    &pwc,
                     &user,
                     None,
                     None,
@@ -1359,10 +1425,11 @@ async fn password_change(
             }
         },
         None => {
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let (pc, pwc) = profile_csrf_pair(&session).await;
             return render_profile(
                 &state,
-                &csrf_token,
+                &pc,
+                &pwc,
                 &user,
                 None,
                 None,
@@ -1390,8 +1457,8 @@ async fn password_change(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-        return render_profile(&state, &csrf_token, &user, Some(&errors), None, None, None).await;
+        let (pc, pwc) = profile_csrf_pair(&session).await;
+        return render_profile(&state, &pc, &pwc, &user, Some(&errors), None, None, None).await;
     }
 
     match User::update_password(state.db(), user.id, &form.new_password).await {
@@ -1408,10 +1475,11 @@ async fn password_change(
 
             info!(user_id = %user.id, "password changed via self-service");
 
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
-                &csrf_token,
+                &pc,
+                &pwc,
                 &user,
                 None,
                 Some("Password changed successfully."),
@@ -1421,10 +1489,11 @@ async fn password_change(
             .await
         }
         _ => {
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
-                &csrf_token,
+                &pc,
+                &pwc,
                 &user,
                 None,
                 None,
