@@ -506,12 +506,27 @@ async fn create_item(
     };
 
     match state.items().create(input, &user).await {
-        Ok(item) => Ok(Json(ItemResponse {
-            id: item.id,
-            title: item.title,
-            item_type: item.item_type,
-            status: item.status,
-        })),
+        Ok(item) => {
+            // Auto-generate URL alias if pattern configured for this type
+            if let Err(e) = crate::services::pathauto::auto_alias_item(
+                state.db(),
+                item.id,
+                &item.title,
+                &item.item_type,
+                item.created,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
+            }
+
+            Ok(Json(ItemResponse {
+                id: item.id,
+                title: item.title,
+                item_type: item.item_type,
+                status: item.status,
+            }))
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to create item");
             Err((

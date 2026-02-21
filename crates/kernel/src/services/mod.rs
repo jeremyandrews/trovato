@@ -10,5 +10,6 @@ pub mod email;
 pub mod image_style;
 pub mod locale;
 pub mod oauth;
+pub mod pathauto;
 pub mod redirect;
 pub mod tile;

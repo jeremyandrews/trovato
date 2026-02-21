@@ -439,7 +439,7 @@ development_status:
   epic-28: in-progress
   28-1-public-user-registration: done
   28-2-user-self-service-account-management: done
-  28-3-automatic-path-alias-generation: ready-for-dev
+  28-3-automatic-path-alias-generation: done
   28-4-admin-local-tasks: ready-for-dev
   28-5-update-alignment-documentation: done
   epic-28-retrospective: optional
