@@ -53,6 +53,11 @@ impl EmailService {
         })
     }
 
+    /// Get the site URL used for email links.
+    pub fn site_url(&self) -> &str {
+        &self.site_url
+    }
+
     /// Send a plain-text email.
     pub async fn send(&self, to: &str, subject: &str, body: &str) -> Result<()> {
         let email = Message::builder()

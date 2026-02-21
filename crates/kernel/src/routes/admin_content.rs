@@ -12,8 +12,8 @@ use crate::models::{CreateItem, Item, User};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_admin,
-    require_csrf,
+    CsrfOnlyForm, build_local_tasks, render_admin_template, render_not_found, render_server_error,
+    require_admin, require_csrf,
 };
 
 /// Content form data.
@@ -224,6 +224,19 @@ async fn add_content_submit(
 
     match Item::create(state.db(), input).await {
         Ok(item) => {
+            // Auto-generate URL alias if pattern configured for this type
+            if let Err(e) = crate::services::pathauto::auto_alias_item(
+                state.db(),
+                item.id,
+                &item.title,
+                &item.item_type,
+                item.created,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
+            }
+
             tracing::info!(item_id = %item.id, "content created");
             Redirect::to("/admin/content").into_response()
         }
@@ -275,14 +288,18 @@ async fn edit_content_form(
     );
     context.insert("path", &format!("/admin/content/{item_id}/edit"));
 
-    // Local task tabs for item edit pages
+    // Local task tabs for item edit pages (hardcoded + plugin-registered)
     context.insert(
         "local_tasks",
-        &serde_json::json!([
-            {"title": "View", "path": format!("/item/{item_id}"), "active": false},
-            {"title": "Edit", "path": format!("/admin/content/{item_id}/edit"), "active": true},
-            {"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false},
-        ]),
+        &build_local_tasks(
+            &state,
+            "/admin/content/:id",
+            vec![
+                serde_json::json!({"title": "View", "path": format!("/item/{item_id}"), "active": false}),
+                serde_json::json!({"title": "Edit", "path": format!("/admin/content/{item_id}/edit"), "active": true}),
+                serde_json::json!({"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false}),
+            ],
+        ),
     );
 
     render_admin_template(&state, "admin/content-form.html", context).await
@@ -386,7 +403,21 @@ async fn edit_content_submit(
     };
 
     match Item::update(state.db(), item_id, user.id, input).await {
-        Ok(_) => {
+        Ok(updated) => {
+            // Auto-update URL alias from pathauto pattern
+            if let Some(ref updated_item) = updated
+                && let Err(e) = crate::services::pathauto::update_alias_item(
+                    state.db(),
+                    updated_item.id,
+                    &updated_item.title,
+                    &updated_item.item_type,
+                    updated_item.created,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, item_id = %item_id, "pathauto alias update failed");
+            }
+
             tracing::info!(item_id = %item_id, "content updated");
             Redirect::to("/admin/content").into_response()
         }

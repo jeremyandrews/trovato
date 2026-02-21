@@ -29,3 +29,8 @@ So that contributors can trust the docs as an accurate picture of what's done an
 - `docs/alignment/gap-analysis.md`
 - `docs/alignment/roadmap.md`
 - `docs/alignment/intentional-divergences.md`
+
+### Code Review Fixes Applied
+
+- **Pathauto status corrected** — gap-analysis.md Gap #4 updated from "Defer" to "RESOLVED"; roadmap.md deferred table updated from "Being addressed" to "Resolved"
+- **Local tasks status corrected** — gap-analysis.md Gap #17 updated to "RESOLVED"

@@ -37,3 +37,9 @@ So that I can manage my own account without admin help.
 
 - `crates/kernel/src/routes/auth.rs` — add profile/password endpoints
 - `templates/user/profile.html` — profile edit form template
+- `crates/kernel/src/services/email.rs` — added `site_url()` accessor
+
+### Code Review Fixes Applied
+
+- **Email change verification** — email changes now store `pending_email` in user data and send verification email to new address; email updated only after clicking verification link at `/user/verify-email/{token}`
+- **Form value preservation** — `render_profile` accepts optional `values` parameter; submitted form data preserved on validation errors

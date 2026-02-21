@@ -38,6 +38,14 @@ So that every item gets a human-readable URL without manual entry.
 
 ### Key Files
 
-- `crates/kernel/src/services/` — new pathauto service or add to item_service
+- `crates/kernel/src/services/pathauto.rs` — pathauto service
 - `crates/kernel/src/models/url_alias.rs` — alias CRUD
-- `crates/kernel/src/routes/item.rs` — integrate into create/update handlers
+- `crates/kernel/src/routes/item.rs` — integrated into create/update handlers
+- `crates/kernel/src/routes/admin_content.rs` — integrated into admin create/update
+
+### Code Review Fixes Applied
+
+- **Pathauto on update** — added `update_alias_item()` function; called from both `item.rs` and `admin_content.rs` update handlers
+- **Admin content integration** — `auto_alias_item()` now called on admin content create
+- **Query optimization** — `generate_unique_alias` uses single `LIKE` query instead of up to 100 sequential lookups
+- **Kernel minimality** — noted for future extraction to plugin (architectural change deferred)

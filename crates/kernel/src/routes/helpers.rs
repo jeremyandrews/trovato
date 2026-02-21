@@ -286,6 +286,30 @@ pub fn render_not_found() -> Response {
 }
 
 /// HTML-escape a string for safe output.
+/// Build local task tab data from the menu registry, merged with hardcoded tabs.
+///
+/// Looks up plugin-registered local tasks for the given `parent_path` and
+/// merges them with `base_tabs`. Plugin tabs are appended after base tabs,
+/// sorted by weight.
+pub fn build_local_tasks(
+    state: &crate::state::AppState,
+    parent_path: &str,
+    base_tabs: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut tabs = base_tabs;
+
+    // Append plugin-registered local tasks from menu registry
+    for task in state.menu_registry().local_tasks(parent_path) {
+        tabs.push(serde_json::json!({
+            "title": task.title,
+            "path": task.path,
+            "active": false,
+        }));
+    }
+
+    serde_json::Value::Array(tabs)
+}
+
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

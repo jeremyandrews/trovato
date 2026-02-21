@@ -82,6 +82,8 @@ pub fn expand_pattern(
 /// Generate a unique alias for an item, handling duplicates with numeric suffixes.
 ///
 /// If `/blog/my-post` is taken, tries `/blog/my-post-1`, `/blog/my-post-2`, etc.
+/// Uses a single query to find existing aliases with matching prefix to avoid
+/// sequential lookups.
 pub async fn generate_unique_alias(pool: &PgPool, base_alias: &str) -> Result<String> {
     // Ensure alias starts with /
     let base = if base_alias.starts_with('/') {
@@ -90,15 +92,27 @@ pub async fn generate_unique_alias(pool: &PgPool, base_alias: &str) -> Result<St
         format!("/{base_alias}")
     };
 
+    // Find all existing aliases that match this base pattern in one query
+    let like_pattern = format!("{base}%");
+    let existing: Vec<(String,)> =
+        sqlx::query_as("SELECT alias FROM url_alias WHERE alias LIKE $1")
+            .bind(&like_pattern)
+            .fetch_all(pool)
+            .await
+            .context("failed to check alias uniqueness")?;
+
+    let existing_set: std::collections::HashSet<&str> =
+        existing.iter().map(|(a,)| a.as_str()).collect();
+
     // Try the base alias first
-    if UrlAlias::find_by_alias(pool, &base).await?.is_none() {
+    if !existing_set.contains(base.as_str()) {
         return Ok(base);
     }
 
     // Try with numeric suffixes
     for i in 1..100 {
         let candidate = format!("{base}-{i}");
-        if UrlAlias::find_by_alias(pool, &candidate).await?.is_none() {
+        if !existing_set.contains(candidate.as_str()) {
             return Ok(candidate);
         }
     }
@@ -165,6 +179,62 @@ pub async fn auto_alias_item(
         item_id = %item_id,
         alias = %alias,
         "auto-generated path alias"
+    );
+
+    Ok(Some(alias))
+}
+
+/// Update the auto-generated alias for an item after title changes.
+///
+/// Does nothing if:
+/// - No pattern configured for this content type
+/// - No existing alias for this item (item may not have had pathauto on create)
+///
+/// If an alias exists, regenerates from the pattern and updates it.
+/// If no alias exists, creates one (same as `auto_alias_item`).
+pub async fn update_alias_item(
+    pool: &PgPool,
+    item_id: Uuid,
+    title: &str,
+    item_type: &str,
+    created_ts: i64,
+) -> Result<Option<String>> {
+    let created = DateTime::from_timestamp(created_ts, 0).unwrap_or_else(Utc::now);
+    let Some(pattern) = get_pattern(pool, item_type).await? else {
+        return Ok(None);
+    };
+
+    let source = format!("/item/{item_id}");
+    let existing = UrlAlias::find_by_source(pool, &source).await?;
+
+    // Expand the pattern and generate a unique alias
+    let expanded = expand_pattern(&pattern, title, item_type, created);
+    let alias = generate_unique_alias(pool, &expanded).await?;
+
+    if existing.is_empty() {
+        // No alias yet — create one
+        UrlAlias::create(
+            pool,
+            CreateUrlAlias {
+                source,
+                alias: alias.clone(),
+                language: None,
+                stage_id: None,
+            },
+        )
+        .await
+        .context("failed to create auto-generated alias")?;
+    } else {
+        // Update existing alias
+        UrlAlias::upsert_for_source(pool, &source, &alias, "live", "en")
+            .await
+            .context("failed to update auto-generated alias")?;
+    }
+
+    tracing::info!(
+        item_id = %item_id,
+        alias = %alias,
+        "updated auto-generated path alias"
     );
 
     Ok(Some(alias))

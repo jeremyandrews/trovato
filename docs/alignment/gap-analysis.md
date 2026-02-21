@@ -38,17 +38,11 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 
 ## MEDIUM Priority
 
-### 4. No Automatic Path Alias Generation (Pathauto)
+### 4. ~~No Automatic Path Alias Generation (Pathauto)~~ RESOLVED
 
-**Gap:** URL aliases must be manually created for each item. There is no pattern-based automatic generation from item title or other fields.
+**Status:** Resolved in Epic 28 (Story 28.3). Pattern-based URL alias generation using configurable patterns per content type (e.g., `[type]/[title]`, `news/[yyyy]/[mm]/[title]`). Aliases auto-generated on item create and updated on item edit. Unique alias collision handling with numeric suffixes. Configured via `pathauto_patterns` in site config.
 
-**D6 equivalent:** The Pathauto contrib module (not core, but installed on nearly every D6 site) automatically generated URL aliases from configurable patterns (e.g., `blog/[title]`, `news/[yyyy]/[mm]/[title]`).
-
-**Impact:** Editorial friction. Every content item requires manual alias entry. Sites with hundreds of items need automation, but manual alias creation works for smaller sites.
-
-**Effort:** M (3-5 days). Implement a pattern system using item field tokens, trigger on item create/update, integrate with existing `url_alias` infrastructure. Could be a plugin with kernel support.
-
-**Resolution:** Defer. URL aliases work manually. Automatic generation is a post-v1.0 enhancement. The infrastructure (url_alias table, middleware, language/stage columns) is ready.
+**File:** `crates/kernel/src/services/pathauto.rs`
 
 ---
 
@@ -207,17 +201,11 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 
 ---
 
-### 17. No Local Tasks (Admin Tabs)
+### 17. ~~No Local Tasks (Admin Tabs)~~ RESOLVED
 
-**Gap:** No equivalent of D6's local tasks (the tab navigation on admin pages like View/Edit/Revisions).
+**Status:** Resolved in Epic 28 (Story 28.4). `local_task` flag added to MenuDefinition, tab bar macro renders horizontal tabs on admin entity pages (View/Edit/Revisions). Plugin-registered local tasks via `tap_menu` are merged with hardcoded tabs.
 
-**D6 equivalent:** `hook_menu` could define `MENU_LOCAL_TASK` items that appeared as tabs on their parent page.
-
-**Impact:** Admin UX gap. Tab-style navigation between related admin pages (view/edit/translate/revisions) requires manual template handling.
-
-**Effort:** S (1 day). Add `local_task` flag to MenuDefinition, render tab navigation in admin templates.
-
-**Resolution:** Defer. Can be added to the menu system when the admin UI is polished.
+**Files:** `crates/kernel/src/menu/registry.rs`, `templates/admin/macros/tabs.html`
 
 ---
 

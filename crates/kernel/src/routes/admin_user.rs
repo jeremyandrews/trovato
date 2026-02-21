@@ -14,8 +14,8 @@ use crate::models::{CreateUser, Role, UpdateUser, User};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_error, render_not_found, render_server_error,
-    require_admin, require_csrf,
+    CsrfOnlyForm, build_local_tasks, render_admin_template, render_error, render_not_found,
+    render_server_error, require_admin, require_csrf,
 };
 
 /// Permissions available for assignment to roles.
@@ -261,12 +261,16 @@ async fn edit_user_form(
     );
     context.insert("path", &format!("/admin/people/{user_id}/edit"));
 
-    // Local task tabs for user edit pages
+    // Local task tabs for user edit pages (hardcoded + plugin-registered)
     context.insert(
         "local_tasks",
-        &serde_json::json!([
-            {"title": "Edit", "path": format!("/admin/people/{user_id}/edit"), "active": true},
-        ]),
+        &build_local_tasks(
+            &state,
+            "/admin/people/:id",
+            vec![
+                serde_json::json!({"title": "Edit", "path": format!("/admin/people/{user_id}/edit"), "active": true}),
+            ],
+        ),
     );
 
     render_admin_template(&state, "admin/user-form.html", context).await

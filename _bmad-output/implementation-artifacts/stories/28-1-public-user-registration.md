@@ -46,3 +46,10 @@ So that I can access authenticated features without admin intervention.
 - `crates/kernel/src/models/` — new verification token model
 - `crates/kernel/migrations/` — new migration for verification tokens
 - `templates/user/register.html` — registration form template
+
+### Code Review Fixes Applied
+
+- **Rate limiting enforced** — `state.rate_limiter().check("login", ...)` added to both form and JSON registration handlers
+- **Email enumeration mitigated** — changed duplicate email error to generic "Username or email is already in use"
+- **JSON password confirmation** — added optional `confirm_password` field to `RegisterJsonRequest`; validated when provided
+- **Token logging removed** — removed `plain_token` and `verify_url` from debug log messages

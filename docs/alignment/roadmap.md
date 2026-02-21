@@ -103,12 +103,12 @@ Add pattern-based URL alias generation (Pathauto equivalent) for items.
 
 | Gap | Rationale |
 |---|---|
-| ~~Automatic path alias generation (Pathauto)~~ | Being addressed in Epic 28, Story 28.3 |
+| ~~Automatic path alias generation (Pathauto)~~ | Resolved in Epic 28, Story 28.3 |
 | File usage reference counting | Current behavior (permanent = stays, temporary = cleaned) is acceptable. Implement when storage management matters. |
 | Tile/Block placement UI | Page layout handled via templates. Admin UI is a product concern for post-v1.0. |
 | Sub-theme inheritance | Single-theme sites don't need it. Add when the theming ecosystem matures. |
 | Free-tagging autocomplete | Standard term selection works. Autocomplete is a UX enhancement. |
-| ~~Local tasks (admin tabs)~~ | Being addressed in Epic 28, Story 28.4 |
+| ~~Local tasks (admin tabs)~~ | Resolved in Epic 28, Story 28.4 |
 | ~~Stage-aware menus/aliases (Epic 21, Story 21.5)~~ | Resolved in Epic 21 |
 | ~~Stage hierarchy support (Epic 21, Story 21.8)~~ | Resolved in Epic 21 |
 

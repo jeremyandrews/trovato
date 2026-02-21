@@ -704,6 +704,19 @@ async fn update_item(
                         tracing::warn!(error = %e, "failed to update url alias");
                     }
                 }
+            } else {
+                // No explicit alias — auto-update from pathauto pattern
+                if let Err(e) = crate::services::pathauto::update_alias_item(
+                    state.db(),
+                    item.id,
+                    &item.title,
+                    &item.item_type,
+                    item.created,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, item_id = %item.id, "pathauto alias update failed");
+                }
             }
 
             Ok(Json(ItemResponse {

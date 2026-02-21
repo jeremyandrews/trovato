@@ -467,6 +467,8 @@ struct RegisterJsonRequest {
     username: String,
     mail: String,
     password: String,
+    #[serde(default)]
+    confirm_password: Option<String>,
 }
 
 /// Check whether user registration is enabled via site config.
@@ -550,10 +552,17 @@ async fn render_register_form(
 async fn register_form_submit(
     State(state): State<AppState>,
     session: Session,
+    headers: axum::http::HeaderMap,
     Form(form): Form<RegisterFormRequest>,
 ) -> Response {
     if !is_registration_enabled(&state).await {
         return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
+    }
+
+    // Rate limit registration attempts
+    let client_id = crate::middleware::get_client_id(None, &headers);
+    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
+        return crate::middleware::rate_limit_response(retry_after);
     }
 
     // Verify CSRF token
@@ -660,12 +669,12 @@ async fn validate_registration_input(
         ));
     }
 
-    // Check email uniqueness
+    // Check email uniqueness — use generic message to prevent email enumeration
     if !mail.is_empty()
         && mail.contains('@')
         && let Ok(Some(_)) = User::find_by_mail(state.db(), mail).await
     {
-        errors.push("An account with that email address already exists.".to_string());
+        errors.push("Username or email is already in use.".to_string());
     }
 }
 
@@ -697,25 +706,15 @@ async fn do_register(
             .await
         {
             tracing::error!(error = %e, "failed to send verification email");
-            // Log the URL as fallback for dev environments
-            tracing::debug!(
-                verify_url = format!("/user/verify/{}", plain_token),
-                "Verification URL (email send failed)"
-            );
         } else {
             info!(user_id = %user.id, email = %mail.trim(), "verification email sent");
         }
     } else {
-        // SMTP not configured — log the token for development
-        tracing::debug!(
+        // SMTP not configured — log without exposing the token
+        tracing::warn!(
             user_id = %user.id,
             email = %mail.trim(),
-            token = %plain_token,
-            "Registration verification (SMTP not configured, token logged)"
-        );
-        tracing::debug!(
-            verify_url = format!("/user/verify/{}", plain_token),
-            "Verification URL for testing"
+            "SMTP not configured; verification email not sent"
         );
     }
 
@@ -739,8 +738,20 @@ async fn do_register(
 /// - Returns JSON response
 async fn register_json(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<RegisterJsonRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+    // Rate limit registration attempts
+    let client_id = crate::middleware::get_client_id(None, &headers);
+    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(AuthError {
+                error: format!("Rate limit exceeded. Retry after {retry_after} seconds."),
+            }),
+        ));
+    }
+
     if !is_registration_enabled(&state).await {
         return Err((
             StatusCode::NOT_FOUND,
@@ -760,6 +771,13 @@ async fn register_json(
         &mut errors,
     )
     .await;
+
+    // Validate password confirmation if provided
+    if let Some(ref confirm) = request.confirm_password
+        && confirm != &request.password
+    {
+        errors.push("Passwords do not match.".to_string());
+    }
 
     if !errors.is_empty() {
         return Err((
@@ -866,6 +884,104 @@ async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) 
     }
 }
 
+/// Email change verification handler.
+///
+/// GET /user/verify-email/{token}
+/// - Validates the token, updates the user's email to the pending address
+async fn verify_email_change(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+    let verification = match EmailVerificationToken::find_valid(state.db(), &token).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Html(
+                "<h1>Verification Failed</h1>\
+                 <p>Invalid or expired verification link.</p>\
+                 <p><a href=\"/user/profile\">Return to profile</a></p>"
+                    .to_string(),
+            )
+            .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "database error during email change verification");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+        }
+    };
+
+    // Get the user and check for pending_email in data
+    let Some(user) = User::find_by_id(state.db(), verification.user_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return (StatusCode::NOT_FOUND, "User not found").into_response();
+    };
+
+    let pending_email = user
+        .data
+        .get("pending_email")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let Some(new_email) = pending_email else {
+        return Html(
+            "<h1>No Pending Change</h1>\
+             <p>There is no pending email change for this account.</p>\
+             <p><a href=\"/user/profile\">Return to profile</a></p>"
+                .to_string(),
+        )
+        .into_response();
+    };
+
+    // Update the user's email and clear pending_email from data
+    let mut data = user.data.clone();
+    if let Some(obj) = data.as_object_mut() {
+        obj.remove("pending_email");
+    }
+
+    let update = crate::models::UpdateUser {
+        mail: Some(new_email),
+        data: Some(data),
+        ..Default::default()
+    };
+
+    if let Err(e) = User::update(state.db(), user.id, update).await {
+        tracing::error!(error = %e, user_id = %user.id, "failed to update email");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update email").into_response();
+    }
+
+    // Mark token as used
+    if let Err(e) = EmailVerificationToken::mark_used(state.db(), verification.id).await {
+        tracing::warn!(error = %e, "failed to mark email change token as used");
+    }
+
+    // Invalidate remaining tokens
+    if let Err(e) =
+        EmailVerificationToken::invalidate_user_tokens(state.db(), verification.user_id).await
+    {
+        tracing::warn!(error = %e, "failed to invalidate remaining verification tokens");
+    }
+
+    info!(user_id = %user.id, "email address updated via verification");
+
+    // Render success
+    let mut context = tera::Context::new();
+    context.insert("csrf_token", "");
+    context.insert(
+        "success",
+        "Your email address has been updated successfully.",
+    );
+
+    match state.theme().tera().render("user/login.html", &context) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => Html(
+            "<h1>Email Updated</h1>\
+             <p>Your email address has been updated successfully.</p>\
+             <p><a href=\"/user/profile\">Return to profile</a></p>"
+                .to_string(),
+        )
+        .into_response(),
+    }
+}
+
 // ─── Profile & Password Management ──────────────────────────────────────────
 
 /// Profile edit form request.
@@ -908,6 +1024,9 @@ async fn get_current_user(state: &AppState, session: &Session) -> Result<User, R
 }
 
 /// Render the profile page with context.
+///
+/// When `values` is provided, those values override the user's stored values
+/// (used to preserve submitted form data on validation errors).
 async fn render_profile(
     state: &AppState,
     csrf_token: &str,
@@ -915,16 +1034,17 @@ async fn render_profile(
     errors: Option<&[String]>,
     success: Option<&str>,
     error: Option<&str>,
+    values: Option<&serde_json::Value>,
 ) -> Response {
     let mut context = tera::Context::new();
     context.insert("csrf_token", csrf_token);
     context.insert(
         "user",
-        &serde_json::json!({
+        values.unwrap_or(&serde_json::json!({
             "name": user.name,
             "mail": user.mail,
             "timezone": user.timezone,
-        }),
+        })),
     );
     if let Some(errors) = errors {
         context.insert("errors", errors);
@@ -955,7 +1075,7 @@ async fn profile_form(State(state): State<AppState>, session: Session) -> Respon
     };
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-    render_profile(&state, &csrf_token, &user, None, None, None).await
+    render_profile(&state, &csrf_token, &user, None, None, None, None).await
 }
 
 /// Profile update handler.
@@ -984,6 +1104,7 @@ async fn profile_update(
                     None,
                     None,
                     Some("Invalid form token. Please try again."),
+                    None,
                 )
                 .await;
             }
@@ -997,6 +1118,7 @@ async fn profile_update(
                 None,
                 None,
                 Some("Missing form token. Please try again."),
+                None,
             )
             .await;
         }
@@ -1006,6 +1128,13 @@ async fn profile_update(
     let mail = form.mail.trim();
     let timezone = form.timezone.trim();
     let email_changing = mail != user.mail;
+
+    // Build form values for re-rendering on validation errors
+    let form_values = serde_json::json!({
+        "name": name,
+        "mail": mail,
+        "timezone": timezone,
+    });
 
     let mut errors = Vec::new();
 
@@ -1051,18 +1180,22 @@ async fn profile_update(
 
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-        return render_profile(&state, &csrf_token, &user, Some(&errors), None, None).await;
+        return render_profile(
+            &state,
+            &csrf_token,
+            &user,
+            Some(&errors),
+            None,
+            None,
+            Some(&form_values),
+        )
+        .await;
     }
 
-    // Build update
+    // Build update — do NOT change email directly; require verification
     let update = crate::models::UpdateUser {
         name: if name != user.name {
             Some(name.to_string())
-        } else {
-            None
-        },
-        mail: if email_changing {
-            Some(mail.to_string())
         } else {
             None
         },
@@ -1074,21 +1207,64 @@ async fn profile_update(
         ..Default::default()
     };
 
+    // If email is changing, store pending_email and send verification
+    let pending_email_data = if email_changing {
+        let mut data = user.data.clone();
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert(
+                "pending_email".to_string(),
+                serde_json::Value::String(mail.to_string()),
+            );
+        }
+        Some(data)
+    } else {
+        None
+    };
+
+    // Merge data update into the main update if needed
+    let update = if let Some(data) = pending_email_data {
+        crate::models::UpdateUser {
+            data: Some(data),
+            ..update
+        }
+    } else {
+        update
+    };
+
     match User::update(state.db(), user.id, update).await {
         Ok(Some(updated_user)) => {
-            // Send notification email if email changed
+            // Send verification email if email is changing
             if email_changing {
-                let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
-                if let Some(email_service) = state.email() {
-                    let body = format!(
-                        "Your email address at {site_name} has been changed to this address.\n\n\
-                         If you did not make this change, please contact the site administrator."
-                    );
-                    if let Err(e) = email_service
-                        .send(mail, &format!("Email changed at {site_name}"), &body)
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to send email change notification");
+                // Create verification token
+                match EmailVerificationToken::create(state.db(), user.id).await {
+                    Ok((_, plain_token)) => {
+                        let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
+                        if let Some(email_service) = state.email() {
+                            let verify_url = format!(
+                                "{}/user/verify-email/{}",
+                                email_service.site_url(),
+                                plain_token
+                            );
+                            let body = format!(
+                                "You requested to change your email address at {site_name}.\n\n\
+                                 To confirm this change, visit the following link:\n\
+                                 {verify_url}\n\n\
+                                 If you did not request this change, you can safely ignore this email.\n\n\
+                                 This link will expire in 24 hours."
+                            );
+                            if let Err(e) = email_service
+                                .send(mail, &format!("Confirm email change at {site_name}"), &body)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to send email change verification"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to create email change token");
                     }
                 }
             }
@@ -1104,12 +1280,19 @@ async fn profile_update(
                 .await;
 
             let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let success_msg = if email_changing {
+                "Profile updated. A verification email has been sent to your new address. \
+                 Your email will be updated after you confirm the change."
+            } else {
+                "Profile updated successfully."
+            };
             render_profile(
                 &state,
                 &csrf_token,
                 &updated_user,
                 None,
-                Some("Profile updated successfully."),
+                Some(success_msg),
+                None,
                 None,
             )
             .await
@@ -1123,6 +1306,7 @@ async fn profile_update(
                 None,
                 None,
                 Some("User not found."),
+                None,
             )
             .await
         }
@@ -1136,6 +1320,7 @@ async fn profile_update(
                 None,
                 None,
                 Some("An error occurred while saving your profile."),
+                None,
             )
             .await
         }
@@ -1168,6 +1353,7 @@ async fn password_change(
                     None,
                     None,
                     Some("Invalid form token. Please try again."),
+                    None,
                 )
                 .await;
             }
@@ -1181,6 +1367,7 @@ async fn password_change(
                 None,
                 None,
                 Some("Missing form token. Please try again."),
+                None,
             )
             .await;
         }
@@ -1204,7 +1391,7 @@ async fn password_change(
 
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-        return render_profile(&state, &csrf_token, &user, Some(&errors), None, None).await;
+        return render_profile(&state, &csrf_token, &user, Some(&errors), None, None, None).await;
     }
 
     match User::update_password(state.db(), user.id, &form.new_password).await {
@@ -1229,6 +1416,7 @@ async fn password_change(
                 None,
                 Some("Password changed successfully."),
                 None,
+                None,
             )
             .await
         }
@@ -1241,6 +1429,7 @@ async fn password_change(
                 None,
                 None,
                 Some("An error occurred while changing your password."),
+                None,
             )
             .await
         }
@@ -1259,6 +1448,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/user/register/json", post(register_json))
         .route("/user/verify/{token}", get(verify_email))
+        .route("/user/verify-email/{token}", get(verify_email_change))
         .route("/user/profile", get(profile_form).post(profile_update))
         .route("/user/password", post(password_change))
 }

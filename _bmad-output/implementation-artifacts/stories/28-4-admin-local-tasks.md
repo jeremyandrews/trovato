@@ -38,4 +38,11 @@ So that I can quickly switch between related views (View/Edit/Revisions/Translat
 - `crates/kernel/src/menu/` — MenuDefinition, registry
 - `crates/plugin-sdk/src/lib.rs` — MenuDefinition in plugin SDK
 - `templates/page--admin.html` — admin base template
-- `templates/admin/macros/` — add tab bar macro
+- `templates/admin/macros/tabs.html` — tab bar macro
+- `crates/kernel/src/routes/helpers.rs` — `build_local_tasks` helper
+
+### Code Review Fixes Applied
+
+- **Plugin tab integration** — added `build_local_tasks()` helper that merges hardcoded tabs with `menu_registry.local_tasks()` results; admin_content and admin_user now call it
+- **XSS escaping** — tab template now uses `| escape` filter on `tab.path` and `tab.title`
+- **Accessibility** — added `aria-current="page"` to active tab link
