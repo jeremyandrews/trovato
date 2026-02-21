@@ -24,7 +24,7 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 
 **Status:** Resolved in Epic 23 (Stories 23.1-23.10). Full admin UI with query builder, live preview, relationship editor, display configuration, and performance guardrails. Admin and content gather views registered.
 
-**Files:** `crates/kernel/src/routes/admin_gather.rs`, `templates/admin/gather-form.html`
+**Files:** `crates/kernel/src/routes/gather_admin.rs`, `templates/admin/gather-form.html`
 
 ---
 

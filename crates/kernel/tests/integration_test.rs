@@ -4643,3 +4643,192 @@ async fn profile_update_changes_display_name() {
         "Should show success message after profile update"
     );
 }
+
+// =============================================================================
+// Pathauto Tests (Story 28.3)
+// =============================================================================
+
+#[tokio::test]
+async fn pathauto_generates_alias_on_item_create() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let type_name = format!("pa_{}", &unique_id[..8]);
+
+    // Create content type
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, plugin, settings)
+         VALUES ($1, 'Pathauto Test', 'For testing', 'test', '{}'::jsonb)
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(&type_name)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create content type");
+
+    // Configure pathauto pattern for this content type
+    let patterns = json!({ &type_name: "test/[title]" });
+    trovato_kernel::models::SiteConfig::set(&app.db, "pathauto_patterns", patterns)
+        .await
+        .unwrap();
+
+    // Create an item directly in DB and trigger pathauto
+    let item_id = uuid::Uuid::now_v7();
+    let now = Utc::now().timestamp();
+    let title = "My Test Article";
+
+    sqlx::query(
+        "INSERT INTO item (id, type, title, status, author_id, created, changed, promote, sticky, fields)
+         VALUES ($1, $2, $3, 1, '00000000-0000-0000-0000-000000000000', $4, $5, 0, 0, '{}'::jsonb)",
+    )
+    .bind(item_id)
+    .bind(&type_name)
+    .bind(title)
+    .bind(now)
+    .bind(now)
+    .execute(&app.db)
+    .await
+    .expect("Failed to create item");
+
+    // Call pathauto
+    let result = trovato_kernel::services::pathauto::auto_alias_item(
+        &app.db, item_id, title, &type_name, now,
+    )
+    .await
+    .expect("pathauto should succeed");
+
+    assert!(result.is_some(), "Should generate an alias");
+    let alias = result.unwrap();
+    assert_eq!(alias, "test/my-test-article", "Alias should match pattern");
+
+    // Verify alias exists in DB
+    let exists = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(*) FROM url_alias WHERE alias = $1 AND source = $2",
+    )
+    .bind(&alias)
+    .bind(format!("/item/{item_id}"))
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+
+    assert_eq!(exists.0, 1, "Alias should be stored in database");
+
+    // Cleanup
+    sqlx::query("DELETE FROM url_alias WHERE source = $1")
+        .bind(format!("/item/{item_id}"))
+        .execute(&app.db)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(item_id)
+        .execute(&app.db)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM item_type WHERE type = $1")
+        .bind(&type_name)
+        .execute(&app.db)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn pathauto_skips_when_alias_exists() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let type_name = format!("pa2_{}", &unique_id[..8]);
+
+    // Create content type
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, plugin, settings)
+         VALUES ($1, 'Pathauto Skip Test', 'For testing', 'test', '{}'::jsonb)
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(&type_name)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    // Configure pattern
+    let patterns = json!({ &type_name: "skip/[title]" });
+    trovato_kernel::models::SiteConfig::set(&app.db, "pathauto_patterns", patterns)
+        .await
+        .unwrap();
+
+    // Create item
+    let item_id = uuid::Uuid::now_v7();
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO item (id, type, title, status, author_id, created, changed, promote, sticky, fields)
+         VALUES ($1, $2, 'Skip Test', 1, '00000000-0000-0000-0000-000000000000', $3, $4, 0, 0, '{}'::jsonb)",
+    )
+    .bind(item_id)
+    .bind(&type_name)
+    .bind(now)
+    .bind(now)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    // Manually set an alias first
+    sqlx::query("INSERT INTO url_alias (source, alias) VALUES ($1, $2)")
+        .bind(format!("/item/{item_id}"))
+        .bind("my-custom-alias")
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    // Pathauto should skip because alias already exists
+    let result = trovato_kernel::services::pathauto::auto_alias_item(
+        &app.db,
+        item_id,
+        "Skip Test",
+        &type_name,
+        now,
+    )
+    .await
+    .expect("pathauto should succeed");
+
+    assert!(
+        result.is_none(),
+        "Should not overwrite existing manual alias"
+    );
+
+    // Cleanup
+    sqlx::query("DELETE FROM url_alias WHERE source = $1")
+        .bind(format!("/item/{item_id}"))
+        .execute(&app.db)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(item_id)
+        .execute(&app.db)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM item_type WHERE type = $1")
+        .bind(&type_name)
+        .execute(&app.db)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn pathauto_returns_none_without_pattern() {
+    let app = TestApp::new().await;
+    let item_id = uuid::Uuid::now_v7();
+    let now = Utc::now().timestamp();
+
+    // Call pathauto with a type that has no pattern configured
+    let result = trovato_kernel::services::pathauto::auto_alias_item(
+        &app.db,
+        item_id,
+        "No Pattern",
+        "nonexistent_type_xyz",
+        now,
+    )
+    .await
+    .expect("pathauto should succeed even without pattern");
+
+    assert!(
+        result.is_none(),
+        "Should return None when no pattern configured"
+    );
+}
