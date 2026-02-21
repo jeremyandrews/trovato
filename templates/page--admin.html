@@ -106,6 +106,42 @@
     .link-button--danger {
         color: #dc3545;
     }
+
+    .admin-tabs {
+        margin-bottom: 1.5rem;
+    }
+
+    .admin-tabs__list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        border-bottom: 2px solid var(--gray-300);
+    }
+
+    .admin-tabs__item {
+        margin: 0;
+    }
+
+    .admin-tabs__link {
+        display: block;
+        padding: 0.625rem 1.25rem;
+        color: var(--gray-600);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: color 0.15s, border-color 0.15s;
+    }
+
+    .admin-tabs__link:hover {
+        color: var(--gray-900);
+        text-decoration: none;
+    }
+
+    .admin-tabs__link--active {
+        color: var(--primary);
+        border-bottom-color: var(--primary);
+        font-weight: 600;
+    }
 </style>
 {% endblock %}
 

@@ -1,10 +1,13 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
+{% import "admin/macros/tabs.html" as tabs %}
 
 {% block content %}
 <div class="admin-header">
     <h2>{% if editing %}Edit user{% else %}Add user{% endif %}</h2>
 </div>
+
+{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}
 
 <div class="admin-card">
     <form id="user-form" method="post" action="{{ action }}">

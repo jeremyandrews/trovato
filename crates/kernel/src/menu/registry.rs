@@ -36,6 +36,9 @@ pub struct MenuDefinition {
     /// Handler type: "page", "api", "form"
     #[serde(default = "default_page")]
     pub handler_type: String,
+    /// Whether this is a local task (tab-style navigation on entity pages)
+    #[serde(default)]
+    pub local_task: bool,
 }
 
 fn default_true() -> bool {
@@ -185,6 +188,17 @@ impl MenuRegistry {
             .collect()
     }
 
+    /// Get local task menus for a parent path, sorted by weight.
+    pub fn local_tasks(&self, parent: &str) -> Vec<&MenuDefinition> {
+        let mut tasks: Vec<&MenuDefinition> = self
+            .menus
+            .values()
+            .filter(|m| m.local_task && m.parent.as_deref() == Some(parent))
+            .collect();
+        tasks.sort_by_key(|m| m.weight);
+        tasks
+    }
+
     /// Get menu count.
     pub fn len(&self) -> usize {
         self.menus.len()
@@ -293,6 +307,29 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result.menu.path, "/blog/:slug");
         assert_eq!(result.params.get("slug"), Some(&"hello-world".to_string()));
+    }
+
+    #[test]
+    fn registry_local_tasks() {
+        let json = r#"[
+            {"path": "/admin/content/:id", "title": "View", "parent": "/admin/content/:id", "local_task": true, "weight": 0},
+            {"path": "/admin/content/:id/edit", "title": "Edit", "parent": "/admin/content/:id", "local_task": true, "weight": 1},
+            {"path": "/admin/content/:id/revisions", "title": "Revisions", "parent": "/admin/content/:id", "local_task": true, "weight": 2},
+            {"path": "/admin/content", "title": "Content"}
+        ]"#;
+
+        let registry =
+            MenuRegistry::from_tap_results(vec![("content".to_string(), json.to_string())]);
+
+        let tasks = registry.local_tasks("/admin/content/:id");
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].title, "View");
+        assert_eq!(tasks[1].title, "Edit");
+        assert_eq!(tasks[2].title, "Revisions");
+
+        // Non-local-task items should not appear
+        let no_tasks = registry.local_tasks("/admin/content");
+        assert!(no_tasks.is_empty());
     }
 
     #[test]

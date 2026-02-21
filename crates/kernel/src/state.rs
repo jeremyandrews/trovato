@@ -326,6 +326,7 @@ impl AppState {
             visible: true,
             method: "GET".to_string(),
             handler_type: "page".to_string(),
+            local_task: false,
         });
 
         let menu_registry = Arc::new(menu_registry);

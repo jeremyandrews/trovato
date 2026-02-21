@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/tabs.html" as tabs %}
 
 {% set has_compound = false %}
 {% for field in content_type.fields %}
@@ -16,6 +17,8 @@
 <div class="admin-header">
     <h2>{% if editing %}Edit {{ content_type.label }}{% else %}Create {{ content_type.label }}{% endif %}</h2>
 </div>
+
+{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}
 
 <div class="admin-card">
     <form id="content-form" method="post" action="{{ action }}">

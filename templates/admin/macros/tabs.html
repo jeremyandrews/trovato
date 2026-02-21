@@ -1,0 +1,17 @@
+{#- Admin tab bar macro — renders local task tabs for entity pages. -#}
+
+{#- Horizontal tab bar for entity-level navigation (View/Edit/Revisions).
+    Expects `local_tasks` as a list of {title, path, active} objects. -#}
+{% macro tab_bar(local_tasks) %}
+{% if local_tasks and local_tasks | length > 1 %}
+<nav class="admin-tabs" aria-label="Local tasks">
+    <ul class="admin-tabs__list">
+        {% for tab in local_tasks %}
+        <li class="admin-tabs__item">
+            <a href="{{ tab.path }}" class="admin-tabs__link{% if tab.active %} admin-tabs__link--active{% endif %}">{{ tab.title }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+</nav>
+{% endif %}
+{% endmacro tab_bar %}

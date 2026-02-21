@@ -261,6 +261,14 @@ async fn edit_user_form(
     );
     context.insert("path", &format!("/admin/people/{user_id}/edit"));
 
+    // Local task tabs for user edit pages
+    context.insert(
+        "local_tasks",
+        &serde_json::json!([
+            {"title": "Edit", "path": format!("/admin/people/{user_id}/edit"), "active": true},
+        ]),
+    );
+
     render_admin_template(&state, "admin/user-form.html", context).await
 }
 
@@ -341,6 +349,12 @@ async fn edit_user_submit(
             }),
         );
         context.insert("path", &format!("/admin/people/{user_id}/edit"));
+        context.insert(
+            "local_tasks",
+            &serde_json::json!([
+                {"title": "Edit", "path": format!("/admin/people/{user_id}/edit"), "active": true},
+            ]),
+        );
 
         return render_admin_template(&state, "admin/user-form.html", context).await;
     }

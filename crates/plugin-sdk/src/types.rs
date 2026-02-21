@@ -257,6 +257,9 @@ pub struct MenuDefinition {
     pub callback: String,
     pub permission: String,
     pub parent: Option<String>,
+    /// Whether this is a local task (tab-style navigation on entity pages).
+    #[serde(default)]
+    pub local_task: bool,
 }
 
 impl MenuDefinition {
@@ -267,6 +270,7 @@ impl MenuDefinition {
             callback: String::new(),
             permission: "access content".into(),
             parent: None,
+            local_task: false,
         }
     }
 
@@ -282,6 +286,11 @@ impl MenuDefinition {
 
     pub fn parent(mut self, parent: impl Into<String>) -> Self {
         self.parent = Some(parent.into());
+        self
+    }
+
+    pub fn local_task(mut self) -> Self {
+        self.local_task = true;
         self
     }
 }
