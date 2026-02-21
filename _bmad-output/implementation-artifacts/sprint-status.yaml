@@ -443,3 +443,15 @@ development_status:
   28-4-admin-local-tasks: review
   28-5-update-alignment-documentation: review
   epic-28-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Ritrovo: Reference Application, Demo & Tutorial
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 29: Ritrovo Part 1 — Hello, Trovato
+  # Install, define conference type, create content, first Gather
+  epic-29: backlog
+  29-1-define-conference-item-type: ready-for-dev
+  29-2-admin-ui-manual-conference-creation: ready-for-dev
+  29-3-upcoming-conferences-gather: ready-for-dev
+  epic-29-retrospective: optional
