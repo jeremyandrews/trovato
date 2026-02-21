@@ -35,14 +35,14 @@
         <div class="form-item" style="margin-bottom: 1rem;">
             <label for="username" class="form-item__label">Username</label>
             <input type="text" id="username" name="username" class="form-text"
-                   value="{{ values.username | default(value='') }}"
+                   value="{{ values.username | default(value='') | escape }}"
                    style="width: 100%; padding: 0.5rem; font-size: 1rem;" required autofocus>
         </div>
 
         <div class="form-item" style="margin-bottom: 1rem;">
             <label for="mail" class="form-item__label">Email address</label>
             <input type="email" id="mail" name="mail" class="form-text"
-                   value="{{ values.mail | default(value='') }}"
+                   value="{{ values.mail | default(value='') | escape }}"
                    style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
         </div>
 

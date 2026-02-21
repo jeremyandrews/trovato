@@ -106,17 +106,15 @@ impl EmailVerificationToken {
         Ok(())
     }
 
-    /// Delete expired tokens and used tokens (cleanup job).
+    /// Delete expired tokens (cleanup job).
     ///
-    /// Removes tokens that have expired OR have been used. Used tokens
-    /// are retained for the validity period to allow audit, then cleaned up.
+    /// Removes tokens whose expiry time has passed. Used tokens are retained
+    /// until their expiry to preserve an audit trail.
     pub async fn cleanup_expired(pool: &PgPool) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM email_verification_tokens WHERE expires_at < NOW() OR used_at IS NOT NULL",
-        )
-        .execute(pool)
-        .await
-        .context("failed to cleanup expired verification tokens")?;
+        let result = sqlx::query("DELETE FROM email_verification_tokens WHERE expires_at < NOW()")
+            .execute(pool)
+            .await
+            .context("failed to cleanup expired verification tokens")?;
 
         Ok(result.rows_affected())
     }

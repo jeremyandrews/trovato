@@ -170,6 +170,13 @@ pub async fn auto_alias_item(
 
     // Expand the pattern and generate a unique alias
     let expanded = expand_pattern(&pattern, title, item_type, created);
+
+    // If the slug is empty (e.g. pure non-ASCII title), skip alias generation
+    if expanded.trim_matches('/').is_empty() {
+        tracing::debug!(item_id = %item_id, "skipping pathauto: expanded pattern is empty");
+        return Ok(None);
+    }
+
     let alias = generate_unique_alias(pool, &expanded).await?;
 
     // Create the alias
@@ -218,6 +225,13 @@ pub async fn update_alias_item(
 
     let source = format!("/item/{item_id}");
     let expanded = expand_pattern(&pattern, title, item_type, created);
+
+    // If the slug is empty (e.g. pure non-ASCII title), skip alias update
+    if expanded.trim_matches('/').is_empty() {
+        tracing::debug!(item_id = %item_id, "skipping pathauto update: expanded pattern is empty");
+        return Ok(None);
+    }
+
     let base_alias = if expanded.starts_with('/') {
         expanded
     } else {

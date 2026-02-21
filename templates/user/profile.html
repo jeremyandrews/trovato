@@ -35,21 +35,21 @@
         <div class="form-item" style="margin-bottom: 1rem;">
             <label for="name" class="form-item__label">Username</label>
             <input type="text" id="name" name="name" class="form-text"
-                   value="{{ user.name }}"
+                   value="{{ user.name | escape }}"
                    style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
         </div>
 
         <div class="form-item" style="margin-bottom: 1rem;">
             <label for="mail" class="form-item__label">Email address</label>
             <input type="email" id="mail" name="mail" class="form-text"
-                   value="{{ user.mail }}"
+                   value="{{ user.mail | escape }}"
                    style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
         </div>
 
         <div class="form-item" style="margin-bottom: 1rem;">
             <label for="timezone" class="form-item__label">Timezone</label>
             <input type="text" id="timezone" name="timezone" class="form-text"
-                   value="{{ user.timezone | default(value='') }}"
+                   value="{{ user.timezone | default(value='') | escape }}"
                    placeholder="e.g., America/New_York"
                    style="width: 100%; padding: 0.5rem; font-size: 1rem;">
         </div>

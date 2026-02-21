@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use tracing::info;
 
-use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
+use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
 use crate::models::email_verification::{
     EmailVerificationToken, PURPOSE_EMAIL_CHANGE, PURPOSE_REGISTRATION,
@@ -110,13 +110,14 @@ async fn login_form(State(state): State<AppState>, session: Session) -> Response
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to render login form");
+            let escaped_token = html_escape(&csrf_token);
             Html(format!(
                 r#"<!DOCTYPE html>
 <html><head><title>Log in</title></head>
 <body style="font-family: sans-serif; max-width: 400px; margin: 100px auto; padding: 2rem;">
 <h1>Log in</h1>
 <form method="post" action="/user/login">
-<input type="hidden" name="_token" value="{csrf_token}">
+<input type="hidden" name="_token" value="{escaped_token}">
 <p><label>Username<br><input type="text" name="username" required></label></p>
 <p><label>Password<br><input type="password" name="password" required></label></p>
 <p><button type="submit">Log in</button></p>
@@ -136,7 +137,7 @@ pub struct LoginFormRequest {
     #[serde(default)]
     pub remember_me: Option<String>,
     #[serde(rename = "_token")]
-    pub csrf_token: Option<String>,
+    pub csrf_token: String,
 }
 
 /// Form-based login handler.
@@ -147,23 +148,9 @@ async fn login_form_submit(
     session: Session,
     Form(form): Form<LoginFormRequest>,
 ) -> Response {
-    // Verify CSRF token — always required, reject if missing
-    match &form.csrf_token {
-        Some(token) => match verify_csrf_token(&session, token).await {
-            Ok(true) => {}
-            _ => {
-                return render_login_error(
-                    &state,
-                    &session,
-                    "Invalid form token. Please try again.",
-                )
-                .await;
-            }
-        },
-        None => {
-            return render_login_error(&state, &session, "Missing form token. Please try again.")
-                .await;
-        }
+    // Verify CSRF token
+    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
+        return resp;
     }
 
     // Convert to internal request format
@@ -405,18 +392,10 @@ async fn logout(
     State(state): State<AppState>,
     session: Session,
     Form(form): Form<CsrfOnlyForm>,
-) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+) -> Response {
     // Verify CSRF token
-    let valid = crate::form::csrf::verify_csrf_token(&session, &form.token)
-        .await
-        .unwrap_or(false);
-    if !valid {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(AuthError {
-                error: "Invalid or expired form token. Please try again.".to_string(),
-            }),
-        ));
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
     }
 
     // Extract user_id before deleting the session
@@ -434,20 +413,12 @@ async fn logout(
             .await;
     }
 
-    session.delete().await.map_err(|e| {
+    if let Err(e) = session.delete().await {
         tracing::error!(error = %e, "failed to delete session");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(AuthError {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+    }
 
-    Ok(Json(LoginResponse {
-        success: true,
-        message: "Logout successful".to_string(),
-    }))
+    Redirect::to("/user/login").into_response()
 }
 
 // ─── Registration ────────────────────────────────────────────────────────────
@@ -572,21 +543,17 @@ async fn register_form_submit(
         return resp;
     }
 
+    let username = form.username.trim().to_string();
+    let mail = form.mail.trim().to_string();
+
     let values = serde_json::json!({
-        "username": form.username,
-        "mail": form.mail,
+        "username": username,
+        "mail": mail,
     });
 
     // Validate input
     let mut errors = Vec::new();
-    validate_registration_input(
-        &state,
-        &form.username,
-        &form.mail,
-        &form.password,
-        &mut errors,
-    )
-    .await;
+    validate_registration_input(&state, &username, &mail, &form.password, &mut errors).await;
 
     if form.password != form.confirm_password {
         errors.push("Passwords do not match.".to_string());
@@ -598,7 +565,7 @@ async fn register_form_submit(
     }
 
     // Create inactive user
-    match do_register(&state, &form.username, &form.mail, &form.password).await {
+    match do_register(&state, &username, &mail, &form.password).await {
         Ok(_) => {
             let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
             render_register_form(
@@ -813,7 +780,17 @@ async fn register_json(
 ///
 /// GET /user/verify/{token}
 /// - Validates the token, activates the user, redirects to login
-async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+async fn verify_email(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(token): Path<String>,
+) -> Response {
+    // Rate limit verification attempts to prevent token brute-force
+    let client_id = crate::middleware::get_client_id(None, &headers);
+    if let Err(retry_after) = state.rate_limiter().check("verify_email", &client_id).await {
+        return crate::middleware::rate_limit_response(retry_after);
+    }
+
     let verification =
         match EmailVerificationToken::find_valid(state.db(), &token, PURPOSE_REGISTRATION).await {
             Ok(Some(v)) => v,
@@ -832,6 +809,18 @@ async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) 
                     .into_response();
             }
         };
+
+    // Mark token as used first to prevent replay if activation fails midway
+    if let Err(e) = EmailVerificationToken::mark_used(state.db(), verification.id).await {
+        tracing::warn!(error = %e, "failed to mark verification token as used");
+    }
+
+    // Invalidate any other verification tokens for this user
+    if let Err(e) =
+        EmailVerificationToken::invalidate_user_tokens(state.db(), verification.user_id).await
+    {
+        tracing::warn!(error = %e, "failed to invalidate remaining verification tokens");
+    }
 
     // Activate the user (status=1)
     if let Err(e) = User::update(
@@ -852,18 +841,6 @@ async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) 
             .into_response();
     }
 
-    // Mark token as used
-    if let Err(e) = EmailVerificationToken::mark_used(state.db(), verification.id).await {
-        tracing::warn!(error = %e, "failed to mark verification token as used");
-    }
-
-    // Invalidate any other verification tokens for this user
-    if let Err(e) =
-        EmailVerificationToken::invalidate_user_tokens(state.db(), verification.user_id).await
-    {
-        tracing::warn!(error = %e, "failed to invalidate remaining verification tokens");
-    }
-
     info!(user_id = %verification.user_id, "email verified, account activated");
 
     Redirect::to("/user/login").into_response()
@@ -873,7 +850,17 @@ async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) 
 ///
 /// GET /user/verify-email/{token}
 /// - Validates the token, updates the user's email to the pending address
-async fn verify_email_change(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+async fn verify_email_change(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(token): Path<String>,
+) -> Response {
+    // Rate limit verification attempts to prevent token brute-force
+    let client_id = crate::middleware::get_client_id(None, &headers);
+    if let Err(retry_after) = state.rate_limiter().check("verify_email", &client_id).await {
+        return crate::middleware::rate_limit_response(retry_after);
+    }
+
     let verification =
         match EmailVerificationToken::find_valid(state.db(), &token, PURPOSE_EMAIL_CHANGE).await {
             Ok(Some(v)) => v,
@@ -933,6 +920,18 @@ async fn verify_email_change(State(state): State<AppState>, Path(token): Path<St
         .into_response();
     }
 
+    // Mark token as used first to prevent replay if email update fails midway
+    if let Err(e) = EmailVerificationToken::mark_used(state.db(), verification.id).await {
+        tracing::warn!(error = %e, "failed to mark email change token as used");
+    }
+
+    // Invalidate remaining tokens
+    if let Err(e) =
+        EmailVerificationToken::invalidate_user_tokens(state.db(), verification.user_id).await
+    {
+        tracing::warn!(error = %e, "failed to invalidate remaining verification tokens");
+    }
+
     // Update the user's email and clear pending_email from data
     let mut data = user.data.clone();
     if let Some(obj) = data.as_object_mut() {
@@ -948,18 +947,6 @@ async fn verify_email_change(State(state): State<AppState>, Path(token): Path<St
     if let Err(e) = User::update(state.db(), user.id, update).await {
         tracing::error!(error = %e, user_id = %user.id, "failed to update email");
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update email").into_response();
-    }
-
-    // Mark token as used
-    if let Err(e) = EmailVerificationToken::mark_used(state.db(), verification.id).await {
-        tracing::warn!(error = %e, "failed to mark email change token as used");
-    }
-
-    // Invalidate remaining tokens
-    if let Err(e) =
-        EmailVerificationToken::invalidate_user_tokens(state.db(), verification.user_id).await
-    {
-        tracing::warn!(error = %e, "failed to invalidate remaining verification tokens");
     }
 
     info!(user_id = %user.id, "email address updated via verification");
