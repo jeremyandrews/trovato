@@ -110,6 +110,24 @@ impl LockoutService {
         Ok(())
     }
 
+    /// Clear all lockout state (both attempts and lock) for a user.
+    pub async fn clear_all(&self, username: &str) -> Result<()> {
+        let mut conn = self
+            .redis
+            .get_multiplexed_async_connection()
+            .await
+            .context("failed to get Redis connection")?;
+
+        conn.del::<_, ()>(&attempts_key(username))
+            .await
+            .context("failed to clear attempt counter")?;
+        conn.del::<_, ()>(&lockout_key(username))
+            .await
+            .context("failed to clear lockout flag")?;
+
+        Ok(())
+    }
+
     /// Get remaining lockout time in seconds.
     pub async fn get_lockout_remaining(&self, username: &str) -> Result<Option<u64>> {
         let key = lockout_key(username);

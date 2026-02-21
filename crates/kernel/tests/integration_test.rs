@@ -23,7 +23,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 
 mod common;
-use common::{TestApp, extract_cookies};
+use common::{TestApp, extract_cookies, shared_app};
 
 // =============================================================================
 // Health Check Tests
@@ -31,7 +31,7 @@ use common::{TestApp, extract_cookies};
 
 #[tokio::test]
 async fn health_check_returns_healthy() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(Request::get("/health").body(Body::empty()).unwrap())
@@ -51,7 +51,7 @@ async fn health_check_returns_healthy() {
 
 #[tokio::test]
 async fn login_with_invalid_credentials_returns_401() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Use unique username to avoid rate limiting from previous test runs
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -82,10 +82,14 @@ async fn login_with_invalid_credentials_returns_401() {
 
 #[tokio::test]
 async fn login_with_valid_credentials_returns_success() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
-    // Create a test user first
-    app.create_test_user("testuser", "testpass123", "test@example.com")
+    // Use unique username to avoid rate-limit pollution across runs
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("testuser_{}", &unique_id[..12]);
+    let email = format!("{username}@test.com");
+
+    app.create_test_user(&username, "testpass123", &email)
         .await;
 
     let response = app
@@ -94,7 +98,7 @@ async fn login_with_valid_credentials_returns_success() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "username": "testuser",
+                        "username": username,
                         "password": "testpass123"
                     })
                     .to_string(),
@@ -115,7 +119,7 @@ async fn login_with_valid_credentials_returns_success() {
 
 #[tokio::test]
 async fn admin_content_types_list_returns_html() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first
     let cookies = app
@@ -151,7 +155,7 @@ async fn admin_content_types_list_returns_html() {
 
 #[tokio::test]
 async fn admin_add_content_type_form_returns_html() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first
     let cookies = app
@@ -187,7 +191,7 @@ async fn admin_add_content_type_form_returns_html() {
 
 #[tokio::test]
 async fn admin_manage_fields_returns_html() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first
     let cookies = app
@@ -222,7 +226,7 @@ async fn admin_manage_fields_returns_html() {
 
 #[tokio::test]
 async fn admin_nonexistent_content_type_returns_404() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first
     let cookies = app
@@ -247,7 +251,7 @@ async fn admin_nonexistent_content_type_returns_404() {
 
 #[tokio::test]
 async fn e2e_create_content_type() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Use unique name per test run to avoid conflicts with parallel tests
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -337,7 +341,7 @@ async fn e2e_create_content_type() {
 
 #[tokio::test]
 async fn e2e_add_field_to_content_type() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Use unique name per test run to avoid conflicts with parallel tests
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -467,7 +471,7 @@ async fn e2e_add_field_to_content_type() {
 
 #[tokio::test]
 async fn e2e_search_returns_results() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Create a test item to search for
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -522,7 +526,7 @@ async fn e2e_search_returns_results() {
 
 #[tokio::test]
 async fn e2e_search_html_page_works() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first (search requires session for user context)
     let cookies = app
@@ -555,7 +559,7 @@ async fn e2e_search_html_page_works() {
 
 #[tokio::test]
 async fn e2e_search_empty_query_returns_no_results() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(Request::get("/api/search?q=").body(Body::empty()).unwrap())
@@ -574,7 +578,7 @@ async fn e2e_search_empty_query_returns_no_results() {
 
 #[tokio::test]
 async fn e2e_cron_invalid_key_rejected() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -592,7 +596,7 @@ async fn e2e_cron_invalid_key_rejected() {
 
 #[tokio::test]
 async fn e2e_cron_valid_key_runs() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Use the default key (tests don't set CRON_KEY env var)
     let response = app
@@ -615,7 +619,7 @@ async fn e2e_cron_valid_key_runs() {
 
 #[tokio::test]
 async fn e2e_cron_status_requires_admin() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Try without login
     let response = app
@@ -636,7 +640,7 @@ async fn e2e_cron_status_requires_admin() {
 
 #[tokio::test]
 async fn e2e_file_upload_requires_auth() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Create a simple multipart body manually
     let boundary = "----TestBoundary12345";
@@ -671,7 +675,7 @@ Hello, World!\r\n\
 
 #[tokio::test]
 async fn e2e_file_upload_with_auth() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first
     let cookies = app
@@ -730,7 +734,7 @@ Content-Type: text/plain\r\n\
 
 #[tokio::test]
 async fn e2e_file_get_info() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login and upload a file first
     let cookies = app
@@ -804,7 +808,7 @@ Test file content\r\n\
 
 #[tokio::test]
 async fn e2e_file_invalid_mime_type_rejected() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first
     let cookies = app
@@ -853,7 +857,7 @@ MZ...\r\n\
 
 #[tokio::test]
 async fn e2e_rate_limiter_exists() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Make a few requests - just verify the rate limiter is wired up
     // (actual rate limit testing would require making many requests quickly)
@@ -873,7 +877,7 @@ async fn e2e_rate_limiter_exists() {
 
 #[tokio::test]
 async fn e2e_metrics_endpoint_returns_prometheus_format() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(Request::get("/metrics").body(Body::empty()).unwrap())
@@ -898,7 +902,7 @@ async fn e2e_metrics_endpoint_returns_prometheus_format() {
 
 #[tokio::test]
 async fn e2e_metrics_tracks_requests() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Make a health check request first
     let _ = app
@@ -927,7 +931,7 @@ async fn e2e_metrics_tracks_requests() {
 
 #[tokio::test]
 async fn e2e_cache_metrics_exist() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Make some requests that might use cache
     let _ = app
@@ -960,7 +964,7 @@ async fn e2e_cache_metrics_exist() {
 
 #[tokio::test]
 async fn e2e_admin_list_users() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Login first
     let cookies = app
@@ -997,7 +1001,7 @@ async fn e2e_admin_list_users() {
 
 #[tokio::test]
 async fn e2e_admin_add_user_form() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_users_2", "password123", "users2@test.com")
@@ -1032,7 +1036,7 @@ async fn e2e_admin_add_user_form() {
 
 #[tokio::test]
 async fn e2e_admin_create_user() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let new_username = format!("newuser_{}", &unique_id[..16]);
@@ -1099,7 +1103,7 @@ async fn e2e_admin_create_user() {
 
 #[tokio::test]
 async fn e2e_admin_edit_user() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("edituser_{}", &unique_id[..16]);
@@ -1177,7 +1181,7 @@ async fn e2e_admin_edit_user() {
 
 #[tokio::test]
 async fn e2e_admin_delete_user() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("deluser_{}", &unique_id[..16]);
@@ -1228,7 +1232,7 @@ async fn e2e_admin_delete_user() {
 
 #[tokio::test]
 async fn e2e_admin_cannot_delete_self() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("selfuser_{}", &unique_id[..16]);
@@ -1274,7 +1278,7 @@ async fn e2e_admin_cannot_delete_self() {
 
 #[tokio::test]
 async fn e2e_admin_list_roles() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_roles_1", "password123", "roles1@test.com")
@@ -1308,7 +1312,7 @@ async fn e2e_admin_list_roles() {
 
 #[tokio::test]
 async fn e2e_admin_create_role() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let role_name = format!("TestRole_{}", &unique_id[..16]);
@@ -1369,7 +1373,7 @@ async fn e2e_admin_create_role() {
 
 #[tokio::test]
 async fn e2e_admin_delete_role() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let role_name = format!("DelRole_{}", &unique_id[..16]);
@@ -1419,7 +1423,7 @@ async fn e2e_admin_delete_role() {
 
 #[tokio::test]
 async fn e2e_admin_cannot_delete_builtin_roles() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_roles_4", "password123", "roles4@test.com")
@@ -1452,7 +1456,7 @@ async fn e2e_admin_cannot_delete_builtin_roles() {
 
 #[tokio::test]
 async fn e2e_admin_permissions_matrix() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_roles_5", "password123", "roles5@test.com")
@@ -1494,7 +1498,7 @@ async fn e2e_admin_permissions_matrix() {
 
 #[tokio::test]
 async fn e2e_admin_list_content() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_content_1", "password123", "content1@test.com")
@@ -1526,7 +1530,7 @@ async fn e2e_admin_list_content() {
 
 #[tokio::test]
 async fn e2e_admin_select_content_type() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_content_2", "password123", "content2@test.com")
@@ -1560,7 +1564,7 @@ async fn e2e_admin_select_content_type() {
 
 #[tokio::test]
 async fn e2e_admin_create_content() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let title = format!("Test Content {}", &unique_id[..16]);
@@ -1640,7 +1644,7 @@ async fn e2e_admin_create_content() {
 
 #[tokio::test]
 async fn e2e_admin_edit_content() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let title = format!("Edit Content {}", &unique_id[..16]);
@@ -1722,7 +1726,7 @@ async fn e2e_admin_edit_content() {
 
 #[tokio::test]
 async fn e2e_admin_delete_content() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let title = format!("Delete Content {}", &unique_id[..16]);
@@ -1779,7 +1783,7 @@ async fn e2e_admin_delete_content() {
 
 #[tokio::test]
 async fn e2e_admin_content_filter_by_type() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_content_6", "password123", "content6@test.com")
@@ -1812,7 +1816,7 @@ async fn e2e_admin_content_filter_by_type() {
 
 #[tokio::test]
 async fn e2e_admin_list_categories() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("categories").await;
 
     let cookies = app
@@ -1847,7 +1851,7 @@ async fn e2e_admin_list_categories() {
 
 #[tokio::test]
 async fn e2e_admin_create_category() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -1916,7 +1920,7 @@ async fn e2e_admin_create_category() {
 
 #[tokio::test]
 async fn e2e_admin_delete_category() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -1968,7 +1972,7 @@ async fn e2e_admin_delete_category() {
 
 #[tokio::test]
 async fn e2e_admin_list_tags() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -2015,7 +2019,7 @@ async fn e2e_admin_list_tags() {
 
 #[tokio::test]
 async fn e2e_admin_create_tag() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -2092,7 +2096,7 @@ async fn e2e_admin_create_tag() {
 
 #[tokio::test]
 async fn e2e_admin_delete_tag() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("categories").await;
 
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
@@ -2166,7 +2170,7 @@ async fn e2e_admin_delete_tag() {
 
 #[tokio::test]
 async fn e2e_admin_list_files() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_files_1", "password123", "files1@test.com")
@@ -2200,7 +2204,7 @@ async fn e2e_admin_list_files() {
 
 #[tokio::test]
 async fn e2e_admin_file_details() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Create a test file record with unique URI
     let file_id = uuid::Uuid::now_v7();
@@ -2254,7 +2258,7 @@ async fn e2e_admin_file_details() {
 
 #[tokio::test]
 async fn e2e_admin_delete_file() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Create a test file record with unique URI
     let file_id = uuid::Uuid::now_v7();
@@ -2309,7 +2313,7 @@ async fn e2e_admin_delete_file() {
 
 #[tokio::test]
 async fn e2e_admin_files_filter_by_status() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_files_4", "password123", "files4@test.com")
@@ -2356,7 +2360,7 @@ async fn e2e_admin_files_filter_by_status() {
 
 #[tokio::test]
 async fn e2e_admin_search_config_page() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_search_1", "password123", "search1@test.com")
@@ -2395,7 +2399,7 @@ async fn e2e_admin_search_config_page() {
 
 #[tokio::test]
 async fn e2e_admin_add_search_config() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Use the existing 'page' content type
     let type_name = "page";
@@ -2533,7 +2537,7 @@ async fn e2e_admin_add_search_config() {
 
 #[tokio::test]
 async fn e2e_admin_remove_search_config() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Use the existing 'page' content type which has a 'body' field
     let type_name = "page";
@@ -2588,7 +2592,7 @@ async fn e2e_admin_remove_search_config() {
 
 #[tokio::test]
 async fn e2e_admin_reindex_content_type() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("admin_search_4", "password123", "search4@test.com")
@@ -2621,7 +2625,7 @@ async fn e2e_admin_reindex_content_type() {
 
 #[tokio::test]
 async fn e2e_admin_pages_require_login() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // All these core admin routes should redirect to login when not authenticated.
     // Only non-gated routes are listed here; plugin-gated routes (e.g. categories,
@@ -2655,7 +2659,7 @@ async fn e2e_admin_pages_require_login() {
 
 #[tokio::test]
 async fn e2e_static_file_serves_js() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -2685,7 +2689,7 @@ async fn e2e_static_file_serves_js() {
 
 #[tokio::test]
 async fn e2e_static_file_returns_404_for_missing() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -2708,7 +2712,7 @@ async fn e2e_static_file_returns_404_for_missing() {
 
 #[tokio::test]
 async fn e2e_batch_create_operation() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -2744,7 +2748,7 @@ async fn e2e_batch_create_operation() {
 
 #[tokio::test]
 async fn e2e_batch_get_operation() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Create a batch operation first
     let create_response = app
@@ -2787,7 +2791,7 @@ async fn e2e_batch_get_operation() {
 
 #[tokio::test]
 async fn e2e_batch_get_nonexistent_returns_404() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let fake_id = uuid::Uuid::now_v7();
     let response = app
@@ -2803,7 +2807,7 @@ async fn e2e_batch_get_nonexistent_returns_404() {
 
 #[tokio::test]
 async fn e2e_batch_cancel_operation() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Create a batch operation first
     let create_response = app
@@ -2841,7 +2845,7 @@ async fn e2e_batch_cancel_operation() {
 
 #[tokio::test]
 async fn e2e_batch_delete_operation() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Create a batch operation first
     let create_response = app
@@ -2889,7 +2893,7 @@ async fn e2e_batch_delete_operation() {
 
 #[tokio::test]
 async fn e2e_batch_delete_nonexistent_returns_404() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let fake_id = uuid::Uuid::now_v7();
     let response = app
@@ -3021,7 +3025,7 @@ fn csrf_form_body_with(csrf_token: &str, extra_fields: &str) -> Body {
 
 #[tokio::test]
 async fn e2e_api_list_items_returns_paginated() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -3044,7 +3048,7 @@ async fn e2e_api_list_items_returns_paginated() {
 
 #[tokio::test]
 async fn e2e_api_list_items_filters_by_type() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -3066,7 +3070,7 @@ async fn e2e_api_list_items_filters_by_type() {
 
 #[tokio::test]
 async fn e2e_api_list_items_filters_by_status() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -3088,7 +3092,7 @@ async fn e2e_api_list_items_filters_by_status() {
 
 #[tokio::test]
 async fn e2e_api_get_item_not_found() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let fake_id = uuid::Uuid::now_v7();
     let response = app
@@ -3108,7 +3112,7 @@ async fn e2e_api_get_item_not_found() {
 
 #[tokio::test]
 async fn e2e_api_list_comments_for_nonexistent_item() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let fake_id = uuid::Uuid::now_v7();
     let response = app
@@ -3124,7 +3128,7 @@ async fn e2e_api_list_comments_for_nonexistent_item() {
 
 #[tokio::test]
 async fn e2e_api_create_comment_requires_auth() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("comments").await;
 
     let fake_id = uuid::Uuid::now_v7();
@@ -3147,7 +3151,7 @@ async fn e2e_api_create_comment_requires_auth() {
 
 #[tokio::test]
 async fn e2e_api_comment_crud() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("comments").await;
 
     // Create a user and login
@@ -3332,7 +3336,7 @@ async fn e2e_api_comment_crud() {
 
 #[tokio::test]
 async fn e2e_api_comment_validation() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("comments").await;
 
     let cookies = app
@@ -3409,7 +3413,7 @@ async fn e2e_api_comment_validation() {
 
 #[tokio::test]
 async fn e2e_admin_list_comments() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("comments").await;
 
     let cookies = app
@@ -3432,7 +3436,7 @@ async fn e2e_admin_list_comments() {
 
 #[tokio::test]
 async fn e2e_admin_comment_moderation() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     app.ensure_plugin_enabled("comments").await;
 
     let cookies = app
@@ -3627,7 +3631,7 @@ async fn e2e_admin_comment_moderation() {
 
 #[tokio::test]
 async fn e2e_installer_redirects_when_installed() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Ensure site is marked as installed
     sqlx::query("INSERT INTO site_config (key, value) VALUES ('installed', 'true'::jsonb) ON CONFLICT (key) DO UPDATE SET value = 'true'::jsonb")
@@ -3658,7 +3662,7 @@ async fn e2e_installer_redirects_when_installed() {
 
 #[tokio::test]
 async fn e2e_installer_shows_welcome_page() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Access /install/welcome directly
     let response = app
@@ -3676,7 +3680,7 @@ async fn e2e_installer_shows_welcome_page() {
 
 #[tokio::test]
 async fn e2e_installer_admin_form_accessible() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Mark as NOT installed
     sqlx::query("INSERT INTO site_config (key, value) VALUES ('installed', 'false'::jsonb) ON CONFLICT (key) DO UPDATE SET value = 'false'::jsonb")
@@ -3720,7 +3724,7 @@ async fn e2e_installer_admin_form_accessible() {
 
 #[tokio::test]
 async fn e2e_installer_complete_page() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Access /install/complete directly - always accessible
     let response = app
@@ -3744,7 +3748,7 @@ async fn e2e_installer_complete_page() {
 
 #[tokio::test]
 async fn e2e_admin_plugin_list_requires_admin() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Non-admin user should get 403
     let cookies = app
@@ -3767,7 +3771,7 @@ async fn e2e_admin_plugin_list_requires_admin() {
 
 #[tokio::test]
 async fn e2e_admin_plugin_list_shows_plugins() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let cookies = app
         .create_and_login_admin("plugin_admin_1", "password123", "plugadmin1@test.com")
@@ -3789,7 +3793,7 @@ async fn e2e_admin_plugin_list_shows_plugins() {
 
 #[tokio::test]
 async fn e2e_admin_plugin_toggle() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     // Ensure the redirects plugin is installed so the toggle form appears
     app.ensure_plugin_enabled("redirects").await;
 
@@ -3887,7 +3891,7 @@ async fn e2e_admin_plugin_toggle() {
 /// affects route availability (no restart needed).
 #[tokio::test]
 async fn e2e_toggle_gated_plugin_affects_routes() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     // Ensure categories is installed in DB and enabled in-memory
     app.ensure_plugin_enabled("categories").await;
 
@@ -3983,7 +3987,7 @@ async fn e2e_toggle_gated_plugin_affects_routes() {
 /// and re-enabling restores them — without a server restart.
 #[tokio::test]
 async fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Ensure the categories plugin is enabled in memory for this test.
     app.state.set_plugin_enabled("categories", true);
@@ -4030,7 +4034,7 @@ async fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
 
 #[tokio::test]
 async fn registration_form_returns_404_when_disabled() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Ensure registration is disabled (default)
     trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(false))
@@ -4050,7 +4054,7 @@ async fn registration_form_returns_404_when_disabled() {
 
 #[tokio::test]
 async fn registration_form_renders_when_enabled() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Enable registration
     trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(true))
@@ -4076,7 +4080,7 @@ async fn registration_form_renders_when_enabled() {
 
 #[tokio::test]
 async fn json_registration_creates_inactive_user() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("regtest_{}", &unique_id[..12]);
     let email = format!("{username}@test.example.com");
@@ -4160,7 +4164,7 @@ async fn json_registration_creates_inactive_user() {
 
 #[tokio::test]
 async fn json_registration_validates_password_mismatch() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("regval_{}", &unique_id[..12]);
 
@@ -4207,7 +4211,7 @@ async fn json_registration_validates_password_mismatch() {
 
 #[tokio::test]
 async fn json_registration_validates_missing_fields() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Enable registration
     trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(true))
@@ -4256,7 +4260,7 @@ async fn json_registration_validates_missing_fields() {
 
 #[tokio::test]
 async fn json_registration_returns_404_when_disabled() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     // Ensure registration is disabled
     trovato_kernel::models::SiteConfig::set(&app.db, "allow_user_registration", json!(false))
@@ -4288,7 +4292,7 @@ async fn json_registration_returns_404_when_disabled() {
 
 #[tokio::test]
 async fn email_verification_activates_user() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("verify_{}", &unique_id[..12]);
     let email = format!("{username}@test.example.com");
@@ -4369,7 +4373,7 @@ async fn email_verification_activates_user() {
 
 #[tokio::test]
 async fn email_verification_rejects_invalid_token() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(
@@ -4398,7 +4402,7 @@ async fn email_verification_rejects_invalid_token() {
 
 #[tokio::test]
 async fn profile_page_requires_authentication() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
 
     let response = app
         .request(Request::get("/user/profile").body(Body::empty()).unwrap())
@@ -4416,7 +4420,7 @@ async fn profile_page_requires_authentication() {
 
 #[tokio::test]
 async fn profile_page_renders_for_authenticated_user() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("profile_{}", &unique_id[..12]);
     let password = "TestPassword123!";
@@ -4441,7 +4445,7 @@ async fn profile_page_renders_for_authenticated_user() {
 
 #[tokio::test]
 async fn password_change_with_correct_current_password() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("pwchg_{}", &unique_id[..12]);
     let password = "OldPassword123!";
@@ -4501,7 +4505,7 @@ async fn password_change_with_correct_current_password() {
 
 #[tokio::test]
 async fn password_change_rejects_wrong_current_password() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("pwwrong_{}", &unique_id[..12]);
     let password = "CorrectPassword123!";
@@ -4549,7 +4553,7 @@ async fn password_change_rejects_wrong_current_password() {
 
 #[tokio::test]
 async fn password_change_validates_password_mismatch() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("pwmis_{}", &unique_id[..12]);
     let password = "TestPassword123!";
@@ -4596,7 +4600,7 @@ async fn password_change_validates_password_mismatch() {
 
 #[tokio::test]
 async fn profile_update_changes_display_name() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let username = format!("profup_{}", &unique_id[..12]);
     let password = "TestPassword123!";
@@ -4648,7 +4652,7 @@ async fn profile_update_changes_display_name() {
 
 #[tokio::test]
 async fn pathauto_generates_alias_on_item_create() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let type_name = format!("pa_{}", &unique_id[..8]);
 
@@ -4730,7 +4734,7 @@ async fn pathauto_generates_alias_on_item_create() {
 
 #[tokio::test]
 async fn pathauto_skips_when_alias_exists() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let unique_id = uuid::Uuid::now_v7().simple().to_string();
     let type_name = format!("pa2_{}", &unique_id[..8]);
 
@@ -4810,7 +4814,7 @@ async fn pathauto_skips_when_alias_exists() {
 
 #[tokio::test]
 async fn pathauto_returns_none_without_pattern() {
-    let app = TestApp::new().await;
+    let app = shared_app().await;
     let item_id = uuid::Uuid::now_v7();
     let now = Utc::now().timestamp();
 

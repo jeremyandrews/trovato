@@ -3,6 +3,10 @@
 //!
 //! This module provides test infrastructure that uses the REAL kernel code,
 //! not mock implementations. This ensures tests verify actual behavior.
+//!
+//! A single [`TestApp`] instance is shared across all tests via [`shared_app`]
+//! to avoid exhausting virtual memory — each wasmtime pooling allocator
+//! reserves ~64 GB of address space.
 
 #![allow(dead_code)]
 
@@ -11,10 +15,22 @@ use axum::body::Body;
 use axum::http::{Request, header};
 use axum::response::Response;
 use sqlx::PgPool;
+use tokio::sync::OnceCell;
 use tower::ServiceExt;
 use uuid::Uuid;
 
 use trovato_kernel::{AppState, Config, ConfigStorage};
+
+/// Global shared test app — initialized once, reused by every test.
+static SHARED_APP: OnceCell<TestApp> = OnceCell::const_new();
+
+/// Get a reference to the shared [`TestApp`].
+///
+/// The app is lazily initialized on first call and reused thereafter.
+/// Tests run with `--test-threads=1` so no concurrent mutation issues.
+pub async fn shared_app() -> &'static TestApp {
+    SHARED_APP.get_or_init(TestApp::new).await
+}
 
 /// Test application wrapper using the REAL kernel routes and state.
 pub struct TestApp {
@@ -236,7 +252,7 @@ impl TestApp {
             r#"
             INSERT INTO users (id, name, pass, mail, status, is_admin)
             VALUES ($1, $2, $3, $4, 1, $5)
-            ON CONFLICT (name) DO UPDATE SET pass = $3, is_admin = $5
+            ON CONFLICT ((LOWER(name))) DO UPDATE SET pass = $3, is_admin = $5
             "#,
         )
         .bind(id)
@@ -247,6 +263,11 @@ impl TestApp {
         .execute(&self.db)
         .await
         .expect("Failed to create test user");
+
+        // Clear any lockout/rate-limit state from previous test runs so
+        // this user can log in immediately.
+        self.state.lockout().clear_all(username).await.ok();
+        self.state.rate_limiter().reset("login", "unknown").await.ok();
     }
 }
 
