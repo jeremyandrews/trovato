@@ -4393,3 +4393,253 @@ async fn email_verification_rejects_invalid_token() {
         "Should show invalid/expired message"
     );
 }
+
+// =============================================================================
+// User Self-Service Account Management Tests (Story 28.2)
+// =============================================================================
+
+#[tokio::test]
+async fn profile_page_requires_authentication() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .request(Request::get("/user/profile").body(Body::empty()).unwrap())
+        .await;
+
+    // Should redirect to login
+    let status = response.status();
+    assert!(
+        status == StatusCode::SEE_OTHER
+            || status == StatusCode::FOUND
+            || status == StatusCode::TEMPORARY_REDIRECT,
+        "Profile page should redirect unauthenticated users, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn profile_page_renders_for_authenticated_user() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("profile_{}", &unique_id[..12]);
+    let password = "TestPassword123!";
+    let email = format!("{username}@test.example.com");
+
+    let cookies = app.create_and_login_user(&username, password, &email).await;
+
+    let response = app
+        .request_with_cookies(
+            Request::get("/user/profile").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+    assert!(body.contains(&username), "Should display current username");
+    assert!(body.contains(&email), "Should display current email");
+    assert!(body.contains("_token"), "Should have CSRF token");
+}
+
+#[tokio::test]
+async fn password_change_with_correct_current_password() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("pwchg_{}", &unique_id[..12]);
+    let password = "OldPassword123!";
+    let new_password = "NewPassword456!";
+    let email = format!("{username}@test.example.com");
+
+    let cookies = app.create_and_login_user(&username, password, &email).await;
+
+    // Get CSRF token from profile page
+    let response = app
+        .request_with_cookies(
+            Request::get("/user/profile").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+    let body = response_text(response).await;
+    let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+
+    // Change password
+    let form_body = format!(
+        "_token={}&current_password={}&new_password={}&confirm_password={}",
+        urlencoding::encode(&csrf_token),
+        urlencoding::encode(password),
+        urlencoding::encode(new_password),
+        urlencoding::encode(new_password),
+    );
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/user/password")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Password change should succeed"
+    );
+
+    let body = response_text(response).await;
+    assert!(
+        body.contains("changed") || body.contains("updated") || body.contains("success"),
+        "Should show success message after password change"
+    );
+
+    // Verify new password works by logging in
+    let new_cookies = app.login(&username, new_password).await;
+    assert!(
+        !new_cookies.is_empty(),
+        "Should be able to log in with new password"
+    );
+}
+
+#[tokio::test]
+async fn password_change_rejects_wrong_current_password() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("pwwrong_{}", &unique_id[..12]);
+    let password = "CorrectPassword123!";
+    let email = format!("{username}@test.example.com");
+
+    let cookies = app.create_and_login_user(&username, password, &email).await;
+
+    // Get CSRF token
+    let response = app
+        .request_with_cookies(
+            Request::get("/user/profile").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+    let body = response_text(response).await;
+    let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+
+    // Try changing password with wrong current password
+    let form_body = format!(
+        "_token={}&current_password={}&new_password={}&confirm_password={}",
+        urlencoding::encode(&csrf_token),
+        urlencoding::encode("WrongPassword!"),
+        urlencoding::encode("NewPassword456!"),
+        urlencoding::encode("NewPassword456!"),
+    );
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/user/password")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+    assert!(
+        body.contains("incorrect") || body.contains("Current password"),
+        "Should show incorrect password error"
+    );
+}
+
+#[tokio::test]
+async fn password_change_validates_password_mismatch() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("pwmis_{}", &unique_id[..12]);
+    let password = "TestPassword123!";
+    let email = format!("{username}@test.example.com");
+
+    let cookies = app.create_and_login_user(&username, password, &email).await;
+
+    // Get CSRF token
+    let response = app
+        .request_with_cookies(
+            Request::get("/user/profile").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+    let body = response_text(response).await;
+    let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+
+    let form_body = format!(
+        "_token={}&current_password={}&new_password={}&confirm_password={}",
+        urlencoding::encode(&csrf_token),
+        urlencoding::encode(password),
+        urlencoding::encode("NewPassword456!"),
+        urlencoding::encode("DifferentPassword!"),
+    );
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/user/password")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+    assert!(
+        body.contains("do not match"),
+        "Should show password mismatch error"
+    );
+}
+
+#[tokio::test]
+async fn profile_update_changes_display_name() {
+    let app = TestApp::new().await;
+    let unique_id = uuid::Uuid::now_v7().simple().to_string();
+    let username = format!("profup_{}", &unique_id[..12]);
+    let password = "TestPassword123!";
+    let email = format!("{username}@test.example.com");
+
+    let cookies = app.create_and_login_user(&username, password, &email).await;
+
+    // Get CSRF token
+    let response = app
+        .request_with_cookies(
+            Request::get("/user/profile").body(Body::empty()).unwrap(),
+            &cookies,
+        )
+        .await;
+    let body = response_text(response).await;
+    let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+
+    // Update display name (keep same email, no password needed)
+    let new_name = format!("Updated {username}");
+    let form_body = format!(
+        "_token={}&name={}&mail={}&timezone=&current_password=",
+        urlencoding::encode(&csrf_token),
+        urlencoding::encode(&new_name),
+        urlencoding::encode(&email),
+    );
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/user/profile")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_body))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response_text(response).await;
+    assert!(
+        body.contains("updated") || body.contains("saved") || body.contains("success"),
+        "Should show success message after profile update"
+    );
+}
