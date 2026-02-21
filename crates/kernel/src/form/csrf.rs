@@ -95,8 +95,8 @@ pub async fn verify_csrf_token(session: &Session, submitted: &str) -> Result<boo
             Err(_) => continue,
         };
 
-        // Check if token matches
-        if token == submitted {
+        // Check if token matches (constant-time to prevent timing side-channels)
+        if constant_time_eq(token, submitted) {
             // Check if token is still valid
             if now - timestamp <= TOKEN_VALIDITY_SECS {
                 found_index = Some(i);
@@ -131,6 +131,21 @@ pub async fn verify_csrf_token(session: &Session, submitted: &str) -> Result<boo
     Ok(false)
 }
 
+/// Constant-time string equality comparison.
+///
+/// Prevents timing side-channels by always comparing every byte,
+/// regardless of where the first mismatch occurs.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.as_bytes()
+        .iter()
+        .zip(b.as_bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 /// Clear all CSRF tokens from the session.
 pub async fn clear_csrf_tokens(session: &Session) -> Result<()> {
     session
@@ -151,5 +166,14 @@ mod tests {
         // Verify token is hex encoded SHA256 (64 chars)
         let token = hex::encode(sha2::Sha256::digest(b"test"));
         assert_eq!(token.len(), 64);
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq("abc", "abc"));
+        assert!(!constant_time_eq("abc", "abd"));
+        assert!(!constant_time_eq("abc", "ab"));
+        assert!(!constant_time_eq("", "a"));
+        assert!(constant_time_eq("", ""));
     }
 }

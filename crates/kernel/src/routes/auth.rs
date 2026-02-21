@@ -157,8 +157,15 @@ pub struct LoginFormRequest {
 async fn login_form_submit(
     State(state): State<AppState>,
     session: Session,
+    headers: axum::http::HeaderMap,
     Form(form): Form<LoginFormRequest>,
 ) -> Response {
+    // Rate limit login attempts by IP
+    let client_id = crate::middleware::get_client_id(None, &headers);
+    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
+        return crate::middleware::rate_limit_response(retry_after);
+    }
+
     // Verify CSRF token
     if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
         return resp;
@@ -373,8 +380,20 @@ async fn do_login(
 async fn login(
     State(state): State<AppState>,
     session: Session,
+    headers: axum::http::HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+    // Rate limit login attempts by IP
+    let client_id = crate::middleware::get_client_id(None, &headers);
+    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(AuthError {
+                error: format!("Rate limit exceeded. Retry after {retry_after} seconds."),
+            }),
+        ));
+    }
+
     match do_login(&state, &session, &request).await {
         Ok(()) => Ok(Json(LoginResponse {
             success: true,
@@ -1019,7 +1038,10 @@ struct PasswordChangeRequest {
     csrf_token: String,
 }
 
-/// Get the current user from session, or redirect to login.
+/// Get the current active user from session, or redirect to login.
+///
+/// Returns the user only if they exist AND have an active account (status=1).
+/// Blocked or deactivated users are redirected to login.
 async fn get_current_user(state: &AppState, session: &Session) -> Result<User, Response> {
     let user_id: uuid::Uuid = session
         .get(SESSION_USER_ID)
@@ -1028,11 +1050,19 @@ async fn get_current_user(state: &AppState, session: &Session) -> Result<User, R
         .flatten()
         .ok_or_else(|| Redirect::to("/user/login").into_response())?;
 
-    User::find_by_id(state.db(), user_id)
+    let user = User::find_by_id(state.db(), user_id)
         .await
         .ok()
         .flatten()
-        .ok_or_else(|| Redirect::to("/user/login").into_response())
+        .ok_or_else(|| Redirect::to("/user/login").into_response())?;
+
+    // Reject blocked/deactivated users — destroy their session
+    if !user.is_active() {
+        let _ = session.delete().await;
+        return Err(Redirect::to("/user/login").into_response());
+    }
+
+    Ok(user)
 }
 
 /// Render the profile page with context.
@@ -1180,6 +1210,10 @@ async fn profile_update(
             errors
                 .push("Current password is required to change your username or email.".to_string());
         } else if !user.verify_password(&form.current_password) {
+            // Record failed attempt for lockout tracking
+            if let Err(e) = state.lockout().record_failed_attempt(&user.name).await {
+                tracing::warn!(error = %e, "failed to record failed password attempt");
+            }
             errors.push("Current password is incorrect.".to_string());
         }
     }
@@ -1399,6 +1433,10 @@ async fn password_change(
     if form.current_password.is_empty() {
         errors.push("Current password is required.".to_string());
     } else if !user.verify_password(&form.current_password) {
+        // Record failed attempt for lockout tracking
+        if let Err(e) = state.lockout().record_failed_attempt(&user.name).await {
+            tracing::warn!(error = %e, "failed to record failed password attempt");
+        }
         errors.push("Current password is incorrect.".to_string());
     }
 

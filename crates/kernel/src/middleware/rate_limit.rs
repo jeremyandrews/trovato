@@ -110,16 +110,25 @@ impl RateLimiter {
     }
 
     /// Increment the counter and return the new value.
+    ///
+    /// Uses a Lua script to atomically INCR + EXPIRE, preventing a race
+    /// where a crash between the two commands creates an immortal counter.
     async fn increment(&self, key: &str, ttl_secs: u64) -> Result<i64, redis::RedisError> {
         let mut conn = self.redis.get_multiplexed_async_connection().await?;
 
-        // INCR and set TTL if new key
-        let count: i64 = conn.incr(key, 1).await?;
+        let script = redis::Script::new(
+            r"local count = redis.call('INCR', KEYS[1])
+              if count == 1 then
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
+              end
+              return count",
+        );
 
-        if count == 1 {
-            // Set expiry on first increment
-            let _: () = conn.expire(key, ttl_secs as i64).await?;
-        }
+        let count: i64 = script
+            .key(key)
+            .arg(ttl_secs as i64)
+            .invoke_async(&mut conn)
+            .await?;
 
         Ok(count)
     }

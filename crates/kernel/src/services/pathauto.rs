@@ -241,9 +241,14 @@ pub async fn update_alias_item(
         format!("/{expanded}")
     };
 
-    // Check if current alias already matches — no update needed
+    // Check if current alias already matches — no update needed.
+    // An alias matches if it equals the base or is a suffixed variant (e.g. /blog/post-1).
     let existing = UrlAlias::find_by_source(pool, &source).await?;
-    if existing.iter().any(|a| a.alias == base_alias) {
+    let suffixed_prefix = format!("{base_alias}-");
+    if existing
+        .iter()
+        .any(|a| a.alias == base_alias || a.alias.starts_with(&suffixed_prefix))
+    {
         return Ok(None);
     }
 

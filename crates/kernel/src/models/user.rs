@@ -73,9 +73,9 @@ impl User {
         Ok(user)
     }
 
-    /// Find a user by username.
+    /// Find a user by username (case-insensitive).
     pub async fn find_by_name(pool: &PgPool, name: &str) -> Result<Option<Self>> {
-        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE name = $1")
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE LOWER(name) = LOWER($1)")
             .bind(name)
             .fetch_optional(pool)
             .await
