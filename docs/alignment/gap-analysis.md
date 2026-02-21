@@ -59,7 +59,7 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 **Status:** Resolved. All five user lifecycle taps are declared in KNOWN_TAPS and dispatched from route handlers:
 - `tap_user_login` — dispatched in `auth.rs` login handler
 - `tap_user_logout` — dispatched in `auth.rs` logout handler
-- `tap_user_register` — dispatched in `admin_user.rs` user create handler
+- `tap_user_register` — dispatched in `admin_user.rs` user create handler and `auth.rs` self-registration handler
 - `tap_user_update` — dispatched in `admin_user.rs` user update handler
 - `tap_user_delete` — dispatched in `admin_user.rs` user delete handler
 

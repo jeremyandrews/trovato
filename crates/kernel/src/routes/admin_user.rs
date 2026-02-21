@@ -262,14 +262,15 @@ async fn edit_user_form(
     context.insert("path", &format!("/admin/people/{user_id}/edit"));
 
     // Local task tabs for user edit pages (hardcoded + plugin-registered)
+    let current_path = format!("/admin/people/{user_id}/edit");
     context.insert(
         "local_tasks",
         &build_local_tasks(
             &state,
             "/admin/people/:id",
-            vec![
-                serde_json::json!({"title": "Edit", "path": format!("/admin/people/{user_id}/edit"), "active": true}),
-            ],
+            &current_path,
+            Some(&user_id.to_string()),
+            vec![serde_json::json!({"title": "Edit", "path": &current_path, "active": true})],
         ),
     );
 

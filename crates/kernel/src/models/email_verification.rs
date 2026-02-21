@@ -9,6 +9,11 @@ use uuid::Uuid;
 /// Email verification token validity period (24 hours).
 const TOKEN_VALIDITY_HOURS: i64 = 24;
 
+/// Token purpose: registration activation or email address change.
+pub const PURPOSE_REGISTRATION: &str = "registration";
+/// Token purpose: email address change verification.
+pub const PURPOSE_EMAIL_CHANGE: &str = "email_change";
+
 /// Email verification token record.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EmailVerificationToken {
@@ -18,6 +23,8 @@ pub struct EmailVerificationToken {
     pub user_id: Uuid,
     /// SHA-256 hash of the plain token.
     pub token_hash: String,
+    /// Token purpose (`"registration"` or `"email_change"`).
+    pub purpose: String,
     /// When this token expires.
     pub expires_at: DateTime<Utc>,
     /// When this token was used (None if unused).
@@ -29,9 +36,11 @@ pub struct EmailVerificationToken {
 impl EmailVerificationToken {
     /// Create a new email verification token for a user.
     ///
+    /// `purpose` should be [`PURPOSE_REGISTRATION`] or [`PURPOSE_EMAIL_CHANGE`].
+    ///
     /// Returns `(token_record, plain_token)` where `plain_token` should be
     /// sent to the user via email.
-    pub async fn create(pool: &PgPool, user_id: Uuid) -> Result<(Self, String)> {
+    pub async fn create(pool: &PgPool, user_id: Uuid, purpose: &str) -> Result<(Self, String)> {
         let plain_token = generate_token();
         let token_hash = hash_token(&plain_token);
 
@@ -40,14 +49,15 @@ impl EmailVerificationToken {
 
         let record = sqlx::query_as::<_, EmailVerificationToken>(
             r#"
-            INSERT INTO email_verification_tokens (id, user_id, token_hash, expires_at)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO email_verification_tokens (id, user_id, token_hash, purpose, expires_at)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING *
             "#,
         )
         .bind(id)
         .bind(user_id)
         .bind(&token_hash)
+        .bind(purpose)
         .bind(expires_at)
         .fetch_one(pool)
         .await
@@ -56,21 +66,28 @@ impl EmailVerificationToken {
         Ok((record, plain_token))
     }
 
-    /// Find a valid token by its plain text value.
+    /// Find a valid token by its plain text value and purpose.
     ///
-    /// Returns `None` if the token doesn't exist, is expired, or already used.
-    pub async fn find_valid(pool: &PgPool, plain_token: &str) -> Result<Option<Self>> {
+    /// Returns `None` if the token doesn't exist, is expired, already used,
+    /// or doesn't match the expected purpose.
+    pub async fn find_valid(
+        pool: &PgPool,
+        plain_token: &str,
+        purpose: &str,
+    ) -> Result<Option<Self>> {
         let token_hash = hash_token(plain_token);
 
         let token = sqlx::query_as::<_, EmailVerificationToken>(
             r#"
             SELECT * FROM email_verification_tokens
             WHERE token_hash = $1
+              AND purpose = $2
               AND expires_at > NOW()
               AND used_at IS NULL
             "#,
         )
         .bind(&token_hash)
+        .bind(purpose)
         .fetch_optional(pool)
         .await
         .context("failed to find email verification token")?;
@@ -89,12 +106,17 @@ impl EmailVerificationToken {
         Ok(())
     }
 
-    /// Delete expired tokens (cleanup job).
+    /// Delete expired tokens and used tokens (cleanup job).
+    ///
+    /// Removes tokens that have expired OR have been used. Used tokens
+    /// are retained for the validity period to allow audit, then cleaned up.
     pub async fn cleanup_expired(pool: &PgPool) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM email_verification_tokens WHERE expires_at < NOW()")
-            .execute(pool)
-            .await
-            .context("failed to cleanup expired verification tokens")?;
+        let result = sqlx::query(
+            "DELETE FROM email_verification_tokens WHERE expires_at < NOW() OR used_at IS NOT NULL",
+        )
+        .execute(pool)
+        .await
+        .context("failed to cleanup expired verification tokens")?;
 
         Ok(result.rows_affected())
     }

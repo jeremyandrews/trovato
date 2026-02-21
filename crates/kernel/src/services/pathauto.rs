@@ -44,8 +44,14 @@ pub fn slugify(text: &str) -> String {
 
     // Truncate to reasonable length
     if result.len() > 128 {
+        // result is pure ASCII (alphanumerics + hyphens from the char map above),
+        // but use is_char_boundary defensively in case the logic ever changes.
+        let mut end = 128;
+        while end > 0 && !result.is_char_boundary(end) {
+            end -= 1;
+        }
         // Find a clean break point (don't cut in middle of word)
-        let truncated = &result[..128];
+        let truncated = &result[..end];
         if let Some(last_hyphen) = truncated.rfind('-') {
             return truncated[..last_hyphen].to_string();
         }
@@ -92,8 +98,12 @@ pub async fn generate_unique_alias(pool: &PgPool, base_alias: &str) -> Result<St
         format!("/{base_alias}")
     };
 
-    // Find all existing aliases that match this base pattern in one query
-    let like_pattern = format!("{base}%");
+    // Escape LIKE wildcards in the base before building the pattern
+    let escaped_base = base
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let like_pattern = format!("{escaped_base}%");
     let existing: Vec<(String,)> =
         sqlx::query_as("SELECT alias FROM url_alias WHERE alias LIKE $1")
             .bind(&like_pattern)
@@ -184,14 +194,16 @@ pub async fn auto_alias_item(
     Ok(Some(alias))
 }
 
-/// Generate alias for an item on update if none exists yet.
+/// Update the URL alias for an item based on the pathauto pattern.
 ///
 /// Does nothing if:
 /// - No pattern configured for this content type
-/// - An alias already exists for this item (preserves manual overrides)
+/// - The existing alias already matches the current pattern output
 ///
-/// This ensures manually-set aliases are never overwritten. If the item
-/// was created before pathauto was configured, this creates the initial alias.
+/// When a pathauto pattern is configured for a content type, this function
+/// owns the alias for items of that type. Aliases set via the URL alias
+/// admin will be overwritten if a pattern exists. To keep a manual alias,
+/// remove the pathauto pattern for the content type.
 pub async fn update_alias_item(
     pool: &PgPool,
     item_id: Uuid,
@@ -199,9 +211,43 @@ pub async fn update_alias_item(
     item_type: &str,
     created_ts: i64,
 ) -> Result<Option<String>> {
-    // Delegate to auto_alias_item — it already checks for existing aliases
-    // and skips if any exist (preserving manual overrides).
-    auto_alias_item(pool, item_id, title, item_type, created_ts).await
+    let created = DateTime::from_timestamp(created_ts, 0).unwrap_or_else(Utc::now);
+    let Some(pattern) = get_pattern(pool, item_type).await? else {
+        return Ok(None);
+    };
+
+    let source = format!("/item/{item_id}");
+    let expanded = expand_pattern(&pattern, title, item_type, created);
+    let base_alias = if expanded.starts_with('/') {
+        expanded
+    } else {
+        format!("/{expanded}")
+    };
+
+    // Check if current alias already matches — no update needed
+    let existing = UrlAlias::find_by_source(pool, &source).await?;
+    if existing.iter().any(|a| a.alias == base_alias) {
+        return Ok(None);
+    }
+
+    if existing.is_empty() {
+        // No alias exists yet — delegate to auto_alias_item for creation
+        return auto_alias_item(pool, item_id, title, item_type, created_ts).await;
+    }
+
+    // Alias exists but doesn't match current pattern — regenerate
+    let alias = generate_unique_alias(pool, &base_alias).await?;
+    UrlAlias::upsert_for_source(pool, &source, &alias, "live", "en")
+        .await
+        .context("failed to update auto-generated alias")?;
+
+    tracing::info!(
+        item_id = %item_id,
+        alias = %alias,
+        "auto-updated path alias"
+    );
+
+    Ok(Some(alias))
 }
 
 #[cfg(test)]

@@ -4313,11 +4313,15 @@ async fn email_verification_activates_user() {
         .unwrap();
 
     // Create a verification token
-    let (_, plain_token) = trovato_kernel::models::EmailVerificationToken::create(&app.db, user_id)
-        .await
-        .unwrap();
+    let (_, plain_token) = trovato_kernel::models::EmailVerificationToken::create(
+        &app.db,
+        user_id,
+        trovato_kernel::models::email_verification::PURPOSE_REGISTRATION,
+    )
+    .await
+    .unwrap();
 
-    // Verify the token activates the user
+    // Verify the token activates the user (redirects to login)
     let response = app
         .request(
             Request::get(format!("/user/verify/{plain_token}"))
@@ -4328,14 +4332,8 @@ async fn email_verification_activates_user() {
 
     assert_eq!(
         response.status(),
-        StatusCode::OK,
-        "Verification should return 200"
-    );
-
-    let body = response_text(response).await;
-    assert!(
-        body.contains("verified") || body.contains("log in"),
-        "Should show verification success message"
+        StatusCode::SEE_OTHER,
+        "Verification should redirect to login"
     );
 
     // Check user is now active

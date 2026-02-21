@@ -8,13 +8,13 @@
 
     {% if success %}
     <div style="background: #efe; border: 1px solid #0a0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-        {{ success }}
+        {{ success | escape }}
     </div>
     {% endif %}
 
     {% if error %}
     <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-        {{ error }}
+        {{ error | escape }}
     </div>
     {% endif %}
 

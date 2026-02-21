@@ -434,6 +434,7 @@ Items that are in the kernel but could potentially be extracted if the infrastru
 | Redirect service | Hot-path middleware; no `tap_route` | Would need sub-microsecond plugin dispatch |
 | Image style service | WASM can't do image processing or filesystem I/O | Would need native plugin support or host function for image ops |
 | Email service | WASM can't do SMTP network I/O | Would need host function for network access |
+| Pathauto service | No `tap_route`; called from admin content routes | Feature service for URL alias generation; callers are only admin content create/update routes. Candidate for extraction when `tap_item_insert`/`tap_item_update` plugin hooks can create aliases via host DB functions |
 
 ### New Subsystem Rule
 

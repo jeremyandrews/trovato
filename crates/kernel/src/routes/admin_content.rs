@@ -289,14 +289,17 @@ async fn edit_content_form(
     context.insert("path", &format!("/admin/content/{item_id}/edit"));
 
     // Local task tabs for item edit pages (hardcoded + plugin-registered)
+    let current_path = format!("/admin/content/{item_id}/edit");
     context.insert(
         "local_tasks",
         &build_local_tasks(
             &state,
             "/admin/content/:id",
+            &current_path,
+            Some(&item_id.to_string()),
             vec![
                 serde_json::json!({"title": "View", "path": format!("/item/{item_id}"), "active": false}),
-                serde_json::json!({"title": "Edit", "path": format!("/admin/content/{item_id}/edit"), "active": true}),
+                serde_json::json!({"title": "Edit", "path": current_path, "active": true}),
                 serde_json::json!({"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false}),
             ],
         ),
@@ -380,15 +383,18 @@ async fn edit_content_submit(
                 "fields": fields_json,
             }),
         );
-        context.insert("path", &format!("/admin/content/{item_id}/edit"));
+        let current_path = format!("/admin/content/{item_id}/edit");
+        context.insert("path", &current_path);
         context.insert(
             "local_tasks",
             &build_local_tasks(
                 &state,
                 "/admin/content/:id",
+                &current_path,
+                Some(&item_id.to_string()),
                 vec![
                     serde_json::json!({"title": "View", "path": format!("/item/{item_id}"), "active": false}),
-                    serde_json::json!({"title": "Edit", "path": format!("/admin/content/{item_id}/edit"), "active": true}),
+                    serde_json::json!({"title": "Edit", "path": &current_path, "active": true}),
                     serde_json::json!({"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false}),
                 ],
             ),

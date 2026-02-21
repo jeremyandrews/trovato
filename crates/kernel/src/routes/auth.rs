@@ -11,9 +11,11 @@ use tracing::info;
 
 use crate::form::csrf::{generate_csrf_token, verify_csrf_token};
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
-use crate::models::email_verification::EmailVerificationToken;
+use crate::models::email_verification::{
+    EmailVerificationToken, PURPOSE_EMAIL_CHANGE, PURPOSE_REGISTRATION,
+};
 use crate::models::{CreateUser, SiteConfig, User};
-use crate::routes::helpers::{CsrfOnlyForm, html_escape, is_valid_email};
+use crate::routes::helpers::{CsrfOnlyForm, html_escape, is_valid_email, require_csrf};
 use crate::state::AppState;
 
 /// Session key for storing the authenticated user ID.
@@ -458,7 +460,7 @@ struct RegisterFormRequest {
     password: String,
     confirm_password: String,
     #[serde(rename = "_token")]
-    csrf_token: Option<String>,
+    csrf_token: String,
 }
 
 /// JSON registration request body.
@@ -566,20 +568,8 @@ async fn register_form_submit(
     }
 
     // Verify CSRF token
-    match &form.csrf_token {
-        Some(token) => match verify_csrf_token(&session, token).await {
-            Ok(true) => {}
-            _ => {
-                let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-                let errors = vec!["Invalid form token. Please try again.".to_string()];
-                return render_register_form(&state, &csrf_token, Some(&errors), None, None).await;
-            }
-        },
-        None => {
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-            let errors = vec!["Missing form token. Please try again.".to_string()];
-            return render_register_form(&state, &csrf_token, Some(&errors), None, None).await;
-        }
+    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
+        return resp;
     }
 
     let values = serde_json::json!({
@@ -647,6 +637,14 @@ async fn validate_registration_input(
         errors.push("Username is required.".to_string());
     } else if username.len() > 60 {
         errors.push("Username must be 60 characters or fewer.".to_string());
+    } else if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        errors.push(
+            "Username may only contain letters, numbers, underscores, hyphens, and periods."
+                .to_string(),
+        );
     }
 
     if mail.is_empty() {
@@ -657,6 +655,8 @@ async fn validate_registration_input(
 
     if password.len() < 8 {
         errors.push("Password must be at least 8 characters.".to_string());
+    } else if password.len() > 128 {
+        errors.push("Password must be 128 characters or fewer.".to_string());
     }
 
     // Check username and email uniqueness — use generic message to prevent enumeration
@@ -698,7 +698,8 @@ async fn do_register(
     let user = User::create_with_status(state.db(), input, 0).await?;
 
     // Create verification token
-    let (_, plain_token) = EmailVerificationToken::create(state.db(), user.id).await?;
+    let (_, plain_token) =
+        EmailVerificationToken::create(state.db(), user.id, PURPOSE_REGISTRATION).await?;
 
     // Send verification email
     let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
@@ -813,31 +814,24 @@ async fn register_json(
 /// GET /user/verify/{token}
 /// - Validates the token, activates the user, redirects to login
 async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) -> Response {
-    let verification = match EmailVerificationToken::find_valid(state.db(), &token).await {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            let mut context = tera::Context::new();
-            context.insert("csrf_token", "");
-            context.insert(
-                "error",
-                "Invalid or expired verification link. Please register again.",
-            );
-            return match state.theme().tera().render("user/register.html", &context) {
-                Ok(html) => Html(html).into_response(),
-                Err(_) => Html(
+    let verification =
+        match EmailVerificationToken::find_valid(state.db(), &token, PURPOSE_REGISTRATION).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                return Html(
                     "<h1>Verification Failed</h1>\
                      <p>Invalid or expired verification link.</p>\
                      <p><a href=\"/user/register\">Register again</a></p>"
                         .to_string(),
                 )
-                .into_response(),
-            };
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "database error during email verification");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
-        }
-    };
+                .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "database error during email verification");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+                    .into_response();
+            }
+        };
 
     // Activate the user (status=1)
     if let Err(e) = User::update(
@@ -872,18 +866,7 @@ async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) 
 
     info!(user_id = %verification.user_id, "email verified, account activated");
 
-    // Render login page with success message
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", "");
-    context.insert(
-        "success",
-        "Your account has been verified! You can now log in.",
-    );
-
-    match state.theme().tera().render("user/login.html", &context) {
-        Ok(html) => Html(html).into_response(),
-        Err(_) => Redirect::to("/user/login").into_response(),
-    }
+    Redirect::to("/user/login").into_response()
 }
 
 /// Email change verification handler.
@@ -891,22 +874,24 @@ async fn verify_email(State(state): State<AppState>, Path(token): Path<String>) 
 /// GET /user/verify-email/{token}
 /// - Validates the token, updates the user's email to the pending address
 async fn verify_email_change(State(state): State<AppState>, Path(token): Path<String>) -> Response {
-    let verification = match EmailVerificationToken::find_valid(state.db(), &token).await {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            return Html(
-                "<h1>Verification Failed</h1>\
+    let verification =
+        match EmailVerificationToken::find_valid(state.db(), &token, PURPOSE_EMAIL_CHANGE).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                return Html(
+                    "<h1>Verification Failed</h1>\
                  <p>Invalid or expired verification link.</p>\
                  <p><a href=\"/user/profile\">Return to profile</a></p>"
-                    .to_string(),
-            )
-            .into_response();
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "database error during email change verification");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
-        }
-    };
+                        .to_string(),
+                )
+                .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "database error during email change verification");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+                    .into_response();
+            }
+        };
 
     // Get the user and check for pending_email in data
     let Some(user) = User::find_by_id(state.db(), verification.user_id)
@@ -979,24 +964,7 @@ async fn verify_email_change(State(state): State<AppState>, Path(token): Path<St
 
     info!(user_id = %user.id, "email address updated via verification");
 
-    // Render success
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", "");
-    context.insert(
-        "success",
-        "Your email address has been updated successfully.",
-    );
-
-    match state.theme().tera().render("user/login.html", &context) {
-        Ok(html) => Html(html).into_response(),
-        Err(_) => Html(
-            "<h1>Email Updated</h1>\
-             <p>Your email address has been updated successfully.</p>\
-             <p><a href=\"/user/profile\">Return to profile</a></p>"
-                .to_string(),
-        )
-        .into_response(),
-    }
+    Redirect::to("/user/profile").into_response()
 }
 
 // ─── Profile & Password Management ──────────────────────────────────────────
@@ -1011,7 +979,7 @@ struct ProfileFormRequest {
     #[serde(default)]
     current_password: String,
     #[serde(rename = "_token")]
-    csrf_token: Option<String>,
+    csrf_token: String,
 }
 
 /// Password change form request.
@@ -1021,7 +989,7 @@ struct PasswordChangeRequest {
     new_password: String,
     confirm_password: String,
     #[serde(rename = "_token")]
-    csrf_token: Option<String>,
+    csrf_token: String,
 }
 
 /// Get the current user from session, or redirect to login.
@@ -1140,38 +1108,8 @@ async fn profile_update(
     }
 
     // Verify CSRF token
-    match &form.csrf_token {
-        Some(token) => match verify_csrf_token(&session, token).await {
-            Ok(true) => {}
-            _ => {
-                let (pc, pwc) = profile_csrf_pair(&session).await;
-                return render_profile(
-                    &state,
-                    &pc,
-                    &pwc,
-                    &user,
-                    None,
-                    None,
-                    Some("Invalid form token. Please try again."),
-                    None,
-                )
-                .await;
-            }
-        },
-        None => {
-            let (pc, pwc) = profile_csrf_pair(&session).await;
-            return render_profile(
-                &state,
-                &pc,
-                &pwc,
-                &user,
-                None,
-                None,
-                Some("Missing form token. Please try again."),
-                None,
-            )
-            .await;
-        }
+    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
+        return resp;
     }
 
     let name = form.name.trim();
@@ -1192,6 +1130,14 @@ async fn profile_update(
         errors.push("Username is required.".to_string());
     } else if name.len() > 60 {
         errors.push("Username must be 60 characters or fewer.".to_string());
+    } else if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        errors.push(
+            "Username may only contain letters, numbers, underscores, hyphens, and periods."
+                .to_string(),
+        );
     }
 
     if mail.is_empty() {
@@ -1288,8 +1234,17 @@ async fn profile_update(
         Ok(Some(updated_user)) => {
             // Send verification email if email is changing
             if email_changing {
+                // Invalidate any outstanding tokens before creating a new one
+                if let Err(e) =
+                    EmailVerificationToken::invalidate_user_tokens(state.db(), user.id).await
+                {
+                    tracing::warn!(error = %e, "failed to invalidate old verification tokens");
+                }
+
                 // Create verification token
-                match EmailVerificationToken::create(state.db(), user.id).await {
+                match EmailVerificationToken::create(state.db(), user.id, PURPOSE_EMAIL_CHANGE)
+                    .await
+                {
                     Ok((_, plain_token)) => {
                         let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
                         if let Some(email_service) = state.email() {
@@ -1406,38 +1361,8 @@ async fn password_change(
     }
 
     // Verify CSRF token
-    match &form.csrf_token {
-        Some(token) => match verify_csrf_token(&session, token).await {
-            Ok(true) => {}
-            _ => {
-                let (pc, pwc) = profile_csrf_pair(&session).await;
-                return render_profile(
-                    &state,
-                    &pc,
-                    &pwc,
-                    &user,
-                    None,
-                    None,
-                    Some("Invalid form token. Please try again."),
-                    None,
-                )
-                .await;
-            }
-        },
-        None => {
-            let (pc, pwc) = profile_csrf_pair(&session).await;
-            return render_profile(
-                &state,
-                &pc,
-                &pwc,
-                &user,
-                None,
-                None,
-                Some("Missing form token. Please try again."),
-                None,
-            )
-            .await;
-        }
+    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
+        return resp;
     }
 
     let mut errors = Vec::new();
@@ -1450,6 +1375,8 @@ async fn password_change(
 
     if form.new_password.len() < 8 {
         errors.push("New password must be at least 8 characters.".to_string());
+    } else if form.new_password.len() > 128 {
+        errors.push("New password must be 128 characters or fewer.".to_string());
     }
 
     if form.new_password != form.confirm_password {

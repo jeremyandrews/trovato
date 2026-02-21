@@ -289,20 +289,29 @@ pub fn render_not_found() -> Response {
 ///
 /// Looks up plugin-registered local tasks for the given `parent_path` and
 /// merges them with `base_tabs`. Plugin tabs are appended after base tabs,
-/// sorted by weight.
+/// sorted by weight. Plugin task paths have `:id` placeholders substituted
+/// with `id_value` (if provided) and are marked active when they match
+/// `current_path`.
 pub fn build_local_tasks(
     state: &crate::state::AppState,
     parent_path: &str,
+    current_path: &str,
+    id_value: Option<&str>,
     base_tabs: Vec<serde_json::Value>,
 ) -> serde_json::Value {
     let mut tabs = base_tabs;
 
     // Append plugin-registered local tasks from menu registry
     for task in state.menu_registry().local_tasks(parent_path) {
+        let concrete_path = if let Some(id) = id_value {
+            task.path.replace(":id", id)
+        } else {
+            task.path.clone()
+        };
         tabs.push(serde_json::json!({
             "title": task.title,
-            "path": task.path,
-            "active": false,
+            "path": concrete_path,
+            "active": concrete_path == current_path,
         }));
     }
 
