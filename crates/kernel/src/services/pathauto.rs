@@ -65,10 +65,13 @@ pub fn slugify(text: &str) -> String {
 ///
 /// Supported tokens:
 /// - `[title]` — item title, slugified
-/// - `[type]` — content type machine name
+/// - `[type]` — content type machine name (must be a valid machine name: `[a-z0-9_]`)
 /// - `[yyyy]` — four-digit year from created date
 /// - `[mm]` — two-digit month from created date
 /// - `[dd]` — two-digit day from created date
+///
+/// `[type]` is not slugified because machine names are validated at content type
+/// registration time via `is_valid_machine_name` and are already URL-safe.
 pub fn expand_pattern(
     pattern: &str,
     title: &str,
@@ -105,7 +108,7 @@ pub async fn generate_unique_alias(pool: &PgPool, base_alias: &str) -> Result<St
         .replace('_', "\\_");
     let like_pattern = format!("{escaped_base}%");
     let existing: Vec<(String,)> =
-        sqlx::query_as("SELECT alias FROM url_alias WHERE alias LIKE $1")
+        sqlx::query_as("SELECT alias FROM url_alias WHERE alias LIKE $1 LIMIT 200")
             .bind(&like_pattern)
             .fetch_all(pool)
             .await

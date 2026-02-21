@@ -23,16 +23,28 @@ pub struct RateLimitConfig {
     pub search: (u32, Duration),
     /// File uploads
     pub uploads: (u32, Duration),
+    /// User registration
+    pub register: (u32, Duration),
+    /// Email verification token attempts
+    pub verify_email: (u32, Duration),
+    /// Profile update submissions
+    pub profile: (u32, Duration),
+    /// Password change submissions
+    pub password: (u32, Duration),
 }
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            login: (5, Duration::from_secs(60)),    // 5 per minute
-            forms: (30, Duration::from_secs(60)),   // 30 per minute
-            api: (100, Duration::from_secs(60)),    // 100 per minute
-            search: (20, Duration::from_secs(60)),  // 20 per minute
-            uploads: (10, Duration::from_secs(60)), // 10 per minute
+            login: (5, Duration::from_secs(60)),         // 5 per minute
+            forms: (30, Duration::from_secs(60)),        // 30 per minute
+            api: (100, Duration::from_secs(60)),         // 100 per minute
+            search: (20, Duration::from_secs(60)),       // 20 per minute
+            uploads: (10, Duration::from_secs(60)),      // 10 per minute
+            register: (3, Duration::from_secs(3600)),    // 3 per hour
+            verify_email: (10, Duration::from_secs(60)), // 10 per minute
+            profile: (10, Duration::from_secs(60)),      // 10 per minute
+            password: (5, Duration::from_secs(60)),      // 5 per minute
         }
     }
 }
@@ -89,6 +101,10 @@ impl RateLimiter {
             "api" => self.config.api,
             "search" => self.config.search,
             "uploads" => self.config.uploads,
+            "register" => self.config.register,
+            "verify_email" => self.config.verify_email,
+            "profile" => self.config.profile,
+            "password" => self.config.password,
             _ => self.config.api, // Default to API limits
         }
     }

@@ -18,6 +18,17 @@ use crate::models::{CreateUser, SiteConfig, User};
 use crate::routes::helpers::{CsrfOnlyForm, html_escape, is_valid_email, require_csrf};
 use crate::state::AppState;
 
+/// Check if an anyhow error wraps a sqlx unique constraint violation.
+fn is_unique_violation(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        if let Some(sqlx::Error::Database(db_err)) = cause.downcast_ref::<sqlx::Error>() {
+            db_err.is_unique_violation()
+        } else {
+            false
+        }
+    })
+}
+
 /// Session key for storing the authenticated user ID.
 pub const SESSION_USER_ID: &str = "user_id";
 
@@ -28,7 +39,7 @@ pub const SESSION_ACTIVE_STAGE: &str = "active_stage";
 pub const SESSION_REMEMBER_ME: &str = "remember_me";
 
 /// Login request body.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
@@ -130,7 +141,7 @@ async fn login_form(State(state): State<AppState>, session: Session) -> Response
 }
 
 /// Form-based login request.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct LoginFormRequest {
     pub username: String,
     pub password: String,
@@ -424,7 +435,7 @@ async fn logout(
 // ─── Registration ────────────────────────────────────────────────────────────
 
 /// Registration form request (deserialized from form POST).
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct RegisterFormRequest {
     username: String,
     mail: String,
@@ -435,7 +446,7 @@ struct RegisterFormRequest {
 }
 
 /// JSON registration request body.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct RegisterJsonRequest {
     username: String,
     mail: String,
@@ -566,24 +577,28 @@ async fn register_form_submit(
 
     // Create inactive user
     match do_register(&state, &username, &mail, &form.password).await {
-        Ok(_) => {
+        Ok(result) => {
             let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-            render_register_form(
-                &state,
-                &csrf_token,
-                None,
-                Some(
-                    "Registration successful! Check your email for a verification link \
-                     to activate your account.",
-                ),
-                None,
-            )
-            .await
+            let message = if result.email_sent {
+                "Registration successful! Check your email for a verification link \
+                 to activate your account."
+            } else {
+                "Registration successful! However, we were unable to send the \
+                 verification email. Please contact the site administrator to \
+                 activate your account."
+            };
+            render_register_form(&state, &csrf_token, None, Some(message), None).await
         }
         Err(e) => {
             tracing::error!(error = %e, "registration failed");
             let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
-            let errors = vec!["An unexpected error occurred. Please try again later.".to_string()];
+            // Check for DB unique constraint violation (TOCTOU race)
+            let msg = if is_unique_violation(&e) {
+                "Username or email is already in use."
+            } else {
+                "An unexpected error occurred. Please try again later."
+            };
+            let errors = vec![msg.to_string()];
             render_register_form(&state, &csrf_token, Some(&errors), None, Some(&values)).await
         }
     }
@@ -647,13 +662,19 @@ async fn validate_registration_input(
     }
 }
 
+/// Result of a successful registration.
+struct RegistrationResult {
+    /// Whether the verification email was actually sent.
+    email_sent: bool,
+}
+
 /// Core registration logic shared by form and JSON handlers.
 async fn do_register(
     state: &AppState,
     username: &str,
     mail: &str,
     password: &str,
-) -> anyhow::Result<uuid::Uuid> {
+) -> anyhow::Result<RegistrationResult> {
     let input = CreateUser {
         name: username.trim().to_string(),
         password: password.to_string(),
@@ -670,17 +691,21 @@ async fn do_register(
 
     // Send verification email
     let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
+    let mut email_sent = false;
     if let Some(email_service) = state.email() {
-        if let Err(e) = email_service
+        match email_service
             .send_verification_email(mail.trim(), &plain_token, &site_name)
             .await
         {
-            tracing::error!(error = %e, "failed to send verification email");
-        } else {
-            info!(user_id = %user.id, email = %mail.trim(), "verification email sent");
+            Ok(()) => {
+                email_sent = true;
+                info!(user_id = %user.id, email = %mail.trim(), "verification email sent");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to send verification email");
+            }
         }
     } else {
-        // SMTP not configured — log without exposing the token
         tracing::warn!(
             user_id = %user.id,
             email = %mail.trim(),
@@ -698,7 +723,7 @@ async fn do_register(
         .await;
 
     info!(user_id = %user.id, name = %username.trim(), "user registered (pending verification)");
-    Ok(user.id)
+    Ok(RegistrationResult { email_sent })
 }
 
 /// JSON registration handler.
@@ -759,17 +784,32 @@ async fn register_json(
     }
 
     match do_register(&state, &request.username, &request.mail, &request.password).await {
-        Ok(_) => Ok(Json(LoginResponse {
-            success: true,
-            message: "Registration successful. Check your email for a verification link."
-                .to_string(),
-        })),
+        Ok(result) => {
+            let message = if result.email_sent {
+                "Registration successful. Check your email for a verification link."
+            } else {
+                "Registration successful. However, the verification email could not be sent. \
+                 Please contact the site administrator."
+            };
+            Ok(Json(LoginResponse {
+                success: true,
+                message: message.to_string(),
+            }))
+        }
         Err(e) => {
             tracing::error!(error = %e, "JSON registration failed");
+            let (status, msg) = if is_unique_violation(&e) {
+                (StatusCode::CONFLICT, "Username or email is already in use.")
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Registration failed. Please try again later.",
+                )
+            };
             Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
+                status,
                 Json(AuthError {
-                    error: "Registration failed. Please try again later.".to_string(),
+                    error: msg.to_string(),
                 }),
             ))
         }
@@ -957,7 +997,7 @@ async fn verify_email_change(
 // ─── Profile & Password Management ──────────────────────────────────────────
 
 /// Profile edit form request.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct ProfileFormRequest {
     name: String,
     mail: String,
@@ -970,7 +1010,7 @@ struct ProfileFormRequest {
 }
 
 /// Password change form request.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct PasswordChangeRequest {
     current_password: String,
     new_password: String,
@@ -1103,6 +1143,7 @@ async fn profile_update(
     let mail = form.mail.trim();
     let timezone = form.timezone.trim();
     let email_changing = mail != user.mail;
+    let name_changing = name != user.name;
 
     // Build form values for re-rendering on validation errors
     let form_values = serde_json::json!({
@@ -1133,10 +1174,11 @@ async fn profile_update(
         errors.push("Please enter a valid email address.".to_string());
     }
 
-    // If email is changing, require current password
-    if email_changing {
+    // Require current password when changing username or email (login credentials)
+    if email_changing || name_changing {
         if form.current_password.is_empty() {
-            errors.push("Current password is required to change your email.".to_string());
+            errors
+                .push("Current password is required to change your username or email.".to_string());
         } else if !user.verify_password(&form.current_password) {
             errors.push("Current password is incorrect.".to_string());
         }
@@ -1377,6 +1419,11 @@ async fn password_change(
 
     match User::update_password(state.db(), user.id, &form.new_password).await {
         Ok(true) => {
+            // Rotate session ID so a stolen pre-change session is invalid
+            if let Err(e) = session.cycle_id().await {
+                tracing::warn!(error = %e, "failed to cycle session after password change");
+            }
+
             // Dispatch tap_user_update
             let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
             let tap_state = crate::tap::RequestState::without_services(

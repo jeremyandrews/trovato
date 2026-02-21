@@ -159,6 +159,8 @@ async fn add_user_submit(
         errors.push("Password is required.".to_string());
     } else if password.len() < 8 {
         errors.push("Password must be at least 8 characters.".to_string());
+    } else if password.len() > 128 {
+        errors.push("Password must be 128 characters or fewer.".to_string());
     }
 
     // Check if username already exists
@@ -328,9 +330,12 @@ async fn edit_user_submit(
     // Validate password if provided
     if let Some(ref password) = form.password
         && !password.is_empty()
-        && password.len() < 8
     {
-        errors.push("Password must be at least 8 characters.".to_string());
+        if password.len() < 8 {
+            errors.push("Password must be at least 8 characters.".to_string());
+        } else if password.len() > 128 {
+            errors.push("Password must be 128 characters or fewer.".to_string());
+        }
     }
 
     if !errors.is_empty() {
