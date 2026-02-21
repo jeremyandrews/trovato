@@ -20,32 +20,41 @@ pub struct CsrfOnlyForm {
     pub token: String,
 }
 
-/// Require an authenticated user, or redirect to login.
+/// Require an authenticated, active user, or redirect to login.
 ///
-/// Returns the [`User`] if one is logged in. Returns a redirect response if the
-/// session contains no valid user id.
+/// Returns the [`User`] if one is logged in and active (`status=1`).
+/// Destroys the session and redirects to login if the user is blocked.
 pub async fn require_login(state: &AppState, session: &Session) -> Result<User, Response> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id
         && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
     {
+        if !user.is_active() {
+            let _ = session.delete().await;
+            return Err(Redirect::to("/user/login").into_response());
+        }
         return Ok(user);
     }
 
     Err(Redirect::to("/user/login").into_response())
 }
 
-/// Require an authenticated **admin** user, or redirect/reject.
+/// Require an authenticated, active **admin** user, or redirect/reject.
 ///
 /// Returns the admin [`User`] on success. Redirects to `/user/login` if the
-/// session has no valid user. Returns 403 if the user exists but is not an admin.
+/// session has no valid user or the user is blocked. Returns 403 if the user
+/// exists and is active but is not an admin.
 pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id
         && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
     {
+        if !user.is_active() {
+            let _ = session.delete().await;
+            return Err(Redirect::to("/user/login").into_response());
+        }
         if user.is_admin {
             return Ok(user);
         }
@@ -360,6 +369,19 @@ pub fn is_valid_email(email: &str) -> bool {
     domain.split('.').all(|label| !label.is_empty())
 }
 
+/// Basic timezone format validation.
+///
+/// Accepts IANA timezone identifiers (e.g. `America/New_York`, `UTC`,
+/// `Europe/London`) by checking that the value contains only ASCII
+/// alphanumeric characters, `/`, `_`, `+`, and `-`.
+pub fn is_valid_timezone(tz: &str) -> bool {
+    !tz.is_empty()
+        && tz.len() <= 64
+        && tz
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '+' || c == '-')
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -414,5 +436,22 @@ mod tests {
         assert!(!is_valid_email("user@.com"));
         assert!(!is_valid_email("user@domain."));
         assert!(!is_valid_email("user@domain..com"));
+    }
+
+    #[test]
+    fn test_is_valid_timezone_valid() {
+        assert!(is_valid_timezone("UTC"));
+        assert!(is_valid_timezone("America/New_York"));
+        assert!(is_valid_timezone("Europe/London"));
+        assert!(is_valid_timezone("Etc/GMT+5"));
+        assert!(is_valid_timezone("US/Eastern"));
+    }
+
+    #[test]
+    fn test_is_valid_timezone_invalid() {
+        assert!(!is_valid_timezone(""));
+        assert!(!is_valid_timezone("America/New York"));
+        assert!(!is_valid_timezone("<script>"));
+        assert!(!is_valid_timezone("a".repeat(65).as_str()));
     }
 }

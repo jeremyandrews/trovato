@@ -84,9 +84,9 @@ impl User {
         Ok(user)
     }
 
-    /// Find a user by email.
+    /// Find a user by email (case-insensitive).
     pub async fn find_by_mail(pool: &PgPool, mail: &str) -> Result<Option<Self>> {
-        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE mail = $1")
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE LOWER(mail) = LOWER($1)")
             .bind(mail)
             .fetch_optional(pool)
             .await

@@ -15,7 +15,9 @@ use crate::models::email_verification::{
     EmailVerificationToken, PURPOSE_EMAIL_CHANGE, PURPOSE_REGISTRATION,
 };
 use crate::models::{CreateUser, SiteConfig, User};
-use crate::routes::helpers::{CsrfOnlyForm, html_escape, is_valid_email, require_csrf};
+use crate::routes::helpers::{
+    CsrfOnlyForm, html_escape, is_valid_email, is_valid_timezone, require_csrf,
+};
 use crate::state::AppState;
 
 /// Check if an anyhow error wraps a sqlx unique constraint violation.
@@ -964,6 +966,20 @@ async fn verify_email_change(
         .into_response();
     };
 
+    // Re-validate the pending email address (defensive — the value was validated
+    // when the change was requested, but user.data is mutable by other code paths)
+    if !is_valid_email(&new_email) {
+        let _ = EmailVerificationToken::mark_used(state.db(), verification.id).await;
+        return Html(
+            "<h1>Email Change Failed</h1>\
+             <p>The pending email address is invalid. \
+             Please update your profile with a valid email address.</p>\
+             <p><a href=\"/user/profile\">Return to profile</a></p>"
+                .to_string(),
+        )
+        .into_response();
+    }
+
     // Re-check email uniqueness at verification time to prevent race condition
     // (another user may have registered with this email since the change was requested)
     if let Ok(Some(_)) = User::find_by_mail(state.db(), &new_email).await {
@@ -1172,8 +1188,8 @@ async fn profile_update(
     let name = form.name.trim();
     let mail = form.mail.trim();
     let timezone = form.timezone.trim();
-    let email_changing = mail != user.mail;
-    let name_changing = name != user.name;
+    let email_changing = !mail.eq_ignore_ascii_case(&user.mail);
+    let name_changing = !name.eq_ignore_ascii_case(&user.name);
 
     // Build form values for re-rendering on validation errors
     let form_values = serde_json::json!({
@@ -1204,9 +1220,16 @@ async fn profile_update(
         errors.push("Please enter a valid email address.".to_string());
     }
 
+    if !timezone.is_empty() && !is_valid_timezone(timezone) {
+        errors.push("Please enter a valid timezone (e.g., America/New_York).".to_string());
+    }
+
     // Require current password when changing username or email (login credentials)
     if email_changing || name_changing {
-        if form.current_password.is_empty() {
+        // Check lockout before attempting password verification
+        if let Ok(true) = state.lockout().is_locked(&user.name).await {
+            errors.push("Account temporarily locked due to too many failed attempts.".to_string());
+        } else if form.current_password.is_empty() {
             errors
                 .push("Current password is required to change your username or email.".to_string());
         } else if !user.verify_password(&form.current_password) {
@@ -1218,19 +1241,22 @@ async fn profile_update(
         }
     }
 
-    // Check uniqueness — use generic message to prevent enumeration
+    // Check uniqueness — use generic message to prevent enumeration.
+    // Exclude the user's own record to allow case-only changes (e.g. alice → Alice).
     let mut uniqueness_conflict = false;
 
-    if name != user.name
+    if name_changing
         && !name.is_empty()
-        && let Ok(Some(_)) = User::find_by_name(state.db(), name).await
+        && let Ok(Some(existing)) = User::find_by_name(state.db(), name).await
+        && existing.id != user.id
     {
         uniqueness_conflict = true;
     }
 
     if email_changing
         && !mail.is_empty()
-        && let Ok(Some(_)) = User::find_by_mail(state.db(), mail).await
+        && let Ok(Some(existing)) = User::find_by_mail(state.db(), mail).await
+        && existing.id != user.id
     {
         uniqueness_conflict = true;
     }
@@ -1254,7 +1280,8 @@ async fn profile_update(
         .await;
     }
 
-    // Build update — do NOT change email directly; require verification
+    // Build update — do NOT change email directly; require verification.
+    // Always persist name changes including case-only changes (e.g. alice → Alice).
     let update = crate::models::UpdateUser {
         name: if name != user.name {
             Some(name.to_string())
@@ -1430,7 +1457,10 @@ async fn password_change(
 
     let mut errors = Vec::new();
 
-    if form.current_password.is_empty() {
+    // Check lockout before attempting password verification
+    if let Ok(true) = state.lockout().is_locked(&user.name).await {
+        errors.push("Account temporarily locked due to too many failed attempts.".to_string());
+    } else if form.current_password.is_empty() {
         errors.push("Current password is required.".to_string());
     } else if !user.verify_password(&form.current_password) {
         // Record failed attempt for lockout tracking
