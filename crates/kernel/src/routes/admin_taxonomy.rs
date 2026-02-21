@@ -12,8 +12,8 @@ use crate::models::{Category, CreateCategory, CreateTag, Tag, UpdateCategory, Up
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, is_valid_machine_name, render_admin_template, render_error, render_not_found,
-    render_server_error, require_admin, require_csrf,
+    CsrfOnlyForm, MACHINE_NAME_ERROR, is_valid_machine_name, render_admin_template, render_error,
+    render_not_found, render_server_error, require_admin, require_csrf,
 };
 
 // =============================================================================
@@ -131,7 +131,7 @@ async fn add_category_submit(
     if form.id.trim().is_empty() {
         errors.push("Machine name is required.".to_string());
     } else if !is_valid_machine_name(&form.id) {
-        errors.push("Machine name must start with a letter and contain only lowercase letters, numbers, and underscores.".to_string());
+        errors.push(MACHINE_NAME_ERROR.to_string());
     }
 
     if form.label.trim().is_empty() {

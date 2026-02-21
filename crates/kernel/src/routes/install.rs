@@ -15,7 +15,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::models::{CreateUser, SiteConfig, User};
-use crate::routes::helpers::html_escape;
+use crate::routes::helpers::{html_escape, is_valid_email, validate_password, validate_username};
 use crate::state::AppState;
 
 // =============================================================================
@@ -339,16 +339,16 @@ async fn install_admin_submit(
     }
 
     // Validate
-    if form.username.trim().is_empty() {
-        return render_admin_form_with_error("Username is required");
+    if let Err(msg) = validate_username(form.username.trim()) {
+        return render_admin_form_with_error(msg);
     }
 
-    if form.email.trim().is_empty() || !form.email.contains('@') {
+    if form.email.trim().is_empty() || !is_valid_email(form.email.trim()) {
         return render_admin_form_with_error("Valid email is required");
     }
 
-    if form.password.len() < 8 {
-        return render_admin_form_with_error("Password must be at least 8 characters");
+    if let Err(msg) = validate_password(&form.password) {
+        return render_admin_form_with_error(msg);
     }
 
     if form.password != form.password_confirm {

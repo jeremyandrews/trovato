@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use super::helpers::html_escape as escape_html;
+use super::helpers::{JsonError, html_escape as escape_html};
 
 /// Create the gather router.
 pub fn router() -> Router<AppState> {
@@ -64,11 +64,6 @@ struct GatherResultResponse {
     has_prev: bool,
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-}
-
 // -------------------------------------------------------------------------
 // Request types
 // -------------------------------------------------------------------------
@@ -110,7 +105,7 @@ struct AdhocQueryRequest {
 
 async fn list_queries(
     State(state): State<AppState>,
-) -> Result<Json<Vec<QuerySummary>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Vec<QuerySummary>>, (StatusCode, Json<JsonError>)> {
     let queries = state.gather().list_queries();
 
     Ok(Json(
@@ -129,11 +124,11 @@ async fn list_queries(
 async fn get_query(
     State(state): State<AppState>,
     Path(query_id): Path<String>,
-) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<QueryResponse>, (StatusCode, Json<JsonError>)> {
     let query = state.gather().get_query(&query_id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: "query not found".to_string(),
             }),
         )
@@ -156,7 +151,7 @@ async fn execute_query(
     session: Session,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
-) -> Result<Json<GatherResultResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<GatherResultResponse>, (StatusCode, Json<JsonError>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let context = QueryContext {
         current_user_id: user_id,
@@ -179,7 +174,7 @@ async fn execute_query(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: e.to_string(),
                 }),
             )
@@ -200,7 +195,7 @@ async fn execute_adhoc_query(
     State(state): State<AppState>,
     session: Session,
     Json(request): Json<AdhocQueryRequest>,
-) -> Result<Json<GatherResultResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<GatherResultResponse>, (StatusCode, Json<JsonError>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let context = QueryContext {
         current_user_id: user_id,
@@ -228,7 +223,7 @@ async fn execute_adhoc_query(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: e.to_string(),
                 }),
             )
@@ -250,7 +245,7 @@ async fn render_query_html(
     session: Session,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
-) -> Result<Html<String>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let query_context = QueryContext {
         current_user_id: user_id,
@@ -260,7 +255,7 @@ async fn render_query_html(
     let gather_query = state.gather().get_query(&query_id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: "query not found".to_string(),
             }),
         )
@@ -281,7 +276,7 @@ async fn render_query_html(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: e.to_string(),
                 }),
             )

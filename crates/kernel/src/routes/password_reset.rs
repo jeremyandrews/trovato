@@ -4,11 +4,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::info;
 
 use crate::models::User;
 use crate::models::password_reset::PasswordResetToken;
+use crate::routes::helpers::{JsonError, JsonSuccess, validate_password};
 use crate::state::AppState;
 
 /// Password reset request (step 1: request reset).
@@ -17,23 +18,10 @@ pub struct RequestResetInput {
     pub email: String,
 }
 
-/// Password reset response.
-#[derive(Debug, Serialize)]
-pub struct ResetResponse {
-    pub success: bool,
-    pub message: String,
-}
-
 /// New password input (step 2: set new password).
 #[derive(Debug, Deserialize)]
 pub struct SetPasswordInput {
     pub password: String,
-}
-
-/// Error response.
-#[derive(Debug, Serialize)]
-pub struct ResetError {
-    pub error: String,
 }
 
 /// Request a password reset.
@@ -43,7 +31,7 @@ pub struct ResetError {
 async fn request_reset(
     State(state): State<AppState>,
     Json(input): Json<RequestResetInput>,
-) -> Json<ResetResponse> {
+) -> Json<JsonSuccess> {
     // Try to find user by email
     match User::find_by_mail(state.db(), &input.email).await {
         Ok(Some(user)) => {
@@ -105,7 +93,7 @@ async fn request_reset(
     }
 
     // Always return success (security)
-    Json(ResetResponse {
+    Json(JsonSuccess {
         success: true,
         message: "If an account with that email exists, a reset link has been sent.".to_string(),
     })
@@ -117,28 +105,28 @@ async fn request_reset(
 async fn validate_token(
     State(state): State<AppState>,
     Path(token): Path<String>,
-) -> Result<Json<ResetResponse>, (StatusCode, Json<ResetError>)> {
+) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
     let reset_token = PasswordResetToken::find_valid(state.db(), &token)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "database error validating reset token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ResetError {
+                Json(JsonError {
                     error: "Internal server error".to_string(),
                 }),
             )
         })?;
 
     if reset_token.is_some() {
-        Ok(Json(ResetResponse {
+        Ok(Json(JsonSuccess {
             success: true,
             message: "Token is valid. You may set a new password.".to_string(),
         }))
     } else {
         Err((
             StatusCode::BAD_REQUEST,
-            Json(ResetError {
+            Json(JsonError {
                 error: "Invalid or expired reset token".to_string(),
             }),
         ))
@@ -152,13 +140,13 @@ async fn set_password(
     State(state): State<AppState>,
     Path(token): Path<String>,
     Json(input): Json<SetPasswordInput>,
-) -> Result<Json<ResetResponse>, (StatusCode, Json<ResetError>)> {
-    // Validate password length
-    if input.password.len() < 8 {
+) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
+    // Validate password
+    if let Err(msg) = validate_password(&input.password) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ResetError {
-                error: "Password must be at least 8 characters".to_string(),
+            Json(JsonError {
+                error: msg.to_string(),
             }),
         ));
     }
@@ -170,7 +158,7 @@ async fn set_password(
             tracing::error!(error = %e, "database error validating reset token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ResetError {
+                Json(JsonError {
                     error: "Internal server error".to_string(),
                 }),
             )
@@ -178,7 +166,7 @@ async fn set_password(
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
-                Json(ResetError {
+                Json(JsonError {
                     error: "Invalid or expired reset token".to_string(),
                 }),
             )
@@ -191,7 +179,7 @@ async fn set_password(
             tracing::error!(error = %e, "failed to update password");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ResetError {
+                Json(JsonError {
                     error: "Failed to update password".to_string(),
                 }),
             )
@@ -204,7 +192,7 @@ async fn set_password(
             tracing::error!(error = %e, "failed to mark token as used");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ResetError {
+                Json(JsonError {
                     error: "Internal server error".to_string(),
                 }),
             )
@@ -219,7 +207,7 @@ async fn set_password(
 
     info!(user_id = %reset_token.user_id, "password reset completed");
 
-    Ok(Json(ResetResponse {
+    Ok(Json(JsonSuccess {
         success: true,
         message: "Password has been reset. You may now log in.".to_string(),
     }))

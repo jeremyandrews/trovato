@@ -12,14 +12,14 @@ use tower_sessions::Session;
 use crate::file::service::FileStatus;
 use crate::form::AjaxRequest;
 use crate::models::{Comment, Item, UpdateComment, User};
-use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
+use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
 
 use crate::form::csrf::generate_csrf_token;
 
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_admin,
-    require_csrf,
+    CsrfOnlyForm, JsonError, render_admin_template, render_not_found, render_server_error,
+    require_admin, require_admin_json, require_csrf,
 };
 
 /// Stage switch request.
@@ -36,38 +36,6 @@ struct StageSwitchResponse {
     active_stage: Option<String>,
 }
 
-/// Error response.
-#[derive(Debug, Serialize)]
-struct AdminError {
-    error: String,
-}
-
-/// Require admin for JSON API endpoints, returning a JSON error on failure.
-async fn require_admin_json(
-    state: &AppState,
-    session: &Session,
-) -> Result<(), (StatusCode, Json<AdminError>)> {
-    let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let is_admin = match user_id {
-        Some(id) => User::find_by_id(state.db(), id)
-            .await
-            .ok()
-            .flatten()
-            .map(|u| u.is_admin)
-            .unwrap_or(false),
-        None => false,
-    };
-    if !is_admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(AdminError {
-                error: "Admin access required".to_string(),
-            }),
-        ));
-    }
-    Ok(())
-}
-
 /// Switch the active stage for the current session.
 ///
 /// POST /admin/stage/switch
@@ -76,14 +44,14 @@ async fn switch_stage(
     session: Session,
     headers: HeaderMap,
     Json(request): Json<StageSwitchRequest>,
-) -> Result<Json<StageSwitchResponse>, (StatusCode, Json<AdminError>)> {
+) -> Result<Json<StageSwitchResponse>, (StatusCode, Json<JsonError>)> {
     // Verify CSRF token from header
     super::helpers::require_csrf_header(&session, &headers)
         .await
         .map_err(|(s, j)| {
             (
                 s,
-                Json(AdminError {
+                Json(JsonError {
                     error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
@@ -98,7 +66,7 @@ async fn switch_stage(
             tracing::error!(error = %e, "failed to update active_stage in session");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AdminError {
+                Json(JsonError {
                     error: "Failed to switch stage".to_string(),
                 }),
             )
@@ -116,7 +84,7 @@ async fn switch_stage(
 async fn get_current_stage(
     State(state): State<AppState>,
     session: Session,
-) -> Result<Json<StageSwitchResponse>, (StatusCode, Json<AdminError>)> {
+) -> Result<Json<StageSwitchResponse>, (StatusCode, Json<JsonError>)> {
     require_admin_json(&state, &session).await?;
 
     let active_stage: Option<String> = session
@@ -126,7 +94,7 @@ async fn get_current_stage(
             tracing::error!(error = %e, "failed to get active_stage from session");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AdminError {
+                Json(JsonError {
                     error: "Failed to get stage".to_string(),
                 }),
             )
@@ -505,6 +473,39 @@ async fn edit_comment_submit(
     }
 }
 
+/// Set a comment's publication status (shared by approve/unpublish).
+async fn set_comment_status(
+    state: &AppState,
+    session: &Session,
+    id: uuid::Uuid,
+    token: &str,
+    status: i16,
+    action: &str,
+) -> Response {
+    if let Err(redirect) = require_admin(state, session).await {
+        return redirect;
+    }
+
+    if let Err(resp) = require_csrf(session, token).await {
+        return resp;
+    }
+
+    let input = UpdateComment {
+        body: None,
+        body_format: None,
+        status: Some(status),
+    };
+
+    match Comment::update(state.db(), id, input).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(None) => render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to {} comment", action);
+            render_server_error(&format!("Failed to {action} comment"))
+        }
+    }
+}
+
 /// Approve a comment.
 ///
 /// POST /admin/content/comments/{id}/approve
@@ -514,28 +515,7 @@ async fn approve_comment(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
-        return redirect;
-    }
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let input = UpdateComment {
-        body: None,
-        body_format: None,
-        status: Some(1),
-    };
-
-    match Comment::update(state.db(), id, input).await {
-        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
-        Ok(None) => render_not_found(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to approve comment");
-            render_server_error("Failed to approve comment")
-        }
-    }
+    set_comment_status(&state, &session, id, &form.token, 1, "approve").await
 }
 
 /// Unpublish a comment.
@@ -547,28 +527,7 @@ async fn unpublish_comment(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
-        return redirect;
-    }
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let input = UpdateComment {
-        body: None,
-        body_format: None,
-        status: Some(0),
-    };
-
-    match Comment::update(state.db(), id, input).await {
-        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
-        Ok(None) => render_not_found(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to unpublish comment");
-            render_server_error("Failed to unpublish comment")
-        }
-    }
+    set_comment_status(&state, &session, id, &form.token, 0, "unpublish").await
 }
 
 /// Delete a comment.

@@ -11,8 +11,8 @@ use crate::form::csrf::generate_csrf_token;
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, html_escape, is_valid_machine_name, render_admin_template, render_error,
-    render_not_found, render_server_error, require_admin, require_csrf,
+    CsrfOnlyForm, MACHINE_NAME_ERROR, html_escape, is_valid_machine_name, render_admin_template,
+    render_error, render_not_found, render_server_error, require_admin, require_csrf,
 };
 
 // =============================================================================
@@ -127,7 +127,7 @@ async fn add_content_type_submit(
     if form.machine_name.trim().is_empty() {
         errors.push("Machine name is required.".to_string());
     } else if !is_valid_machine_name(&form.machine_name) {
-        errors.push("Machine name must start with a letter and contain only lowercase letters, numbers, and underscores.".to_string());
+        errors.push(MACHINE_NAME_ERROR.to_string());
     }
 
     // Check if machine name already exists
@@ -414,7 +414,7 @@ async fn add_field(
     if form.name.trim().is_empty() {
         errors.push("Machine name is required.".to_string());
     } else if !is_valid_machine_name(&form.name) {
-        errors.push("Machine name must start with a letter and contain only lowercase letters, numbers, and underscores.".to_string());
+        errors.push(MACHINE_NAME_ERROR.to_string());
     }
 
     if form.field_type.is_empty() {
@@ -721,10 +721,7 @@ pub(crate) async fn handle_ajax_add_field(
         return Json(AjaxResponse::new().alert("Machine name is required.")).into_response();
     }
     if !is_valid_machine_name(name) {
-        return Json(AjaxResponse::new().alert(
-            "Machine name must start with a letter and contain only lowercase letters, numbers, and underscores.",
-        ))
-        .into_response();
+        return Json(AjaxResponse::new().alert(MACHINE_NAME_ERROR)).into_response();
     }
     if field_type.is_empty() {
         return Json(AjaxResponse::new().alert("Field type is required.")).into_response();

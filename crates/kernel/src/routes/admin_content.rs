@@ -16,6 +16,19 @@ use super::helpers::{
     require_admin, require_csrf,
 };
 
+/// Extract content fields from form data, excluding system fields.
+fn extract_content_fields(
+    fields: &std::collections::HashMap<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut result = serde_json::Map::new();
+    for (key, value) in fields {
+        if !key.starts_with('_') && key != "title" && key != "status" && key != "log" {
+            result.insert(key.clone(), value.clone());
+        }
+    }
+    result
+}
+
 /// Content form data.
 #[derive(Debug, Deserialize)]
 struct ContentFormData {
@@ -154,13 +167,7 @@ async fn add_content_submit(
         return render_not_found();
     };
 
-    // Build fields JSON from form data (excluding system fields)
-    let mut fields_json = serde_json::Map::new();
-    for (key, value) in &form.fields {
-        if !key.starts_with('_') && key != "title" && key != "status" && key != "log" {
-            fields_json.insert(key.clone(), value.clone());
-        }
-    }
+    let mut fields_json = extract_content_fields(&form.fields);
 
     // Validate all fields before checking errors
     let mut errors = Vec::new();
@@ -342,13 +349,7 @@ async fn edit_content_submit(
         errors.push("Title is required.".to_string());
     }
 
-    // Build fields JSON from form data
-    let mut fields_json = serde_json::Map::new();
-    for (key, value) in &form.fields {
-        if !key.starts_with('_') && key != "title" && key != "status" && key != "log" {
-            fields_json.insert(key.clone(), value.clone());
-        }
-    }
+    let mut fields_json = extract_content_fields(&form.fields);
 
     // Process compound fields: parse JSON string from hidden input
     errors.extend(crate::content::compound::process_compound_fields(

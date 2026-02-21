@@ -20,13 +20,7 @@ use crate::state::AppState;
 use crate::tap::UserContext;
 
 use super::auth::SESSION_USER_ID;
-use super::helpers::{CsrfOnlyForm, html_escape};
-
-/// Error response for item operations.
-#[derive(Debug, Serialize)]
-pub struct ItemError {
-    pub error: String,
-}
+use super::helpers::{CsrfOnlyForm, JsonError, html_escape};
 
 /// Response for successful item operations.
 #[derive(Debug, Serialize)]
@@ -192,7 +186,7 @@ async fn view_item(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
-) -> Result<Html<String>, (StatusCode, Json<ItemError>)> {
+) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Load item with view tap invocation
@@ -201,7 +195,7 @@ async fn view_item(
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Item not found".to_string(),
                 }),
             ));
@@ -210,7 +204,7 @@ async fn view_item(
             tracing::error!(error = %e, "failed to load item");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Internal server error".to_string(),
                 }),
             ));
@@ -389,7 +383,7 @@ async fn add_item_form(
     State(state): State<AppState>,
     session: Session,
     Path(item_type): Path<String>,
-) -> Result<Html<String>, (StatusCode, Json<ItemError>)> {
+) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Check permission
@@ -397,7 +391,7 @@ async fn add_item_form(
     if !user.has_permission(&permission) && !user.is_admin() {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ItemError {
+            Json(JsonError {
                 error: "Access denied".to_string(),
             }),
         ));
@@ -407,7 +401,7 @@ async fn add_item_form(
     let content_type = state.content_types().get(&item_type).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
-            Json(ItemError {
+            Json(JsonError {
                 error: format!("Content type '{item_type}' not found"),
             }),
         )
@@ -452,7 +446,7 @@ async fn create_item(
     resolved_lang: Option<Extension<crate::middleware::language::ResolvedLanguage>>,
     Path(item_type): Path<String>,
     Json(request): Json<CreateItemRequest>,
-) -> Result<Json<ItemResponse>, (StatusCode, Json<ItemError>)> {
+) -> Result<Json<ItemResponse>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Check permission
@@ -460,7 +454,7 @@ async fn create_item(
     if !user.has_permission(&permission) && !user.is_admin() {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ItemError {
+            Json(JsonError {
                 error: "Access denied".to_string(),
             }),
         ));
@@ -472,7 +466,7 @@ async fn create_item(
         .map_err(|(s, j)| {
             (
                 s,
-                Json(ItemError {
+                Json(JsonError {
                     error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
@@ -482,7 +476,7 @@ async fn create_item(
     if !state.content_types().exists(&item_type) {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ItemError {
+            Json(JsonError {
                 error: format!("Content type '{item_type}' not found"),
             }),
         ));
@@ -531,7 +525,7 @@ async fn create_item(
             tracing::error!(error = %e, "failed to create item");
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Failed to create item".to_string(),
                 }),
             ))
@@ -544,7 +538,7 @@ async fn edit_item_form(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
-) -> Result<Html<String>, (StatusCode, Json<ItemError>)> {
+) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Load item
@@ -553,7 +547,7 @@ async fn edit_item_form(
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Item not found".to_string(),
                 }),
             ));
@@ -562,7 +556,7 @@ async fn edit_item_form(
             tracing::error!(error = %e, "failed to load item");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Internal server error".to_string(),
                 }),
             ));
@@ -578,7 +572,7 @@ async fn edit_item_form(
     {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ItemError {
+            Json(JsonError {
                 error: "Access denied".to_string(),
             }),
         ));
@@ -588,7 +582,7 @@ async fn edit_item_form(
     let content_type = state.content_types().get(&item.item_type).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
-            Json(ItemError {
+            Json(JsonError {
                 error: format!("Content type '{}' not found", item.item_type),
             }),
         )
@@ -652,7 +646,7 @@ async fn update_item(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(request): Json<UpdateItemRequest>,
-) -> Result<Json<ItemResponse>, (StatusCode, Json<ItemError>)> {
+) -> Result<Json<ItemResponse>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Verify CSRF token from header
@@ -661,7 +655,7 @@ async fn update_item(
         .map_err(|(s, j)| {
             (
                 s,
-                Json(ItemError {
+                Json(JsonError {
                     error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
@@ -728,7 +722,7 @@ async fn update_item(
         }
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
-            Json(ItemError {
+            Json(JsonError {
                 error: "Item not found".to_string(),
             }),
         )),
@@ -737,7 +731,7 @@ async fn update_item(
             if msg.contains("access denied") {
                 Err((
                     StatusCode::FORBIDDEN,
-                    Json(ItemError {
+                    Json(JsonError {
                         error: "Access denied".to_string(),
                     }),
                 ))
@@ -745,7 +739,7 @@ async fn update_item(
                 tracing::error!(error = %e, "failed to update item");
                 Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ItemError {
+                    Json(JsonError {
                         error: "Failed to update item".to_string(),
                     }),
                 ))
@@ -760,7 +754,7 @@ async fn delete_item(
     session: Session,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ItemError>)> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Verify CSRF token from header
@@ -769,7 +763,7 @@ async fn delete_item(
         .map_err(|(s, j)| {
             (
                 s,
-                Json(ItemError {
+                Json(JsonError {
                     error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
@@ -779,7 +773,7 @@ async fn delete_item(
         Ok(true) => Ok(Json(serde_json::json!({"deleted": true}))),
         Ok(false) => Err((
             StatusCode::NOT_FOUND,
-            Json(ItemError {
+            Json(JsonError {
                 error: "Item not found".to_string(),
             }),
         )),
@@ -788,7 +782,7 @@ async fn delete_item(
             if msg.contains("access denied") {
                 Err((
                     StatusCode::FORBIDDEN,
-                    Json(ItemError {
+                    Json(JsonError {
                         error: "Access denied".to_string(),
                     }),
                 ))
@@ -796,7 +790,7 @@ async fn delete_item(
                 tracing::error!(error = %e, "failed to delete item");
                 Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ItemError {
+                    Json(JsonError {
                         error: "Failed to delete item".to_string(),
                     }),
                 ))
@@ -810,7 +804,7 @@ async fn list_revisions(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
-) -> Result<Html<String>, (StatusCode, Json<ItemError>)> {
+) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let _user = get_user_context(&session, &state).await;
 
     // Load item
@@ -819,7 +813,7 @@ async fn list_revisions(
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Item not found".to_string(),
                 }),
             ));
@@ -828,7 +822,7 @@ async fn list_revisions(
             tracing::error!(error = %e, "failed to load item");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Internal server error".to_string(),
                 }),
             ));
@@ -840,7 +834,7 @@ async fn list_revisions(
         tracing::error!(error = %e, "failed to get revisions");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ItemError {
+            Json(JsonError {
                 error: "Internal server error".to_string(),
             }),
         )
@@ -908,7 +902,7 @@ async fn revert_revision(
     session: Session,
     Path((id, rev_id)): Path<(Uuid, Uuid)>,
     Form(form): Form<CsrfOnlyForm>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ItemError>)> {
+) -> Result<impl IntoResponse, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Verify CSRF token from form body
@@ -917,7 +911,7 @@ async fn revert_revision(
         .map_err(|_| {
             (
                 StatusCode::FORBIDDEN,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Invalid or expired form token. Please try again.".to_string(),
                 }),
             )
@@ -930,7 +924,7 @@ async fn revert_revision(
             if msg.contains("access denied") {
                 Err((
                     StatusCode::FORBIDDEN,
-                    Json(ItemError {
+                    Json(JsonError {
                         error: "Access denied".to_string(),
                     }),
                 ))
@@ -938,7 +932,7 @@ async fn revert_revision(
                 tracing::error!(error = %e, "failed to revert revision");
                 Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ItemError {
+                    Json(JsonError {
                         error: "Failed to revert".to_string(),
                     }),
                 ))
@@ -956,7 +950,7 @@ async fn list_content_types(State(state): State<AppState>) -> Json<Vec<String>> 
 async fn list_items_by_type(
     State(state): State<AppState>,
     Path(item_type): Path<String>,
-) -> Result<Json<Vec<ItemResponse>>, (StatusCode, Json<ItemError>)> {
+) -> Result<Json<Vec<ItemResponse>>, (StatusCode, Json<JsonError>)> {
     match state.items().list_by_type(&item_type).await {
         Ok(items) => Ok(Json(
             items
@@ -973,7 +967,7 @@ async fn list_items_by_type(
             tracing::error!(error = %e, "failed to list items");
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Failed to list items".to_string(),
                 }),
             ))
@@ -992,14 +986,14 @@ async fn get_item_api(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Query(query): Query<GetItemQuery>,
-) -> Result<Json<ItemApiResponse>, (StatusCode, Json<ItemError>)> {
+) -> Result<Json<ItemApiResponse>, (StatusCode, Json<JsonError>)> {
     // Load item
     let item = match state.items().load(id).await {
         Ok(Some(i)) => i,
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Item not found".to_string(),
                 }),
             ));
@@ -1008,7 +1002,7 @@ async fn get_item_api(
             tracing::error!(error = %e, "failed to load item");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Internal server error".to_string(),
                 }),
             ));
@@ -1056,7 +1050,7 @@ async fn get_item_api(
 async fn list_items_api(
     State(state): State<AppState>,
     Query(query): Query<ListItemsQuery>,
-) -> Result<Json<PaginatedResponse<ItemApiResponse>>, (StatusCode, Json<ItemError>)> {
+) -> Result<Json<PaginatedResponse<ItemApiResponse>>, (StatusCode, Json<JsonError>)> {
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
     let offset = (page - 1) * per_page;
@@ -1083,7 +1077,7 @@ async fn list_items_api(
             tracing::error!(error = %e, "failed to list items");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ItemError {
+                Json(JsonError {
                     error: "Failed to list items".to_string(),
                 }),
             )

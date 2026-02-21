@@ -14,19 +14,13 @@ use crate::gather::{
 use crate::state::AppState;
 
 use super::helpers::{
-    render_admin_template, render_not_found, render_server_error, require_admin, require_csrf,
+    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_admin,
+    require_csrf,
 };
 
 // =============================================================================
 // Form data
 // =============================================================================
-
-/// Form data for clone/delete actions (CSRF token only).
-#[derive(Debug, Deserialize)]
-struct CsrfFormData {
-    #[serde(rename = "_token")]
-    token: String,
-}
 
 /// Form data for creating or editing a gather query.
 #[derive(Debug, Deserialize)]
@@ -393,7 +387,7 @@ async fn clone_query(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
-    Form(form): Form<CsrfFormData>,
+    Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
     if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
@@ -430,7 +424,7 @@ async fn delete_query(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
-    Form(form): Form<CsrfFormData>,
+    Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
     if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;

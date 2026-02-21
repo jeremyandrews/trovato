@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tower_sessions::Session;
 use tracing::info;
 
@@ -16,7 +16,8 @@ use crate::models::email_verification::{
 };
 use crate::models::{CreateUser, SiteConfig, User};
 use crate::routes::helpers::{
-    CsrfOnlyForm, html_escape, is_valid_email, is_valid_timezone, require_csrf,
+    CsrfOnlyForm, JsonError, JsonSuccess, html_escape, is_valid_email, is_valid_timezone,
+    require_csrf, validate_password, validate_username,
 };
 use crate::state::AppState;
 
@@ -47,19 +48,6 @@ pub struct LoginRequest {
     pub password: String,
     #[serde(default)]
     pub remember_me: bool,
-}
-
-/// Login response.
-#[derive(Debug, Serialize)]
-pub struct LoginResponse {
-    pub success: bool,
-    pub message: String,
-}
-
-/// Error response for authentication failures.
-#[derive(Debug, Serialize)]
-pub struct AuthError {
-    pub error: String,
 }
 
 /// Typed login error for explicit status code mapping.
@@ -384,20 +372,20 @@ async fn login(
     session: Session,
     headers: axum::http::HeaderMap,
     Json(request): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
     // Rate limit login attempts by IP
     let client_id = crate::middleware::get_client_id(None, &headers);
     if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
-            Json(AuthError {
+            Json(JsonError {
                 error: format!("Rate limit exceeded. Retry after {retry_after} seconds."),
             }),
         ));
     }
 
     match do_login(&state, &session, &request).await {
-        Ok(()) => Ok(Json(LoginResponse {
+        Ok(()) => Ok(Json(JsonSuccess {
             success: true,
             message: "Login successful".to_string(),
         })),
@@ -405,7 +393,7 @@ async fn login(
             let status = e.status_code();
             Err((
                 status,
-                Json(AuthError {
+                Json(JsonError {
                     error: e.message().to_string(),
                 }),
             ))
@@ -636,18 +624,8 @@ async fn validate_registration_input(
     let username = username.trim();
     let mail = mail.trim();
 
-    if username.is_empty() {
-        errors.push("Username is required.".to_string());
-    } else if username.len() > 60 {
-        errors.push("Username must be 60 characters or fewer.".to_string());
-    } else if !username
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-    {
-        errors.push(
-            "Username may only contain letters, numbers, underscores, hyphens, and periods."
-                .to_string(),
-        );
+    if let Err(msg) = validate_username(username) {
+        errors.push(msg.to_string());
     }
 
     if mail.is_empty() {
@@ -656,10 +634,8 @@ async fn validate_registration_input(
         errors.push("Please enter a valid email address.".to_string());
     }
 
-    if password.len() < 8 {
-        errors.push("Password must be at least 8 characters.".to_string());
-    } else if password.len() > 128 {
-        errors.push("Password must be 128 characters or fewer.".to_string());
+    if let Err(msg) = validate_password(password) {
+        errors.push(msg.to_string());
     }
 
     // Check username and email uniqueness — use generic message to prevent enumeration
@@ -756,13 +732,13 @@ async fn register_json(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(request): Json<RegisterJsonRequest>,
-) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
     // Rate limit registration attempts (separate bucket from login)
     let client_id = crate::middleware::get_client_id(None, &headers);
     if let Err(retry_after) = state.rate_limiter().check("register", &client_id).await {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
-            Json(AuthError {
+            Json(JsonError {
                 error: format!("Rate limit exceeded. Retry after {retry_after} seconds."),
             }),
         ));
@@ -771,7 +747,7 @@ async fn register_json(
     if !is_registration_enabled(&state).await {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(AuthError {
+            Json(JsonError {
                 error: "Registration is not enabled.".to_string(),
             }),
         ));
@@ -798,7 +774,7 @@ async fn register_json(
     if !errors.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(AuthError {
+            Json(JsonError {
                 error: errors.join(" "),
             }),
         ));
@@ -812,7 +788,7 @@ async fn register_json(
                 "Registration successful. However, the verification email could not be sent. \
                  Please contact the site administrator."
             };
-            Ok(Json(LoginResponse {
+            Ok(Json(JsonSuccess {
                 success: true,
                 message: message.to_string(),
             }))
@@ -829,7 +805,7 @@ async fn register_json(
             };
             Err((
                 status,
-                Json(AuthError {
+                Json(JsonError {
                     error: msg.to_string(),
                 }),
             ))
@@ -1200,18 +1176,8 @@ async fn profile_update(
 
     let mut errors = Vec::new();
 
-    if name.is_empty() {
-        errors.push("Username is required.".to_string());
-    } else if name.len() > 60 {
-        errors.push("Username must be 60 characters or fewer.".to_string());
-    } else if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-    {
-        errors.push(
-            "Username may only contain letters, numbers, underscores, hyphens, and periods."
-                .to_string(),
-        );
+    if let Err(msg) = validate_username(name) {
+        errors.push(msg.to_string());
     }
 
     if mail.is_empty() {
@@ -1470,10 +1436,8 @@ async fn password_change(
         errors.push("Current password is incorrect.".to_string());
     }
 
-    if form.new_password.len() < 8 {
-        errors.push("New password must be at least 8 characters.".to_string());
-    } else if form.new_password.len() > 128 {
-        errors.push("New password must be 128 characters or fewer.".to_string());
+    if let Err(msg) = validate_password(&form.new_password) {
+        errors.push(msg.to_string());
     }
 
     if form.new_password != form.confirm_password {

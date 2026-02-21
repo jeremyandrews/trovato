@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, build_local_tasks, render_admin_template, render_error, render_not_found,
-    render_server_error, require_admin, require_csrf,
+    render_server_error, require_admin, require_csrf, validate_password,
 };
 
 /// Permissions available for assignment to roles.
@@ -155,12 +155,8 @@ async fn add_user_submit(
     }
 
     let password = form.password.as_deref().unwrap_or("");
-    if password.is_empty() {
-        errors.push("Password is required.".to_string());
-    } else if password.len() < 8 {
-        errors.push("Password must be at least 8 characters.".to_string());
-    } else if password.len() > 128 {
-        errors.push("Password must be 128 characters or fewer.".to_string());
+    if let Err(msg) = validate_password(password) {
+        errors.push(msg.to_string());
     }
 
     // Check if username already exists
@@ -330,12 +326,9 @@ async fn edit_user_submit(
     // Validate password if provided
     if let Some(ref password) = form.password
         && !password.is_empty()
+        && let Err(msg) = validate_password(password)
     {
-        if password.len() < 8 {
-            errors.push("Password must be at least 8 characters.".to_string());
-        } else if password.len() > 128 {
-            errors.push("Password must be 128 characters or fewer.".to_string());
-        }
+        errors.push(msg.to_string());
     }
 
     if !errors.is_empty() {

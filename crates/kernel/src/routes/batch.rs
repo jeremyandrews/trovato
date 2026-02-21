@@ -11,6 +11,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::batch::{BatchOperation, BatchStatus, CreateBatch};
+use crate::routes::helpers::JsonError;
 use crate::state::AppState;
 
 /// Response for batch operation creation.
@@ -45,23 +46,17 @@ struct BatchProgressResponse {
     current_operation: Option<String>,
 }
 
-/// Error response.
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-}
-
 /// Create a new batch operation.
 ///
 /// POST /api/batch
 async fn create_batch(
     State(state): State<AppState>,
     Json(input): Json<CreateBatch>,
-) -> Result<(StatusCode, Json<CreateBatchResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<CreateBatchResponse>), (StatusCode, Json<JsonError>)> {
     let operation = state.batch().create(input).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: e.to_string(),
             }),
         )
@@ -82,7 +77,7 @@ async fn create_batch(
 async fn get_batch(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<BatchStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<BatchStatusResponse>, (StatusCode, Json<JsonError>)> {
     let operation = state
         .batch()
         .get(id)
@@ -90,7 +85,7 @@ async fn get_batch(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: e.to_string(),
                 }),
             )
@@ -98,7 +93,7 @@ async fn get_batch(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Batch operation not found".to_string(),
                 }),
             )
@@ -113,7 +108,7 @@ async fn get_batch(
 async fn cancel_batch(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<BatchStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<BatchStatusResponse>, (StatusCode, Json<JsonError>)> {
     state.batch().cancel(id).await.map_err(|e| {
         let status = if e.to_string().contains("not found") {
             StatusCode::NOT_FOUND
@@ -124,7 +119,7 @@ async fn cancel_batch(
         };
         (
             status,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: e.to_string(),
             }),
         )
@@ -138,7 +133,7 @@ async fn cancel_batch(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: e.to_string(),
                 }),
             )
@@ -146,7 +141,7 @@ async fn cancel_batch(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Batch operation not found".to_string(),
                 }),
             )
@@ -161,11 +156,11 @@ async fn cancel_batch(
 async fn delete_batch(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
     let deleted = state.batch().delete(id).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: e.to_string(),
             }),
         )
@@ -176,7 +171,7 @@ async fn delete_batch(
     } else {
         Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: "Batch operation not found".to_string(),
             }),
         ))

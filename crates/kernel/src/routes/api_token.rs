@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::models::api_token::{ApiToken, MAX_TOKENS_PER_USER};
 use crate::routes::auth::SESSION_USER_ID;
-use crate::routes::helpers::require_csrf_header;
+use crate::routes::helpers::{JsonError, require_csrf_header};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -42,18 +42,13 @@ pub struct TokenListItem {
     pub expires_at: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
 /// POST /api/tokens — Create a new API token.
 async fn create_token(
     State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
     Json(body): Json<CreateTokenRequest>,
-) -> Result<(StatusCode, Json<CreateTokenResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<CreateTokenResponse>), (StatusCode, Json<JsonError>)> {
     let user_id: Uuid = session
         .get(SESSION_USER_ID)
         .await
@@ -62,7 +57,7 @@ async fn create_token(
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Authentication required".to_string(),
                 }),
             )
@@ -74,7 +69,7 @@ async fn create_token(
         .map_err(|(s, j)| {
             (
                 s,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
@@ -84,7 +79,7 @@ async fn create_token(
     if name.is_empty() || name.len() > 255 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: "Token name must be 1-255 characters".to_string(),
             }),
         ));
@@ -97,7 +92,7 @@ async fn create_token(
             tracing::error!(error = %e, "failed to count API tokens");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Failed to create token".to_string(),
                 }),
             )
@@ -106,7 +101,7 @@ async fn create_token(
     if count >= MAX_TOKENS_PER_USER {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: format!("Maximum of {MAX_TOKENS_PER_USER} tokens per user"),
             }),
         ));
@@ -122,7 +117,7 @@ async fn create_token(
             tracing::error!(error = %e, "failed to create API token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Failed to create token".to_string(),
                 }),
             )
@@ -143,7 +138,7 @@ async fn create_token(
 async fn list_tokens(
     State(state): State<AppState>,
     session: Session,
-) -> Result<Json<Vec<TokenListItem>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Vec<TokenListItem>>, (StatusCode, Json<JsonError>)> {
     let user_id: Uuid = session
         .get(SESSION_USER_ID)
         .await
@@ -152,7 +147,7 @@ async fn list_tokens(
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Authentication required".to_string(),
                 }),
             )
@@ -164,7 +159,7 @@ async fn list_tokens(
             tracing::error!(error = %e, "failed to list API tokens");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Failed to list tokens".to_string(),
                 }),
             )
@@ -190,7 +185,7 @@ async fn delete_token(
     session: Session,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
     let user_id: Uuid = session
         .get(SESSION_USER_ID)
         .await
@@ -199,7 +194,7 @@ async fn delete_token(
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Authentication required".to_string(),
                 }),
             )
@@ -211,7 +206,7 @@ async fn delete_token(
         .map_err(|(s, j)| {
             (
                 s,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
                 }),
             )
@@ -223,7 +218,7 @@ async fn delete_token(
             tracing::error!(error = %e, "failed to delete API token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
+                Json(JsonError {
                     error: "Failed to delete token".to_string(),
                 }),
             )
@@ -234,7 +229,7 @@ async fn delete_token(
     } else {
         Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
+            Json(JsonError {
                 error: "Token not found".to_string(),
             }),
         ))

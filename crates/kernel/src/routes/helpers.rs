@@ -5,11 +5,32 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::models::{SiteConfig, User};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
+
+/// Standard JSON error response for API endpoints.
+#[derive(Debug, Serialize)]
+pub struct JsonError {
+    /// Human-readable error message.
+    pub error: String,
+}
+
+/// Standard JSON success response for API endpoints.
+#[derive(Debug, Serialize)]
+pub struct JsonSuccess {
+    /// Whether the operation succeeded.
+    pub success: bool,
+    /// Human-readable success message.
+    pub message: String,
+}
+
+/// Error message for invalid machine names.
+///
+/// Used by content type, category, and gather admin forms.
+pub const MACHINE_NAME_ERROR: &str = "Machine name must start with a letter and contain only lowercase letters, numbers, and underscores.";
 
 /// Generic form struct for POST endpoints that only need a CSRF token.
 ///
@@ -327,6 +348,67 @@ pub fn build_local_tasks(
     serde_json::Value::Array(tabs)
 }
 
+/// Validate a password meets length requirements.
+///
+/// Checks: non-empty, minimum 8 characters, maximum 128 characters.
+/// Returns `Ok(())` on success, or `Err` with a human-readable error message.
+pub fn validate_password(password: &str) -> Result<(), &'static str> {
+    if password.is_empty() {
+        return Err("Password is required.");
+    }
+    if password.len() < 8 {
+        return Err("Password must be at least 8 characters.");
+    }
+    if password.len() > 128 {
+        return Err("Password must be 128 characters or fewer.");
+    }
+    Ok(())
+}
+
+/// Validate a username meets format requirements.
+///
+/// Checks: non-empty, 2–60 characters, alphanumeric + underscores + hyphens + periods only.
+/// Returns `Ok(())` on success, or `Err` with a human-readable error message.
+pub fn validate_username(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("Username is required.");
+    }
+    if name.len() < 2 {
+        return Err("Username must be at least 2 characters.");
+    }
+    if name.len() > 60 {
+        return Err("Username must be 60 characters or fewer.");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(
+            "Username may only contain letters, numbers, underscores, hyphens, and periods.",
+        );
+    }
+    Ok(())
+}
+
+/// Require an authenticated, active **admin** user for JSON API endpoints.
+///
+/// Returns `Ok(())` on success. Returns a JSON 403 error if the user is not
+/// an admin, or the session is invalid.
+pub async fn require_admin_json(
+    state: &AppState,
+    session: &Session,
+) -> Result<(), (StatusCode, axum::Json<JsonError>)> {
+    match require_admin(state, session).await {
+        Ok(_) => Ok(()),
+        Err(_) => Err((
+            StatusCode::FORBIDDEN,
+            axum::Json(JsonError {
+                error: "Admin access required".to_string(),
+            }),
+        )),
+    }
+}
+
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -453,5 +535,37 @@ mod tests {
         assert!(!is_valid_timezone("America/New York"));
         assert!(!is_valid_timezone("<script>"));
         assert!(!is_valid_timezone("a".repeat(65).as_str()));
+    }
+
+    #[test]
+    fn test_validate_password_valid() {
+        assert!(validate_password("abcdefgh").is_ok());
+        assert!(validate_password("a".repeat(128).as_str()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_invalid() {
+        assert!(validate_password("").is_err());
+        assert!(validate_password("short").is_err());
+        assert!(validate_password("a".repeat(129).as_str()).is_err());
+    }
+
+    #[test]
+    fn test_validate_username_valid() {
+        assert!(validate_username("ab").is_ok());
+        assert!(validate_username("user_name").is_ok());
+        assert!(validate_username("user-name").is_ok());
+        assert!(validate_username("user.name").is_ok());
+        assert!(validate_username("Admin123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_invalid() {
+        assert!(validate_username("").is_err());
+        assert!(validate_username("a").is_err());
+        assert!(validate_username("a".repeat(61).as_str()).is_err());
+        assert!(validate_username("user name").is_err());
+        assert!(validate_username("user@name").is_err());
+        assert!(validate_username("user<script>").is_err());
     }
 }
