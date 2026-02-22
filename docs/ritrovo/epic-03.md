@@ -11,7 +11,7 @@
 
 *Your conference site has content and search. Now you teach the system to think. But unlike bolting AI onto the side, you wire it in as infrastructure -- a host function any plugin can call, with the kernel managing keys, budgets, and providers so plugins never touch credentials.*
 
-This epic implements the AI Integration design in four phases: kernel foundation (provider registry, `ai_request()` host function, key store, token budgets), content enrichment (field rules that fire on save), conversational search and chatbot (SSE streaming, RAG context), and MCP integration (exposing Trovato to external AI tools). See [AI Integration Design](../design/ai-integration.md) for the full architecture.
+This epic implements the [AI Integration design](../design/ai-integration.md) in four phases: kernel foundation (provider registry, `ai_request()` host function, key store, token budgets), content enrichment (field rules that fire on save), conversational search and chatbot (SSE / Server-Sent Events streaming, RAG / Retrieval-Augmented Generation context), and MCP (Model Context Protocol) integration (exposing Trovato to external AI tools).
 
 The guiding principle: **AI never publishes.** Every AI-initiated content mutation flows through the Stage system. Editors review AI work the same way they review human work -- no separate "AI review queue." The same editorial pipeline, the same permissions, the same audit trail.
 
@@ -37,15 +37,17 @@ Call `ai_request(operation: Chat)` from a test plugin with a simple prompt. See 
 
 ### Step 2: Content Enrichment -- Field Rules
 
-Configure AI field rules that fire on `tap_item_presave`. When a conference description changes, AI auto-generates a summary. When an image is uploaded without alt text, AI generates it. The `trovato_ai` plugin reads field rule configuration and enriches content before save.
+Configure AI field rules that fire on a new `tap_item_presave` tap. When a conference description changes, AI auto-generates a summary. When an image is uploaded without alt text, AI generates it. The `trovato_ai` plugin reads field rule configuration and enriches content before save.
+
+**Note:** The existing `tap_item_insert` and `tap_item_update` taps fire *after* save, which is too late for enrichment that should be part of the saved content. Story 31.5 introduces `tap_item_presave` as a new tap that fires before the item is persisted, giving plugins the opportunity to modify fields.
 
 **What to cover:**
 
 - Field rule configuration: item_type, field, trigger, operation, prompt, target_field, behavior, weight
 - Behaviors: `fill_if_empty` (only when target is blank), `always_update` (every save), `suggest` (UI only), `validate` (block/allow)
 - Chaining: lower-weight rules run first; a summary rule can reference the output of a prior enrichment
-- Stage integration: when AI modifies a `Public`-stage Item, the change creates a new revision in an `Internal` stage (D8)
-- Per-field staging overrides: alt-text can update `Public` in place; body changes go through full editorial review
+- Stage integration: when AI modifies an item on the live stage (public visibility), the change creates a new revision on a stage with internal visibility (see [design decision D8](../design/ai-integration.md#d8-stage-based-human-in-the-middle-for-all-ai-mutations))
+- Per-field staging overrides: alt-text can update in place; body changes go through full editorial review
 - Audit trail: AI changes recorded with model, prompt, and input/output in revision metadata
 - Admin UI: visual field rule editor with drag-to-reorder
 
@@ -53,13 +55,13 @@ Create a field rule: when `conference.description` changes, auto-fill `conferenc
 
 ### Step 3: Form Assistance & AI Assist Buttons
 
-Add AI-powered assistance directly in content editing forms. The `trovato_ai` plugin uses `tap_form_alter` to inject "AI Assist" buttons next to text fields, taxonomy fields, and image uploads.
+Add AI-powered assistance directly in content editing forms. The `trovato_ai` plugin uses `tap_form_alter` to inject "AI Assist" buttons next to text fields, category fields, and image uploads.
 
 **What to cover:**
 
-- `tap_form_alter` for injecting AI Assist buttons into content forms
+- `tap_form_alter` for injecting AI Assist buttons into content forms (this tap already exists in the kernel)
 - Text field operations: rewrite, expand, shorten, translate, adjust tone
-- Category suggestion: analyze content, suggest taxonomy terms from existing categories
+- Category suggestion: analyze content, suggest terms from existing categories
 - Alt-text generation: generate from uploaded image (requires multimodal model or image-to-text operation)
 - Inline UI: popover with operation buttons, streamed preview, accept/reject
 - All operations go through `ai_request()` -- same provider, same budget, same rate limits
@@ -87,7 +89,7 @@ Place the chatbot Tile in the sidebar Slot. Ask "What Rust conferences are in Eu
 
 ### Step 5: MCP Server
 
-Expose Trovato as an MCP server so external AI tools (Claude Desktop, Cursor, VS Code) can interact with site content. The `trovato_mcp` plugin surfaces CRUD, search, and Gather as MCP tools.
+Expose Trovato as an MCP server so external AI tools (Claude Desktop, Cursor, VS Code) can interact with site content. The `trovato_mcp` plugin surfaces CRUD (Create, Read, Update, Delete), search, and Gather as MCP tools.
 
 **What to cover:**
 
@@ -106,6 +108,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.1: AI Provider Registry & Secure Key Store
 
+**Status:** Not started
+
 **As a** site administrator,
 **I want to** configure AI providers with securely stored API keys,
 **So that** plugins can use AI services without managing credentials.
@@ -123,6 +127,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 - Connection test verifies the provider is reachable and the key is valid
 
 ### Story 31.2: `ai_request()` Host Function
+
+**Status:** Not started
 
 **As a** plugin developer,
 **I want to** call a single host function to make AI requests,
@@ -144,6 +150,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.3: Token Budget Tracking
 
+**Status:** Not started
+
 **As a** site administrator,
 **I want to** set token usage limits per role and provider,
 **So that** AI costs are predictable and controllable.
@@ -162,6 +170,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.4: AI Permissions
 
+**Status:** Not started
+
 **As a** site administrator,
 **I want** granular permissions for AI features,
 **So that** I can control which roles have access to which AI operations.
@@ -178,23 +188,28 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.5: Content Enrichment Field Rules
 
+**Status:** Not started
+
 **As a** content editor,
 **I want** AI to automatically enrich content when I save,
 **So that** summaries, alt-text, and other derived fields are populated without manual effort.
 
 **Acceptance criteria:**
 
+- **New tap required:** `tap_item_presave` added to `KNOWN_TAPS` in `crates/kernel/src/plugin/info_parser.rs`. This tap fires before the item is persisted to the database, allowing plugins to modify fields. Existing `tap_item_insert` and `tap_item_update` fire after save and cannot modify the saved content.
 - `trovato_ai` plugin implements `tap_item_presave` to process configured field rules
 - Field rule config: item_type, field, trigger (`on_change`, `always`), operation, prompt (with `{field_name}` template variables), target_field, behavior, weight
 - Behaviors: `fill_if_empty` (skip if target has value), `always_update` (overwrite), `suggest` (store suggestion metadata, don't write to field), `validate` (block save if AI flags content)
 - Rules ordered by weight (lower runs first); a rule's target_field can be a subsequent rule's source field (chaining)
 - Prompt template variables resolved from Item fields before sending to `ai_request()`
-- Stage integration (D8): if Item is in `Public` stage and behavior is `always_update` or `fill_if_empty`, create a new revision in the configured `Internal` stage (default: highest-sort-order Internal)
+- Stage integration (see [design decision D8](../design/ai-integration.md#d8-stage-based-human-in-the-middle-for-all-ai-mutations)): if Item is on the live stage (public visibility) and behavior is `always_update` or `fill_if_empty`, create a new revision on a stage with internal visibility (default: highest-sort-order internal stage)
 - Per-field staging overrides: configurable `in_place` for low-risk fields (alt-text), `highest_internal` for summaries, `specific_stage` for body
 - Audit trail: revision metadata records field rule ID, model, prompt, and AI output
 - Admin UI: field rule list (item_type > field > operation > target), drag-to-reorder, prompt editor with field variable autocomplete
 
 ### Story 31.6: Form AI Assist Buttons
+
+**Status:** Not started
 
 **As a** content editor,
 **I want** AI assistance buttons in content forms,
@@ -202,10 +217,10 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 **Acceptance criteria:**
 
-- `trovato_ai` plugin implements `tap_form_alter` to inject AI Assist buttons
-- Buttons appear next to text fields (WYSIWYG and plain), taxonomy fields, and image upload fields
+- `trovato_ai` plugin implements `tap_form_alter` to inject AI Assist buttons (this tap already exists in the kernel's `KNOWN_TAPS` and is dispatched by `FormService::build()`)
+- Buttons appear next to text fields (WYSIWYG and plain), category fields, and image upload fields
 - Text operations: rewrite, expand, shorten, translate (select target language), adjust tone (select tone: formal, casual, technical)
-- Category suggestion: analyze field content, suggest taxonomy terms from existing categories
+- Category suggestion: analyze field content, suggest terms from existing categories
 - Alt-text generation: generate description from uploaded image via `ai_request()`
 - Inline UI: button opens popover with operation choices, shows streamed AI preview, accept/reject buttons
 - Accept replaces field value; reject dismisses with no change
@@ -214,6 +229,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 - Operations are non-destructive: original value preserved until explicit accept
 
 ### Story 31.7: Chatbot Tile with SSE Streaming
+
+**Status:** Not started
 
 **As a** site visitor,
 **I want** to ask questions about site content in a chat interface,
@@ -235,6 +252,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.8: Chatbot Actions (Tool Calling)
 
+**Status:** Not started
+
 **As a** site visitor,
 **I want** the chatbot to perform actions like searching content or navigating the site,
 **So that** I can accomplish tasks through conversation.
@@ -243,7 +262,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 - Actions declared as an enum in `trovato_ai` plugin, described to LLM via function-calling format in system prompt
 - Built-in actions: search (runs Gather query), navigate (returns URL), get_item_details (fetches specific Item)
-- Plugin-extensible actions: if `ritrovo_notify` is enabled, adds subscribe/unsubscribe action via `invoke_plugin`
+- Plugin-extensible actions: plugins register additional actions via a new `tap_chat_actions` tap (e.g., `ritrovo_notify` could add subscribe/unsubscribe)
 - LLM decides which action to invoke based on user message; plugin executes with full access control checks
 - Action results fed back to LLM as tool results; LLM generates natural language response incorporating results
 - Admin UI: toggle individual actions on/off, configure which plugins contribute actions
@@ -251,6 +270,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 - Actions respect all existing permissions -- the chatbot user's role determines what actions succeed
 
 ### Story 31.9: AI Admin UI & Usage Dashboard
+
+**Status:** Not started
 
 **As a** site administrator,
 **I want** a unified admin interface for all AI configuration,
@@ -268,6 +289,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.10: MCP Server Plugin
 
+**Status:** Not started
+
 **As a** developer using external AI tools,
 **I want** to connect them to my Trovato site via MCP,
 **So that** I can interact with site content from Claude Desktop, Cursor, or VS Code.
@@ -284,6 +307,8 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 - Plugin declares `use ai` not required -- MCP is about content access, not AI operations (though MCP clients may use AI internally)
 
 ### Story 31.11: VectorStore Trait & pgvector Implementation
+
+**Status:** Not started
 
 **As a** site that needs semantic search beyond keyword expansion,
 **I want** embedding storage with a pluggable backend,
@@ -316,7 +341,7 @@ AI as infrastructure, not afterthought. The reader understands:
 - How the chatbot provides conversational access to site content with RAG
 - How MCP connects Trovato to the broader AI tool ecosystem
 
-One plugin replaces twelve Drupal modules. The tap system replaces ECA workflows. Gather replaces a parallel search pipeline. And security is architectural, not bolted on.
+One plugin replaces twelve Drupal modules. The tap system replaces ECA (Event-Condition-Action) workflows. Gather replaces a parallel search pipeline. And security is architectural, not bolted on.
 
 ---
 
@@ -326,7 +351,7 @@ These are explicitly **not** in this epic:
 
 - **Multi-modal search** -- Image/audio search via embeddings. Requires the embeddings upgrade path (Story 31.11) plus multi-modal embedding models.
 - **Personalized search** -- Per-user ranking based on browsing history. A future plugin concern, not core AI.
-- **AI Agents / autonomous workflows** -- The tap system + `invoke_plugin` + Gather already provide orchestration. No separate "agent" abstraction needed.
+- **AI Agents / autonomous workflows** -- The tap system + Gather already provide orchestration. No separate "agent" abstraction needed.
 - **Fine-tuning / model training** -- Out of scope. Trovato uses pre-trained models via API.
 - **AI-generated images in content** -- ImageGeneration operation type exists but no content editing UI for it in this epic. A future `trovato_ai` enhancement.
 - **Voice input/output** -- SpeechToText and TextToSpeech operation types exist but no UI. Future plugin territory.
@@ -357,11 +382,7 @@ Story 31.11 (VectorStore) ── after 31.2, parallel to 31.5-31.9
 
 ## Related
 
-- [AI Integration Design](../design/ai-integration.md) -- Full architecture and design decisions
+- [AI Integration Design](../design/ai-integration.md) -- Full architecture and design decisions (D1-D8)
 - [Search Architecture](../design/search-architecture.md) -- Pagefind + progressive enhancement
 - [Ritrovo Overview](overview.md) -- Reference application context
 - [Epic 2: Search That Thinks](epic-02.md) -- Search epic (Stories 30.4-30.6 depend on AI Core)
-- AI Integration D1 -- pgvector + VectorStore trait
-- AI Integration D2 -- SSE for streaming
-- AI Integration D3 -- Token budget system
-- AI Integration D8 -- Stage-based human-in-the-middle
