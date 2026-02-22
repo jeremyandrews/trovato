@@ -7,6 +7,13 @@
 //! A single [`TestApp`] instance is shared across all tests via [`shared_app`]
 //! to avoid exhausting virtual memory — each wasmtime pooling allocator
 //! reserves ~64 GB of address space.
+//!
+//! ## Runtime Safety
+//!
+//! The shared `TestApp` is initialized on a long-lived, multi-threaded Tokio
+//! runtime that outlives any individual `#[tokio::test]` runtime. This prevents
+//! 500 errors from session-layer Redis connections being dropped when the
+//! initializing test's runtime shuts down.
 
 #![allow(dead_code)]
 
@@ -15,21 +22,55 @@ use axum::body::Body;
 use axum::http::{Request, header};
 use axum::response::Response;
 use sqlx::PgPool;
-use tokio::sync::OnceCell;
 use tower::ServiceExt;
 use uuid::Uuid;
 
 use trovato_kernel::{AppState, Config, ConfigStorage};
 
-/// Global shared test app — initialized once, reused by every test.
-static SHARED_APP: OnceCell<TestApp> = OnceCell::const_new();
+/// Shared Tokio runtime that outlives all individual test runtimes.
+///
+/// PgPool and Redis connections need an active I/O driver. By keeping this
+/// runtime alive for the entire test binary, the shared `TestApp`'s connections
+/// remain valid across all tests.
+///
+/// All tests run on this runtime via [`run_test`] to prevent cross-runtime
+/// connection migration (connections opened on one runtime becoming stale
+/// when that runtime shuts down).
+pub static SHARED_RT: std::sync::LazyLock<tokio::runtime::Runtime> =
+    std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build shared test runtime")
+    });
+
+/// Global shared test app — initialized once on the shared runtime, reused
+/// by every test.
+static SHARED_APP: std::sync::OnceLock<TestApp> = std::sync::OnceLock::new();
 
 /// Get a reference to the shared [`TestApp`].
 ///
 /// The app is lazily initialized on first call and reused thereafter.
-/// Tests run with `--test-threads=1` so no concurrent mutation issues.
+/// Initialization runs on a dedicated multi-thread Tokio runtime (via
+/// `SHARED_RT`) so that async resources survive across tests.
 pub async fn shared_app() -> &'static TestApp {
-    SHARED_APP.get_or_init(TestApp::new).await
+    SHARED_APP.get_or_init(|| {
+        // Use the shared runtime's handle to initialize inside a
+        // separate OS thread (avoiding nested block_on).
+        let handle = SHARED_RT.handle().clone();
+        std::thread::spawn(move || handle.block_on(TestApp::new()))
+            .join()
+            .expect("TestApp init thread panicked")
+    })
+}
+
+/// Run an async test body on [`SHARED_RT`].
+///
+/// Using a single runtime for all tests prevents the "Tokio context is being
+/// shutdown" error that occurs when PgPool connections opened on one
+/// `#[tokio::test]` runtime are reused by another after the first shuts down.
+pub fn run_test<F: std::future::Future<Output = ()> + Send>(f: F) {
+    SHARED_RT.block_on(f);
 }
 
 /// Test application wrapper using the REAL kernel routes and state.
@@ -62,6 +103,12 @@ impl TestApp {
         if std::env::var("STATIC_DIR").is_err() {
             let static_dir = project_root.join("static");
             unsafe { std::env::set_var("STATIC_DIR", static_dir) };
+        }
+
+        // Tests run 100 tests concurrently — bump the default pool size so
+        // serialization locks don't starve other tests of connections.
+        if std::env::var("DATABASE_MAX_CONNECTIONS").is_err() {
+            unsafe { std::env::set_var("DATABASE_MAX_CONNECTIONS", "25") };
         }
 
         // Create config from environment
@@ -113,6 +160,21 @@ impl TestApp {
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .with_state(state.clone());
 
+        // Pre-warm all pool connections on SHARED_RT so that no connection
+        // is ever first created on a per-test #[tokio::test] runtime.
+        // Without this, connections lazily opened on test runtimes become
+        // invalid when those runtimes shut down, causing "Tokio context
+        // is being shutdown" errors in later tests that reuse them.
+        {
+            let mut conns = Vec::new();
+            for _ in 0..config.database_max_connections {
+                if let Ok(c) = db.acquire().await {
+                    conns.push(c);
+                }
+            }
+            drop(conns);
+        }
+
         // Note: We don't do global cleanup here because it interferes with parallel tests.
         // Each test should use unique identifiers and clean up its own data if needed.
 
@@ -163,11 +225,32 @@ impl TestApp {
     }
 
     /// Login via JSON API and return session cookies.
+    ///
+    /// Each login uses a per-username `X-Forwarded-For` header so that
+    /// parallel tests don't share the same rate-limit bucket.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the login response is not 200 OK (e.g. rate-limited or
+    /// invalid credentials).
     pub async fn login(&self, username: &str, password: &str) -> String {
+        // Clear lockout state so the user can log in.
+        self.state.lockout().clear_all(username).await.ok();
+
+        // Derive a unique fake IP from the username so each test gets its own
+        // rate-limit bucket and parallel tests can't starve each other.
+        let fake_ip = test_ip_for(username);
+        self.state
+            .rate_limiter()
+            .reset("login", &fake_ip)
+            .await
+            .ok();
+
         let response = self
             .request(
                 Request::post("/user/login/json")
                     .header("content-type", "application/json")
+                    .header("x-forwarded-for", &fake_ip)
                     .body(Body::from(
                         serde_json::json!({
                             "username": username,
@@ -178,6 +261,13 @@ impl TestApp {
                     .unwrap(),
             )
             .await;
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "Login failed for user '{username}' (status {})",
+            response.status()
+        );
 
         extract_cookies(&response)
     }
@@ -239,12 +329,26 @@ impl TestApp {
             password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
         };
 
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)
-            .expect("Failed to hash password")
-            .to_string();
+        // Use minimal Argon2 params for test speed — production uses RFC 9106
+        // params (m=65536, t=3, p=4) but that's too slow for 50+ test users.
+        let password = password.to_owned();
+        let password_hash = tokio::task::spawn_blocking(move || {
+            let salt = SaltString::generate(&mut OsRng);
+            let params = argon2::Params::new(
+                4 * 1024, // 4 MiB (minimum viable, 16x less than production)
+                1,        // 1 iteration
+                1,        // 1 lane
+                None,
+            )
+            .expect("test Argon2 params are valid");
+            let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+            argon2
+                .hash_password(password.as_bytes(), &salt)
+                .expect("Failed to hash password")
+                .to_string()
+        })
+        .await
+        .expect("Argon2 hashing task panicked");
 
         let id = Uuid::now_v7();
 
@@ -263,11 +367,6 @@ impl TestApp {
         .execute(&self.db)
         .await
         .expect("Failed to create test user");
-
-        // Clear any lockout/rate-limit state from previous test runs so
-        // this user can log in immediately.
-        self.state.lockout().clear_all(username).await.ok();
-        self.state.rate_limiter().reset("login", "unknown").await.ok();
     }
 }
 
@@ -284,4 +383,21 @@ pub fn extract_cookies(response: &Response) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// Derive a deterministic fake IP from a username.
+///
+/// Each test user gets a unique IP in the 10.x.x.x range so that parallel
+/// tests never share a rate-limit bucket.
+fn test_ip_for(username: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    username.hash(&mut hasher);
+    let h = hasher.finish();
+    format!(
+        "10.{}.{}.{}",
+        (h >> 16) as u8,
+        (h >> 8) as u8,
+        (h as u8).max(1) // avoid .0 which could be confused with a network address
+    )
 }
