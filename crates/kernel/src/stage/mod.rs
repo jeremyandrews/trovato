@@ -369,7 +369,7 @@ impl StageService {
     /// Publish a stage to live using default phases.
     ///
     /// This is the primary entry point for stage publishing.
-    /// Delegates to [`publish_with_resolution`] with [`ConflictResolution::OverwriteAll`].
+    /// Delegates to [`Self::publish_with_resolution`] with [`ConflictResolution::OverwriteAll`].
     pub async fn publish(&self, stage_id: Uuid) -> Result<PublishResult> {
         self.publish_with_resolution(stage_id, ConflictResolution::OverwriteAll)
             .await

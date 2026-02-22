@@ -62,7 +62,7 @@ impl std::str::FromStr for StageVisibility {
 
 impl From<&str> for StageVisibility {
     /// Parse a visibility string, defaulting to `Internal` for unrecognized
-    /// values. Prefer [`FromStr`] when you want errors on bad input.
+    /// values. Prefer [`std::str::FromStr`] when you want errors on bad input.
     fn from(s: &str) -> Self {
         match s {
             "public" => Self::Public,
