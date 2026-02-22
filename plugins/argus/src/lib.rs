@@ -21,6 +21,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "argus_article".into(),
             label: "Article".into(),
             description: "Fetched news article with analysis".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_url", FieldType::Text { max_length: None })
                     .required()
@@ -54,6 +55,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "argus_story".into(),
             label: "Story".into(),
             description: "Aggregated narrative from multiple articles".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_summary", FieldType::TextLong)
                     .required()
@@ -76,6 +78,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "argus_topic".into(),
             label: "Topic".into(),
             description: "Monitored topic with relevance criteria".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_name", FieldType::Text { max_length: None })
                     .required()
@@ -89,6 +92,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "argus_feed".into(),
             label: "Feed".into(),
             description: "RSS/Atom feed source".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_url", FieldType::Text { max_length: None })
                     .required()
@@ -106,6 +110,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "argus_entity".into(),
             label: "Entity".into(),
             description: "Named entity (person, org, place) extracted from articles".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_canonical_name", FieldType::Text { max_length: None })
                     .required()
@@ -120,6 +125,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "argus_reaction".into(),
             label: "Reaction".into(),
             description: "User reaction to content".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_user_id", FieldType::Text { max_length: None })
                     .required()
@@ -136,6 +142,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "argus_discussion".into(),
             label: "Discussion".into(),
             description: "Threaded discussion on a story".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new(
                     "field_story_id",

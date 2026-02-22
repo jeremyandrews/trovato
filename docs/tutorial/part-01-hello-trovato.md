@@ -74,7 +74,7 @@ Only `field_start_date` and `field_end_date` are required. Everything else is op
 
 ### Multi-Value Fields (Cardinality)
 
-Most fields have a cardinality of 1 (single value). Four fields use cardinality -1, meaning they accept an unlimited number of values:
+Most fields have a cardinality of 1 (single value). Three fields use cardinality -1, meaning they accept an unlimited number of values:
 
 - **field_topics** -- a conference can span multiple topics (Rust, WebAssembly, Systems)
 - **field_venue_photos** -- a gallery of event photos
@@ -142,7 +142,100 @@ Actual item data is stored in the `item.fields` JSONB column -- not in `item_typ
 
 ## Step 3: Create Your First Conference
 
-*Coming in the next section -- covers creating a conference item via the admin UI and inspecting the stored JSONB.*
+Now that the `conference` Item Type exists, let's create a conference via the admin UI.
+
+### Navigating to the Form
+
+1. Open `/admin/content` in your browser. This is the content listing page.
+2. Click **Add content** (or go directly to `/admin/content/add`).
+3. You'll see a list of available Item Types. Click **Conference**.
+
+This opens the auto-generated form at `/admin/content/add/conference`. Trovato inspects the `conference` type's field definitions and renders the correct HTML input for each field type:
+
+- **Date** fields (`field_start_date`, `field_end_date`, `field_cfp_end_date`) render as `<input type="date">` -- your browser shows a date picker.
+- **Boolean** fields (`field_online`) render as a checkbox.
+- **Text** fields (`field_city`, `field_country`, `field_url`) render as standard text inputs.
+- **TextLong** fields (`field_description`, `field_editor_notes`) render as multi-line textareas.
+- **File** fields (`field_logo`, `field_schedule_pdf`) render as file inputs (upload wiring comes later).
+- **RecordReference** fields (`field_topics`, `field_speakers`) render as text inputs accepting UUIDs (autocomplete comes later).
+
+The title field at the top uses the custom label "Conference Name" (from `title_label` in the Item Type definition).
+
+### Walkthrough: Creating a Conference
+
+The Ritrovo migration seeds three conferences automatically (see "Seeded Conferences" below), so let's create a fourth one by hand. Fill in the form with these values:
+
+| Field | Value |
+|---|---|
+| Conference Name | RustNation UK 2026 |
+| Conference Website | https://rustnationuk.com |
+| Start Date | 2026-03-17 |
+| End Date | 2026-03-18 |
+| City | London |
+| Country | United Kingdom |
+| Online Event | (unchecked) |
+| Description | A Rust conference in the heart of London. |
+
+Leave the remaining fields blank (they're optional) and make sure **Published** is checked. Click **Create content**.
+
+You'll be redirected to `/admin/content` where "RustNation UK 2026" now appears in the list alongside the seeded conferences.
+
+### What Happened on Submit
+
+When you submitted the form, the kernel:
+
+1. **Validated** -- checked that `field_start_date` and `field_end_date` (the two required fields) were present.
+2. **Extracted fields** -- separated the dynamic field values (`field_url`, `field_start_date`, etc.) from system fields (`title`, `status`, CSRF token).
+3. **Stored the item** -- inserted a row into the `item` table with the field values as a flat JSONB object in the `fields` column.
+4. **Created a revision** -- inserted a snapshot into `item_revision` for the revision history.
+5. **Generated a URL alias** -- every item gets a system path like `/item/{uuid}`. In a later part of this tutorial we will configure pathauto to generate human-friendly aliases like `/conferences/rustconf-2026`.
+
+### Inspecting the Database Row
+
+Connect to your database and query the item:
+
+```sql
+SELECT id, title, fields, created, stage_id
+FROM item
+WHERE type = 'conference'
+ORDER BY created DESC
+LIMIT 1;
+```
+
+The `fields` column contains a flat JSON object:
+
+```json
+{
+  "field_url": "https://rustnationuk.com",
+  "field_start_date": "2026-03-17",
+  "field_end_date": "2026-03-18",
+  "field_city": "London",
+  "field_country": "United Kingdom",
+  "field_description": "A Rust conference in the heart of London."
+}
+```
+
+Notice that `title` is a column on the `item` table itself, not inside `fields`. Boolean fields that are unchecked are simply absent from the JSON (the checkbox was not checked, so `field_online` is not submitted).
+
+### Item IDs and Timestamps
+
+Every item gets a **UUIDv7** identifier. UUIDv7 encodes a millisecond timestamp in its most significant bits, which means IDs are naturally time-sorted -- you can ORDER BY `id` and get chronological order without an extra index on `created`.
+
+The `created` and `changed` columns store **Unix timestamps** (seconds since epoch), not SQL `TIMESTAMP` values. This keeps time handling consistent across time zones and avoids database-specific timestamp semantics.
+
+### Stages
+
+The `stage_id` column defaults to `'live'`. In later parts of this tutorial we'll explore how Stages let you prepare content changes on a draft stage before promoting them to live. For now, every item goes directly to the live stage.
+
+### Seeded Conferences
+
+The Ritrovo migration also seeds three conferences so you have data to work with even without filling in forms:
+
+1. **RustConf 2026** -- Portland, OR, Sep 9--11. Includes CFP URL and deadline.
+2. **EuroRust 2026** -- Paris, France, Oct 15--16. A European Rust conference.
+3. **WasmCon Online 2026** -- Online-only, Jul 22--23. Exercises the `field_online` boolean.
+
+You can see all of them at `/admin/content`.
 
 ---
 

@@ -11,6 +11,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
         machine_name: "media".into(),
         label: "Media".into(),
         description: "A media entity with file, alt text, caption, and credit".into(),
+        title_label: None,
         fields: vec![
             FieldDefinition::new("field_file", FieldType::File)
                 .required()

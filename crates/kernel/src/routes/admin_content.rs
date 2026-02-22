@@ -12,9 +12,12 @@ use crate::models::{CreateItem, Item, User};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, build_local_tasks, render_admin_template, render_not_found, render_server_error,
-    require_admin, require_csrf,
+    CsrfOnlyForm, build_local_tasks, html_escape, render_admin_template, render_not_found,
+    render_server_error, require_admin, require_csrf,
 };
+
+/// Session key for flash messages on the content list page.
+const CONTENT_FLASH_KEY: &str = "content_admin_flash";
 
 /// Extract content fields from form data, excluding system fields.
 fn extract_content_fields(
@@ -80,6 +83,14 @@ async fn list_content(
 
     let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
 
+    // Read and clear flash message
+    let flash: Option<String> = session.get(CONTENT_FLASH_KEY).await.ok().flatten();
+    if flash.is_some()
+        && let Err(e) = session.remove::<String>(CONTENT_FLASH_KEY).await
+    {
+        tracing::warn!(error = %e, "failed to clear flash message");
+    }
+
     let mut context = tera::Context::new();
     context.insert("items", &items);
     context.insert("authors", &authors);
@@ -90,6 +101,7 @@ async fn list_content(
         &status_filter.map(|s| s.to_string()).unwrap_or_default(),
     );
     context.insert("csrf_token", &csrf_token);
+    context.insert("flash", &flash);
     context.insert("path", "/admin/content");
 
     render_admin_template(&state, "admin/content-list.html", context).await
@@ -245,6 +257,23 @@ async fn add_content_submit(
             }
 
             tracing::info!(item_id = %item.id, "content created");
+
+            // Flash success message with link to edit the created item
+            let type_label = state
+                .content_types()
+                .get(&item.item_type)
+                .map(|ct| ct.label)
+                .unwrap_or_else(|| item.item_type.clone());
+            let msg = format!(
+                "{} <a href=\"/admin/content/{}/edit\">{}</a> has been created.",
+                html_escape(&type_label),
+                item.id,
+                html_escape(&item.title),
+            );
+            if let Err(e) = session.insert(CONTENT_FLASH_KEY, &msg).await {
+                tracing::warn!(error = %e, "failed to set flash message");
+            }
+
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
@@ -430,6 +459,24 @@ async fn edit_content_submit(
             }
 
             tracing::info!(item_id = %item_id, "content updated");
+
+            if let Some(ref updated_item) = updated {
+                let type_label = state
+                    .content_types()
+                    .get(&updated_item.item_type)
+                    .map(|ct| ct.label)
+                    .unwrap_or_else(|| updated_item.item_type.clone());
+                let msg = format!(
+                    "{} <a href=\"/admin/content/{}/edit\">{}</a> has been updated.",
+                    html_escape(&type_label),
+                    item_id,
+                    html_escape(&updated_item.title),
+                );
+                if let Err(e) = session.insert(CONTENT_FLASH_KEY, &msg).await {
+                    tracing::warn!(error = %e, "failed to set flash message");
+                }
+            }
+
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
@@ -459,6 +506,12 @@ async fn delete_content(
     match Item::delete(state.db(), item_id).await {
         Ok(true) => {
             tracing::info!(item_id = %item_id, "content deleted");
+            if let Err(e) = session
+                .insert(CONTENT_FLASH_KEY, "Content has been deleted.")
+                .await
+            {
+                tracing::warn!(error = %e, "failed to set flash message");
+            }
             Redirect::to("/admin/content").into_response()
         }
         Ok(false) => render_not_found(),

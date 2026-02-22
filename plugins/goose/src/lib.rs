@@ -16,6 +16,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "goose_test_run".into(),
             label: "Test Run".into(),
             description: "Load test execution with aggregate metrics".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new(
                     "field_target_site_id",
@@ -38,6 +39,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "goose_scenario".into(),
             label: "Scenario".into(),
             description: "Load test scenario definition".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_name", FieldType::Text { max_length: None })
                     .required()
@@ -59,6 +61,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "goose_endpoint_result".into(),
             label: "Endpoint Result".into(),
             description: "Per-endpoint metrics from a test run".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new(
                     "field_test_run_id",
@@ -88,6 +91,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "goose_site".into(),
             label: "Site".into(),
             description: "Target site for load testing".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_name", FieldType::Text { max_length: None })
                     .required()
@@ -104,6 +108,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
             machine_name: "goose_comparison".into(),
             label: "Comparison".into(),
             description: "Side-by-side comparison of test runs".into(),
+            title_label: None,
             fields: vec![
                 FieldDefinition::new("field_name", FieldType::Text { max_length: None })
                     .required()

@@ -450,8 +450,8 @@ development_status:
 
   # Epic 29: Ritrovo Part 1 — Hello, Trovato
   # Install, define conference type, create content, first Gather
-  epic-29: backlog
-  29-1-define-conference-item-type: ready-for-dev
-  29-2-admin-ui-manual-conference-creation: ready-for-dev
+  epic-29: in-progress
+  29-1-define-conference-item-type: done
+  29-2-admin-ui-manual-conference-creation: done
   29-3-upcoming-conferences-gather: ready-for-dev
   epic-29-retrospective: optional

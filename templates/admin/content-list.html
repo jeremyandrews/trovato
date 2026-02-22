@@ -6,6 +6,13 @@
     <a href="/admin/content/add" class="button button--primary">Add content</a>
 </div>
 
+{% if flash %}
+<div class="messages">
+    {# SAFE: flash message is constructed server-side with html_escape on user-supplied values #}
+    <div class="message message--status">{{ flash | safe }}</div>
+</div>
+{% endif %}
+
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/content">
         <div class="filter-row">

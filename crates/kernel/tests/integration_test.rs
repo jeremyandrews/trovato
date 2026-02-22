@@ -5262,7 +5262,7 @@ fn conference_item_type_exists_with_correct_fields() {
             "venue_photos should be multi-value"
         );
 
-        // Text field with max_length
+        // Text field with max_length (struct variant shape)
         let city = find_field("field_city").expect("field_city should exist");
         assert_eq!(city["field_type"], json!({"Text": {"max_length": 255}}));
 
@@ -5270,5 +5270,1107 @@ fn conference_item_type_exists_with_correct_fields() {
         let cfp_end = find_field("field_cfp_end_date").expect("field_cfp_end_date should exist");
         assert_eq!(cfp_end["field_type"], json!("Date"));
         assert_eq!(cfp_end["required"], json!(false));
+
+        // Tutorial Step 2: exactly 2 required fields
+        let required_count = fields
+            .iter()
+            .filter(|f| f.get("required").and_then(|r| r.as_bool()) == Some(true))
+            .count();
+        assert_eq!(
+            required_count, 2,
+            "Only field_start_date and field_end_date should be required"
+        );
+
+        // Tutorial Step 2: exactly 3 multi-value fields (cardinality -1)
+        let multi_value: Vec<&str> = fields
+            .iter()
+            .filter(|f| f.get("cardinality").and_then(|c| c.as_i64()) == Some(-1))
+            .filter_map(|f| f.get("field_name").and_then(|n| n.as_str()))
+            .collect();
+        assert_eq!(
+            multi_value.len(),
+            3,
+            "Expected 3 multi-value fields, got {multi_value:?}"
+        );
+        assert!(multi_value.contains(&"field_topics"));
+        assert!(multi_value.contains(&"field_venue_photos"));
+        assert!(multi_value.contains(&"field_speakers"));
+
+        // Tutorial Step 2: three shapes of field_type serialize correctly
+        // Unit variant: Date → "Date"
+        assert!(
+            start_date["field_type"].is_string(),
+            "Unit variant Date should serialize as a string"
+        );
+        // Newtype variant: RecordReference → {"RecordReference": "category_term"}
+        assert!(
+            topics["field_type"].is_object(),
+            "Newtype variant RecordReference should serialize as an object"
+        );
+        // Struct variant: Text → {"Text": {"max_length": 255}}
+        assert!(
+            city["field_type"].is_object(),
+            "Struct variant Text should serialize as an object"
+        );
+        assert!(
+            city["field_type"]["Text"].is_object(),
+            "Struct variant Text value should be an object with max_length"
+        );
+    });
+}
+
+/// Tutorial Step 2: `/admin/structure/types` lists Conference alongside Basic Page.
+#[test]
+fn admin_types_list_shows_conference_and_page() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("types_list_admin", "password123", "typeslist@test.com")
+            .await;
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/structure/types")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_text(response).await;
+
+        assert!(
+            body.contains("Conference"),
+            "Types list should show Conference"
+        );
+        assert!(
+            body.contains("Basic Page") || body.contains("page"),
+            "Types list should show Basic Page"
+        );
+    });
+}
+
+/// Tutorial Step 3: `/admin/content/add` lists conference as a selectable type.
+#[test]
+fn admin_content_add_lists_conference_type() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("add_list_admin", "password123", "addlist@test.com")
+            .await;
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_text(response).await;
+
+        assert!(
+            body.contains("Conference") || body.contains("conference"),
+            "Content add page should list conference as a selectable type"
+        );
+    });
+}
+
+#[test]
+fn seeded_conferences_exist_with_correct_data() {
+    run_test(async {
+        let app = shared_app().await;
+
+        // Verify all 3 seeded conferences exist
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE type = 'conference'")
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+
+        assert!(
+            count >= 3,
+            "Expected at least 3 seeded conferences, found {count}"
+        );
+
+        // RustConf 2026 — Portland, in-person, with CFP
+        let rustconf: Option<(String, Value)> = sqlx::query_as(
+            "SELECT title, fields FROM item WHERE type = 'conference' AND title = 'RustConf 2026' LIMIT 1",
+        )
+        .fetch_optional(&app.db)
+        .await
+        .unwrap();
+
+        let (title, fields) = rustconf.expect("RustConf 2026 should be seeded");
+        assert_eq!(title, "RustConf 2026");
+        assert_eq!(fields["field_start_date"], "2026-09-09");
+        assert_eq!(fields["field_end_date"], "2026-09-11");
+        assert_eq!(fields["field_city"], "Portland");
+        assert_eq!(fields["field_country"], "United States");
+        assert!(
+            fields.get("field_online").is_none(),
+            "In-person conference should not have field_online set"
+        );
+        assert_eq!(fields["field_cfp_url"], "https://rustconf.com/cfp");
+        assert_eq!(fields["field_cfp_end_date"], "2026-06-15");
+
+        // EuroRust 2026 — Paris, in-person, no CFP
+        let eurorust: Option<(String, Value)> = sqlx::query_as(
+            "SELECT title, fields FROM item WHERE type = 'conference' AND title = 'EuroRust 2026' LIMIT 1",
+        )
+        .fetch_optional(&app.db)
+        .await
+        .unwrap();
+
+        let (title, fields) = eurorust.expect("EuroRust 2026 should be seeded");
+        assert_eq!(title, "EuroRust 2026");
+        assert_eq!(fields["field_start_date"], "2026-10-15");
+        assert_eq!(fields["field_end_date"], "2026-10-16");
+        assert_eq!(fields["field_city"], "Paris");
+        assert_eq!(fields["field_country"], "France");
+        assert!(
+            fields.get("field_online").is_none(),
+            "In-person conference should not have field_online set"
+        );
+
+        // WasmCon Online 2026 — online-only
+        let wasmcon: Option<(String, Value)> = sqlx::query_as(
+            "SELECT title, fields FROM item WHERE type = 'conference' AND title = 'WasmCon Online 2026' LIMIT 1",
+        )
+        .fetch_optional(&app.db)
+        .await
+        .unwrap();
+
+        let (title, fields) = wasmcon.expect("WasmCon Online 2026 should be seeded");
+        assert_eq!(title, "WasmCon Online 2026");
+        assert_eq!(fields["field_start_date"], "2026-07-22");
+        assert_eq!(fields["field_end_date"], "2026-07-23");
+        assert_eq!(
+            fields["field_online"], "1",
+            "Online conference should store field_online as string \"1\" matching form format"
+        );
+        assert!(
+            fields.get("field_city").is_none()
+                || fields["field_city"].is_null()
+                || fields["field_city"] == "",
+            "Online-only conference should have no city"
+        );
+
+        // Verify all 3 have revision linkage
+        let linked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM item i
+             JOIN item_revision r ON r.id = i.current_revision_id
+             WHERE i.type = 'conference'
+             AND i.title IN ('RustConf 2026', 'EuroRust 2026', 'WasmCon Online 2026')",
+        )
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        assert!(
+            linked >= 3,
+            "All 3 seeded conferences should have linked revisions, found {linked}"
+        );
+
+        // Tutorial Step 3: title is a column on item, not inside fields JSONB
+        for conf_title in ["RustConf 2026", "EuroRust 2026", "WasmCon Online 2026"] {
+            let fields: Value = sqlx::query_scalar(
+                "SELECT fields FROM item WHERE type = 'conference' AND title = $1 LIMIT 1",
+            )
+            .bind(conf_title)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+
+            assert!(
+                fields.get("title").is_none(),
+                "title should NOT be stored inside fields JSONB for '{conf_title}'"
+            );
+        }
+
+        // Tutorial Step 3: all seeded items have stage_id = 'live'
+        let non_live: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM item
+             WHERE type = 'conference' AND stage_id != 'live'
+             AND title IN ('RustConf 2026', 'EuroRust 2026', 'WasmCon Online 2026')",
+        )
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            non_live, 0,
+            "All seeded conferences should have stage_id = 'live'"
+        );
+
+        // Tutorial Step 3: created/changed are reasonable Unix timestamps (not 0, not in the future)
+        let timestamps: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT created, changed FROM item
+             WHERE type = 'conference'
+             AND title IN ('RustConf 2026', 'EuroRust 2026', 'WasmCon Online 2026')",
+        )
+        .fetch_all(&app.db)
+        .await
+        .unwrap();
+
+        let now = Utc::now().timestamp();
+        for (created, changed) in &timestamps {
+            assert!(
+                *created > 1_700_000_000 && *created <= now,
+                "created timestamp {created} should be a reasonable Unix epoch"
+            );
+            assert!(
+                *changed > 1_700_000_000 && *changed <= now,
+                "changed timestamp {changed} should be a reasonable Unix epoch"
+            );
+        }
+
+        // Tutorial Step 3: item IDs are valid UUIDs (UUIDv7 — version nibble = 7)
+        let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT id FROM item
+             WHERE type = 'conference'
+             AND title IN ('RustConf 2026', 'EuroRust 2026', 'WasmCon Online 2026')",
+        )
+        .fetch_all(&app.db)
+        .await
+        .unwrap();
+
+        assert!(
+            ids.len() >= 3,
+            "Should have at least 3 seeded conference IDs, found {}",
+            ids.len()
+        );
+        for id in &ids {
+            assert!(!id.is_nil(), "Conference ID should not be nil UUID");
+        }
+    });
+}
+
+#[test]
+fn e2e_conference_form_renders_date_pickers() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("conf_form_admin", "password123", "confform@test.com")
+            .await;
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add/conference")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Conference add form should be accessible"
+        );
+
+        let body = response_text(response).await;
+
+        // Date fields should render as date pickers, not plain text inputs
+        assert!(
+            body.contains(r#"type="date""#),
+            "Form should contain date picker inputs for Date fields"
+        );
+
+        // Verify specific date fields are present
+        assert!(
+            body.contains(r#"id="field_start_date""#),
+            "Form should contain field_start_date"
+        );
+        assert!(
+            body.contains(r#"id="field_end_date""#),
+            "Form should contain field_end_date"
+        );
+        assert!(
+            body.contains(r#"id="field_cfp_end_date""#),
+            "Form should contain field_cfp_end_date"
+        );
+
+        // Boolean field should render as checkbox
+        assert!(
+            body.contains(r#"type="checkbox""#),
+            "Form should contain checkbox for Boolean field"
+        );
+        assert!(
+            body.contains(r#"id="field_online""#),
+            "Form should contain field_online checkbox"
+        );
+
+        // Tutorial Step 3: TextLong fields render as <textarea>
+        assert!(
+            body.contains(r#"id="field_description""#),
+            "Form should contain field_description"
+        );
+        assert!(
+            body.contains("<textarea"),
+            "TextLong fields should render as textarea elements"
+        );
+
+        // Tutorial Step 3: File fields render as disabled placeholder (uploads not yet wired)
+        assert!(
+            body.contains(r#"id="field_logo""#),
+            "Form should contain field_logo"
+        );
+        assert!(
+            body.contains("File uploads not yet available"),
+            "File fields should show placeholder message"
+        );
+
+        // Tutorial Step 3: RecordReference fields render with UUID placeholder
+        assert!(
+            body.contains(r#"placeholder="UUID""#),
+            "RecordReference fields should have UUID placeholder"
+        );
+
+        // Tutorial Step 3: title label shows "Conference Name"
+        assert!(
+            body.contains("Conference Name"),
+            "Title label should show 'Conference Name' from title_label"
+        );
+    });
+}
+
+#[test]
+fn e2e_conference_create_and_verify() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let title = format!("Test Conf {}", &unique_id[..12]);
+
+        let cookies = app
+            .create_and_login_admin("conf_create_admin", "password123", "confcreate@test.com")
+            .await;
+
+        // Get form to extract CSRF token
+        let form_response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add/conference")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let form_cookies = extract_cookies(&form_response);
+        let cookies = if form_cookies.is_empty() {
+            cookies
+        } else {
+            form_cookies
+        };
+        let form_html = response_text(form_response).await;
+
+        let csrf_token = extract_csrf_token(&form_html)
+            .unwrap_or_else(|| panic!("CSRF token not found in conference form"));
+        let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
+
+        // Submit conference with required fields
+        let form_data = format!(
+            "_token={}&_form_build_id={}&title={}&field_start_date=2026-11-01&field_end_date=2026-11-03&field_city=Seattle&field_country=United+States&field_online=1&status=1",
+            csrf_token,
+            form_build_id,
+            urlencoding::encode(&title),
+        );
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/content/add/conference")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let resp_status = response.status();
+        assert!(
+            resp_status == StatusCode::SEE_OTHER || resp_status == StatusCode::OK,
+            "Expected redirect or success, got {resp_status}"
+        );
+
+        // Verify item was created with correct JSONB fields
+        let row: Option<(String, Value)> = sqlx::query_as(
+            "SELECT title, fields FROM item WHERE title = $1 AND type = 'conference'",
+        )
+        .bind(&title)
+        .fetch_optional(&app.db)
+        .await
+        .unwrap();
+
+        let (db_title, fields) = row.expect("Conference item should exist in DB");
+        assert_eq!(db_title, title);
+        assert_eq!(fields["field_start_date"], "2026-11-01");
+        assert_eq!(fields["field_end_date"], "2026-11-03");
+        assert_eq!(fields["field_city"], "Seattle");
+        assert_eq!(fields["field_country"], "United States");
+
+        // AC #4: checked boolean field is stored in JSONB
+        assert_eq!(
+            fields["field_online"], "1",
+            "Checked boolean (field_online=1) should be stored in JSONB"
+        );
+
+        // Tutorial Step 3: form submission creates a revision
+        let item_id: uuid::Uuid = sqlx::query_scalar(
+            "SELECT id FROM item WHERE title = $1 AND type = 'conference' LIMIT 1",
+        )
+        .bind(&title)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        let rev_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item_revision WHERE item_id = $1)")
+                .bind(item_id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert!(rev_exists, "Form submission should create an item_revision");
+
+        // Tutorial Step 3: items created through the kernel use UUIDv7 (version nibble = 7)
+        let version = item_id.get_version_num();
+        assert_eq!(
+            version, 7,
+            "Item ID should be UUIDv7, got version {version}"
+        );
+
+        // Cleanup
+        sqlx::query(
+            "DELETE FROM item_revision WHERE item_id = (SELECT id FROM item WHERE title = $1 AND type = 'conference' LIMIT 1)",
+        )
+        .bind(&title)
+        .execute(&app.db)
+        .await
+        .ok();
+        sqlx::query(
+            "DELETE FROM url_alias WHERE source = '/item/' || (SELECT id::text FROM item WHERE title = $1 AND type = 'conference' LIMIT 1)",
+        )
+        .bind(&title)
+        .execute(&app.db)
+        .await
+        .ok();
+        sqlx::query("DELETE FROM item WHERE title = $1 AND type = 'conference'")
+            .bind(&title)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// Tutorial Step 3: unchecked boolean fields are absent from the JSONB, not stored as false.
+#[test]
+fn e2e_conference_unchecked_boolean_absent_from_json() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let title = format!("Bool Test {}", &unique_id[..12]);
+
+        let cookies = app
+            .create_and_login_admin("bool_test_admin", "password123", "booltest@test.com")
+            .await;
+
+        let form_response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add/conference")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let form_cookies = extract_cookies(&form_response);
+        let cookies = if form_cookies.is_empty() {
+            cookies
+        } else {
+            form_cookies
+        };
+        let form_html = response_text(form_response).await;
+
+        let csrf_token =
+            extract_csrf_token(&form_html).unwrap_or_else(|| panic!("CSRF token not found"));
+        let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
+
+        // Submit WITHOUT field_online (checkbox unchecked)
+        let form_data = format!(
+            "_token={}&_form_build_id={}&title={}&field_start_date=2026-12-01&field_end_date=2026-12-02&status=1",
+            csrf_token,
+            form_build_id,
+            urlencoding::encode(&title),
+        );
+
+        app.request_with_cookies(
+            Request::post("/admin/content/add/conference")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form_data))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+
+        // Verify field_online is absent from JSONB (not stored as false)
+        let fields: Value = sqlx::query_scalar(
+            "SELECT fields FROM item WHERE title = $1 AND type = 'conference' LIMIT 1",
+        )
+        .bind(&title)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        assert!(
+            fields.get("field_online").is_none(),
+            "Unchecked boolean should be absent from JSONB, not stored as false. Got: {:?}",
+            fields.get("field_online")
+        );
+
+        // Cleanup
+        sqlx::query(
+            "DELETE FROM item_revision WHERE item_id = (SELECT id FROM item WHERE title = $1 AND type = 'conference' LIMIT 1)",
+        )
+        .bind(&title)
+        .execute(&app.db)
+        .await
+        .ok();
+        sqlx::query(
+            "DELETE FROM url_alias WHERE source = '/item/' || (SELECT id::text FROM item WHERE title = $1 AND type = 'conference' LIMIT 1)",
+        )
+        .bind(&title)
+        .execute(&app.db)
+        .await
+        .ok();
+        sqlx::query("DELETE FROM item WHERE title = $1 AND type = 'conference'")
+            .bind(&title)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// AC #2: Submitting the conference form without required date fields shows validation errors.
+#[test]
+fn e2e_conference_required_field_validation() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("conf_val_admin", "password123", "confval@test.com")
+            .await;
+
+        // Get form to extract CSRF token
+        let form_response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add/conference")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let form_cookies = extract_cookies(&form_response);
+        let cookies = if form_cookies.is_empty() {
+            cookies
+        } else {
+            form_cookies
+        };
+        let form_html = response_text(form_response).await;
+
+        let csrf_token = extract_csrf_token(&form_html)
+            .unwrap_or_else(|| panic!("CSRF token not found in conference form"));
+        let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
+
+        // Submit WITHOUT start_date and end_date (both required)
+        let form_data = format!(
+            "_token={csrf_token}&_form_build_id={form_build_id}&title=Missing+Dates+Conf&status=1"
+        );
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/content/add/conference")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        // Should re-render the form (200) with errors, not redirect (303)
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Missing required fields should re-render the form, not redirect"
+        );
+
+        let body = response_text(response).await;
+        // validate_required_fields produces "{Label} is required" messages
+        assert!(
+            body.contains("is required"),
+            "Response should contain '{{label}} is required' validation messages"
+        );
+
+        // Item should NOT have been created
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM item WHERE title = 'Missing Dates Conf' AND type = 'conference'",
+        )
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 0,
+            "Item should not be created when required fields are missing"
+        );
+    });
+}
+
+/// AC #7: Conference form submission with invalid CSRF token is rejected.
+#[test]
+fn e2e_conference_csrf_rejection() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("conf_csrf_admin", "password123", "confcsrf@test.com")
+            .await;
+
+        // Submit with a bogus CSRF token (no form fetch)
+        let form_data = "_token=bogus_invalid_token&_form_build_id=fake&title=CSRF+Test&field_start_date=2026-01-01&field_end_date=2026-01-02&status=1";
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/content/add/conference")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        // require_csrf returns 400 Bad Request for invalid tokens
+        let status = response.status();
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "Invalid CSRF should return 400 Bad Request, got {status}"
+        );
+
+        // Item should NOT have been created
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM item WHERE title = 'CSRF Test' AND type = 'conference'",
+        )
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 0,
+            "Item should not be created with invalid CSRF token"
+        );
+    });
+}
+
+/// AC #6: Success message with link shown after creating content.
+#[test]
+fn e2e_conference_create_shows_flash_message() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let title = format!("Flash Test {}", &unique_id[..12]);
+
+        let cookies = app
+            .create_and_login_admin("flash_test_admin", "password123", "flashtest@test.com")
+            .await;
+
+        // Get form to extract CSRF token
+        let form_response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add/conference")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let form_cookies = extract_cookies(&form_response);
+        let cookies = if form_cookies.is_empty() {
+            cookies
+        } else {
+            form_cookies
+        };
+        let form_html = response_text(form_response).await;
+
+        let csrf_token =
+            extract_csrf_token(&form_html).unwrap_or_else(|| panic!("CSRF token not found"));
+        let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
+
+        // Submit valid conference
+        let form_data = format!(
+            "_token={}&_form_build_id={}&title={}&field_start_date=2026-12-10&field_end_date=2026-12-11&status=1",
+            csrf_token,
+            form_build_id,
+            urlencoding::encode(&title),
+        );
+
+        let create_response = app
+            .request_with_cookies(
+                Request::post("/admin/content/add/conference")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        // Should redirect to /admin/content
+        assert_eq!(create_response.status(), StatusCode::SEE_OTHER);
+        let redirect_cookies = extract_cookies(&create_response);
+        let cookies = if redirect_cookies.is_empty() {
+            cookies
+        } else {
+            redirect_cookies
+        };
+
+        // Follow redirect — content list should show flash message
+        let list_response = app
+            .request_with_cookies(
+                Request::get("/admin/content").body(Body::empty()).unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let body = response_text(list_response).await;
+
+        assert!(
+            body.contains("has been created"),
+            "Content list should show flash success message after creation"
+        );
+        assert!(
+            body.contains("Conference"),
+            "Flash message should contain the content type label (not machine name)"
+        );
+        assert!(
+            body.contains(&title),
+            "Flash message should contain the item title"
+        );
+        assert!(
+            body.contains("/edit"),
+            "Flash message should contain a link to edit the item"
+        );
+
+        // Cleanup
+        sqlx::query(
+            "DELETE FROM item_revision WHERE item_id = (SELECT id FROM item WHERE title = $1 AND type = 'conference' LIMIT 1)",
+        )
+        .bind(&title)
+        .execute(&app.db)
+        .await
+        .ok();
+        sqlx::query(
+            "DELETE FROM url_alias WHERE source = '/item/' || (SELECT id::text FROM item WHERE title = $1 AND type = 'conference' LIMIT 1)",
+        )
+        .bind(&title)
+        .execute(&app.db)
+        .await
+        .ok();
+        sqlx::query("DELETE FROM item WHERE title = $1 AND type = 'conference'")
+            .bind(&title)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// AC #6: Success message with link shown after updating content.
+#[test]
+fn e2e_conference_update_shows_flash_message() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let title = format!("Update Flash {}", &unique_id[..12]);
+
+        let cookies = app
+            .create_and_login_admin("upd_flash_admin", "password123", "updflash@test.com")
+            .await;
+
+        // Create a conference first
+        let form_response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add/conference")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let form_cookies = extract_cookies(&form_response);
+        let cookies = if form_cookies.is_empty() {
+            cookies
+        } else {
+            form_cookies
+        };
+        let form_html = response_text(form_response).await;
+
+        let csrf_token =
+            extract_csrf_token(&form_html).unwrap_or_else(|| panic!("CSRF token not found"));
+        let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
+
+        let form_data = format!(
+            "_token={csrf_token}&_form_build_id={form_build_id}&title={}&field_start_date=2027-01-10&field_end_date=2027-01-11&status=1",
+            urlencoding::encode(&title),
+        );
+
+        let create_resp = app
+            .request_with_cookies(
+                Request::post("/admin/content/add/conference")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let redirect_cookies = extract_cookies(&create_resp);
+        let cookies = if redirect_cookies.is_empty() {
+            cookies
+        } else {
+            redirect_cookies
+        };
+
+        // Get the item ID
+        let item_id: uuid::Uuid = sqlx::query_scalar(
+            "SELECT id FROM item WHERE title = $1 AND type = 'conference' LIMIT 1",
+        )
+        .bind(&title)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        // Load the edit form
+        let edit_form_resp = app
+            .request_with_cookies(
+                Request::get(format!("/admin/content/{item_id}/edit"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let edit_cookies = extract_cookies(&edit_form_resp);
+        let cookies = if edit_cookies.is_empty() {
+            cookies
+        } else {
+            edit_cookies
+        };
+        let edit_html = response_text(edit_form_resp).await;
+
+        let csrf_token =
+            extract_csrf_token(&edit_html).unwrap_or_else(|| panic!("CSRF token not found"));
+        let form_build_id = extract_form_build_id(&edit_html).unwrap_or_default();
+
+        // Submit the edit
+        let updated_title = format!("{title} Updated");
+        let form_data = format!(
+            "_token={csrf_token}&_form_build_id={form_build_id}&title={}&field_start_date=2027-01-10&field_end_date=2027-01-12&status=1",
+            urlencoding::encode(&updated_title),
+        );
+
+        let update_resp = app
+            .request_with_cookies(
+                Request::post(format!("/admin/content/{item_id}/edit"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(update_resp.status(), StatusCode::SEE_OTHER);
+        let redirect_cookies = extract_cookies(&update_resp);
+        let cookies = if redirect_cookies.is_empty() {
+            cookies
+        } else {
+            redirect_cookies
+        };
+
+        // Follow redirect — should show update flash
+        let list_resp = app
+            .request_with_cookies(
+                Request::get("/admin/content").body(Body::empty()).unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = response_text(list_resp).await;
+
+        assert!(
+            body.contains("has been updated"),
+            "Content list should show flash message after update"
+        );
+        assert!(
+            body.contains(&updated_title),
+            "Flash message should contain the updated title"
+        );
+
+        // Cleanup
+        sqlx::query("DELETE FROM item_revision WHERE item_id = $1")
+            .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM url_alias WHERE source = $1")
+            .bind(format!("/item/{item_id}"))
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// AC #6: Success message shown after deleting content.
+#[test]
+fn e2e_conference_delete_shows_flash_message() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let title = format!("Delete Flash {}", &unique_id[..12]);
+
+        let cookies = app
+            .create_and_login_admin("del_flash_admin", "password123", "delflash@test.com")
+            .await;
+
+        // Create a conference first
+        let form_response = app
+            .request_with_cookies(
+                Request::get("/admin/content/add/conference")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let form_cookies = extract_cookies(&form_response);
+        let cookies = if form_cookies.is_empty() {
+            cookies
+        } else {
+            form_cookies
+        };
+        let form_html = response_text(form_response).await;
+
+        let csrf_token =
+            extract_csrf_token(&form_html).unwrap_or_else(|| panic!("CSRF token not found"));
+        let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
+
+        let form_data = format!(
+            "_token={csrf_token}&_form_build_id={form_build_id}&title={}&field_start_date=2027-02-10&field_end_date=2027-02-11&status=1",
+            urlencoding::encode(&title),
+        );
+
+        let create_resp = app
+            .request_with_cookies(
+                Request::post("/admin/content/add/conference")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let redirect_cookies = extract_cookies(&create_resp);
+        let cookies = if redirect_cookies.is_empty() {
+            cookies
+        } else {
+            redirect_cookies
+        };
+
+        // Get the item ID
+        let item_id: uuid::Uuid = sqlx::query_scalar(
+            "SELECT id FROM item WHERE title = $1 AND type = 'conference' LIMIT 1",
+        )
+        .bind(&title)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        // Get a CSRF token for the delete
+        let list_resp = app
+            .request_with_cookies(
+                Request::get("/admin/content").body(Body::empty()).unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let list_cookies = extract_cookies(&list_resp);
+        let cookies = if list_cookies.is_empty() {
+            cookies
+        } else {
+            list_cookies
+        };
+        let list_html = response_text(list_resp).await;
+
+        let csrf_token =
+            extract_csrf_token(&list_html).unwrap_or_else(|| panic!("CSRF token not found"));
+
+        // Delete the item
+        let delete_resp = app
+            .request_with_cookies(
+                Request::post(format!("/admin/content/{item_id}/delete"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("_token={csrf_token}")))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(delete_resp.status(), StatusCode::SEE_OTHER);
+        let redirect_cookies = extract_cookies(&delete_resp);
+        let cookies = if redirect_cookies.is_empty() {
+            cookies
+        } else {
+            redirect_cookies
+        };
+
+        // Follow redirect — should show delete flash
+        let list_resp = app
+            .request_with_cookies(
+                Request::get("/admin/content").body(Body::empty()).unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = response_text(list_resp).await;
+
+        assert!(
+            body.contains("has been deleted"),
+            "Content list should show flash message after deletion"
+        );
+
+        // Cleanup (item already deleted, but clean up any orphaned data)
+        sqlx::query("DELETE FROM item_revision WHERE item_id = $1")
+            .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM url_alias WHERE source = $1")
+            .bind(format!("/item/{item_id}"))
+            .execute(&app.db)
+            .await
+            .ok();
     });
 }

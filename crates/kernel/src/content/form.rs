@@ -409,6 +409,7 @@ mod tests {
             machine_name: "blog".to_string(),
             label: "Blog Post".to_string(),
             description: "A blog article".to_string(),
+            title_label: None,
             fields: vec![
                 FieldDefinition {
                     field_name: "body".to_string(),
@@ -516,6 +517,7 @@ mod tests {
             machine_name: "page".to_string(),
             label: "Page".to_string(),
             description: "A page".to_string(),
+            title_label: None,
             fields: vec![FieldDefinition {
                 field_name: "sections".to_string(),
                 field_type: FieldType::Compound {

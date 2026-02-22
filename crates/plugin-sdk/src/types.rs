@@ -172,6 +172,9 @@ pub struct ContentTypeDefinition {
     pub machine_name: String,
     pub label: String,
     pub description: String,
+    /// Custom label for the title field (e.g., "Conference Name" instead of "Title").
+    #[serde(default)]
+    pub title_label: Option<String>,
     pub fields: Vec<FieldDefinition>,
 }
 

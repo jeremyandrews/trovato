@@ -67,6 +67,7 @@ fn test_content_type() -> ContentTypeDefinition {
         machine_name: "blog".to_string(),
         label: "Blog Post".to_string(),
         description: "A blog article".to_string(),
+        title_label: None,
         fields: vec![
             FieldDefinition {
                 field_name: "body".to_string(),
@@ -548,6 +549,7 @@ fn comprehensive_content_type() -> ContentTypeDefinition {
         machine_name: "test".to_string(),
         label: "Test Content".to_string(),
         description: "Tests all field types".to_string(),
+        title_label: None,
         fields: vec![
             FieldDefinition::new("body", FieldType::TextLong)
                 .label("Body")

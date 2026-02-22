@@ -36,7 +36,7 @@
         {% endif %}
 
         <div class="form-item">
-            <label for="title" class="form-item__label form-item__label--required">Title</label>
+            <label for="title" class="form-item__label form-item__label--required">{{ content_type.title_label | default(value="Title") }}</label>
             <input type="text" id="title" name="title" class="form-text"
                    value="{{ values.title | default(value='') }}"
                    required>
@@ -47,20 +47,40 @@
             <label for="{{ field.field_name }}" class="form-item__label {% if field.required %}form-item__label--required{% endif %}">
                 {{ field.label }}
             </label>
-            {% if field.field_type == "text" or field.field_type.Text %}
+            {% if field.field_type.Text %}
             <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
                    {% if field.required %}required{% endif %}>
-            {% elif field.field_type == "textarea" or field.field_type == "text_long" or field.field_type.TextLong %}
+            {% elif field.field_type == "TextLong" %}
             <textarea id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-textarea" rows="5"
                       {% if field.required %}required{% endif %}>{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}</textarea>
-            {% elif field.field_type == "boolean" or field.field_type.Boolean %}
+            {% elif field.field_type == "Boolean" %}
             <div class="form-checkbox-wrapper">
                 <input type="checkbox" id="{{ field.field_name }}" name="{{ field.field_name }}" value="1"
                        {% if values.fields[field.field_name] or (item and item.fields[field.field_name]) %}checked{% endif %}>
             </div>
-            {% elif field.field_type == "integer" or field.field_type == "number" or field.field_type.Integer %}
+            {% elif field.field_type == "Integer" %}
             <input type="number" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Float" %}
+            <input type="number" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" step="any"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Date" %}
+            <input type="date" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Email" %}
+            <input type="email" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "File" %}
+            <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" disabled
+                   placeholder="File uploads not yet available">
+            <p class="form-item__description">File upload support is coming in a future release.</p>
+            {% elif field.field_type.RecordReference %}
+            <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" placeholder="UUID"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
                    {% if field.required %}required{% endif %}>
             {% elif field.field_type.Compound %}

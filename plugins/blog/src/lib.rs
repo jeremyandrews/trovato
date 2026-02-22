@@ -14,6 +14,7 @@ pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
         machine_name: "blog".into(),
         label: "Blog Post".into(),
         description: "A blog entry with body and tags".into(),
+        title_label: None,
         fields: vec![
             FieldDefinition::new("field_body", FieldType::TextLong)
                 .required()

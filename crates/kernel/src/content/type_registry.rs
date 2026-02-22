@@ -28,6 +28,24 @@ struct ContentTypeRegistryInner {
     types: DashMap<String, ContentTypeDefinition>,
 }
 
+/// Resolve the title label, normalizing empty strings to None and
+/// falling back to "Title" if no value is provided.
+fn resolve_title_label(primary: Option<&str>, fallback: Option<&str>) -> Option<String> {
+    let normalize = |s: &str| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
+
+    primary
+        .and_then(normalize)
+        .or_else(|| fallback.and_then(normalize))
+        .or_else(|| Some("Title".to_string()))
+}
+
 impl ContentTypeRegistry {
     /// Create a new content type registry.
     pub fn new(pool: PgPool) -> Self {
@@ -91,6 +109,7 @@ impl ContentTypeRegistry {
                 machine_name: db_type.type_name.clone(),
                 label: db_type.label.clone(),
                 description: db_type.description.clone().unwrap_or_default(),
+                title_label: db_type.title_label.clone(),
                 fields: self.parse_fields_from_settings(&db_type.settings),
             };
             self.inner.types.insert(db_type.type_name, def);
@@ -108,7 +127,7 @@ impl ContentTypeRegistry {
             label: def.label.clone(),
             description: Some(def.description.clone()),
             has_title: Some(true),
-            title_label: Some("Title".to_string()),
+            title_label: resolve_title_label(def.title_label.as_deref(), None),
             plugin: "plugin".to_string(), // TODO: Get actual plugin name
             settings: Some(serde_json::to_value(&def.fields).context("serialize fields")?),
         };
@@ -160,12 +179,15 @@ impl ContentTypeRegistry {
         description: Option<&str>,
         settings: serde_json::Value,
     ) -> Result<()> {
+        let title_label =
+            resolve_title_label(settings.get("title_label").and_then(|v| v.as_str()), None);
+
         let input = CreateItemType {
             type_name: machine_name.to_string(),
             label: label.to_string(),
             description: description.map(|s| s.to_string()),
             has_title: Some(true),
-            title_label: Some("Title".to_string()),
+            title_label: title_label.clone(),
             plugin: "core".to_string(),
             settings: Some(settings.clone()),
         };
@@ -177,6 +199,7 @@ impl ContentTypeRegistry {
             machine_name: machine_name.to_string(),
             label: label.to_string(),
             description: description.unwrap_or("").to_string(),
+            title_label,
             fields: vec![],
         };
         self.inner.types.insert(machine_name.to_string(), def);
@@ -196,16 +219,17 @@ impl ContentTypeRegistry {
         // Get existing type to preserve fields
         let existing = self.get(machine_name);
 
+        let title_label = resolve_title_label(
+            settings.get("title_label").and_then(|v| v.as_str()),
+            existing.as_ref().and_then(|e| e.title_label.as_deref()),
+        );
+
         let input = CreateItemType {
             type_name: machine_name.to_string(),
             label: label.to_string(),
             description: description.map(|s| s.to_string()),
             has_title: Some(true),
-            title_label: settings
-                .get("title_label")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or(Some("Title".to_string())),
+            title_label: title_label.clone(),
             plugin: "core".to_string(),
             settings: Some(settings.clone()),
         };
@@ -217,6 +241,7 @@ impl ContentTypeRegistry {
             machine_name: machine_name.to_string(),
             label: label.to_string(),
             description: description.unwrap_or("").to_string(),
+            title_label,
             fields: existing.map(|e| e.fields).unwrap_or_default(),
         };
         self.inner.types.insert(machine_name.to_string(), def);
