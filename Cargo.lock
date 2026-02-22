@@ -6092,6 +6092,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_search"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

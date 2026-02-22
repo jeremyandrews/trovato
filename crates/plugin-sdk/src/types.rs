@@ -8,6 +8,12 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Live stage UUID string, matching `LIVE_STAGE_ID` in the kernel.
+///
+/// Use this constant instead of hardcoding the UUID string in plugins
+/// to stay in sync with the kernel's canonical definition.
+pub const LIVE_STAGE_UUID: &str = "0193a5a0-0000-7000-8000-000000000001";
+
 /// A complete item (content record) for full-serialization taps.
 ///
 /// Plugins receive this struct serialized as JSON for view/alter/insert/update taps.

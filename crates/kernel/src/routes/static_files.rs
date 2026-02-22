@@ -80,6 +80,7 @@ fn mime_from_path(path: &std::path::Path) -> &'static str {
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
         Some("ico") => "image/x-icon",
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }

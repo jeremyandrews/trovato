@@ -1,0 +1,17 @@
+[package]
+name = "trovato_search"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Client-side search plugin for Trovato (Pagefind)"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

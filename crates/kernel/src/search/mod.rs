@@ -54,10 +54,13 @@ impl SearchService {
     /// Search for items matching the query.
     ///
     /// Uses PostgreSQL full-text search with ts_rank for relevance scoring.
-    /// If `user_id` is provided, also includes the user's draft items.
+    /// Results are filtered to only include items whose `stage_id` is in
+    /// `stage_ids`. If `user_id` is provided, also includes the user's
+    /// draft items (still stage-filtered).
     pub async fn search(
         &self,
         query: &str,
+        stage_ids: &[Uuid],
         user_id: Option<Uuid>,
         limit: i64,
         offset: i64,
@@ -91,10 +94,12 @@ impl SearchService {
                 FROM item
                 WHERE search_vector @@ to_tsquery('english', $1)
                   AND (status = 1 OR author_id = $2)
+                  AND stage_id = ANY($3)
                 "#,
             )
             .bind(&ts_query)
             .bind(uid)
+            .bind(stage_ids)
             .fetch_one(&self.pool)
             .await
             .context("failed to count search results")?
@@ -105,15 +110,18 @@ impl SearchService {
                 FROM item
                 WHERE search_vector @@ to_tsquery('english', $1)
                   AND status = 1
+                  AND stage_id = ANY($2)
                 "#,
             )
             .bind(&ts_query)
+            .bind(stage_ids)
             .fetch_one(&self.pool)
             .await
             .context("failed to count search results")?
         };
 
         // Get ranked results
+        // Headline source: title + body text for richer snippets
         let results = if let Some(uid) = user_id {
             sqlx::query_as::<_, SearchResultRow>(
                 r#"
@@ -124,19 +132,25 @@ impl SearchService {
                     ts_rank(search_vector, to_tsquery('english', $1)) as rank,
                     ts_headline(
                         'english',
-                        COALESCE(title, ''),
+                        COALESCE(title, '') || ' ' || COALESCE(
+                            fields->'field_body'->>'value',
+                            fields->>'field_body',
+                            ''
+                        ),
                         to_tsquery('english', $1),
                         'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=15'
                     ) as snippet
                 FROM item
                 WHERE search_vector @@ to_tsquery('english', $1)
                   AND (status = 1 OR author_id = $2)
+                  AND stage_id = ANY($3)
                 ORDER BY rank DESC, created DESC
-                LIMIT $3 OFFSET $4
+                LIMIT $4 OFFSET $5
                 "#,
             )
             .bind(&ts_query)
             .bind(uid)
+            .bind(stage_ids)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)
@@ -152,18 +166,24 @@ impl SearchService {
                     ts_rank(search_vector, to_tsquery('english', $1)) as rank,
                     ts_headline(
                         'english',
-                        COALESCE(title, ''),
+                        COALESCE(title, '') || ' ' || COALESCE(
+                            fields->'field_body'->>'value',
+                            fields->>'field_body',
+                            ''
+                        ),
                         to_tsquery('english', $1),
                         'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=15'
                     ) as snippet
                 FROM item
                 WHERE search_vector @@ to_tsquery('english', $1)
                   AND status = 1
+                  AND stage_id = ANY($2)
                 ORDER BY rank DESC, created DESC
-                LIMIT $2 OFFSET $3
+                LIMIT $3 OFFSET $4
                 "#,
             )
             .bind(&ts_query)
+            .bind(stage_ids)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)

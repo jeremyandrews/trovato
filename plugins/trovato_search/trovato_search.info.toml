@@ -1,0 +1,12 @@
+name = "trovato_search"
+description = "Client-side search powered by Pagefind"
+version = "1.0.0"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_cron"]
+weight = 10
+
+[migrations]
+files = ["migrations/001_create_index_status.sql"]

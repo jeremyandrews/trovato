@@ -13,9 +13,37 @@ use uuid::Uuid;
 
 use tower_sessions::Session;
 
-use crate::routes::auth::SESSION_USER_ID;
+use crate::models::stage::LIVE_STAGE_ID;
+use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
 use crate::routes::helpers::html_escape;
 use crate::state::AppState;
+
+/// Resolve the active stage IDs from the user session.
+///
+/// Anonymous users (or sessions without an active stage) see only
+/// `LIVE_STAGE_ID`. Authenticated users with an active non-live stage
+/// see both their active stage and the live stage.
+async fn resolve_stage_ids(session: &Session) -> Vec<Uuid> {
+    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
+        Ok(Some(s)) => match s.parse() {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    value = %s,
+                    error = %e,
+                    "corrupt SESSION_ACTIVE_STAGE value, falling back to live stage"
+                );
+                LIVE_STAGE_ID
+            }
+        },
+        _ => LIVE_STAGE_ID,
+    };
+    if active_stage == LIVE_STAGE_ID {
+        vec![LIVE_STAGE_ID]
+    } else {
+        vec![active_stage, LIVE_STAGE_ID]
+    }
+}
 
 /// Sanitize a search snippet from PostgreSQL `ts_headline`.
 ///
@@ -97,9 +125,14 @@ async fn search_html(
 
     // Get user ID if logged in
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let stage_ids = resolve_stage_ids(&session).await;
 
     // Execute search
-    let results = match state.search().search(&query, user_id, limit, offset).await {
+    let results = match state
+        .search()
+        .search(&query, &stage_ids, user_id, limit, offset)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "search failed");
@@ -163,9 +196,14 @@ async fn search_json(
 
     // Get user ID if logged in
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let stage_ids = resolve_stage_ids(&session).await;
 
     // Execute search
-    let results = match state.search().search(&query, user_id, limit, offset).await {
+    let results = match state
+        .search()
+        .search(&query, &stage_ids, user_id, limit, offset)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "search failed");

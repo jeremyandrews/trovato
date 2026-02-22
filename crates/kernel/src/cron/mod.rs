@@ -3,6 +3,7 @@
 //! Provides distributed cron with Redis-based locking to ensure
 //! exactly-once execution across multiple server instances.
 
+mod pagefind;
 mod queue;
 mod tasks;
 
@@ -53,6 +54,7 @@ pub struct CronService {
     tasks: CronTasks,
     queue: Arc<RedisQueue>,
     tap_dispatcher: Option<Arc<TapDispatcher>>,
+    pagefind_enabled: bool,
 }
 
 impl CronService {
@@ -66,6 +68,7 @@ impl CronService {
             tasks,
             queue,
             tap_dispatcher: None,
+            pagefind_enabled: false,
         }
     }
 
@@ -79,12 +82,18 @@ impl CronService {
             tasks,
             queue,
             tap_dispatcher: None,
+            pagefind_enabled: false,
         }
     }
 
     /// Set the tap dispatcher for plugin cron hooks.
     pub fn set_tap_dispatcher(&mut self, dispatcher: Arc<TapDispatcher>) {
         self.tap_dispatcher = Some(dispatcher);
+    }
+
+    /// Enable pagefind index rebuilding (requires `trovato_search` plugin).
+    pub fn set_pagefind_enabled(&mut self, enabled: bool) {
+        self.pagefind_enabled = enabled;
     }
 
     /// Set optional plugin services for cron tasks.
@@ -249,6 +258,15 @@ impl CronService {
                         tasks_run.push("tap_cron:TIMEOUT".to_string());
                     }
                 }
+            }
+        }
+
+        // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
+        if self.pagefind_enabled {
+            match pagefind::maybe_rebuild_index(&self.pool).await {
+                Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
+                Ok(false) => {}
+                Err(e) => warn!(error = %e, "pagefind index rebuild failed"),
             }
         }
 

@@ -6375,3 +6375,309 @@ fn e2e_conference_delete_shows_flash_message() {
             .ok();
     });
 }
+
+// =============================================================================
+// Stage-Aware Search Tests
+// =============================================================================
+
+#[test]
+fn e2e_search_filters_by_stage_live() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = SEARCH_CONFIG_LOCK.lock().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let search_term = format!("stagelive_{}", &unique_id[..12]);
+
+        let live_stage_id = trovato_kernel::models::stage::LIVE_STAGE_ID;
+
+        // Create a non-live stage for test isolation
+        let suffix = &uuid::Uuid::now_v7().simple().to_string()[..8];
+        let nonlive_stage_id = uuid::Uuid::now_v7();
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO category_tag (id, category_id, label, weight, created, changed) \
+             VALUES ($1, 'stages', $2, 0, $3, $3)",
+        )
+        .bind(nonlive_stage_id)
+        .bind(format!("srch_stage_{suffix}"))
+        .bind(now)
+        .execute(&app.db)
+        .await
+        .expect("insert stage tag");
+
+        sqlx::query(
+            "INSERT INTO stage_config (tag_id, machine_name, visibility, is_default) \
+             VALUES ($1, $2, 'internal', false)",
+        )
+        .bind(nonlive_stage_id)
+        .bind(format!("srch_{suffix}"))
+        .execute(&app.db)
+        .await
+        .expect("insert stage config");
+
+        // Insert a live-stage item with the search term
+        let live_item_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            r#"INSERT INTO item (id, type, title, status, author_id, stage_id, fields, search_vector, created, changed)
+            VALUES ($1, 'page', $2, 1, $3, $4, '{}',
+                    setweight(to_tsvector('english', $2), 'A'),
+                    extract(epoch from now())::bigint,
+                    extract(epoch from now())::bigint)"#,
+        )
+        .bind(live_item_id)
+        .bind(format!("Live Page {search_term}"))
+        .bind(uuid::Uuid::nil())
+        .bind(live_stage_id)
+        .execute(&app.db)
+        .await
+        .expect("insert live item");
+
+        // Insert a non-live-stage item with the same search term
+        let nonlive_item_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            r#"INSERT INTO item (id, type, title, status, author_id, stage_id, fields, search_vector, created, changed)
+            VALUES ($1, 'page', $2, 1, $3, $4, '{}',
+                    setweight(to_tsvector('english', $2), 'A'),
+                    extract(epoch from now())::bigint,
+                    extract(epoch from now())::bigint)"#,
+        )
+        .bind(nonlive_item_id)
+        .bind(format!("Staged Page {search_term}"))
+        .bind(uuid::Uuid::nil())
+        .bind(nonlive_stage_id)
+        .execute(&app.db)
+        .await
+        .expect("insert non-live item");
+
+        // Anonymous search — should only find the live item
+        let response = app
+            .request(
+                Request::get(format!("/api/search?q={search_term}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let results = body["results"].as_array().expect("results array");
+
+        let found_live = results
+            .iter()
+            .any(|r| r["id"].as_str() == Some(&live_item_id.to_string()));
+        let found_nonlive = results
+            .iter()
+            .any(|r| r["id"].as_str() == Some(&nonlive_item_id.to_string()));
+
+        assert!(found_live, "Anonymous search should find live-stage item");
+        assert!(
+            !found_nonlive,
+            "Anonymous search should NOT find non-live-stage item"
+        );
+
+        // Cleanup — stage_config is removed via ON DELETE CASCADE from category_tag
+        sqlx::query("DELETE FROM item WHERE id = ANY($1)")
+            .bind(&[live_item_id, nonlive_item_id][..])
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM category_tag WHERE id = $1 AND category_id = 'stages'")
+            .bind(nonlive_stage_id)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+#[test]
+fn e2e_search_includes_active_stage() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = SEARCH_CONFIG_LOCK.lock().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let search_term = format!("stageact_{}", &unique_id[..12]);
+
+        // Create a non-live stage
+        let suffix = &uuid::Uuid::now_v7().simple().to_string()[..8];
+        let nonlive_stage_id = uuid::Uuid::now_v7();
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO category_tag (id, category_id, label, weight, created, changed) \
+             VALUES ($1, 'stages', $2, 0, $3, $3)",
+        )
+        .bind(nonlive_stage_id)
+        .bind(format!("act_stage_{suffix}"))
+        .bind(now)
+        .execute(&app.db)
+        .await
+        .expect("insert stage tag");
+
+        sqlx::query(
+            "INSERT INTO stage_config (tag_id, machine_name, visibility, is_default) \
+             VALUES ($1, $2, 'internal', false)",
+        )
+        .bind(nonlive_stage_id)
+        .bind(format!("act_{suffix}"))
+        .execute(&app.db)
+        .await
+        .expect("insert stage config");
+
+        // Insert item in non-live stage
+        let item_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            r#"INSERT INTO item (id, type, title, status, author_id, stage_id, fields, search_vector, created, changed)
+            VALUES ($1, 'page', $2, 1, $3, $4, '{}',
+                    setweight(to_tsvector('english', $2), 'A'),
+                    extract(epoch from now())::bigint,
+                    extract(epoch from now())::bigint)"#,
+        )
+        .bind(item_id)
+        .bind(format!("Active Stage Page {search_term}"))
+        .bind(uuid::Uuid::nil())
+        .bind(nonlive_stage_id)
+        .execute(&app.db)
+        .await
+        .expect("insert staged item");
+
+        // Test at the service level: call SearchService::search() directly
+        // with stage_ids including the non-live stage (simulating a user
+        // whose session has an active stage set).
+        let results = app
+            .state
+            .search()
+            .search(
+                &search_term,
+                &[
+                    nonlive_stage_id,
+                    trovato_kernel::models::stage::LIVE_STAGE_ID,
+                ],
+                None,
+                10,
+                0,
+            )
+            .await
+            .expect("search should succeed");
+
+        let found = results.results.iter().any(|r| r.id == item_id);
+        assert!(
+            found,
+            "Search with active stage should find staged item. Results: {:?}",
+            results.results
+        );
+
+        // Also verify anonymous search (live-only) does NOT find it
+        let anon_results = app
+            .state
+            .search()
+            .search(
+                &search_term,
+                &[trovato_kernel::models::stage::LIVE_STAGE_ID],
+                None,
+                10,
+                0,
+            )
+            .await
+            .expect("anon search should succeed");
+
+        let found_anon = anon_results.results.iter().any(|r| r.id == item_id);
+        assert!(!found_anon, "Live-only search should NOT find staged item");
+
+        // Cleanup — stage_config is removed via ON DELETE CASCADE from category_tag
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM category_tag WHERE id = $1 AND category_id = 'stages'")
+            .bind(nonlive_stage_id)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+#[test]
+fn e2e_search_snippet_includes_body() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = SEARCH_CONFIG_LOCK.lock().await;
+
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let search_term = format!("bodysnip{}", &unique_id[..12]);
+
+        // Configure field_body for search on the page type so the trigger
+        // indexes body text. The trigger (fixed in migration 20260226000001)
+        // reads search_field_config to know which fields to index.
+        sqlx::query(
+            r#"INSERT INTO search_field_config (id, bundle, field_name, weight)
+            VALUES ($1, 'page', 'field_body', 'B')
+            ON CONFLICT (bundle, field_name) DO NOTHING"#,
+        )
+        .bind(uuid::Uuid::now_v7())
+        .execute(&app.db)
+        .await
+        .expect("configure field_body for search");
+
+        // Insert item where the search term is ONLY in the body, not the title.
+        // The trigger will index field_body because of the config above.
+        let item_id = uuid::Uuid::now_v7();
+        let body_text = format!("This article discusses the concept of {search_term} in detail.");
+        let fields = serde_json::json!({
+            "field_body": { "value": body_text }
+        });
+
+        sqlx::query(
+            r#"INSERT INTO item (id, type, title, status, author_id, stage_id, fields, created, changed)
+            VALUES ($1, 'page', 'Unrelated Title', 1, $2, $3, $4,
+                    extract(epoch from now())::bigint,
+                    extract(epoch from now())::bigint)"#,
+        )
+        .bind(item_id)
+        .bind(uuid::Uuid::nil())
+        .bind(trovato_kernel::models::stage::LIVE_STAGE_ID)
+        .bind(&fields)
+        .execute(&app.db)
+        .await
+        .expect("insert body-only item");
+
+        // Search for the term — snippet should contain <mark> from body text
+        let results = app
+            .state
+            .search()
+            .search(
+                &search_term,
+                &[trovato_kernel::models::stage::LIVE_STAGE_ID],
+                None,
+                10,
+                0,
+            )
+            .await
+            .expect("search should succeed");
+
+        assert!(
+            !results.results.is_empty(),
+            "Should find item by body text. search_term={search_term}, item_id={item_id}"
+        );
+
+        let snippet = results.results[0].snippet.as_deref().unwrap_or("");
+        assert!(
+            snippet.contains("<mark>"),
+            "Snippet should contain <mark> tag from body match. Got: {snippet}"
+        );
+
+        // Cleanup
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query(
+            "DELETE FROM search_field_config WHERE bundle = 'page' AND field_name = 'field_body'",
+        )
+        .execute(&app.db)
+        .await
+        .ok();
+    });
+}
