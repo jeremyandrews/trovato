@@ -9,6 +9,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{run_test, shared_app};
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::{CreateUrlAlias, UrlAlias};
 
 #[test]
@@ -28,7 +29,7 @@ fn test_alias_create_and_lookup() {
         assert_eq!(created.source, "/item/test-123");
         assert_eq!(created.alias, "/about-us");
         assert_eq!(created.language, "en");
-        assert_eq!(created.stage_id, "live");
+        assert_eq!(created.stage_id, LIVE_STAGE_ID);
 
         // Look up by alias
         let found = UrlAlias::find_by_alias(&app.db, "/about-us")
@@ -224,17 +225,27 @@ fn test_alias_upsert() {
         let app = shared_app().await;
 
         // Upsert creates when no alias exists
-        let alias1 =
-            UrlAlias::upsert_for_source(&app.db, "/item/upsert-test", "/first-path", "live", "en")
-                .await
-                .unwrap();
+        let alias1 = UrlAlias::upsert_for_source(
+            &app.db,
+            "/item/upsert-test",
+            "/first-path",
+            LIVE_STAGE_ID,
+            "en",
+        )
+        .await
+        .unwrap();
         assert_eq!(alias1.alias, "/first-path");
 
         // Upsert updates existing alias
-        let alias2 =
-            UrlAlias::upsert_for_source(&app.db, "/item/upsert-test", "/second-path", "live", "en")
-                .await
-                .unwrap();
+        let alias2 = UrlAlias::upsert_for_source(
+            &app.db,
+            "/item/upsert-test",
+            "/second-path",
+            LIVE_STAGE_ID,
+            "en",
+        )
+        .await
+        .unwrap();
         assert_eq!(alias2.id, alias1.id); // Same record
         assert_eq!(alias2.alias, "/second-path");
 
@@ -314,12 +325,13 @@ fn test_e2e_middleware_rewrites_alias_to_source() {
         sqlx::query(
             r#"
             INSERT INTO item (id, type, title, author_id, status, promote, sticky, fields, created, changed, stage_id)
-            VALUES ($1, 'page', 'Test Page for Alias', $2, 1, 0, 0, '{}', $3, $3, 'live')
+            VALUES ($1, 'page', 'Test Page for Alias', $2, 1, 0, 0, '{}', $3, $3, $4)
             "#,
         )
         .bind(item_id)
         .bind(uuid::Uuid::nil())
         .bind(now)
+        .bind(LIVE_STAGE_ID)
         .execute(&app.db)
         .await
         .expect("failed to create test item");
@@ -444,12 +456,13 @@ fn test_e2e_middleware_preserves_query_string() {
         sqlx::query(
             r#"
             INSERT INTO item (id, type, title, author_id, status, promote, sticky, fields, created, changed, stage_id)
-            VALUES ($1, 'page', 'Query String Test Page', $2, 1, 0, 0, '{}', $3, $3, 'live')
+            VALUES ($1, 'page', 'Query String Test Page', $2, 1, 0, 0, '{}', $3, $3, $4)
             "#,
         )
         .bind(item_id)
         .bind(uuid::Uuid::nil())
         .bind(now)
+        .bind(LIVE_STAGE_ID)
         .execute(&app.db)
         .await
         .expect("failed to create test item");

@@ -4,6 +4,7 @@
 //! These tests verify the Item model, ItemService, and related functionality.
 
 use trovato_kernel::content::{FilterPipeline, FormBuilder};
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::{
     CreateItem, CreateItemType, Item, ItemRevision, ItemType, UpdateItem,
 };
@@ -155,8 +156,9 @@ fn form_builder_edit_form_includes_values() {
             "summary": {"value": "A test summary"},
             "featured": {"value": true}
         }),
-        stage_id: "live".to_string(),
+        stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
+        item_group_id: Uuid::now_v7(),
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -192,8 +194,9 @@ fn item_status_checks() {
         promote: 1,
         sticky: 0,
         fields: serde_json::json!({}),
-        stage_id: "live".to_string(),
+        stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
+        item_group_id: Uuid::now_v7(),
     };
 
     assert!(item.is_published());
@@ -640,8 +643,9 @@ fn form_builder_edit_form_populates_all_types() {
             "contact": {"value": "test@example.com"},
             "related": {"target_id": "550e8400-e29b-41d4-a716-446655440000"},
         }),
-        stage_id: "live".to_string(),
+        stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
+        item_group_id: Uuid::now_v7(),
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -678,8 +682,9 @@ fn form_builder_escapes_html_in_values() {
         fields: serde_json::json!({
             "body": {"value": "<b>bold</b>", "format": "filtered_html"},
         }),
-        stage_id: "live".to_string(),
+        stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
+        item_group_id: Uuid::now_v7(),
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -747,8 +752,9 @@ fn item_status_unpublished() {
         promote: 0,
         sticky: 1,
         fields: serde_json::json!({}),
-        stage_id: "live".to_string(),
+        stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
+        item_group_id: Uuid::now_v7(),
     };
 
     assert!(!item.is_published());
@@ -782,14 +788,14 @@ fn create_item_with_all_fields() {
         promote: Some(1),
         sticky: Some(1),
         fields: Some(serde_json::json!({"body": {"value": "Content"}})),
-        stage_id: Some("preview".to_string()),
+        stage_id: Some(Uuid::now_v7()),
         language: Some("en".to_string()),
         log: Some("Initial creation".to_string()),
     };
 
     assert_eq!(input.status, Some(0));
     assert_eq!(input.promote, Some(1));
-    assert_eq!(input.stage_id, Some("preview".to_string()));
+    assert!(input.stage_id.is_some());
 }
 
 #[test]

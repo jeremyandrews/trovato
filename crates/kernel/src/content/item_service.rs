@@ -100,11 +100,11 @@ impl ItemService {
     ///
     /// Falls back to `load()` if the item exists but isn't in any of the given stages
     /// (e.g., it was loaded by a direct UUID link).
-    pub async fn load_with_overlay(&self, id: Uuid, stage_ids: &[String]) -> Result<Option<Item>> {
+    pub async fn load_with_overlay(&self, id: Uuid, stage_ids: &[Uuid]) -> Result<Option<Item>> {
         // Check cache first (cache is stage-agnostic — items have single stage_id)
         if let Some(item) = self.inner.cache.get(&id) {
             // Verify the item's stage is in our overlay list
-            if stage_ids.iter().any(|s| s == &item.stage_id) {
+            if stage_ids.contains(&item.stage_id) {
                 return Ok(Some(item.clone()));
             }
         }
@@ -114,7 +114,7 @@ impl ItemService {
 
         if let Some(ref i) = item {
             // Only return if the item is in one of the visible stages
-            if stage_ids.iter().any(|s| s == &i.stage_id) {
+            if stage_ids.contains(&i.stage_id) {
                 self.inner.cache.insert(id, i.clone());
                 return Ok(Some(i.clone()));
             }

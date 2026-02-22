@@ -256,7 +256,7 @@ mod tests {
     fn make_context() -> FilterContext {
         FilterContext {
             base_table: "item".to_string(),
-            stage_id: "live".to_string(),
+            stage_id: crate::models::stage::LIVE_STAGE_ID,
         }
     }
 

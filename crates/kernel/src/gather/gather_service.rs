@@ -149,29 +149,22 @@ impl GatherService {
         query_id: &str,
         page: u32,
         exposed_filters: HashMap<String, FilterValue>,
-        stage_id: &str,
+        stage_id: Uuid,
         context: &QueryContext,
     ) -> Result<GatherResult> {
-        self.execute_with_stages(
-            query_id,
-            page,
-            exposed_filters,
-            &[stage_id.to_string()],
-            context,
-        )
-        .await
+        self.execute_with_stages(query_id, page, exposed_filters, &[stage_id], context)
+            .await
     }
 
-    /// Execute a registered query with stage hierarchy overlay.
+    /// Execute a registered query with stage overlay.
     ///
-    /// `stage_ids` is the ancestry chain (e.g., `["review", "draft", "live"]`).
-    /// Items in any of these stages will be included in results.
+    /// Items in any of the provided stages will be included in results.
     pub async fn execute_with_stages(
         &self,
         query_id: &str,
         page: u32,
         exposed_filters: HashMap<String, FilterValue>,
-        stage_ids: &[String],
+        stage_ids: &[Uuid],
         context: &QueryContext,
     ) -> Result<GatherResult> {
         let query = self
@@ -197,7 +190,7 @@ impl GatherService {
         display: &QueryDisplay,
         page: u32,
         exposed_filters: HashMap<String, FilterValue>,
-        stage_id: &str,
+        stage_id: Uuid,
         context: &QueryContext,
     ) -> Result<GatherResult> {
         self.execute_definition_with_stages(
@@ -205,20 +198,20 @@ impl GatherService {
             display,
             page,
             exposed_filters,
-            &[stage_id.to_string()],
+            &[stage_id],
             context,
         )
         .await
     }
 
-    /// Execute a query definition with stage hierarchy overlay.
+    /// Execute a query definition with stage overlay.
     pub async fn execute_definition_with_stages(
         &self,
         definition: &QueryDefinition,
         display: &QueryDisplay,
         page: u32,
         exposed_filters: HashMap<String, FilterValue>,
-        stage_ids: &[String],
+        stage_ids: &[Uuid],
         context: &QueryContext,
     ) -> Result<GatherResult> {
         // Performance guardrails: validate definition before execution
@@ -427,7 +420,7 @@ impl GatherService {
         &'a self,
         parent_items: &'a mut [serde_json::Value],
         includes: &'a HashMap<String, super::types::IncludeDefinition>,
-        stage_ids: &'a [String],
+        stage_ids: &'a [Uuid],
         context: &'a QueryContext,
         depth: u8,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {

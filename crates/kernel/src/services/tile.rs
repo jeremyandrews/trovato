@@ -23,7 +23,7 @@ impl TileService {
     pub async fn get_visible_tiles(
         &self,
         region: &str,
-        stage_id: &str,
+        stage_id: uuid::Uuid,
         path: &str,
         user_roles: &[String],
     ) -> Result<Vec<Tile>> {
@@ -44,7 +44,7 @@ impl TileService {
     pub async fn render_region(
         &self,
         region: &str,
-        stage_id: &str,
+        stage_id: uuid::Uuid,
         path: &str,
         user_roles: &[String],
     ) -> Result<String> {
@@ -141,7 +141,7 @@ mod tests {
             weight: 0,
             status: 1,
             plugin: "core".into(),
-            stage_id: "live".into(),
+            stage_id: crate::models::stage::LIVE_STAGE_ID,
             created: 0,
             changed: 0,
         }

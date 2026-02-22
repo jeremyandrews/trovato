@@ -10,7 +10,36 @@ use uuid::Uuid;
 mod common;
 use common::{run_test, shared_app};
 
+use trovato_kernel::models::stage::{CreateStage, LIVE_STAGE_ID, Stage};
 use trovato_kernel::{ConflictResolution, ConflictType, PublishPhase};
+
+/// Create a test stage in the DB and return its UUID.
+async fn create_test_stage(app: &common::TestApp, prefix: &str) -> Uuid {
+    let suffix = &Uuid::now_v7().simple().to_string()[..8];
+    let stage = Stage::create(
+        &app.db,
+        CreateStage {
+            label: format!("{prefix} {suffix}"),
+            machine_name: format!("{prefix}_{suffix}"),
+            description: None,
+            visibility: None,
+            is_default: None,
+            weight: None,
+        },
+    )
+    .await
+    .expect("failed to create test stage");
+    stage.id
+}
+
+/// Clean up a test stage (category_tag cascades to stage_config).
+async fn cleanup_stage(app: &common::TestApp, stage_id: Uuid) {
+    sqlx::query("DELETE FROM category_tag WHERE id = $1 AND category_id = 'stages'")
+        .bind(stage_id)
+        .execute(&app.db)
+        .await
+        .ok();
+}
 
 /// Test that publishing 'live' stage fails with appropriate error.
 #[test]
@@ -20,7 +49,7 @@ fn stage_publish_live_fails() {
 
         let result = app
             .stage()
-            .publish("live")
+            .publish(LIVE_STAGE_ID)
             .await
             .expect("publish should return result");
 
@@ -36,18 +65,19 @@ fn stage_publish_empty_stage() {
     run_test(async {
         let app = shared_app().await;
 
-        // Use a unique stage ID that doesn't exist
-        let stage_id = format!("test-stage-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "empty").await;
 
         let result = app
             .stage()
-            .publish(&stage_id)
+            .publish(stage_id)
             .await
             .expect("publish should succeed");
 
         assert!(result.success, "publishing empty stage should succeed");
         assert_eq!(result.items_published, 0);
         assert_eq!(result.items_deleted, 0);
+
+        cleanup_stage(app, stage_id).await;
     });
 }
 
@@ -57,8 +87,7 @@ fn stage_publish_moves_items_to_live() {
     run_test(async {
         let app = shared_app().await;
 
-        // Create a unique stage ID
-        let stage_id = format!("pub-test-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "pub").await;
 
         // Create a test item in the stage
         let item_id = Uuid::now_v7();
@@ -67,21 +96,21 @@ fn stage_publish_moves_items_to_live() {
 
         sqlx::query(
             r#"
-            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id)
-            VALUES ($1, NULL, 'page', 'Test Staged Item', $2, 1, $3, $3, 0, 0, '{}', $4)
+            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, item_group_id)
+            VALUES ($1, NULL, 'page', 'Test Staged Item', $2, 1, $3, $3, 0, 0, '{}', $4, $1)
             "#,
         )
         .bind(item_id)
         .bind(author_id)
         .bind(now)
-        .bind(&stage_id)
+        .bind(stage_id)
         .execute(&app.db)
         .await
         .expect("failed to create test item");
 
         // Verify item is in the stage
         let staged_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE stage_id = $1")
-            .bind(&stage_id)
+            .bind(stage_id)
             .fetch_one(&app.db)
             .await
             .expect("failed to count");
@@ -91,23 +120,22 @@ fn stage_publish_moves_items_to_live() {
         // Publish the stage
         let result = app
             .stage()
-            .publish(&stage_id)
+            .publish(stage_id)
             .await
             .expect("publish should succeed");
 
         assert!(result.success, "publish should succeed");
 
         // Verify item was moved to live
-        let live_item: Option<String> =
-            sqlx::query_scalar("SELECT stage_id FROM item WHERE id = $1")
-                .bind(item_id)
-                .fetch_optional(&app.db)
-                .await
-                .expect("failed to query");
+        let live_item: Option<Uuid> = sqlx::query_scalar("SELECT stage_id FROM item WHERE id = $1")
+            .bind(item_id)
+            .fetch_optional(&app.db)
+            .await
+            .expect("failed to query");
 
         assert_eq!(
             live_item,
-            Some("live".to_string()),
+            Some(LIVE_STAGE_ID),
             "item should be in live stage"
         );
 
@@ -117,6 +145,7 @@ fn stage_publish_moves_items_to_live() {
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_id).await;
     });
 }
 
@@ -126,12 +155,12 @@ fn stage_has_changes_with_items() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = format!("chg-test-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "chg").await;
 
         // Initially should have no changes
         let has_changes = app
             .stage()
-            .has_changes(&stage_id)
+            .has_changes(stage_id)
             .await
             .expect("should check");
         assert!(!has_changes, "empty stage should have no changes");
@@ -143,14 +172,14 @@ fn stage_has_changes_with_items() {
 
         sqlx::query(
             r#"
-            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id)
-            VALUES ($1, NULL, 'page', 'Test Item', $2, 1, $3, $3, 0, 0, '{}', $4)
+            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, item_group_id)
+            VALUES ($1, NULL, 'page', 'Test Item', $2, 1, $3, $3, 0, 0, '{}', $4, $1)
             "#,
         )
         .bind(item_id)
         .bind(author_id)
         .bind(now)
-        .bind(&stage_id)
+        .bind(stage_id)
         .execute(&app.db)
         .await
         .expect("failed to create test item");
@@ -158,7 +187,7 @@ fn stage_has_changes_with_items() {
         // Now should have changes
         let has_changes = app
             .stage()
-            .has_changes(&stage_id)
+            .has_changes(stage_id)
             .await
             .expect("should check");
         assert!(has_changes, "stage with item should have changes");
@@ -169,6 +198,7 @@ fn stage_has_changes_with_items() {
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_id).await;
     });
 }
 
@@ -178,7 +208,7 @@ fn stage_has_changes_with_deletions() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = format!("del-test-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "del").await;
 
         // Create a deletion record
         let item_id = Uuid::now_v7();
@@ -187,7 +217,7 @@ fn stage_has_changes_with_deletions() {
         sqlx::query(
             "INSERT INTO stage_deletion (stage_id, entity_type, entity_id, deleted_at) VALUES ($1, 'item', $2, $3)",
         )
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(item_id.to_string())
         .bind(now)
         .execute(&app.db)
@@ -197,17 +227,18 @@ fn stage_has_changes_with_deletions() {
         // Should have changes due to deletion
         let has_changes = app
             .stage()
-            .has_changes(&stage_id)
+            .has_changes(stage_id)
             .await
             .expect("should check");
         assert!(has_changes, "stage with deletion should have changes");
 
         // Clean up
         sqlx::query("DELETE FROM stage_deletion WHERE stage_id = $1")
-            .bind(&stage_id)
+            .bind(stage_id)
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_id).await;
     });
 }
 
@@ -217,7 +248,11 @@ fn stage_live_has_no_changes() {
     run_test(async {
         let app = shared_app().await;
 
-        let has_changes = app.stage().has_changes("live").await.expect("should check");
+        let has_changes = app
+            .stage()
+            .has_changes(LIVE_STAGE_ID)
+            .await
+            .expect("should check");
         assert!(!has_changes, "live stage should never report changes");
     });
 }
@@ -228,22 +263,23 @@ fn stage_publish_processes_deletions() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = format!("pdel-test-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "pdel").await;
 
-        // Create an item to be deleted
+        // Create an item to be deleted (in live stage)
         let item_id = Uuid::now_v7();
         let author_id = create_test_author(app).await;
         let now = chrono::Utc::now().timestamp();
 
         sqlx::query(
             r#"
-            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id)
-            VALUES ($1, NULL, 'page', 'Item to Delete', $2, 1, $3, $3, 0, 0, '{}', 'live')
+            INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, item_group_id)
+            VALUES ($1, NULL, 'page', 'Item to Delete', $2, 1, $3, $3, 0, 0, '{}', $4, $1)
             "#,
         )
         .bind(item_id)
         .bind(author_id)
         .bind(now)
+        .bind(LIVE_STAGE_ID)
         .execute(&app.db)
         .await
         .expect("failed to create test item");
@@ -252,7 +288,7 @@ fn stage_publish_processes_deletions() {
         sqlx::query(
             "INSERT INTO stage_deletion (stage_id, entity_type, entity_id, deleted_at) VALUES ($1, 'item', $2, $3)",
         )
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(item_id.to_string())
         .bind(now)
         .execute(&app.db)
@@ -262,7 +298,7 @@ fn stage_publish_processes_deletions() {
         // Publish the stage
         let result = app
             .stage()
-            .publish(&stage_id)
+            .publish(stage_id)
             .await
             .expect("publish should succeed");
         assert!(result.success);
@@ -281,7 +317,7 @@ fn stage_publish_processes_deletions() {
         let deletion_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM stage_deletion WHERE stage_id = $1 AND entity_id = $2)",
         )
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(item_id.to_string())
         .fetch_one(&app.db)
         .await
@@ -291,6 +327,8 @@ fn stage_publish_processes_deletions() {
             !deletion_exists,
             "deletion record should be cleaned up after publish"
         );
+
+        cleanup_stage(app, stage_id).await;
     });
 }
 
@@ -326,14 +364,16 @@ async fn create_test_author(app: &common::TestApp) -> Uuid {
 fn conflict_detection_empty_stage() {
     run_test(async {
         let app = shared_app().await;
-        let stage_id = format!("conf-empty-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "conf_empty").await;
 
         let conflicts = app
             .stage()
-            .detect_conflicts(&stage_id)
+            .detect_conflicts(stage_id)
             .await
             .expect("detect should work");
         assert!(conflicts.is_empty(), "empty stage should have no conflicts");
+
+        cleanup_stage(app, stage_id).await;
     });
 }
 
@@ -345,7 +385,7 @@ fn conflict_detection_live_stage() {
 
         let conflicts = app
             .stage()
-            .detect_conflicts("live")
+            .detect_conflicts(LIVE_STAGE_ID)
             .await
             .expect("detect should work");
         assert!(conflicts.is_empty(), "live stage should have no conflicts");
@@ -358,8 +398,8 @@ fn conflict_detection_cross_stage_config() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_a = format!("conf-a-{}", &Uuid::now_v7().simple().to_string()[..8]);
-        let stage_b = format!("conf-b-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_a = create_test_stage(app, "conf_a").await;
+        let stage_b = create_test_stage(app, "conf_b").await;
 
         // Create a shared config entity revision
         let revision_id_a = Uuid::now_v7();
@@ -398,7 +438,7 @@ fn conflict_detection_cross_stage_config() {
         sqlx::query(
             "INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id) VALUES ($1, 'item_type', 'shared_type', $2)",
         )
-        .bind(&stage_a)
+        .bind(stage_a)
         .bind(revision_id_a)
         .execute(&app.db)
         .await
@@ -407,7 +447,7 @@ fn conflict_detection_cross_stage_config() {
         sqlx::query(
             "INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id) VALUES ($1, 'item_type', 'shared_type', $2)",
         )
-        .bind(&stage_b)
+        .bind(stage_b)
         .bind(revision_id_b)
         .execute(&app.db)
         .await
@@ -416,7 +456,7 @@ fn conflict_detection_cross_stage_config() {
         // Detect conflicts for stage A
         let conflicts = app
             .stage()
-            .detect_conflicts(&stage_a)
+            .detect_conflicts(stage_a)
             .await
             .expect("detect should work");
 
@@ -435,8 +475,8 @@ fn conflict_detection_cross_stage_config() {
 
         // Clean up
         sqlx::query("DELETE FROM config_stage_association WHERE stage_id IN ($1, $2)")
-            .bind(&stage_a)
-            .bind(&stage_b)
+            .bind(stage_a)
+            .bind(stage_b)
             .execute(&app.db)
             .await
             .ok();
@@ -446,6 +486,8 @@ fn conflict_detection_cross_stage_config() {
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_a).await;
+        cleanup_stage(app, stage_b).await;
     });
 }
 
@@ -455,8 +497,8 @@ fn publish_with_resolution_cancel_on_conflict() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_a = format!("res-a-{}", &Uuid::now_v7().simple().to_string()[..8]);
-        let stage_b = format!("res-b-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_a = create_test_stage(app, "res_a").await;
+        let stage_b = create_test_stage(app, "res_b").await;
 
         // Set up cross-stage conflict (same as above)
         let revision_id_a = Uuid::now_v7();
@@ -485,14 +527,14 @@ fn publish_with_resolution_cancel_on_conflict() {
         .expect("create rev B");
 
         sqlx::query("INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id) VALUES ($1, 'item_type', 'cancel_test', $2)")
-            .bind(&stage_a)
+            .bind(stage_a)
             .bind(revision_id_a)
             .execute(&app.db)
             .await
             .expect("assoc A");
 
         sqlx::query("INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id) VALUES ($1, 'item_type', 'cancel_test', $2)")
-            .bind(&stage_b)
+            .bind(stage_b)
             .bind(revision_id_b)
             .execute(&app.db)
             .await
@@ -501,7 +543,7 @@ fn publish_with_resolution_cancel_on_conflict() {
         // Try to publish with Cancel resolution
         let result = app
             .stage()
-            .publish_with_resolution(&stage_a, ConflictResolution::Cancel)
+            .publish_with_resolution(stage_a, ConflictResolution::Cancel)
             .await
             .expect("publish should return result");
 
@@ -514,8 +556,8 @@ fn publish_with_resolution_cancel_on_conflict() {
 
         // Clean up
         sqlx::query("DELETE FROM config_stage_association WHERE stage_id IN ($1, $2)")
-            .bind(&stage_a)
-            .bind(&stage_b)
+            .bind(stage_a)
+            .bind(stage_b)
             .execute(&app.db)
             .await
             .ok();
@@ -525,6 +567,8 @@ fn publish_with_resolution_cancel_on_conflict() {
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_a).await;
+        cleanup_stage(app, stage_b).await;
     });
 }
 
@@ -534,8 +578,8 @@ fn publish_with_resolution_overwrite_all() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_a = format!("ow-a-{}", &Uuid::now_v7().simple().to_string()[..8]);
-        let stage_b = format!("ow-b-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_a = create_test_stage(app, "ow_a").await;
+        let stage_b = create_test_stage(app, "ow_b").await;
 
         // Set up cross-stage conflict
         let revision_id_a = Uuid::now_v7();
@@ -564,14 +608,14 @@ fn publish_with_resolution_overwrite_all() {
         .expect("create rev B");
 
         sqlx::query("INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id) VALUES ($1, 'item_type', 'overwrite_test', $2)")
-            .bind(&stage_a)
+            .bind(stage_a)
             .bind(revision_id_a)
             .execute(&app.db)
             .await
             .expect("assoc A");
 
         sqlx::query("INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id) VALUES ($1, 'item_type', 'overwrite_test', $2)")
-            .bind(&stage_b)
+            .bind(stage_b)
             .bind(revision_id_b)
             .execute(&app.db)
             .await
@@ -580,7 +624,7 @@ fn publish_with_resolution_overwrite_all() {
         // Publish with OverwriteAll - should succeed despite conflicts
         let result = app
             .stage()
-            .publish_with_resolution(&stage_a, ConflictResolution::OverwriteAll)
+            .publish_with_resolution(stage_a, ConflictResolution::OverwriteAll)
             .await
             .expect("publish should return result");
 
@@ -589,8 +633,8 @@ fn publish_with_resolution_overwrite_all() {
 
         // Clean up
         sqlx::query("DELETE FROM config_stage_association WHERE stage_id IN ($1, $2)")
-            .bind(&stage_a)
-            .bind(&stage_b)
+            .bind(stage_a)
+            .bind(stage_b)
             .execute(&app.db)
             .await
             .ok();
@@ -600,6 +644,8 @@ fn publish_with_resolution_overwrite_all() {
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_a).await;
+        cleanup_stage(app, stage_b).await;
     });
 }
 
@@ -610,7 +656,7 @@ fn conflict_detection_live_modified_config() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = format!("lm-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "lm").await;
         let author_id = create_test_author(app).await;
 
         // Create a staged revision at T1
@@ -632,7 +678,7 @@ fn conflict_detection_live_modified_config() {
             "INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id)
              VALUES ($1, 'item_type', 'live_mod_test', $2)",
         )
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(staged_revision_id)
         .execute(&app.db)
         .await
@@ -655,8 +701,9 @@ fn conflict_detection_live_modified_config() {
 
         sqlx::query(
             "INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id)
-             VALUES ('live', 'item_type', 'live_mod_test', $1)",
+             VALUES ($1, 'item_type', 'live_mod_test', $2)",
         )
+        .bind(LIVE_STAGE_ID)
         .bind(live_revision_id)
         .execute(&app.db)
         .await
@@ -665,7 +712,7 @@ fn conflict_detection_live_modified_config() {
         // Detect conflicts - should find LiveModified conflict
         let conflicts = app
             .stage()
-            .detect_conflicts(&stage_id)
+            .detect_conflicts(stage_id)
             .await
             .expect("detect should work");
 
@@ -696,6 +743,7 @@ fn conflict_detection_live_modified_config() {
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_id).await;
     });
 }
 
@@ -704,10 +752,10 @@ fn conflict_detection_live_modified_config() {
 fn stage_has_changes_with_config() {
     run_test(async {
         let app = shared_app().await;
-        let stage_id = format!("cfg-chg-{}", &Uuid::now_v7().simple().to_string()[..8]);
+        let stage_id = create_test_stage(app, "cfg_chg").await;
 
         // Initially no changes
-        let has_changes = app.stage().has_changes(&stage_id).await.expect("check");
+        let has_changes = app.stage().has_changes(stage_id).await.expect("check");
         assert!(!has_changes, "empty stage should have no changes");
 
         // Add a config revision
@@ -726,19 +774,19 @@ fn stage_has_changes_with_config() {
         .expect("create rev");
 
         sqlx::query("INSERT INTO config_stage_association (stage_id, entity_type, entity_id, target_revision_id) VALUES ($1, 'item_type', 'has_changes_test', $2)")
-            .bind(&stage_id)
+            .bind(stage_id)
             .bind(revision_id)
             .execute(&app.db)
             .await
             .expect("assoc");
 
         // Now should have changes
-        let has_changes = app.stage().has_changes(&stage_id).await.expect("check");
+        let has_changes = app.stage().has_changes(stage_id).await.expect("check");
         assert!(has_changes, "stage with config should have changes");
 
         // Clean up
         sqlx::query("DELETE FROM config_stage_association WHERE stage_id = $1")
-            .bind(&stage_id)
+            .bind(stage_id)
             .execute(&app.db)
             .await
             .ok();
@@ -747,5 +795,6 @@ fn stage_has_changes_with_config() {
             .execute(&app.db)
             .await
             .ok();
+        cleanup_stage(app, stage_id).await;
     });
 }

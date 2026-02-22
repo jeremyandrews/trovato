@@ -24,21 +24,14 @@ use super::{ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage};
 ///
 /// Wraps DirectConfigStorage to provide stage-specific config views.
 /// Changes made through this storage are isolated to the stage until published.
-///
-/// Supports hierarchy: when `ancestry` contains intermediate stages
-/// (e.g., `["review", "draft"]`), the storage walks the chain before
-/// falling back to live (DirectConfigStorage).
 #[derive(Clone)]
 pub struct StageAwareConfigStorage {
     /// The underlying live storage.
     direct: Arc<DirectConfigStorage>,
     /// Database pool for stage-specific queries.
     pool: PgPool,
-    /// The stage ID this storage operates in (writes go here).
-    stage_id: String,
-    /// Ancestor stage IDs ordered from nearest to farthest (excluding self).
-    /// Empty for a stage that is a direct child of live.
-    ancestors: Vec<String>,
+    /// The stage UUID this storage operates in (writes go here).
+    stage_id: Uuid,
 }
 
 impl StageAwareConfigStorage {
@@ -48,45 +41,17 @@ impl StageAwareConfigStorage {
     /// * `direct` - The live storage to fall back to
     /// * `pool` - Database pool for stage queries
     /// * `stage_id` - The stage this storage operates in
-    pub fn new(direct: Arc<DirectConfigStorage>, pool: PgPool, stage_id: String) -> Self {
+    pub fn new(direct: Arc<DirectConfigStorage>, pool: PgPool, stage_id: Uuid) -> Self {
         Self {
             direct,
             pool,
             stage_id,
-            ancestors: Vec::new(),
         }
     }
 
-    /// Create a new stage-aware config storage with hierarchy.
-    ///
-    /// `ancestry` should be the full chain from self → ... → root,
-    /// e.g., `["review", "draft", "live"]`. The first element is this
-    /// storage's stage_id; remaining non-"live" entries become ancestors.
-    pub fn new_with_ancestry(
-        direct: Arc<DirectConfigStorage>,
-        pool: PgPool,
-        ancestry: Vec<String>,
-    ) -> Self {
-        let stage_id = ancestry
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "live".to_string());
-        let ancestors: Vec<String> = ancestry
-            .into_iter()
-            .skip(1) // skip self
-            .filter(|s| s != "live") // live is handled by DirectConfigStorage
-            .collect();
-        Self {
-            direct,
-            pool,
-            stage_id,
-            ancestors,
-        }
-    }
-
-    /// Get the stage ID this storage operates in.
-    pub fn stage_id(&self) -> &str {
-        &self.stage_id
+    /// Get the stage UUID this storage operates in.
+    pub fn stage_id(&self) -> Uuid {
+        self.stage_id
     }
 
     /// Check if an entity is marked as deleted in this stage.
@@ -99,7 +64,7 @@ impl StageAwareConfigStorage {
             )
             "#,
         )
-        .bind(&self.stage_id)
+        .bind(self.stage_id)
         .bind(entity_type)
         .bind(entity_id)
         .fetch_one(&self.pool)
@@ -126,40 +91,12 @@ impl StageAwareConfigStorage {
                 AND csa.entity_id = $3
             "#,
         )
-        .bind(&self.stage_id)
+        .bind(self.stage_id)
         .bind(entity_type)
         .bind(entity_id)
         .fetch_optional(&self.pool)
         .await
         .context("failed to fetch staged revision")?;
-
-        Ok(revision)
-    }
-
-    /// Get a staged revision for an entity in a specific (ancestor) stage.
-    async fn get_staged_revision_in(
-        &self,
-        entity_type: &str,
-        entity_id: &str,
-        stage_id: &str,
-    ) -> Result<Option<ConfigRevisionRow>> {
-        let revision = sqlx::query_as::<_, ConfigRevisionRow>(
-            r#"
-            SELECT cr.id, cr.entity_type, cr.entity_id, cr.data, cr.created, cr.author_id
-            FROM config_revision cr
-            INNER JOIN config_stage_association csa
-                ON cr.id = csa.target_revision_id
-            WHERE csa.stage_id = $1
-                AND csa.entity_type = $2
-                AND csa.entity_id = $3
-            "#,
-        )
-        .bind(stage_id)
-        .bind(entity_type)
-        .bind(entity_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to fetch ancestor staged revision")?;
 
         Ok(revision)
     }
@@ -208,7 +145,7 @@ impl StageAwareConfigStorage {
                 SET target_revision_id = EXCLUDED.target_revision_id
             "#,
         )
-        .bind(&self.stage_id)
+        .bind(self.stage_id)
         .bind(entity_type)
         .bind(&entity_id)
         .bind(revision_id)
@@ -220,7 +157,7 @@ impl StageAwareConfigStorage {
         sqlx::query(
             "DELETE FROM stage_deletion WHERE stage_id = $1 AND entity_type = $2 AND entity_id = $3",
         )
-        .bind(&self.stage_id)
+        .bind(self.stage_id)
         .bind(entity_type)
         .bind(&entity_id)
         .execute(&mut *tx)
@@ -254,7 +191,7 @@ impl StageAwareConfigStorage {
         sqlx::query(
             "DELETE FROM config_stage_association WHERE stage_id = $1 AND entity_type = $2 AND entity_id = $3",
         )
-        .bind(&self.stage_id)
+        .bind(self.stage_id)
         .bind(entity_type)
         .bind(entity_id)
         .execute(&mut *tx)
@@ -273,7 +210,7 @@ impl StageAwareConfigStorage {
                 ON CONFLICT (stage_id, entity_type, entity_id) DO NOTHING
                 "#,
             )
-            .bind(&self.stage_id)
+            .bind(self.stage_id)
             .bind(entity_type)
             .bind(entity_id)
             .bind(now)
@@ -300,7 +237,7 @@ impl StageAwareConfigStorage {
         let ids: Vec<String> = sqlx::query_scalar(
             "SELECT entity_id FROM stage_deletion WHERE stage_id = $1 AND entity_type = $2",
         )
-        .bind(&self.stage_id)
+        .bind(self.stage_id)
         .bind(entity_type)
         .fetch_all(&self.pool)
         .await
@@ -320,7 +257,7 @@ impl StageAwareConfigStorage {
             WHERE csa.stage_id = $1 AND csa.entity_type = $2
             "#,
         )
-        .bind(&self.stage_id)
+        .bind(self.stage_id)
         .bind(entity_type)
         .fetch_all(&self.pool)
         .await
@@ -364,26 +301,7 @@ impl ConfigStorage for StageAwareConfigStorage {
             return Ok(Some(entity));
         }
 
-        // 3. Walk ancestor stages (hierarchy overlay)
-        for ancestor in &self.ancestors {
-            if let Some(revision) = self
-                .get_staged_revision_in(entity_type, id, ancestor)
-                .await?
-            {
-                debug!(
-                    stage_id = %self.stage_id,
-                    ancestor = %ancestor,
-                    entity_type = %entity_type,
-                    id = %id,
-                    "loaded from ancestor staged revision"
-                );
-                let entity = serde_json::from_value(revision.data)
-                    .context("failed to deserialize ancestor staged revision")?;
-                return Ok(Some(entity));
-            }
-        }
-
-        // 4. Fall back to live
+        // 3. Fall back to live
         debug!(
             stage_id = %self.stage_id,
             entity_type = %entity_type,
@@ -460,17 +378,6 @@ impl ConfigStorage for StageAwareConfigStorage {
             return Ok(true);
         }
 
-        // Check ancestor stages
-        for ancestor in &self.ancestors {
-            if self
-                .get_staged_revision_in(entity_type, id, ancestor)
-                .await?
-                .is_some()
-            {
-                return Ok(true);
-            }
-        }
-
         // Fall back to live
         self.direct.exists(entity_type, id).await
     }
@@ -479,7 +386,7 @@ impl ConfigStorage for StageAwareConfigStorage {
 impl std::fmt::Debug for StageAwareConfigStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StageAwareConfigStorage")
-            .field("stage_id", &self.stage_id)
+            .field("stage_id", &self.stage_id.to_string())
             .finish()
     }
 }

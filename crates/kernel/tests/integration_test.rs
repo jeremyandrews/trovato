@@ -5492,12 +5492,13 @@ fn seeded_conferences_exist_with_correct_data() {
             );
         }
 
-        // Tutorial Step 3: all seeded items have stage_id = 'live'
+        // Tutorial Step 3: all seeded items have stage_id = live stage UUID
         let non_live: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM item
-             WHERE type = 'conference' AND stage_id != 'live'
+             WHERE type = 'conference' AND stage_id != $1
              AND title IN ('RustConf 2026', 'EuroRust 2026', 'WasmCon Online 2026')",
         )
+        .bind(trovato_kernel::models::stage::LIVE_STAGE_ID)
         .fetch_one(&app.db)
         .await
         .unwrap();

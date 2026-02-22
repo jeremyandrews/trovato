@@ -39,6 +39,7 @@ pub use config_storage::{
     ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage, SearchFieldConfig,
     StageAwareConfigStorage, entity_types,
 };
+pub use models::stage::{LIVE_STAGE_ID, StageVisibility};
 pub use stage::{
     ConflictInfo, ConflictResolution, ConflictType, PublishPhase, PublishResult, Resolution,
     StageService,

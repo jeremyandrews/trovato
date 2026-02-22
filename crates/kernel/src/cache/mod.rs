@@ -169,9 +169,10 @@ impl CacheLayer {
     ///
     /// Live stage uses bare keys for maximum cache hit rates.
     /// Non-live stages use prefixed keys to isolate preview data.
-    pub fn stage_key(key: &str, stage_id: Option<&str>) -> String {
+    pub fn stage_key(key: &str, stage_id: Option<uuid::Uuid>) -> String {
         match stage_id {
-            None | Some("live") => key.to_string(),
+            None => key.to_string(),
+            Some(st) if st == crate::models::stage::LIVE_STAGE_ID => key.to_string(),
             Some(st) => format!("st:{st}:{key}"),
         }
     }
@@ -179,8 +180,8 @@ impl CacheLayer {
     /// Invalidate all cache keys for a stage.
     ///
     /// Used when publishing a stage to live.
-    pub async fn invalidate_stage(&self, stage_id: &str) {
-        if stage_id == "live" {
+    pub async fn invalidate_stage(&self, stage_id: uuid::Uuid) {
+        if stage_id == crate::models::stage::LIVE_STAGE_ID {
             warn!("attempted to invalidate live stage cache - ignoring");
             return;
         }
@@ -282,14 +283,18 @@ mod tests {
     #[test]
     fn test_stage_key_live() {
         assert_eq!(CacheLayer::stage_key("item:123", None), "item:123");
-        assert_eq!(CacheLayer::stage_key("item:123", Some("live")), "item:123");
+        assert_eq!(
+            CacheLayer::stage_key("item:123", Some(crate::models::stage::LIVE_STAGE_ID)),
+            "item:123"
+        );
     }
 
     #[test]
     fn test_stage_key_non_live() {
+        let preview = uuid::Uuid::now_v7();
         assert_eq!(
-            CacheLayer::stage_key("item:123", Some("preview-abc")),
-            "st:preview-abc:item:123"
+            CacheLayer::stage_key("item:123", Some(preview)),
+            format!("st:{preview}:item:123")
         );
     }
 

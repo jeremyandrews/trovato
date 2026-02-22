@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::stage::LIVE_STAGE_ID;
+
 /// Menu link record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MenuLink {
@@ -36,8 +38,8 @@ pub struct MenuLink {
     /// Plugin that owns this link.
     pub plugin: String,
 
-    /// Stage ID (e.g., "live", "draft").
-    pub stage_id: String,
+    /// Stage UUID referencing category_tag(id) in the "stages" vocabulary.
+    pub stage_id: Uuid,
 
     /// Unix timestamp when created.
     pub created: i64,
@@ -56,7 +58,7 @@ pub struct CreateMenuLink {
     pub weight: Option<i32>,
     pub hidden: Option<bool>,
     pub plugin: Option<String>,
-    pub stage_id: Option<String>,
+    pub stage_id: Option<Uuid>,
 }
 
 /// Input for updating a menu link.
@@ -69,7 +71,7 @@ pub struct UpdateMenuLink {
     pub weight: Option<i32>,
     pub hidden: Option<bool>,
     pub plugin: Option<String>,
-    pub stage_id: Option<String>,
+    pub stage_id: Option<Uuid>,
 }
 
 impl MenuLink {
@@ -81,7 +83,7 @@ impl MenuLink {
         let weight = input.weight.unwrap_or(0);
         let hidden = input.hidden.unwrap_or(false);
         let plugin = input.plugin.unwrap_or_else(|| "core".to_string());
-        let stage_id = input.stage_id.unwrap_or_else(|| "live".to_string());
+        let stage_id = input.stage_id.unwrap_or(LIVE_STAGE_ID);
 
         let link = sqlx::query_as::<_, MenuLink>(
             r#"
@@ -98,7 +100,7 @@ impl MenuLink {
         .bind(weight)
         .bind(hidden)
         .bind(&plugin)
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(now)
         .bind(now)
         .fetch_one(pool)
@@ -125,7 +127,7 @@ impl MenuLink {
     pub async fn find_by_menu_and_stage(
         pool: &PgPool,
         menu_name: &str,
-        stage_id: &str,
+        stage_id: Uuid,
     ) -> Result<Vec<Self>> {
         let links = sqlx::query_as::<_, MenuLink>(
             r#"
@@ -149,7 +151,7 @@ impl MenuLink {
         pool: &PgPool,
         path: &str,
         menu_name: &str,
-        stage_id: &str,
+        stage_id: Uuid,
     ) -> Result<Option<Self>> {
         let link = sqlx::query_as::<_, MenuLink>(
             r#"
@@ -200,7 +202,7 @@ impl MenuLink {
         .bind(weight)
         .bind(hidden)
         .bind(&plugin)
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(now)
         .bind(id)
         .fetch_optional(pool)

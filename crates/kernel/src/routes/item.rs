@@ -47,7 +47,9 @@ pub struct ItemApiResponse {
     pub promote: i16,
     pub sticky: i16,
     pub fields: serde_json::Value,
-    pub stage_id: String,
+    pub stage_id: Uuid,
+    /// Links copies of the same logical item across stages.
+    pub item_group_id: Uuid,
 }
 
 /// Author information for embedding.
@@ -691,9 +693,14 @@ async fn update_item(
                     };
 
                     // Create or update alias
-                    if let Err(e) =
-                        UrlAlias::upsert_for_source(state.db(), &source, &alias_path, "live", "en")
-                            .await
+                    if let Err(e) = UrlAlias::upsert_for_source(
+                        state.db(),
+                        &source,
+                        &alias_path,
+                        crate::models::stage::LIVE_STAGE_ID,
+                        "en",
+                    )
+                    .await
                     {
                         tracing::warn!(error = %e, "failed to update url alias");
                     }
@@ -1041,6 +1048,7 @@ async fn get_item_api(
         sticky: item.sticky,
         fields: item.fields,
         stage_id: item.stage_id,
+        item_group_id: item.item_group_id,
     }))
 }
 
@@ -1126,6 +1134,7 @@ async fn list_items_api(
                 sticky: item.sticky,
                 fields: item.fields,
                 stage_id: item.stage_id,
+                item_group_id: item.item_group_id,
             }
         })
         .collect();

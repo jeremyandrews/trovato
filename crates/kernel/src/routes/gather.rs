@@ -3,6 +3,7 @@
 //! REST endpoints for executing gather queries.
 
 use crate::gather::{FilterValue, GatherQuery, QueryContext, QueryDefinition, QueryDisplay};
+use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 use axum::{
@@ -84,7 +85,7 @@ fn default_page() -> u32 {
 }
 
 fn default_stage() -> String {
-    "live".to_string()
+    LIVE_STAGE_ID.to_string()
 }
 
 #[derive(Deserialize)]
@@ -160,16 +161,11 @@ async fn execute_query(
 
     // Parse exposed filter values
     let exposed_filters = parse_filter_params(&params.filters);
+    let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
 
     let result = state
         .gather()
-        .execute(
-            &query_id,
-            params.page,
-            exposed_filters,
-            &params.stage,
-            &context,
-        )
+        .execute(&query_id, params.page, exposed_filters, stage_id, &context)
         .await
         .map_err(|e| {
             (
@@ -209,6 +205,8 @@ async fn execute_adhoc_query(
         .filter_map(|(k, v)| json_to_filter_value(v).map(|fv| (k, fv)))
         .collect();
 
+    let stage_id = request.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
+
     let result = state
         .gather()
         .execute_definition(
@@ -216,7 +214,7 @@ async fn execute_adhoc_query(
             &request.display,
             request.page,
             exposed_filters,
-            &request.stage,
+            stage_id,
             &context,
         )
         .await
@@ -262,6 +260,7 @@ async fn render_query_html(
     })?;
 
     let exposed_filters = parse_filter_params(&params.filters);
+    let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
 
     let result = state
         .gather()
@@ -269,7 +268,7 @@ async fn render_query_html(
             &query_id,
             params.page,
             exposed_filters,
-            &params.stage,
+            stage_id,
             &query_context,
         )
         .await

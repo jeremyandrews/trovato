@@ -4,41 +4,53 @@
 //! Tests for Phase 6A two-tier cache functionality.
 
 use trovato_kernel::cache::CacheLayer;
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
+use uuid::Uuid;
 
 #[test]
 fn test_stage_key_live() {
     // Live stage uses bare keys
     assert_eq!(CacheLayer::stage_key("item:123", None), "item:123");
-    assert_eq!(CacheLayer::stage_key("item:123", Some("live")), "item:123");
+    assert_eq!(
+        CacheLayer::stage_key("item:123", Some(LIVE_STAGE_ID)),
+        "item:123"
+    );
 }
 
 #[test]
 fn test_stage_key_non_live() {
-    // Non-live stages get prefixed
+    // Non-live stages get prefixed with UUID
+    let preview = Uuid::now_v7();
+    let staging = Uuid::now_v7();
     assert_eq!(
-        CacheLayer::stage_key("item:123", Some("preview-abc")),
-        "st:preview-abc:item:123"
+        CacheLayer::stage_key("item:123", Some(preview)),
+        format!("st:{preview}:item:123")
     );
     assert_eq!(
-        CacheLayer::stage_key("gather:view", Some("staging")),
-        "st:staging:gather:view"
+        CacheLayer::stage_key("gather:view", Some(staging)),
+        format!("st:{staging}:gather:view")
     );
 }
 
 #[test]
 fn test_stage_key_preserves_colons() {
     // Keys with existing colons work correctly
+    let preview = Uuid::now_v7();
     assert_eq!(
-        CacheLayer::stage_key("item:type:page:123", Some("preview")),
-        "st:preview:item:type:page:123"
+        CacheLayer::stage_key("item:type:page:123", Some(preview)),
+        format!("st:{preview}:item:type:page:123")
     );
 }
 
 #[test]
 fn test_stage_key_empty_key() {
     // Empty keys work (edge case)
+    let preview = Uuid::now_v7();
     assert_eq!(CacheLayer::stage_key("", None), "");
-    assert_eq!(CacheLayer::stage_key("", Some("preview")), "st:preview:");
+    assert_eq!(
+        CacheLayer::stage_key("", Some(preview)),
+        format!("st:{preview}:")
+    );
 }
 
 #[tokio::test]

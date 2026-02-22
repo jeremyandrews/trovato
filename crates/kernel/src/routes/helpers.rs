@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::stage::LIVE_STAGE_ID;
 use crate::models::{SiteConfig, User};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
@@ -149,7 +150,7 @@ pub async fn inject_site_context(
     // Load sidebar tiles filtered by request path and user roles
     let sidebar_tiles_html = state
         .tiles()
-        .render_region("sidebar", "live", path, &user_roles)
+        .render_region("sidebar", LIVE_STAGE_ID, path, &user_roles)
         .await
         .unwrap_or_default();
     context.insert("sidebar_tiles", &sidebar_tiles_html);

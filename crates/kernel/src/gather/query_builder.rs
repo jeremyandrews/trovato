@@ -16,6 +16,7 @@ use sea_query::{
     SelectStatement, SimpleExpr,
 };
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Identifier for dynamic table/column names.
 #[allow(dead_code)]
@@ -26,26 +27,25 @@ struct ItemTable;
 /// Query builder for Gather queries.
 pub struct GatherQueryBuilder {
     definition: QueryDefinition,
-    stage_ids: Vec<String>,
+    stage_ids: Vec<Uuid>,
     extensions: Option<Arc<GatherExtensionRegistry>>,
 }
 
 impl GatherQueryBuilder {
     /// Create a new query builder targeting a single stage.
-    pub fn new(definition: QueryDefinition, stage_id: &str) -> Self {
+    pub fn new(definition: QueryDefinition, stage_id: Uuid) -> Self {
         Self {
             definition,
-            stage_ids: vec![stage_id.to_string()],
+            stage_ids: vec![stage_id],
             extensions: None,
         }
     }
 
     /// Create a query builder with stage overlay (hierarchy).
     ///
-    /// When multiple stages are provided (e.g., `["review", "draft", "live"]`),
-    /// the query will match items in ANY of those stages, enabling content
-    /// overlay where child stages inherit from parents.
-    pub fn new_with_stages(definition: QueryDefinition, stage_ids: Vec<String>) -> Self {
+    /// When multiple stages are provided, the query will match items in
+    /// ANY of those stages, enabling content overlay across stages.
+    pub fn new_with_stages(definition: QueryDefinition, stage_ids: Vec<Uuid>) -> Self {
         Self {
             definition,
             stage_ids,
@@ -130,6 +130,7 @@ impl GatherQueryBuilder {
     /// Add stage_id filter to the query if the definition is stage-aware.
     ///
     /// Uses `= $val` for a single stage, `IN (...)` for hierarchy overlay.
+    /// UUIDs are passed directly to SeaQuery (via `with-uuid` feature).
     fn add_stage_filter(&self, query: &mut SelectStatement) {
         if !self.definition.stage_aware {
             return;
@@ -139,9 +140,9 @@ impl GatherQueryBuilder {
             Alias::new("stage_id"),
         ));
         if self.stage_ids.len() == 1 {
-            query.and_where(col.eq(&self.stage_ids[0]));
+            query.and_where(col.eq(self.stage_ids[0]));
         } else {
-            query.and_where(col.is_in(&self.stage_ids));
+            query.and_where(col.is_in(self.stage_ids.clone()));
         }
     }
 
@@ -341,7 +342,7 @@ impl GatherQueryBuilder {
                 {
                     let ctx = FilterContext {
                         base_table: self.definition.base_table.clone(),
-                        stage_id: self.stage_ids.first().cloned().unwrap_or_default(),
+                        stage_id: self.stage_ids.first().copied().unwrap_or(Uuid::nil()),
                     };
                     match handler.build_condition(filter, config, &ctx) {
                         Ok(expr) => return expr,
@@ -446,6 +447,7 @@ impl GatherQueryBuilder {
         let jsonb_path = field.strip_prefix("fields.").unwrap_or(field);
         let jsonb_expr = self.jsonb_extract_expr(&self.definition.base_table, jsonb_path);
         let uuid_strings: Vec<String> = tag_ids.iter().map(|u| u.to_string()).collect();
+        // Category tag IDs are stored as text in JSONB, so string comparison is correct here
         Some(jsonb_expr.is_in(uuid_strings))
     }
 
@@ -547,6 +549,7 @@ mod tests {
 
     use super::*;
     use crate::gather::types::{QueryField, QueryFilter, QuerySort};
+    use crate::models::stage::LIVE_STAGE_ID;
 
     #[test]
     fn simple_query_build() {
@@ -568,7 +571,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         assert!(sql.contains("FROM \"item\""));
@@ -585,7 +588,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build_count();
 
         assert!(sql.contains("COUNT(*)"));
@@ -605,7 +608,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         assert!(sql.contains("fields->>'body'"));
@@ -624,13 +627,13 @@ mod tests {
     #[test]
     fn pagination_offset() {
         let def = QueryDefinition::default();
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
 
         let sql_page1 = builder.build(1, 10);
         assert!(sql_page1.contains("OFFSET 0"));
 
         let def2 = QueryDefinition::default();
-        let builder2 = GatherQueryBuilder::new(def2, "live");
+        let builder2 = GatherQueryBuilder::new(def2, LIVE_STAGE_ID);
         let sql_page2 = builder2.build(2, 10);
         assert!(sql_page2.contains("OFFSET 10"));
     }
@@ -649,7 +652,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         assert!(sql.contains("LIKE"));
@@ -664,7 +667,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 20);
 
         assert!(sql.contains("FROM \"users\""));
@@ -683,7 +686,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build_count();
 
         assert!(sql.contains("COUNT(*)"));
@@ -699,7 +702,7 @@ mod tests {
         let def = QueryDefinition::default();
         assert!(def.stage_aware, "stage_aware should default to true");
 
-        let builder = GatherQueryBuilder::new(def, "preview");
+        let builder = GatherQueryBuilder::new(def, Uuid::now_v7());
         let sql = builder.build(1, 10);
         assert!(
             sql.contains("stage_id"),
@@ -728,12 +731,13 @@ mod tests {
     #[test]
     fn stage_overlay_single_stage_uses_equals() {
         let def = QueryDefinition::default();
-        let builder = GatherQueryBuilder::new_with_stages(def, vec!["live".to_string()]);
+        let builder = GatherQueryBuilder::new_with_stages(def, vec![LIVE_STAGE_ID]);
         let sql = builder.build(1, 10);
 
-        // Single stage should use = 'live'
+        // Single stage should use =
+        let live_str = LIVE_STAGE_ID.to_string();
         assert!(
-            sql.contains("\"stage_id\" = 'live'"),
+            sql.contains(&format!("\"stage_id\" = '{live_str}'")),
             "single stage should use =: {sql}"
         );
         assert!(!sql.contains("IN"), "single stage should not use IN: {sql}");
@@ -742,11 +746,9 @@ mod tests {
     #[test]
     fn stage_overlay_multiple_stages_uses_in() {
         let def = QueryDefinition::default();
-        let stages = vec![
-            "review".to_string(),
-            "draft".to_string(),
-            "live".to_string(),
-        ];
+        let stage_a = Uuid::now_v7();
+        let stage_b = Uuid::now_v7();
+        let stages = vec![stage_a, stage_b, LIVE_STAGE_ID];
         let builder = GatherQueryBuilder::new_with_stages(def, stages);
         let sql = builder.build(1, 10);
 
@@ -755,15 +757,25 @@ mod tests {
             sql.contains("IN"),
             "multiple stages should use IN clause: {sql}"
         );
-        assert!(sql.contains("'review'"), "should contain review: {sql}");
-        assert!(sql.contains("'draft'"), "should contain draft: {sql}");
-        assert!(sql.contains("'live'"), "should contain live: {sql}");
+        assert!(
+            sql.contains(&stage_a.to_string()),
+            "should contain stage_a: {sql}"
+        );
+        assert!(
+            sql.contains(&stage_b.to_string()),
+            "should contain stage_b: {sql}"
+        );
+        assert!(
+            sql.contains(&LIVE_STAGE_ID.to_string()),
+            "should contain live: {sql}"
+        );
     }
 
     #[test]
     fn stage_overlay_count_uses_in() {
         let def = QueryDefinition::default();
-        let stages = vec!["review".to_string(), "live".to_string()];
+        let stage_a = Uuid::now_v7();
+        let stages = vec![stage_a, LIVE_STAGE_ID];
         let builder = GatherQueryBuilder::new_with_stages(def, stages);
         let sql = builder.build_count();
 
@@ -772,10 +784,13 @@ mod tests {
             "count with multiple stages should use IN: {sql}"
         );
         assert!(
-            sql.contains("'review'"),
-            "count should contain review: {sql}"
+            sql.contains(&stage_a.to_string()),
+            "count should contain stage_a: {sql}"
         );
-        assert!(sql.contains("'live'"), "count should contain live: {sql}");
+        assert!(
+            sql.contains(&LIVE_STAGE_ID.to_string()),
+            "count should contain live: {sql}"
+        );
     }
 
     #[test]
@@ -792,7 +807,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         assert!(
@@ -820,7 +835,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         assert!(
@@ -843,7 +858,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // Special chars should be stripped, only words remain
@@ -879,7 +894,7 @@ mod tests {
             ..Default::default()
         };
 
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // SeaQuery renders with E prefix and double-backslash escaping
@@ -909,7 +924,7 @@ mod tests {
             stage_aware: false,
             ..Default::default()
         };
-        let stages = vec!["review".to_string(), "live".to_string()];
+        let stages = vec![Uuid::now_v7(), LIVE_STAGE_ID];
         let builder = GatherQueryBuilder::new_with_stages(def, stages);
         let sql = builder.build(1, 10);
 
@@ -934,7 +949,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // The unsafe path is neutralized to a bare NULL expression.
@@ -961,7 +976,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // Nested path with injection should also be neutralized to NULL.
@@ -991,7 +1006,7 @@ mod tests {
             stage_aware: false,
             ..Default::default()
         };
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // JSONB expression neutralized to NULL (not the raw interpolation).
@@ -1021,7 +1036,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // UUID should appear as a SeaQuery-parameterized value, not a format! interpolation.
@@ -1051,7 +1066,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // Injection payload should be neutralized to (NULL) IN (...), not executed.
@@ -1082,7 +1097,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // FTS expression neutralized to FALSE (not interpolated into search_vector).
@@ -1109,7 +1124,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let builder = GatherQueryBuilder::new(def, "live");
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
         // Sort expression should be neutralized to NULL ORDER BY, not raw injection.

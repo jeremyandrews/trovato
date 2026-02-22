@@ -726,8 +726,8 @@ impl AppState {
     /// This creates a StageAwareConfigStorage that reads/writes to the given stage,
     /// falling back to live for reads. Use this when you need to operate within
     /// a stage context.
-    pub fn config_storage_for_stage(&self, stage_id: &str) -> Arc<dyn ConfigStorage> {
-        if stage_id == "live" {
+    pub fn config_storage_for_stage(&self, stage_id: uuid::Uuid) -> Arc<dyn ConfigStorage> {
+        if stage_id == crate::models::stage::LIVE_STAGE_ID {
             // Live stage uses direct storage
             self.inner.config_storage.clone()
         } else {
@@ -736,7 +736,7 @@ impl AppState {
             Arc::new(StageAwareConfigStorage::new(
                 direct,
                 self.inner.db.clone(),
-                stage_id.to_string(),
+                stage_id,
             ))
         }
     }

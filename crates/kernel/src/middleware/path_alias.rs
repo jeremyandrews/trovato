@@ -15,8 +15,11 @@ use axum::{
 };
 use tower_sessions::Session;
 
+use uuid::Uuid;
+
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::UrlAlias;
+use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
 
@@ -67,19 +70,26 @@ pub async fn resolve_path_alias(
         .map(|l| l.0.as_str())
         .unwrap_or_else(|| state.default_language());
 
-    // Read active stage from session (default "live" for anonymous users)
-    let active_stage: String = session
-        .get::<String>(SESSION_ACTIVE_STAGE)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "live".to_string());
+    // Read active stage from session (default live for anonymous users)
+    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
+        Ok(Some(s)) => match s.parse::<Uuid>() {
+            Ok(uuid) => uuid,
+            Err(_) => {
+                tracing::warn!(
+                    raw_value = %s,
+                    "session active_stage is not a valid UUID, defaulting to live"
+                );
+                LIVE_STAGE_ID
+            }
+        },
+        _ => LIVE_STAGE_ID,
+    };
 
     // Look up alias in database with language and stage context.
-    // Try the active stage first; fall back to "live" if not found.
+    // Try the active stage first; fall back to live if not found.
     tracing::debug!(path = %path, language = %language, stage = %active_stage, "looking up path alias");
 
-    let alias_result = lookup_alias(state.db(), path, &active_stage, language).await;
+    let alias_result = lookup_alias(state.db(), path, active_stage, language).await;
 
     if let Some(alias) = alias_result {
         tracing::debug!(
@@ -99,11 +109,11 @@ pub async fn resolve_path_alias(
     next.run(request).await
 }
 
-/// Look up an alias, trying the active stage first then falling back to "live".
+/// Look up an alias, trying the active stage first then falling back to live.
 async fn lookup_alias(
     pool: &sqlx::PgPool,
     path: &str,
-    stage_id: &str,
+    stage_id: Uuid,
     language: &str,
 ) -> Option<UrlAlias> {
     // Try active stage first
@@ -115,9 +125,9 @@ async fn lookup_alias(
         }
     }
 
-    // Fall back to "live" if we were looking in a different stage
-    if stage_id != "live" {
-        match UrlAlias::find_by_alias_with_context(pool, path, "live", language).await {
+    // Fall back to live if we were looking in a different stage
+    if stage_id != LIVE_STAGE_ID {
+        match UrlAlias::find_by_alias_with_context(pool, path, LIVE_STAGE_ID, language).await {
             Ok(Some(alias)) => return Some(alias),
             Ok(None) => {}
             Err(e) => {

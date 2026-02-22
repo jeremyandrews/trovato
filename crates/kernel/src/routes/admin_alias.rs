@@ -155,7 +155,7 @@ async fn add_alias_submit(
         source,
         alias,
         language: form.language,
-        stage_id: Some("live".to_string()),
+        stage_id: Some(crate::models::stage::LIVE_STAGE_ID),
     };
 
     match UrlAlias::create(state.db(), input).await {

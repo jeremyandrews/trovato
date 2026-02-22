@@ -11,6 +11,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use uuid::Uuid;
 
 use super::types::QueryFilter;
 
@@ -23,8 +24,8 @@ use super::types::QueryFilter;
 pub struct FilterContext {
     /// Base table name (e.g. "item").
     pub base_table: String,
-    /// Current stage ID (e.g. "live").
-    pub stage_id: String,
+    /// Current stage UUID.
+    pub stage_id: Uuid,
 }
 
 /// Context passed to relationship handlers during SQL generation.
@@ -32,8 +33,8 @@ pub struct FilterContext {
 pub struct RelationshipContext {
     /// Base table name.
     pub base_table: String,
-    /// Current stage ID.
-    pub stage_id: String,
+    /// Current stage UUID.
+    pub stage_id: Uuid,
 }
 
 /// Context passed to sort handlers during SQL generation.
@@ -41,8 +42,8 @@ pub struct RelationshipContext {
 pub struct SortContext {
     /// Base table name.
     pub base_table: String,
-    /// Current stage ID.
-    pub stage_id: String,
+    /// Current stage UUID.
+    pub stage_id: Uuid,
 }
 
 // ---------------------------------------------------------------------------

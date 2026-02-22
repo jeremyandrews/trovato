@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::stage::LIVE_STAGE_ID;
+
 /// URL Alias record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct UrlAlias {
@@ -22,8 +24,8 @@ pub struct UrlAlias {
     /// Language code (default: "en").
     pub language: String,
 
-    /// Stage ID (default: "live").
-    pub stage_id: String,
+    /// Stage UUID referencing category_tag(id) in the "stages" vocabulary.
+    pub stage_id: Uuid,
 
     /// Unix timestamp when created.
     pub created: i64,
@@ -35,7 +37,7 @@ pub struct CreateUrlAlias {
     pub source: String,
     pub alias: String,
     pub language: Option<String>,
-    pub stage_id: Option<String>,
+    pub stage_id: Option<Uuid>,
 }
 
 /// Input for updating a URL alias.
@@ -44,7 +46,7 @@ pub struct UpdateUrlAlias {
     pub source: Option<String>,
     pub alias: Option<String>,
     pub language: Option<String>,
-    pub stage_id: Option<String>,
+    pub stage_id: Option<Uuid>,
 }
 
 impl UrlAlias {
@@ -53,7 +55,7 @@ impl UrlAlias {
         let id = Uuid::now_v7();
         let now = chrono::Utc::now().timestamp();
         let language = input.language.unwrap_or_else(|| "en".to_string());
-        let stage_id = input.stage_id.unwrap_or_else(|| "live".to_string());
+        let stage_id = input.stage_id.unwrap_or(LIVE_STAGE_ID);
 
         let alias = sqlx::query_as::<_, UrlAlias>(
             r#"
@@ -66,7 +68,7 @@ impl UrlAlias {
         .bind(&input.source)
         .bind(&input.alias)
         .bind(&language)
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(now)
         .fetch_one(pool)
         .await
@@ -89,16 +91,16 @@ impl UrlAlias {
     }
 
     /// Find a URL alias by alias path (for route resolution).
-    /// Uses stage_id = 'live' and language = 'en' by default.
+    /// Uses the live stage and language = 'en' by default.
     pub async fn find_by_alias(pool: &PgPool, alias_path: &str) -> Result<Option<Self>> {
-        Self::find_by_alias_with_context(pool, alias_path, "live", "en").await
+        Self::find_by_alias_with_context(pool, alias_path, LIVE_STAGE_ID, "en").await
     }
 
     /// Find a URL alias by alias path with specific stage and language.
     pub async fn find_by_alias_with_context(
         pool: &PgPool,
         alias_path: &str,
-        stage_id: &str,
+        stage_id: Uuid,
         language: &str,
     ) -> Result<Option<Self>> {
         let alias = sqlx::query_as::<_, UrlAlias>(
@@ -120,14 +122,14 @@ impl UrlAlias {
 
     /// Find all URL aliases for a given source path.
     pub async fn find_by_source(pool: &PgPool, source: &str) -> Result<Vec<Self>> {
-        Self::find_by_source_with_context(pool, source, "live", "en").await
+        Self::find_by_source_with_context(pool, source, LIVE_STAGE_ID, "en").await
     }
 
     /// Find all URL aliases for a given source path with specific stage and language.
     pub async fn find_by_source_with_context(
         pool: &PgPool,
         source: &str,
-        stage_id: &str,
+        stage_id: Uuid,
         language: &str,
     ) -> Result<Vec<Self>> {
         let aliases = sqlx::query_as::<_, UrlAlias>(
@@ -151,14 +153,14 @@ impl UrlAlias {
     /// Get the canonical (most recent) alias for a source path.
     /// Returns the alias path if found, otherwise None.
     pub async fn get_canonical_alias(pool: &PgPool, source: &str) -> Result<Option<String>> {
-        Self::get_canonical_alias_with_context(pool, source, "live", "en").await
+        Self::get_canonical_alias_with_context(pool, source, LIVE_STAGE_ID, "en").await
     }
 
     /// Get the canonical (most recent) alias for a source path with specific stage and language.
     pub async fn get_canonical_alias_with_context(
         pool: &PgPool,
         source: &str,
-        stage_id: &str,
+        stage_id: Uuid,
         language: &str,
     ) -> Result<Option<String>> {
         let alias: Option<String> = sqlx::query_scalar(
@@ -213,7 +215,7 @@ impl UrlAlias {
         .bind(&source)
         .bind(&alias)
         .bind(&language)
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -275,25 +277,27 @@ impl UrlAlias {
 
     /// Find aliases that conflict with a given alias path across stages.
     ///
-    /// Returns aliases in other stages (excluding `excluding_stage`) that share
-    /// the same alias path and language. Used by publish conflict detection.
+    /// Returns aliases in other stages (excluding `excluding_stage` and the live
+    /// stage) that share the same alias path and language. Used by publish
+    /// conflict detection.
     pub async fn find_conflicting_aliases(
         pool: &PgPool,
         alias_path: &str,
         language: &str,
-        excluding_stage: &str,
+        excluding_stage: Uuid,
     ) -> Result<Vec<Self>> {
         let aliases = sqlx::query_as::<_, UrlAlias>(
             r#"
             SELECT id, source, alias, language, stage_id, created
             FROM url_alias
-            WHERE alias = $1 AND language = $2 AND stage_id != $3 AND stage_id != 'live'
+            WHERE alias = $1 AND language = $2 AND stage_id != $3 AND stage_id != $4
             ORDER BY created DESC
             "#,
         )
         .bind(alias_path)
         .bind(language)
         .bind(excluding_stage)
+        .bind(LIVE_STAGE_ID)
         .fetch_all(pool)
         .await
         .context("failed to find conflicting aliases")?;
@@ -308,7 +312,7 @@ impl UrlAlias {
         pool: &PgPool,
         source: &str,
         alias_path: &str,
-        stage_id: &str,
+        stage_id: Uuid,
         language: &str,
     ) -> Result<Self> {
         // Check if there's an existing alias for this source
@@ -338,7 +342,7 @@ impl UrlAlias {
                     source: source.to_string(),
                     alias: alias_path.to_string(),
                     language: Some(language.to_string()),
-                    stage_id: Some(stage_id.to_string()),
+                    stage_id: Some(stage_id),
                 },
             )
             .await

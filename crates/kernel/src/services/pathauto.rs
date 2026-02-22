@@ -259,9 +259,15 @@ pub async fn update_alias_item(
 
     // Alias exists but doesn't match current pattern — regenerate
     let alias = generate_unique_alias(pool, &base_alias).await?;
-    UrlAlias::upsert_for_source(pool, &source, &alias, "live", "en")
-        .await
-        .context("failed to update auto-generated alias")?;
+    UrlAlias::upsert_for_source(
+        pool,
+        &source,
+        &alias,
+        crate::models::stage::LIVE_STAGE_ID,
+        "en",
+    )
+    .await
+    .context("failed to update auto-generated alias")?;
 
     tracing::info!(
         item_id = %item_id,

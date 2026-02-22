@@ -576,8 +576,9 @@ mod tests {
             promote: 0,
             sticky: 0,
             fields: serde_json::json!({}),
-            stage_id: "live".to_string(),
+            stage_id: crate::models::stage::LIVE_STAGE_ID,
             language: "en".to_string(),
+            item_group_id: uuid::Uuid::now_v7(),
         };
         let form = builder.build_edit_form(&item, "/item/123/edit");
         assert!(form.contains(r#"name="log""#));

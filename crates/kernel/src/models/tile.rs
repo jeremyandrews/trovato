@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::stage::LIVE_STAGE_ID;
+
 /// Tile record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Tile {
@@ -18,7 +20,8 @@ pub struct Tile {
     pub weight: i32,
     pub status: i32,
     pub plugin: String,
-    pub stage_id: String,
+    /// Stage UUID referencing category_tag(id) in the "stages" vocabulary.
+    pub stage_id: Uuid,
     pub created: i64,
     pub changed: i64,
 }
@@ -35,7 +38,7 @@ pub struct CreateTile {
     pub weight: Option<i32>,
     pub status: Option<i32>,
     pub plugin: Option<String>,
-    pub stage_id: Option<String>,
+    pub stage_id: Option<Uuid>,
 }
 
 /// Input for updating a tile.
@@ -49,7 +52,7 @@ pub struct UpdateTile {
     pub weight: Option<i32>,
     pub status: Option<i32>,
     pub plugin: Option<String>,
-    pub stage_id: Option<String>,
+    pub stage_id: Option<Uuid>,
 }
 
 impl Tile {
@@ -64,7 +67,7 @@ impl Tile {
         let weight = input.weight.unwrap_or(0);
         let status = input.status.unwrap_or(1);
         let plugin = input.plugin.unwrap_or_else(|| "core".to_string());
-        let stage_id = input.stage_id.unwrap_or_else(|| "live".to_string());
+        let stage_id = input.stage_id.unwrap_or(LIVE_STAGE_ID);
 
         let tile = sqlx::query_as::<_, Tile>(
             r#"
@@ -83,7 +86,7 @@ impl Tile {
         .bind(weight)
         .bind(status)
         .bind(&plugin)
-        .bind(&stage_id)
+        .bind(stage_id)
         .bind(now)
         .bind(now)
         .fetch_one(pool)
@@ -117,7 +120,7 @@ impl Tile {
     }
 
     /// List active tiles for a region and stage, ordered by weight.
-    pub async fn list_by_region(pool: &PgPool, region: &str, stage_id: &str) -> Result<Vec<Self>> {
+    pub async fn list_by_region(pool: &PgPool, region: &str, stage_id: Uuid) -> Result<Vec<Self>> {
         let tiles = sqlx::query_as::<_, Tile>(
             r#"
             SELECT * FROM tile
@@ -256,7 +259,7 @@ mod tests {
             weight: 0,
             status: 1,
             plugin: "core".into(),
-            stage_id: "live".into(),
+            stage_id: LIVE_STAGE_ID,
             created: 0,
             changed: 0,
         }
