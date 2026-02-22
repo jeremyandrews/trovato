@@ -5,14 +5,17 @@
 -- Boolean fields use string "1" to match form submission format (not JSON true/false).
 
 -- Session-scoped UUIDv7 generator (RFC 9562 §5.7)
+-- Uses uuid_send(gen_random_uuid()) for random bytes — built-in since PG13,
+-- no pgcrypto extension required.
 CREATE OR REPLACE FUNCTION pg_temp.uuid_v7() RETURNS uuid AS $$
 DECLARE
     v_ts bigint;
     v_bytes bytea;
 BEGIN
     v_ts := (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
-    -- 6 bytes of millisecond timestamp + 10 random bytes
-    v_bytes := substring(int8send(v_ts) from 3) || gen_random_bytes(10);
+    -- 6 bytes of millisecond timestamp + 10 random bytes from a random UUID
+    v_bytes := substring(int8send(v_ts) from 3)
+            || substring(uuid_send(gen_random_uuid()) from 1 for 10);
     -- Set version nibble to 7
     v_bytes := set_byte(v_bytes, 6, (get_byte(v_bytes, 6) & x'0f'::int) | x'70'::int);
     -- Set variant bits to RFC 4122 (10xx)
