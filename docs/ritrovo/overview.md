@@ -27,14 +27,14 @@ This is the master checklist. Every Trovato feature should appear here.
 | Trovato Feature | How Ritrovo Uses It |
 |---|---|
 | **Item Types & CCK** | `conference` and `speaker` item types with JSONB fields, RecordReference relations, File fields |
-| **Categories** | Three-level hierarchical topic taxonomy: domain > area > specific (e.g., Languages > Systems > Rust). Demonstrates nested category queries, breadcrumb generation, hierarchical browsing |
+| **Categories** | Three-level hierarchical topic category: domain > area > specific (e.g., Languages > Systems > Rust). Demonstrates nested category queries, breadcrumb generation, hierarchical browsing |
 | **Stages & Revisions** | Three-stage workflow (Incoming > Curated > Live) with full revision history. Tutorial explicitly demos creating a draft revision, previewing, reverting to a previous revision, and staging a new version of the site |
-| **Gather** | Six Gather definitions: Upcoming, Open CFPs, By Topic, By Location, Conferences This Month (Tile), CFPs Closing Soon (Tile). Exposed filters, contextual filters, relationships, pagination |
+| **Gather** | Six Gather definitions: Upcoming, Open CFPs (Call for Papers -- the submission process conferences use to solicit talk proposals), By Topic, By Location, Conferences This Month (Tile), CFPs Closing Soon (Tile). Exposed filters, contextual filters, relationships, pagination |
 | **Render Tree** | Conference card, detail page, speaker card, CFP badge, topic pills, user profile -- all structured JSON RenderElements rendered by Tera templates |
 | **Form API** | Conference edit form (standard), conference submission form (multi-step: basic info > details > review & submit), user profile form, subscription management form |
 | **WYSIWYG** | Rich text editing for conference descriptions and user bios. AJAX "add another" for multi-value speaker references |
 | **Plugins & Taps** | Five plugins demonstrating the full tap lifecycle (see Plugins section) |
-| **Plugin-to-Plugin** | `ritrovo_notify` invoked by `ritrovo_cfp` via `invoke_plugin` when a subscribed conference's CFP is closing soon |
+| **Plugin-to-Plugin** | `ritrovo_cfp` writes CFP-closing-soon events to the `ritrovo_notifications` queue; `ritrovo_notify` processes them via `tap_queue_worker`. Demonstrates plugin-to-plugin communication through shared queue infrastructure |
 | **Cron** | `ritrovo_importer` daily import, `ritrovo_notify` digest emails, temp file cleanup |
 | **Queue** | Import validation queue: new conference sources queued, validated, then processed. Demonstrates `tap_queue_info` and `tap_queue_worker` |
 | **Tiles** | Sidebar tiles: CFPs Closing Soon, Conferences This Month, Topic Cloud, Recent Comments, My Subscriptions (authenticated) |
@@ -72,7 +72,7 @@ This is the master checklist. Every Trovato feature should appear here.
 | `cfp_url` | `TextValue` (plain) | confs.tech `cfpUrl` | Nullable |
 | `cfp_end_date` | Date | confs.tech `cfpEndDate` | Nullable |
 | `description` | `TextValue` (filtered_html) | Manual / enriched | WYSIWYG-edited rich text |
-| `topics` | Category reference (multi) | Mapped from confs.tech topic | Links to topic taxonomy |
+| `topics` | Category reference (multi) | Mapped from confs.tech topic | Links to topic category hierarchy |
 | `logo` | File (image) | Manual upload | Conference logo, required for Live stage |
 | `venue_photos` | File (image, multi) | Manual upload | Venue/event photos, optional |
 | `schedule_pdf` | File (pdf) | Manual upload | Conference schedule, optional |
@@ -179,7 +179,7 @@ Users are Records (Items), demonstrating the "everything is an Item" architectur
 - `tap_cron` -- Daily. Fetches confs.tech JSON, computes diffs, queues new/changed items for validation before creating/updating.
 - `tap_queue_info` -- Declares the `ritrovo_import` queue.
 - `tap_queue_worker` -- Processes queued imports: validates data integrity (required fields, date sanity, dedup check), then creates Items in Incoming stage or updates existing Items. Logs results. Bad data is logged and skipped, not silently dropped.
-- `tap_plugin_install` -- First install: full historical import + taxonomy seeding.
+- `tap_plugin_install` -- First install: full historical import + category seeding.
 
 **SDK features demonstrated:** Cron, Queue API, Item CRUD via host functions, category term creation, stage-aware creation, HTTP requests via `http_request()`, structured logging, error handling.
 
@@ -190,8 +190,7 @@ Users are Records (Items), demonstrating the "everything is an Item" architectur
 **Taps implemented:**
 
 - `tap_item_view` -- Computes "days until CFP closes." Injects RenderElement badge: green/yellow/red.
-- `tap_item_presave` -- Validates `cfp_end_date` not after `end_date`.
-- Calls `invoke_plugin("ritrovo_notify", "cfp_closing_soon", data)` when a CFP enters the 7-day window. Demonstrates plugin-to-plugin communication.
+- `tap_item_insert` / `tap_item_update` -- Validates `cfp_end_date` not after `end_date`. When a CFP enters the 7-day window, writes a `cfp_closing_soon` event to the `ritrovo_notifications` queue for `ritrovo_notify` to process.
 
 ### `ritrovo_notify`
 
@@ -205,9 +204,8 @@ Users are Records (Items), demonstrating the "everything is an Item" architectur
 - `tap_queue_info` -- Declares the `ritrovo_notifications` queue.
 - `tap_queue_worker` -- Sends notification emails (or queues them for digest).
 - `tap_cron` -- Sends daily digest emails to users with pending notifications.
-- Exposes an `invoke_plugin` handler for `cfp_closing_soon` (called by `ritrovo_cfp`).
 
-**SDK features demonstrated:** Plugin-to-plugin communication via `invoke_plugin`, user-context operations, AJAX endpoints from plugins, queue processing, cron, email dispatch.
+**SDK features demonstrated:** Plugin-to-plugin communication via shared queues, user-context operations, AJAX endpoints from plugins, queue processing, cron, email dispatch.
 
 ### `ritrovo_translate`
 
@@ -562,9 +560,17 @@ This is the site-building experience. It proves Trovato can be configured by a s
 
 ## Search
 
-### Configuration
+Ritrovo uses a two-layer search architecture. See [Epic 2: Search That Thinks](epic-02.md) for the full design.
 
-Full-text search using PostgreSQL `tsvector`:
+### Layer 1: Pagefind (user-facing default)
+
+The `trovato_search` plugin provides client-side search powered by [Pagefind](https://pagefind.app/) -- a Rust/WASM static search library. Results appear in ~50ms with zero server involvement.
+
+The plugin's `tap_cron` handler detects content changes and signals the kernel to rebuild the index. The kernel exports live-stage published items as HTML fragments, runs the Pagefind CLI, and atomically deploys the WASM index to `./static/pagefind/`. Only items on the live stage with public visibility are indexed (the human-in-the-middle guarantee). WASM plugins cannot spawn subprocesses or access the filesystem, so this split architecture is necessary.
+
+### Layer 2: tsvector (server-side)
+
+PostgreSQL `tsvector` handles server-side search for Gather queries, API consumers, admin search, and cron jobs. Also serves as the no-JavaScript fallback for user-facing search (progressive enhancement).
 
 | Content Type | Field | Weight |
 |---|---|---|
@@ -577,11 +583,11 @@ Full-text search using PostgreSQL `tsvector`:
 
 ### Behavior
 
-- Only Live-stage items indexed for anonymous users
-- Search results page with relevance ranking (`ts_rank`)
+- Stage-aware: anonymous users see only live-stage results; editors see their active stage + live
+- Pagefind search runs entirely client-side (~50ms, no server load)
+- tsvector search provides server-side relevance ranking (`ts_rank`) with highlighted snippets
 - Exposed search box in header (all pages)
-- Search results Gather with highlighted snippets
-- Stage-aware: editors searching see Curated + Live results
+- Empty state handled gracefully
 
 ---
 
@@ -637,10 +643,12 @@ Eight parts, ordered as a narrative arc. Each part builds on the previous one, a
 7. **Part 7: Going Global** -- i18n, translation plugin, REST API. *(Trovato Phases 4-5)*
 8. **Part 8: Production Ready** -- Caching, batch, S3, testing. *(Trovato Phase 6)*
 
-Supporting epics (not tied to a tutorial part):
+Supporting epics (span multiple tutorial parts):
 
-- **Epic 14: Demo Installer & Seed Data**
-- **Epic 15: Test Suite, Tested Documentation & Enforcement**
+- **[Epic 2: Search That Thinks](epic-02.md)** -- Progressive enhancement search: Pagefind client-side WASM, ranking signals, AI query expansion, AI summaries (spans Part 2 search + AI integration)
+- **[Epic 3: AI as a Building Block](epic-03.md)** -- AI provider registry, `ai_request()` kernel service, token budgets, content enrichment, chatbot (spans Parts 2, 5-6)
+- **Epic 14: Demo Installer & Seed Data** *(planned)*
+- **Epic 15: Test Suite, Tested Documentation & Enforcement** *(planned)*
 
 ### Appendix (planned)
 

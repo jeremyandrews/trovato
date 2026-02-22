@@ -85,7 +85,7 @@ This maps technical topics to the tutorial parts where they naturally belong. No
 |---|---|
 | Install & Scaffold | Project structure: what each generated file does, how the kernel boots |
 | Define Item Type | JSONB storage layout, field type system internals, migration SQL |
-| Create Content | How Items get IDs (ULIDs vs UUIDs), timestamp handling, the `items` table schema |
+| Create Content | How Items get IDs (UUIDv7 with embedded timestamps), timestamp handling, the `items` table schema |
 | First Gather | Generated SQL from a Gather definition, query planner output, how the Gather engine resolves field references |
 
 ### Part 2: Real Data, Real Site
@@ -125,7 +125,7 @@ This maps technical topics to the tutorial parts where they naturally belong. No
 | Multi-Step Forms | Form state serialization, step transition mechanics, how file uploads are tracked across steps |
 | WYSIWYG | HTML sanitization pipeline, allowed-tag configuration, how `filtered_html` differs from `plain` in storage |
 | AJAX | AJAX callback routing, partial form rebuild mechanics, how form state is maintained during AJAX round-trips |
-| CFP Plugin | `tap_item_view` injection point in the render pipeline, `invoke_plugin` serialization across WASM boundaries |
+| CFP Plugin | `tap_item_view` injection point in the render pipeline, cross-plugin communication via shared queues |
 
 ### Part 6: Community
 
@@ -133,7 +133,7 @@ This maps technical topics to the tutorial parts where they naturally belong. No
 |---|---|
 | Comments | Self-referencing RecordReference for threading, comment tree query (recursive CTE), comment count denormalization |
 | Subscriptions | Subscription storage design choices (join table vs JSONB), subscription lookup performance |
-| Notification Plugin | The full `invoke_plugin` call chain across WASM boundaries, queue processing internals, digest aggregation algorithm |
+| Notification Plugin | Cross-plugin communication via shared queues, queue processing internals, digest aggregation algorithm |
 | Integration | Event propagation across three plugins, how the kernel dispatches tap calls, ordering guarantees |
 
 ### Part 7: Going Global
