@@ -3,7 +3,7 @@
 **Tutorial Part:** 1
 **Trovato Phase Dependency:** Phase 3 (Content Model, CCK, Gather)
 **BMAD Epic:** 29
-**Status:** Stories 29.1 and 29.2 complete; 29.3 not started
+**Status:** Complete (all stories done)
 
 ---
 
@@ -241,7 +241,7 @@ Visit `http://localhost:3000/conferences` and see the listing page with the manu
 
 ### Story 29.3: "Upcoming Conferences" Gather with Pagination
 
-**Status:** Not started
+**Status:** Complete
 
 **As a** site visitor,
 **I want to** see a list of upcoming conferences sorted by date,
