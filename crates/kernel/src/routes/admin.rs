@@ -578,6 +578,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_content_type::router())
         // URL Alias management
         .merge(super::admin_alias::router())
+        // AI Provider management
+        .merge(super::admin_ai_provider::router())
         // AJAX endpoint
         .route("/system/ajax", post(ajax_callback))
 }

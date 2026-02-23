@@ -1,6 +1,7 @@
 //! HTTP route handlers.
 
 pub mod admin;
+pub mod admin_ai_provider;
 pub mod admin_alias;
 pub mod admin_content;
 pub mod admin_content_type;

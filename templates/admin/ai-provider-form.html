@@ -1,0 +1,132 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block content %}
+
+<div class="admin-header">
+    <h2>{% if editing %}Edit{% else %}Add{% endif %} AI Provider</h2>
+</div>
+
+<div class="admin-card">
+    {{ form::errors(errors=errors) }}
+
+    <form method="post" action="{{ action }}">
+        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
+
+        <div class="form-item">
+            <label for="label">Label</label>
+            <input type="text" id="label" name="label" value="{{ values.label | default(value='') }}" required>
+            <div class="description">A human-readable name for this provider (e.g. "OpenAI Production").</div>
+        </div>
+
+        <div class="form-item">
+            <label for="protocol">Protocol</label>
+            <select id="protocol" name="protocol" required>
+                <option value="">— Select —</option>
+                <option value="open_ai_compatible" {% if values.protocol is defined and values.protocol == "open_ai_compatible" %}selected{% endif %}>OpenAI Compatible</option>
+                <option value="anthropic" {% if values.protocol is defined and values.protocol == "anthropic" %}selected{% endif %}>Anthropic</option>
+            </select>
+            <div class="description">OpenAI Compatible covers OpenAI, Azure, Ollama, and vLLM endpoints.</div>
+        </div>
+
+        <div class="form-item">
+            <label for="base_url">Base URL</label>
+            <input type="url" id="base_url" name="base_url" value="{{ values.base_url | default(value='') }}" placeholder="https://api.openai.com/v1" required>
+            <div class="description">The API base URL without trailing slash.</div>
+        </div>
+
+        <div class="form-item">
+            <label for="api_key_env">API Key Environment Variable</label>
+            <input type="text" id="api_key_env" name="api_key_env" value="{{ values.api_key_env | default(value='') }}" placeholder="OPENAI_API_KEY">
+            <div class="description">Name of the environment variable containing the API key. The key itself is never stored in the database.</div>
+        </div>
+
+        <div class="form-item">
+            <label for="rate_limit_rpm">Rate Limit (requests per minute)</label>
+            <input type="number" id="rate_limit_rpm" name="rate_limit_rpm" value="{{ values.rate_limit_rpm | default(value='0') }}" min="0">
+            <div class="description">0 = no rate limiting.</div>
+        </div>
+
+        <div class="form-item">
+            <label>
+                <input type="checkbox" name="enabled" value="1" {% if values.enabled is defined and values.enabled %}checked{% endif %}>
+                Enabled
+            </label>
+        </div>
+
+        <fieldset style="margin-top: 1.5rem;">
+            <legend>Operation Models</legend>
+            <p class="description">Assign a model identifier to each operation type this provider supports. Leave blank for operations this provider does not serve.</p>
+
+            <div id="model-rows">
+                {% if values.models is defined and values.models | length > 0 %}
+                    {% for m in values.models %}
+                    <div class="form-item form-item--inline" style="display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem;">
+                        <select name="op_{{ loop.index0 }}" style="flex: 1;">
+                            <option value="">— Select operation —</option>
+                            {% for op in operations %}
+                            <option value="{{ op.key }}" {% if m.operation == op.key %}selected{% endif %}>{{ op.label }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="model_{{ loop.index0 }}" value="{{ m.model | default(value='') }}" placeholder="Model ID (e.g. gpt-4o)" style="flex: 2;">
+                        <button type="button" class="button button--small button--danger js-remove-row" title="Remove">&times;</button>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="form-item form-item--inline" style="display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem;">
+                        <select name="op_0" style="flex: 1;">
+                            <option value="">— Select operation —</option>
+                            {% for op in operations %}
+                            <option value="{{ op.key }}">{{ op.label }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="model_0" value="" placeholder="Model ID (e.g. gpt-4o)" style="flex: 2;">
+                        <button type="button" class="button button--small button--danger js-remove-row" title="Remove">&times;</button>
+                    </div>
+                {% endif %}
+            </div>
+
+            <button type="button" id="add-model-row" class="button button--secondary" style="margin-top: 0.5rem;">+ Add model</button>
+        </fieldset>
+
+        {{ form::actions(submit_label="Save provider", cancel_url="/admin/system/ai-providers") }}
+    </form>
+</div>
+
+<script>
+(function() {
+    var container = document.getElementById('model-rows');
+    var addBtn = document.getElementById('add-model-row');
+    var optionsHtml = '';
+    {% for op in operations %}
+    optionsHtml += '<option value="{{ op.key }}">{{ op.label }}</option>';
+    {% endfor %}
+
+    function getNextIndex() {
+        var rows = container.querySelectorAll('.form-item--inline');
+        return rows.length;
+    }
+
+    addBtn.addEventListener('click', function() {
+        var idx = getNextIndex();
+        var row = document.createElement('div');
+        row.className = 'form-item form-item--inline';
+        row.style.cssText = 'display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem;';
+        row.innerHTML =
+            '<select name="op_' + idx + '" style="flex: 1;"><option value="">— Select operation —</option>' + optionsHtml + '</select>' +
+            '<input type="text" name="model_' + idx + '" value="" placeholder="Model ID (e.g. gpt-4o)" style="flex: 2;">' +
+            '<button type="button" class="button button--small button--danger js-remove-row" title="Remove">&times;</button>';
+        container.appendChild(row);
+    });
+
+    container.addEventListener('click', function(e) {
+        if (e.target.classList.contains('js-remove-row')) {
+            var row = e.target.closest('.form-item--inline');
+            if (container.querySelectorAll('.form-item--inline').length > 1) {
+                row.remove();
+            }
+        }
+    });
+})();
+</script>
+{% endblock %}

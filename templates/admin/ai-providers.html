@@ -1,0 +1,149 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block content %}
+
+<div class="admin-header">
+    <h2>AI Providers</h2>
+    <a href="/admin/system/ai-providers/add" class="button button--primary">Add provider</a>
+</div>
+
+{% if flash %}
+<div class="message message--info">{{ flash }}</div>
+{% endif %}
+
+<div class="admin-card">
+    {% if providers | length > 0 %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Label</th>
+                <th>Protocol</th>
+                <th>Base URL</th>
+                <th>API Key</th>
+                <th>Models</th>
+                <th>Status</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for provider in providers %}
+            <tr>
+                <td>{{ provider.label }}</td>
+                <td>{{ provider.protocol }}</td>
+                <td><code>{{ provider.base_url }}</code></td>
+                <td>
+                    {% if provider.key_is_set %}
+                    <span style="color: var(--success, green);">{{ provider.api_key_status }}</span>
+                    {% else %}
+                    <span style="color: var(--warning, #b45309);">{{ provider.api_key_status }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% for model in provider.models %}
+                    <span>{{ model.operation }}: <code>{{ model.model }}</code></span>{% if not loop.last %}<br>{% endif %}
+                    {% endfor %}
+                </td>
+                <td>
+                    {% if provider.enabled %}
+                    <span style="color: var(--success, green); font-weight: 600;">Enabled</span>
+                    {% else %}
+                    <span style="color: var(--warning, #b45309); font-weight: 600;">Disabled</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="/admin/system/ai-providers/{{ provider.id }}/edit">Edit</a>
+                    &middot;
+                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/test" style="display: inline;" class="js-test-connection" data-provider-id="{{ provider.id }}">
+                        {{ form::csrf(csrf_token=csrf_token) }}
+                        <button type="submit" class="link-button">Test</button>
+                    </form>
+                    &middot;
+                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/delete" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this provider?');">
+                        {{ form::csrf(csrf_token=csrf_token) }}
+                        <button type="submit" class="link-button" style="color: var(--danger, red);">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No AI providers configured. <a href="/admin/system/ai-providers/add">Add a provider</a> to get started.</p>
+    {% endif %}
+</div>
+
+<div id="test-result" style="display: none; margin-top: 1rem;" class="admin-card">
+    <h3>Connection Test Result</h3>
+    <p id="test-message"></p>
+    <p id="test-latency"></p>
+</div>
+
+{% if providers | length > 0 %}
+<div class="admin-card" style="margin-top: 2rem;">
+    <h3>Default Providers</h3>
+    <p>Assign a default provider for each operation type. Plugins will use these unless they specify an override.</p>
+
+    <form method="post" action="/admin/system/ai-providers/defaults">
+        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
+
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Operation</th>
+                    <th>Default Provider</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for op in operation_defaults %}
+                <tr>
+                    <td>{{ op.label }}</td>
+                    <td>
+                        <select name="default_{{ op.key }}">
+                            <option value="">— None —</option>
+                            {% for provider in providers %}
+                            {% if provider.enabled %}
+                            <option value="{{ provider.id }}" {% if op.default_provider == provider.id %}selected{% endif %}>{{ provider.label }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {{ form::actions(submit_label="Save defaults", cancel_url="/admin/system/ai-providers") }}
+    </form>
+</div>
+{% endif %}
+
+<script>
+document.querySelectorAll('.js-test-connection').forEach(function(form) {
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var resultDiv = document.getElementById('test-result');
+        var msgEl = document.getElementById('test-message');
+        var latEl = document.getElementById('test-latency');
+        msgEl.textContent = 'Testing connection...';
+        latEl.textContent = '';
+        resultDiv.style.display = 'block';
+
+        fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form)
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            msgEl.textContent = (data.success ? '\u2705 ' : '\u274c ') + data.message;
+            latEl.textContent = 'Latency: ' + data.latency_ms + 'ms';
+            msgEl.style.color = data.success ? 'var(--success, green)' : 'var(--danger, red)';
+        })
+        .catch(function(err) {
+            msgEl.textContent = '\u274c Request failed: ' + err;
+            msgEl.style.color = 'var(--danger, red)';
+        });
+    });
+});
+</script>
+{% endblock %}

@@ -104,6 +104,9 @@ struct AppStateInner {
     /// Search service for full-text search.
     search: Arc<SearchService>,
 
+    /// AI provider registry for managing LLM configurations.
+    ai_providers: Arc<services::ai_provider::AiProviderService>,
+
     /// Theme engine for template rendering.
     theme: Arc<ThemeEngine>,
 
@@ -412,6 +415,9 @@ impl AppState {
         // Create search service
         let search = Arc::new(SearchService::new(db.clone()));
 
+        // Create AI provider service
+        let ai_providers = Arc::new(services::ai_provider::AiProviderService::new(db.clone()));
+
         // Create file service with local storage
         let file_storage = Arc::new(LocalFileStorage::new(
             &config.uploads_dir,
@@ -576,6 +582,7 @@ impl AppState {
                 categories,
                 gather,
                 search,
+                ai_providers,
                 theme,
                 forms,
                 files,
@@ -745,6 +752,11 @@ impl AppState {
     /// Get the search service.
     pub fn search(&self) -> &Arc<SearchService> {
         &self.inner.search
+    }
+
+    /// Get the AI provider service.
+    pub fn ai_providers(&self) -> &Arc<services::ai_provider::AiProviderService> {
+        &self.inner.ai_providers
     }
 
     /// Get the file service.

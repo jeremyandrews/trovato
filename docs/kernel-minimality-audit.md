@@ -137,6 +137,12 @@ Prometheus counters/histograms for HTTP requests, tap durations, DB queries, cac
 
 **Verdict: All correctly placed — core runtime infrastructure.**
 
+### 1v. AI Provider Registry (`services/ai_provider.rs`, 1 file)
+
+**Verdict: Correctly placed — shared AI infrastructure.**
+
+`AiProviderService` manages provider configurations (stored as JSONB in `site_config`) and resolves API keys from environment variables at runtime. Multiple future plugins depend on this infrastructure: WASM AI host functions (Epic 31.2), token budget management (31.3), AI permissions (31.4), chatbot (31.5), and MCP integration (31.6). The registry is always-initialized (like `SearchService`) because any combination of AI-consuming plugins may be enabled. Provider configs, default assignments, and connection testing are kernel concerns — individual plugins should not each independently manage API credentials or endpoint discovery. API keys are referenced by env var name only (never stored in the database) as a security invariant enforced at the kernel level.
+
 ---
 
 ## 2. Extraction Candidates
