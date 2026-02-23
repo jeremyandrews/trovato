@@ -6,7 +6,92 @@ Welcome to the Ritrovo tutorial. Over the next eight parts you will build a full
 
 ## Step 1: Installation
 
-*Coming soon -- covers installing Trovato, running migrations, and verifying the health check.*
+### Prerequisites
+
+You need three things installed:
+
+- **Rust** (stable toolchain, 1.85+) -- install from <https://rustup.rs/>
+- **PostgreSQL 16+** -- any standard installation works
+- **Redis 7+** -- used for caching and sessions
+
+Verify everything is available:
+
+```bash
+rustc --version        # 1.85 or newer
+psql --version         # 16 or newer
+redis-cli ping         # should print PONG
+```
+
+### Start the Services
+
+Trovato includes a `docker-compose.yml` that runs PostgreSQL 17 and Redis 7 with a single command:
+
+```bash
+docker compose up -d
+```
+
+This gives you a `trovato` database owned by user `trovato` with password `trovato`, plus Redis on the default port. If you prefer to manage PostgreSQL and Redis yourself, create the database manually:
+
+```bash
+psql -c "CREATE USER trovato WITH PASSWORD 'trovato';"
+psql -c "CREATE DATABASE trovato OWNER trovato;"
+```
+
+### Configure Environment
+
+Copy the example environment file and review the defaults:
+
+```bash
+cp .env.example .env
+```
+
+The defaults work with Docker Compose out of the box:
+
+```env
+PORT=3000
+DATABASE_URL=postgres://trovato:trovato@localhost:5432/trovato
+REDIS_URL=redis://127.0.0.1:6379
+DATABASE_MAX_CONNECTIONS=10
+RUST_LOG=info,tower_http=debug,sqlx=warn
+```
+
+### Build and Run
+
+Build the kernel and start the server:
+
+```bash
+cargo build --release
+cargo run --release
+```
+
+On first startup, Trovato automatically:
+
+1. Connects to PostgreSQL and Redis.
+2. Runs all pending database migrations (including the ones that create the `conference` Item Type and seed data).
+3. Discovers and loads WASM plugins from the `plugins/` directory.
+4. Starts listening on `http://localhost:3000`.
+
+### Verify the Health Check
+
+```bash
+curl http://localhost:3000/health
+```
+
+You should see:
+
+```json
+{"status":"healthy","postgres":true,"redis":true}
+```
+
+### Run the Installer
+
+Open `http://localhost:3000` in your browser. The first-time setup redirects you to the installation wizard, where you will:
+
+1. Confirm that PostgreSQL and Redis are connected.
+2. Create an admin account (username, email, password).
+3. Set basic site configuration (site name, slogan).
+
+Once complete, you can access the admin dashboard at `http://localhost:3000/admin`.
 
 ---
 
@@ -14,7 +99,7 @@ Welcome to the Ritrovo tutorial. Over the next eight parts you will build a full
 
 Every piece of content in Trovato is an **Item**. Items are typed -- a blog post, a page, and a conference are all Items, but each has its own set of fields. The blueprint that describes which fields an Item has is called an **Item Type**.
 
-Trovato ships with one built-in Item Type: `page` (a simple page with a body field). Ritrovo needs a `conference` type with fields for dates, location, CFP info, topics, files, and more.
+Trovato ships with one built-in Item Type: `page` (a simple page with a body field). Ritrovo needs a `conference` type with fields for dates, location, CFP (Call for Papers) info, topics, files, and more.
 
 ### What Is an Item Type?
 
@@ -225,7 +310,7 @@ The `created` and `changed` columns store **Unix timestamps** (seconds since epo
 
 ### Stages
 
-The `stage_id` column defaults to `'live'`. In later parts of this tutorial we'll explore how Stages let you prepare content changes on a draft stage before promoting them to live. For now, every item goes directly to the live stage.
+The `stage_id` column holds a UUID that references the stage an item belongs to. New items default to the **live** stage (a well-known UUID seeded during installation). In later parts of this tutorial we'll explore how Stages let you prepare content changes on a draft stage before promoting them to live. For now, every item goes directly to the live stage.
 
 ### Seeded Conferences
 
@@ -241,4 +326,77 @@ You can see all of them at `/admin/content`.
 
 ## Step 4: Build a Gather Listing
 
-*Coming soon -- covers defining a Gather to list upcoming conferences.*
+You have conferences in the database, but no public page that lists them. That's where **Gathers** come in. A Gather is Trovato's declarative query builder -- you describe what data to fetch (base table, filters, sort order) and how to display it (table, list, grid), and Trovato generates the query and renders the results.
+
+### Creating the Gather
+
+1. Navigate to `/admin/gather` in your browser.
+2. Click **Create gather query** (or go directly to `/admin/gather/create`).
+3. Fill in the form:
+
+| Field | Value |
+|---|---|
+| Query ID | `conf_listing` |
+| Label | Conferences |
+| Description | All published conferences |
+
+4. In the **Definition** section, set:
+
+   - **Base table**: `item`
+   - **Item type**: `conference` -- this restricts results to conference items only.
+   - Add a **filter**: field `status`, operator `equals`, value `1`. Leave "Exposed" unchecked. This ensures only published conferences appear.
+   - Add a **sort**: field `created`, direction `desc`. Newest conferences appear first.
+
+5. In the **Display** section, set:
+
+   - **Format**: `table`
+   - **Items per page**: `20`
+   - **Empty text**: `No conferences found.`
+   - Enable the **pager** and **show result count** checkboxes.
+
+6. Click **Save**.
+
+### Viewing the Listing
+
+Open `/gather/conf_listing` in your browser. You should see a table listing all four conferences (the three seeded ones plus "RustNation UK 2026" if you created it in Step 3). Each row shows the item's fields, and the pager appears at the bottom.
+
+The Gather is also available as JSON via the REST API:
+
+```bash
+curl http://localhost:3000/api/query/conf_listing/execute
+```
+
+This returns a JSON response with the query results, pagination info, and total count -- useful for building custom front ends or feeding data to other services.
+
+### What Just Happened
+
+When you saved the Gather, Trovato:
+
+1. **Stored the definition** -- inserted a row into the `gather_query` table with the query ID, filters, sorts, and display settings as JSONB.
+2. **Registered the route** -- the Gather is now accessible at `/gather/conf_listing` (HTML) and `/api/query/conf_listing/execute` (JSON).
+
+When a visitor hits `/gather/conf_listing`, the kernel:
+
+1. Loads the query definition from the database.
+2. Builds a parameterized SQL query from the filters and sorts.
+3. Executes it against the `item` table, filtering by `type = 'conference'` and `status = 1`.
+4. Renders the results using the configured display format (table, in this case).
+
+No code was written. No templates were edited. The Gather system translated your declarative definition into a working page.
+
+### Exposed Filters (Preview)
+
+In the Gather definition, each filter has an "Exposed" checkbox. If you check it, the filter becomes a URL query parameter that visitors can use to narrow results. For example, you could expose a filter on `fields.field_country` so visitors can filter conferences by country. We'll revisit exposed filters in a later part of this tutorial when we build a more advanced search experience.
+
+---
+
+## What You've Built
+
+By the end of Part 1, you have:
+
+- A running Trovato instance with PostgreSQL and Redis.
+- A `conference` Item Type with 17 fields for dates, location, CFP details, topics, and more.
+- Four conferences (three seeded, one created by hand).
+- A Gather listing at `/gather/conf_listing` that displays all published conferences.
+
+In **Part 2** we'll add human-friendly URL aliases, set up the pathauto system for automatic slug generation, and start building navigation menus.
