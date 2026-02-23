@@ -309,6 +309,11 @@ impl AiProviderService {
         }
     }
 
+    /// Get the shared HTTP client for making outbound requests.
+    pub fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     // -------------------------------------------------------------------------
     // CRUD
     // -------------------------------------------------------------------------

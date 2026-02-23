@@ -371,6 +371,132 @@ pub enum LogLevel {
     Error,
 }
 
+// =============================================================================
+// AI types — shared between kernel and plugins for `ai_request()` host function
+// =============================================================================
+
+/// The kind of AI operation to perform.
+///
+/// Must use the same `snake_case` serde representation as the kernel's
+/// `AiOperationType` so JSON is wire-compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiOperationType {
+    /// Conversational / completion.
+    Chat,
+    /// Text embedding.
+    Embedding,
+    /// Image generation.
+    ImageGeneration,
+    /// Speech-to-text transcription.
+    SpeechToText,
+    /// Text-to-speech synthesis.
+    TextToSpeech,
+    /// Content moderation.
+    Moderation,
+}
+
+/// A single message in a chat conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiMessage {
+    /// Message role: `"system"`, `"user"`, or `"assistant"`.
+    pub role: String,
+    /// Message content.
+    pub content: String,
+}
+
+impl AiMessage {
+    /// Create a system message.
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".to_string(),
+            content: content.into(),
+        }
+    }
+
+    /// Create a user message.
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+        }
+    }
+
+    /// Create an assistant message.
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+        }
+    }
+}
+
+/// Options for controlling AI request behavior.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AiRequestOptions {
+    /// Maximum tokens to generate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Sampling temperature (0.0 = deterministic, 2.0 = very random).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Top-p nucleus sampling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// Stop sequences.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
+}
+
+/// A request to the AI provider, serialized as JSON for the `ai_request()` host function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiRequest {
+    /// Operation type (determines which provider/model is used).
+    pub operation: AiOperationType,
+    /// Optional provider ID override (uses site default if `None`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// Optional model override (uses provider's configured model if `None`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Chat messages (for Chat operation).
+    #[serde(default)]
+    pub messages: Vec<AiMessage>,
+    /// Input text (for Embedding, Moderation, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// Request options.
+    #[serde(default)]
+    pub options: AiRequestOptions,
+}
+
+/// Token usage statistics from the provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AiUsage {
+    /// Tokens used in the prompt/input.
+    pub prompt_tokens: u32,
+    /// Tokens generated in the response.
+    pub completion_tokens: u32,
+    /// Total tokens (prompt + completion).
+    pub total_tokens: u32,
+}
+
+/// Normalized response from an AI provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiResponse {
+    /// Generated text content.
+    pub content: String,
+    /// Model that was actually used.
+    pub model: String,
+    /// Token usage statistics.
+    pub usage: AiUsage,
+    /// Round-trip latency in milliseconds.
+    pub latency_ms: u64,
+    /// Reason the generation stopped (e.g., `"stop"`, `"length"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -395,5 +521,91 @@ mod tests {
         let kernel_json = r#"{"timestamp":1234567890}"#;
         let input: CronInput = serde_json::from_str(kernel_json).unwrap();
         assert_eq!(input.timestamp, 1_234_567_890);
+    }
+
+    // ---- AI types serde roundtrips ----
+
+    #[test]
+    fn ai_operation_type_serde_roundtrip() {
+        let ops = [
+            (AiOperationType::Chat, "\"chat\""),
+            (AiOperationType::Embedding, "\"embedding\""),
+            (AiOperationType::ImageGeneration, "\"image_generation\""),
+            (AiOperationType::SpeechToText, "\"speech_to_text\""),
+            (AiOperationType::TextToSpeech, "\"text_to_speech\""),
+            (AiOperationType::Moderation, "\"moderation\""),
+        ];
+        for (op, expected_json) in ops {
+            let json = serde_json::to_string(&op).unwrap();
+            assert_eq!(json, expected_json, "serialize {op:?}");
+            let back: AiOperationType = serde_json::from_str(&json).unwrap();
+            assert_eq!(op, back);
+        }
+    }
+
+    #[test]
+    fn ai_request_serde_roundtrip() {
+        let req = AiRequest {
+            operation: AiOperationType::Chat,
+            provider_id: None,
+            model: Some("gpt-4o".to_string()),
+            messages: vec![
+                AiMessage::system("You are helpful."),
+                AiMessage::user("Hello"),
+            ],
+            input: None,
+            options: AiRequestOptions {
+                max_tokens: Some(200),
+                temperature: Some(0.3),
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: AiRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.operation, AiOperationType::Chat);
+        assert_eq!(back.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(back.messages.len(), 2);
+        assert_eq!(back.messages[0].role, "system");
+        assert_eq!(back.options.max_tokens, Some(200));
+    }
+
+    #[test]
+    fn ai_response_serde_roundtrip() {
+        let resp = AiResponse {
+            content: "Hello!".to_string(),
+            model: "gpt-4o".to_string(),
+            usage: AiUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            latency_ms: 234,
+            finish_reason: Some("stop".to_string()),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: AiResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, "Hello!");
+        assert_eq!(back.usage.total_tokens, 15);
+        assert_eq!(back.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn ai_request_options_default_is_empty() {
+        let opts = AiRequestOptions::default();
+        let json = serde_json::to_string(&opts).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn ai_message_constructors() {
+        let sys = AiMessage::system("sys");
+        assert_eq!(sys.role, "system");
+        assert_eq!(sys.content, "sys");
+
+        let user = AiMessage::user("usr");
+        assert_eq!(user.role, "user");
+
+        let asst = AiMessage::assistant("asst");
+        assert_eq!(asst.role, "assistant");
     }
 }

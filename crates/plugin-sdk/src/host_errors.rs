@@ -108,6 +108,26 @@
 //!
 //! - **`log(level_ptr, level_len, plugin_ptr, plugin_len, msg_ptr, msg_len) → void`**
 //!   - No return value. Falls back to `info` level on parse failure.
+//!
+//! ## AI API (`trovato:kernel/ai-api`)
+//!
+//! - **`ai-request(req_ptr, req_len, out_ptr, out_max_len) → i32`**
+//!   - `-1`: memory missing, `-2`: request JSON read failed, `-3`: output write failed
+//!   - `-20`: no provider configured for operation type
+//!   - `-21`: HTTP request to provider failed
+//!   - `-22`: rate limit exceeded (provider 429 or local RPM)
+//!   - `-23`: malformed `AiRequest` JSON (or invalid message role)
+//!   - `-24`: auth failure (401/403)
+//!   - `-25`: provider error (non-2xx)
+//!   - `≥ 0`: bytes written (JSON `AiResponse`)
+//!
+//! ## SDK-side Errors (client-side, before/after WASM boundary)
+//!
+//! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
+//!
+//! - `-100` ([`ERR_SDK_SERIALIZE`]): JSON serialization failed before calling host
+//! - `-101` ([`ERR_SDK_UTF8`]): UTF-8 decoding of host response buffer failed
+//! - `-102` ([`ERR_SDK_DESERIALIZE`]): Host response JSON deserialization failed
 
 /// Memory export not found — the WASM module does not export `"memory"`.
 pub const ERR_MEMORY_MISSING: i32 = -1;
@@ -139,3 +159,39 @@ pub const ERR_PARAM_DESERIALIZE: i32 = -14;
 
 /// Invalid table or column name (must match `[a-zA-Z_][a-zA-Z0-9_]*`).
 pub const ERR_INVALID_IDENTIFIER: i32 = -15;
+
+// =============================================================================
+// AI API errors (`trovato:kernel/ai-api`)
+// =============================================================================
+
+/// No provider configured (or enabled) for the requested operation type.
+pub const ERR_AI_NO_PROVIDER: i32 = -20;
+
+/// HTTP request to the AI provider failed (timeout, network error, DNS).
+pub const ERR_AI_REQUEST_FAILED: i32 = -21;
+
+/// Rate limit exceeded — either the provider returned HTTP 429 or the
+/// local per-provider RPM limit was reached.
+pub const ERR_AI_RATE_LIMITED: i32 = -22;
+
+/// Malformed `AiRequest` JSON from the plugin (deserialization failure).
+pub const ERR_AI_INVALID_REQUEST: i32 = -23;
+
+/// Provider returned 401 or 403 — API key is invalid or missing.
+pub const ERR_AI_AUTH_FAILED: i32 = -24;
+
+/// Provider returned a non-2xx error (500, 503, etc.).
+pub const ERR_AI_PROVIDER_ERROR: i32 = -25;
+
+// =============================================================================
+// SDK-side errors (client-side, before/after crossing WASM boundary)
+// =============================================================================
+
+/// JSON serialization failed on the SDK side (before crossing the WASM boundary).
+pub const ERR_SDK_SERIALIZE: i32 = -100;
+
+/// UTF-8 decoding failed when reading the host response buffer.
+pub const ERR_SDK_UTF8: i32 = -101;
+
+/// Failed to deserialize the host response JSON into the expected Rust type.
+pub const ERR_SDK_DESERIALIZE: i32 = -102;

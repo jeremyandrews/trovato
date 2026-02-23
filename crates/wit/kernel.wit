@@ -65,6 +65,16 @@ interface logging {
     log: func(level: string, plugin: string, message: string);
 }
 
+/// AI API — access to AI providers via the kernel's secure provider registry.
+/// Plugins submit requests as JSON; the kernel resolves the provider,
+/// injects the API key, and returns a normalized response.
+/// API keys never cross the WASM boundary.
+interface ai-api {
+    /// Make an AI request. Input is JSON-serialized `AiRequest`,
+    /// output is JSON-serialized `AiResponse`.
+    ai-request: func(request-json: string) -> result<string, string>;
+}
+
 /// The plugin world — all imports and exports for a Trovato plugin.
 /// All tap functions use full-serialization (JSON in, JSON out).
 world plugin {
@@ -76,6 +86,7 @@ world plugin {
     import cache-api;
     import plugin-api;
     import logging;
+    import ai-api;
 
     // Lifecycle
     export tap-install: func() -> result<_, string>;

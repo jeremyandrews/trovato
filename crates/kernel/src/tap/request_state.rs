@@ -10,6 +10,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::lockout::LockoutService;
+use crate::services::ai_provider::AiProviderService;
 
 /// User context for the current request.
 #[derive(Debug, Clone)]
@@ -67,13 +68,18 @@ pub struct RequestServices {
     pub db: PgPool,
     /// Lockout service for rate limiting (None in background/cron contexts).
     pub lockout: Option<Arc<LockoutService>>,
-    // Future: Add cache, template engine, etc.
+    /// AI provider service for making AI requests from plugins.
+    pub ai_providers: Option<Arc<AiProviderService>>,
 }
 
 impl RequestServices {
     /// Create services for background tasks (cron, batch) — no lockout needed.
-    pub fn for_background(db: PgPool) -> Self {
-        Self { db, lockout: None }
+    pub fn for_background(db: PgPool, ai_providers: Option<Arc<AiProviderService>>) -> Self {
+        Self {
+            db,
+            lockout: None,
+            ai_providers,
+        }
     }
 }
 
@@ -82,6 +88,10 @@ impl std::fmt::Debug for RequestServices {
         f.debug_struct("RequestServices")
             .field("db", &"PgPool")
             .field("lockout", &self.lockout.as_ref().map(|_| "LockoutService"))
+            .field(
+                "ai_providers",
+                &self.ai_providers.as_ref().map(|_| "AiProviderService"),
+            )
             .finish()
     }
 }

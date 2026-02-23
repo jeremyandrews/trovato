@@ -560,6 +560,7 @@ impl AppState {
         // Wire plugin services into cron
         cron.set_plugin_services(content_lock.clone(), audit.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
+        cron.set_ai_providers(ai_providers.clone());
         cron.set_pagefind_enabled(enabled_set.contains("trovato_search"));
         let cron = Arc::new(cron);
 

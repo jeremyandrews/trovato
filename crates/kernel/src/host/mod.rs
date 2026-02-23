@@ -3,6 +3,7 @@
 //! These functions are imported by plugins and provide access to kernel services.
 //! All string parameters use ptr+len pairs passed through WASM linear memory.
 
+mod ai;
 mod cache;
 mod db;
 mod item;
@@ -16,6 +17,7 @@ use wasmtime::Linker;
 
 use crate::plugin::PluginState;
 
+pub use ai::register_ai_functions;
 pub use cache::register_cache_functions;
 pub use db::register_db_functions;
 pub use item::register_item_functions;
@@ -33,6 +35,7 @@ pub fn register_all(linker: &mut Linker<PluginState>) -> Result<()> {
     register_cache_functions(linker)?;
     register_item_functions(linker)?;
     register_db_functions(linker)?;
+    register_ai_functions(linker)?;
     Ok(())
 }
 

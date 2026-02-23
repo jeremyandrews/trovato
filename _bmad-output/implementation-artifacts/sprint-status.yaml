@@ -455,3 +455,18 @@ development_status:
   29-2-admin-ui-manual-conference-creation: done
   29-3-upcoming-conferences-gather: done
   epic-29-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Phase 14: AI as a Building Block
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 31: AI as a Building Block
+  # Provider registry, host functions, token budgets, permissions, chatbot, MCP
+  epic-31: in-progress
+  31-1-ai-provider-registry-and-secure-key-store: done
+  31-2-wasm-ai-host-functions: done
+  31-3-token-budget-management: backlog
+  31-4-ai-permissions: backlog
+  31-5-chatbot: backlog
+  31-6-mcp-integration: backlog
+  epic-31-retrospective: optional
