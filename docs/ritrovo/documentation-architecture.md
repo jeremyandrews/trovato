@@ -51,15 +51,6 @@ created:
 SELECT id, jsonb_pretty(fields) FROM items WHERE item_type = 'conference';
 ...
 
-...trovato-test:internal
-// Verify JSONB storage structure for a conference item
-let item = test_ctx.load_item(conference_id).await?;
-let fields = item.fields_raw_json();
-assert!(fields.get("name").is_some());
-assert!(fields.get("start_date").is_some());
-assert_eq!(fields.get("online").unwrap(), &serde_json::json!(false));
-...
-
 The JSONB approach means...
 
 [... explanation of design decisions, tradeoffs, alternatives considered ...]
@@ -162,105 +153,70 @@ The core rule: **if the tutorial says it, a test proves it. If the test breaks, 
 
 ### How It Works
 
-#### 1. Tutorial code blocks are tagged
+#### 1. Standard integration tests validate tutorial claims
 
-Fenced code blocks in tutorial markdown use language tags to declare their purpose:
+Tutorial tests are standard Rust integration tests in `crates/kernel/tests/tutorial_test.rs`. They use the same shared `TestApp` infrastructure as the rest of the test suite -- `shared_app()`, `run_test()`, `#[test]` macros, and direct database access.
 
-| Tag | Meaning | Extracted? |
-|---|---|---|
-| `bash` | Shell command the user runs | No (shown as-is) |
-| `sql` | SQL query shown for illustration | No |
-| `rust` | Rust code shown for illustration | No |
-| `toml` | Configuration shown for illustration | No |
-| `trovato-test` | User story assertion -- extracted and run | **Yes** |
-| `trovato-test:internal` | Under the Hood assertion -- extracted and run | **Yes** |
-
-The `trovato-test` and `trovato-test:internal` blocks are real Rust code that compiles and runs against a test Trovato instance. The distinction between the two tags is purely organizational (user track vs technical track) -- both run in the same test suite.
-
-#### 2. Test extraction at build time
-
-A build script (`tests/tutorial/build.rs` or similar) reads the tutorial markdown files and extracts all tagged code blocks. Each block becomes a test function, named after its source location:
+Each test is named after the tutorial part and step it validates:
 
 ```
-docs/tutorial/part-01-hello-trovato.md, Step 2, block 1
-  -> test function: part_01_step_02_block_01()
+test_part01_step02_conference_type_in_api
+test_part01_step02_conference_has_17_fields
+test_part01_step03_seeded_conferences_exist
+test_part01_step04_gather_returns_conferences
 ```
 
-This is the same pattern as `skeptic` or Rust's own `rustdoc` test extraction, adapted for Trovato's integration test context.
+Tests make HTTP requests to API endpoints, query the database directly, and verify that the behavior matches what the tutorial prose describes. For example, if the tutorial says "the Gather displays the configured empty text: 'No conferences found.'", a test verifies the gather query definition has that exact `empty_text` value.
 
-#### 3. Test harness provides context
+#### 2. No custom extraction tooling
 
-Each extracted test runs inside a harness that provides:
+Unlike `skeptic` or `rustdoc` test extraction, tutorial tests are plain Rust code in a `.rs` file. This means:
 
-- A fresh Trovato instance (test database, in-memory cache)
-- A `TestContext` with helper methods for common operations (create item, load item, query Gather, submit form, etc.)
-- Automatic setup/teardown between tests
-- The ability to declare dependencies between tests (Part 2 tests can depend on Part 1 setup)
+- **Full IDE support** -- autocomplete, type checking, go-to-definition, refactoring
+- **Clear error messages** -- compilation and assertion failures point at real source lines
+- **Standard debugging** -- set breakpoints, step through code, inspect variables
+- **No build script** -- no custom markdown parser, no code generation, no fragile extraction pipeline
 
-```rust
-// In tests/tutorial/harness.rs
-pub struct TestContext {
-    pub db: TestDatabase,
-    pub kernel: TrovatoKernel,
-    pub http: TestHttpClient,
-}
-
-impl TestContext {
-    /// Create an item and return its ID
-    pub async fn create_item(&self, item_type: &str, fields: serde_json::Value) -> ItemId { ... }
-
-    /// Execute a Gather query and return results
-    pub async fn gather(&self, definition: &str) -> Vec<Item> { ... }
-
-    /// Make an HTTP request to the running test server
-    pub async fn get(&self, path: &str) -> Response { ... }
-
-    /// Load raw JSONB fields for an item (for internal tests)
-    pub async fn load_item_raw(&self, id: ItemId) -> serde_json::Value { ... }
-}
-```
-
-#### 4. CI enforcement
+#### 3. CI enforcement
 
 Two checks run on every Trovato PR:
 
 **Check 1: Tutorial tests pass**
 
 ```bash
-cargo test --test tutorial
+cargo test --test tutorial_test
 ```
 
-If a core change breaks behavior that the tutorial documents, this fails. The fix requires updating both the code and the tutorial markdown.
+If a core change breaks behavior that the tutorial documents, this fails. The fix requires updating both the code and the tutorial test.
 
 **Check 2: Coverage check**
 
-A script verifies that every tutorial step in the markdown has at least one `trovato-test` block. This prevents documentation from drifting by omission -- you can't add a tutorial step without also adding a testable assertion.
+A naming convention makes coverage verification trivial. A script parses tutorial markdown for `## Step` headers and verifies each step has at least one corresponding `test_partNN_stepNN_*` function:
 
 ```bash
 # scripts/check-tutorial-coverage.sh
-# Parses markdown for ### Step headers
-# Verifies each step section contains at least one trovato-test block
+# Parses markdown for ## Step N headers
+# Checks tutorial_test.rs for matching test_partNN_stepNN_ functions
 # Exits non-zero if any step lacks coverage
 ```
 
-This is a simple grep/parse script, not a complex framework.
+This is a simple grep script, not a framework.
 
-#### 5. The developer workflow
+#### 4. The developer workflow
 
 When a Trovato core change breaks a tutorial test:
 
-1. `cargo test --test tutorial` fails in CI
-2. The failure message identifies the tutorial chapter, step, and assertion
-3. The developer reads the relevant markdown section to understand what the tutorial promises
-4. They update the tutorial markdown (and its code blocks) to match the new behavior
-5. The test now extracts the updated code block and passes
+1. `cargo test --test tutorial_test` fails in CI
+2. The failure message identifies the test function and assertion
+3. Each test function has a comment referencing the tutorial file and step it validates
+4. The developer updates both the tutorial prose and the test to match the new behavior
 
 When adding a new tutorial step:
 
-1. Write the markdown with tutorial content
-2. Add `trovato-test` code blocks that assert the documented behavior
-3. Add `trovato-test:internal` blocks for Under the Hood sections (if present)
-4. `cargo test --test tutorial` validates everything
+1. Write the tutorial markdown
+2. Add test functions in `tutorial_test.rs` named `test_partNN_stepNN_*`
+3. Each test should have a comment linking back to the tutorial section it validates
+4. `cargo test --test tutorial_test` verifies everything
 5. Coverage check confirms no steps were left untested
 
 ---
@@ -270,7 +226,7 @@ When adding a new tutorial step:
 This system is deliberately simple. It does not:
 
 - **Generate documentation from tests.** The tutorial is hand-written prose. Tests validate it; they don't produce it.
-- **Require a custom test framework.** It's standard `cargo test` with a build script that extracts code blocks. The extraction is the only custom piece.
+- **Require custom tooling.** It's standard `cargo test` with a naming convention. No build scripts, no markdown parsers, no code generators.
 - **Test prose accuracy.** If the tutorial says "this is fast" but doesn't quantify it, no test catches that. Tests validate behavior, not adjectives.
 - **Version documentation separately from code.** Tutorial markdown lives in the same repo as Trovato core. They ship together, branch together, and break together. That's the point.
 
@@ -280,29 +236,26 @@ This system is deliberately simple. It does not:
 
 This is built incrementally alongside the tutorial, not as a separate project.
 
-### Phase 1: Harness (built during Epic 1)
+### Phase 1: Part 1 tests (Epic 1)
 
-- Create `tests/tutorial/` directory structure
-- Build `TestContext` with basic helpers (create item, load item, execute Gather)
-- Build the markdown extraction script (read `.md`, find tagged code blocks, emit test functions)
-- Wire into `cargo test --test tutorial`
-- Write coverage check script
+- Create `crates/kernel/tests/tutorial_test.rs` using existing `shared_app()` infrastructure
+- Write tests for all four Part 1 steps (install, define type, create content, first gather)
+- Verify tests pass with `cargo test --test tutorial_test`
 
-### Phase 2: First tests (Epic 1 code blocks)
+### Phase 2: Iterate (Epics 2-8)
 
-- Write Part 1 tutorial markdown with `trovato-test` blocks for each step
-- Write Under the Hood sections with `trovato-test:internal` blocks
-- Validate the full pipeline: markdown -> extraction -> compilation -> test execution
+- Each epic adds test functions for its tutorial steps
+- Tests use HTTP requests to API endpoints plus direct database queries
+- All tests share the same `TestApp` instance for efficiency
 
-### Phase 3: Iterate (Epics 2-8)
+### Phase 3: Coverage script (Epic 2+)
 
-- Each epic adds its tutorial markdown and test blocks
-- `TestContext` gains new helpers as needed (plugin installation, form submission, API calls, etc.)
-- Under the Hood coverage grows with each part
+- Write `scripts/check-tutorial-coverage.sh` to verify naming convention coverage
+- Add to CI pipeline
 
 ### Phase 4: Polish (Epic 15)
 
-- Coverage audit: every step has tests, every Under the Hood section has tests
+- Coverage audit: every step has tests
 - Tutorial prose review and editing
 - Appendix materials
 

@@ -121,7 +121,7 @@ The Ritrovo migration lives at `crates/kernel/migrations/20260224000001_seed_con
 After the migration runs, verify the type exists:
 
 ```bash
-curl http://localhost:3000/api/content-types | jq '.[] | select(.name == "conference")'
+curl http://localhost:3000/api/content-types | jq '.[] | select(. == "conference")'
 ```
 
 You can also visit `/admin/structure/types` in your browser. You should see "Conference" listed alongside "Basic Page". Click it to inspect the field definitions.
