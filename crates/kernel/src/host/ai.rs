@@ -89,6 +89,26 @@ fn check_rate_limit(provider_id: &str, rpm_limit: u32) -> bool {
 }
 
 // =============================================================================
+// Permission mapping
+// =============================================================================
+
+/// Map an SDK `AiOperationType` to the required operation-specific permission.
+///
+/// All AI operations require `use ai` as a base permission (checked separately).
+/// This returns the *additional* operation-specific permission, or `"use ai"`
+/// when only the base permission is needed.
+fn permission_for_operation(op: &trovato_sdk::types::AiOperationType) -> &'static str {
+    use trovato_sdk::types::AiOperationType;
+    match op {
+        AiOperationType::Chat => "use ai chat",
+        AiOperationType::Embedding => "use ai embeddings",
+        AiOperationType::ImageGeneration => "use ai image generation",
+        // Future operations: base permission only
+        _ => "use ai",
+    }
+}
+
+// =============================================================================
 // HTTP request building
 // =============================================================================
 
@@ -408,6 +428,36 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                             "invalid message role in AiRequest"
                         );
                         return host_errors::ERR_AI_INVALID_REQUEST;
+                    }
+                }
+
+                // Permission check — before rate limit and budget
+                {
+                    let user = &caller.data().request.user;
+                    if !user.has_permission("use ai") {
+                        if !user.authenticated {
+                            warn!(
+                                plugin = %plugin_name,
+                                "AI request denied: anonymous user (authentication required)"
+                            );
+                        } else {
+                            warn!(
+                                plugin = %plugin_name,
+                                user_id = %user.id,
+                                "AI request denied: user lacks 'use ai' permission"
+                            );
+                        }
+                        return host_errors::ERR_AI_PERMISSION_DENIED;
+                    }
+                    let op_perm = permission_for_operation(&request.operation);
+                    if op_perm != "use ai" && !user.has_permission(op_perm) {
+                        warn!(
+                            plugin = %plugin_name,
+                            user_id = %user.id,
+                            permission = op_perm,
+                            "AI request denied: user lacks operation permission"
+                        );
+                        return host_errors::ERR_AI_PERMISSION_DENIED;
                     }
                 }
 
@@ -855,6 +905,36 @@ mod tests {
         let map = RATE_LIMITS.lock().unwrap();
         let window = map.get(provider).unwrap();
         assert_eq!(window.count.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn permission_for_operation_maps_correctly() {
+        use trovato_sdk::types::AiOperationType;
+        assert_eq!(
+            permission_for_operation(&AiOperationType::Chat),
+            "use ai chat"
+        );
+        assert_eq!(
+            permission_for_operation(&AiOperationType::Embedding),
+            "use ai embeddings"
+        );
+        assert_eq!(
+            permission_for_operation(&AiOperationType::ImageGeneration),
+            "use ai image generation"
+        );
+        // Other operations fall back to base permission
+        assert_eq!(
+            permission_for_operation(&AiOperationType::SpeechToText),
+            "use ai"
+        );
+        assert_eq!(
+            permission_for_operation(&AiOperationType::TextToSpeech),
+            "use ai"
+        );
+        assert_eq!(
+            permission_for_operation(&AiOperationType::Moderation),
+            "use ai"
+        );
     }
 
     #[test]

@@ -86,6 +86,65 @@ pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, 
     Err(Redirect::to("/user/login").into_response())
 }
 
+/// Require an authenticated, active user with a specific permission.
+///
+/// Returns the [`User`] if the session user is active and has the named
+/// permission. Admin users (`is_admin == true`) are implicitly granted all
+/// permissions. Redirects to `/user/login` if unauthenticated or blocked.
+/// Returns 403 if the user exists but lacks the permission.
+pub async fn require_permission(
+    state: &AppState,
+    session: &Session,
+    permission: &str,
+) -> Result<User, Response> {
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+
+    if let Some(id) = user_id
+        && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+    {
+        if !user.is_active() {
+            let _ = session.delete().await;
+            return Err(Redirect::to("/user/login").into_response());
+        }
+        // Admin users implicitly have all permissions
+        if user.is_admin {
+            return Ok(user);
+        }
+        if state
+            .permissions()
+            .user_has_permission(&user, permission)
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(user);
+        }
+        return Err((StatusCode::FORBIDDEN, Html("Access denied")).into_response());
+    }
+
+    Err(Redirect::to("/user/login").into_response())
+}
+
+/// Require an authenticated, active user with a specific permission for JSON
+/// API endpoints.
+///
+/// Returns `Ok(())` on success. Returns a JSON 403 error if the user lacks
+/// the permission or the session is invalid.
+pub async fn require_permission_json(
+    state: &AppState,
+    session: &Session,
+    permission: &str,
+) -> Result<(), (StatusCode, axum::Json<JsonError>)> {
+    match require_permission(state, session, permission).await {
+        Ok(_) => Ok(()),
+        Err(_) => Err((
+            StatusCode::FORBIDDEN,
+            axum::Json(JsonError {
+                error: format!("Permission required: {permission}"),
+            }),
+        )),
+    }
+}
+
 /// Inject site-wide context variables into a Tera context.
 ///
 /// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`, `sidebar_tiles`

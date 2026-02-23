@@ -36,6 +36,12 @@ const AVAILABLE_PERMISSIONS: &[&str] = &[
     "administer files",
     "use filtered_html",
     "use full_html",
+    "use ai",
+    "use ai chat",
+    "use ai embeddings",
+    "use ai image generation",
+    "configure ai",
+    "view ai usage",
 ];
 
 /// User form data.

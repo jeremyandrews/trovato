@@ -15,8 +15,8 @@ use crate::services::ai_provider::{
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_admin,
-    require_admin_json, require_csrf,
+    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
+    require_permission, require_permission_json,
 };
 
 /// Session key for flash messages on the AI providers list page.
@@ -129,7 +129,7 @@ fn provider_view(config: &AiProviderConfig) -> serde_json::Value {
 ///
 /// GET /admin/system/ai-providers
 async fn list_providers(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
 
@@ -191,7 +191,7 @@ async fn list_providers(State(state): State<AppState>, session: Session) -> Resp
 ///
 /// GET /admin/system/ai-providers/add
 async fn add_provider_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
 
@@ -229,7 +229,7 @@ async fn add_provider_submit(
     session: Session,
     Form(form): Form<ProviderFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -317,7 +317,7 @@ async fn edit_provider_form(
     session: Session,
     Path(provider_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
 
@@ -399,7 +399,7 @@ async fn edit_provider_submit(
     Path(provider_id): Path<String>,
     Form(form): Form<ProviderFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -498,7 +498,7 @@ async fn delete_provider(
     Path(provider_id): Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -532,7 +532,7 @@ async fn test_provider(
     Path(provider_id): Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err((status, json)) = require_admin_json(&state, &session).await {
+    if let Err((status, json)) = require_permission_json(&state, &session, "configure ai").await {
         return (status, json).into_response();
     }
     if require_csrf(&session, &form.token).await.is_err() {
@@ -576,7 +576,7 @@ async fn save_defaults(
     session: Session,
     Form(form): Form<DefaultsFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {

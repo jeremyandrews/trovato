@@ -466,7 +466,7 @@ development_status:
   31-1-ai-provider-registry-and-secure-key-store: done
   31-2-wasm-ai-host-functions: done
   31-3-token-budget-management: review
-  31-4-ai-permissions: backlog
+  31-4-ai-permissions: done
   31-5-chatbot: backlog
   31-6-mcp-integration: backlog
   epic-31-retrospective: optional

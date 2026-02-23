@@ -120,6 +120,7 @@
 //!   - `-24`: auth failure (401/403)
 //!   - `-25`: provider error (non-2xx)
 //!   - `-26`: token budget exceeded for the current period
+//!   - `-27`: permission denied (user lacks `use ai` or operation-specific permission)
 //!   - `≥ 0`: bytes written (JSON `AiResponse`)
 //!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
@@ -186,6 +187,10 @@ pub const ERR_AI_PROVIDER_ERROR: i32 = -25;
 
 /// Token budget exceeded for the current period.
 pub const ERR_AI_BUDGET_EXCEEDED: i32 = -26;
+
+/// Permission denied — the current user lacks `use ai` or the required
+/// operation-specific AI permission.
+pub const ERR_AI_PERMISSION_DENIED: i32 = -27;
 
 // =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)

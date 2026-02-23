@@ -14,8 +14,8 @@ use crate::services::ai_token_budget::{BudgetAction, BudgetConfig, BudgetPeriod}
 use crate::state::AppState;
 
 use super::helpers::{
-    render_admin_template, render_error, render_not_found, render_server_error, require_admin,
-    require_csrf,
+    render_admin_template, render_error, render_not_found, render_server_error, require_csrf,
+    require_permission,
 };
 
 /// Session key for flash messages on the budget page.
@@ -78,7 +78,7 @@ pub fn router() -> Router<AppState> {
 ///
 /// GET /admin/system/ai-budgets
 async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "view ai usage").await {
         return redirect;
     }
 
@@ -235,7 +235,7 @@ async fn save_budget_config(
     session: Session,
     Form(form): Form<BudgetConfigForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -304,7 +304,7 @@ async fn user_budget_detail(
     session: Session,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
 
@@ -395,7 +395,7 @@ async fn save_user_override(
     Path(id): Path<String>,
     Form(form): Form<UserOverrideForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {

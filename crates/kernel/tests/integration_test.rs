@@ -53,6 +53,9 @@ static SEARCH_CONFIG_LOCK: Mutex<()> = Mutex::const_new(());
 /// Tests that modify AI budget configuration in `site_config`.
 static AI_BUDGET_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// Tests that modify AI permissions / roles for permission-gated routes.
+static AI_PERMISSION_LOCK: Mutex<()> = Mutex::const_new(());
+
 // =============================================================================
 // Health Check Tests
 // =============================================================================
@@ -6711,9 +6714,20 @@ fn e2e_admin_ai_budgets_page_loads() {
         let status = response.status();
         let body = response_text(response).await;
 
-        assert_eq!(status, StatusCode::OK, "Budget page should load: {}", &body[..body.len().min(500)]);
-        assert!(body.contains("AI Token Budgets"), "Should show budget heading");
-        assert!(body.contains("Budget Configuration"), "Should show config section");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "Budget page should load: {}",
+            &body[..body.len().min(500)]
+        );
+        assert!(
+            body.contains("AI Token Budgets"),
+            "Should show budget heading"
+        );
+        assert!(
+            body.contains("Budget Configuration"),
+            "Should show config section"
+        );
     });
 }
 
@@ -6732,7 +6746,11 @@ fn e2e_admin_ai_budgets_requires_admin() {
             )
             .await;
 
-        assert_eq!(response.status(), StatusCode::SEE_OTHER, "Should redirect unauthenticated users");
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "Should redirect unauthenticated users"
+        );
     });
 }
 
@@ -6766,7 +6784,8 @@ fn e2e_admin_ai_budgets_save_config() {
         let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
 
         // POST budget config
-        let form_data = format!("_token={csrf_token}&_form_build_id=test&period=daily&action_on_limit=warn");
+        let form_data =
+            format!("_token={csrf_token}&_form_build_id=test&period=daily&action_on_limit=warn");
 
         let response = app
             .request_with_cookies(
@@ -6826,8 +6845,16 @@ fn e2e_admin_ai_budgets_user_page_loads() {
         let status = response.status();
         let body = response_text(response).await;
 
-        assert_eq!(status, StatusCode::OK, "User budget page should load: {}", &body[..body.len().min(500)]);
-        assert!(body.contains("AI Budget"), "Should show user budget heading");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "User budget page should load: {}",
+            &body[..body.len().min(500)]
+        );
+        assert!(
+            body.contains("AI Budget"),
+            "Should show user budget heading"
+        );
     });
 }
 
@@ -6849,7 +6876,11 @@ fn e2e_admin_ai_budgets_user_invalid_id() {
             )
             .await;
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "Invalid UUID should return 404");
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "Invalid UUID should return 404"
+        );
     });
 }
 
@@ -6915,9 +6946,7 @@ fn e2e_ai_budget_sidebar_link() {
         // Load any admin page and check for sidebar link
         let response = app
             .request_with_cookies(
-                Request::get("/admin")
-                    .body(Body::empty())
-                    .unwrap(),
+                Request::get("/admin").body(Body::empty()).unwrap(),
                 &cookies,
             )
             .await;
@@ -6950,10 +6979,10 @@ fn e2e_ai_budget_enforcement_deny() {
         let test_user = user.id;
 
         // Set a budget config with a low limit and deny action
+        use std::collections::HashMap;
         use trovato_kernel::services::ai_token_budget::{
             BudgetAction, BudgetConfig, BudgetPeriod, UsageLogEntry,
         };
-        use std::collections::HashMap;
 
         let mut role_limits = HashMap::new();
         role_limits.insert("authenticated".to_string(), 100u64);
@@ -6997,7 +7026,10 @@ fn e2e_ai_budget_enforcement_deny() {
             .check_budget(&app.db, test_user, "other-provider")
             .await
             .unwrap();
-        assert!(result2.allowed, "Should be allowed for unconfigured provider");
+        assert!(
+            result2.allowed,
+            "Should be allowed for unconfigured provider"
+        );
 
         // Set a per-user override that raises the limit
         budget_svc
@@ -7017,7 +7049,10 @@ fn e2e_ai_budget_enforcement_deny() {
             .check_budget(&app.db, test_user, test_provider)
             .await
             .unwrap();
-        assert!(result3.allowed, "Should be allowed with override raising limit");
+        assert!(
+            result3.allowed,
+            "Should be allowed with override raising limit"
+        );
         assert_eq!(result3.limit, 500);
         assert_eq!(result3.remaining, Some(390));
 
@@ -7035,5 +7070,359 @@ fn e2e_ai_budget_enforcement_deny() {
             .remove_user_override(&app.db, test_user, test_provider)
             .await
             .ok();
+    });
+}
+
+// =============================================================================
+// AI Permissions Tests (Story 31.4)
+// =============================================================================
+
+/// Test: non-admin with `configure ai` can GET /admin/system/ai-providers.
+#[test]
+fn e2e_ai_permission_configure_ai_grants_provider_access() {
+    run_test(async {
+        let _lock = AI_PERMISSION_LOCK.lock().await;
+        let app = shared_app().await;
+
+        // Create a role with "configure ai" permission
+        let role_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO roles (id, name) VALUES ($1, $2) \
+             ON CONFLICT (name) DO UPDATE SET name = $2 RETURNING id",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind("ai_config_role")
+        .fetch_one(&app.db)
+        .await
+        .expect("create role");
+        sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(role_id)
+            .bind("configure ai")
+            .execute(&app.db)
+            .await
+            .expect("add permission");
+
+        // Create non-admin user and assign the role
+        let cookies = app
+            .create_and_login_user("ai_perm_cfg_1", "password123", "aicfg1@test.com")
+            .await;
+        let user_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM users WHERE LOWER(name) = LOWER($1)")
+                .bind("ai_perm_cfg_1")
+                .fetch_one(&app.db)
+                .await
+                .expect("find user");
+        sqlx::query(
+            "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(role_id)
+        .execute(&app.db)
+        .await
+        .expect("assign role");
+
+        // Invalidate cache so PermissionService sees the new role
+        app.state.permissions().invalidate_all();
+
+        // GET the AI providers page — should succeed (200)
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-providers")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Non-admin with 'configure ai' should access provider page"
+        );
+
+        // Cleanup
+        sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
+            .bind(user_id)
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM role_permissions WHERE role_id = $1")
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM roles WHERE id = $1")
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        app.state.permissions().invalidate_all();
+    });
+}
+
+/// Test: non-admin WITHOUT `configure ai` gets 403 on /admin/system/ai-providers.
+#[test]
+fn e2e_ai_permission_no_configure_ai_gets_403() {
+    run_test(async {
+        let _lock = AI_PERMISSION_LOCK.lock().await;
+        let app = shared_app().await;
+
+        // Create a non-admin user with NO special roles
+        let cookies = app
+            .create_and_login_user("ai_perm_noai_1", "password123", "ainoai1@test.com")
+            .await;
+
+        // Invalidate cache
+        app.state.permissions().invalidate_all();
+
+        // GET the AI providers page — should get 403
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-providers")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "Non-admin without 'configure ai' should get 403"
+        );
+    });
+}
+
+/// Test: non-admin with `view ai usage` can GET /admin/system/ai-budgets.
+#[test]
+fn e2e_ai_permission_view_usage_grants_budget_access() {
+    run_test(async {
+        let _lock = AI_PERMISSION_LOCK.lock().await;
+        let app = shared_app().await;
+
+        // Create a role with "view ai usage" permission
+        let role_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO roles (id, name) VALUES ($1, $2) \
+             ON CONFLICT (name) DO UPDATE SET name = $2 RETURNING id",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind("ai_viewer_role")
+        .fetch_one(&app.db)
+        .await
+        .expect("create role");
+        sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(role_id)
+            .bind("view ai usage")
+            .execute(&app.db)
+            .await
+            .expect("add permission");
+
+        // Create non-admin user and assign the role
+        let cookies = app
+            .create_and_login_user("ai_perm_view_1", "password123", "aiview1@test.com")
+            .await;
+        let user_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM users WHERE LOWER(name) = LOWER($1)")
+                .bind("ai_perm_view_1")
+                .fetch_one(&app.db)
+                .await
+                .expect("find user");
+        sqlx::query(
+            "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(role_id)
+        .execute(&app.db)
+        .await
+        .expect("assign role");
+
+        app.state.permissions().invalidate_all();
+
+        // GET the AI budgets page — should succeed (200)
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-budgets")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Non-admin with 'view ai usage' should access budget dashboard"
+        );
+
+        // Cleanup
+        sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
+            .bind(user_id)
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM role_permissions WHERE role_id = $1")
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM roles WHERE id = $1")
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        app.state.permissions().invalidate_all();
+    });
+}
+
+/// Test: unauthenticated (no cookies) user gets redirected to login on provider page.
+#[test]
+fn e2e_ai_permission_unauthenticated_redirects_to_login() {
+    run_test(async {
+        let app = shared_app().await;
+
+        // No cookies = unauthenticated
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-providers")
+                    .body(Body::empty())
+                    .unwrap(),
+                "",
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "Unauthenticated user should be redirected"
+        );
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(location, "/user/login", "Should redirect to login");
+    });
+}
+
+/// Test: admin user can still access provider and budget pages (implicit permission).
+#[test]
+fn e2e_ai_permission_admin_implicitly_has_all() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("ai_perm_admin_1", "password123", "aiadmin1@test.com")
+            .await;
+
+        // Admin should access provider page
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-providers")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Admin should access provider page"
+        );
+
+        // Admin should access budget page
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-budgets")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Admin should access budget page"
+        );
+    });
+}
+
+/// Test: non-admin with `view ai usage` but NOT `configure ai` gets 403 on POST budget config.
+#[test]
+fn e2e_ai_permission_view_usage_cannot_post_budget_config() {
+    run_test(async {
+        let _lock = AI_PERMISSION_LOCK.lock().await;
+        let app = shared_app().await;
+
+        // Create a role with only "view ai usage" permission
+        let role_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO roles (id, name) VALUES ($1, $2) \
+             ON CONFLICT (name) DO UPDATE SET name = $2 RETURNING id",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind("ai_view_only_role")
+        .fetch_one(&app.db)
+        .await
+        .expect("create role");
+        sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(role_id)
+            .bind("view ai usage")
+            .execute(&app.db)
+            .await
+            .expect("add permission");
+
+        // Create non-admin user and assign the role
+        let cookies = app
+            .create_and_login_user("ai_perm_viewpost_1", "password123", "aiviewpost1@test.com")
+            .await;
+        let user_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM users WHERE LOWER(name) = LOWER($1)")
+                .bind("ai_perm_viewpost_1")
+                .fetch_one(&app.db)
+                .await
+                .expect("find user");
+        sqlx::query(
+            "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(role_id)
+        .execute(&app.db)
+        .await
+        .expect("assign role");
+
+        app.state.permissions().invalidate_all();
+
+        // POST to save budget config — should get 403 (requires "configure ai")
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/system/ai-budgets")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "_token=fake&_form_build_id=fake&period=monthly&action_on_limit=deny",
+                    ))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "User with only 'view ai usage' should get 403 on POST budget config"
+        );
+
+        // Cleanup
+        sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
+            .bind(user_id)
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM role_permissions WHERE role_id = $1")
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM roles WHERE id = $1")
+            .bind(role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        app.state.permissions().invalidate_all();
     });
 }
