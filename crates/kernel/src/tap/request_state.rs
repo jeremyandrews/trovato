@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::lockout::LockoutService;
 use crate::services::ai_provider::AiProviderService;
+use crate::services::ai_token_budget::AiTokenBudgetService;
 
 /// User context for the current request.
 #[derive(Debug, Clone)]
@@ -70,15 +71,22 @@ pub struct RequestServices {
     pub lockout: Option<Arc<LockoutService>>,
     /// AI provider service for making AI requests from plugins.
     pub ai_providers: Option<Arc<AiProviderService>>,
+    /// Token budget service for tracking and enforcing AI usage limits.
+    pub ai_budgets: Option<Arc<AiTokenBudgetService>>,
 }
 
 impl RequestServices {
     /// Create services for background tasks (cron, batch) — no lockout needed.
-    pub fn for_background(db: PgPool, ai_providers: Option<Arc<AiProviderService>>) -> Self {
+    pub fn for_background(
+        db: PgPool,
+        ai_providers: Option<Arc<AiProviderService>>,
+        ai_budgets: Option<Arc<AiTokenBudgetService>>,
+    ) -> Self {
         Self {
             db,
             lockout: None,
             ai_providers,
+            ai_budgets,
         }
     }
 }
@@ -91,6 +99,10 @@ impl std::fmt::Debug for RequestServices {
             .field(
                 "ai_providers",
                 &self.ai_providers.as_ref().map(|_| "AiProviderService"),
+            )
+            .field(
+                "ai_budgets",
+                &self.ai_budgets.as_ref().map(|_| "AiTokenBudgetService"),
             )
             .finish()
     }

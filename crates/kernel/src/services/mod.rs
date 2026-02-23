@@ -5,6 +5,7 @@
 //! menus, migrations), while these services implement the logic.
 
 pub mod ai_provider;
+pub mod ai_token_budget;
 pub mod audit;
 pub mod content_lock;
 pub mod email;

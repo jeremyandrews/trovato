@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::file::FileService;
 use crate::services::ai_provider::AiProviderService;
+use crate::services::ai_token_budget::AiTokenBudgetService;
 use crate::tap::{RequestState, TapDispatcher};
 
 /// Lock TTL in seconds (5 minutes).
@@ -56,6 +57,7 @@ pub struct CronService {
     queue: Arc<RedisQueue>,
     tap_dispatcher: Option<Arc<TapDispatcher>>,
     ai_providers: Option<Arc<AiProviderService>>,
+    ai_budgets: Option<Arc<AiTokenBudgetService>>,
     pagefind_enabled: bool,
 }
 
@@ -71,6 +73,7 @@ impl CronService {
             queue,
             tap_dispatcher: None,
             ai_providers: None,
+            ai_budgets: None,
             pagefind_enabled: false,
         }
     }
@@ -86,6 +89,7 @@ impl CronService {
             queue,
             tap_dispatcher: None,
             ai_providers: None,
+            ai_budgets: None,
             pagefind_enabled: false,
         }
     }
@@ -98,6 +102,11 @@ impl CronService {
     /// Set the AI provider service for cron plugin access.
     pub fn set_ai_providers(&mut self, ai_providers: Arc<AiProviderService>) {
         self.ai_providers = Some(ai_providers);
+    }
+
+    /// Set the AI token budget service for cron plugin access.
+    pub fn set_ai_budgets(&mut self, ai_budgets: Arc<AiTokenBudgetService>) {
+        self.ai_budgets = Some(ai_budgets);
     }
 
     /// Enable pagefind index rebuilding (requires `trovato_search` plugin).
@@ -238,6 +247,7 @@ impl CronService {
                     crate::tap::RequestServices::for_background(
                         self.pool.clone(),
                         self.ai_providers.clone(),
+                        self.ai_budgets.clone(),
                     ),
                 );
                 match tokio::time::timeout(

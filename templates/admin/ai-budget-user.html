@@ -1,0 +1,82 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block content %}
+
+<div class="admin-header">
+    <h2>AI Budget — {{ user_name }}</h2>
+    <a href="/admin/system/ai-budgets" class="button button--secondary">Back to budgets</a>
+</div>
+
+{% if flash %}
+<div class="message message--info">{{ flash }}</div>
+{% endif %}
+
+<div class="admin-card">
+    <h3>Usage — {{ period_label }}</h3>
+
+    {% if provider_usage | length > 0 %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Provider</th>
+                <th>Tokens Used</th>
+                <th>Override Limit</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in provider_usage %}
+            <tr>
+                <td>{{ u.label }}</td>
+                <td>{{ u.used }}</td>
+                <td>
+                    {% if u.override is defined and u.override %}
+                    {{ u.override }}
+                    {% else %}
+                    <span style="color: var(--muted, #666);">Role default</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No providers configured.</p>
+    {% endif %}
+</div>
+
+<div class="admin-card" style="margin-top: 2rem;">
+    <h3>Per-User Overrides</h3>
+    <p>Set per-user token limits that override role defaults. Enter 0 for unlimited. Leave blank to use role default.</p>
+
+    <form method="post" action="/admin/system/ai-budgets/user/{{ user_id }}">
+        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
+
+        {% if provider_usage | length > 0 %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Provider</th>
+                    <th>Current Usage</th>
+                    <th>Override Limit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in provider_usage %}
+                <tr>
+                    <td>{{ u.label }}</td>
+                    <td>{{ u.used }}</td>
+                    <td>
+                        <input type="number" name="override_{{ u.provider_id }}" value="{% if u.override is defined and u.override %}{{ u.override }}{% endif %}" min="0" style="width: 120px;" placeholder="Role default">
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        {{ form::actions(submit_label="Save overrides", cancel_url="/admin/system/ai-budgets") }}
+    </form>
+</div>
+
+{% endblock %}

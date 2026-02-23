@@ -107,6 +107,9 @@ struct AppStateInner {
     /// AI provider registry for managing LLM configurations.
     ai_providers: Arc<services::ai_provider::AiProviderService>,
 
+    /// AI token budget service for usage tracking and enforcement.
+    ai_budgets: Arc<services::ai_token_budget::AiTokenBudgetService>,
+
     /// Theme engine for template rendering.
     theme: Arc<ThemeEngine>,
 
@@ -418,6 +421,11 @@ impl AppState {
         // Create AI provider service
         let ai_providers = Arc::new(services::ai_provider::AiProviderService::new(db.clone()));
 
+        // Create AI token budget service
+        let ai_budgets = Arc::new(services::ai_token_budget::AiTokenBudgetService::new(
+            db.clone(),
+        ));
+
         // Create file service with local storage
         let file_storage = Arc::new(LocalFileStorage::new(
             &config.uploads_dir,
@@ -561,6 +569,7 @@ impl AppState {
         cron.set_plugin_services(content_lock.clone(), audit.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
         cron.set_ai_providers(ai_providers.clone());
+        cron.set_ai_budgets(ai_budgets.clone());
         cron.set_pagefind_enabled(enabled_set.contains("trovato_search"));
         let cron = Arc::new(cron);
 
@@ -584,6 +593,7 @@ impl AppState {
                 gather,
                 search,
                 ai_providers,
+                ai_budgets,
                 theme,
                 forms,
                 files,
@@ -758,6 +768,11 @@ impl AppState {
     /// Get the AI provider service.
     pub fn ai_providers(&self) -> &Arc<services::ai_provider::AiProviderService> {
         &self.inner.ai_providers
+    }
+
+    /// Get the AI token budget service.
+    pub fn ai_budgets(&self) -> &Arc<services::ai_token_budget::AiTokenBudgetService> {
+        &self.inner.ai_budgets
     }
 
     /// Get the file service.

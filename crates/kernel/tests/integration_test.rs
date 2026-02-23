@@ -50,6 +50,9 @@ static INSTALLER_LOCK: Mutex<()> = Mutex::const_new(());
 /// Tests that modify search field configs on the shared `page` content type.
 static SEARCH_CONFIG_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// Tests that modify AI budget configuration in `site_config`.
+static AI_BUDGET_LOCK: Mutex<()> = Mutex::const_new(());
+
 // =============================================================================
 // Health Check Tests
 // =============================================================================
@@ -6679,5 +6682,358 @@ fn e2e_search_snippet_includes_body() {
         .execute(&app.db)
         .await
         .ok();
+    });
+}
+
+// =============================================================================
+// AI Token Budget Tests
+// =============================================================================
+
+#[test]
+fn e2e_admin_ai_budgets_page_loads() {
+    run_test(async {
+        let _lock = AI_BUDGET_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("admin_budget_1", "password123!", "budget1@test.com")
+            .await;
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-budgets")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let status = response.status();
+        let body = response_text(response).await;
+
+        assert_eq!(status, StatusCode::OK, "Budget page should load: {}", &body[..body.len().min(500)]);
+        assert!(body.contains("AI Token Budgets"), "Should show budget heading");
+        assert!(body.contains("Budget Configuration"), "Should show config section");
+    });
+}
+
+#[test]
+fn e2e_admin_ai_budgets_requires_admin() {
+    run_test(async {
+        let app = shared_app().await;
+
+        // Unauthenticated request should redirect
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-budgets")
+                    .body(Body::empty())
+                    .unwrap(),
+                "",
+            )
+            .await;
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "Should redirect unauthenticated users");
+    });
+}
+
+#[test]
+fn e2e_admin_ai_budgets_save_config() {
+    run_test(async {
+        let _lock = AI_BUDGET_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("admin_budget_2", "password123!", "budget2@test.com")
+            .await;
+
+        // Load the page to get CSRF token
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-budgets")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let page_cookies = extract_cookies(&response);
+        let cookies = if page_cookies.is_empty() {
+            cookies
+        } else {
+            page_cookies
+        };
+        let body = response_text(response).await;
+        let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+
+        // POST budget config
+        let form_data = format!("_token={csrf_token}&_form_build_id=test&period=daily&action_on_limit=warn");
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/system/ai-budgets")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "Should redirect after saving config"
+        );
+
+        // Verify config was saved via the service
+        let config = app.state.ai_budgets().get_config().await.unwrap();
+        assert!(config.is_some(), "Config should be saved");
+        let config = config.unwrap();
+        assert_eq!(config.period.to_string(), "daily");
+
+        // Cleanup: reset config
+        sqlx::query("DELETE FROM site_config WHERE key = 'ai_token_budgets'")
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+#[test]
+fn e2e_admin_ai_budgets_user_page_loads() {
+    run_test(async {
+        let _lock = AI_BUDGET_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("admin_budget_3", "password123!", "budget3@test.com")
+            .await;
+
+        // Find the admin user's UUID
+        let user = trovato_kernel::models::User::find_by_name(&app.db, "admin_budget_3")
+            .await
+            .unwrap()
+            .expect("Admin user should exist");
+
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/admin/system/ai-budgets/user/{}", user.id))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let status = response.status();
+        let body = response_text(response).await;
+
+        assert_eq!(status, StatusCode::OK, "User budget page should load: {}", &body[..body.len().min(500)]);
+        assert!(body.contains("AI Budget"), "Should show user budget heading");
+    });
+}
+
+#[test]
+fn e2e_admin_ai_budgets_user_invalid_id() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("admin_budget_4", "password123!", "budget4@test.com")
+            .await;
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-budgets/user/not-a-uuid")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "Invalid UUID should return 404");
+    });
+}
+
+#[test]
+fn e2e_ai_budget_service_record_and_query() {
+    run_test(async {
+        let _lock = AI_BUDGET_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let budget_svc = app.state.ai_budgets();
+        let test_user = uuid::Uuid::new_v4();
+        let test_provider = "test-provider-budget";
+
+        // Record a usage entry
+        use trovato_kernel::services::ai_token_budget::UsageLogEntry;
+        let entry = UsageLogEntry {
+            user_id: Some(test_user),
+            plugin_name: "test_plugin".to_string(),
+            provider_id: test_provider.to_string(),
+            operation: "chat".to_string(),
+            model: "gpt-4o".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            latency_ms: 500,
+        };
+        budget_svc.record_usage(&app.db, entry).await.unwrap();
+
+        // Query usage — should find our entry
+        let since = chrono::Utc::now().timestamp() - 60; // last minute
+        let used = budget_svc
+            .get_usage_for_period(&app.db, test_user, test_provider, since)
+            .await
+            .unwrap();
+
+        assert_eq!(used, 150, "Should report 150 total tokens used");
+
+        // Check budget with no config → unlimited
+        let result = budget_svc
+            .check_budget(&app.db, test_user, test_provider)
+            .await
+            .unwrap();
+        assert!(result.allowed, "Should be allowed with no config");
+
+        // Cleanup
+        sqlx::query("DELETE FROM ai_usage_log WHERE user_id = $1")
+            .bind(test_user)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+#[test]
+fn e2e_ai_budget_sidebar_link() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("admin_budget_5", "password123!", "budget5@test.com")
+            .await;
+
+        // Load any admin page and check for sidebar link
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        let body = response_text(response).await;
+        assert!(
+            body.contains("/admin/system/ai-budgets"),
+            "Admin sidebar should contain AI Budgets link"
+        );
+    });
+}
+
+#[test]
+fn e2e_ai_budget_enforcement_deny() {
+    run_test(async {
+        let _lock = AI_BUDGET_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let budget_svc = app.state.ai_budgets();
+        let test_provider = "test-provider-enforce";
+
+        // Create a real user so override writes and role lookups work
+        let _cookies = app
+            .create_and_login_admin("admin_budget_enforce", "password123!", "budgetenf@test.com")
+            .await;
+        let user = trovato_kernel::models::User::find_by_name(&app.db, "admin_budget_enforce")
+            .await
+            .unwrap()
+            .expect("user should exist");
+        let test_user = user.id;
+
+        // Set a budget config with a low limit and deny action
+        use trovato_kernel::services::ai_token_budget::{
+            BudgetAction, BudgetConfig, BudgetPeriod, UsageLogEntry,
+        };
+        use std::collections::HashMap;
+
+        let mut role_limits = HashMap::new();
+        role_limits.insert("authenticated".to_string(), 100u64);
+        let mut defaults = HashMap::new();
+        defaults.insert(test_provider.to_string(), role_limits);
+
+        let config = BudgetConfig {
+            period: BudgetPeriod::Daily,
+            action_on_limit: BudgetAction::Deny,
+            defaults,
+        };
+        budget_svc.save_config(&config).await.unwrap();
+
+        // Record usage that exceeds the limit
+        let entry = UsageLogEntry {
+            user_id: Some(test_user),
+            plugin_name: "test_plugin".to_string(),
+            provider_id: test_provider.to_string(),
+            operation: "chat".to_string(),
+            model: "gpt-4o".to_string(),
+            prompt_tokens: 80,
+            completion_tokens: 30,
+            total_tokens: 110,
+            latency_ms: 200,
+        };
+        budget_svc.record_usage(&app.db, entry).await.unwrap();
+
+        // Check budget — should be denied (110 used >= 100 limit)
+        let result = budget_svc
+            .check_budget(&app.db, test_user, test_provider)
+            .await
+            .unwrap();
+        assert!(!result.allowed, "Should be denied when usage exceeds limit");
+        assert_eq!(result.action, BudgetAction::Deny);
+        assert_eq!(result.used, 110);
+        assert_eq!(result.limit, 100);
+        assert_eq!(result.remaining, Some(0));
+
+        // Check with a different provider — should be unlimited (no config for it)
+        let result2 = budget_svc
+            .check_budget(&app.db, test_user, "other-provider")
+            .await
+            .unwrap();
+        assert!(result2.allowed, "Should be allowed for unconfigured provider");
+
+        // Set a per-user override that raises the limit
+        budget_svc
+            .set_user_override(&app.db, test_user, test_provider, 500)
+            .await
+            .unwrap();
+
+        // Verify the override was persisted
+        let ovr = budget_svc
+            .get_user_override(&app.db, test_user, test_provider)
+            .await
+            .unwrap();
+        assert_eq!(ovr, Some(500), "Override should be persisted");
+
+        // Check budget again — should be allowed now (110 < 500)
+        let result3 = budget_svc
+            .check_budget(&app.db, test_user, test_provider)
+            .await
+            .unwrap();
+        assert!(result3.allowed, "Should be allowed with override raising limit");
+        assert_eq!(result3.limit, 500);
+        assert_eq!(result3.remaining, Some(390));
+
+        // Cleanup
+        sqlx::query("DELETE FROM ai_usage_log WHERE user_id = $1")
+            .bind(test_user)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM site_config WHERE key = 'ai_token_budgets'")
+            .execute(&app.db)
+            .await
+            .ok();
+        budget_svc
+            .remove_user_override(&app.db, test_user, test_provider)
+            .await
+            .ok();
     });
 }

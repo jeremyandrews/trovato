@@ -16,6 +16,7 @@ use wasmtime::Linker;
 
 use crate::plugin::PluginState;
 use crate::services::ai_provider::{ProviderProtocol, ResolvedProvider};
+use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
 use trovato_sdk::host_errors;
 use trovato_sdk::types::{AiRequest, AiResponse, AiUsage};
 
@@ -451,6 +452,47 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     return host_errors::ERR_AI_RATE_LIMITED;
                 }
 
+                // Check token budget
+                let user_id = caller.data().request.user.id;
+                if let Some(ref budget_svc) = services.ai_budgets {
+                    match budget_svc
+                        .check_budget(&services.db, user_id, &resolved.config.id)
+                        .await
+                    {
+                        Ok(result) if !result.allowed => match result.action {
+                            BudgetAction::Deny | BudgetAction::Queue => {
+                                warn!(
+                                    plugin = %plugin_name,
+                                    provider = %resolved.config.label,
+                                    user = %user_id,
+                                    used = result.used,
+                                    limit = result.limit,
+                                    "AI token budget exceeded"
+                                );
+                                return host_errors::ERR_AI_BUDGET_EXCEEDED;
+                            }
+                            BudgetAction::Warn => {
+                                warn!(
+                                    plugin = %plugin_name,
+                                    provider = %resolved.config.label,
+                                    user = %user_id,
+                                    used = result.used,
+                                    limit = result.limit,
+                                    "AI token budget exceeded (warn mode, allowing)"
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                plugin = %plugin_name,
+                                "failed to check AI budget, allowing request"
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+
                 let started = Instant::now();
 
                 // Execute HTTP request
@@ -502,6 +544,33 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     latency_ms = latency_ms,
                     "ai_request completed"
                 );
+
+                // Record usage in ai_usage_log
+                if let Some(ref budget_svc) = services.ai_budgets {
+                    let entry = UsageLogEntry {
+                        user_id: if user_id.is_nil() {
+                            None
+                        } else {
+                            Some(user_id)
+                        },
+                        plugin_name: plugin_name.clone(),
+                        provider_id: resolved.config.id.clone(),
+                        operation: kernel_op.to_string(),
+                        model: ai_response.model.clone(),
+                        prompt_tokens: ai_response.usage.prompt_tokens.min(i32::MAX as u32) as i32,
+                        completion_tokens: ai_response.usage.completion_tokens.min(i32::MAX as u32)
+                            as i32,
+                        total_tokens: ai_response.usage.total_tokens.min(i32::MAX as u32) as i32,
+                        latency_ms: latency_ms as i64,
+                    };
+                    if let Err(e) = budget_svc.record_usage(&services.db, entry).await {
+                        warn!(
+                            error = %e,
+                            plugin = %plugin_name,
+                            "failed to record AI usage"
+                        );
+                    }
+                }
 
                 // Serialize response and write to WASM memory
                 let Ok(response_json) = serde_json::to_string(&ai_response) else {

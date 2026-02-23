@@ -119,6 +119,7 @@
 //!   - `-23`: malformed `AiRequest` JSON (or invalid message role)
 //!   - `-24`: auth failure (401/403)
 //!   - `-25`: provider error (non-2xx)
+//!   - `-26`: token budget exceeded for the current period
 //!   - `≥ 0`: bytes written (JSON `AiResponse`)
 //!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
@@ -182,6 +183,9 @@ pub const ERR_AI_AUTH_FAILED: i32 = -24;
 
 /// Provider returned a non-2xx error (500, 503, etc.).
 pub const ERR_AI_PROVIDER_ERROR: i32 = -25;
+
+/// Token budget exceeded for the current period.
+pub const ERR_AI_BUDGET_EXCEEDED: i32 = -26;
 
 // =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)
