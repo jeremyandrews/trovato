@@ -1,7 +1,7 @@
 //! Content item CRUD tools.
 //!
 //! Implements `list_items`, `get_item`, `create_item`, `update_item`,
-//! and `delete_item` MCP tools via the kernel's [`ItemService`], ensuring
+//! and `delete_item` MCP tools via the kernel's [`ItemService`](trovato_kernel::content::ItemService), ensuring
 //! all tap integrations (insert, update, delete, view, access) are invoked.
 
 use rmcp::ErrorData as McpError;
@@ -42,7 +42,7 @@ fn map_service_err(e: anyhow::Error, id: Uuid) -> McpError {
 
 /// List items with optional filtering.
 ///
-/// Uses [`ItemService::list_filtered`] which returns `(Vec<Item>, i64)`
+/// Uses [`ItemService::list_filtered`](trovato_kernel::content::ItemService::list_filtered) which returns `(Vec<Item>, i64)`
 /// in a single logical operation. Non-admin users only see published items
 /// unless they explicitly filter by status and have appropriate permissions.
 pub async fn list_items(
@@ -92,7 +92,7 @@ pub async fn list_items(
 
 /// Get a single item by ID.
 ///
-/// Uses [`ItemService::load`] + [`ItemService::check_access`] for
+/// Uses [`ItemService::load`](trovato_kernel::content::ItemService::load) + [`ItemService::check_access`](trovato_kernel::content::ItemService::check_access) for
 /// tap-integrated access control. Unpublished items require per-type
 /// view permission or plugin-granted access via `tap_item_access`.
 pub async fn get_item(
@@ -131,7 +131,7 @@ pub async fn get_item(
 
 /// Create a new item.
 ///
-/// Uses [`ItemService::create`] which invokes `tap_item_insert` after
+/// Uses [`ItemService::create`](trovato_kernel::content::ItemService::create) which invokes `tap_item_insert` after
 /// the database insert, allowing plugins to react to new content.
 pub async fn create_item(
     state: &AppState,
@@ -182,7 +182,7 @@ pub async fn create_item(
 
 /// Update an existing item.
 ///
-/// Uses [`ItemService::update`] which checks edit access via
+/// Uses [`ItemService::update`](trovato_kernel::content::ItemService::update) which checks edit access via
 /// `tap_item_access` and invokes `tap_item_update` after the write.
 pub async fn update_item(
     state: &AppState,
@@ -227,7 +227,7 @@ pub async fn update_item(
 
 /// Delete an item.
 ///
-/// Uses [`ItemService::delete`] which checks delete access via
+/// Uses [`ItemService::delete`](trovato_kernel::content::ItemService::delete) which checks delete access via
 /// `tap_item_access` and invokes `tap_item_delete` before the write.
 pub async fn delete_item(
     state: &AppState,

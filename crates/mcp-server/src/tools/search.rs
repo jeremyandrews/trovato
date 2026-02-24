@@ -1,6 +1,6 @@
 //! Full-text search tool.
 //!
-//! Wraps the kernel's [`SearchService`] for MCP access.
+//! Wraps the kernel's [`SearchService`](trovato_kernel::search::SearchService) for MCP access.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::*;

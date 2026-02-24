@@ -44,7 +44,7 @@ pub async fn read_site_config(state: &AppState) -> Result<ReadResourceResult, Mc
 
 /// Read the 20 most recently published items.
 ///
-/// Uses [`ItemService::list_published`] for consistency with the service
+/// Uses [`ItemService::list_published`](trovato_kernel::content::ItemService::list_published) for consistency with the service
 /// layer, ensuring future tap integrations (e.g. `tap_item_view`) apply.
 ///
 /// Note: this returns all published items without per-item `tap_item_access`

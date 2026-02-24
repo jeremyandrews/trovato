@@ -159,7 +159,7 @@ impl TrovatoMcpServer {
     ///
     /// `raw_token` is stored for periodic session revalidation — the server
     /// re-checks that the token is still valid and the user is still active
-    /// every [`SESSION_REVALIDATION_SECS`] seconds.
+    /// every `SESSION_REVALIDATION_SECS` seconds.
     pub fn new(state: AppState, raw_token: String, user_ctx: UserContext) -> Self {
         Self {
             state,
