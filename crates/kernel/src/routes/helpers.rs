@@ -11,6 +11,7 @@ use crate::models::stage::LIVE_STAGE_ID;
 use crate::models::{SiteConfig, User};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
+use crate::tap::UserContext;
 
 /// Standard JSON error response for API endpoints.
 #[derive(Debug, Serialize)]
@@ -469,6 +470,16 @@ pub async fn require_admin_json(
     }
 }
 
+/// Build a [`UserContext`] for an admin user.
+///
+/// Admin routes call [`require_admin`] which returns a [`User`]. Service-layer
+/// methods need a [`UserContext`]. This helper bridges the gap by creating a
+/// context with the `"administer site"` permission, which makes
+/// [`UserContext::is_admin()`] return `true`.
+pub fn admin_user_context(user: &User) -> UserContext {
+    UserContext::authenticated(user.id, vec!["administer site".to_string()])
+}
+
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -627,5 +638,29 @@ mod tests {
         assert!(validate_username("user name").is_err());
         assert!(validate_username("user@name").is_err());
         assert!(validate_username("user<script>").is_err());
+    }
+
+    #[test]
+    fn test_admin_user_context_is_admin() {
+        let user = User {
+            id: Uuid::new_v4(),
+            name: "admin".to_string(),
+            pass: String::new(),
+            mail: "admin@example.com".to_string(),
+            is_admin: true,
+            created: chrono::Utc::now(),
+            access: None,
+            login: None,
+            status: 1,
+            timezone: None,
+            language: None,
+            data: serde_json::Value::Null,
+        };
+
+        let ctx = admin_user_context(&user);
+        assert_eq!(ctx.id, user.id);
+        assert!(ctx.authenticated);
+        assert!(ctx.is_admin());
+        assert!(ctx.has_permission("administer site"));
     }
 }

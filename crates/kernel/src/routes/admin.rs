@@ -11,7 +11,7 @@ use tower_sessions::Session;
 
 use crate::file::service::FileStatus;
 use crate::form::AjaxRequest;
-use crate::models::{Comment, Item, UpdateComment, User};
+use crate::models::{Comment, UpdateComment, User};
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
 
@@ -370,7 +370,7 @@ async fn list_comments(
     let mut items: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
     for comment in &comments {
         if !items.contains_key(&comment.item_id)
-            && let Ok(Some(item)) = Item::find_by_id(state.db(), comment.item_id).await
+            && let Ok(Some(item)) = state.items().load(comment.item_id).await
         {
             items.insert(comment.item_id, item.title);
         }
@@ -422,7 +422,9 @@ async fn edit_comment_form(
         .flatten()
         .map(|u| u.name);
 
-    let item_title = Item::find_by_id(state.db(), comment.item_id)
+    let item_title = state
+        .items()
+        .load(comment.item_id)
         .await
         .ok()
         .flatten()

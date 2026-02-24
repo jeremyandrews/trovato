@@ -8,12 +8,12 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
-use crate::models::{CreateItem, Item, User};
+use crate::models::{CreateItem, User};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, build_local_tasks, html_escape, render_admin_template, render_not_found,
-    render_server_error, require_admin, require_csrf,
+    CsrfOnlyForm, admin_user_context, build_local_tasks, html_escape, render_admin_template,
+    render_not_found, render_server_error, require_admin, require_csrf,
 };
 
 /// Session key for flash messages on the content list page.
@@ -60,14 +60,17 @@ async fn list_content(
     let type_filter = params.get("type").map(|s| s.as_str());
     let status_filter = params.get("status").and_then(|s| s.parse::<i16>().ok());
 
-    let items =
-        match Item::list_filtered(state.db(), type_filter, status_filter, None, 100, 0).await {
-            Ok(items) => items,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to list content");
-                return render_server_error("Failed to load content.");
-            }
-        };
+    let items = match state
+        .items()
+        .list_filtered(type_filter, status_filter, None, 100, 0)
+        .await
+    {
+        Ok((items, _total)) => items,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list content");
+            return render_server_error("Failed to load content.");
+        }
+    };
 
     // Get authors for display
     let mut authors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -241,7 +244,8 @@ async fn add_content_submit(
         log: Some("Created via admin UI".to_string()),
     };
 
-    match Item::create(state.db(), input).await {
+    let user_ctx = admin_user_context(&user);
+    match state.items().create(input, &user_ctx).await {
         Ok(item) => {
             // Auto-generate URL alias if pattern configured for this type
             if let Err(e) = crate::services::pathauto::auto_alias_item(
@@ -295,7 +299,7 @@ async fn edit_content_form(
         return redirect;
     }
 
-    let Some(item) = Item::find_by_id(state.db(), item_id).await.ok().flatten() else {
+    let Some(item) = state.items().load(item_id).await.ok().flatten() else {
         return render_not_found();
     };
 
@@ -363,7 +367,7 @@ async fn edit_content_submit(
         return resp;
     }
 
-    let Some(item) = Item::find_by_id(state.db(), item_id).await.ok().flatten() else {
+    let Some(item) = state.items().load(item_id).await.ok().flatten() else {
         return render_not_found();
     };
 
@@ -442,7 +446,8 @@ async fn edit_content_submit(
         log: Some("Updated via admin UI".to_string()),
     };
 
-    match Item::update(state.db(), item_id, user.id, input).await {
+    let user_ctx = admin_user_context(&user);
+    match state.items().update(item_id, input, &user_ctx).await {
         Ok(updated) => {
             // Auto-update URL alias from pathauto pattern
             if let Some(ref updated_item) = updated
@@ -495,15 +500,17 @@ async fn delete_content(
     Path(item_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
-        return redirect;
-    }
+    let user = match require_admin(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
     }
 
-    match Item::delete(state.db(), item_id).await {
+    let user_ctx = admin_user_context(&user);
+    match state.items().delete(item_id, &user_ctx).await {
         Ok(true) => {
             tracing::info!(item_id = %item_id, "content deleted");
             if let Err(e) = session

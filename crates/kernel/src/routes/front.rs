@@ -97,7 +97,9 @@ async fn render_configured_front_page(
 
 /// Render promoted items listing HTML.
 async fn render_promoted_listing(state: &AppState) -> String {
-    let items = Item::list_published(state.db(), 10, 0)
+    let items = state
+        .items()
+        .list_published(10, 0)
         .await
         .unwrap_or_default();
 
@@ -190,11 +192,7 @@ fn render_item_fields(item: &Item) -> String {
 async fn get_user_context(session: &Session) -> UserContext {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     match user_id {
-        Some(id) => UserContext {
-            id,
-            authenticated: true,
-            permissions: vec!["access content".to_string()],
-        },
+        Some(id) => UserContext::authenticated(id, vec!["access content".to_string()]),
         None => UserContext::anonymous(),
     }
 }

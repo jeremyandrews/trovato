@@ -13,7 +13,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::FilterPipeline;
-use crate::models::{Comment, CreateComment, Item, UpdateComment, User};
+use crate::models::{Comment, CreateComment, UpdateComment, User};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::{JsonError, require_csrf_header};
 use crate::state::AppState;
@@ -91,7 +91,7 @@ async fn list_item_comments(
     Query(query): Query<ListCommentsQuery>,
 ) -> Result<Json<CommentListResponse>, (StatusCode, Json<JsonError>)> {
     // Verify item exists
-    let item = Item::find_by_id(state.db(), item_id).await.map_err(|e| {
+    let item = state.items().load(item_id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load item");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -211,7 +211,7 @@ async fn create_comment(
         })?;
 
     // Verify item exists
-    let item = Item::find_by_id(state.db(), item_id).await.map_err(|e| {
+    let item = state.items().load(item_id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load item");
         (
             StatusCode::INTERNAL_SERVER_ERROR,

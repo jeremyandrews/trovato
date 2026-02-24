@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
-use crate::models::{Category, CreateCategory, CreateTag, Tag, UpdateCategory, UpdateTag};
+use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
 use crate::state::AppState;
 
 use super::helpers::{
@@ -58,7 +58,7 @@ async fn list_categories(State(state): State<AppState>, session: Session) -> Res
         return redirect;
     }
 
-    let categories = match Category::list(state.db()).await {
+    let categories = match state.categories().list_categories().await {
         Ok(categories) => categories,
         Err(e) => {
             tracing::error!(error = %e, "failed to list categories");
@@ -69,9 +69,7 @@ async fn list_categories(State(state): State<AppState>, session: Session) -> Res
     // Get tag counts for each category
     let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for cat in &categories {
-        let count = Tag::count_by_category(state.db(), &cat.id)
-            .await
-            .unwrap_or(0);
+        let count = state.categories().count_tags(&cat.id).await.unwrap_or(0);
         tag_counts.insert(cat.id.clone(), count);
     }
 
@@ -139,7 +137,9 @@ async fn add_category_submit(
     }
 
     // Check if category already exists
-    if Category::exists(state.db(), &form.id)
+    if state
+        .categories()
+        .category_exists(&form.id)
         .await
         .unwrap_or(false)
     {
@@ -178,7 +178,7 @@ async fn add_category_submit(
         weight: None,
     };
 
-    match Category::create(state.db(), input).await {
+    match state.categories().create_category(input).await {
         Ok(_) => {
             tracing::info!(id = %form.id, "category created");
             Redirect::to("/admin/structure/categories").into_response()
@@ -202,7 +202,9 @@ async fn edit_category_form(
         return redirect;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id)
+    let Some(category) = state
+        .categories()
+        .get_category(&category_id)
         .await
         .ok()
         .flatten()
@@ -257,13 +259,6 @@ async fn edit_category_submit(
         return resp;
     }
 
-    if !Category::exists(state.db(), &category_id)
-        .await
-        .unwrap_or(false)
-    {
-        return render_not_found();
-    }
-
     // Validate
     let mut errors = Vec::new();
 
@@ -309,11 +304,16 @@ async fn edit_category_submit(
         weight: None,
     };
 
-    match Category::update(state.db(), &category_id, input).await {
-        Ok(_) => {
+    match state
+        .categories()
+        .update_category(&category_id, input)
+        .await
+    {
+        Ok(Some(_)) => {
             tracing::info!(id = %category_id, "category updated");
             Redirect::to("/admin/structure/categories").into_response()
         }
+        Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update category");
             render_server_error("Failed to update category.")
@@ -338,7 +338,7 @@ async fn delete_category(
         return resp;
     }
 
-    match Category::delete(state.db(), &category_id).await {
+    match state.categories().delete_category(&category_id).await {
         Ok(true) => {
             tracing::info!(id = %category_id, "category deleted");
             Redirect::to("/admin/structure/categories").into_response()
@@ -367,7 +367,9 @@ async fn list_tags(
         return redirect;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id)
+    let Some(category) = state
+        .categories()
+        .get_category(&category_id)
         .await
         .ok()
         .flatten()
@@ -375,7 +377,7 @@ async fn list_tags(
         return render_not_found();
     };
 
-    let tags = match Tag::list_by_category(state.db(), &category_id).await {
+    let tags = match state.categories().list_tags(&category_id).await {
         Ok(tags) => tags,
         Err(e) => {
             tracing::error!(error = %e, "failed to list tags");
@@ -409,7 +411,9 @@ async fn add_tag_form(
         return redirect;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id)
+    let Some(category) = state
+        .categories()
+        .get_category(&category_id)
         .await
         .ok()
         .flatten()
@@ -418,7 +422,9 @@ async fn add_tag_form(
     };
 
     // Get existing tags for parent selector
-    let tags = Tag::list_by_category(state.db(), &category_id)
+    let tags = state
+        .categories()
+        .list_tags(&category_id)
         .await
         .unwrap_or_default();
 
@@ -462,7 +468,9 @@ async fn add_tag_submit(
         return resp;
     }
 
-    let Some(category) = Category::find_by_id(state.db(), &category_id)
+    let Some(category) = state
+        .categories()
+        .get_category(&category_id)
         .await
         .ok()
         .flatten()
@@ -478,7 +486,9 @@ async fn add_tag_submit(
     }
 
     if !errors.is_empty() {
-        let tags = Tag::list_by_category(state.db(), &category_id)
+        let tags = state
+            .categories()
+            .list_tags(&category_id)
             .await
             .unwrap_or_default();
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
@@ -528,7 +538,7 @@ async fn add_tag_submit(
         parent_ids,
     };
 
-    match Tag::create(state.db(), input).await {
+    match state.categories().create_tag(input).await {
         Ok(_) => {
             tracing::info!(category = %category_id, label = %form.label, "tag created");
             Redirect::to(&format!("/admin/structure/categories/{category_id}/tags")).into_response()
@@ -552,11 +562,13 @@ async fn edit_tag_form(
         return redirect;
     }
 
-    let Some(tag) = Tag::find_by_id(state.db(), tag_id).await.ok().flatten() else {
+    let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
         return render_not_found();
     };
 
-    let Some(category) = Category::find_by_id(state.db(), &tag.category_id)
+    let Some(category) = state
+        .categories()
+        .get_category(&tag.category_id)
         .await
         .ok()
         .flatten()
@@ -565,7 +577,9 @@ async fn edit_tag_form(
     };
 
     // Get existing tags for parent selector (excluding self)
-    let tags: Vec<_> = Tag::list_by_category(state.db(), &tag.category_id)
+    let tags: Vec<_> = state
+        .categories()
+        .list_tags(&tag.category_id)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -573,7 +587,9 @@ async fn edit_tag_form(
         .collect();
 
     // Get current parents
-    let parents = Tag::get_parents(state.db(), tag_id)
+    let parents = state
+        .categories()
+        .get_parents(tag_id)
         .await
         .unwrap_or_default();
     let current_parent_id = parents.first().map(|p| p.id.to_string());
@@ -621,11 +637,13 @@ async fn edit_tag_submit(
         return resp;
     }
 
-    let Some(tag) = Tag::find_by_id(state.db(), tag_id).await.ok().flatten() else {
+    let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
         return render_not_found();
     };
 
-    let Some(category) = Category::find_by_id(state.db(), &tag.category_id)
+    let Some(category) = state
+        .categories()
+        .get_category(&tag.category_id)
         .await
         .ok()
         .flatten()
@@ -641,7 +659,9 @@ async fn edit_tag_submit(
     }
 
     if !errors.is_empty() {
-        let tags: Vec<_> = Tag::list_by_category(state.db(), &tag.category_id)
+        let tags: Vec<_> = state
+            .categories()
+            .list_tags(&tag.category_id)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -681,7 +701,7 @@ async fn edit_tag_submit(
         weight: form.weight.as_ref().and_then(|s| s.parse().ok()),
     };
 
-    if let Err(e) = Tag::update(state.db(), tag_id, input).await {
+    if let Err(e) = state.categories().update_tag(tag_id, input).await {
         tracing::error!(error = %e, "failed to update tag");
         return render_server_error("Failed to update tag.");
     }
@@ -696,7 +716,7 @@ async fn edit_tag_submit(
             _ => vec![],
         };
 
-        if let Err(e) = Tag::set_parents(state.db(), tag_id, &parent_ids).await {
+        if let Err(e) = state.categories().set_parents(tag_id, &parent_ids).await {
             tracing::error!(error = %e, "failed to update tag parents");
         }
     }
@@ -727,13 +747,15 @@ async fn delete_tag(
     }
 
     // Get category ID for redirect
-    let category_id = Tag::find_by_id(state.db(), tag_id)
+    let category_id = state
+        .categories()
+        .get_tag(tag_id)
         .await
         .ok()
         .flatten()
         .map(|t| t.category_id);
 
-    match Tag::delete(state.db(), tag_id).await {
+    match state.categories().delete_tag(tag_id).await {
         Ok(true) => {
             tracing::info!(tag_id = %tag_id, "tag deleted");
             let redirect_url = category_id
