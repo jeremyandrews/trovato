@@ -1,6 +1,6 @@
 # Story 31.5: Chatbot Tile with SSE Streaming
 
-Status: review
+Status: complete
 
 ## Story
 
@@ -134,9 +134,13 @@ pub struct ChatConfig {
     pub rate_limit_per_hour: u32,   // default 20
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatRole { User, Assistant }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTurn {
-    pub role: String,     // "user" or "assistant"
+    pub role: ChatRole,
     pub content: String,
     pub timestamp: i64,   // unix seconds
 }
@@ -229,14 +233,12 @@ async fn chat_handler(
 }
 ```
 
-**CRITICAL: Session update after stream.** The session cannot be updated inside the stream closure (session is not `Send` across the stream boundary). Instead:
-- Clone the conversation history before creating the stream
-- After stream creation, the response is returned immediately
-- Record the assistant's full response by accumulating tokens in the stream closure, then write usage log inside the stream's final event
-- Session history update: Two options:
-  1. Write user message to session BEFORE stream starts. Write assistant response via a separate `POST /api/v1/chat/history` call from the client after stream completes.
-  2. Use a `tokio::sync::mpsc` channel: stream sends accumulated response to a background task that updates the session.
-- Recommended: Option 1 (simpler). Client sends user message + receives stream + then POSTs the assistant response to update history.
+**Session update during stream.** `tower_sessions::Session` is `Clone` (Arc-backed) and can be moved into the `async_stream` closure. The implementation:
+- Saves the user message to session BEFORE the stream starts
+- Clones the session into the SSE stream closure
+- Accumulates tokens server-side during streaming
+- On the Done event, saves the assistant message to session history directly
+- No client-side `save_history` POST needed (endpoint removed)
 
 ### RAG Context Assembly
 
@@ -601,4 +603,33 @@ Claude Opus 4.6
 
 ### Completion Notes List
 
+- Server-side token accumulation replaced client-side `save_history` POST — session is cloned into async_stream closure
+- `ChatTurn.role` is `ChatRole` enum (not `String`) with `serde(rename_all = "lowercase")`
+- `save_history` endpoint removed as vestigial after server-side accumulation
+- Three rounds of adversarial review completed with all findings resolved
+
 ### File List
+
+**Created:**
+- `crates/kernel/src/services/ai_chat.rs` — ChatService, config, RAG, message assembly, SSE stream parsers
+- `crates/kernel/src/routes/api_chat.rs` — POST /api/v1/chat SSE endpoint, rate limiter
+- `crates/kernel/src/routes/admin_ai_chat.rs` — Admin config GET/POST handlers
+- `templates/admin/ai-chat.html` — Admin chat configuration form
+
+**Modified:**
+- `Cargo.toml` — Added `stream` feature to reqwest
+- `Cargo.lock` — Updated lockfile
+- `crates/kernel/Cargo.toml` — Added tokio-stream, async-stream, futures-core
+- `crates/kernel/src/main.rs` — Wire ChatService into AppState initialization
+- `crates/kernel/src/state.rs` — Add ai_chat field + getter to AppStateInner
+- `crates/kernel/src/services/mod.rs` — Add `pub mod ai_chat;`
+- `crates/kernel/src/routes/mod.rs` — Add `pub mod api_chat;` + `pub mod admin_ai_chat;`, merge routers
+- `crates/kernel/src/routes/admin.rs` — Merge admin_ai_chat router
+- `crates/kernel/src/routes/tile_admin.rs` — Add `chat` to tile type options + build_config
+- `crates/kernel/src/services/tile.rs` — Add `chat` tile rendering with inline JS widget
+- `templates/admin/tile-form.html` — Add `chat` option to tile type dropdown
+- `templates/page--admin.html` — Add "AI Chat" sidebar link under System section
+- `templates/base.html` — Add CSRF meta tag for authenticated users
+- `crates/kernel/tests/common/mod.rs` — Add AI_CHAT_LOCK mutex
+- `crates/kernel/tests/integration_test.rs` — Add 6 chat integration tests
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — Update sprint tracking

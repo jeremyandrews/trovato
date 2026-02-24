@@ -466,120 +466,6 @@ async fn chat_handler(
         .into_response()
 }
 
-/// Save assistant response to conversation history.
-///
-/// POST /api/v1/chat/history — called by the client after stream completes.
-/// Requires the same authentication and permissions as the chat endpoint.
-///
-/// Note: The assistant message content is client-controlled and thus not
-/// trustworthy. This is inherent to the design — the client accumulates
-/// streamed tokens and sends back the result. The content only affects
-/// the user's own session history (used for conversation context in
-/// subsequent requests).
-async fn save_history(
-    State(state): State<AppState>,
-    session: Session,
-    headers: HeaderMap,
-    Json(input): Json<SaveHistoryInput>,
-) -> Response {
-    // CSRF check
-    if let Err((status, json)) = require_csrf_header(&session, &headers).await {
-        return (status, json).into_response();
-    }
-
-    // Auth + permission check (same as chat_handler)
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let Some(uid) = user_id else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "Authentication required".to_string(),
-            }),
-        )
-            .into_response();
-    };
-
-    let user = match User::find_by_id(state.db(), uid).await {
-        Ok(Some(u)) if u.is_active() => u,
-        _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(JsonError {
-                    error: "Authentication required".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if !user.is_admin {
-        let has_base = state
-            .permissions()
-            .user_has_permission(&user, "use ai")
-            .await
-            .unwrap_or(false);
-        let has_chat = state
-            .permissions()
-            .user_has_permission(&user, "use ai chat")
-            .await
-            .unwrap_or(false);
-        if !has_base || !has_chat {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(JsonError {
-                    error: "Permission required: use ai chat".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    }
-
-    let config = state.ai_chat().load_config().await.unwrap_or_default();
-
-    // Truncate assistant message to prevent session bloat from very long responses.
-    let mut assistant_msg = input.assistant_message;
-    if assistant_msg.len() > MAX_ASSISTANT_MESSAGE_LEN {
-        let mut end = MAX_ASSISTANT_MESSAGE_LEN;
-        while end > 0 && !assistant_msg.is_char_boundary(end) {
-            end -= 1;
-        }
-        assistant_msg.truncate(end);
-    }
-
-    // Load current history, append assistant turn
-    let mut history: Vec<ChatTurn> = session
-        .get(CHAT_HISTORY_KEY)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-
-    history.push(ChatTurn {
-        role: ChatRole::Assistant,
-        content: assistant_msg,
-        timestamp: chrono::Utc::now().timestamp(),
-    });
-
-    // Trim to max
-    let max_entries = (config.max_history_turns as usize) * 2;
-    if history.len() > max_entries {
-        history = history[history.len() - max_entries..].to_vec();
-    }
-
-    if let Err(e) = session.insert(CHAT_HISTORY_KEY, &history).await {
-        tracing::warn!(error = %e, "failed to save assistant message to session history");
-    }
-
-    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
-}
-
-/// Input for saving assistant response to history.
-#[derive(Debug, Deserialize)]
-struct SaveHistoryInput {
-    /// The assistant's complete response text.
-    assistant_message: String,
-}
-
 // =============================================================================
 // Router
 // =============================================================================
@@ -588,16 +474,9 @@ struct SaveHistoryInput {
 pub fn router() -> Router<AppState> {
     use axum::extract::DefaultBodyLimit;
 
-    // The history endpoint receives the full assistant response text, which can
-    // be up to MAX_ASSISTANT_MESSAGE_LEN (32 KiB) plus JSON overhead. Cap at
-    // 64 KiB to prevent abuse while allowing legitimate payloads.
-    let history_route = post(save_history).layer(DefaultBodyLimit::max(64 * 1024));
-
     // The chat endpoint receives a JSON message (max 4096 chars) plus JSON
     // overhead. Cap at 8 KiB to prevent abuse while allowing legitimate payloads.
     let chat_route = post(chat_handler).layer(DefaultBodyLimit::max(8 * 1024));
 
-    Router::new()
-        .route("/api/v1/chat", chat_route)
-        .route("/api/v1/chat/history", history_route)
+    Router::new().route("/api/v1/chat", chat_route)
 }
