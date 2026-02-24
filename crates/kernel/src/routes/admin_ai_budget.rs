@@ -9,7 +9,6 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::form::csrf::generate_csrf_token;
-use crate::models::Role;
 use crate::services::ai_token_budget::{BudgetAction, BudgetConfig, BudgetPeriod};
 use crate::state::AppState;
 
@@ -103,7 +102,7 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
         }
     };
 
-    let roles = match Role::list(state.db()).await {
+    let roles = match state.roles().list().await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "failed to list roles for budget dashboard");
@@ -313,7 +312,7 @@ async fn user_budget_detail(
     };
 
     // Load user info
-    let user = match crate::models::User::find_by_id(state.db(), user_id).await {
+    let user = match state.users().find_by_id(user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => return render_not_found(),
         Err(e) => {
@@ -407,7 +406,7 @@ async fn save_user_override(
     };
 
     // Verify user exists
-    match crate::models::User::find_by_id(state.db(), user_id).await {
+    match state.users().find_by_id(user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return render_not_found(),
         Err(e) => {

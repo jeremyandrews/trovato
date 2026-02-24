@@ -13,10 +13,11 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::FilterPipeline;
-use crate::models::{Comment, CreateComment, UpdateComment, User};
+use crate::models::{Comment, CreateComment, UpdateComment};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::{JsonError, require_csrf_header};
 use crate::state::AppState;
+use crate::tap::UserContext;
 
 /// Render a comment body to HTML with safe format whitelisting.
 fn render_comment_body(comment: &Comment) -> String {
@@ -117,17 +118,15 @@ async fn list_item_comments(
         .unwrap_or(false);
 
     // Get comments (threaded order)
-    let comments = Comment::list_for_item(state.db(), item_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list comments");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
-        })?;
+    let comments = state.comments().list_for_item(item_id).await.map_err(|e| {
+        tracing::error!(error = %e, "failed to list comments");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: "Internal server error".to_string(),
+            }),
+        )
+    })?;
 
     let total = comments.len() as i64;
 
@@ -140,7 +139,7 @@ async fn list_item_comments(
         let author = if include_author {
             if let Some(cached) = author_cache.get(&comment.author_id) {
                 Some(cached.clone())
-            } else if let Ok(Some(user)) = User::find_by_id(state.db(), comment.author_id).await {
+            } else if let Ok(Some(user)) = state.users().find_by_id(comment.author_id).await {
                 let info = AuthorInfo {
                     id: user.id,
                     name: user.name.clone(),
@@ -232,17 +231,15 @@ async fn create_comment(
 
     // Verify parent comment exists if specified
     if let Some(parent_id) = request.parent_id {
-        let parent = Comment::find_by_id(state.db(), parent_id)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to load parent comment");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(JsonError {
-                        error: "Internal server error".to_string(),
-                    }),
-                )
-            })?;
+        let parent = state.comments().load(parent_id).await.map_err(|e| {
+            tracing::error!(error = %e, "failed to load parent comment");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: "Internal server error".to_string(),
+                }),
+            )
+        })?;
 
         let Some(parent) = parent else {
             return Err((
@@ -284,18 +281,25 @@ async fn create_comment(
         status: Some(1), // Published by default
     };
 
-    let comment = Comment::create(state.db(), input).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to create comment");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Failed to create comment".to_string(),
-            }),
-        )
-    })?;
+    let user_ctx = UserContext::authenticated(user_id, vec!["post comments".to_string()]);
+    let comment = state
+        .comments()
+        .create(input, &user_ctx)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to create comment");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: "Failed to create comment".to_string(),
+                }),
+            )
+        })?;
 
     // Get author info
-    let author = User::find_by_id(state.db(), user_id)
+    let author = state
+        .users()
+        .find_by_id(user_id)
         .await
         .ok()
         .flatten()
@@ -329,7 +333,7 @@ async fn get_comment(
     Path(id): Path<Uuid>,
     Query(query): Query<ListCommentsQuery>,
 ) -> Result<Json<CommentResponse>, (StatusCode, Json<JsonError>)> {
-    let comment = Comment::find_by_id(state.db(), id).await.map_err(|e| {
+    let comment = state.comments().load(id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load comment");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -355,7 +359,9 @@ async fn get_comment(
         .unwrap_or(false);
 
     let author = if include_author {
-        User::find_by_id(state.db(), comment.author_id)
+        state
+            .users()
+            .find_by_id(comment.author_id)
             .await
             .ok()
             .flatten()
@@ -418,7 +424,7 @@ async fn update_comment(
         })?;
 
     // Load existing comment
-    let existing = Comment::find_by_id(state.db(), id).await.map_err(|e| {
+    let existing = state.comments().load(id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load comment");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -437,13 +443,58 @@ async fn update_comment(
         )
     })?;
 
-    // Check permission (must be author or admin)
-    // TODO: Add proper permission check for admins
-    if existing.author_id != user_id {
+    // Build UserContext for the acting user to check access
+    let user = state.users().find_by_id(user_id).await.map_err(|e| {
+        tracing::error!(error = %e, "failed to load user");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: "Internal server error".to_string(),
+            }),
+        )
+    })?;
+    let user = user.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(JsonError {
+                error: "User not found".to_string(),
+            }),
+        )
+    })?;
+    let user_perms = state
+        .permissions()
+        .load_user_permissions(&user)
+        .await
+        .unwrap_or_default();
+    let user_ctx = if user.is_admin {
+        UserContext::authenticated(user_id, {
+            let mut p: Vec<String> = user_perms.into_iter().collect();
+            p.push("administer site".to_string());
+            p
+        })
+    } else {
+        UserContext::authenticated(user_id, user_perms.into_iter().collect())
+    };
+
+    // Check permission via service (admin, tap, or permission fallback)
+    let has_access = state
+        .comments()
+        .check_access(&existing, "edit", &user_ctx)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check comment access");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: "Internal server error".to_string(),
+                }),
+            )
+        })?;
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(JsonError {
-                error: "You can only edit your own comments".to_string(),
+                error: "You do not have permission to edit this comment".to_string(),
             }),
         ));
     }
@@ -466,7 +517,9 @@ async fn update_comment(
         status: request.status,
     };
 
-    let comment = Comment::update(state.db(), id, input)
+    let comment = state
+        .comments()
+        .update(id, input, &user_ctx)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to update comment");
@@ -486,7 +539,9 @@ async fn update_comment(
             )
         })?;
 
-    let author = User::find_by_id(state.db(), comment.author_id)
+    let author = state
+        .users()
+        .find_by_id(comment.author_id)
         .await
         .ok()
         .flatten()
@@ -545,7 +600,7 @@ async fn delete_comment(
         })?;
 
     // Load existing comment
-    let existing = Comment::find_by_id(state.db(), id).await.map_err(|e| {
+    let existing = state.comments().load(id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load comment");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -564,18 +619,63 @@ async fn delete_comment(
         )
     })?;
 
-    // Check permission (must be author or admin)
-    // TODO: Add proper permission check for admins
-    if existing.author_id != user_id {
+    // Build UserContext for access check
+    let user = state.users().find_by_id(user_id).await.map_err(|e| {
+        tracing::error!(error = %e, "failed to load user");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: "Internal server error".to_string(),
+            }),
+        )
+    })?;
+    let user = user.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(JsonError {
+                error: "User not found".to_string(),
+            }),
+        )
+    })?;
+    let user_perms = state
+        .permissions()
+        .load_user_permissions(&user)
+        .await
+        .unwrap_or_default();
+    let user_ctx = if user.is_admin {
+        UserContext::authenticated(user_id, {
+            let mut p: Vec<String> = user_perms.into_iter().collect();
+            p.push("administer site".to_string());
+            p
+        })
+    } else {
+        UserContext::authenticated(user_id, user_perms.into_iter().collect())
+    };
+
+    // Check permission via service
+    let has_access = state
+        .comments()
+        .check_access(&existing, "delete", &user_ctx)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check comment access");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: "Internal server error".to_string(),
+                }),
+            )
+        })?;
+    if !has_access {
         return Err((
             StatusCode::FORBIDDEN,
             Json(JsonError {
-                error: "You can only delete your own comments".to_string(),
+                error: "You do not have permission to delete this comment".to_string(),
             }),
         ));
     }
 
-    Comment::delete(state.db(), id).await.map_err(|e| {
+    state.comments().delete(id, &user_ctx).await.map_err(|e| {
         tracing::error!(error = %e, "failed to delete comment");
         (
             StatusCode::INTERNAL_SERVER_ERROR,

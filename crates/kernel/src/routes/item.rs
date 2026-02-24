@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::content::{FilterPipeline, FormBuilder};
 use crate::form::csrf::generate_csrf_token;
-use crate::models::{CreateItem, UpdateItem, UrlAlias, User};
+use crate::models::{CreateItem, UpdateItem, UrlAlias};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
@@ -1024,7 +1024,7 @@ async fn get_item_api(
         .unwrap_or(false);
 
     let author = if include_author {
-        match User::find_by_id(state.db(), item.author_id).await {
+        match state.users().find_by_id(item.author_id).await {
             Ok(Some(user)) => Some(AuthorResponse {
                 id: user.id,
                 name: user.name,
@@ -1098,7 +1098,7 @@ async fn list_items_api(
         let author_ids: Vec<Uuid> = items.iter().map(|i| i.author_id).collect();
         for author_id in author_ids {
             if !author_cache.contains_key(&author_id)
-                && let Ok(Some(user)) = User::find_by_id(state.db(), author_id).await
+                && let Ok(Some(user)) = state.users().find_by_id(author_id).await
             {
                 author_cache.insert(
                     author_id,

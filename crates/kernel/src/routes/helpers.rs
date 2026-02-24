@@ -51,7 +51,7 @@ pub async fn require_login(state: &AppState, session: &Session) -> Result<User, 
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id
-        && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+        && let Ok(Some(user)) = state.users().find_by_id(id).await
     {
         if !user.is_active() {
             let _ = session.delete().await;
@@ -72,7 +72,7 @@ pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, 
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id
-        && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+        && let Ok(Some(user)) = state.users().find_by_id(id).await
     {
         if !user.is_active() {
             let _ = session.delete().await;
@@ -101,7 +101,7 @@ pub async fn require_permission(
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id
-        && let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+        && let Ok(Some(user)) = state.users().find_by_id(id).await
     {
         if !user.is_active() {
             let _ = session.delete().await;
@@ -200,7 +200,7 @@ pub async fn inject_site_context(
     let mut user_roles = vec!["anonymous user".to_string()];
     if let Some(id) = user_id {
         user_roles.push("authenticated user".to_string());
-        if let Ok(Some(user)) = User::find_by_id(state.db(), id).await
+        if let Ok(Some(user)) = state.users().find_by_id(id).await
             && user.is_admin
         {
             user_roles.push("administrator".to_string());

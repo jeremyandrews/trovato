@@ -3365,6 +3365,34 @@ fn e2e_api_comment_crud() {
                 .await
                 .expect("User should exist");
 
+        // Grant comment permissions via role
+        let comment_role_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO roles (id, name) VALUES ($1, $2) \
+             ON CONFLICT (name) DO UPDATE SET name = $2 RETURNING id",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind("comment_test_role")
+        .fetch_one(&app.db)
+        .await
+        .expect("create comment role");
+        for perm in &["post comments", "edit own comments", "delete own comments"] {
+            sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                .bind(comment_role_id)
+                .bind(perm)
+                .execute(&app.db)
+                .await
+                .expect("add comment permission");
+        }
+        sqlx::query(
+            "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(comment_role_id)
+        .execute(&app.db)
+        .await
+        .expect("assign comment role");
+        app.state.permissions().invalidate_all();
+
         // Ensure content type exists
         let type_name = format!("commenttest_{}", &uuid::Uuid::now_v7().to_string()[..8]);
         sqlx::query(
@@ -3528,6 +3556,22 @@ fn e2e_api_comment_crud() {
             .ok();
         sqlx::query("DELETE FROM item WHERE id = $1")
             .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
+            .bind(user_id)
+            .bind(comment_role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM role_permissions WHERE role_id = $1")
+            .bind(comment_role_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM roles WHERE id = $1")
+            .bind(comment_role_id)
             .execute(&app.db)
             .await
             .ok();

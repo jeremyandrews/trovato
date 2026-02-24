@@ -14,9 +14,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::models::{CreateUser, SiteConfig, User};
+use crate::models::{CreateUser, SiteConfig};
 use crate::routes::helpers::{html_escape, is_valid_email, validate_password, validate_username};
 use crate::state::AppState;
+use crate::tap::UserContext;
 
 // =============================================================================
 // Request Types
@@ -356,16 +357,16 @@ async fn install_admin_submit(
     }
 
     // Check if username already exists
-    if let Ok(Some(_)) = User::find_by_name(state.db(), &form.username).await {
+    if let Ok(Some(_)) = state.users().find_by_name(&form.username).await {
         return render_admin_form_with_error("Username already exists");
     }
 
     // Check if email already exists
-    if let Ok(Some(_)) = User::find_by_mail(state.db(), &form.email).await {
+    if let Ok(Some(_)) = state.users().find_by_mail(&form.email).await {
         return render_admin_form_with_error("Email already in use");
     }
 
-    // Create admin user
+    // Create admin user (anonymous context — no user exists yet)
     let input = CreateUser {
         name: form.username.trim().to_string(),
         password: form.password,
@@ -373,7 +374,8 @@ async fn install_admin_submit(
         is_admin: true,
     };
 
-    match User::create(state.db(), input).await {
+    let anon = UserContext::anonymous();
+    match state.users().create(input, &anon).await {
         Ok(_) => Redirect::to("/install/site").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to create admin user");

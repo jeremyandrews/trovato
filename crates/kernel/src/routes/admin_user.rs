@@ -10,12 +10,12 @@ use tower_sessions::Session;
 use crate::form::csrf::generate_csrf_token;
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
-use crate::models::{CreateUser, Role, UpdateUser, User};
+use crate::models::{CreateUser, UpdateUser};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, build_local_tasks, render_admin_template, render_error, render_not_found,
-    render_server_error, require_admin, require_csrf, validate_password,
+    CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
+    render_not_found, render_server_error, require_admin, require_csrf, validate_password,
 };
 
 /// Permissions available for assignment to roles.
@@ -91,7 +91,7 @@ async fn list_users(State(state): State<AppState>, session: Session) -> Response
         return redirect;
     }
 
-    let users = match User::list(state.db()).await {
+    let users = match state.users().list().await {
         Ok(users) => users,
         Err(e) => {
             tracing::error!(error = %e, "failed to list users");
@@ -166,12 +166,12 @@ async fn add_user_submit(
     }
 
     // Check if username already exists
-    if let Ok(Some(_)) = User::find_by_name(state.db(), &form.name).await {
+    if let Ok(Some(_)) = state.users().find_by_name(&form.name).await {
         errors.push(format!("Username '{}' is already taken.", form.name));
     }
 
     // Check if email already exists
-    if let Ok(Some(_)) = User::find_by_mail(state.db(), &form.mail).await {
+    if let Ok(Some(_)) = state.users().find_by_mail(&form.mail).await {
         errors.push(format!("Email '{}' is already in use.", form.mail));
     }
 
@@ -207,18 +207,9 @@ async fn add_user_submit(
         is_admin: form.is_admin.is_some(),
     };
 
-    match User::create(state.db(), input).await {
-        Ok(user) => {
-            // Dispatch tap_user_register
-            let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
-            let tap_state = crate::tap::RequestState::without_services(
-                crate::tap::UserContext::authenticated(current_user.id, vec![]),
-            );
-            state
-                .tap_dispatcher()
-                .dispatch("tap_user_register", &tap_input.to_string(), tap_state)
-                .await;
-
+    let user_ctx = admin_user_context(&current_user);
+    match state.users().create(input, &user_ctx).await {
+        Ok(_user) => {
             tracing::info!(name = %form.name, "user created");
             Redirect::to("/admin/people").into_response()
         }
@@ -241,7 +232,7 @@ async fn edit_user_form(
         return redirect;
     }
 
-    let Some(user) = User::find_by_id(state.db(), user_id).await.ok().flatten() else {
+    let Some(target_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
         return render_not_found();
     };
 
@@ -257,10 +248,10 @@ async fn edit_user_form(
     context.insert(
         "values",
         &serde_json::json!({
-            "name": user.name,
-            "mail": user.mail,
-            "is_admin": user.is_admin,
-            "status": user.status == 1,
+            "name": target_user.name,
+            "mail": target_user.mail,
+            "is_admin": target_user.is_admin,
+            "status": target_user.status == 1,
         }),
     );
     context.insert("path", &format!("/admin/people/{user_id}/edit"));
@@ -300,7 +291,7 @@ async fn edit_user_submit(
         return resp;
     }
 
-    let Some(existing_user) = User::find_by_id(state.db(), user_id).await.ok().flatten() else {
+    let Some(existing_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
         return render_not_found();
     };
 
@@ -317,14 +308,14 @@ async fn edit_user_submit(
 
     // Check if new username is taken by someone else
     if form.name != existing_user.name
-        && let Ok(Some(_)) = User::find_by_name(state.db(), &form.name).await
+        && let Ok(Some(_)) = state.users().find_by_name(&form.name).await
     {
         errors.push(format!("Username '{}' is already taken.", form.name));
     }
 
     // Check if new email is taken by someone else
     if form.mail != existing_user.mail
-        && let Ok(Some(_)) = User::find_by_mail(state.db(), &form.mail).await
+        && let Ok(Some(_)) = state.users().find_by_mail(&form.mail).await
     {
         errors.push(format!("Email '{}' is already in use.", form.mail));
     }
@@ -379,26 +370,20 @@ async fn edit_user_submit(
         data: None,
     };
 
-    match User::update(state.db(), user_id, input).await {
+    let user_ctx = admin_user_context(&current_user);
+    match state.users().update(user_id, input, &user_ctx).await {
         Ok(_) => {
             // Update password if provided
             if let Some(ref password) = form.password
                 && !password.is_empty()
-                && let Err(e) = User::update_password(state.db(), user_id, password).await
+                && let Err(e) = state
+                    .users()
+                    .update_password(user_id, password, &user_ctx)
+                    .await
             {
                 tracing::error!(error = %e, "failed to update user password");
                 return render_server_error("Failed to update password.");
             }
-
-            // Dispatch tap_user_update
-            let tap_input = serde_json::json!({ "user_id": user_id.to_string() });
-            let tap_state = crate::tap::RequestState::without_services(
-                crate::tap::UserContext::authenticated(current_user.id, vec![]),
-            );
-            state
-                .tap_dispatcher()
-                .dispatch("tap_user_update", &tap_input.to_string(), tap_state)
-                .await;
 
             tracing::info!(user_id = %user_id, "user updated");
             Redirect::to("/admin/people").into_response()
@@ -438,18 +423,9 @@ async fn delete_user(
         return render_error("Cannot delete your own account.");
     }
 
-    match User::delete(state.db(), user_id).await {
+    let user_ctx = admin_user_context(&current_user);
+    match state.users().delete(user_id, &user_ctx).await {
         Ok(true) => {
-            // Dispatch tap_user_delete
-            let tap_input = serde_json::json!({ "user_id": user_id.to_string() });
-            let tap_state = crate::tap::RequestState::without_services(
-                crate::tap::UserContext::authenticated(current_user.id, vec![]),
-            );
-            state
-                .tap_dispatcher()
-                .dispatch("tap_user_delete", &tap_input.to_string(), tap_state)
-                .await;
-
             tracing::info!(user_id = %user_id, "user deleted");
             Redirect::to("/admin/people").into_response()
         }
@@ -473,7 +449,7 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
         return redirect;
     }
 
-    let roles = match Role::list(state.db()).await {
+    let roles = match state.roles().list().await {
         Ok(roles) => roles,
         Err(e) => {
             tracing::error!(error = %e, "failed to list roles");
@@ -540,7 +516,7 @@ async fn add_role_submit(
     }
 
     // Check if role name already exists
-    if let Ok(Some(_)) = Role::find_by_name(state.db(), &form.name).await {
+    if let Ok(Some(_)) = state.roles().find_by_name(&form.name).await {
         errors.push(format!("A role named '{}' already exists.", form.name));
     }
 
@@ -565,7 +541,7 @@ async fn add_role_submit(
         return render_admin_template(&state, "admin/role-form.html", context).await;
     }
 
-    match Role::create(state.db(), &form.name).await {
+    match state.roles().create(&form.name).await {
         Ok(_) => {
             tracing::info!(name = %form.name, "role created");
             Redirect::to("/admin/people/roles").into_response()
@@ -589,11 +565,13 @@ async fn edit_role_form(
         return redirect;
     }
 
-    let Some(role) = Role::find_by_id(state.db(), role_id).await.ok().flatten() else {
+    let Some(role) = state.roles().find_by_id(role_id).await.ok().flatten() else {
         return render_not_found();
     };
 
-    let permissions = Role::get_permissions(state.db(), role_id)
+    let permissions = state
+        .roles()
+        .get_permissions(role_id)
         .await
         .unwrap_or_default();
 
@@ -636,7 +614,7 @@ async fn edit_role_submit(
         return resp;
     }
 
-    let Some(existing_role) = Role::find_by_id(state.db(), role_id).await.ok().flatten() else {
+    let Some(existing_role) = state.roles().find_by_id(role_id).await.ok().flatten() else {
         return render_not_found();
     };
 
@@ -649,13 +627,15 @@ async fn edit_role_submit(
 
     // Check if new name is taken by someone else
     if form.name != existing_role.name
-        && let Ok(Some(_)) = Role::find_by_name(state.db(), &form.name).await
+        && let Ok(Some(_)) = state.roles().find_by_name(&form.name).await
     {
         errors.push(format!("A role named '{}' already exists.", form.name));
     }
 
     if !errors.is_empty() {
-        let permissions = Role::get_permissions(state.db(), role_id)
+        let permissions = state
+            .roles()
+            .get_permissions(role_id)
             .await
             .unwrap_or_default();
         let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
@@ -680,7 +660,7 @@ async fn edit_role_submit(
         return render_admin_template(&state, "admin/role-form.html", context).await;
     }
 
-    match Role::update(state.db(), role_id, &form.name).await {
+    match state.roles().update(role_id, &form.name).await {
         Ok(_) => {
             tracing::info!(role_id = %role_id, "role updated");
             Redirect::to("/admin/people/roles").into_response()
@@ -714,7 +694,7 @@ async fn delete_role(
         return render_error("Cannot delete built-in roles.");
     }
 
-    match Role::delete(state.db(), role_id).await {
+    match state.roles().delete(role_id).await {
         Ok(true) => {
             tracing::info!(role_id = %role_id, "role deleted");
             Redirect::to("/admin/people/roles").into_response()
@@ -735,7 +715,7 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
         return redirect;
     }
 
-    let roles = match Role::list(state.db()).await {
+    let roles = match state.roles().list().await {
         Ok(roles) => roles,
         Err(e) => {
             tracing::error!(error = %e, "failed to list roles");
@@ -747,7 +727,9 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
     let mut role_permissions: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for role in &roles {
-        let perms = Role::get_permissions(state.db(), role.id)
+        let perms = state
+            .roles()
+            .get_permissions(role.id)
             .await
             .unwrap_or_default();
         role_permissions.insert(role.id.to_string(), perms);
@@ -784,7 +766,7 @@ async fn save_permissions(
         return resp;
     }
 
-    let roles = match Role::list(state.db()).await {
+    let roles = match state.roles().list().await {
         Ok(roles) => roles,
         Err(e) => {
             tracing::error!(error = %e, "failed to list roles");
@@ -794,7 +776,9 @@ async fn save_permissions(
 
     // Process form data - permissions are submitted as "perm_{role_id}_{permission}"
     for role in &roles {
-        let current_perms = Role::get_permissions(state.db(), role.id)
+        let current_perms = state
+            .roles()
+            .get_permissions(role.id)
             .await
             .unwrap_or_default();
 
@@ -804,12 +788,12 @@ async fn save_permissions(
             let has_now = current_perms.contains(&permission.to_string());
 
             if should_have && !has_now {
-                if let Err(e) = Role::add_permission(state.db(), role.id, permission).await {
+                if let Err(e) = state.roles().add_permission(role.id, permission).await {
                     tracing::error!(error = %e, role_id = %role.id, permission = %permission, "failed to add permission");
                 }
             } else if !should_have
                 && has_now
-                && let Err(e) = Role::remove_permission(state.db(), role.id, permission).await
+                && let Err(e) = state.roles().remove_permission(role.id, permission).await
             {
                 tracing::error!(error = %e, role_id = %role.id, permission = %permission, "failed to remove permission");
             }

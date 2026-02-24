@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
-use crate::models::{CreateItem, User};
+use crate::models::CreateItem;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -76,7 +76,7 @@ async fn list_content(
     let mut authors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for item in &items {
         if !authors.contains_key(&item.author_id.to_string())
-            && let Ok(Some(user)) = User::find_by_id(state.db(), item.author_id).await
+            && let Ok(Some(user)) = state.users().find_by_id(item.author_id).await
         {
             authors.insert(item.author_id.to_string(), user.name);
         }

@@ -12,7 +12,6 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::models::User;
 use crate::state::AppState;
 
 /// Lock request payload.
@@ -110,7 +109,7 @@ async fn break_lock(
     }
 
     // Check permission - load user to check against their roles
-    let user = match User::find_by_id(state.db(), user_id).await {
+    let user = match state.users().find_by_id(user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => return (StatusCode::UNAUTHORIZED, "User not found").into_response(),
         Err(_) => {

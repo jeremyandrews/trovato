@@ -18,7 +18,6 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::models::User;
 use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::{JsonError, require_csrf_header};
 use crate::services::ai_chat::{ChatRole, ChatStreamEvent, ChatTurn};
@@ -136,7 +135,7 @@ async fn chat_handler(
             .into_response();
     };
 
-    let user = match User::find_by_id(state.db(), uid).await {
+    let user = match state.users().find_by_id(uid).await {
         Ok(Some(u)) if u.is_active() => u,
         _ => {
             return (

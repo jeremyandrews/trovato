@@ -11,15 +11,15 @@ use tower_sessions::Session;
 
 use crate::file::service::FileStatus;
 use crate::form::AjaxRequest;
-use crate::models::{Comment, UpdateComment, User};
+use crate::models::UpdateComment;
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
 
 use crate::form::csrf::generate_csrf_token;
 
 use super::helpers::{
-    CsrfOnlyForm, JsonError, render_admin_template, render_not_found, render_server_error,
-    require_admin, require_admin_json, require_csrf,
+    CsrfOnlyForm, JsonError, admin_user_context, render_admin_template, render_not_found,
+    render_server_error, require_admin, require_admin_json, require_csrf,
 };
 
 /// Stage switch request.
@@ -167,7 +167,7 @@ async fn list_files(
     let mut owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for file in &files {
         if !owners.contains_key(&file.owner_id.to_string())
-            && let Ok(Some(user)) = User::find_by_id(state.db(), file.owner_id).await
+            && let Ok(Some(user)) = state.users().find_by_id(file.owner_id).await
         {
             owners.insert(file.owner_id.to_string(), user.name);
         }
@@ -201,10 +201,7 @@ async fn file_details(
         return render_not_found();
     };
 
-    let owner = User::find_by_id(state.db(), file.owner_id)
-        .await
-        .ok()
-        .flatten();
+    let owner = state.users().find_by_id(file.owner_id).await.ok().flatten();
     let public_url = state.files().storage().public_url(&file.uri);
 
     let mut context = tera::Context::new();
@@ -344,23 +341,27 @@ async fn list_comments(
     let offset = (page - 1) * per_page;
 
     let comments = if let Some(status) = query.status {
-        Comment::list_by_status(state.db(), status, per_page, offset)
+        state
+            .comments()
+            .list_by_status(status, per_page, offset)
             .await
             .unwrap_or_default()
     } else {
-        Comment::list_all(state.db(), per_page, offset)
+        state
+            .comments()
+            .list_all(per_page, offset)
             .await
             .unwrap_or_default()
     };
 
-    let total = Comment::count_all(state.db()).await.unwrap_or(0);
+    let total = state.comments().count_all().await.unwrap_or(0);
 
     // Get author names
     let mut authors: std::collections::HashMap<uuid::Uuid, String> =
         std::collections::HashMap::new();
     for comment in &comments {
         if !authors.contains_key(&comment.author_id)
-            && let Ok(Some(user)) = User::find_by_id(state.db(), comment.author_id).await
+            && let Ok(Some(user)) = state.users().find_by_id(comment.author_id).await
         {
             authors.insert(comment.author_id, user.name);
         }
@@ -407,7 +408,7 @@ async fn edit_comment_form(
         return redirect;
     }
 
-    let comment = match Comment::find_by_id(state.db(), id).await {
+    let comment = match state.comments().load(id).await {
         Ok(Some(c)) => c,
         Ok(None) => return render_not_found(),
         Err(e) => {
@@ -416,7 +417,9 @@ async fn edit_comment_form(
         }
     };
 
-    let author_name = User::find_by_id(state.db(), comment.author_id)
+    let author_name = state
+        .users()
+        .find_by_id(comment.author_id)
         .await
         .ok()
         .flatten()
@@ -451,21 +454,23 @@ async fn edit_comment_submit(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<EditCommentForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
-        return redirect;
-    }
+    let user = match require_admin(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
     }
 
+    let user_ctx = admin_user_context(&user);
     let input = UpdateComment {
         body: Some(form.body),
         body_format: None,
         status: Some(form.status),
     };
 
-    match Comment::update(state.db(), id, input).await {
+    match state.comments().update(id, input, &user_ctx).await {
         Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
@@ -484,21 +489,23 @@ async fn set_comment_status(
     status: i16,
     action: &str,
 ) -> Response {
-    if let Err(redirect) = require_admin(state, session).await {
-        return redirect;
-    }
+    let user = match require_admin(state, session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     if let Err(resp) = require_csrf(session, token).await {
         return resp;
     }
 
+    let user_ctx = admin_user_context(&user);
     let input = UpdateComment {
         body: None,
         body_format: None,
         status: Some(status),
     };
 
-    match Comment::update(state.db(), id, input).await {
+    match state.comments().update(id, input, &user_ctx).await {
         Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
@@ -541,15 +548,17 @@ async fn delete_comment_admin(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
-        return redirect;
-    }
+    let user = match require_admin(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
     }
 
-    match Comment::delete(state.db(), id).await {
+    let user_ctx = admin_user_context(&user);
+    match state.comments().delete(id, &user_ctx).await {
         Ok(true) => Redirect::to("/admin/content/comments").into_response(),
         Ok(false) => render_not_found(),
         Err(e) => {

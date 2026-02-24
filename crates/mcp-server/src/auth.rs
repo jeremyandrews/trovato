@@ -25,7 +25,9 @@ pub async fn resolve_token(state: &AppState, raw_token: &str) -> Result<User> {
         tracing::warn!(error = %e, "failed to update API token last_used");
     }
 
-    let user = User::find_by_id(state.db(), api_token.user_id)
+    let user = state
+        .users()
+        .find_by_id(api_token.user_id)
         .await
         .context("failed to load user for API token")?
         .ok_or_else(|| anyhow::anyhow!("user associated with API token not found"))?;

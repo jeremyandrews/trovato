@@ -284,7 +284,7 @@ async fn do_login(
     }
 
     // Find user by username
-    let user = match User::find_by_name(state.db(), &request.username).await {
+    let user = match state.users().find_by_name(&request.username).await {
         Ok(Some(user)) => user,
         Ok(None) => {
             if let Err(e) = state
@@ -340,23 +340,13 @@ async fn do_login(
         tracing::warn!(error = %e, username = %request.username, "failed to clear login attempts");
     }
 
-    // Update login timestamp
-    if let Err(e) = User::touch_login(state.db(), user.id).await {
-        tracing::warn!(error = %e, user_id = %user.id, "failed to update login timestamp");
+    // Record login (updates timestamp + dispatches tap_user_login)
+    if let Err(e) = state.users().record_login(&user).await {
+        tracing::warn!(error = %e, user_id = %user.id, "failed to record login");
     }
 
     // Create session
     setup_session(session, user.id, request.remember_me).await?;
-
-    // Dispatch tap_user_login
-    let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
-    let tap_state = crate::tap::RequestState::without_services(
-        crate::tap::UserContext::authenticated(user.id, vec![]),
-    );
-    state
-        .tap_dispatcher()
-        .dispatch("tap_user_login", &tap_input.to_string(), tap_state)
-        .await;
 
     info!(user_id = %user.id, "user logged in");
     Ok(())
@@ -405,7 +395,7 @@ async fn login(
 ///
 /// POST /user/logout
 /// - Validates CSRF token
-/// - Dispatches tap_user_logout before destroying session
+/// - Records logout via UserService (dispatches tap_user_logout)
 /// - Deletes session from Redis
 /// - Clears session cookie
 async fn logout(
@@ -421,16 +411,9 @@ async fn logout(
     // Extract user_id before deleting the session
     let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
-    // Dispatch tap_user_logout
+    // Record logout (dispatches tap_user_logout)
     if let Some(uid) = user_id {
-        let tap_input = serde_json::json!({ "user_id": uid.to_string() });
-        let tap_state = crate::tap::RequestState::without_services(
-            crate::tap::UserContext::authenticated(uid, vec![]),
-        );
-        state
-            .tap_dispatcher()
-            .dispatch("tap_user_logout", &tap_input.to_string(), tap_state)
-            .await;
+        let _ = state.users().record_logout(uid).await;
     }
 
     if let Err(e) = session.delete().await {
@@ -642,14 +625,14 @@ async fn validate_registration_input(
     let mut uniqueness_conflict = false;
 
     if !username.is_empty()
-        && let Ok(Some(_)) = User::find_by_name(state.db(), username).await
+        && let Ok(Some(_)) = state.users().find_by_name(username).await
     {
         uniqueness_conflict = true;
     }
 
     if !mail.is_empty()
         && is_valid_email(mail)
-        && let Ok(Some(_)) = User::find_by_mail(state.db(), mail).await
+        && let Ok(Some(_)) = state.users().find_by_mail(mail).await
     {
         uniqueness_conflict = true;
     }
@@ -680,7 +663,12 @@ async fn do_register(
     };
 
     // Create user with status=0 (inactive, pending email verification)
-    let user = User::create_with_status(state.db(), input, 0).await?;
+    // Registration is an anonymous action — no authenticated user context.
+    let user_ctx = crate::tap::UserContext::anonymous();
+    let user = state
+        .users()
+        .create_with_status(input, 0, &user_ctx)
+        .await?;
 
     // Create verification token
     let (_, plain_token) =
@@ -709,15 +697,6 @@ async fn do_register(
             "SMTP not configured; verification email not sent"
         );
     }
-
-    // Dispatch tap_user_register
-    let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
-    let tap_state =
-        crate::tap::RequestState::without_services(crate::tap::UserContext::anonymous());
-    state
-        .tap_dispatcher()
-        .dispatch("tap_user_register", &tap_input.to_string(), tap_state)
-        .await;
 
     info!(user_id = %user.id, name = %username.trim(), "user registered (pending verification)");
     Ok(RegistrationResult { email_sent })
@@ -860,15 +839,20 @@ async fn verify_email(
     }
 
     // Activate the user (status=1)
-    if let Err(e) = User::update(
-        state.db(),
-        verification.user_id,
-        crate::models::UpdateUser {
-            status: Some(1),
-            ..Default::default()
-        },
-    )
-    .await
+    // Email verification is a system action — use anonymous context since
+    // the user doesn't have a session yet.
+    let user_ctx = crate::tap::UserContext::anonymous();
+    if let Err(e) = state
+        .users()
+        .update(
+            verification.user_id,
+            crate::models::UpdateUser {
+                status: Some(1),
+                ..Default::default()
+            },
+            &user_ctx,
+        )
+        .await
     {
         tracing::error!(error = %e, user_id = %verification.user_id, "failed to activate user");
         return (
@@ -918,7 +902,9 @@ async fn verify_email_change(
         };
 
     // Get the user and check for pending_email in data
-    let Some(user) = User::find_by_id(state.db(), verification.user_id)
+    let Some(user) = state
+        .users()
+        .find_by_id(verification.user_id)
         .await
         .ok()
         .flatten()
@@ -958,7 +944,7 @@ async fn verify_email_change(
 
     // Re-check email uniqueness at verification time to prevent race condition
     // (another user may have registered with this email since the change was requested)
-    if let Ok(Some(_)) = User::find_by_mail(state.db(), &new_email).await {
+    if let Ok(Some(_)) = state.users().find_by_mail(&new_email).await {
         // Mark token as used since the change can't proceed
         let _ = EmailVerificationToken::mark_used(state.db(), verification.id).await;
         return Html(
@@ -995,7 +981,10 @@ async fn verify_email_change(
         ..Default::default()
     };
 
-    if let Err(e) = User::update(state.db(), user.id, update).await {
+    // Email change verification is a self-service action — build user context
+    // from the owning user.
+    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    if let Err(e) = state.users().update(user.id, update, &user_ctx).await {
         tracing::error!(error = %e, user_id = %user.id, "failed to update email");
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update email").into_response();
     }
@@ -1042,7 +1031,9 @@ async fn get_current_user(state: &AppState, session: &Session) -> Result<User, R
         .flatten()
         .ok_or_else(|| Redirect::to("/user/login").into_response())?;
 
-    let user = User::find_by_id(state.db(), user_id)
+    let user = state
+        .users()
+        .find_by_id(user_id)
         .await
         .ok()
         .flatten()
@@ -1213,7 +1204,7 @@ async fn profile_update(
 
     if name_changing
         && !name.is_empty()
-        && let Ok(Some(existing)) = User::find_by_name(state.db(), name).await
+        && let Ok(Some(existing)) = state.users().find_by_name(name).await
         && existing.id != user.id
     {
         uniqueness_conflict = true;
@@ -1221,7 +1212,7 @@ async fn profile_update(
 
     if email_changing
         && !mail.is_empty()
-        && let Ok(Some(existing)) = User::find_by_mail(state.db(), mail).await
+        && let Ok(Some(existing)) = state.users().find_by_mail(mail).await
         && existing.id != user.id
     {
         uniqueness_conflict = true;
@@ -1286,7 +1277,9 @@ async fn profile_update(
         update
     };
 
-    match User::update(state.db(), user.id, update).await {
+    // Profile update is a self-service action.
+    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    match state.users().update(user.id, update, &user_ctx).await {
         Ok(Some(updated_user)) => {
             // Send verification email if email is changing
             if email_changing {
@@ -1332,16 +1325,6 @@ async fn profile_update(
                     }
                 }
             }
-
-            // Dispatch tap_user_update
-            let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
-            let tap_state = crate::tap::RequestState::without_services(
-                crate::tap::UserContext::authenticated(user.id, vec![]),
-            );
-            state
-                .tap_dispatcher()
-                .dispatch("tap_user_update", &tap_input.to_string(), tap_state)
-                .await;
 
             let (pc, pwc) = profile_csrf_pair(&session).await;
             let success_msg = if email_changing {
@@ -1449,22 +1432,18 @@ async fn password_change(
         return render_profile(&state, &pc, &pwc, &user, Some(&errors), None, None, None).await;
     }
 
-    match User::update_password(state.db(), user.id, &form.new_password).await {
+    // Password change is a self-service action.
+    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    match state
+        .users()
+        .update_password(user.id, &form.new_password, &user_ctx)
+        .await
+    {
         Ok(true) => {
             // Rotate session ID so a stolen pre-change session is invalid
             if let Err(e) = session.cycle_id().await {
                 tracing::warn!(error = %e, "failed to cycle session after password change");
             }
-
-            // Dispatch tap_user_update
-            let tap_input = serde_json::json!({ "user_id": user.id.to_string() });
-            let tap_state = crate::tap::RequestState::without_services(
-                crate::tap::UserContext::authenticated(user.id, vec![]),
-            );
-            state
-                .tap_dispatcher()
-                .dispatch("tap_user_update", &tap_input.to_string(), tap_state)
-                .await;
 
             info!(user_id = %user.id, "password changed via self-service");
 

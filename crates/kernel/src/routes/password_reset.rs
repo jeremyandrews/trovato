@@ -7,10 +7,10 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tracing::info;
 
-use crate::models::User;
 use crate::models::password_reset::PasswordResetToken;
 use crate::routes::helpers::{JsonError, JsonSuccess, validate_password};
 use crate::state::AppState;
+use crate::tap::UserContext;
 
 /// Password reset request (step 1: request reset).
 #[derive(Debug, Deserialize)]
@@ -33,7 +33,7 @@ async fn request_reset(
     Json(input): Json<RequestResetInput>,
 ) -> Json<JsonSuccess> {
     // Try to find user by email
-    match User::find_by_mail(state.db(), &input.email).await {
+    match state.users().find_by_mail(&input.email).await {
         Ok(Some(user)) => {
             // Create reset token
             match PasswordResetToken::create(state.db(), user.id).await {
@@ -172,8 +172,11 @@ async fn set_password(
             )
         })?;
 
-    // Update the password
-    User::update_password(state.db(), reset_token.user_id, &input.password)
+    // Update the password (anonymous context — user is not logged in)
+    let anon = UserContext::anonymous();
+    state
+        .users()
+        .update_password(reset_token.user_id, &input.password, &anon)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to update password");

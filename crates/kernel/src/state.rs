@@ -153,6 +153,12 @@ struct AppStateInner {
     /// Frozen at startup: changing the default language requires a restart.
     default_language: String,
 
+    /// User service for user CRUD with tap integration and caching.
+    users: Arc<services::user::UserService>,
+
+    /// Role service for role/permission management with cache invalidation.
+    roles: Arc<services::role::RoleService>,
+
     /// Tile rendering service.
     tiles: Arc<services::tile::TileService>,
 
@@ -178,6 +184,9 @@ struct AppStateInner {
 
     /// Redirect lookup cache (available when redirects plugin is enabled).
     redirect_cache: Option<Arc<services::redirect::RedirectCache>>,
+
+    /// Comment service (available when comments plugin is enabled).
+    comments: Option<Arc<services::comment::CommentService>>,
 }
 
 impl AppState {
@@ -458,6 +467,18 @@ impl AppState {
         // Create stage service
         let stage = Arc::new(StageService::new(db.clone(), cache.clone()));
 
+        // Create user service
+        let users = Arc::new(services::user::UserService::new(
+            db.clone(),
+            tap_dispatcher.clone(),
+        ));
+
+        // Create role service (depends on permission service for cache invalidation)
+        let roles = Arc::new(services::role::RoleService::new(
+            db.clone(),
+            permissions.clone(),
+        ));
+
         // Create tile service
         let tiles = Arc::new(services::tile::TileService::new(db.clone()));
 
@@ -575,6 +596,15 @@ impl AppState {
             None
         };
 
+        let comments = if enabled_set.contains("comments") {
+            Some(Arc::new(services::comment::CommentService::new(
+                db.clone(),
+                tap_dispatcher.clone(),
+            )))
+        } else {
+            None
+        };
+
         // Wire plugin services into cron
         cron.set_plugin_services(content_lock.clone(), audit.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
@@ -616,6 +646,8 @@ impl AppState {
                 language_negotiators,
                 known_languages,
                 default_language,
+                users,
+                roles,
                 tiles,
                 email,
                 audit,
@@ -628,6 +660,7 @@ impl AppState {
                 } else {
                     None
                 },
+                comments,
             }),
         })
     }
@@ -836,6 +869,16 @@ impl AppState {
         &self.inner.default_language
     }
 
+    /// Get the user service.
+    pub fn users(&self) -> &Arc<services::user::UserService> {
+        &self.inner.users
+    }
+
+    /// Get the role service.
+    pub fn roles(&self) -> &Arc<services::role::RoleService> {
+        &self.inner.roles
+    }
+
     /// Get the tile service.
     pub fn tiles(&self) -> &Arc<services::tile::TileService> {
         &self.inner.tiles
@@ -874,6 +917,21 @@ impl AppState {
     /// Get the redirect cache (if redirects plugin is enabled).
     pub fn redirect_cache(&self) -> Option<&Arc<services::redirect::RedirectCache>> {
         self.inner.redirect_cache.as_ref()
+    }
+
+    /// Get the comment service (if comments plugin is enabled).
+    ///
+    /// # Panics
+    ///
+    /// Callers behind the `plugin_gate!(gate_comments, "comments")` guard can
+    /// safely unwrap because the gate ensures the plugin is enabled and the
+    /// service is initialized.
+    #[allow(clippy::expect_used)] // Callers are behind plugin_gate! — see doc above.
+    pub fn comments(&self) -> &Arc<services::comment::CommentService> {
+        self.inner
+            .comments
+            .as_ref()
+            .expect("comments service not initialized — caller must be behind plugin gate")
     }
 
     /// Check if PostgreSQL is healthy.
