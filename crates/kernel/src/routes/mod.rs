@@ -2,12 +2,14 @@
 
 pub mod admin;
 pub mod admin_ai_budget;
+pub mod admin_ai_chat;
 pub mod admin_ai_provider;
 pub mod admin_alias;
 pub mod admin_content;
 pub mod admin_content_type;
 pub mod admin_taxonomy;
 pub mod admin_user;
+pub mod api_chat;
 pub mod api_token;
 pub mod auth;
 pub mod batch;

@@ -52,6 +52,7 @@ impl TileFormData {
             "gather_query" => serde_json::json!({
                 "query_id": self.query_id.as_deref().unwrap_or(""),
             }),
+            "chat" => serde_json::json!({}),
             _ => serde_json::json!({}),
         }
     }

@@ -42,6 +42,7 @@
                 <option value="custom_html" {% if values.tile_type is defined and values.tile_type == "custom_html" %}selected{% endif %}>Custom HTML</option>
                 <option value="menu" {% if values.tile_type is defined and values.tile_type == "menu" %}selected{% endif %}>Menu</option>
                 <option value="gather_query" {% if values.tile_type is defined and values.tile_type == "gather_query" %}selected{% endif %}>Gather query</option>
+                <option value="chat" {% if values.tile_type is defined and values.tile_type == "chat" %}selected{% endif %}>Chat</option>
             </select>
         </div>
 
@@ -79,6 +80,11 @@
                        value="{{ values.query_id | default(value='') }}"
                        class="form-control" placeholder="e.g., blog_listing">
             </div>
+        </div>
+
+        <!-- Chat fields (no additional config needed) -->
+        <div id="fields-chat" class="tile-type-fields" style="display:none">
+            <p class="form-help">The chat widget will be rendered in this region. Configure chat settings at <a href="/admin/system/ai-chat">AI Chat</a>.</p>
         </div>
 
         <div class="form-group">

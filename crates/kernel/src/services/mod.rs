@@ -4,6 +4,7 @@
 //! Plugin WASM modules provide declarative configuration (permissions,
 //! menus, migrations), while these services implement the logic.
 
+pub mod ai_chat;
 pub mod ai_provider;
 pub mod ai_token_budget;
 pub mod audit;

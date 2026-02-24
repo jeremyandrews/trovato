@@ -110,6 +110,9 @@ struct AppStateInner {
     /// AI token budget service for usage tracking and enforcement.
     ai_budgets: Arc<services::ai_token_budget::AiTokenBudgetService>,
 
+    /// AI chat service for streaming chatbot.
+    ai_chat: Arc<services::ai_chat::ChatService>,
+
     /// Theme engine for template rendering.
     theme: Arc<ThemeEngine>,
 
@@ -426,6 +429,13 @@ impl AppState {
             db.clone(),
         ));
 
+        // Create AI chat service
+        let ai_chat = Arc::new(services::ai_chat::ChatService::new(
+            db.clone(),
+            ai_providers.clone(),
+            search.clone(),
+        ));
+
         // Create file service with local storage
         let file_storage = Arc::new(LocalFileStorage::new(
             &config.uploads_dir,
@@ -594,6 +604,7 @@ impl AppState {
                 search,
                 ai_providers,
                 ai_budgets,
+                ai_chat,
                 theme,
                 forms,
                 files,
@@ -773,6 +784,11 @@ impl AppState {
     /// Get the AI token budget service.
     pub fn ai_budgets(&self) -> &Arc<services::ai_token_budget::AiTokenBudgetService> {
         &self.inner.ai_budgets
+    }
+
+    /// Get the AI chat service.
+    pub fn ai_chat(&self) -> &Arc<services::ai_chat::ChatService> {
+        &self.inner.ai_chat
     }
 
     /// Get the file service.

@@ -582,6 +582,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_ai_provider::router())
         // AI Budget management
         .merge(super::admin_ai_budget::router())
+        // AI Chat configuration
+        .merge(super::admin_ai_chat::router())
         // AJAX endpoint
         .route("/system/ajax", post(ajax_callback))
 }

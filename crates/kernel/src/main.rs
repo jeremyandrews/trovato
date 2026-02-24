@@ -191,6 +191,7 @@ async fn run_server() -> Result<()> {
         .merge(routes::metrics::router())
         .merge(routes::batch::router())
         .merge(routes::api_token::router())
+        .merge(routes::api_chat::router())
         .merge(routes::tile_admin::router())
         .merge(routes::static_files::router())
         // Plugin-gated routes — runtime middleware returns 404 when disabled.

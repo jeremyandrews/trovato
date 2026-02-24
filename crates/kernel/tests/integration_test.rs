@@ -56,6 +56,9 @@ static AI_BUDGET_LOCK: Mutex<()> = Mutex::const_new(());
 /// Tests that modify AI permissions / roles for permission-gated routes.
 static AI_PERMISSION_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// Tests that modify AI chat configuration in `site_config`.
+static AI_CHAT_LOCK: Mutex<()> = Mutex::const_new(());
+
 // =============================================================================
 // Health Check Tests
 // =============================================================================
@@ -7424,5 +7427,296 @@ fn e2e_ai_permission_view_usage_cannot_post_budget_config() {
             .await
             .ok();
         app.state.permissions().invalidate_all();
+    });
+}
+
+// =============================================================================
+// AI Chat Tests
+// =============================================================================
+
+/// Test: unauthenticated user gets rejected on chat endpoint.
+///
+/// The CSRF check runs first (403) before auth (401), so unauthenticated
+/// requests without a valid session/CSRF token receive 403.
+#[test]
+fn e2e_ai_chat_unauthenticated_returns_error() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let response = app
+            .request(
+                Request::post("/api/v1/chat")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"message":"hello"}"#))
+                    .unwrap(),
+            )
+            .await;
+        let status = response.status();
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
+            "Unauthenticated user should get 401 or 403, got {status}"
+        );
+    });
+}
+
+/// Test: authenticated user without `use ai chat` permission gets 403.
+#[test]
+fn e2e_ai_chat_missing_permission_returns_403() {
+    run_test(async {
+        let _guard = AI_PERMISSION_LOCK.lock().await;
+        let app = shared_app().await;
+
+        // Create a regular user (no special permissions)
+        let cookies = app
+            .create_and_login_user("chat_noperm_1", "password12345", "chatnoperm1@test.com")
+            .await;
+
+        // Fetch a CSRF token from a page
+        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/user/login").await;
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/api/v1/chat")
+                    .header("content-type", "application/json")
+                    .header("x-csrf-token", &csrf_token)
+                    .body(Body::from(r#"{"message":"hello"}"#))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "User without 'use ai chat' permission should get 403"
+        );
+    });
+}
+
+/// Test: admin user can POST /api/v1/chat and gets SSE content-type back.
+///
+/// This test verifies the endpoint accepts the request and returns SSE,
+/// but the actual AI provider likely won't be configured in tests, so
+/// we expect either SSE streaming or a 502 (no provider).
+#[test]
+fn e2e_ai_chat_admin_gets_sse_or_502() {
+    run_test(async {
+        let _guard = AI_CHAT_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("chat_admin_1", "password12345", "chatadmin1@test.com")
+            .await;
+
+        // Fetch a CSRF token
+        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin").await;
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/api/v1/chat")
+                    .header("content-type", "application/json")
+                    .header("x-csrf-token", &csrf_token)
+                    .body(Body::from(r#"{"message":"What is Trovato?"}"#))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+
+        // Admin bypasses permission check, so we either get SSE (200) when
+        // a provider is configured or 502 when no provider is available.
+        let status = response.status();
+        assert!(
+            status == StatusCode::OK || status == StatusCode::BAD_GATEWAY,
+            "Admin chat should get 200 (SSE) or 502 (no provider), got {status}"
+        );
+
+        if status == StatusCode::OK {
+            let ct = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                ct.contains("text/event-stream"),
+                "Successful chat response should be SSE, got content-type: {ct}"
+            );
+        }
+    });
+}
+
+/// Test: empty message returns 400.
+#[test]
+fn e2e_ai_chat_empty_message_returns_400() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("chat_empty_1", "password12345", "chatempty1@test.com")
+            .await;
+
+        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin").await;
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/api/v1/chat")
+                    .header("content-type", "application/json")
+                    .header("x-csrf-token", &csrf_token)
+                    .body(Body::from(r#"{"message":"   "}"#))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "Empty (whitespace-only) message should return 400"
+        );
+    });
+}
+
+/// Test: admin can access the AI chat config page.
+#[test]
+fn e2e_ai_chat_admin_config_page() {
+    run_test(async {
+        let _guard = AI_CHAT_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("chat_cfg_1", "password12345", "chatcfg1@test.com")
+            .await;
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-chat")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Admin should access AI chat config page"
+        );
+
+        let html = response_text(response).await;
+        assert!(
+            html.contains("system_prompt"),
+            "Config page should contain system_prompt field"
+        );
+        assert!(
+            html.contains("rag_enabled"),
+            "Config page should contain rag_enabled field"
+        );
+    });
+}
+
+/// Test: admin can save AI chat configuration via POST.
+#[test]
+fn e2e_ai_chat_admin_save_config() {
+    run_test(async {
+        let _guard = AI_CHAT_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("chat_save_1", "password12345", "chatsave1@test.com")
+            .await;
+
+        // Fetch CSRF token from the chat config page
+        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/system/ai-chat").await;
+
+        let form_body = format!(
+            "_token={}&system_prompt={}&rag_max_results=5&rag_min_score=0.5&max_history_turns=10&rate_limit_per_hour=60&max_tokens=2048&temperature=0.5",
+            url_encode(&csrf_token),
+            url_encode("You are a helpful assistant for {site_name}.")
+        );
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/system/ai-chat")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_body))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "Saving chat config should redirect (303)"
+        );
+
+        // Verify config was saved
+        let config = app.state.ai_chat().load_config().await.unwrap();
+        assert!(
+            config.system_prompt.contains("helpful assistant"),
+            "Saved config should contain our prompt"
+        );
+        assert_eq!(config.rag_max_results, 5);
+        assert_eq!(config.max_history_turns, 10);
+        assert_eq!(config.rate_limit_per_hour, 60);
+        assert_eq!(config.max_tokens, 2048);
+        assert!((config.temperature - 0.5).abs() < f32::EPSILON);
+    });
+}
+
+/// Test: rate limiting returns 429 after exceeding the per-hour limit.
+#[test]
+fn e2e_ai_chat_rate_limit_returns_429() {
+    run_test(async {
+        let _guard = AI_CHAT_LOCK.lock().await;
+        let app = shared_app().await;
+
+        // Clear any leftover rate limit state from prior tests.
+        trovato_kernel::routes::api_chat::clear_chat_rate_limits();
+
+        // Save config with rate_limit_per_hour = 1
+        let mut config = app.state.ai_chat().load_config().await.unwrap();
+        config.rate_limit_per_hour = 1;
+        app.state.ai_chat().save_config(&config).await.unwrap();
+
+        let cookies = app
+            .create_and_login_admin("chat_rate_1", "password12345", "chatrate1@test.com")
+            .await;
+
+        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin").await;
+
+        // First request — should be allowed (200 SSE or 502 no provider).
+        let response = app
+            .request_with_cookies(
+                Request::post("/api/v1/chat")
+                    .header("content-type", "application/json")
+                    .header("x-csrf-token", &csrf_token)
+                    .body(Body::from(r#"{"message":"hello"}"#))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let first_status = response.status();
+        assert!(
+            first_status == StatusCode::OK || first_status == StatusCode::BAD_GATEWAY,
+            "First request should be allowed, got {first_status}"
+        );
+
+        // Second request — should be rate limited.
+        let response = app
+            .request_with_cookies(
+                Request::post("/api/v1/chat")
+                    .header("content-type", "application/json")
+                    .header("x-csrf-token", &csrf_token)
+                    .body(Body::from(r#"{"message":"hello again"}"#))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "Second request should be rate limited (429)"
+        );
+
+        // Clean up: restore reasonable rate limit and clear state.
+        config.rate_limit_per_hour = 20;
+        app.state.ai_chat().save_config(&config).await.unwrap();
+        trovato_kernel::routes::api_chat::clear_chat_rate_limits();
     });
 }

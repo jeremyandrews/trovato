@@ -61,6 +61,9 @@ url = { workspace = true }
 ammonia = { workspace = true }
 syntect = { workspace = true }
 parking_lot = { workspace = true }
+tokio-stream = { workspace = true }
+async-stream = { workspace = true }
+futures-core = { workspace = true }
 lettre = { workspace = true }
 
 # Optional S3 support (requires Rust 1.91+)
