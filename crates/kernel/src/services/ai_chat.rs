@@ -375,7 +375,7 @@ impl ChatService {
 
     /// Execute a streaming chat request against the given resolved provider.
     ///
-    /// The caller must resolve the provider first via [`resolve_chat_provider`]
+    /// The caller must resolve the provider first via [`Self::resolve_chat_provider`]
     /// and perform budget checks before calling this method. This avoids a
     /// TOCTOU race where the provider could change between budget check and
     /// request execution.

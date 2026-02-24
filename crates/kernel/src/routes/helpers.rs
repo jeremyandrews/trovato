@@ -473,9 +473,9 @@ pub async fn require_admin_json(
 /// Build a [`UserContext`] for an admin user.
 ///
 /// Admin routes call [`require_admin`] which returns a [`User`]. Service-layer
-/// methods need a [`UserContext`]. This helper bridges the gap by creating a
+/// methods need a `UserContext`. This helper bridges the gap by creating a
 /// context with the `"administer site"` permission, which makes
-/// [`UserContext::is_admin()`] return `true`.
+/// `UserContext::is_admin()` return `true`.
 pub fn admin_user_context(user: &User) -> UserContext {
     UserContext::authenticated(user.id, vec!["administer site".to_string()])
 }

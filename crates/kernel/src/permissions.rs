@@ -73,9 +73,9 @@ impl PermissionService {
     /// Load all permissions for a user from the database.
     ///
     /// Returns the raw role-based permission set (does **not** include the
-    /// implicit admin bypass). Callers building a [`UserContext`] for admin
+    /// implicit admin bypass). Callers building a [`UserContext`](crate::tap::UserContext) for admin
     /// users should add `"administer site"` themselves so that
-    /// [`UserContext::is_admin`] returns `true`.
+    /// [`UserContext::is_admin`](crate::tap::UserContext::is_admin) returns `true`.
     pub async fn load_user_permissions(&self, user: &User) -> Result<HashSet<String>> {
         let mut permissions = HashSet::new();
 
