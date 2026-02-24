@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/kernel",
+    "crates/mcp-server",
     "crates/plugin-sdk",
     "crates/plugin-sdk-macros",
     "crates/test-utils",
@@ -30,6 +31,7 @@ members = [
 # Plugin cdylibs (argus, netgrasp, goose) excluded — build with --target wasm32-wasip1
 default-members = [
     "crates/kernel",
+    "crates/mcp-server",
     "crates/plugin-sdk",
     "crates/plugin-sdk-macros",
     "crates/test-utils",
