@@ -84,6 +84,7 @@ pub struct DeleteItemParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchParams {
     /// Search query string (max 1000 characters).
+    #[schemars(length(max = 1000))]
     pub query: String,
     /// Maximum results to return (default: 20, max: 100).
     pub limit: Option<u32>,
@@ -130,8 +131,9 @@ pub struct TrovatoMcpServer {
     /// User context with pre-loaded permissions (for `ItemService` calls).
     ///
     /// Permissions are loaded once at session start and cached for the
-    /// session lifetime. If permissions change mid-session, they will be
-    /// picked up at the next revalidation interval.
+    /// session lifetime. Revalidation checks token validity and user
+    /// active status but does **not** refresh permissions — an admin
+    /// must revoke the API token itself for immediate effect.
     user_ctx: Arc<UserContext>,
     /// When the session was last validated against the database.
     validated_at: Arc<std::sync::Mutex<std::time::Instant>>,
