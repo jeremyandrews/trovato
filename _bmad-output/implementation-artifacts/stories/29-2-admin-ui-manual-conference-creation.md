@@ -57,7 +57,7 @@ so that I can populate the site with content.
 - `templates/admin/content-form.html` -- content form template
 - `templates/admin/content-list.html` -- content list template (flash messages)
 - `docs/tutorial/part-01-hello-trovato.md` -- Tutorial chapter
-- `crates/kernel/migrations/20260224000002_seed_conference_items.sql` -- Seed migration
+- ~~`crates/kernel/migrations/20260224000002_seed_conference_items.sql`~~ -- Seed migration (deleted: tutorial now guides users to create conferences by hand)
 
 ### Testing
 
@@ -98,7 +98,7 @@ Claude Opus 4.6
 - `crates/kernel/src/content/form.rs` -- Added `title_label: None` to test helpers
 - `templates/admin/content-form.html` -- Added Date/File/RecordReference/Email/Float handlers, dynamic title label
 - `templates/admin/content-list.html` -- Added flash message display
-- `crates/kernel/migrations/20260224000002_seed_conference_items.sql` -- New: idempotent seed migration with UUIDv7
+- ~~`crates/kernel/migrations/20260224000002_seed_conference_items.sql`~~ -- Deleted: seed migration replaced by hands-on tutorial + test helper
 - `crates/kernel/tests/integration_test.rs` -- 12 new conference tests (including update/delete flash)
 - `crates/kernel/tests/item_test.rs` -- Added `title_label: None` to test helpers
 - `docs/tutorial/part-01-hello-trovato.md` -- Tutorial Step 3: manual conference creation

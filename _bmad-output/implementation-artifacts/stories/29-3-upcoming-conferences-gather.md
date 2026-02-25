@@ -74,7 +74,7 @@ For Part 1, all seeded conferences are in the future, so the listing is effectiv
 
 ### Key Files
 
-- `crates/kernel/migrations/20260226000002_seed_conference_gather.sql` -- Gather + URL alias migration
+- ~~`crates/kernel/migrations/20260226000002_seed_conference_gather.sql`~~ -- Gather + URL alias migration (deleted: tutorial now guides users to create these by hand)
 - `crates/kernel/src/routes/gather.rs` -- Gather route handlers
 - `crates/kernel/src/middleware/path_alias.rs` -- URL alias middleware
 - `docs/tutorial/part-01-hello-trovato.md` -- Tutorial chapter
@@ -96,7 +96,7 @@ Claude Opus 4.6
 
 ### Completion Notes List
 
-- Created kernel migration `20260226000002_seed_conference_gather.sql` following the blog plugin pattern
+- ~~Created kernel migration `20260226000002_seed_conference_gather.sql` following the blog plugin pattern~~ (deleted: replaced by hands-on tutorial + test helper)
 - Gather query_id: `upcoming_conferences`, item_type: `conference`, status=1 filter, sort by `fields.field_start_date` ASC, 25 items/page, table format, stage_aware: true
 - URL alias: `/conferences` → `/gather/upcoming_conferences` with ON CONFLICT upsert
 - Date filter (`start_date >= current_date`) deferred — gather `GreaterOrEqual` operator only accepts integer values via `as_i64()`, incompatible with ISO date strings in JSONB
@@ -105,5 +105,5 @@ Claude Opus 4.6
 
 ### File List
 
-- `crates/kernel/migrations/20260226000002_seed_conference_gather.sql` -- New: gather definition + URL alias
+- ~~`crates/kernel/migrations/20260226000002_seed_conference_gather.sql`~~ -- Deleted: gather + URL alias migration replaced by hands-on tutorial + test helper
 - `docs/tutorial/part-01-hello-trovato.md` -- Rewritten: all 4 steps aligned with epic-01.md

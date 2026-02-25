@@ -1,6 +1,6 @@
 # Part 1: Hello, Trovato
 
-Welcome to the Ritrovo tutorial. Over the next eight parts you will build a fully functional tech conference aggregator using Trovato. By the end of Part 1 you will have a running Trovato instance with a `conference` content type, a handful of manually created conferences, and a Gather listing that displays them at `/conferences`.
+Welcome to the Ritrovo tutorial. Over the next eight parts you will build a fully functional tech conference aggregator using Trovato. By the end of Part 1 you will have a running Trovato instance with a `conference` content type, three hand-created conferences, and a Gather listing that displays them at `/conferences`.
 
 ---
 
@@ -62,7 +62,7 @@ psql -c "CREATE DATABASE trovato OWNER trovato;"
 On first startup, Trovato will:
 
 1. Connect to PostgreSQL and Redis.
-2. Run all database migrations (including the ones that create the `conference` Item Type, seed data, and Gather definition).
+2. Run all database migrations (including the one that creates the `conference` Item Type).
 3. Discover and install plugins from `plugins/`.
 4. Start listening on `http://localhost:3000`.
 
@@ -101,7 +101,7 @@ Trovato ships with one built-in Item Type: `page` (a simple page with a body fie
 Trovato offers two ways to create an Item Type:
 
 1. **Admin UI** -- Navigate to `/admin/structure/types/add`, fill in the form, then add fields one by one at `/admin/structure/types/{machine_name}/fields`.
-2. **SQL migration** -- Insert directly into the `item_type` table. This is what Ritrovo does so the type definition is reproducible and version-controlled.
+2. **SQL migration** -- Insert directly into the `item_type` table. This is what the conference type migration does so the type definition is reproducible and version-controlled.
 
 **Why is direct SQL safe here?** In some CMS platforms, direct database queries bypass the hook system, which can leave caches stale or skip side effects. Trovato's content type system is different: no taps fire when a type is created (neither through the admin UI nor through SQL). The type registry loads all types from the database at startup and caches them in memory. Both approaches produce identical results.
 
@@ -116,7 +116,7 @@ cargo run --release -- config import ./config/ --dry-run
 cargo run --release -- config import ./config/
 ```
 
-The Ritrovo migration lives at `crates/kernel/migrations/20260224000001_seed_conference_item_type.sql`. When you run `sqlx migrate run` (or start the server, which runs pending migrations automatically), the `conference` type is created.
+The conference type migration lives at `crates/kernel/migrations/20260224000001_seed_conference_item_type.sql`. When you run `sqlx migrate run` (or start the server, which runs pending migrations automatically), the `conference` type is created.
 
 After the migration runs, verify the type exists:
 
@@ -249,28 +249,65 @@ This opens the auto-generated form at `/admin/content/add/conference`. Trovato i
 
 The title field at the top uses the custom label "Conference Name" (from `title_label` in the Item Type definition).
 
-### Walkthrough: Creating a Conference
+### Conference 1: RustConf 2026
 
-The Ritrovo migration seeds three conferences automatically (see "Seeded Conferences" below), so let's create a fourth one by hand. Fill in the form with these values:
+This first conference gets a detailed field-by-field walkthrough. Fill in the form with these values:
 
 | Field | Value |
 |---|---|
-| Conference Name | RustNation UK 2026 |
-| Conference Website | https://rustnationuk.com |
-| Start Date | 2026-03-17 |
-| End Date | 2026-03-18 |
-| City | London |
-| Country | United Kingdom |
-| Online Event | (unchecked) |
-| Description | A Rust conference in the heart of London. |
+| Conference Name | RustConf 2026 |
+| Conference Website | https://rustconf.com |
+| Start Date | 2026-09-09 |
+| End Date | 2026-09-11 |
+| City | Portland |
+| Country | United States |
+| CFP URL | https://rustconf.com/cfp |
+| CFP End Date | 2026-06-15 |
+| Description | The official Rust conference, featuring talks on the latest Rust developments. |
+| Published | (checked) |
 
-Leave the remaining fields blank (they're optional) and make sure **Published** is checked. Click **Create content**.
+Leave the remaining fields blank (they're optional). Click **Create content**.
 
-You'll be redirected to `/admin/content` where "RustNation UK 2026" now appears in the list alongside the seeded conferences.
+You'll be redirected to `/admin/content` where "RustConf 2026" now appears in the list.
+
+### Conference 2: EuroRust 2026
+
+Go back to `/admin/content/add/conference` and create a second conference:
+
+| Field | Value |
+|---|---|
+| Conference Name | EuroRust 2026 |
+| Conference Website | https://eurorust.eu |
+| Start Date | 2026-10-15 |
+| End Date | 2026-10-16 |
+| City | Paris |
+| Country | France |
+| Description | Europe's premier Rust conference, bringing together Rustaceans from across the continent. |
+| Published | (checked) |
+
+Click **Create content**.
+
+### Conference 3: WasmCon Online 2026
+
+One more -- this time an online-only conference, which exercises the `field_online` boolean checkbox. Navigate to `/admin/content/add/conference`:
+
+| Field | Value |
+|---|---|
+| Conference Name | WasmCon Online 2026 |
+| Conference Website | https://wasmcon.dev |
+| Start Date | 2026-07-22 |
+| End Date | 2026-07-23 |
+| Online Event | (checked) |
+| Description | A virtual conference dedicated to WebAssembly, covering toolchains, runtimes, and the component model. |
+| Published | (checked) |
+
+Notice that **City** and **Country** are left blank -- this is an online event, so a physical location doesn't apply. Click **Create content**.
+
+You now have three conferences in your content listing at `/admin/content`.
 
 ### What Happened on Submit
 
-When you submitted the form, the kernel:
+When you submitted each form, the kernel:
 
 1. **Validated** -- checked that `field_start_date` and `field_end_date` (the two required fields) were present.
 2. **Extracted fields** -- separated the dynamic field values (`field_url`, `field_start_date`, etc.) from system fields (`title`, `status`, CSRF token).
@@ -310,16 +347,18 @@ The `fields` column contains a flat JSON object:
 
 ```json
 {
-  "field_url": "https://rustnationuk.com",
-  "field_start_date": "2026-03-17",
-  "field_end_date": "2026-03-18",
-  "field_city": "London",
-  "field_country": "United Kingdom",
-  "field_description": "A Rust conference in the heart of London."
+  "field_url": "https://rustconf.com",
+  "field_start_date": "2026-09-09",
+  "field_end_date": "2026-09-11",
+  "field_city": "Portland",
+  "field_country": "United States",
+  "field_cfp_url": "https://rustconf.com/cfp",
+  "field_cfp_end_date": "2026-06-15",
+  "field_description": "The official Rust conference, featuring talks on the latest Rust developments."
 }
 ```
 
-Notice that `title` is a column on the `item` table itself, not inside `fields`. Boolean fields that are unchecked are simply absent from the JSON (the checkbox was not checked, so `field_online` is not submitted).
+Notice that `title` is a column on the `item` table itself, not inside `fields`. Boolean fields that are unchecked are simply absent from the JSON (the checkbox was not checked, so `field_online` is not submitted). For WasmCon Online 2026, you would see `"field_online": "1"` present in the JSON.
 
 ### Item IDs and Timestamps
 
@@ -333,34 +372,47 @@ Every item has a `stage_id` that defaults to the **live** stage (a deterministic
 
 In Part 4, we will explore how Stages let you prepare content changes on a draft or review stage before promoting them to live. For now, you can ignore stages entirely: every item you create goes directly to the live stage and is immediately visible.
 
-### Seeded Conferences
-
-The Ritrovo migration also seeds three conferences so you have data to work with even without filling in forms:
-
-1. **RustConf 2026** -- Portland, OR, Sep 9--11. Includes CFP URL and deadline.
-2. **EuroRust 2026** -- Paris, France, Oct 15--16. A European Rust conference.
-3. **WasmCon Online 2026** -- Online-only, Jul 22--23. Exercises the `field_online` boolean.
-
-You can see all of them at `/admin/content`.
-
 ---
 
 ## Step 4: Build Your First Gather
 
 You have conferences in the database, but no public page that lists them. That's where **Gathers** come in. A Gather is Trovato's declarative query engine -- you define *what* you want (which item type, which filters, which sort order) and Trovato generates the SQL, handles pagination, and renders the results.
 
-### The Ritrovo Migration
+### Creating the Gather via Admin UI
 
-Like the conference Item Type and seed data, the Gather definition is created by a migration (`crates/kernel/migrations/20260226000002_seed_conference_gather.sql`). This migration:
+Let's create a Gather that lists all published conferences sorted by start date.
 
-1. Inserts a `gather_query` row with query ID `upcoming_conferences`.
-2. Creates a URL alias from `/conferences` to `/gather/upcoming_conferences`.
+1. Navigate to `/admin/gather` in your browser.
+2. Click **Create gather query** (or go directly to `/admin/gather/create`).
+3. Fill in the form:
 
-When the server starts (or when you run `sqlx migrate run`), this migration runs automatically. You don't need to create the Gather by hand -- but let's walk through what it contains.
+| Field | Value |
+|---|---|
+| Query ID | upcoming_conferences |
+| Label | Upcoming Conferences |
+| Description | Published conferences sorted by start date |
+| Base Table | item |
+| Item Type | conference |
+
+4. **Add a filter** -- this ensures only published conferences appear:
+   - Field: `status`
+   - Operator: `equals`
+   - Value: `1`
+
+5. **Add a sort** -- this orders conferences by when they start:
+   - Field: `fields.field_start_date`
+   - Direction: `asc`
+
+6. **Display settings:**
+   - Format: `table`
+   - Items per page: `25`
+   - Empty text: `No conferences found.`
+
+7. Click **Save**.
 
 ### Gather Definition
 
-The Gather definition is a JSONB document stored in the `gather_query` table:
+Here's what the form created in the database. The Gather definition is a JSONB document stored in the `gather_query` table:
 
 ```
 GatherDefinition {
@@ -382,11 +434,10 @@ This is a simplified version of the full Upcoming Conferences Gather -- no expos
 
 ### How It Works
 
-When a visitor hits `/conferences`, the kernel:
+When a visitor hits the Gather's URL, the kernel:
 
-1. **Resolves the URL** -- the path alias middleware rewrites `/conferences` to `/gather/upcoming_conferences` transparently (the visitor's URL bar still shows `/conferences`).
-2. **Loads the definition** -- reads the `upcoming_conferences` row from `gather_query`.
-3. **Builds a parameterized SQL query** -- the Gather engine translates the definition into a SQL query:
+1. **Loads the definition** -- reads the `upcoming_conferences` row from `gather_query`.
+2. **Builds a parameterized SQL query** -- the Gather engine translates the definition into a SQL query:
 
 ```sql
 SELECT id, current_revision_id, type, title, author_id, status,
@@ -397,13 +448,29 @@ ORDER BY item.fields->>'field_start_date' ASC
 LIMIT 25 OFFSET 0
 ```
 
-4. **Renders the results** -- using the configured display format (table, with pagination controls).
+3. **Renders the results** -- using the configured display format (table, with pagination controls).
 
 No code was written. No templates were edited. The Gather system translated your declarative definition into a working page.
 
+### Creating the URL Alias
+
+The Gather is accessible at `/gather/upcoming_conferences`, but that's not a user-friendly URL. Let's create a clean alias.
+
+1. Navigate to `/admin/structure/aliases/add`.
+2. Fill in the form:
+
+| Field | Value |
+|---|---|
+| Source path | /gather/upcoming_conferences |
+| Alias | /conferences |
+
+3. Click **Save**.
+
+Now `/conferences` transparently resolves to `/gather/upcoming_conferences` -- visitors see the clean URL in their browser.
+
 ### Viewing the Listing
 
-Visit `http://localhost:3000/conferences` in your browser. You should see a table listing all four conferences (the three seeded ones plus "RustNation UK 2026" if you created it in Step 3), sorted by start date with the soonest conference first.
+Visit `http://localhost:3000/conferences` in your browser. You should see a table listing all three conferences you created in Step 3, sorted by start date with the soonest conference first (WasmCon Online in July, then RustConf in September, then EuroRust in October).
 
 The Gather is also available as JSON via the REST API:
 
@@ -415,14 +482,7 @@ This returns a JSON response with the query results, pagination info, and total 
 
 ### URL Routing
 
-Gathers are served at `/gather/{query_id}` by default. To give a Gather a clean URL like `/conferences`, Trovato uses the same **URL alias** system that gives items human-friendly paths. The migration inserts an alias record:
-
-```sql
-INSERT INTO url_alias (id, source, alias, language, stage_id, created)
-VALUES (gen_random_uuid(), '/gather/upcoming_conferences', '/conferences', 'en', 'live', ...);
-```
-
-The path alias middleware intercepts incoming requests, looks up the alias, and rewrites the URI before it reaches the router. Query strings and pagination parameters pass through unchanged.
+Gathers are served at `/gather/{query_id}` by default. The URL alias you just created gives it a clean URL. The path alias middleware intercepts incoming requests, looks up the alias, and rewrites the URI before it reaches the router. Query strings and pagination parameters pass through unchanged.
 
 ### Pagination
 
@@ -431,17 +491,6 @@ The Gather renders 25 items per page with next/previous controls. The pager show
 ### Empty State
 
 If no conferences match the filters (for example, if you delete all conferences), the Gather displays the configured empty text: "No conferences found." rather than a blank page.
-
-### Creating Gathers Through the Admin UI
-
-The migration creates the Gather automatically, but you can also create Gathers through the admin UI:
-
-1. Navigate to `/admin/gather`.
-2. Click **Create gather query** (or go directly to `/admin/gather/create`).
-3. Fill in the query ID, label, base table, item type, filters, sorts, and display settings.
-4. Click **Save**.
-
-The admin UI at `/admin/gather` lists all Gather definitions and lets you edit, clone, or delete them. You can use it to experiment with different filter and sort combinations.
 
 ### Exposed Filters (Preview)
 
@@ -455,7 +504,7 @@ By the end of Part 1, you have:
 
 - A running Trovato instance with PostgreSQL and Redis.
 - A `conference` Item Type with 17 fields for dates, location, CFP details, topics, and more.
-- Four conferences (three seeded, one created by hand), each viewable at `/item/{uuid}`.
+- Three conferences (created by hand), each viewable at `/item/{uuid}`.
 - A Gather listing at `/conferences` that displays all published conferences sorted by start date.
 
 This is enough to see the shape of Trovato. Everything after this builds on these fundamentals.

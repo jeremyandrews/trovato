@@ -162,7 +162,7 @@ Each test is named after the tutorial part and step it validates:
 ```
 test_part01_step02_conference_type_in_api
 test_part01_step02_conference_has_17_fields
-test_part01_step03_seeded_conferences_exist
+test_part01_step03_conferences_exist
 test_part01_step04_gather_returns_conferences
 ```
 

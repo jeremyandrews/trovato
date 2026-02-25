@@ -16,6 +16,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
+use tokio::sync::OnceCell;
+use trovato_kernel::gather::{
+    DisplayFormat, FilterOperator, FilterValue, GatherQuery, PagerConfig, PagerStyle,
+    QueryDefinition, QueryDisplay, QueryFilter, QuerySort, SortDirection,
+};
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
 
 mod common;
@@ -41,6 +46,195 @@ async fn response_text(response: axum::response::Response) -> String {
         .expect("failed to read response body")
         .to_bytes();
     String::from_utf8(bytes.to_vec()).expect("response body is not valid UTF-8")
+}
+
+// =============================================================================
+// Tutorial data seeding
+//
+// The tutorial guides users to create conferences, a gather, and a URL alias
+// by hand through the admin UI. Tests seed the same data programmatically.
+// This replaces the deleted seed migrations that previously provided this data.
+// =============================================================================
+
+/// One-time initialization cell for tutorial seed data.
+static TUTORIAL_SEED: OnceCell<()> = OnceCell::const_new();
+
+/// Seed the 3 tutorial conferences, the `upcoming_conferences` gather, and
+/// the `/conferences` URL alias. Idempotent — safe to call from any test.
+async fn seed_tutorial_data(app: &'static common::TestApp) {
+    TUTORIAL_SEED
+        .get_or_init(|| async {
+            let now = chrono::Utc::now().timestamp();
+            let nil_author = uuid::Uuid::nil();
+
+            // --- Conference items ---
+            let conferences = [
+                (
+                    "RustConf 2026",
+                    serde_json::json!({
+                        "field_url": "https://rustconf.com",
+                        "field_start_date": "2026-09-09",
+                        "field_end_date": "2026-09-11",
+                        "field_city": "Portland",
+                        "field_country": "United States",
+                        "field_cfp_url": "https://rustconf.com/cfp",
+                        "field_cfp_end_date": "2026-06-15",
+                        "field_description": "The official Rust conference, featuring talks on the latest Rust developments.",
+                        "field_language": "en"
+                    }),
+                ),
+                (
+                    "EuroRust 2026",
+                    serde_json::json!({
+                        "field_url": "https://eurorust.eu",
+                        "field_start_date": "2026-10-15",
+                        "field_end_date": "2026-10-16",
+                        "field_city": "Paris",
+                        "field_country": "France",
+                        "field_description": "Europe's premier Rust conference, bringing together Rustaceans from across the continent.",
+                        "field_language": "en"
+                    }),
+                ),
+                (
+                    "WasmCon Online 2026",
+                    serde_json::json!({
+                        "field_url": "https://wasmcon.dev",
+                        "field_start_date": "2026-07-22",
+                        "field_end_date": "2026-07-23",
+                        "field_online": "1",
+                        "field_description": "A virtual conference dedicated to WebAssembly, covering toolchains, runtimes, and the component model.",
+                        "field_language": "en"
+                    }),
+                ),
+            ];
+
+            for (title, fields) in &conferences {
+                let exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM item WHERE type = 'conference' AND title = $1)",
+                )
+                .bind(title)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+
+                if exists {
+                    continue;
+                }
+
+                let item_id = uuid::Uuid::now_v7();
+                let rev_id = uuid::Uuid::now_v7();
+
+                sqlx::query(
+                    r#"INSERT INTO item (id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id)
+                       VALUES ($1, 'conference', $2, $3, 1, $4, $4, 0, 0, $5, $6)"#,
+                )
+                .bind(item_id)
+                .bind(title)
+                .bind(nil_author)
+                .bind(now)
+                .bind(fields)
+                .bind(LIVE_STAGE_ID)
+                .execute(&app.db)
+                .await
+                .expect("failed to seed conference item");
+
+                sqlx::query(
+                    r#"INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log)
+                       VALUES ($1, $2, $3, $4, 1, $5, $6, 'Tutorial seed')"#,
+                )
+                .bind(rev_id)
+                .bind(item_id)
+                .bind(nil_author)
+                .bind(title)
+                .bind(fields)
+                .bind(now)
+                .execute(&app.db)
+                .await
+                .expect("failed to seed conference revision");
+
+                sqlx::query("UPDATE item SET current_revision_id = $1 WHERE id = $2")
+                    .bind(rev_id)
+                    .bind(item_id)
+                    .execute(&app.db)
+                    .await
+                    .expect("failed to link revision to item");
+            }
+
+            // --- Gather query ---
+            // Use register_query() which atomically persists to DB and updates
+            // the in-memory cache for this single query, avoiding a global
+            // load_queries() reload that could race with other tests.
+            if app.state.gather().get_query("upcoming_conferences").is_none() {
+                app.state
+                    .gather()
+                    .register_query(GatherQuery {
+                        query_id: "upcoming_conferences".to_string(),
+                        label: "Upcoming Conferences".to_string(),
+                        description: Some(
+                            "Published conferences sorted by start date".to_string(),
+                        ),
+                        definition: QueryDefinition {
+                            base_table: "item".to_string(),
+                            item_type: Some("conference".to_string()),
+                            fields: vec![],
+                            filters: vec![QueryFilter {
+                                field: "status".to_string(),
+                                operator: FilterOperator::Equals,
+                                value: FilterValue::Integer(1),
+                                exposed: false,
+                                exposed_label: None,
+                            }],
+                            sorts: vec![QuerySort {
+                                field: "fields.field_start_date".to_string(),
+                                direction: SortDirection::Asc,
+                                nulls: None,
+                            }],
+                            relationships: vec![],
+                            includes: std::collections::HashMap::new(),
+                            stage_aware: true,
+                        },
+                        display: QueryDisplay {
+                            format: DisplayFormat::Table,
+                            items_per_page: 25,
+                            pager: PagerConfig {
+                                enabled: true,
+                                style: PagerStyle::Full,
+                                show_count: true,
+                            },
+                            empty_text: Some("No conferences found.".to_string()),
+                            header: None,
+                            footer: None,
+                        },
+                        plugin: "core".to_string(),
+                        created: now,
+                        changed: now,
+                    })
+                    .await
+                    .expect("failed to register gather query");
+            }
+
+            // --- URL alias: /conferences → /gather/upcoming_conferences ---
+            let alias_exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM url_alias WHERE alias = '/conferences' AND language = 'en' AND stage_id = $1)",
+            )
+            .bind(LIVE_STAGE_ID)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+
+            if !alias_exists {
+                sqlx::query(
+                    r#"INSERT INTO url_alias (id, source, alias, language, stage_id, created)
+                       VALUES (gen_random_uuid(), '/gather/upcoming_conferences', '/conferences', 'en', $1, $2)"#,
+                )
+                .bind(LIVE_STAGE_ID)
+                .bind(now)
+                .execute(&app.db)
+                .await
+                .expect("failed to seed /conferences URL alias");
+            }
+        })
+        .await;
 }
 
 // =============================================================================
@@ -296,16 +490,18 @@ fn test_part01_step02_title_label() {
 // Step 3: Create Your First Conference
 // Validates: docs/tutorial/part-01-hello-trovato.md — Step 3
 //
-// The tutorial claims:
-// - 3 seeded conferences exist (RustConf, EuroRust, WasmCon Online)
+// The tutorial guides users to create 3 conferences by hand.
+// Tests seed the same data programmatically, then verify:
+// - 3 conferences exist (RustConf, EuroRust, WasmCon Online)
 // - Items viewable at /item/{uuid} (HTML) and /api/item/{uuid} (JSON)
 // - Items have UUIDv7 IDs, Unix timestamps, and live stage_id
 // =============================================================================
 
 #[test]
-fn test_part01_step03_seeded_conferences_exist() {
+fn test_part01_step03_conferences_exist() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT title FROM item WHERE type = 'conference' AND status = 1 ORDER BY title",
@@ -316,18 +512,18 @@ fn test_part01_step03_seeded_conferences_exist() {
 
         let titles: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
 
-        // Tutorial documents 3 seeded conferences
+        // Tutorial Step 3 creates 3 conferences
         assert!(
             titles.contains(&"RustConf 2026"),
-            "RustConf 2026 must be seeded; found: {titles:?}"
+            "RustConf 2026 must exist; found: {titles:?}"
         );
         assert!(
             titles.contains(&"EuroRust 2026"),
-            "EuroRust 2026 must be seeded; found: {titles:?}"
+            "EuroRust 2026 must exist; found: {titles:?}"
         );
         assert!(
             titles.contains(&"WasmCon Online 2026"),
-            "WasmCon Online 2026 must be seeded; found: {titles:?}"
+            "WasmCon Online 2026 must exist; found: {titles:?}"
         );
     });
 }
@@ -336,6 +532,7 @@ fn test_part01_step03_seeded_conferences_exist() {
 fn test_part01_step03_item_viewable_as_html() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         // Viewing items requires "access content" permission, so authenticate
         let cookies = app
@@ -373,6 +570,7 @@ fn test_part01_step03_item_viewable_as_html() {
 fn test_part01_step03_item_json_api() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         // Get a conference item ID and title
         let row: (uuid::Uuid, String) = sqlx::query_as(
@@ -401,6 +599,7 @@ fn test_part01_step03_item_json_api() {
 fn test_part01_step03_items_on_live_stage() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         // Tutorial: "Every item has a stage_id that defaults to the live stage"
         let rows: Vec<(uuid::Uuid,)> =
@@ -427,6 +626,7 @@ fn test_part01_step03_items_on_live_stage() {
 fn test_part01_step03_timestamps_are_unix() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         // Tutorial: "created and changed columns store Unix timestamps (seconds since epoch)"
         let row: (i64, i64) = sqlx::query_as(
@@ -452,11 +652,46 @@ fn test_part01_step03_timestamps_are_unix() {
     });
 }
 
+#[test]
+fn test_part01_step03_online_boolean_field() {
+    run_test(async {
+        let app = shared_app().await;
+        seed_tutorial_data(app).await;
+
+        // Tutorial: 'For WasmCon Online 2026, you would see "field_online": "1"'
+        let row: (Value,) = sqlx::query_as(
+            "SELECT fields FROM item WHERE type = 'conference' AND title = 'WasmCon Online 2026'",
+        )
+        .fetch_one(&app.db)
+        .await
+        .expect("WasmCon Online 2026 must exist");
+
+        assert_eq!(
+            row.0["field_online"], "1",
+            "WasmCon Online should have field_online set to \"1\""
+        );
+
+        // RustConf should NOT have field_online (unchecked = absent)
+        let row2: (Value,) = sqlx::query_as(
+            "SELECT fields FROM item WHERE type = 'conference' AND title = 'RustConf 2026'",
+        )
+        .fetch_one(&app.db)
+        .await
+        .expect("RustConf 2026 must exist");
+
+        assert!(
+            row2.0.get("field_online").is_none() || row2.0["field_online"].is_null(),
+            "RustConf should not have field_online set"
+        );
+    });
+}
+
 // =============================================================================
 // Step 4: Build Your First Gather
 // Validates: docs/tutorial/part-01-hello-trovato.md — Step 4
 //
-// The tutorial claims:
+// The tutorial guides users to create a gather and URL alias via admin UI.
+// Tests seed the same data programmatically, then verify:
 // - Gather query "upcoming_conferences" exists
 // - /conferences URL alias resolves to the gather
 // - Results sorted by start_date ascending
@@ -468,6 +703,7 @@ fn test_part01_step03_timestamps_are_unix() {
 fn test_part01_step04_gather_query_exists() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         // Tutorial: Gather query_id "upcoming_conferences"
         let response = app
@@ -494,6 +730,7 @@ fn test_part01_step04_gather_query_exists() {
 fn test_part01_step04_gather_returns_conferences() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let response = app
             .request(
@@ -507,11 +744,11 @@ fn test_part01_step04_gather_returns_conferences() {
 
         let body = response_json(response).await;
 
-        // Should return at least the 3 seeded conferences
+        // Should return at least the 3 tutorial conferences
         let total = body["total"].as_u64().unwrap_or(0);
         assert!(
             total >= 3,
-            "gather should return at least 3 seeded conferences, got {total}"
+            "gather should return at least 3 conferences, got {total}"
         );
 
         let items = body["items"].as_array().expect("items must be an array");
@@ -523,6 +760,7 @@ fn test_part01_step04_gather_returns_conferences() {
 fn test_part01_step04_conferences_url_alias() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         // Tutorial: "/conferences" URL alias resolves to /gather/upcoming_conferences
         //
@@ -576,7 +814,7 @@ fn test_part01_step04_conferences_url_alias() {
         let body = response_text(response).await;
         assert!(
             body.contains("RustConf 2026") || body.contains("EuroRust 2026"),
-            "gather page should contain seeded conference names"
+            "gather page should contain conference names"
         );
     });
 }
@@ -585,6 +823,7 @@ fn test_part01_step04_conferences_url_alias() {
 fn test_part01_step04_sorted_by_start_date() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let response = app
             .request(
@@ -618,6 +857,7 @@ fn test_part01_step04_sorted_by_start_date() {
 fn test_part01_step04_pagination_config() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let response = app
             .request(
@@ -647,6 +887,7 @@ fn test_part01_step04_pagination_config() {
 fn test_part01_step04_empty_text_configured() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let response = app
             .request(
@@ -670,6 +911,7 @@ fn test_part01_step04_empty_text_configured() {
 fn test_part01_step04_gather_status_filter() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let response = app
             .request(
