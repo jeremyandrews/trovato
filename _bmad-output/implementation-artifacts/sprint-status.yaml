@@ -470,3 +470,11 @@ development_status:
   31-5-chatbot: done
   31-6-mcp-integration: done
   epic-31-retrospective: optional
+
+  # Epic 32: Service Layer Integration
+  # Service layers for Comment, User, and Role with tap hooks, caching, and permission cache invalidation
+  epic-32: done
+  32-1-comment-service: done
+  32-2-user-service: done
+  32-3-role-service: done
+  epic-32-retrospective: optional

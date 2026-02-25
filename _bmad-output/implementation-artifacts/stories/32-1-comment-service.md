@@ -1,6 +1,6 @@
 # Story 32.1: Comment Service Layer
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -40,44 +40,44 @@ Additionally, the two `// TODO: Add proper permission check for admins` notes in
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Create `CommentService` (AC: #1, #2)
-  - [ ] 1.1 Create `crates/kernel/src/services/comment.rs` with struct, `new()`, and `PgPool` + `Arc<TapDispatcher>`
-  - [ ] 1.2 Implement `load(id) -> Result<Option<Comment>>`
-  - [ ] 1.3 Implement `create(input, &UserContext) -> Result<Comment>` with `tap_comment_insert`
-  - [ ] 1.4 Implement `update(id, input, &UserContext) -> Result<Option<Comment>>` with `tap_comment_update`
-  - [ ] 1.5 Implement `delete(id, &UserContext) -> Result<bool>` with `tap_comment_delete`
-  - [ ] 1.6 Implement `list_for_item(item_id) -> Result<Vec<Comment>>`
-  - [ ] 1.7 Implement `list_all(limit, offset) -> Result<Vec<Comment>>`
-  - [ ] 1.8 Implement `list_by_status(status, limit, offset) -> Result<Vec<Comment>>`
-  - [ ] 1.9 Implement `count_all() -> Result<i64>`
-  - [ ] 1.10 Add `pub mod comment;` to `services/mod.rs`
+- [x] Task 1: Create `CommentService` (AC: #1, #2)
+  - [x] 1.1 Create `crates/kernel/src/services/comment.rs` with struct, `new()`, and `PgPool` + `Arc<TapDispatcher>`
+  - [x] 1.2 Implement `load(id) -> Result<Option<Comment>>`
+  - [x] 1.3 Implement `create(input, &UserContext) -> Result<Comment>` with `tap_comment_insert`
+  - [x] 1.4 Implement `update(id, input, &UserContext) -> Result<Option<Comment>>` with `tap_comment_update`
+  - [x] 1.5 Implement `delete(id, &UserContext) -> Result<bool>` with `tap_comment_delete`
+  - [x] 1.6 Implement `list_for_item(item_id) -> Result<Vec<Comment>>`
+  - [x] 1.7 Implement `list_all(limit, offset) -> Result<Vec<Comment>>`
+  - [x] 1.8 Implement `list_by_status(status, limit, offset) -> Result<Vec<Comment>>`
+  - [x] 1.9 Implement `count_all() -> Result<i64>`
+  - [x] 1.10 Add `pub mod comment;` to `services/mod.rs`
 
-- [ ] Task 2: Implement access control (AC: #3)
-  - [ ] 2.1 Implement `check_access(&Comment, operation, &UserContext) -> Result<bool>`
-  - [ ] 2.2 Admin short-circuit (`is_admin() -> true`)
-  - [ ] 2.3 Author-owns-comment check for edit/delete own
-  - [ ] 2.4 `tap_comment_access` dispatch with deny/grant/neutral aggregation
-  - [ ] 2.5 Permission fallback: `"post comments"`, `"edit own comments"`, `"edit any comment"`, `"delete own comments"`, `"delete any comment"`
+- [x] Task 2: Implement access control (AC: #3)
+  - [x] 2.1 Implement `check_access(&Comment, operation, &UserContext) -> Result<bool>`
+  - [x] 2.2 Admin short-circuit (`is_admin() -> true`)
+  - [x] 2.3 Author-owns-comment check for edit/delete own
+  - [x] 2.4 `tap_comment_access` dispatch with deny/grant/neutral aggregation
+  - [x] 2.5 Permission fallback: `"post comments"`, `"edit own comments"`, `"edit any comment"`, `"delete own comments"`, `"delete any comment"`
 
-- [ ] Task 3: Wire into AppState (AC: #6)
-  - [ ] 3.1 Add `comments: Option<Arc<CommentService>>` to `AppStateInner`
-  - [ ] 3.2 Initialize conditionally when `"comments"` plugin is enabled
-  - [ ] 3.3 Add accessor `pub fn comments(&self) -> &CommentService`
+- [x] Task 3: Wire into AppState (AC: #6)
+  - [x] 3.1 Add `comments: Option<Arc<CommentService>>` to `AppStateInner`
+  - [x] 3.2 Initialize conditionally when `"comments"` plugin is enabled
+  - [x] 3.3 Add accessor `pub fn comments(&self) -> &CommentService`
 
-- [ ] Task 4: Migrate `routes/comment.rs` (AC: #4)
-  - [ ] 4.1 Replace 9 `Comment::*` calls with `state.comments().*`
-  - [ ] 4.2 Remove `Comment` from models import (keep `CreateComment`, `UpdateComment`)
-  - [ ] 4.3 Remove TODO comments, use `check_access` for admin permission checks
+- [x] Task 4: Migrate `routes/comment.rs` (AC: #4)
+  - [x] 4.1 Replace 9 `Comment::*` calls with `state.comments().*`
+  - [x] 4.2 Remove `Comment` from models import (keep `CreateComment`, `UpdateComment`)
+  - [x] 4.3 Remove TODO comments, use `check_access` for admin permission checks
 
-- [ ] Task 5: Migrate `routes/admin.rs` (AC: #5)
-  - [ ] 5.1 Replace 7 `Comment::*` calls with `state.comments().*`
-  - [ ] 5.2 Build `UserContext` via `admin_user_context()` for mutation operations
-  - [ ] 5.3 Remove `Comment` from models import if no longer needed as a type
+- [x] Task 5: Migrate `routes/admin.rs` (AC: #5)
+  - [x] 5.1 Replace 7 `Comment::*` calls with `state.comments().*`
+  - [x] 5.2 Build `UserContext` via `admin_user_context()` for mutation operations
+  - [x] 5.3 Remove `Comment` from models import if no longer needed as a type
 
-- [ ] Task 6: Tests (AC: #7)
-  - [ ] 6.1 Unit tests for `check_access` (admin bypass, author owns, permission fallback)
-  - [ ] 6.2 Verify all existing integration tests pass
-  - [ ] 6.3 `cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --all`
+- [x] Task 6: Tests (AC: #7)
+  - [x] 6.1 Unit tests for `check_access` (admin bypass, author owns, permission fallback)
+  - [x] 6.2 Verify all existing integration tests pass
+  - [x] 6.3 `cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --all`
 
 ## Dev Notes
 
