@@ -271,6 +271,49 @@ async fn create_comment(
         ));
     }
 
+    // Build UserContext with real permissions for access check
+    let user = state.users().find_by_id(user_id).await.map_err(|e| {
+        tracing::error!(error = %e, "failed to load user");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: "Internal server error".to_string(),
+            }),
+        )
+    })?;
+    let user = user.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(JsonError {
+                error: "User not found".to_string(),
+            }),
+        )
+    })?;
+    let user_perms = state
+        .permissions()
+        .load_user_permissions(&user)
+        .await
+        .unwrap_or_default();
+    let user_ctx = if user.is_admin {
+        UserContext::authenticated(user_id, {
+            let mut p: Vec<String> = user_perms.into_iter().collect();
+            p.push("administer site".to_string());
+            p
+        })
+    } else {
+        UserContext::authenticated(user_id, user_perms.into_iter().collect())
+    };
+
+    // Check "post comments" permission
+    if !user_ctx.is_admin() && !user_ctx.has_permission("post comments") {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(JsonError {
+                error: "You do not have permission to post comments".to_string(),
+            }),
+        ));
+    }
+
     // Create comment
     let input = CreateComment {
         item_id,
@@ -280,8 +323,6 @@ async fn create_comment(
         body_format: Some("filtered_html".to_string()),
         status: Some(1), // Published by default
     };
-
-    let user_ctx = UserContext::authenticated(user_id, vec!["post comments".to_string()]);
     let comment = state
         .comments()
         .create(input, &user_ctx)

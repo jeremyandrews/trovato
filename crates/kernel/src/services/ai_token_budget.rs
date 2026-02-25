@@ -494,7 +494,9 @@ impl AiTokenBudgetService {
             return Ok(0); // No defaults for this provider → unlimited
         };
 
-        // Load user's role names
+        // Load user's role names.
+        // Uses Role model directly: AiTokenBudgetService has no RoleService
+        // reference, and this is a read-only lookup with no cache to invalidate.
         let roles = crate::models::Role::get_user_roles(pool, user_id).await?;
 
         let mut highest_limit: Option<u64> = None;

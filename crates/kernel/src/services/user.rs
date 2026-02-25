@@ -21,6 +21,9 @@ use crate::tap::{RequestState, TapDispatcher, UserContext};
 /// The DashMap cache deduplicates `find_by_id` lookups that are called
 /// repeatedly across route helpers (`require_login`, `require_admin`,
 /// author info in list views, etc.).
+///
+/// The cache is unbounded but users are few relative to content items.
+/// Call [`clear_cache`](Self::clear_cache) periodically if memory is a concern.
 #[derive(Clone)]
 pub struct UserService {
     inner: Arc<UserServiceInner>,
@@ -106,8 +109,8 @@ impl UserService {
     ) -> Result<Option<User>> {
         let user = User::update(&self.inner.pool, id, input).await?;
 
-        if user.is_some() {
-            self.invalidate(id);
+        if let Some(ref u) = user {
+            self.inner.cache.insert(id, u.clone());
             self.dispatch_tap("tap_user_update", id, acting_user).await;
             info!(user_id = %id, "user updated");
         }
@@ -148,6 +151,10 @@ impl UserService {
     }
 
     /// Record a successful login: update timestamps and dispatch `tap_user_login`.
+    ///
+    /// The tap fires with an empty-permission `UserContext` because this runs
+    /// during the login flow before the session is fully established. Plugins
+    /// that need the user's permissions should load them from the database.
     pub async fn record_login(&self, user: &User) -> Result<()> {
         User::touch_login(&self.inner.pool, user.id).await?;
         self.invalidate(user.id);
@@ -158,6 +165,10 @@ impl UserService {
     }
 
     /// Record a logout: dispatch `tap_user_logout`.
+    ///
+    /// The tap fires with an empty-permission `UserContext` because the
+    /// session is being destroyed. Plugins should use the user ID for
+    /// any post-logout processing.
     pub async fn record_logout(&self, user_id: Uuid) -> Result<()> {
         let user_ctx = UserContext::authenticated(user_id, vec![]);
         self.dispatch_tap("tap_user_logout", user_id, &user_ctx)
@@ -228,5 +239,72 @@ mod tests {
         let json = serde_json::json!({ "user_id": id.to_string() });
         let s = json.to_string();
         assert!(s.contains(&id.to_string()));
+    }
+
+    fn make_test_user(id: Uuid, name: &str) -> User {
+        User {
+            id,
+            name: name.to_string(),
+            pass: String::new(),
+            mail: format!("{name}@test.com"),
+            status: 1,
+            is_admin: false,
+            created: chrono::Utc::now(),
+            access: None,
+            login: None,
+            timezone: None,
+            language: None,
+            data: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn cache_insert_and_retrieve() {
+        let cache: DashMap<Uuid, User> = DashMap::new();
+        let id = Uuid::now_v7();
+        let user = make_test_user(id, "test");
+
+        cache.insert(id, user);
+        assert_eq!(cache.len(), 1);
+
+        let cached = cache.get(&id).unwrap();
+        assert_eq!(cached.name, "test");
+        assert_eq!(cached.mail, "test@test.com");
+    }
+
+    #[test]
+    fn cache_invalidate_removes_entry() {
+        let cache: DashMap<Uuid, User> = DashMap::new();
+        let id = Uuid::now_v7();
+        cache.insert(id, make_test_user(id, "test"));
+        assert!(cache.get(&id).is_some());
+
+        cache.remove(&id);
+        assert!(cache.get(&id).is_none());
+    }
+
+    #[test]
+    fn cache_clear_removes_all() {
+        let cache: DashMap<Uuid, User> = DashMap::new();
+        for i in 0..5 {
+            let id = Uuid::now_v7();
+            cache.insert(id, make_test_user(id, &format!("user_{i}")));
+        }
+        assert_eq!(cache.len(), 5);
+
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn cache_update_replaces_entry() {
+        let cache: DashMap<Uuid, User> = DashMap::new();
+        let id = Uuid::now_v7();
+        cache.insert(id, make_test_user(id, "original"));
+        assert_eq!(cache.get(&id).unwrap().name, "original");
+
+        // Simulate update: insert new version
+        cache.insert(id, make_test_user(id, "updated"));
+        assert_eq!(cache.get(&id).unwrap().name, "updated");
     }
 }

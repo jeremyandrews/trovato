@@ -79,6 +79,9 @@ impl PermissionService {
     pub async fn load_user_permissions(&self, user: &User) -> Result<HashSet<String>> {
         let mut permissions = HashSet::new();
 
+        // Note: Uses Role model directly (not RoleService) because
+        // PermissionService is initialized before RoleService in AppState.
+        // These are read-only lookups with no cache invalidation needed.
         if user.is_anonymous() {
             // Anonymous users only get anonymous role permissions
             let anon_perms =

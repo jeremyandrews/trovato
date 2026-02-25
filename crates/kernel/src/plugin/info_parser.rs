@@ -117,6 +117,11 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_user_register",
     "tap_user_update",
     "tap_user_delete",
+    // Comments
+    "tap_comment_insert",
+    "tap_comment_update",
+    "tap_comment_delete",
+    "tap_comment_access",
     // Gather extensions
     "tap_gather_extend",
 ];

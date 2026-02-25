@@ -1,8 +1,9 @@
-//! Kernel services for standard plugins.
+//! Kernel services.
 //!
-//! Services that provide runtime behavior for standard plugins.
-//! Plugin WASM modules provide declarative configuration (permissions,
-//! menus, migrations), while these services implement the logic.
+//! Core services (`user`, `role`) are always present in `AppState`.
+//! Plugin-optional services (`comment`, `content_lock`, etc.) are
+//! wrapped in `Option<Arc<...>>` and initialized only when the
+//! corresponding plugin is enabled.
 
 pub mod ai_chat;
 pub mod ai_provider;

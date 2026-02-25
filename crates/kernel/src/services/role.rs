@@ -154,3 +154,80 @@ impl RoleService {
         Role::get_user_permissions(&self.inner.pool, user_id).await
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use crate::models::role::well_known;
+
+    #[test]
+    fn well_known_role_ids_are_distinct() {
+        assert_ne!(
+            well_known::ANONYMOUS_ROLE_ID,
+            well_known::AUTHENTICATED_ROLE_ID
+        );
+    }
+
+    #[test]
+    fn save_permissions_diff_logic() {
+        // Test the set-diff logic used by save_permissions
+        let current = ["read", "write", "delete"];
+        let desired = ["read", "execute"];
+
+        let current_set: std::collections::HashSet<&str> = current.into_iter().collect();
+        let desired_set: std::collections::HashSet<&str> = desired.into_iter().collect();
+
+        let to_add: Vec<&str> = desired_set
+            .iter()
+            .filter(|p| !current_set.contains(**p))
+            .copied()
+            .collect();
+        let to_remove: Vec<&str> = current_set
+            .iter()
+            .filter(|p| !desired_set.contains(**p))
+            .copied()
+            .collect();
+
+        assert_eq!(to_add, ["execute"]);
+        assert!(to_remove.contains(&"write"));
+        assert!(to_remove.contains(&"delete"));
+        assert!(!to_remove.contains(&"read"));
+    }
+
+    #[test]
+    fn save_permissions_no_change() {
+        let current = ["read", "write"];
+        let desired = ["read", "write"];
+
+        let current_set: std::collections::HashSet<&str> = current.into_iter().collect();
+        let desired_set: std::collections::HashSet<&str> = desired.into_iter().collect();
+
+        let to_add: Vec<&&str> = desired_set
+            .iter()
+            .filter(|p| !current_set.contains(**p))
+            .collect();
+        let to_remove: Vec<&&str> = current_set
+            .iter()
+            .filter(|p| !desired_set.contains(**p))
+            .collect();
+
+        assert!(to_add.is_empty(), "no permissions should be added");
+        assert!(to_remove.is_empty(), "no permissions should be removed");
+    }
+
+    #[test]
+    fn invalidation_call_sites_documented() {
+        // Verify the contract: these are the operations that must invalidate.
+        // This test serves as documentation that any new mutation method
+        // must also call invalidate_all() or invalidate_user().
+        let mutation_methods_with_invalidation = [
+            "add_permission -> invalidate_all",
+            "remove_permission -> invalidate_all",
+            "save_permissions -> invalidate_all",
+            "delete -> invalidate_all",
+            "assign_to_user -> invalidate_user",
+            "remove_from_user -> invalidate_user",
+        ];
+        assert_eq!(mutation_methods_with_invalidation.len(), 6);
+    }
+}

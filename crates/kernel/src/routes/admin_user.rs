@@ -776,27 +776,17 @@ async fn save_permissions(
 
     // Process form data - permissions are submitted as "perm_{role_id}_{permission}"
     for role in &roles {
-        let current_perms = state
-            .roles()
-            .get_permissions(role.id)
-            .await
-            .unwrap_or_default();
+        let desired: Vec<String> = AVAILABLE_PERMISSIONS
+            .iter()
+            .filter(|permission| {
+                let key = format!("perm_{}_{}", role.id, permission.replace(' ', "_"));
+                form.permissions.contains_key(&key)
+            })
+            .map(|p| (*p).to_string())
+            .collect();
 
-        for permission in AVAILABLE_PERMISSIONS {
-            let key = format!("perm_{}_{}", role.id, permission.replace(' ', "_"));
-            let should_have = form.permissions.contains_key(&key);
-            let has_now = current_perms.contains(&permission.to_string());
-
-            if should_have && !has_now {
-                if let Err(e) = state.roles().add_permission(role.id, permission).await {
-                    tracing::error!(error = %e, role_id = %role.id, permission = %permission, "failed to add permission");
-                }
-            } else if !should_have
-                && has_now
-                && let Err(e) = state.roles().remove_permission(role.id, permission).await
-            {
-                tracing::error!(error = %e, role_id = %role.id, permission = %permission, "failed to remove permission");
-            }
+        if let Err(e) = state.roles().save_permissions(role.id, &desired).await {
+            tracing::error!(error = %e, role_id = %role.id, "failed to save permissions");
         }
     }
 
