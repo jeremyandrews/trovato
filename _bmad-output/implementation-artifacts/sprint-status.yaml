@@ -462,10 +462,10 @@ development_status:
 
   # Epic 31: AI as a Building Block
   # Provider registry, host functions, token budgets, permissions, chatbot, MCP
-  epic-31: in-progress
+  epic-31: done
   31-1-ai-provider-registry-and-secure-key-store: done
   31-2-wasm-ai-host-functions: done
-  31-3-token-budget-management: review
+  31-3-token-budget-management: done
   31-4-ai-permissions: done
   31-5-chatbot: done
   31-6-mcp-integration: done
