@@ -126,7 +126,7 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     // Read and clear flash
@@ -364,7 +364,7 @@ async fn user_budget_detail(
         }));
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let flash: Option<String> = session.get(FLASH_KEY).await.ok().flatten();

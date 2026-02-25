@@ -188,12 +188,20 @@ impl MenuRegistry {
             .collect()
     }
 
-    /// Get local task menus for a parent path, sorted by weight.
+    /// Get visible local task menus for a parent path, sorted by weight.
+    ///
+    /// Only returns menus where `visible` is `true`. Menus with
+    /// `visible: false` are excluded even if `local_task` is set — as of
+    /// the Epic 28 audit no registered plugin uses that combination.
+    ///
+    /// Permission filtering is handled at the route level (admin routes
+    /// require `require_admin()`), so tabs are only shown on pages the
+    /// user already has access to.
     pub fn local_tasks(&self, parent: &str) -> Vec<&MenuDefinition> {
         let mut tasks: Vec<&MenuDefinition> = self
             .menus
             .values()
-            .filter(|m| m.local_task && m.parent.as_deref() == Some(parent))
+            .filter(|m| m.local_task && m.visible && m.parent.as_deref() == Some(parent))
             .collect();
         tasks.sort_by_key(|m| m.weight);
         tasks

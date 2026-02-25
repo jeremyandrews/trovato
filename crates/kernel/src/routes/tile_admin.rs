@@ -71,7 +71,7 @@ async fn list_tiles(State(state): State<AppState>, session: Session) -> Response
     }
 
     let tiles = Tile::list_all(state.db()).await.unwrap_or_default();
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     // Group tiles by region
     let mut by_region: std::collections::BTreeMap<String, Vec<&Tile>> =
@@ -97,7 +97,7 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
         return redirect;
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("action", "/admin/structure/tiles/add");
@@ -170,7 +170,7 @@ async fn edit_tile_form(
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("action", &format!("/admin/structure/tiles/{tile_id}/edit"));

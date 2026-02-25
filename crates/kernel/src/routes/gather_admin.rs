@@ -53,7 +53,7 @@ async fn list_queries(State(state): State<AppState>, session: Session) -> Respon
 
     let queries = state.gather().list_queries();
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("queries", &queries);
@@ -72,7 +72,7 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
         return redirect;
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let default_definition = QueryDefinition::default();
@@ -174,7 +174,7 @@ async fn create_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -241,7 +241,7 @@ async fn edit_form(
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let definition_json = serde_json::to_string(&query.definition).unwrap_or_default();
@@ -329,7 +329,7 @@ async fn save_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();

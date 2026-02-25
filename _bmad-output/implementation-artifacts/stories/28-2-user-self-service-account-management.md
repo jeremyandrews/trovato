@@ -1,6 +1,6 @@
 # Story 28.2: User Self-Service Account Management
 
-Status: review
+Status: done
 
 ## Story
 

@@ -1,6 +1,6 @@
 # Story 28.5: Update Alignment Documentation
 
-Status: review
+Status: done
 
 ## Story
 

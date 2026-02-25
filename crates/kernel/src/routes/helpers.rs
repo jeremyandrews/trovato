@@ -191,9 +191,7 @@ pub async fn inject_site_context(
 
     // Generate CSRF token for authenticated users (used by logout form in page.html)
     if user_id.is_some() {
-        let csrf_token = crate::form::csrf::generate_csrf_token(session)
-            .await
-            .unwrap_or_default();
+        let csrf_token = crate::form::csrf::generate_csrf_token(session).await;
         context.insert("csrf_token", &csrf_token);
     }
 
@@ -411,14 +409,14 @@ pub fn build_local_tasks(
 
 /// Validate a password meets length requirements.
 ///
-/// Checks: non-empty, minimum 8 characters, maximum 128 characters.
+/// Checks: non-empty, minimum 12 characters, maximum 128 characters.
 /// Returns `Ok(())` on success, or `Err` with a human-readable error message.
 pub fn validate_password(password: &str) -> Result<(), &'static str> {
     if password.is_empty() {
         return Err("Password is required.");
     }
-    if password.len() < 8 {
-        return Err("Password must be at least 8 characters.");
+    if password.len() < 12 {
+        return Err("Password must be at least 12 characters.");
     }
     if password.len() > 128 {
         return Err("Password must be 128 characters or fewer.");
@@ -610,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_validate_password_valid() {
-        assert!(validate_password("abcdefgh").is_ok());
+        assert!(validate_password("abcdefghijkl").is_ok());
         assert!(validate_password("a".repeat(128).as_str()).is_ok());
     }
 

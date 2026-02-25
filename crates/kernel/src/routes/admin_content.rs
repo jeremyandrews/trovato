@@ -84,7 +84,7 @@ async fn list_content(
 
     let content_types = state.content_types().list_all().await;
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
     let flash: Option<String> = session.get(CONTENT_FLASH_KEY).await.ok().flatten();
@@ -143,7 +143,7 @@ async fn add_content_form(
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -204,7 +204,7 @@ async fn add_content_submit(
     ));
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -307,7 +307,7 @@ async fn edit_content_form(
         return render_server_error("Content type not found.");
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -397,7 +397,7 @@ async fn edit_content_submit(
     ));
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();

@@ -147,7 +147,7 @@ async fn list_providers(State(state): State<AppState>, session: Session) -> Resp
         .await
         .unwrap_or_default();
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     // Read and clear flash message
@@ -195,7 +195,7 @@ async fn add_provider_form(State(state): State<AppState>, session: Session) -> R
         return redirect;
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let operations: Vec<serde_json::Value> = AiOperationType::ALL
@@ -330,7 +330,7 @@ async fn edit_provider_form(
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let operations: Vec<serde_json::Value> = AiOperationType::ALL
@@ -626,7 +626,7 @@ async fn redisplay_form(
     form: &ProviderFormData,
     models: &[OperationModel],
 ) -> Response {
-    let csrf_token = generate_csrf_token(session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let operations: Vec<serde_json::Value> = AiOperationType::ALL

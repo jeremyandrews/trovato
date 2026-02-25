@@ -88,7 +88,7 @@ async fn list_aliases(
         })
         .collect();
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("aliases", &aliases_display);
@@ -109,7 +109,7 @@ async fn add_alias_form(State(state): State<AppState>, session: Session) -> Resp
         return redirect;
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
@@ -188,7 +188,7 @@ async fn edit_alias_form(
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);

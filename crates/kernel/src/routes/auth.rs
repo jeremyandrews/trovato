@@ -94,14 +94,7 @@ impl std::fmt::Display for LoginError {
 /// - Renders login form with CSRF token
 async fn login_form(State(state): State<AppState>, session: Session) -> Response {
     // Generate CSRF token
-    let csrf_token = match generate_csrf_token(&session).await {
-        Ok(token) => token,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to generate CSRF token");
-            return Html("<h1>Error</h1><p>Failed to generate form token</p>".to_string())
-                .into_response();
-        }
-    };
+    let csrf_token = generate_csrf_token(&session).await;
 
     // Render login form
     let mut context = tera::Context::new();
@@ -177,7 +170,7 @@ async fn login_form_submit(
 
 /// Render login form with error message.
 async fn render_login_error(state: &AppState, session: &Session, error: &str) -> Response {
-    let csrf_token = generate_csrf_token(session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(session).await;
 
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
@@ -292,7 +285,7 @@ async fn do_login(
                 .record_failed_attempt(&request.username)
                 .await
             {
-                tracing::warn!(error = %e, username = %request.username, "failed to record failed login attempt");
+                tracing::warn!(error = %e, "failed to record failed login attempt");
             }
             return Err(LoginError::InvalidCredentials);
         }
@@ -309,7 +302,7 @@ async fn do_login(
             .record_failed_attempt(&request.username)
             .await
         {
-            tracing::warn!(error = %e, username = %request.username, "failed to record failed login attempt");
+            tracing::warn!(error = %e, user_id = %user.id, "failed to record failed login attempt");
         }
         return Err(LoginError::InvalidCredentials);
     }
@@ -329,7 +322,7 @@ async fn do_login(
                 }
             }
             Err(e) => {
-                tracing::error!(error = %e, "failed to record failed attempt");
+                tracing::error!(error = %e, user_id = %user.id, "failed to record failed attempt");
             }
         }
         return Err(LoginError::InvalidCredentials);
@@ -337,7 +330,7 @@ async fn do_login(
 
     // Successful login - clear any failed attempts
     if let Err(e) = state.lockout().clear_attempts(&request.username).await {
-        tracing::warn!(error = %e, username = %request.username, "failed to clear login attempts");
+        tracing::warn!(error = %e, user_id = %user.id, "failed to clear login attempts");
     }
 
     // Record login (updates timestamp + dispatches tap_user_login)
@@ -478,14 +471,7 @@ async fn register_form(State(state): State<AppState>, session: Session) -> Respo
         return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
     }
 
-    let csrf_token = match generate_csrf_token(&session).await {
-        Ok(token) => token,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to generate CSRF token");
-            return Html("<h1>Error</h1><p>Failed to generate form token</p>".to_string())
-                .into_response();
-        }
-    };
+    let csrf_token = generate_csrf_token(&session).await;
 
     render_register_form(&state, &csrf_token, None, None, None).await
 }
@@ -563,14 +549,14 @@ async fn register_form_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         return render_register_form(&state, &csrf_token, Some(&errors), None, Some(&values)).await;
     }
 
     // Create inactive user
     match do_register(&state, &username, &mail, &form.password).await {
         Ok(result) => {
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let csrf_token = generate_csrf_token(&session).await;
             let message = if result.email_sent {
                 "Registration successful! Check your email for a verification link \
                  to activate your account."
@@ -583,7 +569,7 @@ async fn register_form_submit(
         }
         Err(e) => {
             tracing::error!(error = %e, "registration failed");
-            let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+            let csrf_token = generate_csrf_token(&session).await;
             // Check for DB unique constraint violation (TOCTOU race)
             let msg = if is_unique_violation(&e) {
                 "Username or email is already in use."
@@ -684,7 +670,7 @@ async fn do_register(
         {
             Ok(()) => {
                 email_sent = true;
-                info!(user_id = %user.id, email = %mail.trim(), "verification email sent");
+                info!(user_id = %user.id, "verification email sent");
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to send verification email");
@@ -693,20 +679,27 @@ async fn do_register(
     } else {
         tracing::warn!(
             user_id = %user.id,
-            email = %mail.trim(),
             "SMTP not configured; verification email not sent"
         );
     }
 
-    info!(user_id = %user.id, name = %username.trim(), "user registered (pending verification)");
+    info!(user_id = %user.id, "user registered (pending verification)");
     Ok(RegistrationResult { email_sent })
 }
 
 /// JSON registration handler.
 ///
-/// POST /user/register/json
-/// - Creates inactive user, sends verification email
-/// - Returns JSON response
+/// POST /user/register/json — JSON registration endpoint for API clients.
+///
+/// Creates an inactive user and sends a verification email.
+///
+/// # CSRF
+///
+/// This endpoint does **not** require a CSRF token because it accepts
+/// `application/json` bodies, which cannot be submitted by cross-origin
+/// HTML forms (the browser's same-origin policy blocks `Content-Type:
+/// application/json` from `<form>` elements). Rate limiting provides
+/// additional abuse protection.
 async fn register_json(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -931,6 +924,8 @@ async fn verify_email_change(
     // Re-validate the pending email address (defensive — the value was validated
     // when the change was requested, but user.data is mutable by other code paths)
     if !is_valid_email(&new_email) {
+        // Clear stale data first — if this fails, the token is still valid for retry.
+        clear_pending_email(&state, &user).await;
         let _ = EmailVerificationToken::mark_used(state.db(), verification.id).await;
         return Html(
             "<h1>Email Change Failed</h1>\
@@ -945,7 +940,8 @@ async fn verify_email_change(
     // Re-check email uniqueness at verification time to prevent race condition
     // (another user may have registered with this email since the change was requested)
     if let Ok(Some(_)) = state.users().find_by_mail(&new_email).await {
-        // Mark token as used since the change can't proceed
+        // Clear stale data first — if this fails, the token is still valid for retry.
+        clear_pending_email(&state, &user).await;
         let _ = EmailVerificationToken::mark_used(state.db(), verification.id).await;
         return Html(
             "<h1>Email Change Failed</h1>\
@@ -992,6 +988,33 @@ async fn verify_email_change(
     info!(user_id = %user.id, "email address updated via verification");
 
     Redirect::to("/user/profile").into_response()
+}
+
+/// Remove stale `pending_email` from a user's JSONB data after a failed
+/// email-change verification (invalid address or uniqueness conflict).
+///
+/// No-ops (without a DB round-trip) if `pending_email` is not present.
+async fn clear_pending_email(state: &AppState, user: &User) {
+    let has_key = user
+        .data
+        .as_object()
+        .is_some_and(|obj| obj.contains_key("pending_email"));
+    if !has_key {
+        return;
+    }
+
+    let mut data = user.data.clone();
+    if let Some(obj) = data.as_object_mut() {
+        obj.remove("pending_email");
+    }
+    let update = crate::models::UpdateUser {
+        data: Some(data),
+        ..Default::default()
+    };
+    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    if let Err(e) = state.users().update(user.id, update, &user_ctx).await {
+        tracing::warn!(error = %e, user_id = %user.id, "failed to clear pending_email");
+    }
 }
 
 // ─── Profile & Password Management ──────────────────────────────────────────
@@ -1097,8 +1120,8 @@ async fn render_profile(
 
 /// Generate a pair of CSRF tokens for the profile page (one per form).
 async fn profile_csrf_pair(session: &Session) -> (String, String) {
-    let profile = generate_csrf_token(session).await.unwrap_or_default();
-    let password = generate_csrf_token(session).await.unwrap_or_default();
+    let profile = generate_csrf_token(session).await;
+    let password = generate_csrf_token(session).await;
     (profile, password)
 }
 
@@ -1281,6 +1304,11 @@ async fn profile_update(
     let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
     match state.users().update(user.id, update, &user_ctx).await {
         Ok(Some(updated_user)) => {
+            // Cycle session ID after credential changes to prevent fixation
+            if name_changing && let Err(e) = session.cycle_id().await {
+                tracing::warn!(error = %e, user_id = %user.id, "failed to cycle session ID after username change");
+            }
+
             // Send verification email if email is changing
             if email_changing {
                 // Invalidate any outstanding tokens before creating a new one

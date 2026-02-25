@@ -1,6 +1,6 @@
 # Story 28.3: Automatic Path Alias Generation (Pathauto)
 
-Status: review
+Status: done
 
 ## Story
 

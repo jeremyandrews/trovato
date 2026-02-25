@@ -35,12 +35,12 @@
             <label for="password" class="form-item__label {% if not editing %}form-item__label--required{% endif %}">Password</label>
             <input type="password" id="password" name="password" class="form-text"
                    {% if not editing %}required{% endif %}
-                   minlength="8">
+                   minlength="12">
             <p class="form-item__description">
                 {% if editing %}
-                Leave blank to keep the current password. Minimum 8 characters.
+                Leave blank to keep the current password. Minimum 12 characters.
                 {% else %}
-                Minimum 8 characters.
+                Minimum 12 characters.
                 {% endif %}
             </p>
         </div>

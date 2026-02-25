@@ -73,7 +73,7 @@ async fn list_categories(State(state): State<AppState>, session: Session) -> Res
         tag_counts.insert(cat.id.clone(), count);
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("categories", &categories);
@@ -92,7 +92,7 @@ async fn add_category_form(State(state): State<AppState>, session: Session) -> R
         return redirect;
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -147,7 +147,7 @@ async fn add_category_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -212,7 +212,7 @@ async fn edit_category_form(
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -267,7 +267,7 @@ async fn edit_category_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -385,7 +385,7 @@ async fn list_tags(
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("category", &category);
@@ -428,7 +428,7 @@ async fn add_tag_form(
         .await
         .unwrap_or_default();
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -491,7 +491,7 @@ async fn add_tag_submit(
             .list_tags(&category_id)
             .await
             .unwrap_or_default();
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -594,7 +594,7 @@ async fn edit_tag_form(
         .unwrap_or_default();
     let current_parent_id = parents.first().map(|p| p.id.to_string());
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -668,7 +668,7 @@ async fn edit_tag_submit(
             .filter(|t| t.id != tag_id)
             .collect();
 
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();

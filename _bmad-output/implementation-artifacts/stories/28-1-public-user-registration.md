@@ -1,6 +1,6 @@
 # Story 28.1: Public User Registration
 
-Status: review
+Status: done
 
 ## Story
 

@@ -93,7 +93,19 @@ pub fn expand_pattern(
 /// If `/blog/my-post` is taken, tries `/blog/my-post-1`, `/blog/my-post-2`, etc.
 /// Uses a single query to find existing aliases with matching prefix to avoid
 /// sequential lookups.
+///
+/// Rejects aliases containing path traversal sequences (`..`), double slashes,
+/// or control characters.
 pub async fn generate_unique_alias(pool: &PgPool, base_alias: &str) -> Result<String> {
+    // Defense-in-depth: slugify() already neutralizes traversal sequences (`.` → `-`),
+    // but this guard catches direct callers that bypass expand_pattern/slugify.
+    anyhow::ensure!(
+        !base_alias.contains("..")
+            && !base_alias.contains("//")
+            && !base_alias.chars().any(|c| c.is_control()),
+        "alias contains invalid path sequences"
+    );
+
     // Ensure alias starts with /
     let base = if base_alias.starts_with('/') {
         base_alias.to_string()
@@ -107,8 +119,9 @@ pub async fn generate_unique_alias(pool: &PgPool, base_alias: &str) -> Result<St
         .replace('%', "\\%")
         .replace('_', "\\_");
     let like_pattern = format!("{escaped_base}%");
+    // Rust '\\' → SQL literal '\' → PostgreSQL ESCAPE character is backslash.
     let existing: Vec<(String,)> =
-        sqlx::query_as("SELECT alias FROM url_alias WHERE alias LIKE $1 LIMIT 200")
+        sqlx::query_as("SELECT alias FROM url_alias WHERE alias LIKE $1 ESCAPE '\\' LIMIT 200")
             .bind(&like_pattern)
             .fetch_all(pool)
             .await
@@ -349,6 +362,26 @@ mod tests {
         assert_eq!(
             expand_pattern("news/[yyyy]/[mm]/[title]", "Breaking News", "news", dt),
             "news/2026/03/breaking-news"
+        );
+    }
+
+    #[test]
+    fn test_slugify_path_traversal() {
+        // Ensure slugify neutralizes path traversal sequences.
+        // Note: different inputs may collide (e.g. "../foo" and "..foo" both → "foo").
+        // This is acceptable — generate_unique_alias() resolves collisions with
+        // numeric suffixes.
+        let slug = slugify("../../etc/passwd");
+        assert!(!slug.contains(".."), "slug must not contain path traversal");
+        assert_eq!(slug, "etc-passwd");
+    }
+
+    #[test]
+    fn test_slugify_control_characters() {
+        let slug = slugify("hello\x00world\x1b[31m");
+        assert!(
+            !slug.chars().any(|c| c.is_control()),
+            "slug must not contain control characters"
         );
     }
 

@@ -99,7 +99,7 @@ async fn list_users(State(state): State<AppState>, session: Session) -> Response
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("users", &users);
@@ -117,7 +117,7 @@ async fn add_user_form(State(state): State<AppState>, session: Session) -> Respo
         return redirect;
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -176,7 +176,7 @@ async fn add_user_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -236,7 +236,7 @@ async fn edit_user_form(
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -329,7 +329,7 @@ async fn edit_user_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -348,12 +348,17 @@ async fn edit_user_submit(
                 "status": form.status.is_some(),
             }),
         );
-        context.insert("path", &format!("/admin/people/{user_id}/edit"));
+        let current_path = format!("/admin/people/{user_id}/edit");
+        context.insert("path", &current_path);
         context.insert(
             "local_tasks",
-            &serde_json::json!([
-                {"title": "Edit", "path": format!("/admin/people/{user_id}/edit"), "active": true},
-            ]),
+            &build_local_tasks(
+                &state,
+                "/admin/people/:id",
+                &current_path,
+                Some(&user_id.to_string()),
+                vec![serde_json::json!({"title": "Edit", "path": &current_path, "active": true})],
+            ),
         );
 
         return render_admin_template(&state, "admin/user-form.html", context).await;
@@ -457,7 +462,7 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("roles", &roles);
@@ -477,7 +482,7 @@ async fn add_role_form(State(state): State<AppState>, session: Session) -> Respo
         return redirect;
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -521,7 +526,7 @@ async fn add_role_submit(
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -575,7 +580,7 @@ async fn edit_role_form(
         .await
         .unwrap_or_default();
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -638,7 +643,7 @@ async fn edit_role_submit(
             .get_permissions(role_id)
             .await
             .unwrap_or_default();
-        let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+        let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
 
         let mut context = tera::Context::new();
@@ -735,7 +740,7 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
         role_permissions.insert(role.id.to_string(), perms);
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();

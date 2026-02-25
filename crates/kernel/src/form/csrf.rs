@@ -15,7 +15,12 @@ const MAX_TOKENS: usize = 10;
 const TOKEN_VALIDITY_SECS: i64 = 3600;
 
 /// Generate a CSRF token and store it in the session.
-pub async fn generate_csrf_token(session: &Session) -> Result<String> {
+///
+/// This function is infallible: token generation is pure computation, and
+/// session persistence failures are logged internally rather than propagated.
+/// If persistence fails, the returned token will not verify on submission,
+/// but the form will still render (preferable to a 500 error).
+pub async fn generate_csrf_token(session: &Session) -> String {
     // Generate random bytes
     let mut random_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut random_bytes);
@@ -51,13 +56,18 @@ pub async fn generate_csrf_token(session: &Session) -> Result<String> {
         tokens = tokens.into_iter().skip(skip).collect();
     }
 
-    // Save back to session
-    session
-        .insert(CSRF_SESSION_KEY, tokens)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to store CSRF token: {e}"))?;
+    // Save back to session — log on failure so session store issues are
+    // visible in logs rather than silently swallowed at call sites.
+    // The tracing span from axum's request middleware provides request URI context.
+    if let Err(e) = session.insert(CSRF_SESSION_KEY, tokens).await {
+        tracing::error!(
+            error = %e,
+            session_id = ?session.id(),
+            "failed to persist CSRF token to session store — form submission will fail CSRF validation"
+        );
+    }
 
-    Ok(token)
+    token
 }
 
 /// Verify a CSRF token against the session.

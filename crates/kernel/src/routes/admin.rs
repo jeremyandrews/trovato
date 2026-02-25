@@ -122,7 +122,7 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
 
     let content_types = state.content_types().list_all().await;
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("content_types", &content_types);
@@ -173,7 +173,7 @@ async fn list_files(
         }
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("files", &files);
@@ -377,7 +377,7 @@ async fn list_comments(
         }
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("comments", &comments);
@@ -433,7 +433,7 @@ async fn edit_comment_form(
         .flatten()
         .map(|i| i.title);
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("comment", &comment);

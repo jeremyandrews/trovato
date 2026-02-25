@@ -1,7 +1,7 @@
 //! Role service with permission cache invalidation.
 //!
 //! Wraps role and permission CRUD operations, ensuring that the
-//! [`PermissionService`](crate::permissions::PermissionService) cache is
+//! [`PermissionService`] cache is
 //! invalidated whenever role permissions or user-role assignments change.
 
 use std::sync::Arc;

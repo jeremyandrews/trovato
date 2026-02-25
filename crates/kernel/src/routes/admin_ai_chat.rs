@@ -57,7 +57,7 @@ async fn chat_config_page(State(state): State<AppState>, session: Session) -> Re
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
     let flash: Option<String> = session.remove(FLASH_KEY).await.ok().flatten();
 
     let mut context = tera::Context::new();

@@ -1168,7 +1168,7 @@ fn e2e_admin_create_user() {
 
         // Submit the form
         let form_data = format!(
-            "_token={csrf_token}&_form_build_id={form_build_id}&name={new_username}&mail={new_email}&password=testpass123&status=1"
+            "_token={csrf_token}&_form_build_id={form_build_id}&name={new_username}&mail={new_email}&password=testpass12345&status=1"
         );
 
         let response = app
@@ -4584,7 +4584,7 @@ fn json_registration_validates_missing_fields() {
                 "Should report missing email"
             );
             assert!(
-                error.contains("Password must be at least 8"),
+                error.contains("Password must be at least 12"),
                 "Should report short password"
             );
         }

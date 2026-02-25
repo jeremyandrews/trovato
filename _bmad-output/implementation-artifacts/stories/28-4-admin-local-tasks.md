@@ -1,6 +1,6 @@
 # Story 28.4: Admin Local Tasks (Tab Navigation)
 
-Status: review
+Status: done
 
 ## Story
 

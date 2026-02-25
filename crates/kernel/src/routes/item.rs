@@ -863,7 +863,7 @@ async fn list_revisions(
     ));
 
     // Generate CSRF token for revert forms
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     html.push_str("<table><thead><tr><th>Date</th><th>Title</th><th>Log</th><th>Actions</th></tr></thead><tbody>");
 

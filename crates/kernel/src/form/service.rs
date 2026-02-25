@@ -45,7 +45,7 @@ impl FormService {
         state: &RequestState,
     ) -> Result<Form> {
         // Generate CSRF token
-        let token = generate_csrf_token(session).await?;
+        let token = generate_csrf_token(session).await;
 
         // Create base form
         let mut form = Form::new(form_id);

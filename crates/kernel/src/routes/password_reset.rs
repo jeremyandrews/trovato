@@ -30,8 +30,10 @@ pub struct SetPasswordInput {
 /// Always returns success (security: don't reveal if email exists).
 async fn request_reset(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(input): Json<RequestResetInput>,
 ) -> Json<JsonSuccess> {
+    let client_id = crate::middleware::get_client_id(None, &headers);
     // Try to find user by email
     match state.users().find_by_mail(&input.email).await {
         Ok(Some(user)) => {
@@ -60,7 +62,6 @@ async fn request_reset(
                         } else {
                             info!(
                                 user_id = %user.id,
-                                email = %input.email,
                                 "password reset email sent"
                             );
                         }
@@ -68,7 +69,6 @@ async fn request_reset(
                         // SMTP not configured — log the token for development
                         tracing::debug!(
                             user_id = %user.id,
-                            email = %input.email,
                             token = %plain_token,
                             "Password reset requested (SMTP not configured, token logged)"
                         );
@@ -85,7 +85,7 @@ async fn request_reset(
         }
         Ok(None) => {
             // User not found - log but don't reveal to client
-            info!(email = %input.email, "password reset requested for non-existent email");
+            info!(client = %client_id, "password reset requested for non-existent email");
         }
         Err(e) => {
             tracing::error!(error = %e, "database error during password reset request");

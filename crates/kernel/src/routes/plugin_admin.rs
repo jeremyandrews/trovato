@@ -110,7 +110,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
         }
     }
 
-    let csrf_token = generate_csrf_token(&session).await.unwrap_or_default();
+    let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
     let flash: Option<String> = session.get(FLASH_KEY).await.ok().flatten();

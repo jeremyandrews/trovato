@@ -314,8 +314,8 @@ async fn install_admin_form(State(state): State<AppState>) -> Response {
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
-                <div class="help">Minimum 8 characters</div>
+                <input type="password" id="password" name="password" required minlength="12" autocomplete="new-password">
+                <div class="help">Minimum 12 characters</div>
             </div>
             <div class="form-group">
                 <label for="password_confirm">Confirm Password</label>
@@ -401,8 +401,8 @@ fn render_admin_form_with_error(error: &str) -> Response {
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
-                <div class="help">Minimum 8 characters</div>
+                <input type="password" id="password" name="password" required minlength="12" autocomplete="new-password">
+                <div class="help">Minimum 12 characters</div>
             </div>
             <div class="form-group">
                 <label for="password_confirm">Confirm Password</label>

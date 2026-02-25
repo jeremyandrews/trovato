@@ -1,7 +1,7 @@
 //! Application state shared across all handlers.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use redis::Client as RedisClient;
@@ -186,7 +186,11 @@ struct AppStateInner {
     redirect_cache: Option<Arc<services::redirect::RedirectCache>>,
 
     /// Comment service (available when comments plugin is enabled).
-    comments: Option<Arc<services::comment::CommentService>>,
+    ///
+    /// Uses `OnceLock` rather than `Option` so the service can be
+    /// late-initialized when the plugin is enabled after `AppState`
+    /// construction (e.g. in test helpers via `init_comments_service()`).
+    comments: OnceLock<Arc<services::comment::CommentService>>,
 }
 
 impl AppState {
@@ -596,14 +600,13 @@ impl AppState {
             None
         };
 
-        let comments = if enabled_set.contains("comments") {
-            Some(Arc::new(services::comment::CommentService::new(
+        let comments = OnceLock::new();
+        if enabled_set.contains("comments") {
+            let _ = comments.set(Arc::new(services::comment::CommentService::new(
                 db.clone(),
                 tap_dispatcher.clone(),
-            )))
-        } else {
-            None
-        };
+            )));
+        }
 
         // Wire plugin services into cron
         cron.set_plugin_services(content_lock.clone(), audit.clone());
@@ -697,10 +700,17 @@ impl AppState {
     }
 
     /// Update the in-memory enabled state for a plugin.
+    ///
+    /// When enabling `"comments"`, this also late-initializes the
+    /// `CommentService` if it wasn't created at startup.
     pub fn set_plugin_enabled(&self, plugin: &str, enabled: bool) {
         let mut set = self.inner.enabled_plugins.write();
         if enabled {
             set.insert(plugin.to_string());
+            // Late-init plugin services that weren't created at startup.
+            if plugin == "comments" {
+                self.init_comments_service();
+            }
         } else {
             set.remove(plugin);
         }
@@ -930,8 +940,23 @@ impl AppState {
     pub fn comments(&self) -> &Arc<services::comment::CommentService> {
         self.inner
             .comments
-            .as_ref()
+            .get()
             .expect("comments service not initialized — caller must be behind plugin gate")
+    }
+
+    /// Late-initialize the comments service.
+    ///
+    /// Called by `set_plugin_enabled("comments", true)` when the service was
+    /// not created at `AppState` construction time (e.g. in tests where
+    /// plugins are enabled after startup).  No-op if already initialized.
+    pub fn init_comments_service(&self) {
+        let _ = self
+            .inner
+            .comments
+            .set(Arc::new(services::comment::CommentService::new(
+                self.inner.db.clone(),
+                self.inner.tap_dispatcher.clone(),
+            )));
     }
 
     /// Check if PostgreSQL is healthy.
