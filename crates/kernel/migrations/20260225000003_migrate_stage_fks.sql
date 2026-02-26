@@ -58,9 +58,6 @@ ALTER TABLE url_alias RENAME COLUMN stage_tag_id TO stage_id;
 ALTER TABLE url_alias ADD CONSTRAINT fk_url_alias_stage
     FOREIGN KEY (stage_id) REFERENCES category_tag(id) ON DELETE RESTRICT;
 CREATE INDEX idx_url_alias_stage ON url_alias(stage_id);
--- Restore composite unique constraint lost by column drop/recreate
-ALTER TABLE url_alias ADD CONSTRAINT uq_url_alias_alias_lang_stage
-    UNIQUE (alias, language, stage_id);
 
 -- ============================================================
 -- menu_link
@@ -82,9 +79,6 @@ ALTER TABLE menu_link RENAME COLUMN stage_tag_id TO stage_id;
 ALTER TABLE menu_link ADD CONSTRAINT fk_menu_link_stage
     FOREIGN KEY (stage_id) REFERENCES category_tag(id) ON DELETE RESTRICT;
 CREATE INDEX idx_menu_link_stage ON menu_link(stage_id);
--- Restore composite unique constraint lost by column drop/recreate
-ALTER TABLE menu_link ADD CONSTRAINT uq_menu_link_path_menu_stage
-    UNIQUE (path, menu_name, stage_id);
 
 -- ============================================================
 -- tile
