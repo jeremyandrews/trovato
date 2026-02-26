@@ -57,6 +57,19 @@ psql -c "CREATE USER trovato WITH PASSWORD 'trovato';"
 psql -c "CREATE DATABASE trovato OWNER trovato;"
 ```
 
+### Troubleshooting Startup
+
+**"role trovato does not exist"** -- If you see this error after running `docker compose up -d`, you likely have a local PostgreSQL installation already listening on port 5432. The Docker container maps to the same port, but your local Postgres answers first. Fix: stop your local PostgreSQL (e.g. `brew services stop postgresql`) and retry, or use the manual setup above with your local instance instead of Docker.
+
+**Starting fresh** -- If you need to reset the database (bad migration state, want a clean slate), destroy and recreate the Docker volumes:
+
+```bash
+docker compose down -v
+docker compose up -d
+```
+
+This deletes all data and gives you a fresh PostgreSQL and Redis. On the next `cargo run`, all migrations run from scratch and the web installer will appear again.
+
 ### What Happens on First Startup
 
 On first startup, Trovato will:
