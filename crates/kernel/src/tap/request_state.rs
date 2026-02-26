@@ -73,6 +73,8 @@ pub struct RequestServices {
     pub ai_providers: Option<Arc<AiProviderService>>,
     /// Token budget service for tracking and enforcing AI usage limits.
     pub ai_budgets: Option<Arc<AiTokenBudgetService>>,
+    /// Shared HTTP client for outbound requests from plugins.
+    pub http: reqwest::Client,
 }
 
 impl RequestServices {
@@ -81,12 +83,14 @@ impl RequestServices {
         db: PgPool,
         ai_providers: Option<Arc<AiProviderService>>,
         ai_budgets: Option<Arc<AiTokenBudgetService>>,
+        http: reqwest::Client,
     ) -> Self {
         Self {
             db,
             lockout: None,
             ai_providers,
             ai_budgets,
+            http,
         }
     }
 }
@@ -104,6 +108,7 @@ impl std::fmt::Debug for RequestServices {
                 "ai_budgets",
                 &self.ai_budgets.as_ref().map(|_| "AiTokenBudgetService"),
             )
+            .field("http", &"reqwest::Client")
             .finish()
     }
 }

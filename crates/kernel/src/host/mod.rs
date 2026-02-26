@@ -6,6 +6,7 @@
 mod ai;
 mod cache;
 mod db;
+mod http;
 mod item;
 mod logging;
 mod request_context;
@@ -20,6 +21,7 @@ use crate::plugin::PluginState;
 pub use ai::register_ai_functions;
 pub use cache::register_cache_functions;
 pub use db::register_db_functions;
+pub use http::register_http_functions;
 pub use item::register_item_functions;
 pub use logging::register_logging_functions;
 pub use request_context::register_request_context_functions;
@@ -36,6 +38,7 @@ pub fn register_all(linker: &mut Linker<PluginState>) -> Result<()> {
     register_item_functions(linker)?;
     register_db_functions(linker)?;
     register_ai_functions(linker)?;
+    register_http_functions(linker)?;
     Ok(())
 }
 

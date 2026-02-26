@@ -362,6 +362,81 @@ pub struct CronInput {
     pub timestamp: i64,
 }
 
+/// An outbound HTTP request made through the kernel's HTTP host function.
+///
+/// Plugins cannot make direct network calls from WASM. Instead, they build
+/// an `HttpRequest` and pass it to [`crate::host::http_request`], which the
+/// kernel executes on the plugin's behalf with configurable timeouts and
+/// security restrictions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpRequest {
+    /// Full URL to request (must be `https://` or `http://`).
+    pub url: String,
+    /// HTTP method (GET, POST, PUT, DELETE, etc.).
+    #[serde(default = "default_http_method")]
+    pub method: String,
+    /// Request headers.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Optional request body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// Request timeout in milliseconds (default: 30000, max: 60000).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u32>,
+}
+
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+
+impl HttpRequest {
+    /// Create a GET request to the given URL.
+    pub fn get(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            method: "GET".to_string(),
+            headers: HashMap::new(),
+            body: None,
+            timeout_ms: None,
+        }
+    }
+
+    /// Create a POST request to the given URL with a body.
+    pub fn post(url: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            method: "POST".to_string(),
+            headers: HashMap::new(),
+            body: Some(body.into()),
+            timeout_ms: None,
+        }
+    }
+
+    /// Add a header to the request.
+    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set the request timeout in milliseconds.
+    pub fn timeout(mut self, ms: u32) -> Self {
+        self.timeout_ms = Some(ms);
+        self
+    }
+}
+
+/// Response from an HTTP request made through the kernel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpResponse {
+    /// HTTP status code.
+    pub status: u16,
+    /// Response headers.
+    pub headers: HashMap<String, String>,
+    /// Response body as a string.
+    pub body: String,
+}
+
 /// Log levels for structured logging from plugins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogLevel {
@@ -521,6 +596,60 @@ mod tests {
         let kernel_json = r#"{"timestamp":1234567890}"#;
         let input: CronInput = serde_json::from_str(kernel_json).unwrap();
         assert_eq!(input.timestamp, 1_234_567_890);
+    }
+
+    // ---- HTTP types ----
+
+    #[test]
+    fn http_request_get_builder() {
+        let req = HttpRequest::get("https://example.com/api")
+            .header("Accept", "application/json")
+            .timeout(5000);
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.url, "https://example.com/api");
+        assert_eq!(req.headers.get("Accept").unwrap(), "application/json");
+        assert_eq!(req.timeout_ms, Some(5000));
+        assert!(req.body.is_none());
+    }
+
+    #[test]
+    fn http_request_post_builder() {
+        let req = HttpRequest::post("https://example.com/api", r#"{"key":"value"}"#);
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.body.as_deref(), Some(r#"{"key":"value"}"#));
+    }
+
+    #[test]
+    fn http_request_serde_roundtrip() {
+        let req = HttpRequest::get("https://example.com")
+            .header("X-Custom", "test")
+            .timeout(10000);
+        let json = serde_json::to_string(&req).unwrap();
+        let back: HttpRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.url, "https://example.com");
+        assert_eq!(back.method, "GET");
+        assert_eq!(back.headers.get("X-Custom").unwrap(), "test");
+        assert_eq!(back.timeout_ms, Some(10000));
+    }
+
+    #[test]
+    fn http_response_serde_roundtrip() {
+        let resp = HttpResponse {
+            status: 200,
+            headers: HashMap::from([("content-type".to_string(), "application/json".to_string())]),
+            body: r#"[{"id":1}]"#.to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: HttpResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.status, 200);
+        assert_eq!(back.body, r#"[{"id":1}]"#);
+    }
+
+    #[test]
+    fn http_request_default_method_is_get() {
+        let json = r#"{"url":"https://example.com"}"#;
+        let req: HttpRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.method, "GET");
     }
 
     // ---- AI types serde roundtrips ----

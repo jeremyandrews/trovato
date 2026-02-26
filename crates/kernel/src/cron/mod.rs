@@ -58,6 +58,7 @@ pub struct CronService {
     tap_dispatcher: Option<Arc<TapDispatcher>>,
     ai_providers: Option<Arc<AiProviderService>>,
     ai_budgets: Option<Arc<AiTokenBudgetService>>,
+    http: reqwest::Client,
     pagefind_enabled: bool,
 }
 
@@ -74,6 +75,7 @@ impl CronService {
             tap_dispatcher: None,
             ai_providers: None,
             ai_budgets: None,
+            http: build_http_client(),
             pagefind_enabled: false,
         }
     }
@@ -90,6 +92,7 @@ impl CronService {
             tap_dispatcher: None,
             ai_providers: None,
             ai_budgets: None,
+            http: build_http_client(),
             pagefind_enabled: false,
         }
     }
@@ -248,6 +251,7 @@ impl CronService {
                         self.pool.clone(),
                         self.ai_providers.clone(),
                         self.ai_budgets.clone(),
+                        self.http.clone(),
                     ),
                 );
                 match tokio::time::timeout(
@@ -455,6 +459,17 @@ async fn run_heartbeat(redis: RedisClient, lock_value: &str, mut stop_rx: watch:
             }
         }
     }
+}
+
+/// Build a shared HTTP client for plugin outbound requests.
+///
+/// Configures a User-Agent header so downstream servers can identify
+/// the traffic source (required by GitHub raw API, among others).
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(format!("Trovato/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Get hostname for lock identification.

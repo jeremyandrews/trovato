@@ -1,0 +1,13 @@
+name = "ritrovo_importer"
+description = "Import tech conferences from confs.tech into Trovato"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_item_info",
+    "tap_perm",
+    "tap_menu",
+    "tap_cron",
+]
+weight = 0

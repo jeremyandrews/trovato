@@ -1,0 +1,17 @@
+[package]
+name = "ritrovo_importer"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Conference importer plugin for the Ritrovo tutorial"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

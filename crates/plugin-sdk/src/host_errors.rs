@@ -123,6 +123,16 @@
 //!   - `-27`: permission denied (user lacks `use ai` or operation-specific permission)
 //!   - `≥ 0`: bytes written (JSON `AiResponse`)
 //!
+//! ## HTTP API (`trovato:kernel/http`)
+//!
+//! - **`request(req_ptr, req_len, out_ptr, out_max_len) → i32`**
+//!   - `-1`: memory missing, `-2`: request JSON read failed, `-3`: output write failed
+//!   - `-30`: HTTP request failed (network/DNS/connection error)
+//!   - `-31`: HTTP request timed out
+//!   - `-32`: invalid URL (malformed, non-HTTP scheme, blocked)
+//!   - `-33`: response body too large for output buffer
+//!   - `≥ 0`: bytes written (JSON [`crate::types::HttpResponse`])
+//!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
 //!
 //! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
@@ -191,6 +201,22 @@ pub const ERR_AI_BUDGET_EXCEEDED: i32 = -26;
 /// Permission denied — the current user lacks `use ai` or the required
 /// operation-specific AI permission.
 pub const ERR_AI_PERMISSION_DENIED: i32 = -27;
+
+// =============================================================================
+// HTTP API errors (`trovato:kernel/http`)
+// =============================================================================
+
+/// HTTP request failed (network error, DNS failure, connection refused).
+pub const ERR_HTTP_REQUEST_FAILED: i32 = -30;
+
+/// HTTP request timed out.
+pub const ERR_HTTP_TIMEOUT: i32 = -31;
+
+/// Invalid URL (malformed, non-HTTP scheme, or blocked destination).
+pub const ERR_HTTP_INVALID_URL: i32 = -32;
+
+/// Response body too large for the output buffer.
+pub const ERR_HTTP_RESPONSE_TOO_LARGE: i32 = -33;
 
 // =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)
