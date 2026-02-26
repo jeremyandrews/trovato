@@ -1,4 +1,4 @@
-//! Trovato CMS Kernel
+//! Trovato Kernel
 //!
 //! HTTP server, plugin runtime, and core services.
 
@@ -51,7 +51,7 @@ use crate::config::Config;
 use crate::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "trovato", about = "Trovato CMS")]
+#[command(name = "trovato", about = "Trovato")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -70,6 +70,11 @@ enum Commands {
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+    /// User management commands.
+    User {
+        #[command(subcommand)]
+        action: UserAction,
     },
 }
 
@@ -92,6 +97,17 @@ enum ConfigAction {
         /// Validate files without writing to the database.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserAction {
+    /// Reset a user's password.
+    ResetPassword {
+        /// Username.
+        username: String,
+        /// New password (min 12 characters). If omitted, reads from stdin.
+        password: Option<String>,
     },
 }
 
@@ -135,12 +151,13 @@ async fn main() -> Result<()> {
         None | Some(Commands::Serve) => run_server().await,
         Some(Commands::Plugin { action }) => run_plugin_command(action).await,
         Some(Commands::Config { action }) => run_config_command(action).await,
+        Some(Commands::User { action }) => run_user_command(action).await,
     }
 }
 
 /// Run the HTTP server (original startup path).
 async fn run_server() -> Result<()> {
-    info!("Starting Trovato CMS kernel");
+    info!("Starting Trovato kernel");
 
     // Load configuration from environment
     let config = Config::from_env().context("failed to load configuration")?;
@@ -300,6 +317,52 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
                 config_storage::yaml::import_config(&storage, &pool, &dir, dry_run).await?;
             let verb = if dry_run { "Would import" } else { "Imported" };
             print_config_summary(verb, &dir, &result.counts, &result.warnings);
+        }
+    }
+
+    Ok(())
+}
+
+/// Run a user CLI command with a minimal context (pool only).
+async fn run_user_command(action: UserAction) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+
+    let pool = db::create_pool(&config)
+        .await
+        .context("failed to create database pool")?;
+
+    db::run_migrations(&pool)
+        .await
+        .context("failed to run migrations")?;
+
+    match action {
+        UserAction::ResetPassword { username, password } => {
+            let password = match password {
+                Some(p) => p,
+                None => {
+                    eprint!("New password: ");
+                    let mut buf = String::new();
+                    std::io::stdin()
+                        .read_line(&mut buf)
+                        .context("failed to read password from stdin")?;
+                    buf.trim().to_string()
+                }
+            };
+
+            if password.len() < 12 {
+                anyhow::bail!("Password must be at least 12 characters.");
+            }
+
+            let user = models::User::find_by_name(&pool, &username)
+                .await?
+                .context(format!("User '{username}' not found."))?;
+
+            let updated = models::User::update_password(&pool, user.id, &password).await?;
+            if updated {
+                println!("Password updated for user '{username}'.");
+            } else {
+                anyhow::bail!("Failed to update password for user '{username}'.");
+            }
         }
     }
 
