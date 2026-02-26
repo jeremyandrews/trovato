@@ -37,7 +37,7 @@ cargo build --release
 cp .env.example .env
 
 # Start the server (runs migrations automatically)
-cargo run --release
+cargo run --release --bin trovato
 ```
 
 The `.env` defaults work with Docker Compose out of the box:
@@ -109,11 +109,11 @@ For production sites that need version-controlled configuration without raw SQL,
 
 ```bash
 # Export all configuration (including item types) to YAML
-cargo run --release -- config export ./config/
+cargo run --release --bin trovato -- config export ./config/
 
 # Import configuration from YAML (with dry-run validation)
-cargo run --release -- config import ./config/ --dry-run
-cargo run --release -- config import ./config/
+cargo run --release --bin trovato -- config import ./config/ --dry-run
+cargo run --release --bin trovato -- config import ./config/
 ```
 
 The conference type migration lives at `crates/kernel/migrations/20260224000001_seed_conference_item_type.sql`. When you run `sqlx migrate run` (or start the server, which runs pending migrations automatically), the `conference` type is created.
