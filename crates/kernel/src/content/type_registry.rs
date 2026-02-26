@@ -313,6 +313,78 @@ impl ContentTypeRegistry {
         Ok(())
     }
 
+    /// Persist the field list for a content type, merging into existing
+    /// settings so that non-field keys (`title_label`, `published_default`,
+    /// etc.) are preserved.
+    async fn persist_fields(&self, type_name: &str, def: &ContentTypeDefinition) -> Result<()> {
+        // Load current settings from DB to preserve non-field keys
+        let current: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT settings FROM item_type WHERE type = $1")
+                .bind(type_name)
+                .fetch_optional(&self.inner.pool)
+                .await
+                .context("failed to read item_type settings")?;
+
+        let mut settings = current.unwrap_or_else(|| serde_json::json!({}));
+        if let Some(obj) = settings.as_object_mut() {
+            obj.insert(
+                "fields".to_string(),
+                serde_json::to_value(&def.fields).context("serialize fields")?,
+            );
+        }
+
+        sqlx::query("UPDATE item_type SET settings = $1 WHERE type = $2")
+            .bind(&settings)
+            .bind(type_name)
+            .execute(&self.inner.pool)
+            .await
+            .context("failed to update item_type")?;
+
+        self.inner.types.insert(type_name.to_string(), def.clone());
+        Ok(())
+    }
+
+    /// Update properties of an existing field (label, required, cardinality).
+    pub async fn update_field(
+        &self,
+        type_name: &str,
+        field_name: &str,
+        label: &str,
+        required: bool,
+        cardinality: i32,
+    ) -> Result<()> {
+        let mut def = self.get(type_name).context("content type not found")?;
+
+        let field = def
+            .fields
+            .iter_mut()
+            .find(|f| f.field_name == field_name)
+            .context("field not found")?;
+
+        field.label = label.to_string();
+        field.required = required;
+        field.cardinality = cardinality;
+
+        self.persist_fields(type_name, &def).await?;
+        info!(type_name = %type_name, field = %field_name, "field updated");
+        Ok(())
+    }
+
+    /// Remove a field from a content type.
+    pub async fn delete_field(&self, type_name: &str, field_name: &str) -> Result<()> {
+        let mut def = self.get(type_name).context("content type not found")?;
+
+        let before = def.fields.len();
+        def.fields.retain(|f| f.field_name != field_name);
+        if def.fields.len() == before {
+            anyhow::bail!("field '{field_name}' not found on type '{type_name}'");
+        }
+
+        self.persist_fields(type_name, &def).await?;
+        info!(type_name = %type_name, field = %field_name, "field deleted");
+        Ok(())
+    }
+
     /// List content type names.
     pub fn type_names(&self) -> Vec<String> {
         self.inner.types.iter().map(|r| r.key().clone()).collect()

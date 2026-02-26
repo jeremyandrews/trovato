@@ -481,6 +481,191 @@ async fn add_field(
 }
 
 // =============================================================================
+// Field Edit / Delete
+// =============================================================================
+
+/// Form data for field editing.
+#[derive(Debug, Deserialize)]
+struct FieldEditFormData {
+    #[serde(rename = "_token")]
+    token: String,
+    #[serde(rename = "_form_build_id")]
+    _form_build_id: String,
+    label: String,
+    required: Option<String>,
+    cardinality: Option<i32>,
+}
+
+/// Show field edit form.
+///
+/// GET /admin/structure/types/{type}/fields/{field}/edit
+async fn edit_field_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path((type_name, field_name)): Path<(String, String)>,
+) -> Response {
+    if let Err(redirect) = require_admin(&state, &session).await {
+        return redirect;
+    }
+
+    let Some(content_type) = state.content_types().get(&type_name) else {
+        return render_not_found();
+    };
+
+    let Some(field) = content_type
+        .fields
+        .iter()
+        .find(|f| f.field_name == field_name)
+    else {
+        return render_not_found();
+    };
+
+    let csrf_token = generate_csrf_token(&session).await;
+    let form_build_id = uuid::Uuid::new_v4().to_string();
+
+    let mut context = tera::Context::new();
+    context.insert("type_name", &type_name);
+    context.insert("field", field);
+    context.insert("csrf_token", &csrf_token);
+    context.insert("form_build_id", &form_build_id);
+    context.insert(
+        "path",
+        &format!("/admin/structure/types/{type_name}/fields/{field_name}/edit"),
+    );
+
+    render_admin_template(&state, "admin/field-edit.html", context).await
+}
+
+/// Handle field edit form submission.
+///
+/// POST /admin/structure/types/{type}/fields/{field}/edit
+async fn edit_field_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path((type_name, field_name)): Path<(String, String)>,
+    Form(form): Form<FieldEditFormData>,
+) -> Response {
+    if let Err(redirect) = require_admin(&state, &session).await {
+        return redirect;
+    }
+
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+
+    let Some(content_type) = state.content_types().get(&type_name) else {
+        return render_not_found();
+    };
+
+    let Some(field) = content_type
+        .fields
+        .iter()
+        .find(|f| f.field_name == field_name)
+    else {
+        return render_not_found();
+    };
+
+    // Validate
+    let mut errors = Vec::new();
+
+    if form.label.trim().is_empty() {
+        errors.push("Label is required.".to_string());
+    }
+
+    let cardinality = form.cardinality.unwrap_or(1);
+    if cardinality == 0 || cardinality < -1 {
+        errors.push("Number of values must be 1 or more, or -1 for unlimited.".to_string());
+    }
+
+    if !errors.is_empty() {
+        let csrf_token = generate_csrf_token(&session).await;
+        let form_build_id = uuid::Uuid::new_v4().to_string();
+
+        // Build a modified field with form values for re-rendering
+        let mut edited_field = field.clone();
+        edited_field.label = form.label;
+        edited_field.required = form.required.is_some();
+        edited_field.cardinality = cardinality;
+
+        let mut context = tera::Context::new();
+        context.insert("type_name", &type_name);
+        context.insert("field", &edited_field);
+        context.insert("csrf_token", &csrf_token);
+        context.insert("form_build_id", &form_build_id);
+        context.insert("errors", &errors);
+        context.insert(
+            "path",
+            &format!("/admin/structure/types/{type_name}/fields/{field_name}/edit"),
+        );
+
+        return render_admin_template(&state, "admin/field-edit.html", context).await;
+    }
+
+    let required = form.required.is_some();
+
+    match state
+        .content_types()
+        .update_field(&type_name, &field_name, &form.label, required, cardinality)
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                content_type = %type_name,
+                field = %field_name,
+                required = %required,
+                "field updated"
+            );
+            Redirect::to(&format!("/admin/structure/types/{type_name}/fields")).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to update field");
+            render_server_error("Failed to update field.")
+        }
+    }
+}
+
+/// Handle field deletion.
+///
+/// POST /admin/structure/types/{type}/fields/{field}/delete
+async fn delete_field_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path((type_name, field_name)): Path<(String, String)>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    if let Err(redirect) = require_admin(&state, &session).await {
+        return redirect;
+    }
+
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+
+    let Some(_content_type) = state.content_types().get(&type_name) else {
+        return render_not_found();
+    };
+
+    match state
+        .content_types()
+        .delete_field(&type_name, &field_name)
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                content_type = %type_name,
+                field = %field_name,
+                "field deleted"
+            );
+            Redirect::to(&format!("/admin/structure/types/{type_name}/fields")).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to delete field");
+            render_server_error("Failed to delete field.")
+        }
+    }
+}
+
+// =============================================================================
 // Search Configuration
 // =============================================================================
 
@@ -741,26 +926,19 @@ pub(crate) async fn handle_ajax_add_field(
 
     // Build the new row HTML
     let row_html = format!(
-        r#"<tr data-field="{}">
-            <td>{}</td>
-            <td><code>{}</code></td>
-            <td>{}</td>
+        r#"<tr data-field="{name_esc}">
+            <td>{label_esc}</td>
+            <td><code>{name_esc}</code></td>
+            <td>{type_esc}</td>
             <td>No</td>
             <td>
-                <a href="/admin/structure/types/{}/fields/{}/edit">Edit</a>
-                &middot;
-                <a href="/admin/structure/types/{}/fields/{}/delete"
-                   onclick="return confirm('Are you sure you want to delete this field?')">Delete</a>
+                <a href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">Edit</a>
             </td>
         </tr>"#,
-        html_escape(name),
-        html_escape(label),
-        html_escape(name),
-        html_escape(field_type),
-        html_escape(type_name),
-        html_escape(name),
-        html_escape(type_name),
-        html_escape(name),
+        name_esc = html_escape(name),
+        label_esc = html_escape(label),
+        type_esc = html_escape(field_type),
+        ct_esc = html_escape(type_name),
     );
 
     // Return AJAX response to append row and reset form
@@ -793,6 +971,14 @@ pub fn router() -> Router<AppState> {
         )
         .route("/admin/structure/types/{type}/fields", get(manage_fields))
         .route("/admin/structure/types/{type}/fields/add", post(add_field))
+        .route(
+            "/admin/structure/types/{type}/fields/{field}/edit",
+            get(edit_field_form).post(edit_field_submit),
+        )
+        .route(
+            "/admin/structure/types/{type}/fields/{field}/delete",
+            post(delete_field_submit),
+        )
         .route(
             "/admin/structure/types/{type}/search",
             get(manage_search_config),

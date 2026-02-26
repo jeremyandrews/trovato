@@ -38,8 +38,12 @@
                 <td>
                     <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/edit">Edit</a>
                     &middot;
-                    <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/delete"
-                       data-confirm="Are you sure you want to delete this field?">Delete</a>
+                    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/delete"
+                          style="display: inline;"
+                          onsubmit="return confirm('Are you sure you want to delete the {{ field.label }} field?')">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="button-link">Delete</button>
+                    </form>
                 </td>
             </tr>
             {% endfor %}

@@ -1,0 +1,64 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Edit field: {{ field.label }}</h2>
+    <a href="/admin/structure/types/{{ type_name }}/fields" class="button button--secondary">Back to fields</a>
+</div>
+
+{% if errors is defined and errors %}
+<div class="messages messages--error">
+    <ul>
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="admin-card">
+    <form method="post" action="/admin/structure/types/{{ type_name }}/fields/{{ field.field_name }}/edit">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        <div class="form-item">
+            <label for="edit_field_label" class="form-item__label form-item__label--required">Label</label>
+            <input type="text" id="edit_field_label" name="label" class="form-text"
+                   value="{{ field.label }}" required>
+        </div>
+
+        <div class="form-item">
+            <label class="form-item__label">Machine name</label>
+            <code>{{ field.field_name }}</code>
+            <div class="description">Machine names cannot be changed after creation.</div>
+        </div>
+
+        <div class="form-item">
+            <label class="form-item__label">Field type</label>
+            <code>{{ field.field_type }}</code>
+            <div class="description">Field types cannot be changed after creation.</div>
+        </div>
+
+        <div class="form-item">
+            <label class="form-item__label">
+                <input type="checkbox" name="required" value="1"
+                       {% if field.required %}checked{% endif %}>
+                Required
+            </label>
+            <div class="description">If checked, this field must be filled in when creating or editing content.</div>
+        </div>
+
+        <div class="form-item">
+            <label for="edit_field_cardinality" class="form-item__label">Number of values</label>
+            <input type="number" id="edit_field_cardinality" name="cardinality" class="form-text"
+                   value="{{ field.cardinality }}" min="-1" style="max-width: 8rem;">
+            <div class="description">Maximum number of values. Use 1 for a single value, -1 for unlimited.</div>
+        </div>
+
+        <div style="margin-top: 1rem;">
+            <button type="submit" class="button button--primary">Save</button>
+            <a href="/admin/structure/types/{{ type_name }}/fields" class="button">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
