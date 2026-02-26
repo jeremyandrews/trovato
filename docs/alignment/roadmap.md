@@ -114,6 +114,14 @@ Add pattern-based URL alias generation (Pathauto equivalent) for items.
 
 ---
 
+## Performance Optimizations (Post-v1.0 Backlog)
+
+| Optimization | Rationale |
+|---|---|
+| Replace `test_before_acquire(true)` with background pool health checks | Current setting adds a `SELECT 1` roundtrip per connection acquire. Negligible at moderate scale, but at top-100 traffic levels a background reaper + shorter `max_lifetime` could eliminate per-request overhead. Requires custom health-check task since sqlx lacks `test_while_idle`. |
+
+---
+
 ## Gaps Intentionally Skipped
 
 These D6 features are intentionally not being implemented:
