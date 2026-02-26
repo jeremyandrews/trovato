@@ -61,19 +61,15 @@ const VAR_LAST_IMPORT: &str = "ritrovo_importer.last_import";
 /// Variables key tracking the topic offset for round-robin.
 const VAR_TOPIC_OFFSET: &str = "ritrovo_importer.topic_offset";
 
-// ─── Content type definition ─────────────────────────────────────────
-
-/// Define the `conference` content type with all fields.
-#[plugin_tap]
-pub fn tap_item_info() -> Vec<ContentTypeDefinition> {
-    vec![ContentTypeDefinition {
-        machine_name: "conference".to_string(),
-        label: "Conference".to_string(),
-        description: "A tech conference imported from confs.tech or created manually.".to_string(),
-        title_label: Some("Conference Name".to_string()),
-        fields: conference_fields(),
-    }]
-}
+// ─── Conference field definitions ────────────────────────────────────
+//
+// The `conference` item type is created by the user via the admin UI
+// (see tutorial Part 1 Step 2). This plugin does NOT auto-register it
+// via `tap_item_info` — the importer assumes the type already exists
+// when `tap_cron` runs.
+//
+// `conference_fields()` documents the fields the importer reads/writes
+// and is used in unit tests to validate field expectations.
 
 /// Build the field definitions for the conference content type.
 fn conference_fields() -> Vec<FieldDefinition> {
@@ -634,23 +630,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn item_info_returns_one_type() {
-        let types = __inner_tap_item_info();
-        assert_eq!(types.len(), 1);
-        assert_eq!(types[0].machine_name, "conference");
-        assert_eq!(types[0].title_label.as_deref(), Some("Conference Name"));
-    }
-
-    #[test]
     fn conference_has_fifteen_fields() {
-        let types = __inner_tap_item_info();
-        assert_eq!(types[0].fields.len(), 15);
+        let fields = conference_fields();
+        assert_eq!(fields.len(), 15);
     }
 
     #[test]
     fn start_and_end_date_required() {
-        let types = __inner_tap_item_info();
-        let fields = &types[0].fields;
+        let fields = conference_fields();
         let start = fields
             .iter()
             .find(|f| f.field_name == "field_start_date")
@@ -665,9 +652,8 @@ mod tests {
 
     #[test]
     fn topics_field_is_multivalue() {
-        let types = __inner_tap_item_info();
-        let topics = types[0]
-            .fields
+        let fields = conference_fields();
+        let topics = fields
             .iter()
             .find(|f| f.field_name == "field_topics")
             .unwrap();

@@ -389,6 +389,109 @@ impl TestApp {
             .ok(); // Ignore error if already cached
     }
 
+    /// Seed the 3 tutorial conferences (RustConf 2026, EuroRust 2026,
+    /// WasmCon Online 2026). Ensures the conference type exists first.
+    /// Idempotent — safe to call from any test.
+    pub async fn ensure_conference_items(&self) {
+        self.ensure_conference_type().await;
+
+        let now = chrono::Utc::now().timestamp();
+        let nil_author = Uuid::nil();
+        let live_stage = trovato_kernel::models::stage::LIVE_STAGE_ID;
+
+        let conferences = [
+            (
+                "RustConf 2026",
+                serde_json::json!({
+                    "field_url": "https://rustconf.com",
+                    "field_start_date": "2026-09-09",
+                    "field_end_date": "2026-09-11",
+                    "field_city": "Portland",
+                    "field_country": "United States",
+                    "field_cfp_url": "https://rustconf.com/cfp",
+                    "field_cfp_end_date": "2026-06-15",
+                    "field_description": "The official Rust conference, featuring talks on the latest Rust developments.",
+                    "field_language": "en"
+                }),
+            ),
+            (
+                "EuroRust 2026",
+                serde_json::json!({
+                    "field_url": "https://eurorust.eu",
+                    "field_start_date": "2026-10-15",
+                    "field_end_date": "2026-10-16",
+                    "field_city": "Paris",
+                    "field_country": "France",
+                    "field_description": "Europe's premier Rust conference, bringing together Rustaceans from across the continent.",
+                    "field_language": "en"
+                }),
+            ),
+            (
+                "WasmCon Online 2026",
+                serde_json::json!({
+                    "field_url": "https://wasmcon.dev",
+                    "field_start_date": "2026-07-22",
+                    "field_end_date": "2026-07-23",
+                    "field_online": "1",
+                    "field_description": "A virtual conference dedicated to WebAssembly, covering toolchains, runtimes, and the component model.",
+                    "field_language": "en"
+                }),
+            ),
+        ];
+
+        for (title, fields) in &conferences {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM item WHERE type = 'conference' AND title = $1)",
+            )
+            .bind(title)
+            .fetch_one(&self.db)
+            .await
+            .unwrap();
+
+            if exists {
+                continue;
+            }
+
+            let item_id = Uuid::now_v7();
+            let rev_id = Uuid::now_v7();
+
+            sqlx::query(
+                r#"INSERT INTO item (id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id)
+                   VALUES ($1, 'conference', $2, $3, 1, $4, $4, 0, 0, $5, $6)"#,
+            )
+            .bind(item_id)
+            .bind(title)
+            .bind(nil_author)
+            .bind(now)
+            .bind(fields)
+            .bind(live_stage)
+            .execute(&self.db)
+            .await
+            .expect("failed to seed conference item");
+
+            sqlx::query(
+                r#"INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log)
+                   VALUES ($1, $2, $3, $4, 1, $5, $6, 'Tutorial seed')"#,
+            )
+            .bind(rev_id)
+            .bind(item_id)
+            .bind(nil_author)
+            .bind(title)
+            .bind(fields)
+            .bind(now)
+            .execute(&self.db)
+            .await
+            .expect("failed to seed conference revision");
+
+            sqlx::query("UPDATE item SET current_revision_id = $1 WHERE id = $2")
+                .bind(rev_id)
+                .bind(item_id)
+                .execute(&self.db)
+                .await
+                .expect("failed to link revision to item");
+        }
+    }
+
     async fn create_test_user_inner(
         &self,
         username: &str,

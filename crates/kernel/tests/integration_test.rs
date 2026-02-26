@@ -5419,7 +5419,7 @@ fn admin_content_add_lists_conference_type() {
 fn seeded_conferences_exist_with_correct_data() {
     run_test(async {
         let app = shared_app().await;
-        app.ensure_conference_type().await;
+        app.ensure_conference_items().await;
 
         // Verify all 3 seeded conferences exist
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE type = 'conference'")

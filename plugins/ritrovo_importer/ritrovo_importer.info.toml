@@ -5,7 +5,6 @@ dependencies = []
 
 [taps]
 implements = [
-    "tap_item_info",
     "tap_perm",
     "tap_menu",
     "tap_cron",

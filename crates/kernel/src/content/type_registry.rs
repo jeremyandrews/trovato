@@ -194,13 +194,14 @@ impl ContentTypeRegistry {
 
         ItemType::upsert(&self.inner.pool, input).await?;
 
-        // Update cache
+        // Update cache (parse fields from settings if present)
+        let fields = self.parse_fields_from_settings(&settings);
         let def = ContentTypeDefinition {
             machine_name: machine_name.to_string(),
             label: label.to_string(),
             description: description.unwrap_or("").to_string(),
             title_label,
-            fields: vec![],
+            fields,
         };
         self.inner.types.insert(machine_name.to_string(), def);
 
