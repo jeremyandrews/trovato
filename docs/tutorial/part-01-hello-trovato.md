@@ -75,7 +75,7 @@ This deletes all data and gives you a fresh PostgreSQL and Redis. On the next `c
 On first startup, Trovato will:
 
 1. Connect to PostgreSQL and Redis.
-2. Run all database migrations (including the one that creates the `conference` Item Type).
+2. Run all database migrations.
 3. Discover and install plugins from `plugins/`.
 4. Start listening on `http://localhost:3000`.
 
@@ -103,43 +103,71 @@ You now have a working Trovato instance with an admin account.
 
 ---
 
-## Step 2: Define the Conference Item Type
+## Step 2: Create the Conference Item Type
 
 Every piece of content in Trovato is an **Item**. Items are typed -- a blog post, a page, and a conference are all Items, but each has its own set of fields. The blueprint that describes which fields an Item has is called an **Item Type**.
 
-Trovato ships with one built-in Item Type: `page` (a simple page with a body field). Ritrovo needs a `conference` type with fields for dates, location, CFP (Call for Papers -- the submission process conferences use to solicit talk proposals) info, topics, files, and more.
+Trovato ships with one built-in Item Type: `page` (a simple page with a body field). Ritrovo needs a `conference` type with fields for dates, location, CFP (Call for Papers -- the submission process conferences use to solicit talk proposals) info, and more.
 
 ### Creating the Type
 
-Trovato offers two ways to create an Item Type:
+1. Navigate to `/admin/structure/types` in your browser. You should see "Basic Page" listed.
+2. Click **Add content type** (or go directly to `/admin/structure/types/add`).
+3. Fill in the form:
 
-1. **Admin UI** -- Navigate to `/admin/structure/types/add`, fill in the form, then add fields one by one at `/admin/structure/types/{machine_name}/fields`.
-2. **SQL migration** -- Insert directly into the `item_type` table. This is what the conference type migration does so the type definition is reproducible and version-controlled.
+| Field | Value |
+|---|---|
+| Name | Conference |
+| Machine name | conference |
+| Description | A tech conference or meetup event |
+| Title field label | Conference Name |
 
-**Why is direct SQL safe here?** In some CMS platforms, direct database queries bypass the hook system, which can leave caches stale or skip side effects. Trovato's content type system is different: no taps fire when a type is created (neither through the admin UI nor through SQL). The type registry loads all types from the database at startup and caches them in memory. Both approaches produce identical results.
+4. Click **Save content type**.
 
-For production sites that need version-controlled configuration without raw SQL, Trovato also provides `config export/import`:
+You are redirected to the content types list. "Conference" now appears alongside "Basic Page".
 
-```bash
-# Export all configuration (including item types) to YAML
-cargo run --release --bin trovato -- config export ./config/
+### Adding Fields
 
-# Import configuration from YAML (with dry-run validation)
-cargo run --release --bin trovato -- config import ./config/ --dry-run
-cargo run --release --bin trovato -- config import ./config/
-```
+Click **Manage fields** next to "Conference" (or go to `/admin/structure/types/conference/fields`). You will see the built-in **Title** field and an "Add a new field" form at the bottom.
 
-The conference type migration lives at `crates/kernel/migrations/20260224000001_seed_conference_item_type.sql`. When you run `sqlx migrate run` (or start the server, which runs pending migrations automatically), the `conference` type is created.
+Add each field below one at a time. For each row, fill in the **Label**, verify the auto-generated **Machine name**, select the **Type**, and click **Add field**:
 
-After the migration runs, verify the type exists:
+| Label | Machine name | Type |
+|---|---|---|
+| Website URL | `field_url` | Text (plain) |
+| Start Date | `field_start_date` | Date |
+| End Date | `field_end_date` | Date |
+| City | `field_city` | Text (plain) |
+| Country | `field_country` | Text (plain) |
+| Online | `field_online` | Boolean |
+| CFP URL | `field_cfp_url` | Text (plain) |
+| CFP End Date | `field_cfp_end_date` | Date |
+| Description | `field_description` | Text (long) |
+| Language | `field_language` | Text (plain) |
+| Source ID | `field_source_id` | Text (plain) |
+| Editor Notes | `field_editor_notes` | Text (long) |
+
+That is 12 fields. The machine name auto-generates from the label (prefixed with `field_`), but you can edit it before clicking **Add field**. Make sure the machine names match the table above -- they are the keys used in the JSON field storage and by the importer plugin in Part 2.
+
+> **Important:** For "Website URL", the auto-generated machine name will be `field_website_url`. Edit it to `field_url` before clicking **Add field** -- the importer plugin in Part 2 expects this shorter name.
+
+After adding all fields, make **Start Date** and **End Date** required: click the **Edit** link next to each one, check the **Required** checkbox, and save.
+
+### What About the Other Fields?
+
+The importer plugin (installed in Part 2) will automatically add three more fields to this type when it starts up: `field_topics` (for tagging conference topics), `field_twitter` (Twitter/X handle), and `field_coc_url` (Code of Conduct URL). Trovato lets you add fields to a type at any time without migrating existing data -- new fields are simply absent from older items until edited.
+
+### Verify the Type
+
+Confirm the type exists via the API:
 
 ```bash
 curl http://localhost:3000/api/content-types | jq '.[] | select(. == "conference")'
 ```
 
-You can also visit `/admin/structure/types` in your browser. You should see "Conference" listed alongside "Basic Page". Click it to inspect the field definitions.
+You should see `"conference"` in the output.
 
-### Field Types
+### Field Types Reference
 
 Trovato supports these field types:
 
@@ -154,45 +182,6 @@ Trovato supports these field types:
 | `Integer` | Whole number | Attendee count |
 | `Float` | Decimal number | Rating score |
 | `Email` | Email address | Contact email |
-| `Compound` | A structured field containing sub-fields | Multi-section layouts |
-
-### The Conference Fields
-
-The `conference` Item Type defines 17 fields (the conference name is handled by the built-in `title` column on every Item):
-
-| Field | Type | Required | Multi-value | Purpose |
-|---|---|---|---|---|
-| `field_url` | Text (max 2048) | no | no | Conference website URL |
-| `field_start_date` | Date | **yes** | no | When it starts |
-| `field_end_date` | Date | **yes** | no | When it ends |
-| `field_city` | Text (max 255) | no | no | City (blank for online-only) |
-| `field_country` | Text (max 255) | no | no | Country |
-| `field_online` | Boolean | no | no | Whether it is online |
-| `field_cfp_url` | Text (max 2048) | no | no | Call for Papers URL |
-| `field_cfp_end_date` | Date | no | no | CFP deadline |
-| `field_description` | TextLong | no | no | Rich-text description |
-| `field_topics` | RecordReference (category_term) | no | **yes** | Topic categories |
-| `field_logo` | File | no | no | Conference logo image |
-| `field_venue_photos` | File | no | **yes** | Venue/event photos |
-| `field_schedule_pdf` | File | no | no | Schedule as PDF |
-| `field_speakers` | RecordReference (speaker) | no | **yes** | Linked speaker profiles |
-| `field_language` | Text (max 10) | no | no | ISO 639-1 language code |
-| `field_source_id` | Text (max 255) | no | no | Dedup key for imports |
-| `field_editor_notes` | TextLong | no | no | Internal notes for editors |
-
-### Required vs. Optional
-
-Only `field_start_date` and `field_end_date` are required. Everything else is optional so that conferences can be created incrementally -- an importer might supply just the name, dates, and URL, with editors enriching the record later. The `field_source_id` field is a computed dedup key that the importer plugin will use in Part 2.
-
-### Multi-Value Fields (Cardinality)
-
-Most fields have a cardinality of 1 (single value). Three fields use cardinality -1, meaning they accept an unlimited number of values:
-
-- **field_topics** -- a conference can span multiple topics (Rust, WebAssembly, Systems)
-- **field_venue_photos** -- a gallery of event photos
-- **field_speakers** -- many speakers per conference
-
-Multi-value fields are stored as JSON arrays in the JSONB `fields` column on the `item` table.
 
 <details>
 <summary>Under the Hood: JSONB Field Storage</summary>
@@ -210,15 +199,8 @@ The `item_type.settings` column stores field definitions as a JSONB object with 
       "cardinality": 1
     },
     {
-      "field_name": "field_topics",
-      "field_type": {"RecordReference": "category_term"},
-      "label": "Topics",
-      "required": false,
-      "cardinality": -1
-    },
-    {
       "field_name": "field_city",
-      "field_type": {"Text": {"max_length": 255}},
+      "field_type": {"Text": {"max_length": null}},
       "label": "City",
       "required": false,
       "cardinality": 1
@@ -227,15 +209,25 @@ The `item_type.settings` column stores field definitions as a JSONB object with 
 }
 ```
 
-Notice the three shapes of `field_type`:
+Notice the shapes of `field_type`:
 
 - **Unit variants** like `Date`, `Boolean`, `File`, `TextLong` serialize as a plain JSON string: `"Date"`.
-- **Newtype variants** like `RecordReference("category_term")` serialize as `{"RecordReference": "category_term"}`.
-- **Struct variants** like `Text { max_length: Some(255) }` serialize as `{"Text": {"max_length": 255}}`.
+- **Struct variants** like `Text { max_length: None }` serialize as `{"Text": {"max_length": null}}`.
+- **Newtype variants** like `RecordReference("category_term")` serialize as `{"RecordReference": "category_term"}` (used in later parts).
 
 This matches Rust's default serde externally-tagged enum serialization. When the kernel boots, it deserializes these definitions into `FieldDefinition` structs (defined in `crates/plugin-sdk/src/types.rs`) and registers them in the `ContentTypeRegistry`.
 
 Actual item data is stored in the `item.fields` JSONB column -- not in `item_type.settings`. The `item_type` defines the schema; `item.fields` holds the values. This separation means you can add or remove fields from a type without migrating existing item data.
+
+For production sites that need version-controlled configuration, Trovato provides `config export/import`:
+
+```bash
+# Export all configuration (including item types) to YAML
+cargo run --release --bin trovato -- config export ./config/
+
+# Import configuration from YAML
+cargo run --release --bin trovato -- config import ./config/
+```
 
 </details>
 
@@ -257,8 +249,6 @@ This opens the auto-generated form at `/admin/content/add/conference`. Trovato i
 - **Boolean** fields (`field_online`) render as a checkbox.
 - **Text** fields (`field_city`, `field_country`, `field_url`) render as standard text inputs.
 - **TextLong** fields (`field_description`, `field_editor_notes`) render as multi-line textareas.
-- **File** fields (`field_logo`, `field_schedule_pdf`) render as file inputs (upload wiring comes later).
-- **RecordReference** fields (`field_topics`, `field_speakers`) render as text inputs accepting UUIDs (autocomplete comes later).
 
 The title field at the top uses the custom label "Conference Name" (from `title_label` in the Item Type definition).
 
@@ -269,7 +259,7 @@ This first conference gets a detailed field-by-field walkthrough. Fill in the fo
 | Field | Value |
 |---|---|
 | Conference Name | RustConf 2026 |
-| Conference Website | https://rustconf.com |
+| Website URL | https://rustconf.com |
 | Start Date | 2026-09-09 |
 | End Date | 2026-09-11 |
 | City | Portland |
@@ -290,7 +280,7 @@ Go back to `/admin/content/add/conference` and create a second conference:
 | Field | Value |
 |---|---|
 | Conference Name | EuroRust 2026 |
-| Conference Website | https://eurorust.eu |
+| Website URL | https://eurorust.eu |
 | Start Date | 2026-10-15 |
 | End Date | 2026-10-16 |
 | City | Paris |
@@ -307,10 +297,10 @@ One more -- this time an online-only conference, which exercises the `field_onli
 | Field | Value |
 |---|---|
 | Conference Name | WasmCon Online 2026 |
-| Conference Website | https://wasmcon.dev |
+| Website URL | https://wasmcon.dev |
 | Start Date | 2026-07-22 |
 | End Date | 2026-07-23 |
-| Online Event | (checked) |
+| Online | (checked) |
 | Description | A virtual conference dedicated to WebAssembly, covering toolchains, runtimes, and the component model. |
 | Published | (checked) |
 
@@ -516,7 +506,7 @@ In the Gather definition, each filter has an "Exposed" option. If you enable it,
 By the end of Part 1, you have:
 
 - A running Trovato instance with PostgreSQL and Redis.
-- A `conference` Item Type with 17 fields for dates, location, CFP details, topics, and more.
+- A `conference` Item Type with 12 fields for dates, location, CFP details, and more.
 - Three conferences (created by hand), each viewable at `/item/{uuid}`.
 - A Gather listing at `/conferences` that displays all published conferences sorted by start date.
 
@@ -532,8 +522,8 @@ These are explicitly **not** in Part 1 (to set expectations):
 - **Categories** -- Part 2
 - **Search** -- Part 2
 - **Templates/theming** -- Part 3 (Part 1 uses default rendering)
-- **File uploads** -- Part 3 (fields declared but not wired)
-- **Speakers** -- Part 3 (RecordReference declared but speaker type not created)
+- **File uploads** -- Part 3
+- **Speakers** -- Part 3
 - **Users/auth** -- Part 4
 - **Stages** -- Part 4 (everything in default live stage for now)
 - **Revisions** -- Part 4

@@ -5259,15 +5259,7 @@ fn pathauto_returns_none_without_pattern() {
 fn conference_item_type_exists_with_correct_fields() {
     run_test(async {
         let app = shared_app().await;
-
-        // Verify the conference type exists
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item_type WHERE type = 'conference')")
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
-
-        assert!(exists, "conference item type should exist after migration");
+        app.ensure_conference_type().await;
 
         // Load settings and verify field count
         let settings: Value =
@@ -5283,22 +5275,21 @@ fn conference_item_type_exists_with_correct_fields() {
 
         assert_eq!(
             fields.len(),
-            17,
-            "conference should have 17 field definitions"
+            12,
+            "conference should have 12 field definitions"
         );
 
         // Verify metadata
-        let row = sqlx::query_as::<_, (String, String, bool, String)>(
-            "SELECT label, plugin, has_title, title_label FROM item_type WHERE type = 'conference'",
+        let row = sqlx::query_as::<_, (String, bool, String)>(
+            "SELECT label, has_title, title_label FROM item_type WHERE type = 'conference'",
         )
         .fetch_one(&app.db)
         .await
         .unwrap();
 
         assert_eq!(row.0, "Conference");
-        assert_eq!(row.1, "ritrovo");
-        assert!(row.2, "has_title should be true");
-        assert_eq!(row.3, "Conference Name");
+        assert!(row.1, "has_title should be true");
+        assert_eq!(row.2, "Conference Name");
 
         // Verify key field types by name
         let find_field = |name: &str| -> Option<&Value> {
@@ -5320,53 +5311,19 @@ fn conference_item_type_exists_with_correct_fields() {
         let online = find_field("field_online").expect("field_online should exist");
         assert_eq!(online["field_type"], json!("Boolean"));
 
-        // File field
-        let logo = find_field("field_logo").expect("field_logo should exist");
-        assert_eq!(logo["field_type"], json!("File"));
-
-        // RecordReference fields with correct targets
-        let topics = find_field("field_topics").expect("field_topics should exist");
-        assert_eq!(
-            topics["field_type"],
-            json!({"RecordReference": "category_term"})
-        );
-        assert_eq!(
-            topics["cardinality"],
-            json!(-1),
-            "topics should be multi-value"
-        );
-
-        let speakers = find_field("field_speakers").expect("field_speakers should exist");
-        assert_eq!(
-            speakers["field_type"],
-            json!({"RecordReference": "speaker"})
-        );
-        assert_eq!(
-            speakers["cardinality"],
-            json!(-1),
-            "speakers should be multi-value"
-        );
-
-        // Multi-value File field
-        let venue_photos =
-            find_field("field_venue_photos").expect("field_venue_photos should exist");
-        assert_eq!(venue_photos["field_type"], json!("File"));
-        assert_eq!(
-            venue_photos["cardinality"],
-            json!(-1),
-            "venue_photos should be multi-value"
-        );
-
-        // Text field with max_length (struct variant shape)
+        // Text field (struct variant shape)
         let city = find_field("field_city").expect("field_city should exist");
-        assert_eq!(city["field_type"], json!({"Text": {"max_length": 255}}));
+        assert!(
+            city["field_type"].get("Text").is_some(),
+            "field_city should be Text type"
+        );
 
         // CFP date (optional)
         let cfp_end = find_field("field_cfp_end_date").expect("field_cfp_end_date should exist");
         assert_eq!(cfp_end["field_type"], json!("Date"));
         assert_eq!(cfp_end["required"], json!(false));
 
-        // Tutorial Step 2: exactly 2 required fields
+        // Exactly 2 required fields
         let required_count = fields
             .iter()
             .filter(|f| f.get("required").and_then(|r| r.as_bool()) == Some(true))
@@ -5376,33 +5333,13 @@ fn conference_item_type_exists_with_correct_fields() {
             "Only field_start_date and field_end_date should be required"
         );
 
-        // Tutorial Step 2: exactly 3 multi-value fields (cardinality -1)
-        let multi_value: Vec<&str> = fields
-            .iter()
-            .filter(|f| f.get("cardinality").and_then(|c| c.as_i64()) == Some(-1))
-            .filter_map(|f| f.get("field_name").and_then(|n| n.as_str()))
-            .collect();
-        assert_eq!(
-            multi_value.len(),
-            3,
-            "Expected 3 multi-value fields, got {multi_value:?}"
-        );
-        assert!(multi_value.contains(&"field_topics"));
-        assert!(multi_value.contains(&"field_venue_photos"));
-        assert!(multi_value.contains(&"field_speakers"));
-
-        // Tutorial Step 2: three shapes of field_type serialize correctly
+        // Two shapes of field_type serialize correctly
         // Unit variant: Date → "Date"
         assert!(
             start_date["field_type"].is_string(),
             "Unit variant Date should serialize as a string"
         );
-        // Newtype variant: RecordReference → {"RecordReference": "category_term"}
-        assert!(
-            topics["field_type"].is_object(),
-            "Newtype variant RecordReference should serialize as an object"
-        );
-        // Struct variant: Text → {"Text": {"max_length": 255}}
+        // Struct variant: Text → {"Text": {"max_length": null}}
         assert!(
             city["field_type"].is_object(),
             "Struct variant Text should serialize as an object"
@@ -5419,6 +5356,7 @@ fn conference_item_type_exists_with_correct_fields() {
 fn admin_types_list_shows_conference_and_page() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let cookies = app
             .create_and_login_admin("types_list_admin", "password123", "typeslist@test.com")
@@ -5452,6 +5390,7 @@ fn admin_types_list_shows_conference_and_page() {
 fn admin_content_add_lists_conference_type() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let cookies = app
             .create_and_login_admin("add_list_admin", "password123", "addlist@test.com")
@@ -5480,6 +5419,7 @@ fn admin_content_add_lists_conference_type() {
 fn seeded_conferences_exist_with_correct_data() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         // Verify all 3 seeded conferences exist
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE type = 'conference'")
@@ -5650,6 +5590,7 @@ fn seeded_conferences_exist_with_correct_data() {
 fn e2e_conference_form_renders_date_pickers() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let cookies = app
             .create_and_login_admin("conf_form_admin", "password123", "confform@test.com")
@@ -5712,22 +5653,6 @@ fn e2e_conference_form_renders_date_pickers() {
             "TextLong fields should render as textarea elements"
         );
 
-        // Tutorial Step 3: File fields render as disabled placeholder (uploads not yet wired)
-        assert!(
-            body.contains(r#"id="field_logo""#),
-            "Form should contain field_logo"
-        );
-        assert!(
-            body.contains("File uploads not yet available"),
-            "File fields should show placeholder message"
-        );
-
-        // Tutorial Step 3: RecordReference fields render with UUID placeholder
-        assert!(
-            body.contains(r#"placeholder="UUID""#),
-            "RecordReference fields should have UUID placeholder"
-        );
-
         // Tutorial Step 3: title label shows "Conference Name"
         assert!(
             body.contains("Conference Name"),
@@ -5740,6 +5665,7 @@ fn e2e_conference_form_renders_date_pickers() {
 fn e2e_conference_create_and_verify() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let title = format!("Test Conf {}", &unique_id[..12]);
@@ -5868,6 +5794,7 @@ fn e2e_conference_create_and_verify() {
 fn e2e_conference_unchecked_boolean_absent_from_json() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let title = format!("Bool Test {}", &unique_id[..12]);
@@ -5957,6 +5884,7 @@ fn e2e_conference_unchecked_boolean_absent_from_json() {
 fn e2e_conference_required_field_validation() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let cookies = app
             .create_and_login_admin("conf_val_admin", "password123", "confval@test.com")
@@ -6032,6 +5960,7 @@ fn e2e_conference_required_field_validation() {
 fn e2e_conference_csrf_rejection() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let cookies = app
             .create_and_login_admin("conf_csrf_admin", "password123", "confcsrf@test.com")
@@ -6077,6 +6006,7 @@ fn e2e_conference_csrf_rejection() {
 fn e2e_conference_create_shows_flash_message() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let title = format!("Flash Test {}", &unique_id[..12]);
@@ -6190,6 +6120,7 @@ fn e2e_conference_create_shows_flash_message() {
 fn e2e_conference_update_shows_flash_message() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let title = format!("Update Flash {}", &unique_id[..12]);
@@ -6342,6 +6273,7 @@ fn e2e_conference_update_shows_flash_message() {
 fn e2e_conference_delete_shows_flash_message() {
     run_test(async {
         let app = shared_app().await;
+        app.ensure_conference_type().await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let title = format!("Delete Flash {}", &unique_id[..12]);

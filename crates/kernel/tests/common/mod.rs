@@ -318,6 +318,77 @@ impl TestApp {
         self.state.set_plugin_enabled(plugin_name, true);
     }
 
+    /// Ensure the `conference` item type exists with the 12-field tutorial schema.
+    ///
+    /// The tutorial walks users through creating this type via the admin UI.
+    /// This method seeds the same structure programmatically. Idempotent — safe
+    /// to call from any test.
+    pub async fn ensure_conference_type(&self) {
+        use trovato_sdk::types::{FieldDefinition, FieldType};
+
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item_type WHERE type = 'conference')")
+                .fetch_one(&self.db)
+                .await
+                .unwrap();
+
+        if exists {
+            return;
+        }
+
+        let fields = vec![
+            FieldDefinition::new("field_url", FieldType::Text { max_length: None })
+                .label("Website URL"),
+            FieldDefinition::new("field_start_date", FieldType::Date)
+                .label("Start Date")
+                .required(),
+            FieldDefinition::new("field_end_date", FieldType::Date)
+                .label("End Date")
+                .required(),
+            FieldDefinition::new("field_city", FieldType::Text { max_length: None }).label("City"),
+            FieldDefinition::new("field_country", FieldType::Text { max_length: None })
+                .label("Country"),
+            FieldDefinition::new("field_online", FieldType::Boolean).label("Online"),
+            FieldDefinition::new("field_cfp_url", FieldType::Text { max_length: None })
+                .label("CFP URL"),
+            FieldDefinition::new("field_cfp_end_date", FieldType::Date).label("CFP End Date"),
+            FieldDefinition::new("field_description", FieldType::TextLong).label("Description"),
+            FieldDefinition::new("field_language", FieldType::Text { max_length: None })
+                .label("Language"),
+            FieldDefinition::new("field_source_id", FieldType::Text { max_length: None })
+                .label("Source ID"),
+            FieldDefinition::new("field_editor_notes", FieldType::TextLong).label("Editor Notes"),
+        ];
+
+        let settings = serde_json::json!({
+            "fields": serde_json::to_value(&fields).unwrap(),
+            "title_label": "Conference Name",
+        });
+
+        sqlx::query(
+            r#"INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings)
+               VALUES ('conference', 'Conference', 'A tech conference or meetup event', true,
+                       'Conference Name', 'core', $1)
+               ON CONFLICT (type) DO NOTHING"#,
+        )
+        .bind(&settings)
+        .execute(&self.db)
+        .await
+        .expect("failed to seed conference item type");
+
+        // Register in the content type cache so API endpoints see it
+        self.state
+            .content_types()
+            .create(
+                "conference",
+                "Conference",
+                Some("A tech conference or meetup event"),
+                settings,
+            )
+            .await
+            .ok(); // Ignore error if already cached
+    }
+
     async fn create_test_user_inner(
         &self,
         username: &str,

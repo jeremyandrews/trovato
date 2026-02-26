@@ -59,13 +59,17 @@ async fn response_text(response: axum::response::Response) -> String {
 /// One-time initialization cell for tutorial seed data.
 static TUTORIAL_SEED: OnceCell<()> = OnceCell::const_new();
 
-/// Seed the 3 tutorial conferences, the `upcoming_conferences` gather, and
-/// the `/conferences` URL alias. Idempotent — safe to call from any test.
+/// Seed the `conference` item type, 3 tutorial conferences, the
+/// `upcoming_conferences` gather, and the `/conferences` URL alias.
+/// Idempotent — safe to call from any test.
 async fn seed_tutorial_data(app: &'static common::TestApp) {
     TUTORIAL_SEED
         .get_or_init(|| async {
             let now = chrono::Utc::now().timestamp();
             let nil_author = uuid::Uuid::nil();
+
+            // --- Conference item type ---
+            app.ensure_conference_type().await;
 
             // --- Conference items ---
             let conferences = [
@@ -269,7 +273,7 @@ fn test_part01_step01_health_check() {
 //
 // The tutorial claims:
 // - "conference" type exists and is visible via /api/content-types
-// - 17 fields with specific names, types, required status, and cardinality
+// - 12 fields with specific names, types, and required status
 // - title_label is "Conference Name"
 // =============================================================================
 
@@ -277,6 +281,7 @@ fn test_part01_step01_health_check() {
 fn test_part01_step02_conference_type_in_api() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let response = app
             .request(
@@ -300,9 +305,10 @@ fn test_part01_step02_conference_type_in_api() {
 }
 
 #[test]
-fn test_part01_step02_conference_has_17_fields() {
+fn test_part01_step02_conference_has_12_fields() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let row: (Value,) =
             sqlx::query_as("SELECT settings FROM item_type WHERE type = 'conference'")
@@ -314,11 +320,11 @@ fn test_part01_step02_conference_has_17_fields() {
             .as_array()
             .expect("settings.fields must be an array");
 
-        // Tutorial Step 2 claims 17 fields
+        // Tutorial Step 2 creates 12 fields via admin UI
         assert_eq!(
             fields.len(),
-            17,
-            "conference type should have 17 fields, found {}",
+            12,
+            "conference type should have 12 fields, found {}",
             fields.len()
         );
 
@@ -333,11 +339,6 @@ fn test_part01_step02_conference_has_17_fields() {
             "field_cfp_url",
             "field_cfp_end_date",
             "field_description",
-            "field_topics",
-            "field_logo",
-            "field_venue_photos",
-            "field_schedule_pdf",
-            "field_speakers",
             "field_language",
             "field_source_id",
             "field_editor_notes",
@@ -361,6 +362,7 @@ fn test_part01_step02_conference_has_17_fields() {
 fn test_part01_step02_field_types() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let row: (Value,) =
             sqlx::query_as("SELECT settings FROM item_type WHERE type = 'conference'")
@@ -385,23 +387,14 @@ fn test_part01_step02_field_types() {
         // Boolean serializes as "Boolean"
         assert_eq!(field_map["field_online"], "Boolean");
 
-        // Text serializes as {"Text": {"max_length": N}}
+        // Text serializes as {"Text": {"max_length": ...}}
         assert!(
-            field_map["field_city"]["Text"]["max_length"].is_number(),
-            "field_city should be Text with max_length"
+            field_map["field_city"].get("Text").is_some(),
+            "field_city should be Text type"
         );
 
         // TextLong serializes as "TextLong"
         assert_eq!(field_map["field_description"], "TextLong");
-
-        // RecordReference serializes as {"RecordReference": "target"}
-        assert!(
-            field_map["field_topics"]["RecordReference"].is_string(),
-            "field_topics should be RecordReference"
-        );
-
-        // File serializes as "File"
-        assert_eq!(field_map["field_logo"], "File");
     });
 }
 
@@ -409,6 +402,7 @@ fn test_part01_step02_field_types() {
 fn test_part01_step02_required_fields() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let row: (Value,) =
             sqlx::query_as("SELECT settings FROM item_type WHERE type = 'conference'")
@@ -442,38 +436,10 @@ fn test_part01_step02_required_fields() {
 }
 
 #[test]
-fn test_part01_step02_multivalue_fields() {
-    run_test(async {
-        let app = shared_app().await;
-
-        let row: (Value,) =
-            sqlx::query_as("SELECT settings FROM item_type WHERE type = 'conference'")
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
-
-        let fields = row.0["fields"].as_array().unwrap();
-
-        // Tutorial says topics, venue_photos, speakers have cardinality -1
-        let multivalue: Vec<&str> = fields
-            .iter()
-            .filter(|f| f["cardinality"].as_i64() == Some(-1))
-            .filter_map(|f| f["field_name"].as_str())
-            .collect();
-
-        for name in &["field_topics", "field_venue_photos", "field_speakers"] {
-            assert!(
-                multivalue.contains(name),
-                "'{name}' should have cardinality -1 (multi-value); multi-value fields: {multivalue:?}"
-            );
-        }
-    });
-}
-
-#[test]
 fn test_part01_step02_title_label() {
     run_test(async {
         let app = shared_app().await;
+        seed_tutorial_data(app).await;
 
         let row: (String,) =
             sqlx::query_as("SELECT title_label FROM item_type WHERE type = 'conference'")
