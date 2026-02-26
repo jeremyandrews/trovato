@@ -7,7 +7,7 @@ VALUES (
     '/gather/media_browser',
     '/media',
     'en',
-    'live',
+    '0193a5a0-0000-7000-8000-000000000001',
     EXTRACT(EPOCH FROM NOW())::bigint
 )
 ON CONFLICT (alias, language, stage_id) DO UPDATE SET
