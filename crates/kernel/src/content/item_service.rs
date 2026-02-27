@@ -4,9 +4,10 @@
 //! for plugin taps (insert, update, delete, view, access).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use dashmap::DashMap;
+use moka::sync::Cache;
 use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
@@ -14,6 +15,9 @@ use uuid::Uuid;
 use crate::models::{CreateItem, Item, ItemRevision, UpdateItem};
 use crate::tap::{RequestState, TapDispatcher, UserContext};
 use trovato_sdk::types::AccessResult;
+
+/// Maximum entries in the item cache.
+const MAX_CAPACITY: u64 = 50_000;
 
 /// Service for item CRUD operations with tap integration.
 #[derive(Clone)]
@@ -24,7 +28,7 @@ pub struct ItemService {
 struct ItemServiceInner {
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
-    cache: DashMap<Uuid, Item>,
+    cache: Cache<Uuid, Item>,
 }
 
 /// Input for checking item access.
@@ -43,12 +47,15 @@ pub struct ItemAccessInput {
 
 impl ItemService {
     /// Create a new item service.
-    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>) -> Self {
+    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>, ttl: Duration) -> Self {
         Self {
             inner: Arc::new(ItemServiceInner {
                 pool,
                 dispatcher,
-                cache: DashMap::new(),
+                cache: Cache::builder()
+                    .max_capacity(MAX_CAPACITY)
+                    .time_to_live(ttl)
+                    .build(),
             }),
         }
     }
@@ -78,7 +85,7 @@ impl ItemService {
     pub async fn load(&self, id: Uuid) -> Result<Option<Item>> {
         // Check cache first
         if let Some(item) = self.inner.cache.get(&id) {
-            return Ok(Some(item.clone()));
+            return Ok(Some(item));
         }
 
         // Load from database
@@ -105,7 +112,7 @@ impl ItemService {
         if let Some(item) = self.inner.cache.get(&id) {
             // Verify the item's stage is in our overlay list
             if stage_ids.contains(&item.stage_id) {
-                return Ok(Some(item.clone()));
+                return Ok(Some(item));
             }
         }
 
@@ -368,17 +375,17 @@ impl ItemService {
 
     /// Invalidate cached item.
     pub fn invalidate(&self, id: Uuid) {
-        self.inner.cache.remove(&id);
+        self.inner.cache.invalidate(&id);
     }
 
     /// Clear all cached items.
     pub fn clear_cache(&self) {
-        self.inner.cache.clear();
+        self.inner.cache.invalidate_all();
     }
 
     /// Get cache size.
     pub fn cache_size(&self) -> usize {
-        self.inner.cache.len()
+        self.inner.cache.entry_count() as usize
     }
 }
 

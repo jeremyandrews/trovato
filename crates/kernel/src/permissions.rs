@@ -1,15 +1,19 @@
-//! Permission checking service with DashMap-based caching.
+//! Permission checking service with TTL-based caching.
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use dashmap::DashMap;
+use moka::sync::Cache;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::role::well_known;
 use crate::models::{Role, User};
+
+/// Maximum entries in the permission cache.
+const MAX_CAPACITY: u64 = 10_000;
 
 /// Permission cache entry.
 #[derive(Debug, Clone)]
@@ -17,15 +21,15 @@ struct CachedPermissions {
     permissions: HashSet<String>,
 }
 
-/// Permission service with fast DashMap-based lookups.
+/// Permission service with TTL-based cached lookups.
 #[derive(Clone)]
 pub struct PermissionService {
     inner: Arc<PermissionServiceInner>,
 }
 
 struct PermissionServiceInner {
-    /// Cache of user_id -> permissions.
-    user_cache: DashMap<Uuid, CachedPermissions>,
+    /// Cache of user_id -> permissions (TTL-bounded).
+    user_cache: Cache<Uuid, CachedPermissions>,
 
     /// Database pool for cache misses.
     pool: PgPool,
@@ -33,10 +37,13 @@ struct PermissionServiceInner {
 
 impl PermissionService {
     /// Create a new permission service.
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, ttl: Duration) -> Self {
         Self {
             inner: Arc::new(PermissionServiceInner {
-                user_cache: DashMap::new(),
+                user_cache: Cache::builder()
+                    .max_capacity(MAX_CAPACITY)
+                    .time_to_live(ttl)
+                    .build(),
                 pool,
             }),
         }
@@ -105,18 +112,18 @@ impl PermissionService {
     ///
     /// Call this when a user's roles or permissions change.
     pub fn invalidate_user(&self, user_id: Uuid) {
-        self.inner.user_cache.remove(&user_id);
+        self.inner.user_cache.invalidate(&user_id);
     }
 
     /// Invalidate the entire cache.
     ///
     /// Call this when role permissions change.
     pub fn invalidate_all(&self) {
-        self.inner.user_cache.clear();
+        self.inner.user_cache.invalidate_all();
     }
 
     /// Get the number of cached entries (for monitoring).
     pub fn cache_size(&self) -> usize {
-        self.inner.user_cache.len()
+        self.inner.user_cache.entry_count() as usize
     }
 }

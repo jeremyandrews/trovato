@@ -1,33 +1,43 @@
 //! Category service with caching.
 //!
-//! Provides high-level operations on categories and tags with DashMap caching
-//! for fast lookups.
+//! Provides high-level operations on categories and tags with TTL-based
+//! Moka caching for fast lookups.
 
 use crate::models::{
     Category, CreateCategory, CreateTag, Tag, TagWithDepth, UpdateCategory, UpdateTag,
 };
 use anyhow::Result;
-use dashmap::DashMap;
+use moka::sync::Cache;
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
+
+/// Maximum entries in each category cache.
+const MAX_CAPACITY: u64 = 1_000;
 
 /// Service for managing categories and tags with caching.
 pub struct CategoryService {
     pool: PgPool,
     /// Cache: category id -> tags in that category
-    tag_cache: DashMap<String, Vec<Tag>>,
+    tag_cache: Cache<String, Vec<Tag>>,
     /// Cache: category id -> category
-    category_cache: DashMap<String, Category>,
+    category_cache: Cache<String, Category>,
 }
 
 impl CategoryService {
     /// Create a new CategoryService.
-    pub fn new(pool: PgPool) -> Arc<Self> {
+    pub fn new(pool: PgPool, ttl: Duration) -> Arc<Self> {
         Arc::new(Self {
             pool,
-            tag_cache: DashMap::new(),
-            category_cache: DashMap::new(),
+            tag_cache: Cache::builder()
+                .max_capacity(MAX_CAPACITY)
+                .time_to_live(ttl)
+                .build(),
+            category_cache: Cache::builder()
+                .max_capacity(MAX_CAPACITY)
+                .time_to_live(ttl)
+                .build(),
         })
     }
 
@@ -39,7 +49,7 @@ impl CategoryService {
     pub async fn get_category(&self, id: &str) -> Result<Option<Category>> {
         // Check cache first
         if let Some(category) = self.category_cache.get(id) {
-            return Ok(Some(category.clone()));
+            return Ok(Some(category));
         }
 
         // Fetch from database
@@ -83,8 +93,8 @@ impl CategoryService {
     pub async fn delete_category(&self, id: &str) -> Result<bool> {
         let deleted = Category::delete(&self.pool, id).await?;
         if deleted {
-            self.category_cache.remove(id);
-            self.tag_cache.remove(id);
+            self.category_cache.invalidate(id);
+            self.tag_cache.invalidate(id);
         }
         Ok(deleted)
     }
@@ -102,7 +112,7 @@ impl CategoryService {
     pub async fn list_tags(&self, category_id: &str) -> Result<Vec<Tag>> {
         // Check cache first
         if let Some(tags) = self.tag_cache.get(category_id) {
-            return Ok(tags.clone());
+            return Ok(tags);
         }
 
         // Fetch from database
@@ -233,13 +243,13 @@ impl CategoryService {
 
     /// Invalidate cache for a category.
     pub fn invalidate_cache(&self, category_id: &str) {
-        self.tag_cache.remove(category_id);
+        self.tag_cache.invalidate(category_id);
     }
 
     /// Clear all caches.
     pub fn clear_cache(&self) {
-        self.tag_cache.clear();
-        self.category_cache.clear();
+        self.tag_cache.invalidate_all();
+        self.category_cache.invalidate_all();
     }
 
     // -------------------------------------------------------------------------
@@ -265,8 +275,8 @@ mod tests {
 
     #[test]
     fn category_service_cache_types() {
-        // Just verify the types compile correctly
-        let _cache: DashMap<String, Vec<Tag>> = DashMap::new();
-        let _category_cache: DashMap<String, Category> = DashMap::new();
+        // Just verify the Moka cache types compile correctly
+        let _cache: Cache<String, Vec<Tag>> = Cache::builder().max_capacity(10).build();
+        let _category_cache: Cache<String, Category> = Cache::builder().max_capacity(10).build();
     }
 }

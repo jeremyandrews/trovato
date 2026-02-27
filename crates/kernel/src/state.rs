@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use redis::Client as RedisClient;
 use sqlx::PgPool;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::middleware::language::{
     AcceptLanguageNegotiator, LanguageNegotiator, UrlPrefixNegotiator,
@@ -15,7 +15,7 @@ use crate::middleware::language::{
 
 use crate::batch::BatchService;
 use crate::cache::CacheLayer;
-use crate::config::Config;
+use crate::config::{CacheConfig, Config};
 use crate::config_storage::{ConfigStorage, DirectConfigStorage, StageAwareConfigStorage};
 use crate::content::{ContentTypeRegistry, ItemService};
 use crate::cron::CronService;
@@ -197,6 +197,9 @@ impl AppState {
     /// Create new application state with database connections.
     ///
     pub async fn new(config: &Config) -> Result<Self> {
+        // Load cache configuration from environment
+        let cache_config = CacheConfig::from_env();
+
         // Create PostgreSQL pool
         let db = db::create_pool(config)
             .await
@@ -228,7 +231,7 @@ impl AppState {
         let config_storage: Arc<dyn ConfigStorage> = Arc::new(DirectConfigStorage::new(db.clone()));
 
         // Create permission service
-        let permissions = PermissionService::new(db.clone());
+        let permissions = PermissionService::new(db.clone(), cache_config.ttl_permissions);
 
         // Create lockout service
         let lockout = LockoutService::new(redis.clone());
@@ -354,17 +357,24 @@ impl AppState {
         let menu_registry = Arc::new(menu_registry);
 
         // Create content type registry
-        let content_types = Arc::new(ContentTypeRegistry::new(db.clone()));
+        let content_types = Arc::new(ContentTypeRegistry::new(
+            db.clone(),
+            cache_config.ttl_content_types,
+        ));
         content_types
             .sync_from_plugins(&tap_dispatcher)
             .await
             .context("failed to sync content types")?;
 
         // Create item service
-        let items = Arc::new(ItemService::new(db.clone(), tap_dispatcher.clone()));
+        let items = Arc::new(ItemService::new(
+            db.clone(),
+            tap_dispatcher.clone(),
+            cache_config.ttl_items,
+        ));
 
         // Create category service
-        let categories = CategoryService::new(db.clone());
+        let categories = CategoryService::new(db.clone(), cache_config.ttl_categories);
 
         // Build Gather extension registry from plugin tap_gather_extend declarations
         let gather_extensions = {
@@ -397,7 +407,12 @@ impl AppState {
         };
 
         // Create gather service and load queries
-        let gather = GatherService::new(db.clone(), categories.clone(), gather_extensions);
+        let gather = GatherService::new(
+            db.clone(),
+            categories.clone(),
+            gather_extensions,
+            cache_config.ttl_gather_queries,
+        );
         gather
             .load_queries()
             .await
@@ -475,6 +490,7 @@ impl AppState {
         let users = Arc::new(services::user::UserService::new(
             db.clone(),
             tap_dispatcher.clone(),
+            cache_config.ttl_users,
         ));
 
         // Create role service (depends on permission service for cache invalidation)
@@ -615,6 +631,39 @@ impl AppState {
         cron.set_ai_budgets(ai_budgets.clone());
         cron.set_pagefind_enabled(enabled_set.contains("trovato_search"));
         let cron = Arc::new(cron);
+
+        // Spawn background cache reload tasks for collection caches.
+        // These periodically reload all entries from the database so that
+        // external changes (CLI config import, second server) become visible
+        // within the TTL window.
+        {
+            let ct = content_types.clone();
+            let interval = cache_config.ttl_content_types;
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(interval);
+                tick.tick().await; // skip immediate first tick
+                loop {
+                    tick.tick().await;
+                    if let Err(e) = ct.reload_from_db().await {
+                        warn!(error = %e, "failed to reload content types from database");
+                    }
+                }
+            });
+        }
+        {
+            let gq = gather.clone();
+            let interval = cache_config.ttl_gather_queries;
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(interval);
+                tick.tick().await; // skip immediate first tick
+                loop {
+                    tick.tick().await;
+                    if let Err(e) = gq.reload_from_db().await {
+                        warn!(error = %e, "failed to reload gather queries from database");
+                    }
+                }
+            });
+        }
 
         Ok(Self {
             inner: Arc::new(AppStateInner {

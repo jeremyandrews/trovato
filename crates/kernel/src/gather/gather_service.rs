@@ -14,22 +14,26 @@ use super::types::{
     QueryDefinition, QueryDisplay, QueryFilter,
 };
 use anyhow::{Context, Result};
-use dashmap::DashMap;
+use moka::sync::Cache;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Maximum nesting depth for includes to prevent unbounded recursion.
 const MAX_INCLUDE_DEPTH: u8 = 3;
+
+/// Maximum entries in the gather query cache.
+const MAX_CAPACITY: u64 = 1_000;
 
 /// Service for executing Gather queries.
 pub struct GatherService {
     pool: PgPool,
     categories: Arc<CategoryService>,
     extensions: Arc<GatherExtensionRegistry>,
-    /// Registered queries by query_id
-    queries: DashMap<String, GatherQuery>,
+    /// Registered queries by query_id (TTL-bounded).
+    queries: Cache<String, GatherQuery>,
 }
 
 impl GatherService {
@@ -38,12 +42,16 @@ impl GatherService {
         pool: PgPool,
         categories: Arc<CategoryService>,
         extensions: Arc<GatherExtensionRegistry>,
+        ttl: Duration,
     ) -> Arc<Self> {
         Arc::new(Self {
             pool,
             categories,
             extensions,
-            queries: DashMap::new(),
+            queries: Cache::builder()
+                .max_capacity(MAX_CAPACITY)
+                .time_to_live(ttl)
+                .build(),
         })
     }
 
@@ -88,12 +96,12 @@ impl GatherService {
 
     /// Get a query by ID.
     pub fn get_query(&self, query_id: &str) -> Option<GatherQuery> {
-        self.queries.get(query_id).map(|v| v.clone())
+        self.queries.get(query_id)
     }
 
     /// List all registered queries.
     pub fn list_queries(&self) -> Vec<GatherQuery> {
-        self.queries.iter().map(|v| v.clone()).collect()
+        self.queries.iter().map(|(_k, v)| v).collect()
     }
 
     /// Load queries from database into memory cache.
@@ -141,6 +149,15 @@ impl GatherService {
         }
 
         Ok(())
+    }
+
+    /// Reload all queries from the database into cache.
+    ///
+    /// Called periodically by the background reload task to keep the
+    /// cache fresh so that external database changes become visible.
+    /// Delegates to [`load_queries`](Self::load_queries).
+    pub async fn reload_from_db(&self) -> Result<()> {
+        self.load_queries().await
     }
 
     /// Execute a registered query by ID.
@@ -599,7 +616,7 @@ impl GatherService {
             .await
             .context("failed to delete query")?;
 
-        self.queries.remove(query_id);
+        self.queries.invalidate(query_id);
 
         Ok(result.rows_affected() > 0)
     }

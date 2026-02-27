@@ -109,14 +109,14 @@ Every piece of content in Trovato is an **Item**. Items are typed -- a blog post
 
 Trovato ships with one built-in Item Type: `page` (a simple page with a body field). Ritrovo needs a `conference` type with fields for dates, location, CFP (Call for Papers -- the submission process conferences use to solicit talk proposals) info, and more.
 
-> **Shortcut:** To skip creating this content type by hand, import the pre-built config. Stop the server if it is running, then run from the project root:
+> **Shortcut:** To skip creating this content type by hand, import the pre-built config from the project root:
 >
 > ```bash
 > cargo run --release --bin trovato -- config import docs/tutorial/config --dry-run
 > cargo run --release --bin trovato -- config import docs/tutorial/config
 > ```
 >
-> This creates the `conference` type with all 12 fields. If a `conference` type already exists it will be overwritten. Restart the server afterward so it picks up the new type, then continue at Step 3 below.
+> This creates the `conference` type with all 12 fields. If a `conference` type already exists it will be overwritten. The running server will pick up the new type automatically within the cache TTL window (60 seconds by default, configurable via `CACHE_TTL`). Then continue at Step 3 below.
 
 ### Creating the Type
 

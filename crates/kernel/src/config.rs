@@ -2,8 +2,63 @@
 
 use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+
+/// Default cache TTL in seconds (1 minute).
+const DEFAULT_CACHE_TTL: u64 = 60;
+
+/// Cache configuration loaded from `CACHE_TTL*` environment variables.
+///
+/// Each per-cache TTL defaults to `CACHE_TTL` if its own variable is unset.
+/// `CACHE_TTL` itself defaults to 60 seconds.
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    /// Content type registry reload interval.
+    pub ttl_content_types: Duration,
+    /// Gather query registry reload interval.
+    pub ttl_gather_queries: Duration,
+    /// Permission cache entry TTL.
+    pub ttl_permissions: Duration,
+    /// User cache entry TTL.
+    pub ttl_users: Duration,
+    /// Item cache entry TTL.
+    pub ttl_items: Duration,
+    /// Category cache entry TTL.
+    pub ttl_categories: Duration,
+}
+
+impl CacheConfig {
+    /// Load cache configuration from environment variables.
+    ///
+    /// Resolution: each `CACHE_TTL_<NAME>` falls back to `CACHE_TTL`,
+    /// which itself defaults to 60 seconds.
+    pub fn from_env() -> Self {
+        let global = Self::parse_env_u64("CACHE_TTL").unwrap_or(DEFAULT_CACHE_TTL);
+        Self {
+            ttl_content_types: Duration::from_secs(
+                Self::parse_env_u64("CACHE_TTL_CONTENT_TYPES").unwrap_or(global),
+            ),
+            ttl_gather_queries: Duration::from_secs(
+                Self::parse_env_u64("CACHE_TTL_GATHER_QUERIES").unwrap_or(global),
+            ),
+            ttl_permissions: Duration::from_secs(
+                Self::parse_env_u64("CACHE_TTL_PERMISSIONS").unwrap_or(global),
+            ),
+            ttl_users: Duration::from_secs(Self::parse_env_u64("CACHE_TTL_USERS").unwrap_or(300)),
+            ttl_items: Duration::from_secs(Self::parse_env_u64("CACHE_TTL_ITEMS").unwrap_or(300)),
+            ttl_categories: Duration::from_secs(
+                Self::parse_env_u64("CACHE_TTL_CATEGORIES").unwrap_or(300),
+            ),
+        }
+    }
+
+    /// Parse an environment variable as `u64`, returning `None` if unset or invalid.
+    fn parse_env_u64(name: &str) -> Option<u64> {
+        env::var(name).ok().and_then(|v| v.parse().ok())
+    }
+}
 
 /// Application configuration.
 #[derive(Debug, Clone)]

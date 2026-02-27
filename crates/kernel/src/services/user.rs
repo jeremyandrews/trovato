@@ -1,13 +1,14 @@
-//! User service with tap integration and DashMap caching.
+//! User service with tap integration and TTL-based caching.
 //!
 //! Centralizes user CRUD operations with automatic tap invocations
 //! for plugin taps (register, update, delete, login, logout) and
 //! an in-process cache for `find_by_id` lookups.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use dashmap::DashMap;
+use moka::sync::Cache;
 use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
@@ -15,15 +16,18 @@ use uuid::Uuid;
 use crate::models::{CreateUser, UpdateUser, User};
 use crate::tap::{RequestState, TapDispatcher, UserContext};
 
+/// Maximum entries in the user cache.
+const MAX_CAPACITY: u64 = 10_000;
+
 /// Service for user CRUD operations with tap integration and caching.
 ///
 /// Always present in [`AppState`](crate::state::AppState) as `Arc<UserService>`.
-/// The DashMap cache deduplicates `find_by_id` lookups that are called
-/// repeatedly across route helpers (`require_login`, `require_admin`,
-/// author info in list views, etc.).
+/// The cache deduplicates `find_by_id` lookups that are called repeatedly
+/// across route helpers (`require_login`, `require_admin`, author info in
+/// list views, etc.).
 ///
-/// The cache is unbounded but users are few relative to content items.
-/// Call [`clear_cache`](Self::clear_cache) periodically if memory is a concern.
+/// Entries expire automatically after the configured TTL so external changes
+/// (direct SQL, second server instance) become visible without a restart.
 #[derive(Clone)]
 pub struct UserService {
     inner: Arc<UserServiceInner>,
@@ -32,17 +36,20 @@ pub struct UserService {
 struct UserServiceInner {
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
-    cache: DashMap<Uuid, User>,
+    cache: Cache<Uuid, User>,
 }
 
 impl UserService {
     /// Create a new user service.
-    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>) -> Self {
+    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>, ttl: Duration) -> Self {
         Self {
             inner: Arc::new(UserServiceInner {
                 pool,
                 dispatcher,
-                cache: DashMap::new(),
+                cache: Cache::builder()
+                    .max_capacity(MAX_CAPACITY)
+                    .time_to_live(ttl)
+                    .build(),
             }),
         }
     }
@@ -51,7 +58,7 @@ impl UserService {
     pub async fn find_by_id(&self, id: Uuid) -> Result<Option<User>> {
         // Check cache first
         if let Some(user) = self.inner.cache.get(&id) {
-            return Ok(Some(user.clone()));
+            return Ok(Some(user));
         }
 
         let user = User::find_by_id(&self.inner.pool, id).await?;
@@ -203,17 +210,17 @@ impl UserService {
 
     /// Invalidate cached user.
     pub fn invalidate(&self, id: Uuid) {
-        self.inner.cache.remove(&id);
+        self.inner.cache.invalidate(&id);
     }
 
     /// Clear all cached users.
     pub fn clear_cache(&self) {
-        self.inner.cache.clear();
+        self.inner.cache.invalidate_all();
     }
 
     /// Get cache size.
     pub fn cache_size(&self) -> usize {
-        self.inner.cache.len()
+        self.inner.cache.entry_count() as usize
     }
 
     /// Dispatch a user tap hook with standard `{ "user_id": "..." }` payload.
@@ -260,12 +267,13 @@ mod tests {
 
     #[test]
     fn cache_insert_and_retrieve() {
-        let cache: DashMap<Uuid, User> = DashMap::new();
+        let cache: Cache<Uuid, User> = Cache::builder().max_capacity(100).build();
         let id = Uuid::now_v7();
         let user = make_test_user(id, "test");
 
         cache.insert(id, user);
-        assert_eq!(cache.len(), 1);
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 1);
 
         let cached = cache.get(&id).unwrap();
         assert_eq!(cached.name, "test");
@@ -274,31 +282,34 @@ mod tests {
 
     #[test]
     fn cache_invalidate_removes_entry() {
-        let cache: DashMap<Uuid, User> = DashMap::new();
+        let cache: Cache<Uuid, User> = Cache::builder().max_capacity(100).build();
         let id = Uuid::now_v7();
         cache.insert(id, make_test_user(id, "test"));
         assert!(cache.get(&id).is_some());
 
-        cache.remove(&id);
+        cache.invalidate(&id);
         assert!(cache.get(&id).is_none());
     }
 
     #[test]
     fn cache_clear_removes_all() {
-        let cache: DashMap<Uuid, User> = DashMap::new();
+        let cache: Cache<Uuid, User> = Cache::builder().max_capacity(100).build();
         for i in 0..5 {
             let id = Uuid::now_v7();
             cache.insert(id, make_test_user(id, &format!("user_{i}")));
         }
-        assert_eq!(cache.len(), 5);
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 5);
 
-        cache.clear();
-        assert_eq!(cache.len(), 0);
+        cache.invalidate_all();
+        // Moka invalidate_all is lazy; run_pending_tasks ensures eviction
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 0);
     }
 
     #[test]
     fn cache_update_replaces_entry() {
-        let cache: DashMap<Uuid, User> = DashMap::new();
+        let cache: Cache<Uuid, User> = Cache::builder().max_capacity(100).build();
         let id = Uuid::now_v7();
         cache.insert(id, make_test_user(id, "original"));
         assert_eq!(cache.get(&id).unwrap().name, "original");

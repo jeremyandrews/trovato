@@ -1,12 +1,15 @@
 //! Content type registry.
 //!
 //! Manages content type definitions collected from plugins via tap_item_info
-//! and synced to the database.
+//! and synced to the database. Uses a TTL-based Moka cache with a background
+//! reload task so that external database changes (CLI config import, second
+//! server instance) become visible within a bounded window.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use dashmap::DashMap;
+use moka::sync::Cache;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
@@ -14,10 +17,14 @@ use crate::models::{CreateItemType, ItemType};
 use crate::tap::TapDispatcher;
 use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition};
 
+/// Maximum entries in the content type cache.
+const MAX_CAPACITY: u64 = 500;
+
 /// Registry of content types.
 ///
 /// Content types are collected from plugins at startup and cached
-/// in memory for fast access.
+/// in memory for fast access. A background task periodically reloads
+/// all types from the database to pick up external changes.
 #[derive(Clone)]
 pub struct ContentTypeRegistry {
     inner: Arc<ContentTypeRegistryInner>,
@@ -25,7 +32,7 @@ pub struct ContentTypeRegistry {
 
 struct ContentTypeRegistryInner {
     pool: PgPool,
-    types: DashMap<String, ContentTypeDefinition>,
+    types: Cache<String, ContentTypeDefinition>,
 }
 
 /// Resolve the title label, normalizing empty strings to None and
@@ -48,11 +55,14 @@ fn resolve_title_label(primary: Option<&str>, fallback: Option<&str>) -> Option<
 
 impl ContentTypeRegistry {
     /// Create a new content type registry.
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, ttl: Duration) -> Self {
         Self {
             inner: Arc::new(ContentTypeRegistryInner {
                 pool,
-                types: DashMap::new(),
+                types: Cache::builder()
+                    .max_capacity(MAX_CAPACITY)
+                    .time_to_live(ttl)
+                    .build(),
             }),
         }
     }
@@ -151,9 +161,51 @@ impl ContentTypeRegistry {
             .unwrap_or_default()
     }
 
-    /// Get a content type by machine name.
+    /// Reload all content types from the database into cache.
+    ///
+    /// Called periodically by the background reload task to keep the
+    /// cache fresh so that external database changes become visible.
+    pub async fn reload_from_db(&self) -> Result<()> {
+        let db_types = ItemType::list(&self.inner.pool).await?;
+        for db_type in db_types {
+            let def = ContentTypeDefinition {
+                machine_name: db_type.type_name.clone(),
+                label: db_type.label.clone(),
+                description: db_type.description.clone().unwrap_or_default(),
+                title_label: db_type.title_label.clone(),
+                fields: self.parse_fields_from_settings(&db_type.settings),
+            };
+            self.inner.types.insert(db_type.type_name, def);
+        }
+        Ok(())
+    }
+
+    /// Get a content type by machine name (sync, cache-only).
     pub fn get(&self, type_name: &str) -> Option<ContentTypeDefinition> {
-        self.inner.types.get(type_name).map(|r| r.clone())
+        self.inner.types.get(type_name)
+    }
+
+    /// Get a content type by machine name with DB fallback on cache miss.
+    pub async fn get_or_load(&self, type_name: &str) -> Result<Option<ContentTypeDefinition>> {
+        if let Some(def) = self.inner.types.get(type_name) {
+            return Ok(Some(def));
+        }
+
+        // Cache miss — load from database
+        let db_type = ItemType::find_by_type(&self.inner.pool, type_name).await?;
+        if let Some(db_type) = db_type {
+            let def = ContentTypeDefinition {
+                machine_name: db_type.type_name.clone(),
+                label: db_type.label.clone(),
+                description: db_type.description.clone().unwrap_or_default(),
+                title_label: db_type.title_label.clone(),
+                fields: self.parse_fields_from_settings(&db_type.settings),
+            };
+            self.inner.types.insert(type_name.to_string(), def.clone());
+            Ok(Some(def))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Get a content type by machine name (async version for API compatibility).
@@ -163,7 +215,7 @@ impl ContentTypeRegistry {
 
     /// List all content types.
     pub fn list(&self) -> Vec<ContentTypeDefinition> {
-        self.inner.types.iter().map(|r| r.value().clone()).collect()
+        self.inner.types.iter().map(|(_k, v)| v).collect()
     }
 
     /// List all content types (async version for API compatibility).
@@ -261,7 +313,10 @@ impl ContentTypeRegistry {
     ) -> Result<()> {
         use trovato_sdk::types::FieldType;
 
-        let mut def = self.get(type_name).context("content type not found")?;
+        let mut def = self
+            .get_or_load(type_name)
+            .await?
+            .context("content type not found")?;
 
         // Parse field type
         let ft = match field_type {
@@ -353,7 +408,10 @@ impl ContentTypeRegistry {
         required: bool,
         cardinality: i32,
     ) -> Result<()> {
-        let mut def = self.get(type_name).context("content type not found")?;
+        let mut def = self
+            .get_or_load(type_name)
+            .await?
+            .context("content type not found")?;
 
         let field = def
             .fields
@@ -372,7 +430,10 @@ impl ContentTypeRegistry {
 
     /// Remove a field from a content type.
     pub async fn delete_field(&self, type_name: &str, field_name: &str) -> Result<()> {
-        let mut def = self.get(type_name).context("content type not found")?;
+        let mut def = self
+            .get_or_load(type_name)
+            .await?
+            .context("content type not found")?;
 
         let before = def.fields.len();
         def.fields.retain(|f| f.field_name != field_name);
@@ -387,32 +448,36 @@ impl ContentTypeRegistry {
 
     /// List content type names.
     pub fn type_names(&self) -> Vec<String> {
-        self.inner.types.iter().map(|r| r.key().clone()).collect()
+        self.inner
+            .types
+            .iter()
+            .map(|(k, _v)| (*k).clone())
+            .collect()
     }
 
     /// Check if a content type exists.
     pub fn exists(&self, type_name: &str) -> bool {
-        self.inner.types.contains_key(type_name)
+        self.inner.types.get(type_name).is_some()
     }
 
     /// Get the number of registered content types.
     pub fn len(&self) -> usize {
-        self.inner.types.len()
+        self.inner.types.entry_count() as usize
     }
 
     /// Check if registry is empty.
     pub fn is_empty(&self) -> bool {
-        self.inner.types.is_empty()
+        self.inner.types.entry_count() == 0
     }
 
     /// Invalidate cached content type.
     pub fn invalidate(&self, type_name: &str) {
-        self.inner.types.remove(type_name);
+        self.inner.types.invalidate(type_name);
     }
 
     /// Clear all cached content types.
     pub fn clear(&self) {
-        self.inner.types.clear();
+        self.inner.types.invalidate_all();
     }
 }
 
