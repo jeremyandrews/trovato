@@ -22,7 +22,7 @@ use super::{ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage};
 
 /// Stage-aware config storage decorator.
 ///
-/// Wraps DirectConfigStorage to provide stage-specific config views.
+/// Wraps DirectConfigStorage to provide stage-specific config overlays.
 /// Changes made through this storage are isolated to the stage until published.
 #[derive(Clone)]
 pub struct StageAwareConfigStorage {

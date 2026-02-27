@@ -38,7 +38,7 @@ pub struct MenuLink {
     /// Plugin that owns this link.
     pub plugin: String,
 
-    /// Stage UUID referencing category_tag(id) in the "stages" vocabulary.
+    /// Stage UUID referencing category_tag(id) in the "stages" category.
     pub stage_id: Uuid,
 
     /// Unix timestamp when created.

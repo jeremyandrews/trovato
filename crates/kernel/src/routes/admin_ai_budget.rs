@@ -135,8 +135,8 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
         let _ = session.remove::<String>(FLASH_KEY).await;
     }
 
-    // Build provider views for the template
-    let provider_views: Vec<serde_json::Value> = providers
+    // Build provider entries for the template
+    let provider_entries: Vec<serde_json::Value> = providers
         .iter()
         .map(|p| {
             serde_json::json!({
@@ -146,8 +146,8 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
         })
         .collect();
 
-    // Build role views
-    let role_views: Vec<serde_json::Value> = {
+    // Build role entries
+    let role_entries: Vec<serde_json::Value> = {
         let mut rv: Vec<serde_json::Value> = roles
             .iter()
             .map(|r| {
@@ -213,8 +213,8 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
             .unwrap_or_else(|| "deny".to_string()),
     );
     context.insert("period_label", config.period.label());
-    context.insert("providers", &provider_views);
-    context.insert("roles", &role_views);
+    context.insert("providers", &provider_entries);
+    context.insert("roles", &role_entries);
     context.insert("defaults_grid", &defaults_grid);
     context.insert("provider_usage", &provider_usage);
     context.insert("user_usage", &user_usage);

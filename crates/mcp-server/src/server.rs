@@ -292,18 +292,18 @@ impl TrovatoMcpServer {
         tools::content_types::list_content_types(&self.state, &self.user_ctx).await
     }
 
-    /// List all category vocabularies.
+    /// List all categories.
     #[tool(
-        description = "List all category vocabularies (taxonomies). Returns each vocabulary's machine name, label, description, and hierarchy type."
+        description = "List all categories. Returns each category's machine name, label, description, and hierarchy type."
     )]
     async fn list_categories(&self) -> Result<CallToolResult, McpError> {
         self.revalidate_session().await?;
         tools::categories::list_categories(&self.state, &self.user_ctx).await
     }
 
-    /// List tags in a specific category vocabulary.
+    /// List tags in a specific category.
     #[tool(
-        description = "List all tags within a specific category vocabulary. Provide the category machine name. Returns tag ID, label, description, and weight."
+        description = "List all tags within a specific category. Provide the category machine name. Returns tag ID, label, description, and weight."
     )]
     async fn list_tags(
         &self,

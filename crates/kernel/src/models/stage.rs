@@ -1,6 +1,6 @@
 //! Stage model and CRUD operations.
 //!
-//! Stages represent publishing workflow states, stored as vocabulary terms
+//! Stages represent publishing workflow states, stored as category tags
 //! in the `category_tag` table with stage-specific metadata in `stage_config`.
 
 use anyhow::{Context, Result};

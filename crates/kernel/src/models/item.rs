@@ -48,7 +48,7 @@ pub struct Item {
     /// Dynamic field storage (JSONB).
     pub fields: serde_json::Value,
 
-    /// Stage UUID referencing category_tag(id) in the "stages" vocabulary.
+    /// Stage UUID referencing category_tag(id) in the "stages" category.
     pub stage_id: Uuid,
 
     /// Language code (default: 'en').

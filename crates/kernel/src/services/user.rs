@@ -24,7 +24,7 @@ const MAX_CAPACITY: u64 = 10_000;
 /// Always present in [`AppState`](crate::state::AppState) as `Arc<UserService>`.
 /// The cache deduplicates `find_by_id` lookups that are called repeatedly
 /// across route helpers (`require_login`, `require_admin`, author info in
-/// list views, etc.).
+/// list pages, etc.).
 ///
 /// Entries expire automatically after the configured TTL so external changes
 /// (direct SQL, second server instance) become visible without a restart.

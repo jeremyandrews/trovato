@@ -20,7 +20,7 @@ pub struct Tile {
     pub weight: i32,
     pub status: i32,
     pub plugin: String,
-    /// Stage UUID referencing category_tag(id) in the "stages" vocabulary.
+    /// Stage UUID referencing category_tag(id) in the "stages" category.
     pub stage_id: Uuid,
     pub created: i64,
     pub changed: i64,

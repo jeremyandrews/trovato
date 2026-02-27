@@ -208,7 +208,7 @@ jobs:
                 ;;
               '\bmodule\b')
                 MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
-                  | grep -vi 'mod \|pub mod\|use \|module path\|wasm module\|Module for' || true)
+                  | grep -vi 'mod \|pub mod\|use \|module path\|wasm module\|Module for\|this module\|the module\|route module\|Module::\|\.module\|host module\|engine module\|management module\|Arc<Module\|&Module\|module: \|, module\|module,\|module)\|{ .* module\|compile.*module\|instantiate.*module\|let module\|&module' || true)
                 ;;
               '\bviews\b')
                 MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \

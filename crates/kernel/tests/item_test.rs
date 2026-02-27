@@ -433,7 +433,7 @@ fn sdk_item_field_access() {
         "body".to_string(),
         serde_json::json!({"value": "Hello world", "format": "filtered_html"}),
     );
-    fields.insert("views".to_string(), serde_json::json!(100));
+    fields.insert("view_count".to_string(), serde_json::json!(100));
 
     let item = SdkItem {
         id: Uuid::now_v7(),
@@ -564,7 +564,7 @@ fn comprehensive_content_type() -> ContentTypeDefinition {
                 },
             )
             .label("Summary"),
-            FieldDefinition::new("views", FieldType::Integer).label("View Count"),
+            FieldDefinition::new("view_count", FieldType::Integer).label("View Count"),
             FieldDefinition::new("rating", FieldType::Float).label("Rating"),
             FieldDefinition::new("featured", FieldType::Boolean).label("Featured"),
             FieldDefinition::new("publish_date", FieldType::Date).label("Publish Date"),
@@ -590,7 +590,7 @@ fn form_builder_renders_all_field_types() {
     assert!(form.contains("maxlength=\"255\""));
 
     // Integer -> number input
-    assert!(form.contains(r#"name="views""#));
+    assert!(form.contains(r#"name="view_count""#));
     assert!(form.contains(r#"type="number""#));
 
     // Float -> number with step
@@ -636,7 +636,7 @@ fn form_builder_edit_form_populates_all_types() {
         fields: serde_json::json!({
             "body": {"value": "Body content", "format": "plain_text"},
             "summary": {"value": "Summary text"},
-            "views": {"value": 42},
+            "view_count": {"value": 42},
             "rating": {"value": 4.5},
             "featured": {"value": true},
             "publish_date": {"value": "2026-01-15"},
