@@ -1,0 +1,60 @@
+# Tutorial Part 1, Step 2: conference content type.
+# Import with: cargo run --release --bin trovato -- config import docs/tutorial/config
+type: conference
+label: Conference
+description: A tech conference or meetup event
+has_title: true
+title_label: Conference Name
+plugin: core
+settings:
+  fields:
+    - field_name: field_url
+      field_type:
+        Text:
+          max_length: null
+      label: Website URL
+    - field_name: field_start_date
+      field_type: Date
+      label: Start Date
+      required: true
+    - field_name: field_end_date
+      field_type: Date
+      label: End Date
+      required: true
+    - field_name: field_city
+      field_type:
+        Text:
+          max_length: null
+      label: City
+    - field_name: field_country
+      field_type:
+        Text:
+          max_length: null
+      label: Country
+    - field_name: field_online
+      field_type: Boolean
+      label: Online
+    - field_name: field_cfp_url
+      field_type:
+        Text:
+          max_length: null
+      label: CFP URL
+    - field_name: field_cfp_end_date
+      field_type: Date
+      label: CFP End Date
+    - field_name: field_description
+      field_type: TextLong
+      label: Description
+    - field_name: field_language
+      field_type:
+        Text:
+          max_length: null
+      label: Language
+    - field_name: field_source_id
+      field_type:
+        Text:
+          max_length: null
+      label: Source ID
+    - field_name: field_editor_notes
+      field_type: TextLong
+      label: Editor Notes

@@ -1208,6 +1208,75 @@ parents:
         assert!(result.is_err());
     }
 
+    #[test]
+    fn tutorial_conference_yaml_deserializes() {
+        let yaml = include_str!("../../../../docs/tutorial/config/item_type.conference.yml");
+        let (entity, tag_parents) = deserialize_entity("item_type", yaml).unwrap();
+        assert_eq!(entity.entity_type(), "item_type");
+        assert_eq!(entity.id(), "conference");
+        assert!(tag_parents.is_empty());
+
+        let it = entity.as_item_type().expect("expected ItemType variant");
+        assert_eq!(it.label, "Conference");
+        assert!(it.has_title);
+        assert_eq!(it.title_label.as_deref(), Some("Conference Name"));
+        assert_eq!(it.plugin, "core");
+
+        // Verify all 12 fields deserialize with correct types and required flags
+        let fields: Vec<trovato_sdk::types::FieldDefinition> = it
+            .settings
+            .get("fields")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .expect("settings.fields should deserialize");
+
+        assert_eq!(fields.len(), 12, "expected 12 fields, got {}", fields.len());
+
+        // Required fields
+        let start = fields
+            .iter()
+            .find(|f| f.field_name == "field_start_date")
+            .unwrap();
+        assert!(start.required, "field_start_date should be required");
+        let end = fields
+            .iter()
+            .find(|f| f.field_name == "field_end_date")
+            .unwrap();
+        assert!(end.required, "field_end_date should be required");
+
+        // Non-required fields should default to false
+        let city = fields
+            .iter()
+            .find(|f| f.field_name == "field_city")
+            .unwrap();
+        assert!(!city.required, "field_city should not be required");
+
+        // Verify field type variants
+        assert!(matches!(
+            start.field_type,
+            trovato_sdk::types::FieldType::Date
+        ));
+        assert!(matches!(
+            city.field_type,
+            trovato_sdk::types::FieldType::Text { .. }
+        ));
+        let online = fields
+            .iter()
+            .find(|f| f.field_name == "field_online")
+            .unwrap();
+        assert!(matches!(
+            online.field_type,
+            trovato_sdk::types::FieldType::Boolean
+        ));
+        let desc = fields
+            .iter()
+            .find(|f| f.field_name == "field_description")
+            .unwrap();
+        assert!(matches!(
+            desc.field_type,
+            trovato_sdk::types::FieldType::TextLong
+        ));
+    }
+
     // ── Serialize helper tests ─────────────────────────────────────
 
     #[test]
