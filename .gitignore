@@ -1,3 +1,6 @@
+# Database backups
+/backups/
+
 # Build artifacts
 /target
 **/*.rs.bk

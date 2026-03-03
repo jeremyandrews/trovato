@@ -104,6 +104,28 @@ See `docs/security-audit.md` for the full dependency audit policy and Epic 27 st
 - **New cron tasks** for plugin features should use `tap_cron` (when activated) rather than hardcoded kernel cron tasks
 - **Infrastructure services** (depended on by multiple kernel subsystems or all plugins) stay in kernel: content, gather, search, files, cache, forms, permissions, stages, auth
 
+## Database Backups
+
+`pg_dump` is not on the default PATH — use the full path from Homebrew's `libpq` formula:
+
+```bash
+# Backup (custom format, ~100K for a tutorial-sized DB)
+/opt/homebrew/Cellar/libpq/18.1/bin/pg_dump \
+  postgres://trovato:trovato@localhost:5432/trovato \
+  -Fc -f backups/<name>-$(date +%Y%m%d).dump
+
+# Restore
+/opt/homebrew/Cellar/libpq/18.1/bin/pg_restore \
+  -d postgres://trovato:trovato@localhost:5432/trovato \
+  --clean backups/<name>.dump
+```
+
+Backups live in `backups/` (gitignored). Existing snapshots:
+
+| File | Contents |
+|---|---|
+| `backups/tutorial-part-01-20260303.dump` | DB after Tutorial Part 1 — three hand-created conferences, no importer data |
+
 ## Before Committing Checklist
 
 1. `cargo fmt --all`
