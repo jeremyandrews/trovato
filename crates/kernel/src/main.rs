@@ -177,7 +177,22 @@ async fn path_alias_fallback(
     use tower::ServiceExt;
     use uuid::Uuid;
 
-    let path = request.uri().path().to_string();
+    let raw_path = request.uri().path();
+
+    // Redirect trailing-slash URLs to their canonical no-slash form so that
+    // `/conferences/` resolves the same alias as `/conferences`.  The root `/`
+    // is the only path that is allowed to keep its trailing slash.
+    if raw_path.len() > 1 && raw_path.ends_with('/') {
+        let canonical = raw_path.trim_end_matches('/');
+        let location = if let Some(query) = request.uri().query() {
+            format!("{canonical}?{query}")
+        } else {
+            canonical.to_string()
+        };
+        return axum::response::Redirect::permanent(&location).into_response();
+    }
+
+    let path = raw_path.to_string();
 
     // Read resolved language from request extensions
     let language = request

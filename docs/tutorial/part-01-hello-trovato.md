@@ -466,9 +466,9 @@ ORDER BY item.fields->>'field_start_date' ASC
 LIMIT 25 OFFSET 0
 ```
 
-3. **Renders the results** -- using the list format, which renders each conference as a card with the title linked to its detail page.
+3. **Renders the results** -- using a query-specific Tera template (`templates/gather/query--upcoming_conferences.html`) that ships with the project. The template displays each conference as a card showing the title (linked to the detail page), date range, city and country, description, and action links to the detail page and the conference website.
 
-No code was written. No templates were edited. The Gather system translated your declarative definition into a working page.
+No admin UI configuration was needed for the template. Gather resolves templates by checking for a file named `query--{query_id}.html` first, then `query--{format}.html`, then the generic `query.html`. Because a file named `query--upcoming_conferences.html` exists in `templates/gather/`, it is used automatically. The template accesses item fields through the `row.fields` object -- the same JSONB blob stored in the database.
 
 ### Creating the URL Alias
 
@@ -488,7 +488,15 @@ Now `/conferences` transparently resolves to `/gather/upcoming_conferences` -- v
 
 ### Viewing the Listing
 
-Visit `http://localhost:3000/conferences` in your browser. You should see a list of three conference cards sorted by start date -- WasmCon Online first (July), then RustConf (September), then EuroRust (October). Each title is a link to the full conference view at `/item/{uuid}`. Click through to confirm the detail page renders correctly before moving on to Step 5.
+Visit `http://localhost:3000/conferences` in your browser. You should see three conference cards sorted by start date -- WasmCon Online first (July), then RustConf (September), then EuroRust (October). Each card shows:
+
+- The conference title, linked to its detail page at `/item/{uuid}`
+- The date range (e.g. `2026-09-09 – 2026-09-11`) and location (city, country)
+- The conference description
+- A "View details" link and an external "Website" link
+- If a CFP is configured, the submission deadline and a "Submit a talk" link
+
+Click a title through to confirm the detail page renders correctly before moving on to Step 5.
 
 The Gather is also available as JSON via the REST API:
 
@@ -501,6 +509,8 @@ This returns a JSON response with the query results, pagination info, and total 
 ### URL Routing
 
 Gathers are served at `/gather/{query_id}` by default. The URL alias you just created gives it a clean URL. The path alias fallback handler intercepts requests that don't match any registered route, looks up the alias, and forwards the request to the inner router with the rewritten URI. Query strings and pagination parameters pass through unchanged.
+
+Trailing slashes are normalised: a request for `/conferences/` issues a **308 Permanent Redirect** to `/conferences` before the alias lookup runs. This means both forms work in the browser, and search engines will consolidate link equity on the canonical (no-slash) URL.
 
 ### Pagination
 
