@@ -351,6 +351,7 @@ fn render_gather_with_theme(
                 "current_page": result.page,
                 "total_pages": result.total_pages,
                 "base_url": format!("/gather/{}", query.query_id),
+                "pages": compute_page_list(result.page, result.total_pages),
             }),
         );
     }
@@ -557,6 +558,31 @@ fn render_gather_content_html(
     }
 
     html
+}
+
+/// Build a list of page numbers (and `"..."` ellipsis sentinels) for pager templates.
+///
+/// Always includes the first page, last page, and a window of 2 pages either side
+/// of the current page.  Gaps are filled with the string `"..."`.
+fn compute_page_list(current: u32, total: u32) -> Vec<serde_json::Value> {
+    let window = 2u32;
+    let mut shown = std::collections::BTreeSet::new();
+    shown.insert(1u32);
+    shown.insert(total);
+    for p in current.saturating_sub(window)..=std::cmp::min(current + window, total) {
+        shown.insert(p);
+    }
+
+    let mut pages: Vec<serde_json::Value> = Vec::new();
+    let mut last = 0u32;
+    for &p in &shown {
+        if last > 0 && p > last + 1 {
+            pages.push(serde_json::json!("..."));
+        }
+        pages.push(serde_json::json!(p));
+        last = p;
+    }
+    pages
 }
 
 /// Full standalone fallback page (used when theme engine fails).
