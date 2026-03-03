@@ -404,9 +404,15 @@ Let's create a Gather that lists all published conferences sorted by start date.
 | Label | Upcoming Conferences |
 | Description | Published conferences sorted by start date |
 | Base Table | item |
-| Item Type | conference |
 
-4. **Add a filter** -- this ensures only published conferences appear:
+4. **Add two filters** -- click **Add filter** twice:
+
+   Filter 1 (item type):
+   - Field: `type`
+   - Operator: `equals`
+   - Value: `conference`
+
+   Filter 2 (published only):
    - Field: `status`
    - Operator: `equals`
    - Value: `1`
@@ -429,8 +435,8 @@ Here's what the form created in the database. The Gather definition is a JSONB d
 ```
 GatherDefinition {
   base_table: "item",
-  item_type: "conference",
   filters: [
+    { field: "type",   operator: "equals", value: "conference" },
     { field: "status", operator: "equals", value: 1 }
   ],
   sorts: [
@@ -455,7 +461,7 @@ When a visitor hits the Gather's URL, the kernel:
 SELECT id, current_revision_id, type, title, author_id, status,
        created, changed, promote, sticky, fields, stage_id, language
 FROM item
-WHERE type = 'conference' AND status = 1 AND stage_id = $1
+WHERE item.type = 'conference' AND item.status = 1 AND stage_id = $1
 ORDER BY item.fields->>'field_start_date' ASC
 LIMIT 25 OFFSET 0
 ```
@@ -478,7 +484,7 @@ The Gather is accessible at `/gather/upcoming_conferences`, but that's not a use
 
 3. Click **Save**.
 
-Now `/conferences` transparently resolves to `/gather/upcoming_conferences` -- visitors see the clean URL in their browser.
+Now `/conferences` transparently resolves to `/gather/upcoming_conferences` -- visitors see the clean URL in their browser. The path alias fallback handler intercepts the unmatched request and forwards it to the Gather route after rewriting the URI.
 
 ### Viewing the Listing
 
@@ -494,7 +500,7 @@ This returns a JSON response with the query results, pagination info, and total 
 
 ### URL Routing
 
-Gathers are served at `/gather/{query_id}` by default. The URL alias you just created gives it a clean URL. The path alias middleware intercepts incoming requests, looks up the alias, and rewrites the URI before it reaches the router. Query strings and pagination parameters pass through unchanged.
+Gathers are served at `/gather/{query_id}` by default. The URL alias you just created gives it a clean URL. The path alias fallback handler intercepts requests that don't match any registered route, looks up the alias, and forwards the request to the inner router with the rewritten URI. Query strings and pagination parameters pass through unchanged.
 
 ### Pagination
 
@@ -516,7 +522,7 @@ Every item is accessible at `/item/{uuid}`, but UUIDs are terrible to share, boo
 
 ### How It Works
 
-Trovato's pathauto system reads a pattern from site configuration (stored in `site_config` under the key `pathauto_patterns`), expands tokens using the item's data, slugifies the result, and creates an entry in the `url_alias` table automatically on save. The path alias middleware intercepts incoming requests and rewrites `/conferences/rustconf-2026` to `/item/{uuid}` before routing -- so the canonical URL remains `/item/{uuid}` internally, while visitors always see the clean alias.
+Trovato's pathauto system reads a pattern from site configuration (stored in `site_config` under the key `pathauto_patterns`), expands tokens using the item's data, slugifies the result, and creates an entry in the `url_alias` table automatically on save. The path alias fallback handler intercepts incoming requests that don't match any registered route and rewrites `/conferences/rustconf-2026` to `/item/{uuid}` before forwarding -- so the canonical URL remains `/item/{uuid}` internally, while visitors always see the clean alias.
 
 ### Option A: Admin UI
 
@@ -591,11 +597,11 @@ If you clear the pattern in `/admin/config/pathauto` and regenerate, the service
 <details>
 <summary>Under the Hood: How the Alias Resolver Works</summary>
 
-When a request arrives for `/conferences/rustconf-2026`, the path alias middleware:
+When a request arrives for `/conferences/rustconf-2026`, the path alias fallback handler:
 
 1. Looks up the alias in the `url_alias` table: `SELECT source FROM url_alias WHERE alias = '/conferences/rustconf-2026'`.
 2. Finds the source `/item/{uuid}`.
-3. Rewrites the request URI to `/item/{uuid}` in-place before passing it to the router.
+3. Rewrites the request URI to `/item/{uuid}` and forwards the request to the inner router.
 
 The router never sees the alias -- it only ever sees canonical `/item/{uuid}` paths. This is why the same middleware that resolves `/conferences/rustconf-2026` → `/item/{uuid}` also resolves `/conferences` → `/gather/upcoming_conferences`: both are just rows in `url_alias`.
 
