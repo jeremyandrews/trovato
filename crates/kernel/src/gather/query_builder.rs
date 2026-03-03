@@ -234,20 +234,33 @@ impl GatherQueryBuilder {
                 Some(field_expr.like(format!("%{}", escape_like_wildcards(&value))))
             }
             FilterOperator::GreaterThan => {
-                let value = filter.value.as_i64()?;
-                Some(field_expr.gt(value))
+                // Try integer first (Unix timestamps), fall back to string (ISO dates).
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.gt(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.gt(s))
+                }
             }
             FilterOperator::LessThan => {
-                let value = filter.value.as_i64()?;
-                Some(field_expr.lt(value))
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.lt(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.lt(s))
+                }
             }
             FilterOperator::GreaterOrEqual => {
-                let value = filter.value.as_i64()?;
-                Some(field_expr.gte(value))
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.gte(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.gte(s))
+                }
             }
             FilterOperator::LessOrEqual => {
-                let value = filter.value.as_i64()?;
-                Some(field_expr.lte(value))
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.lte(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.lte(s))
+                }
             }
             FilterOperator::In => {
                 let values = self.extract_string_list(&filter.value);
@@ -427,28 +440,130 @@ impl GatherQueryBuilder {
 
     /// Build a category filter condition.
     ///
-    /// Uses `jsonb_extract_expr()` for validated JSONB path extraction and
-    /// SeaQuery's `is_in()` for parameterized UUID values.
+    /// Category tag IDs are stored as a JSONB **array of UUID strings**:
+    /// `["uuid1", "uuid2"]`. Uses PostgreSQL's `@>` containment operator
+    /// (`field->'col' @> json_build_array(uuid::text)::jsonb`) rather than
+    /// the text-extraction `->>`+`IN` approach, which cannot match inside arrays.
     ///
-    /// **Note:** `include_descendants` is accepted but not yet implemented —
-    /// `HasTagOrDescendants` currently behaves identically to `HasTag`.
-    /// TODO: Implement recursive CTE expansion for descendant tag matching.
+    /// When `include_descendants = true` (i.e. `HasTagOrDescendants`), a
+    /// recursive CTE walks `category_tag_hierarchy` to find all descendant
+    /// term IDs and checks whether any of them appear in the array.
     fn build_category_filter(
         &self,
         field: &str,
         tag_ids: Vec<uuid::Uuid>,
         include_descendants: bool,
     ) -> Option<SimpleExpr> {
-        if include_descendants {
-            tracing::warn!(
-                "include_descendants is not yet implemented; falling back to exact match"
-            );
+        if tag_ids.is_empty() {
+            return None;
         }
+
         let jsonb_path = field.strip_prefix("fields.").unwrap_or(field);
-        let jsonb_expr = self.jsonb_extract_expr(&self.definition.base_table, jsonb_path);
-        let uuid_strings: Vec<String> = tag_ids.iter().map(|u| u.to_string()).collect();
-        // Category tag IDs are stored as text in JSONB, so string comparison is correct here
-        Some(jsonb_expr.is_in(uuid_strings))
+        let table = &self.definition.base_table;
+
+        // Validate identifiers before SQL interpolation (defense-in-depth).
+        if !is_safe_identifier(table) {
+            tracing::error!(
+                table = &table[..table.len().min(64)],
+                "unsafe base_table in category filter; restricting results"
+            );
+            return Some(Expr::cust("FALSE"));
+        }
+        for part in jsonb_path.split('.') {
+            if !is_safe_identifier(part) {
+                tracing::error!(
+                    path = &jsonb_path[..jsonb_path.len().min(64)],
+                    "unsafe JSONB path in category filter; restricting results"
+                );
+                return Some(Expr::cust("FALSE"));
+            }
+        }
+
+        if include_descendants {
+            // Recursive CTE: walks category_tag_hierarchy from root down to
+            // all descendants, then checks JSONB array containment.
+            if tag_ids.len() == 1 {
+                Some(self.descendants_exists_expr(table, jsonb_path, tag_ids[0]))
+            } else {
+                let mut cond = Cond::any();
+                for uuid in tag_ids {
+                    cond = cond.add(self.descendants_exists_expr(table, jsonb_path, uuid));
+                }
+                Some(cond.into())
+            }
+        } else {
+            // Exact membership: field->'path' @> json_build_array($uuid::text)::jsonb
+            if tag_ids.len() == 1 {
+                Some(Expr::cust_with_values(
+                    format!(
+                        "{table}.fields->'{jsonb_path}' @> \
+                         json_build_array($1::text)::jsonb"
+                    ),
+                    [tag_ids[0]],
+                ))
+            } else {
+                // OR: item matches any of the specified tags.
+                let mut cond = Cond::any();
+                for uuid in tag_ids {
+                    cond = cond.add(Expr::cust_with_values(
+                        format!(
+                            "{table}.fields->'{jsonb_path}' @> \
+                             json_build_array($1::text)::jsonb"
+                        ),
+                        [uuid],
+                    ));
+                }
+                Some(cond.into())
+            }
+        }
+    }
+
+    /// Build an `EXISTS` subquery that uses a recursive CTE to check whether
+    /// the JSONB array field contains the given tag UUID **or any of its
+    /// descendants** in the `category_tag_hierarchy` table.
+    ///
+    /// The generated SQL looks like:
+    ///
+    /// ```sql
+    /// EXISTS (
+    ///     WITH RECURSIVE td AS (
+    ///         SELECT $1::uuid AS id
+    ///         UNION ALL
+    ///         SELECT h.tag_id FROM category_tag_hierarchy h
+    ///         JOIN td ON h.parent_id = td.id
+    ///     )
+    ///     SELECT 1 FROM td
+    ///     WHERE item.fields->'field_topics'
+    ///           @> json_build_array(td.id::text)::jsonb
+    /// )
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Callers must pre-validate `table` and `jsonb_path` with
+    /// `is_safe_identifier` before calling this function.
+    fn descendants_exists_expr(
+        &self,
+        table: &str,
+        jsonb_path: &str,
+        root_uuid: Uuid,
+    ) -> SimpleExpr {
+        Expr::cust_with_values(
+            format!(
+                "EXISTS (\
+                WITH RECURSIVE td AS (\
+                    SELECT $1::uuid AS id \
+                    UNION ALL \
+                    SELECT h.tag_id FROM category_tag_hierarchy h \
+                    JOIN td ON h.parent_id = td.id\
+                ) \
+                SELECT 1 FROM td \
+                WHERE {table}.fields->'{jsonb_path}' \
+                      @> json_build_array(td.id::text)::jsonb\
+            )"
+            ),
+            [root_uuid],
+        )
     }
 
     /// Add ORDER BY clauses.
@@ -1039,13 +1154,13 @@ mod tests {
         let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
-        // UUID should appear as a SeaQuery-parameterized value, not a format! interpolation.
-        // The expression should use JSONB extraction via ->> and an IN clause.
+        // UUID should appear as a value, not injected via format!.
+        // The expression uses JSONB array containment (@>) rather than ->>/IN,
+        // so it correctly handles multi-value (array-stored) tag fields.
         assert!(
-            sql.contains("->>"),
-            "should use JSONB extraction for category field: {sql}"
+            sql.contains("@>"),
+            "should use JSONB containment for category field: {sql}"
         );
-        assert!(sql.contains("IN"), "should use IN clause: {sql}");
         assert!(
             sql.contains(&tag_id.to_string()),
             "should contain UUID value: {sql}"
@@ -1069,10 +1184,11 @@ mod tests {
         let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
         let sql = builder.build(1, 10);
 
-        // Injection payload should be neutralized to (NULL) IN (...), not executed.
+        // Injection payload should be neutralized to FALSE (field validation failed),
+        // not executed. The new containment-based filter returns FALSE on validation failure.
         assert!(
-            sql.contains("(NULL) IN"),
-            "unsafe field should produce NULL expression: {sql}"
+            sql.contains("FALSE"),
+            "unsafe field should produce FALSE expression: {sql}"
         );
         assert!(
             !sql.contains("'1'='1'"),

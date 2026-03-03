@@ -228,9 +228,15 @@ impl FilterValue {
 pub enum ContextualValue {
     /// Current authenticated user's ID.
     CurrentUser,
-    /// Current Unix timestamp.
+    /// Current Unix timestamp (seconds since epoch).
     CurrentTime,
-    /// Value from URL argument.
+    /// Current date as an ISO 8601 string (`YYYY-MM-DD`).
+    ///
+    /// Resolves at query time using the server's local date. Use with
+    /// `GreaterOrEqual`/`LessOrEqual` on date-typed JSONB fields, which
+    /// store values as `"YYYY-MM-DD"` strings and compare lexicographically.
+    CurrentDate,
+    /// Value from URL argument (query-string parameter).
     UrlArg(String),
 }
 

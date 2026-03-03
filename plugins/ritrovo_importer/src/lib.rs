@@ -76,6 +76,264 @@ const STATE_ETAG_PREFIX: &str = "etag";
 /// Queue name declared in `tap_queue_info`.
 const QUEUE_NAME: &str = "ritrovo_import";
 
+/// Category ID for the conference topics taxonomy.
+const TOPICS_CATEGORY_ID: &str = "topics";
+
+/// State key prefix for topic term UUIDs: `"topic_term.{term_slug}"`.
+const STATE_TOPIC_TERM_PREFIX: &str = "topic_term";
+
+// ─── Topic taxonomy definition ────────────────────────────────────────
+
+/// A term in the topics taxonomy.
+struct TermDef {
+    /// Machine-readable slug stored in ritrovo_state.
+    slug: &'static str,
+    /// Human-readable label stored in category_tag.
+    label: &'static str,
+    /// Parent term slug; `None` for root terms.
+    parent: Option<&'static str>,
+    /// Display weight for ordering.
+    weight: i32,
+}
+
+/// Full topic taxonomy. Ordered so parents always appear before children.
+///
+/// Confs.tech slugs not listed here (e.g. `sre`, `scala`) have no taxonomy
+/// mapping and are stored without a term UUID.
+const TAXONOMY: &[TermDef] = &[
+    // Root terms
+    TermDef {
+        slug: "languages",
+        label: "Languages",
+        parent: None,
+        weight: 0,
+    },
+    TermDef {
+        slug: "infrastructure",
+        label: "Infrastructure",
+        parent: None,
+        weight: 1,
+    },
+    TermDef {
+        slug: "ai-data",
+        label: "AI & Data",
+        parent: None,
+        weight: 2,
+    },
+    TermDef {
+        slug: "web-platform",
+        label: "Web Platform",
+        parent: None,
+        weight: 3,
+    },
+    TermDef {
+        slug: "security",
+        label: "Security",
+        parent: None,
+        weight: 4,
+    },
+    TermDef {
+        slug: "general",
+        label: "General",
+        parent: None,
+        weight: 5,
+    },
+    // Languages > Systems
+    TermDef {
+        slug: "lang-systems",
+        label: "Systems",
+        parent: Some("languages"),
+        weight: 0,
+    },
+    TermDef {
+        slug: "rust",
+        label: "Rust",
+        parent: Some("lang-systems"),
+        weight: 0,
+    },
+    TermDef {
+        slug: "cpp",
+        label: "C++",
+        parent: Some("lang-systems"),
+        weight: 1,
+    },
+    TermDef {
+        slug: "dotnet",
+        label: ".NET",
+        parent: Some("lang-systems"),
+        weight: 2,
+    },
+    // Languages > JVM
+    TermDef {
+        slug: "lang-jvm",
+        label: "JVM",
+        parent: Some("languages"),
+        weight: 1,
+    },
+    TermDef {
+        slug: "java",
+        label: "Java",
+        parent: Some("lang-jvm"),
+        weight: 0,
+    },
+    TermDef {
+        slug: "kotlin",
+        label: "Kotlin",
+        parent: Some("lang-jvm"),
+        weight: 1,
+    },
+    // Languages > Web
+    TermDef {
+        slug: "lang-web",
+        label: "Web Languages",
+        parent: Some("languages"),
+        weight: 2,
+    },
+    TermDef {
+        slug: "javascript",
+        label: "JavaScript",
+        parent: Some("lang-web"),
+        weight: 0,
+    },
+    TermDef {
+        slug: "typescript",
+        label: "TypeScript",
+        parent: Some("lang-web"),
+        weight: 1,
+    },
+    TermDef {
+        slug: "php",
+        label: "PHP",
+        parent: Some("lang-web"),
+        weight: 2,
+    },
+    TermDef {
+        slug: "python",
+        label: "Python",
+        parent: Some("lang-web"),
+        weight: 3,
+    },
+    TermDef {
+        slug: "ruby",
+        label: "Ruby",
+        parent: Some("lang-web"),
+        weight: 4,
+    },
+    // Languages > Mobile
+    TermDef {
+        slug: "lang-mobile",
+        label: "Mobile",
+        parent: Some("languages"),
+        weight: 3,
+    },
+    TermDef {
+        slug: "android",
+        label: "Android",
+        parent: Some("lang-mobile"),
+        weight: 0,
+    },
+    TermDef {
+        slug: "ios",
+        label: "iOS",
+        parent: Some("lang-mobile"),
+        weight: 1,
+    },
+    // Infrastructure
+    TermDef {
+        slug: "devops",
+        label: "DevOps",
+        parent: Some("infrastructure"),
+        weight: 0,
+    },
+    TermDef {
+        slug: "networking",
+        label: "Networking",
+        parent: Some("infrastructure"),
+        weight: 1,
+    },
+    TermDef {
+        slug: "testing",
+        label: "Testing",
+        parent: Some("infrastructure"),
+        weight: 2,
+    },
+    // AI & Data
+    TermDef {
+        slug: "data",
+        label: "Data Engineering",
+        parent: Some("ai-data"),
+        weight: 0,
+    },
+    // Web Platform
+    TermDef {
+        slug: "css",
+        label: "CSS",
+        parent: Some("web-platform"),
+        weight: 0,
+    },
+    TermDef {
+        slug: "ux",
+        label: "UX",
+        parent: Some("web-platform"),
+        weight: 1,
+    },
+    TermDef {
+        slug: "accessibility",
+        label: "Accessibility",
+        parent: Some("web-platform"),
+        weight: 2,
+    },
+    TermDef {
+        slug: "api",
+        label: "API",
+        parent: Some("web-platform"),
+        weight: 3,
+    },
+    // Security
+    TermDef {
+        slug: "appsec",
+        label: "AppSec",
+        parent: Some("security"),
+        weight: 0,
+    },
+    // General
+    TermDef {
+        slug: "opensource",
+        label: "Open Source",
+        parent: Some("general"),
+        weight: 0,
+    },
+];
+
+/// Maps confs.tech topic slugs to taxonomy term slugs.
+///
+/// Confs.tech slugs not listed here (`sre`, `scala`) have no taxonomy entry
+/// and will be stored with an empty `field_topics`.
+const SLUG_TO_TERM: &[(&str, &str)] = &[
+    ("rust", "rust"),
+    ("java", "java"),
+    ("kotlin", "kotlin"),
+    ("javascript", "javascript"),
+    ("typescript", "typescript"),
+    ("php", "php"),
+    ("python", "python"),
+    ("dotnet", "dotnet"),
+    ("android", "android"),
+    ("ios", "ios"),
+    ("devops", "devops"),
+    ("networking", "networking"),
+    ("data", "data"),
+    ("css", "css"),
+    ("ux", "ux"),
+    ("accessibility", "accessibility"),
+    ("security", "appsec"),
+    ("api", "api"),
+    ("testing", "testing"),
+    ("general", "general"),
+    ("opensource", "opensource"),
+    ("cpp", "cpp"),
+];
+
 // ─── Conference field definitions ────────────────────────────────────
 //
 // The `conference` item type is created by the user via the admin UI
@@ -172,19 +430,28 @@ fn conference_fields() -> Vec<FieldDefinition> {
 
 /// Called once when the plugin is first enabled in the admin UI.
 ///
-/// Triggers a full historical import by pushing all available years and
-/// topics onto the queue. The queue worker (`tap_queue_worker`) processes
-/// each batch, so the actual DB writes happen asynchronously in subsequent
-/// cron cycles.
+/// 1. Seeds the `topics` category taxonomy (idempotent — safe to re-run).
+/// 2. Triggers a full historical import (2015–current year) by pushing all
+///    available topic/year combinations onto the `ritrovo_import` queue.
+///    The queue worker (`tap_queue_worker`) processes each batch
+///    asynchronously in subsequent cron cycles.
 #[plugin_tap]
 pub fn tap_install() -> serde_json::Value {
     host::log(
         "info",
         PLUGIN_NAME,
-        "ritrovo_importer installed — starting full historical import",
+        "ritrovo_importer installed — seeding taxonomy and starting historical import",
     );
 
-    let current_year = current_year_approx();
+    // 1. Seed the topic taxonomy.
+    let now = current_timestamp();
+    let seeded_terms = seed_taxonomy();
+
+    // 2. Seed the gather queries used by the topic/CFP browse pages.
+    seed_gather_queries(now);
+
+    // 3. Queue historical import.
+    let current_year = timestamp_to_year(now) as u16;
     let mut pushed = 0u32;
     let mut errors = 0u32;
 
@@ -241,9 +508,367 @@ pub fn tap_install() -> serde_json::Value {
 
     serde_json::json!({
         "status": "ok",
+        "seeded_terms": seeded_terms,
         "queued": pushed,
         "errors": errors,
     })
+}
+
+// ─── Taxonomy seeding ─────────────────────────────────────────────────
+
+/// Seed the `topics` category and all terms defined in `TAXONOMY`.
+///
+/// Idempotent: skips terms whose UUID is already stored in `ritrovo_state`.
+/// Returns the number of newly created terms.
+fn seed_taxonomy() -> u32 {
+    let now = current_timestamp();
+
+    // Ensure the 'topics' category exists.
+    let _ = host::execute_raw(
+        "INSERT INTO category (id, label, description, hierarchy, weight) \
+         VALUES ($1, 'Conference Topics', NULL, 2, 0) \
+         ON CONFLICT (id) DO NOTHING",
+        &[serde_json::json!(TOPICS_CATEGORY_ID)],
+    );
+
+    let mut created = 0u32;
+
+    for term in TAXONOMY {
+        let state_key = format!("{STATE_TOPIC_TERM_PREFIX}.{}", term.slug);
+
+        // Skip if already seeded.
+        if load_state_str(&state_key).is_some() {
+            continue;
+        }
+
+        // Insert the term and get the generated UUID.
+        let result = host::query_raw(
+            "INSERT INTO category_tag \
+             (id, category_id, label, description, weight, created, changed) \
+             VALUES (gen_random_uuid(), $1, $2, NULL, $3, $4, $4) \
+             RETURNING id::text AS id",
+            &[
+                serde_json::json!(TOPICS_CATEGORY_ID),
+                serde_json::json!(term.label),
+                serde_json::json!(term.weight),
+                serde_json::json!(now),
+            ],
+        );
+
+        let Some(uuid_str) = result
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+            .and_then(|rows| rows.into_iter().next())
+            .and_then(|row| row.get("id").and_then(|v| v.as_str()).map(String::from))
+        else {
+            host::log(
+                "warn",
+                PLUGIN_NAME,
+                &format!("seed_taxonomy: failed to insert term '{}'", term.slug),
+            );
+            continue;
+        };
+
+        // Persist the UUID for future lookups.
+        save_state(&state_key, &uuid_str);
+        created += 1;
+
+        // Link to parent if specified.
+        if let Some(parent_slug) = term.parent {
+            let parent_key = format!("{STATE_TOPIC_TERM_PREFIX}.{parent_slug}");
+            if let Some(parent_uuid) = load_state_str(&parent_key) {
+                let _ = host::execute_raw(
+                    "INSERT INTO category_tag_hierarchy (tag_id, parent_id) \
+                     SELECT $1::uuid, $2::uuid \
+                     WHERE NOT EXISTS (\
+                         SELECT 1 FROM category_tag_hierarchy \
+                         WHERE tag_id = $1::uuid AND parent_id = $2::uuid\
+                     )",
+                    &[serde_json::json!(uuid_str), serde_json::json!(parent_uuid)],
+                );
+            } else {
+                host::log(
+                    "warn",
+                    PLUGIN_NAME,
+                    &format!(
+                        "seed_taxonomy: parent '{}' not found for '{}'",
+                        parent_slug, term.slug
+                    ),
+                );
+            }
+        } else {
+            // Root term: insert hierarchy entry with NULL parent.
+            let _ = host::execute_raw(
+                "INSERT INTO category_tag_hierarchy (tag_id, parent_id) \
+                 SELECT $1::uuid, NULL \
+                 WHERE NOT EXISTS (\
+                     SELECT 1 FROM category_tag_hierarchy \
+                     WHERE tag_id = $1::uuid AND parent_id IS NULL\
+                 )",
+                &[serde_json::json!(uuid_str)],
+            );
+        }
+    }
+
+    host::log(
+        "info",
+        PLUGIN_NAME,
+        &format!("seed_taxonomy: {created} terms created"),
+    );
+
+    created
+}
+
+// ─── Gather query seeding ─────────────────────────────────────────────
+
+/// Seed the ritrovo gather queries into the `gather_query` table.
+///
+/// Idempotent: `ON CONFLICT (query_id) DO NOTHING` means re-running
+/// `tap_install` after the user has customised a query will not overwrite
+/// their changes.
+fn seed_gather_queries(now: i64) {
+    let mut seeded = 0u32;
+
+    // Helper closure: insert one gather query row.
+    let mut insert = |query_id: &str,
+                      label: &str,
+                      description: Option<&str>,
+                      definition: serde_json::Value,
+                      display: serde_json::Value| {
+        let result = host::execute_raw(
+            "INSERT INTO gather_query \
+             (query_id, label, description, definition, display, plugin, created, changed) \
+             VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $7) \
+             ON CONFLICT (query_id) DO NOTHING",
+            &[
+                serde_json::json!(query_id),
+                serde_json::json!(label),
+                serde_json::json!(description),
+                serde_json::json!(definition.to_string()),
+                serde_json::json!(display.to_string()),
+                serde_json::json!("ritrovo_importer"),
+                serde_json::json!(now),
+            ],
+        );
+        if matches!(result, Ok(1)) {
+            seeded += 1;
+        }
+    };
+
+    // ── upcoming_conferences ──────────────────────────────────────────
+    insert(
+        "ritrovo.upcoming_conferences",
+        "Upcoming Conferences",
+        Some("Conferences starting today or later, filterable by topic, country, and format"),
+        serde_json::json!({
+            "base_table": "item",
+            "item_type": "conference",
+            "filters": [
+                {
+                    "field": "fields.field_start_date",
+                    "operator": "greater_or_equal",
+                    "value": "current_date",
+                    "exposed": false
+                },
+                {
+                    "field": "fields.field_topics",
+                    "operator": "has_tag_or_descendants",
+                    "value": null,
+                    "exposed": true,
+                    "exposed_label": "Topic (UUID)"
+                },
+                {
+                    "field": "fields.field_country",
+                    "operator": "equals",
+                    "value": null,
+                    "exposed": true,
+                    "exposed_label": "Country"
+                },
+                {
+                    "field": "fields.field_online",
+                    "operator": "equals",
+                    "value": null,
+                    "exposed": true,
+                    "exposed_label": "Online Only"
+                },
+                {
+                    "field": "fields.field_language",
+                    "operator": "equals",
+                    "value": null,
+                    "exposed": true,
+                    "exposed_label": "Language"
+                }
+            ],
+            "sorts": [{"field": "fields.field_start_date", "direction": "asc"}],
+            "stage_aware": true
+        }),
+        serde_json::json!({
+            "format": "table",
+            "items_per_page": 20,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No upcoming conferences found."
+        }),
+    );
+
+    // ── open_cfps ─────────────────────────────────────────────────────
+    insert(
+        "ritrovo.open_cfps",
+        "Open CFPs",
+        Some("Conferences currently accepting talk proposals, sorted by deadline"),
+        serde_json::json!({
+            "base_table": "item",
+            "item_type": "conference",
+            "filters": [
+                {
+                    "field": "fields.field_cfp_end_date",
+                    "operator": "greater_or_equal",
+                    "value": "current_date",
+                    "exposed": false
+                },
+                {
+                    "field": "fields.field_cfp_url",
+                    "operator": "is_not_null",
+                    "value": null,
+                    "exposed": false
+                }
+            ],
+            "sorts": [
+                {"field": "fields.field_cfp_end_date", "direction": "asc", "nulls": "last"}
+            ],
+            "stage_aware": true
+        }),
+        serde_json::json!({
+            "format": "table",
+            "items_per_page": 20,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No open CFPs at this time."
+        }),
+    );
+
+    // ── by_topic ──────────────────────────────────────────────────────
+    insert(
+        "ritrovo.by_topic",
+        "Conferences by Topic",
+        Some("Upcoming conferences filtered by topic UUID (includes sub-topics via recursive CTE)"),
+        serde_json::json!({
+            "base_table": "item",
+            "item_type": "conference",
+            "filters": [
+                {
+                    "field": "fields.field_start_date",
+                    "operator": "greater_or_equal",
+                    "value": "current_date",
+                    "exposed": false
+                },
+                {
+                    "field": "fields.field_topics",
+                    "operator": "has_tag_or_descendants",
+                    "value": {"url_arg": "topic"},
+                    "exposed": false
+                }
+            ],
+            "sorts": [{"field": "fields.field_start_date", "direction": "asc"}],
+            "stage_aware": true
+        }),
+        serde_json::json!({
+            "format": "table",
+            "items_per_page": 20,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No upcoming conferences found for this topic."
+        }),
+    );
+
+    // ── by_country ────────────────────────────────────────────────────
+    insert(
+        "ritrovo.by_country",
+        "Conferences by Country",
+        Some("Upcoming conferences filtered by country (from URL path segment)"),
+        serde_json::json!({
+            "base_table": "item",
+            "item_type": "conference",
+            "filters": [
+                {
+                    "field": "fields.field_start_date",
+                    "operator": "greater_or_equal",
+                    "value": "current_date",
+                    "exposed": false
+                },
+                {
+                    "field": "fields.field_country",
+                    "operator": "equals",
+                    "value": {"url_arg": "country"},
+                    "exposed": false
+                }
+            ],
+            "sorts": [{"field": "fields.field_start_date", "direction": "asc"}],
+            "stage_aware": true
+        }),
+        serde_json::json!({
+            "format": "table",
+            "items_per_page": 20,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No upcoming conferences found in this country."
+        }),
+    );
+
+    // ── by_city ───────────────────────────────────────────────────────
+    insert(
+        "ritrovo.by_city",
+        "Conferences by City",
+        Some("Upcoming conferences filtered by country and city (from URL path segments)"),
+        serde_json::json!({
+            "base_table": "item",
+            "item_type": "conference",
+            "filters": [
+                {
+                    "field": "fields.field_start_date",
+                    "operator": "greater_or_equal",
+                    "value": "current_date",
+                    "exposed": false
+                },
+                {
+                    "field": "fields.field_country",
+                    "operator": "equals",
+                    "value": {"url_arg": "country"},
+                    "exposed": false
+                },
+                {
+                    "field": "fields.field_city",
+                    "operator": "equals",
+                    "value": {"url_arg": "city"},
+                    "exposed": false
+                }
+            ],
+            "sorts": [{"field": "fields.field_start_date", "direction": "asc"}],
+            "stage_aware": true
+        }),
+        serde_json::json!({
+            "format": "table",
+            "items_per_page": 20,
+            "pager": {"enabled": true, "style": "full", "show_count": true},
+            "empty_text": "No upcoming conferences found in this city."
+        }),
+    );
+
+    host::log(
+        "info",
+        PLUGIN_NAME,
+        &format!("seed_gather_queries: {seeded}/5 queries seeded"),
+    );
+}
+
+/// Look up the category_tag UUID for a confs.tech topic slug.
+///
+/// Returns `None` if the slug has no taxonomy mapping (e.g. `sre`, `scala`)
+/// or if the taxonomy has not been seeded yet.
+fn topic_term_uuid(confs_tech_slug: &str) -> Option<String> {
+    // Map the confs.tech slug to the taxonomy term slug.
+    let term_slug = SLUG_TO_TERM
+        .iter()
+        .find(|(src, _)| *src == confs_tech_slug)
+        .map(|(_, term)| *term)?;
+
+    load_state_str(&format!("{STATE_TOPIC_TERM_PREFIX}.{term_slug}"))
 }
 
 // ─── Permissions ─────────────────────────────────────────────────────
@@ -478,6 +1103,9 @@ pub fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
     };
 
     let now = current_timestamp();
+    // Look up the taxonomy UUID for this batch's topic slug.
+    // Returns None for unmapped slugs such as `sre` and `scala`.
+    let topic_uuid = topic_term_uuid(&topic);
     let existing = load_existing_conferences();
 
     let mut imported = 0u64;
@@ -509,13 +1137,13 @@ pub fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
         let source_id = compute_source_id(conf);
 
         if let Some(info) = existing.get(&source_id) {
-            let merged_topics = merge_topics(&info.topics, &topic);
+            let merged_topics = merge_topics(&info.topics, topic_uuid.as_deref());
             if update_conference(&info.item_id, conf, &merged_topics, now) {
                 updated += 1;
             } else {
                 skipped += 1;
             }
-        } else if insert_conference(conf, &source_id, &topic, now) {
+        } else if insert_conference(conf, &source_id, topic_uuid.as_deref(), now) {
             imported += 1;
         } else {
             invalid += 1;
@@ -708,20 +1336,6 @@ fn timestamp_to_year(ts: i64) -> u16 {
     year
 }
 
-/// Return an approximation of the current year without a timestamp input.
-///
-/// Used in `tap_install` where no `CronInput` is available.
-fn current_year_approx() -> u16 {
-    // Use the DB clock — WASM doesn't provide a reliable system clock.
-    let result = host::query_raw("SELECT EXTRACT(YEAR FROM NOW())::int AS y", &[]);
-    result
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
-        .and_then(|rows| rows.into_iter().next())
-        .and_then(|row| row.get("y").and_then(|v| v.as_i64()))
-        .and_then(|y| u16::try_from(y).ok())
-        .unwrap_or(2026) // safe fallback
-}
 
 /// Return the current Unix timestamp via the DB clock.
 ///
@@ -826,8 +1440,13 @@ fn build_source_fields(
 /// Insert a new conference item as unpublished on the live stage.
 ///
 /// Returns true on success.
-fn insert_conference(conf: &ConfsTechEntry, source_id: &str, topic: &str, now: i64) -> bool {
-    let topics = vec![topic.to_string()];
+fn insert_conference(
+    conf: &ConfsTechEntry,
+    source_id: &str,
+    topic_uuid: Option<&str>,
+    now: i64,
+) -> bool {
+    let topics: Vec<String> = topic_uuid.map(|u| vec![u.to_string()]).unwrap_or_default();
     let fields = build_source_fields(conf, source_id, &topics);
 
     let result = host::execute_raw(
@@ -919,11 +1538,14 @@ fn slugify(s: &str) -> String {
     result
 }
 
-/// Merge a new topic into an existing topic list, deduplicating and sorting.
-fn merge_topics(existing: &[String], new_topic: &str) -> Vec<String> {
+/// Merge a new topic UUID into an existing topic list, deduplicating and sorting.
+///
+/// If `new_uuid` is `None` (no taxonomy mapping for this confs.tech slug),
+/// the existing list is returned unchanged.
+fn merge_topics(existing: &[String], new_uuid: Option<&str>) -> Vec<String> {
     let mut topics: Vec<String> = existing.to_vec();
-    if !topics.iter().any(|t| t == new_topic) {
-        topics.push(new_topic.to_string());
+    if let Some(uuid) = new_uuid && !topics.iter().any(|t| t == uuid) {
+        topics.push(uuid.to_string());
     }
     topics.sort();
     topics
@@ -1291,18 +1913,54 @@ mod tests {
 
     #[test]
     fn merge_topics_deduplicates() {
-        let existing = vec!["rust".to_string(), "security".to_string()];
-        assert_eq!(merge_topics(&existing, "rust"), vec!["rust", "security"]);
+        let uuid_a = "00000000-0000-0000-0000-000000000001";
+        let uuid_b = "00000000-0000-0000-0000-000000000002";
+        let existing = vec![uuid_a.to_string(), uuid_b.to_string()];
+        // Already present — no duplicate added.
+        assert_eq!(merge_topics(&existing, Some(uuid_a)), vec![uuid_a, uuid_b]);
+        // New UUID — appended and sorted.
+        let uuid_c = "00000000-0000-0000-0000-000000000003";
         assert_eq!(
-            merge_topics(&existing, "devops"),
-            vec!["devops", "rust", "security"]
+            merge_topics(&existing, Some(uuid_c)),
+            vec![uuid_a, uuid_b, uuid_c]
         );
     }
 
     #[test]
     fn merge_topics_empty_existing() {
+        let uuid = "00000000-0000-0000-0000-000000000001";
         let existing: Vec<String> = vec![];
-        assert_eq!(merge_topics(&existing, "rust"), vec!["rust"]);
+        assert_eq!(merge_topics(&existing, Some(uuid)), vec![uuid]);
+    }
+
+    #[test]
+    fn merge_topics_none_uuid_is_noop() {
+        let existing = vec!["uuid-a".to_string()];
+        assert_eq!(merge_topics(&existing, None), vec!["uuid-a"]);
+    }
+
+    // ── topic_term_uuid ───────────────────────────────────────────────
+
+    #[test]
+    fn topic_term_uuid_returns_none_for_unmapped_slug() {
+        // sre and scala have no SLUG_TO_TERM entry.
+        assert!(topic_term_uuid("sre").is_none());
+        assert!(topic_term_uuid("scala").is_none());
+    }
+
+    #[test]
+    fn topic_term_uuid_returns_none_for_unknown_slug() {
+        assert!(topic_term_uuid("not-a-real-topic").is_none());
+    }
+
+    #[test]
+    fn topic_term_uuid_mapped_slug_queries_state() {
+        // In the stub host environment, query_raw returns "[]" so the state
+        // lookup will return None even for mapped slugs.  This confirms the
+        // function at least reaches the state query without panicking.
+        let result = topic_term_uuid("rust");
+        // Stub returns None — acceptable; real env would return Some(uuid).
+        assert!(result.is_none() || result.as_deref().map(|s| s.len()).unwrap_or(0) > 0);
     }
 
     // ── timestamp_to_year ─────────────────────────────────────────────

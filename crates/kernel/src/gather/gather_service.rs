@@ -340,6 +340,12 @@ impl GatherService {
     }
 
     /// Resolve category hierarchy filters by expanding tag IDs.
+    ///
+    /// Filters with a non-UUID value (e.g. exposed filters whose user has not
+    /// yet provided a value, or contextual `UrlArg` filters when the argument
+    /// is absent) are silently **dropped** rather than causing an error. This
+    /// makes `HasTagOrDescendants` behave like other optional exposed filters:
+    /// no value → no constraint → all results are returned.
     async fn resolve_category_hierarchies(
         &self,
         mut definition: QueryDefinition,
@@ -348,11 +354,11 @@ impl GatherService {
 
         for filter in definition.filters {
             if filter.operator == FilterOperator::HasTagOrDescendants {
-                // Expand to include all descendant tag IDs
-                let tag_id = filter
-                    .value
-                    .as_uuid()
-                    .ok_or_else(|| anyhow::anyhow!("HasTagOrDescendants requires UUID value"))?;
+                // Skip if no UUID value is present (exposed filter with no
+                // user input, or UrlArg not found in context).
+                let Some(tag_id) = filter.value.as_uuid() else {
+                    continue;
+                };
 
                 let descendant_ids = self.categories.get_tag_with_descendants(tag_id).await?;
 
@@ -417,6 +423,9 @@ impl GatherService {
                     }
                     ContextualValue::CurrentTime => {
                         FilterValue::Integer(chrono::Utc::now().timestamp())
+                    }
+                    ContextualValue::CurrentDate => {
+                        FilterValue::String(chrono::Local::now().format("%Y-%m-%d").to_string())
                     }
                     ContextualValue::UrlArg(name) => context
                         .url_args
@@ -1338,6 +1347,36 @@ mod tests {
         match &resolved.filters[0].value {
             FilterValue::String(s) => assert_eq!(s, "tech"),
             other => panic!("expected String, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_contextual_current_date() {
+        let context = QueryContext::default();
+        let before = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        let def = QueryDefinition {
+            filters: vec![QueryFilter {
+                field: "fields.field_start_date".to_string(),
+                operator: FilterOperator::GreaterOrEqual,
+                value: FilterValue::Contextual(ContextualValue::CurrentDate),
+                exposed: false,
+                exposed_label: None,
+            }],
+            ..Default::default()
+        };
+
+        let resolved = GatherService::resolve_contextual_values(def, &context);
+        let after = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        match &resolved.filters[0].value {
+            FilterValue::String(s) => {
+                assert!(
+                    s >= &before && s <= &after,
+                    "expected date between {before} and {after}, got {s}"
+                );
+            }
+            other => panic!("expected String date, got {other:?}"),
         }
     }
 

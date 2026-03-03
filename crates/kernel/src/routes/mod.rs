@@ -31,6 +31,7 @@ pub mod metrics;
 pub mod oauth;
 pub mod password_reset;
 pub mod plugin_admin;
+pub mod ritrovo_topics;
 pub mod search;
 pub mod static_files;
 pub mod tile_admin;
@@ -66,6 +67,7 @@ plugin_gate!(gate_comments, "comments");
 plugin_gate!(gate_content_locking, "content_locking");
 plugin_gate!(gate_image_styles, "image_styles");
 plugin_gate!(gate_oauth2, "oauth2");
+plugin_gate!(gate_ritrovo_importer, "ritrovo_importer");
 
 /// Plugin names that are runtime-gated in [`gated_plugin_routes`].
 ///
@@ -77,6 +79,7 @@ pub(crate) const RUNTIME_GATED_NAMES: &[&str] = &[
     "content_locking",
     "image_styles",
     "oauth2",
+    "ritrovo_importer",
 ];
 
 /// Build the router fragment for plugin-gated routes.
@@ -123,6 +126,12 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
             oauth::router().route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 gate_oauth2,
+            )),
+        )
+        .merge(
+            ritrovo_topics::router().route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                gate_ritrovo_importer,
             )),
         )
 }
