@@ -1,6 +1,6 @@
 # Part 1: Hello, Trovato
 
-Welcome to the Ritrovo tutorial. Over the next eight parts you will build a fully functional tech conference aggregator using Trovato. By the end of Part 1 you will have a running Trovato instance with a `conference` content type, three hand-created conferences, and a Gather listing that displays them at `/conferences`.
+Welcome to the Ritrovo tutorial. Over the next eight parts you will build a fully functional tech conference aggregator using Trovato. By the end of Part 1 you will have a running Trovato instance with a `conference` content type, three hand-created conferences, a Gather listing that displays them at `/conferences`, and human-friendly URL aliases like `/conferences/rustconf-2026`.
 
 ---
 
@@ -325,7 +325,7 @@ When you submitted each form, the kernel:
 2. **Extracted fields** -- separated the dynamic field values (`field_url`, `field_start_date`, etc.) from system fields (`title`, `status`, CSRF token).
 3. **Stored the item** -- inserted a row into the `item` table with the field values as a flat JSONB object in the `fields` column.
 4. **Created a revision** -- inserted a snapshot into `item_revision` for the revision history.
-5. **Generated a URL alias** -- every item gets a system path like `/item/{uuid}`. In a later part of this tutorial we will configure pathauto to generate human-friendly aliases like `/conferences/rustconf-2026`.
+5. **Generated a URL alias** -- every item gets a system path like `/item/{uuid}`. In Step 5 we will configure pathauto to generate human-friendly aliases like `/conferences/rustconf-2026` automatically.
 
 ### Viewing the Item
 
@@ -510,6 +510,110 @@ In the Gather definition, each filter has an "Exposed" option. If you enable it,
 
 ---
 
+## Step 5: Human-Friendly URLs
+
+Every item is accessible at `/item/{uuid}`, but UUIDs are terrible to share, bookmark, or read aloud. This step configures pathauto to generate aliases like `/conferences/rustconf-2026` automatically whenever a conference is saved.
+
+### How It Works
+
+Trovato's pathauto system reads a pattern from site configuration (stored in `site_config` under the key `pathauto_patterns`), expands tokens using the item's data, slugifies the result, and creates an entry in the `url_alias` table automatically on save. The path alias middleware intercepts incoming requests and rewrites `/conferences/rustconf-2026` to `/item/{uuid}` before routing -- so the canonical URL remains `/item/{uuid}` internally, while visitors always see the clean alias.
+
+### Option A: Admin UI
+
+Navigate to `/admin/config/pathauto`. You will see a table listing every registered content type with a text input for its URL pattern.
+
+For the **Conference** row, enter:
+
+```
+conferences/[title]
+```
+
+Click **Save configuration**.
+
+Now click **Regenerate aliases** next to Conference. Trovato will iterate all existing conference items, generate the appropriate alias for each, and report how many were created. After this step, the three conferences you created in Step 3 will have aliases:
+
+| Conference | Alias |
+|---|---|
+| RustConf 2026 | `/conferences/rustconf-2026` |
+| EuroRust 2026 | `/conferences/eurorust-2026` |
+| WasmCon Online 2026 | `/conferences/wasmcon-online-2026` |
+
+Any new conference saved after this point will have its alias generated automatically on save -- no manual step needed.
+
+### Option B: Config Import
+
+If you are following the config-import workflow, the pattern is already waiting for you in `docs/tutorial/config/variable.pathauto_patterns.yml`. Import it and then regenerate via the admin UI:
+
+```bash
+# Import the pathauto pattern
+cargo run --release --bin trovato -- config import docs/tutorial/config
+```
+
+> **Warning:** `config import` replaces the **entire** `pathauto_patterns` value in `site_config`. If you have already configured patterns for other content types via the admin UI, those patterns will be overwritten. Import first, then add any additional patterns back through the UI.
+
+After importing, navigate to `/admin/config/pathauto` and click **Regenerate aliases** next to the Conference row. The regenerate step must be done through the UI — the regenerate endpoint is a CSRF-protected form POST that requires a live admin session, not a scriptable API call.
+
+### Verify
+
+```bash
+curl -I http://localhost:3000/conferences/rustconf-2026
+# HTTP/1.1 200 OK
+
+curl -I http://localhost:3000/conferences/eurorust-2026
+# HTTP/1.1 200 OK
+
+curl -I http://localhost:3000/conferences/wasmcon-online-2026
+# HTTP/1.1 200 OK
+```
+
+The tutorial integration tests for Step 5 (`test_part01_step05_*` in `tutorial_test.rs`) verify these aliases at the model layer, confirming the correct rows exist in `url_alias` after regeneration.
+
+### How Slugification Works
+
+The `[title]` token is run through `slugify()`, which:
+
+1. Converts to lowercase.
+2. Replaces any character that is not `a–z`, `0–9` with a hyphen.
+3. Collapses consecutive hyphens into one.
+4. Strips leading and trailing hyphens.
+5. Truncates at 128 characters, breaking at a word boundary.
+
+So "RustConf 2026" becomes `rustconf-2026`, "C++ Now" becomes `c-now`, and "  ⚡ Fast!" becomes `fast`. The full pattern `conferences/[title]` becomes `/conferences/rustconf-2026` -- the leading slash is added automatically.
+
+If two items produce the same base alias (e.g., two conferences both named "Rust Fest"), pathauto generates `/conferences/rust-fest` for the first and `/conferences/rust-fest-1` for the second. Up to 99 numeric suffixes are tried before falling back to a UUID fragment.
+
+### What About Title Changes?
+
+When you edit a conference and save it through the admin form, `update_alias_item` runs automatically. If the title changed, the alias is regenerated to match the new title. The old alias is removed -- it does not redirect automatically. Redirect handling (for SEO continuity) is covered in a later part of the tutorial.
+
+If you clear the pattern in `/admin/config/pathauto` and regenerate, the service stops generating new aliases but does not delete existing ones.
+
+<details>
+<summary>Under the Hood: How the Alias Resolver Works</summary>
+
+When a request arrives for `/conferences/rustconf-2026`, the path alias middleware:
+
+1. Looks up the alias in the `url_alias` table: `SELECT source FROM url_alias WHERE alias = '/conferences/rustconf-2026'`.
+2. Finds the source `/item/{uuid}`.
+3. Rewrites the request URI to `/item/{uuid}` in-place before passing it to the router.
+
+The router never sees the alias -- it only ever sees canonical `/item/{uuid}` paths. This is why the same middleware that resolves `/conferences/rustconf-2026` → `/item/{uuid}` also resolves `/conferences` → `/gather/upcoming_conferences`: both are just rows in `url_alias`.
+
+```trovato-test:internal
+-- Verify alias rows exist in the database after regeneration
+SELECT source, alias
+FROM url_alias
+WHERE alias LIKE '/conferences/%'
+ORDER BY alias;
+-- Expected: three rows, one per conference
+```
+
+The alias lookup hits the database on every request — the path alias middleware does not use a Redis cache or in-process cache. This means newly created aliases are immediately effective without any cache invalidation step. The trade-off is a database query per non-system request; this is acceptable for sites at tutorial scale and can be addressed with a read replica or connection pool tuning for high-traffic deployments.
+
+</details>
+
+---
+
 ## What You've Built
 
 By the end of Part 1, you have:
@@ -518,6 +622,14 @@ By the end of Part 1, you have:
 - A `conference` Item Type with 12 fields for dates, location, CFP details, and more.
 - Three conferences (created by hand), each viewable at `/item/{uuid}`.
 - A Gather listing at `/conferences` that displays all published conferences sorted by start date.
+- Human-friendly URL aliases (`/conferences/rustconf-2026`, etc.) generated automatically by pathauto.
+
+You also now understand:
+
+- How Items, Item Types, and JSONB field storage relate to each other.
+- How Gathers translate declarative definitions into parameterized SQL.
+- How URL aliases and path alias middleware decouple public URLs from internal identifiers.
+- How pathauto generates clean URLs from content using configurable token patterns.
 
 This is enough to see the shape of Trovato. Everything after this builds on these fundamentals.
 

@@ -1,0 +1,150 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Pathauto configuration</h2>
+</div>
+
+{% if flash %}
+<div class="message message--status">{{ flash }}</div>
+{% endif %}
+
+{#
+  Regenerate forms are declared here, OUTSIDE the save form below.
+  HTML5 forbids nested <form> elements, so each regenerate form is placed
+  at the top level and the "Regenerate aliases" button in the table targets
+  it via the HTML5 `form` attribute.
+  SAFE: ct.machine_name is a validated machine name ([a-z][a-z0-9_]*) from
+  the content type registry — it requires no escaping in an id= attribute.
+#}
+{% for ct in content_types %}
+<form id="regen-{{ ct.machine_name }}"
+      method="post"
+      action="/admin/config/pathauto/regenerate">
+    <input type="hidden" name="_token" value="{{ csrf_token }}">
+    <input type="hidden" name="item_type" value="{{ ct.machine_name }}">
+</form>
+{% endfor %}
+
+<div class="admin-card">
+    <p class="description">
+        Configure automatic URL alias patterns for each content type.
+        Use tokens like <code>[title]</code>, <code>[type]</code>, <code>[yyyy]</code>,
+        <code>[mm]</code>, and <code>[dd]</code>. Leave a field blank to disable
+        automatic alias generation for that type.
+    </p>
+    <p class="description">
+        <strong>Save patterns before regenerating.</strong> Clicking "Regenerate aliases"
+        uses the last <em>saved</em> pattern — unsaved edits in the text field are not used.
+    </p>
+
+    <form method="post" action="/admin/config/pathauto">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Content type</th>
+                    <th>URL pattern</th>
+                    <th>Operations</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ct in content_types %}
+                <tr>
+                    <td>
+                        <strong>{{ ct.label }}</strong>
+                        <div class="text-muted" style="font-size: 0.875rem;">{{ ct.machine_name }}</div>
+                    </td>
+                    <td>
+                        <input type="text"
+                               name="pattern.{{ ct.machine_name }}"
+                               value="{{ patterns[ct.machine_name] }}"
+                               placeholder="e.g. {{ ct.machine_name }}s/[title]"
+                               class="form-text"
+                               style="width: 100%;">
+                    </td>
+                    <td style="white-space: nowrap;">
+                        {#
+                          form= targets the matching regenerate form declared above
+                          (outside this save form), satisfying the HTML5 no-nested-
+                          forms requirement while keeping the button visually inline.
+                        #}
+                        <button type="submit"
+                                form="regen-{{ ct.machine_name }}"
+                                class="button button--secondary button--small"
+                                data-confirm="Save pattern changes first. Regenerate aliases for all {{ ct.label }} items using the saved pattern?">
+                            Regenerate aliases
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if not content_types %}
+        <p>No content types are registered. <a href="/admin/structure/types/add">Create one</a> first.</p>
+        {% endif %}
+
+        {% if content_types %}
+        <div style="margin-top: 1rem;">
+            <button type="submit" class="button button--primary">Save configuration</button>
+        </div>
+        {% endif %}
+    </form>
+</div>
+
+<div class="admin-card" style="margin-top: 1rem;">
+    <h3 style="margin-top: 0;">Token reference</h3>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Token</th>
+                <th>Description</th>
+                <th>Example output</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>[title]</code></td>
+                <td>Item title, lowercased and hyphenated</td>
+                <td><code>rustconf-2026</code></td>
+            </tr>
+            <tr>
+                <td><code>[type]</code></td>
+                <td>Content type machine name</td>
+                <td><code>conference</code></td>
+            </tr>
+            <tr>
+                <td><code>[yyyy]</code></td>
+                <td>Four-digit year from the item's created date</td>
+                <td><code>2026</code></td>
+            </tr>
+            <tr>
+                <td><code>[mm]</code></td>
+                <td>Two-digit month from the item's created date</td>
+                <td><code>09</code></td>
+            </tr>
+            <tr>
+                <td><code>[dd]</code></td>
+                <td>Two-digit day from the item's created date</td>
+                <td><code>07</code></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<style>
+    .description {
+        color: var(--gray-600);
+        margin-bottom: 1rem;
+    }
+    .text-muted {
+        color: var(--gray-400);
+    }
+    .button--small {
+        font-size: 0.875rem;
+        padding: 0.25rem 0.5rem;
+    }
+</style>
+{% endblock %}

@@ -1,0 +1,9 @@
+# Tutorial Part 1, Step 5: pathauto patterns for human-friendly URLs.
+# Import with: cargo run --release --bin trovato -- config import docs/tutorial/config
+#
+# WARNING: config import replaces the entire pathauto_patterns value in site_config.
+# If you have already configured patterns for other content types via the admin UI,
+# those patterns will be overwritten. Add them back through the UI after importing.
+key: pathauto_patterns
+value:
+  conference: conferences/[title]

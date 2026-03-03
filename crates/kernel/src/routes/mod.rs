@@ -7,6 +7,7 @@ pub mod admin_ai_provider;
 pub mod admin_alias;
 pub mod admin_content;
 pub mod admin_content_type;
+pub mod admin_pathauto;
 pub mod admin_taxonomy;
 pub mod admin_user;
 pub mod api_chat;

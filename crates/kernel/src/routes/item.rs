@@ -136,26 +136,50 @@ pub fn router() -> Router<AppState> {
         .route("/api/items", get(list_items_api))
 }
 
-/// Get current user from session.
-async fn get_user_context(session: &Session, _state: &AppState) -> UserContext {
+/// Get current user from session with permissions loaded from the database.
+async fn get_user_context(session: &Session, state: &AppState) -> UserContext {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     match user_id {
         Some(id) => {
-            // Load user permissions
-            // TODO: Implement actual permission loading
-            UserContext {
-                id,
-                authenticated: true,
-                permissions: vec![
-                    "access content".to_string(),
-                    "create page content".to_string(),
-                    "edit own page content".to_string(),
-                    "delete own page content".to_string(),
-                ],
+            // Load user from database
+            let Ok(Some(user)) = crate::models::User::find_by_id(state.db(), id).await else {
+                return UserContext::anonymous();
+            };
+            let perms = state
+                .permissions()
+                .load_user_permissions(&user)
+                .await
+                .unwrap_or_default();
+            if user.is_admin {
+                let mut p: Vec<String> = perms.into_iter().collect();
+                p.push("administer site".to_string());
+                UserContext::authenticated(id, p)
+            } else {
+                UserContext::authenticated(id, perms.into_iter().collect())
             }
         }
-        None => UserContext::anonymous(),
+        None => {
+            // Load anonymous user permissions from the database
+            let anon = crate::models::User::find_by_id(state.db(), Uuid::nil())
+                .await
+                .ok()
+                .flatten();
+            if let Some(anon_user) = anon {
+                let perms = state
+                    .permissions()
+                    .load_user_permissions(&anon_user)
+                    .await
+                    .unwrap_or_default();
+                UserContext {
+                    id: Uuid::nil(),
+                    authenticated: false,
+                    permissions: perms.into_iter().collect(),
+                }
+            } else {
+                UserContext::anonymous()
+            }
+        }
     }
 }
 
@@ -332,6 +356,33 @@ async fn view_item(
                 children_html.push_str(&format!(
                     "<div class=\"field field-{}\">{}</div>",
                     html_escape(name),
+                    filtered
+                ));
+            } else if let Some(s) = value.as_str() {
+                // Plain string field (e.g., "field_city": "Portland")
+                let label = name
+                    .strip_prefix("field_")
+                    .unwrap_or(name)
+                    .replace('_', " ");
+                let filtered = FilterPipeline::for_format("plain_text").process(s);
+                children_html.push_str(&format!(
+                    "<div class=\"field field-{}\"><strong class=\"field__label\">{}</strong>: {}</div>",
+                    html_escape(name),
+                    html_escape(&label),
+                    filtered
+                ));
+            } else if !value.is_object() && !value.is_array() && !value.is_null() {
+                // Numeric or boolean scalar fields
+                let label = name
+                    .strip_prefix("field_")
+                    .unwrap_or(name)
+                    .replace('_', " ");
+                let text = value.to_string();
+                let filtered = FilterPipeline::for_format("plain_text").process(&text);
+                children_html.push_str(&format!(
+                    "<div class=\"field field-{}\"><strong class=\"field__label\">{}</strong>: {}</div>",
+                    html_escape(name),
+                    html_escape(&label),
                     filtered
                 ));
             }

@@ -16,7 +16,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
-use tokio::sync::OnceCell;
+use tokio::sync::{Mutex, OnceCell};
 use trovato_kernel::gather::{
     DisplayFormat, FilterOperator, FilterValue, GatherQuery, PagerConfig, PagerStyle,
     QueryDefinition, QueryDisplay, QueryFilter, QuerySort, SortDirection,
@@ -809,5 +809,264 @@ fn test_part01_step04_gather_status_filter() {
             status_filter["value"], 1,
             "status filter should equal 1 (published)"
         );
+    });
+}
+
+// =============================================================================
+// Step 5: Human-Friendly URLs
+// Validates: docs/tutorial/part-01-hello-trovato.md — Step 5
+//
+// The tutorial guides users to:
+// - Set pathauto pattern "conferences/[title]" for the conference type
+// - Click "Regenerate aliases" to backfill the three existing conferences
+//
+// Tests verify:
+// - update_alias_item generates the correct alias for each conference
+// - Expected aliases are findable via find_by_alias_with_context (same
+//   lookup the path alias middleware uses)
+// - A second regeneration call skips items whose alias already matches
+// =============================================================================
+
+/// Serializes Step 5 tests that write to `site_config.pathauto_patterns`.
+static STEP5_PATHAUTO_LOCK: Mutex<()> = Mutex::const_new(());
+
+#[test]
+fn test_part01_step05_pathauto_generates_conference_aliases() {
+    run_test(async {
+        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        let app = shared_app().await;
+        seed_tutorial_data(app).await;
+
+        // Snapshot original patterns so we can restore them after the test.
+        let original_patterns =
+            trovato_kernel::models::SiteConfig::get(&app.db, "pathauto_patterns")
+                .await
+                .expect("failed to read pathauto patterns");
+
+        // Set the conference pathauto pattern (equivalent to Option B config import
+        // or saving the form in Option A).
+        trovato_kernel::models::SiteConfig::set(
+            &app.db,
+            "pathauto_patterns",
+            serde_json::json!({"conference": "conferences/[title]"}),
+        )
+        .await
+        .expect("failed to set pathauto pattern");
+
+        // Clear any existing conference aliases so update_alias_item creates
+        // fresh ones rather than short-circuiting on an already-matching alias.
+        sqlx::query("DELETE FROM url_alias WHERE alias LIKE '/conferences/%'")
+            .execute(&app.db)
+            .await
+            .expect("failed to clear existing conference aliases");
+
+        let conferences: Vec<(uuid::Uuid, String, i64)> = sqlx::query_as(
+            "SELECT id, title, created FROM item WHERE type = 'conference' ORDER BY title",
+        )
+        .fetch_all(&app.db)
+        .await
+        .expect("failed to fetch conferences");
+
+        assert_eq!(
+            conferences.len(),
+            3,
+            "exactly 3 tutorial conferences must exist"
+        );
+
+        // Call update_alias_item for each — this is exactly what the admin
+        // "Regenerate aliases" button invokes for every item of the type.
+        let mut generated = std::collections::HashMap::new();
+        for (id, title, created) in &conferences {
+            let alias = trovato_kernel::services::pathauto::update_alias_item(
+                &app.db,
+                *id,
+                title,
+                "conference",
+                *created,
+            )
+            .await
+            .expect("update_alias_item should succeed");
+            assert!(
+                alias.is_some(),
+                "update_alias_item should generate an alias for '{title}'"
+            );
+            generated.insert(title.clone(), alias.unwrap());
+        }
+
+        // Tutorial: RustConf 2026 → /conferences/rustconf-2026
+        assert_eq!(
+            generated["RustConf 2026"], "/conferences/rustconf-2026",
+            "RustConf alias must match tutorial"
+        );
+        // Tutorial: EuroRust 2026 → /conferences/eurorust-2026
+        assert_eq!(
+            generated["EuroRust 2026"], "/conferences/eurorust-2026",
+            "EuroRust alias must match tutorial"
+        );
+        // Tutorial: WasmCon Online 2026 → /conferences/wasmcon-online-2026
+        assert_eq!(
+            generated["WasmCon Online 2026"], "/conferences/wasmcon-online-2026",
+            "WasmCon alias must match tutorial"
+        );
+
+        // Restore original pathauto patterns.
+        match original_patterns {
+            Some(v) => trovato_kernel::models::SiteConfig::set(&app.db, "pathauto_patterns", v)
+                .await
+                .expect("failed to restore pathauto patterns"),
+            None => sqlx::query("DELETE FROM site_config WHERE key = 'pathauto_patterns'")
+                .execute(&app.db)
+                .await
+                .map(|_| ())
+                .expect("failed to remove pathauto patterns"),
+        }
+    });
+}
+
+#[test]
+fn test_part01_step05_aliases_resolvable_by_middleware_lookup() {
+    run_test(async {
+        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        let app = shared_app().await;
+        seed_tutorial_data(app).await;
+
+        // Configure pattern and clear existing aliases.
+        trovato_kernel::models::SiteConfig::set(
+            &app.db,
+            "pathauto_patterns",
+            serde_json::json!({"conference": "conferences/[title]"}),
+        )
+        .await
+        .expect("failed to set pathauto pattern");
+
+        sqlx::query("DELETE FROM url_alias WHERE alias LIKE '/conferences/%'")
+            .execute(&app.db)
+            .await
+            .expect("failed to clear conference aliases");
+
+        // Regenerate aliases for all three conferences.
+        let conferences: Vec<(uuid::Uuid, String, i64)> =
+            sqlx::query_as("SELECT id, title, created FROM item WHERE type = 'conference'")
+                .fetch_all(&app.db)
+                .await
+                .expect("failed to fetch conferences");
+
+        for (id, title, created) in &conferences {
+            trovato_kernel::services::pathauto::update_alias_item(
+                &app.db,
+                *id,
+                title,
+                "conference",
+                *created,
+            )
+            .await
+            .expect("update_alias_item should succeed");
+        }
+
+        // Verify each expected alias is findable via find_by_alias_with_context,
+        // which is the exact lookup the path alias middleware uses.
+        // (Per the Axum 0.8 testing limitation, we verify at model layer rather
+        // than sending HTTP requests — URI rewriting in middleware does not affect
+        // route matching in oneshot tests.)
+        let expected_aliases = [
+            "/conferences/rustconf-2026",
+            "/conferences/eurorust-2026",
+            "/conferences/wasmcon-online-2026",
+        ];
+
+        for alias_path in &expected_aliases {
+            let found = trovato_kernel::models::UrlAlias::find_by_alias_with_context(
+                &app.db,
+                alias_path,
+                LIVE_STAGE_ID,
+                app.state.default_language(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("alias lookup failed for {alias_path}: {e}"));
+
+            let record = found.unwrap_or_else(|| {
+                panic!("alias '{alias_path}' not found in url_alias after regeneration")
+            });
+
+            // Source must be /item/{uuid} — the canonical internal path.
+            assert!(
+                record.source.starts_with("/item/"),
+                "alias source for '{alias_path}' should be /item/{{uuid}}, got '{}'",
+                record.source
+            );
+        }
+
+        // Restore pathauto config.
+        sqlx::query("DELETE FROM site_config WHERE key = 'pathauto_patterns'")
+            .execute(&app.db)
+            .await
+            .expect("failed to remove pathauto patterns");
+    });
+}
+
+#[test]
+fn test_part01_step05_regenerate_skips_already_matching_alias() {
+    run_test(async {
+        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        let app = shared_app().await;
+        seed_tutorial_data(app).await;
+
+        // Configure pattern and clear existing aliases.
+        trovato_kernel::models::SiteConfig::set(
+            &app.db,
+            "pathauto_patterns",
+            serde_json::json!({"conference": "conferences/[title]"}),
+        )
+        .await
+        .expect("failed to set pathauto pattern");
+
+        sqlx::query("DELETE FROM url_alias WHERE alias LIKE '/conferences/%'")
+            .execute(&app.db)
+            .await
+            .expect("failed to clear conference aliases");
+
+        let row: (uuid::Uuid, String, i64) = sqlx::query_as(
+            "SELECT id, title, created FROM item WHERE type = 'conference' AND title = 'RustConf 2026'",
+        )
+        .fetch_one(&app.db)
+        .await
+        .expect("RustConf 2026 must exist");
+
+        let (id, title, created) = row;
+
+        // First call: creates the alias.
+        let first = trovato_kernel::services::pathauto::update_alias_item(
+            &app.db,
+            id,
+            &title,
+            "conference",
+            created,
+        )
+        .await
+        .expect("first update_alias_item should succeed");
+        assert!(first.is_some(), "first call should create the alias");
+
+        // Second call on the same item: alias already matches — must return None.
+        // Tutorial: "Items whose alias already matches the current pattern are
+        // skipped automatically."
+        let second = trovato_kernel::services::pathauto::update_alias_item(
+            &app.db,
+            id,
+            &title,
+            "conference",
+            created,
+        )
+        .await
+        .expect("second update_alias_item should succeed");
+        assert!(
+            second.is_none(),
+            "second call should return None (alias already matches)"
+        );
+
+        // Restore pathauto config.
+        sqlx::query("DELETE FROM site_config WHERE key = 'pathauto_patterns'")
+            .execute(&app.db)
+            .await
+            .expect("failed to remove pathauto patterns");
     });
 }

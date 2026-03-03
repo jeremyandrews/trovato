@@ -589,6 +589,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_content_type::router())
         // URL Alias management
         .merge(super::admin_alias::router())
+        // Pathauto configuration
+        .merge(super::admin_pathauto::router())
         // AI Provider management
         .merge(super::admin_ai_provider::router())
         // AI Budget management
