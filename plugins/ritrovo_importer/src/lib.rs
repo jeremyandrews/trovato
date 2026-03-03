@@ -151,6 +151,22 @@ fn conference_fields() -> Vec<FieldDefinition> {
     ]
 }
 
+// ─── Install ──────────────────────────────────────────────────────────
+
+/// Called once when the plugin is first enabled in the admin UI.
+///
+/// Logs a startup message so the tutorial reader can confirm the tap fired.
+/// The actual conference import begins automatically on the next cron cycle.
+#[plugin_tap]
+pub fn tap_install() -> serde_json::Value {
+    host::log(
+        "info",
+        PLUGIN_NAME,
+        "ritrovo_importer installed — import will begin on next cron cycle",
+    );
+    serde_json::json!({ "status": "ok" })
+}
+
 // ─── Permissions ─────────────────────────────────────────────────────
 
 /// Define importer-specific permissions.
