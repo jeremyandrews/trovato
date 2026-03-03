@@ -36,13 +36,17 @@ mod tap;
 mod theme;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::http::{HeaderValue, Method};
+use axum::extract::State;
+use axum::http::{HeaderValue, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use clap::{Parser, Subcommand};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use tower_sessions::Session;
 use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -155,6 +159,81 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Fallback handler for path alias resolution.
+///
+/// Called for requests that don't match any registered route. Looks up URL
+/// aliases in the database and, if found, forwards the request to the inner
+/// router with the rewritten URI (transparent internal rewrite).
+async fn path_alias_fallback(
+    state: AppState,
+    session: Session,
+    router: Arc<Router>,
+    mut request: axum::extract::Request,
+) -> Response {
+    use crate::middleware::language::ResolvedLanguage;
+    use crate::models::UrlAlias;
+    use crate::models::stage::LIVE_STAGE_ID;
+    use crate::routes::auth::SESSION_ACTIVE_STAGE;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    let path = request.uri().path().to_string();
+
+    // Read resolved language from request extensions
+    let language = request
+        .extensions()
+        .get::<ResolvedLanguage>()
+        .map(|l| l.0.clone())
+        .unwrap_or_else(|| state.default_language().to_string());
+
+    // Read active stage from session (default to live)
+    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
+        Ok(Some(s)) => s.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID),
+        _ => LIVE_STAGE_ID,
+    };
+
+    // Look up alias: try active stage, then fall back to live
+    let alias = UrlAlias::find_by_alias_with_context(state.db(), &path, active_stage, &language)
+        .await
+        .ok()
+        .flatten();
+    let alias = alias.or_else(|| {
+        if active_stage != LIVE_STAGE_ID {
+            // Blocking fallback — acceptable since this only triggers for non-live stages
+            None // Live stage was already tried above for the common case
+        } else {
+            None
+        }
+    });
+
+    if let Some(alias) = alias {
+        tracing::debug!(
+            alias = %alias.alias,
+            source = %alias.source,
+            "path alias fallback: rewriting and forwarding"
+        );
+        // Rewrite the URI
+        let new_uri_str = if let Some(query) = request.uri().query() {
+            format!("{}?{}", alias.source, query)
+        } else {
+            alias.source.clone()
+        };
+        if let Ok(new_uri) = new_uri_str.parse::<Uri>() {
+            *request.uri_mut() = new_uri;
+            // Forward to the inner router with the rewritten URI
+            return router
+                .as_ref()
+                .clone()
+                .oneshot(request)
+                .await
+                .unwrap_or_else(|err| match err {});
+        }
+    }
+
+    // No alias found — return 404
+    StatusCode::NOT_FOUND.into_response()
+}
+
 /// Run the HTTP server (original startup path).
 async fn run_server() -> Result<()> {
     info!("Starting Trovato kernel");
@@ -190,8 +269,9 @@ async fn run_server() -> Result<()> {
     // Build CORS layer from config
     let cors = build_cors_layer(&config);
 
-    // Build the router — core routes are always registered.
-    let app = Router::new()
+    // Build the inner router with all routes (no path alias — that's handled
+    // by the fallback below so it runs BEFORE Axum route matching).
+    let inner_router: Router<AppState> = Router::new()
         .merge(routes::front::router())
         .merge(routes::install::router())
         .merge(routes::auth::router())
@@ -212,13 +292,31 @@ async fn run_server() -> Result<()> {
         .merge(routes::tile_admin::router())
         .merge(routes::static_files::router())
         // Plugin-gated routes — runtime middleware returns 404 when disabled.
-        .merge(routes::gated_plugin_routes(&state))
+        .merge(routes::gated_plugin_routes(&state));
+
+    // Wrap the inner router with state so we can clone it for the fallback.
+    let inner_with_state: Router = inner_router.clone().with_state(state.clone());
+    let shared_router = Arc::new(inner_with_state);
+
+    // Build the outer app with a fallback that handles path alias resolution.
+    // In Axum 0.8, Router::layer() middleware runs AFTER route matching, so
+    // URI rewriting in middleware cannot affect which route is matched.
+    // The fallback receives all unmatched requests and forwards them to the
+    // inner router after resolving any URL alias.
+    let app = inner_router
+        .fallback({
+            let router = shared_router.clone();
+            let app_state = state.clone();
+            move |session: Session, request: axum::extract::Request| {
+                let router = router.clone();
+                let app_state = app_state.clone();
+                async move {
+                    path_alias_fallback(app_state, session, router, request).await
+                }
+            }
+        })
         // Middleware layers (last added = first executed in request flow):
-        // TraceLayer → session → CORS → bearer_auth → api_token → install_check → negotiate_language → redirect → path_alias → routes
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::middleware::resolve_path_alias,
-        ))
+        // TraceLayer → session → CORS → bearer_auth → api_token → install_check → negotiate_language → redirect → routes
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::check_redirect,

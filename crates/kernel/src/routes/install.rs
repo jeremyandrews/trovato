@@ -254,8 +254,8 @@ async fn install_index(State(state): State<AppState>) -> Response {
     let admin_count = count_admin_users(&state).await;
 
     if admin_count == 0 {
-        // No admin - show welcome/admin creation
-        Redirect::to("/install/admin").into_response()
+        // No admin - show welcome page first
+        Redirect::to("/install/welcome").into_response()
     } else {
         // Have admin but not marked installed - show site config
         Redirect::to("/install/site").into_response()
