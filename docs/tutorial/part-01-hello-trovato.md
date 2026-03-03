@@ -416,7 +416,7 @@ Let's create a Gather that lists all published conferences sorted by start date.
    - Direction: `asc`
 
 6. **Display settings:**
-   - Format: `table`
+   - Format: `list`
    - Items per page: `25`
    - Empty text: `No conferences found.`
 
@@ -460,7 +460,7 @@ ORDER BY item.fields->>'field_start_date' ASC
 LIMIT 25 OFFSET 0
 ```
 
-3. **Renders the results** -- using the configured display format (table, with pagination controls).
+3. **Renders the results** -- using the list format, which renders each conference as a card with the title linked to its detail page.
 
 No code was written. No templates were edited. The Gather system translated your declarative definition into a working page.
 
@@ -482,7 +482,7 @@ Now `/conferences` transparently resolves to `/gather/upcoming_conferences` -- v
 
 ### Viewing the Listing
 
-Visit `http://localhost:3000/conferences` in your browser. You should see a table listing all three conferences you created in Step 3, sorted by start date with the soonest conference first (WasmCon Online in July, then RustConf in September, then EuroRust in October).
+Visit `http://localhost:3000/conferences` in your browser. You should see a list of three conference cards sorted by start date -- WasmCon Online first (July), then RustConf (September), then EuroRust (October). Each title is a link to the full conference view at `/item/{uuid}`. Click through to confirm the detail page renders correctly before moving on to Step 5.
 
 The Gather is also available as JSON via the REST API:
 
