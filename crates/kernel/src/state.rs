@@ -330,8 +330,37 @@ impl AppState {
             tap_registry.clone(),
         ));
 
+        // Dispatch tap_install for enabled plugins that haven't had it called yet.
+        // This covers both auto-installed plugins (first server start after adding
+        // a plugin with default_enabled=true) and CLI-installed plugins (first
+        // server start after `trovato plugin install <name>`).
+        use crate::tap::{RequestServices, RequestState, UserContext};
+        let tap_install_http = reqwest::Client::new();
+        let pending = plugin_status::get_pending_tap_install(&db)
+            .await
+            .context("failed to query pending tap_install")?;
+        for plugin_name in &pending {
+            let install_state = RequestState::new(
+                UserContext::anonymous(),
+                RequestServices::for_background(db.clone(), None, None, tap_install_http.clone()),
+            );
+            let result = tap_dispatcher
+                .dispatch_to_plugin("tap_install", "{}", plugin_name, install_state)
+                .await;
+            if result.is_some() {
+                info!(plugin = %plugin_name, "tap_install dispatched");
+            } else {
+                info!(
+                    plugin = %plugin_name,
+                    "tap_install not implemented — skipping"
+                );
+            }
+            plugin_status::mark_tap_install_called(&db, plugin_name)
+                .await
+                .context("failed to mark tap_install_called")?;
+        }
+
         // Create menu registry from plugins by invoking tap_menu
-        use crate::tap::{RequestState, UserContext};
         let menu_state = RequestState::without_services(UserContext::anonymous());
         let menu_results = tap_dispatcher.dispatch("tap_menu", "{}", menu_state).await;
         let menu_jsons: Vec<(String, String)> = menu_results

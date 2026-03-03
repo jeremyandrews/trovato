@@ -57,8 +57,8 @@ pub fn tap_cron(input: CronInput) -> serde_json::Value {
 
 The `trovato plugin new` command generates the boilerplate for you:
 
-```
-trovato plugin new my_plugin
+```bash
+cargo run --release --bin trovato -- plugin new my_plugin
 ```
 
 This creates:
@@ -73,7 +73,7 @@ plugins/my_plugin/
 
 It also adds `"plugins/my_plugin"` to the workspace `Cargo.toml` members list.
 
-> **Note:** The `ritrovo_importer` plugin already ships with Trovato as a complete example. You don't need to scaffold it — instead, read through its source to understand the patterns, then use `trovato plugin install ritrovo_importer` to enable it.
+> **Note:** The `ritrovo_importer` plugin already ships with Trovato as a complete example. You don't need to scaffold it — instead, read through its source to understand the patterns, then use `cargo run --release --bin trovato -- plugin install ritrovo_importer` to enable it.
 
 ### Installing and enabling a plugin
 
@@ -81,18 +81,31 @@ After building the `.wasm`:
 
 ```bash
 cargo build --target wasm32-wasip1 -p ritrovo_importer --release
-trovato plugin install ritrovo_importer
+cargo run --release --bin trovato -- plugin install ritrovo_importer
 ```
 
-`plugin install` runs any pending SQL migrations, then marks the plugin as enabled. The next time the server starts (or via the admin UI at `/admin/plugins`), the plugin loads.
+`plugin install`:
+1. Copies `target/wasm32-wasip1/release/{name}.wasm` into the plugin directory (where the server can find it).
+2. Runs any pending SQL migrations.
+3. Marks the plugin as enabled in `plugin_status`.
 
-When the plugin is enabled **for the first time**, the kernel calls `tap_install`. You'll see this in the server logs:
+> **Note:** Because `ritrovo_importer` has `default_enabled = true` in its `info.toml`, the server auto-installs it into `plugin_status` on first startup — so you may see the message `Plugin 'ritrovo_importer' is already installed` and that is expected. The command still ensures any pending migrations are applied.
+
+When the server next starts with the plugin enabled, it calls `tap_install` **once** for any plugin where it has not previously run. You'll see this in the server logs:
 
 ```
-INFO ritrovo_importer: ritrovo_importer installed — import will begin on next cron cycle
+INFO trovato::state: tap_install dispatched plugin="ritrovo_importer"
 ```
 
-> **Note:** `tap_install` fires only once — on first enable. If `ritrovo_importer` was already installed automatically at server startup (the default), you won't see this message in existing environments. To see it, disable the plugin, uninstall it via the admin UI, re-enable it, and watch the logs.
+`tap_install` seeds the topic taxonomy, the five gather queries, and queues the historical conference import. After a restart you can verify it ran:
+
+```bash
+/opt/homebrew/Cellar/libpq/18.1/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT COUNT(*) FROM ritrovo_state;"
+# Should return > 0 (one row per taxonomy term seeded)
+```
+
+> **Note:** `tap_install` fires only once per server lifetime — subsequent restarts skip it for already-installed plugins. To re-run it (e.g. after resetting the database), delete the plugin's row from `plugin_status` and restart.
 
 ### The four stubs: tap_install, tap_cron, tap_queue_info, tap_queue_worker
 

@@ -82,6 +82,13 @@ const TOPICS_CATEGORY_ID: &str = "topics";
 /// State key prefix for topic term UUIDs: `"topic_term.{term_slug}"`.
 const STATE_TOPIC_TERM_PREFIX: &str = "topic_term";
 
+/// Maximum number of conferences per queue payload.
+///
+/// The WASM input buffer is 64 KB; a single confs.tech JSON file can exceed
+/// that (e.g. general/2019 is ~69 KB). Chunking at 50 conferences per batch
+/// keeps every payload well under the limit.
+const CONFERENCES_PER_BATCH: usize = 50;
+
 // ─── Topic taxonomy definition ────────────────────────────────────────
 
 /// A term in the topics taxonomy.
@@ -484,16 +491,9 @@ pub fn tap_install() -> serde_json::Value {
                 set_state(&etag_key(topic, year), etag);
             }
 
-            let payload = serde_json::json!({
-                "topic": topic,
-                "year": year,
-                "conferences": response.body,
-            });
-
-            match host::queue_push(QUEUE_NAME, &payload) {
-                Ok(()) => pushed += 1,
-                Err(_) => errors += 1,
-            }
+            let (p, e) = push_conference_batches(topic, year, &response.body);
+            pushed += p;
+            errors += e;
         }
     }
 
@@ -512,6 +512,49 @@ pub fn tap_install() -> serde_json::Value {
         "queued": pushed,
         "errors": errors,
     })
+}
+
+// ─── Queue helpers ─────────────────────────────────────────────────────
+
+/// Push conference data onto the import queue, chunking large payloads.
+///
+/// A single confs.tech JSON file can exceed the 64 KB WASM input limit.
+/// This function parses the raw body as a JSON array and pushes sub-slices of
+/// at most [`CONFERENCES_PER_BATCH`] items. If parsing fails the raw body is
+/// pushed as-is (will fail at the worker if still too large).
+///
+/// Returns `(batches_pushed, errors)`.
+fn push_conference_batches(topic: &str, year: u16, body: &str) -> (u32, u32) {
+    let mut pushed = 0u32;
+    let mut errors = 0u32;
+
+    // Try to parse as an array so we can chunk it.
+    if let Ok(confs) = serde_json::from_str::<Vec<serde_json::Value>>(body) {
+        for chunk in confs.chunks(CONFERENCES_PER_BATCH) {
+            let payload = serde_json::json!({
+                "topic": topic,
+                "year": year,
+                "conferences": serde_json::to_string(chunk).unwrap_or_default(),
+            });
+            match host::queue_push(QUEUE_NAME, &payload) {
+                Ok(()) => pushed += 1,
+                Err(_) => errors += 1,
+            }
+        }
+    } else {
+        // Fallback: push raw (will error at worker if still too large).
+        let payload = serde_json::json!({
+            "topic": topic,
+            "year": year,
+            "conferences": body,
+        });
+        match host::queue_push(QUEUE_NAME, &payload) {
+            Ok(()) => pushed += 1,
+            Err(_) => errors += 1,
+        }
+    }
+
+    (pushed, errors)
 }
 
 // ─── Taxonomy seeding ─────────────────────────────────────────────────
@@ -541,21 +584,9 @@ fn seed_taxonomy() -> u32 {
             continue;
         }
 
-        // Insert the term and get the generated UUID.
-        let result = host::query_raw(
-            "INSERT INTO category_tag \
-             (id, category_id, label, description, weight, created, changed) \
-             VALUES (gen_random_uuid(), $1, $2, NULL, $3, $4, $4) \
-             RETURNING id::text AS id",
-            &[
-                serde_json::json!(TOPICS_CATEGORY_ID),
-                serde_json::json!(term.label),
-                serde_json::json!(term.weight),
-                serde_json::json!(now),
-            ],
-        );
-
-        let Some(uuid_str) = result
+        // Generate a fresh UUID for the term (query_raw only allows SELECT).
+        let uuid_result = host::query_raw("SELECT gen_random_uuid()::text AS id", &[]);
+        let Some(uuid_str) = uuid_result
             .ok()
             .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
             .and_then(|rows| rows.into_iter().next())
@@ -564,10 +595,36 @@ fn seed_taxonomy() -> u32 {
             host::log(
                 "warn",
                 PLUGIN_NAME,
-                &format!("seed_taxonomy: failed to insert term '{}'", term.slug),
+                &format!(
+                    "seed_taxonomy: failed to generate UUID for term '{}'",
+                    term.slug
+                ),
             );
             continue;
         };
+
+        // Insert the term using the pre-generated UUID.
+        let insert_result = host::execute_raw(
+            "INSERT INTO category_tag \
+             (id, category_id, label, description, weight, created, changed) \
+             VALUES ($1::uuid, $2, $3, NULL, $4, $5, $5) \
+             ON CONFLICT (id) DO NOTHING",
+            &[
+                serde_json::json!(uuid_str),
+                serde_json::json!(TOPICS_CATEGORY_ID),
+                serde_json::json!(term.label),
+                serde_json::json!(term.weight),
+                serde_json::json!(now),
+            ],
+        );
+        if insert_result.is_err() {
+            host::log(
+                "warn",
+                PLUGIN_NAME,
+                &format!("seed_taxonomy: failed to insert term '{}'", term.slug),
+            );
+            continue;
+        }
 
         // Persist the UUID for future lookups.
         save_state(&state_key, &uuid_str);
@@ -1003,15 +1060,11 @@ fn fetch_topic_for_queue(topic: &str, year: u16) -> FetchResult {
                 set_state(&etag_key, etag);
             }
 
-            let payload = serde_json::json!({
-                "topic": topic,
-                "year": year,
-                "conferences": response.body,
-            });
-
-            match host::queue_push(QUEUE_NAME, &payload) {
-                Ok(()) => FetchResult::Queued,
-                Err(_) => FetchResult::Error,
+            let (p, _e) = push_conference_batches(topic, year, &response.body);
+            if p > 0 {
+                FetchResult::Queued
+            } else {
+                FetchResult::Error
             }
         }
         status => {
@@ -1336,7 +1389,6 @@ fn timestamp_to_year(ts: i64) -> u16 {
     year
 }
 
-
 /// Return the current Unix timestamp via the DB clock.
 ///
 /// Used in `tap_queue_worker` where no `CronInput` is available.
@@ -1360,7 +1412,7 @@ fn load_existing_conferences() -> HashMap<String, ExistingConference> {
         "SELECT id, fields->>'field_source_id' AS source_id, \
          fields->'field_topics' AS topics \
          FROM item \
-         WHERE item_type = 'conference' \
+         WHERE type = 'conference' \
          AND fields->>'field_source_id' IS NOT NULL",
         &[],
     );
@@ -1450,7 +1502,7 @@ fn insert_conference(
     let fields = build_source_fields(conf, source_id, &topics);
 
     let result = host::execute_raw(
-        "INSERT INTO item (id, item_type, title, status, author_id, stage_id, created, changed, fields) \
+        "INSERT INTO item (id, type, title, status, author_id, stage_id, created, changed, fields) \
          VALUES (\
            gen_random_uuid(), \
            'conference', \
@@ -1544,7 +1596,9 @@ fn slugify(s: &str) -> String {
 /// the existing list is returned unchanged.
 fn merge_topics(existing: &[String], new_uuid: Option<&str>) -> Vec<String> {
     let mut topics: Vec<String> = existing.to_vec();
-    if let Some(uuid) = new_uuid && !topics.iter().any(|t| t == uuid) {
+    if let Some(uuid) = new_uuid
+        && !topics.iter().any(|t| t == uuid)
+    {
         topics.push(uuid.to_string());
     }
     topics.sort();

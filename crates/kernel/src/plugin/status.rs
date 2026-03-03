@@ -87,6 +87,35 @@ pub async fn set_status(pool: &PgPool, name: &str, status: i16) -> Result<bool> 
     Ok(result.rows_affected() > 0)
 }
 
+/// Return names of enabled plugins whose `tap_install` has not been called yet.
+///
+/// Used at server startup to dispatch `tap_install` for newly-installed plugins
+/// before the first request is served.
+pub async fn get_pending_tap_install(pool: &PgPool) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT name FROM plugin_status \
+         WHERE status = $1 AND tap_install_called = FALSE \
+         ORDER BY name",
+    )
+    .bind(STATUS_ENABLED)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(|r| r.get("name")).collect())
+}
+
+/// Mark `tap_install` as called for a plugin.
+pub async fn mark_tap_install_called(pool: &PgPool, name: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE plugin_status SET tap_install_called = TRUE, updated_at = $1 WHERE name = $2",
+    )
+    .bind(chrono::Utc::now().timestamp())
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Auto-install any plugins found on disk but not yet in the plugin_status table.
 ///
 /// Each triple is (name, version, should_enable). New plugins are inserted with

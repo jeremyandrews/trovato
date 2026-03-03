@@ -170,9 +170,15 @@ impl TapDispatcher {
         // Create a new Store with plugin state
         let mut store = Store::new(engine, plugin_state);
 
-        // Set epoch deadline to prevent infinite loops (10 seconds of CPU time).
+        // Set epoch deadline to prevent infinite loops.
         // The engine's epoch is incremented by a background thread every second.
-        store.set_epoch_deadline(10);
+        // Background taps (install, cron, queue) may make many HTTP/DB calls and
+        // need a longer deadline than request-scoped taps.
+        let epoch_deadline = match tap_name {
+            "tap_install" | "tap_cron" | "tap_queue_worker" | "tap_queue_info" => 150,
+            _ => 10,
+        };
+        store.set_epoch_deadline(epoch_deadline);
 
         // Instantiate the module
         let instance = self
