@@ -18,11 +18,20 @@ use super::status;
 /// `migrations/.gitkeep`. Also appends the new crate to the workspace
 /// `Cargo.toml` members list.
 ///
+/// Must be run from the repository root (the directory containing the
+/// workspace `Cargo.toml`). Any failure after directory creation rolls
+/// back the partially-written directory.
+///
 /// # Errors
 ///
 /// Returns an error if the name is invalid, the directory already exists,
-/// or any file write fails.
+/// `workspace_root` is not a Trovato workspace root, or any file write fails.
 pub fn cmd_plugin_new(workspace_root: &Path, name: &str) -> Result<()> {
+    // Validate: must not be empty.
+    if name.is_empty() {
+        bail!("plugin name cannot be empty; must match [a-z][a-z0-9_]*");
+    }
+
     // Validate: lowercase alphanumeric + underscores, must start with a letter.
     if !name
         .chars()
@@ -39,6 +48,23 @@ pub fn cmd_plugin_new(workspace_root: &Path, name: &str) -> Result<()> {
         );
     }
 
+    // Validate: workspace_root looks like a Trovato repository root.
+    let workspace_cargo = workspace_root.join("Cargo.toml");
+    if !workspace_cargo.exists() {
+        bail!(
+            "no Cargo.toml found at '{}' — run `trovato plugin new` from the repository root",
+            workspace_root.display()
+        );
+    }
+    let workspace_content = std::fs::read_to_string(&workspace_cargo)
+        .with_context(|| format!("failed to read {}", workspace_cargo.display()))?;
+    if !workspace_content.contains("[workspace]") {
+        bail!(
+            "'{}' is not a workspace Cargo.toml — run `trovato plugin new` from the repository root",
+            workspace_cargo.display()
+        );
+    }
+
     let plugin_dir = workspace_root.join("plugins").join(name);
     if plugin_dir.exists() {
         bail!(
@@ -47,7 +73,8 @@ pub fn cmd_plugin_new(workspace_root: &Path, name: &str) -> Result<()> {
         );
     }
 
-    // Create directory tree.
+    // Create directory tree then write all files. On any failure, remove the
+    // partially-created directory so the user can retry without manual cleanup.
     let src_dir = plugin_dir.join("src");
     let migrations_dir = plugin_dir.join("migrations");
     std::fs::create_dir_all(&src_dir)
@@ -55,6 +82,30 @@ pub fn cmd_plugin_new(workspace_root: &Path, name: &str) -> Result<()> {
     std::fs::create_dir_all(&migrations_dir)
         .with_context(|| format!("failed to create {}", migrations_dir.display()))?;
 
+    let result = write_scaffold_files(name, &plugin_dir, &src_dir, &migrations_dir, workspace_root);
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&plugin_dir);
+        return Err(e);
+    }
+
+    println!("Plugin '{name}' scaffolded at plugins/{name}/");
+    println!();
+    println!("Next steps:");
+    println!("  1. Edit plugins/{name}/src/lib.rs to implement your taps");
+    println!("  2. Build: cargo build --target wasm32-wasip1 -p {name} --release");
+    println!("  3. Install: trovato plugin install {name}");
+
+    Ok(())
+}
+
+/// Write all scaffold files. Extracted so `cmd_plugin_new` can roll back on error.
+fn write_scaffold_files(
+    name: &str,
+    plugin_dir: &Path,
+    src_dir: &Path,
+    migrations_dir: &Path,
+    workspace_root: &Path,
+) -> Result<()> {
     // Write Cargo.toml.
     let cargo_toml = format!(
         r#"[package]
@@ -117,7 +168,7 @@ pub fn tap_install() -> serde_json::Value {{
     serde_json::json!({{ "status": "ok" }})
 }}
 
-/// Called on every cron cycle (approximately once per minute).
+/// Called on every cron cycle (every 60 seconds).
 ///
 /// Use this to fetch external data, check for updates, or push work
 /// onto a queue for `tap_queue_worker` to process.
@@ -156,13 +207,6 @@ pub fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {{
     // Append to workspace Cargo.toml members list.
     append_workspace_member(workspace_root, name)?;
 
-    println!("Plugin '{name}' scaffolded at plugins/{name}/");
-    println!();
-    println!("Next steps:");
-    println!("  1. Edit plugins/{name}/src/lib.rs to implement your taps");
-    println!("  2. Build: cargo build --target wasm32-wasip1 -p {name} --release");
-    println!("  3. Install: trovato plugin install {name}");
-
     Ok(())
 }
 
@@ -175,6 +219,9 @@ fn write_file(path: &Path, content: &str) -> Result<()> {
 /// root `Cargo.toml`.
 ///
 /// Only modifies the first `members = [` block, not `default-members`.
+/// Returns an error (rather than a warning) if the block cannot be located,
+/// so that the caller's rollback logic can clean up the partially-written
+/// plugin directory.
 fn append_workspace_member(workspace_root: &Path, name: &str) -> Result<()> {
     let cargo_path = workspace_root.join("Cargo.toml");
     let content = std::fs::read_to_string(&cargo_path)
@@ -190,35 +237,31 @@ fn append_workspace_member(workspace_root: &Path, name: &str) -> Result<()> {
     // Locate the `members = [` block. We operate only within this block
     // to avoid accidentally modifying `default-members`.
     let Some(members_start) = content.find("members = [") else {
-        eprintln!(
-            "warning: could not locate `members = [` in {}; \
-             add 'plugins/{name}' to [workspace] members manually",
+        bail!(
+            "could not locate `members = [` in {}; \
+             workspace Cargo.toml may have an unexpected format",
             cargo_path.display()
         );
-        return Ok(());
     };
 
     // Find the closing `]` of the members block.
     let members_region_start = members_start + "members = [".len();
     let Some(members_close_rel) = content[members_region_start..].find(']') else {
-        eprintln!(
-            "warning: could not locate closing `]` of members block in {}; \
-             add 'plugins/{name}' to [workspace] members manually",
+        bail!(
+            "could not locate closing `]` of members block in {}",
             cargo_path.display()
         );
-        return Ok(());
     };
     let members_close = members_region_start + members_close_rel;
 
     // Find the last `"plugins/` entry within the members block only.
     let members_block = &content[members_region_start..members_close];
     let Some(last_plugin_rel) = members_block.rfind("\"plugins/") else {
-        eprintln!(
-            "warning: could not locate plugin entries in members block of {}; \
+        bail!(
+            "could not locate any plugin entries in members block of {}; \
              add 'plugins/{name}' to [workspace] members manually",
             cargo_path.display()
         );
-        return Ok(());
     };
 
     // Find end of that line.

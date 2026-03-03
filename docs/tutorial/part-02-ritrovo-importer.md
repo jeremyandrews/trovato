@@ -22,7 +22,6 @@ The WASM sandbox enforces hard limits:
 |---|---|
 | Database query timeout | 5 s |
 | HTTP request timeout | 30 s |
-| Queue job timeout | 60 s |
 | Clock ticks (epoch interruption) | 10 ticks |
 
 If a plugin hangs, the kernel kills it without affecting the rest of the site. This is the same reason browsers run untrusted JavaScript in a sandbox — isolation is the point.
@@ -87,11 +86,13 @@ trovato plugin install ritrovo_importer
 
 `plugin install` runs any pending SQL migrations, then marks the plugin as enabled. The next time the server starts (or via the admin UI at `/admin/plugins`), the plugin loads.
 
-When the plugin first becomes enabled, the kernel calls `tap_install`. You'll see this in the server logs:
+When the plugin is enabled **for the first time**, the kernel calls `tap_install`. You'll see this in the server logs:
 
 ```
 INFO ritrovo_importer: ritrovo_importer installed — import will begin on next cron cycle
 ```
+
+> **Note:** `tap_install` fires only once — on first enable. If `ritrovo_importer` was already installed automatically at server startup (the default), you won't see this message in existing environments. To see it, disable the plugin, uninstall it via the admin UI, re-enable it, and watch the logs.
 
 ### The four stubs: tap_install, tap_cron, tap_queue_info, tap_queue_worker
 
@@ -106,6 +107,4 @@ The generated scaffold includes stubs for the four taps the importer uses:
 
 The next section covers how `tap_cron` and the queue work together.
 
----
-
-*Next: [2.2 Cron-Driven Conference Import](part-02-ritrovo-importer.md#22-cron-driven-conference-import)*
+> **Note:** The `ritrovo_importer` exemplar plugin declares only `tap_install`, `tap_cron`, `tap_perm`, and `tap_menu` — not the queue taps. The queue infrastructure is introduced in section 2.2. The scaffold includes all four tap stubs upfront so you don't have to add them later.
