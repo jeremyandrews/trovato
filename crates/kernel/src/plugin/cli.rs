@@ -12,6 +12,232 @@ use super::migration;
 use super::runtime::PluginRuntime;
 use super::status;
 
+/// Scaffold a new plugin directory under `{workspace_root}/plugins/{name}/`.
+///
+/// Creates `Cargo.toml`, `{name}.info.toml`, `src/lib.rs`, and
+/// `migrations/.gitkeep`. Also appends the new crate to the workspace
+/// `Cargo.toml` members list.
+///
+/// # Errors
+///
+/// Returns an error if the name is invalid, the directory already exists,
+/// or any file write fails.
+pub fn cmd_plugin_new(workspace_root: &Path, name: &str) -> Result<()> {
+    // Validate: lowercase alphanumeric + underscores, must start with a letter.
+    if !name
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_lowercase())
+        .unwrap_or(false)
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        bail!(
+            "invalid plugin name '{name}': must match [a-z][a-z0-9_]* \
+             (lowercase letters, digits, underscores only)"
+        );
+    }
+
+    let plugin_dir = workspace_root.join("plugins").join(name);
+    if plugin_dir.exists() {
+        bail!(
+            "directory '{}' already exists — delete it first if you want to regenerate",
+            plugin_dir.display()
+        );
+    }
+
+    // Create directory tree.
+    let src_dir = plugin_dir.join("src");
+    let migrations_dir = plugin_dir.join("migrations");
+    std::fs::create_dir_all(&src_dir)
+        .with_context(|| format!("failed to create {}", src_dir.display()))?;
+    std::fs::create_dir_all(&migrations_dir)
+        .with_context(|| format!("failed to create {}", migrations_dir.display()))?;
+
+    // Write Cargo.toml.
+    let cargo_toml = format!(
+        r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "TODO: describe this plugin"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = {{ path = "../../crates/plugin-sdk" }}
+serde = {{ workspace = true }}
+serde_json = {{ workspace = true }}
+"#
+    );
+    write_file(&plugin_dir.join("Cargo.toml"), &cargo_toml)?;
+
+    // Write {name}.info.toml.
+    let info_toml = format!(
+        r#"name = "{name}"
+description = "TODO: describe this plugin"
+version = "0.1.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_install",
+    "tap_cron",
+    "tap_queue_info",
+    "tap_queue_worker",
+]
+weight = 0
+
+[migrations]
+files = []
+"#
+    );
+    write_file(&plugin_dir.join(format!("{name}.info.toml")), &info_toml)?;
+
+    // Write src/lib.rs.
+    let lib_rs = format!(
+        r#"//! {name} plugin for Trovato.
+//!
+//! TODO: describe what this plugin does.
+
+use trovato_sdk::prelude::*;
+
+/// Called once when the plugin is first enabled.
+///
+/// Use this to seed initial data, register content types, or create
+/// database records your plugin depends on.
+#[plugin_tap]
+pub fn tap_install() -> serde_json::Value {{
+    serde_json::json!({{ "status": "ok" }})
+}}
+
+/// Called on every cron cycle (approximately once per minute).
+///
+/// Use this to fetch external data, check for updates, or push work
+/// onto a queue for `tap_queue_worker` to process.
+#[plugin_tap]
+pub fn tap_cron(_input: CronInput) -> serde_json::Value {{
+    serde_json::json!({{ "status": "ok" }})
+}}
+
+/// Declares the queues this plugin owns.
+///
+/// Return JSON describing queue name(s) and max concurrency. The kernel
+/// will call `tap_queue_worker` for each job pushed onto these queues.
+///
+/// Example: `[{{"name": "{name}_import", "concurrency": 4}}]`
+#[plugin_tap]
+pub fn tap_queue_info() -> serde_json::Value {{
+    serde_json::json!([])
+}}
+
+/// Processes a single queue job.
+///
+/// Called by the kernel for each job dequeued from the queues declared
+/// in `tap_queue_info`. Parse `input["payload"]` and perform the work.
+#[plugin_tap]
+pub fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {{
+    let _ = input;
+    serde_json::json!({{ "status": "ok" }})
+}}
+"#
+    );
+    write_file(&src_dir.join("lib.rs"), &lib_rs)?;
+
+    // Write migrations/.gitkeep.
+    write_file(&migrations_dir.join(".gitkeep"), "")?;
+
+    // Append to workspace Cargo.toml members list.
+    append_workspace_member(workspace_root, name)?;
+
+    println!("Plugin '{name}' scaffolded at plugins/{name}/");
+    println!();
+    println!("Next steps:");
+    println!("  1. Edit plugins/{name}/src/lib.rs to implement your taps");
+    println!("  2. Build: cargo build --target wasm32-wasip1 -p {name} --release");
+    println!("  3. Install: trovato plugin install {name}");
+
+    Ok(())
+}
+
+/// Write `content` to `path`, creating the file (error if it already exists).
+fn write_file(path: &Path, content: &str) -> Result<()> {
+    std::fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// Append `"plugins/{name}"` to the `[workspace]` `members` array in the
+/// root `Cargo.toml`.
+///
+/// Only modifies the first `members = [` block, not `default-members`.
+fn append_workspace_member(workspace_root: &Path, name: &str) -> Result<()> {
+    let cargo_path = workspace_root.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_path)
+        .with_context(|| format!("failed to read {}", cargo_path.display()))?;
+
+    let entry = format!("\"plugins/{name}\"");
+
+    // Skip if already present (idempotent).
+    if content.contains(&entry) {
+        return Ok(());
+    }
+
+    // Locate the `members = [` block. We operate only within this block
+    // to avoid accidentally modifying `default-members`.
+    let Some(members_start) = content.find("members = [") else {
+        eprintln!(
+            "warning: could not locate `members = [` in {}; \
+             add 'plugins/{name}' to [workspace] members manually",
+            cargo_path.display()
+        );
+        return Ok(());
+    };
+
+    // Find the closing `]` of the members block.
+    let members_region_start = members_start + "members = [".len();
+    let Some(members_close_rel) = content[members_region_start..].find(']') else {
+        eprintln!(
+            "warning: could not locate closing `]` of members block in {}; \
+             add 'plugins/{name}' to [workspace] members manually",
+            cargo_path.display()
+        );
+        return Ok(());
+    };
+    let members_close = members_region_start + members_close_rel;
+
+    // Find the last `"plugins/` entry within the members block only.
+    let members_block = &content[members_region_start..members_close];
+    let Some(last_plugin_rel) = members_block.rfind("\"plugins/") else {
+        eprintln!(
+            "warning: could not locate plugin entries in members block of {}; \
+             add 'plugins/{name}' to [workspace] members manually",
+            cargo_path.display()
+        );
+        return Ok(());
+    };
+
+    // Find end of that line.
+    let after_last_plugin = members_region_start + last_plugin_rel;
+    let line_end = content[after_last_plugin..]
+        .find('\n')
+        .map(|i| after_last_plugin + i + 1)
+        .unwrap_or(content.len());
+
+    let insertion = format!("    \"plugins/{name}\",\n");
+    let mut new_content = content.clone();
+    new_content.insert_str(line_end, &insertion);
+
+    std::fs::write(&cargo_path, new_content)
+        .with_context(|| format!("failed to update {}", cargo_path.display()))?;
+
+    Ok(())
+}
+
 /// List all discovered plugins and their status.
 pub async fn cmd_plugin_list(pool: &PgPool, plugins_dir: &Path) -> Result<()> {
     let discovered = PluginRuntime::discover_plugins(plugins_dir);

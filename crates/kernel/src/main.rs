@@ -117,6 +117,11 @@ enum UserAction {
 
 #[derive(Subcommand)]
 enum PluginAction {
+    /// Scaffold a new plugin in the plugins/ directory.
+    New {
+        /// Plugin machine name (snake_case, e.g. my_plugin).
+        name: String,
+    },
     /// List discovered plugins and their status.
     List,
     /// Install a plugin (run migrations, set enabled).
@@ -372,6 +377,12 @@ async fn run_server() -> Result<()> {
 
 /// Run a plugin CLI command with a minimal context (pool only).
 async fn run_plugin_command(action: PluginAction) -> Result<()> {
+    // `New` needs no DB connection — handle it before pool setup.
+    if let PluginAction::New { name } = action {
+        let workspace_root = std::env::current_dir().context("failed to get current directory")?;
+        return plugin::cli::cmd_plugin_new(&workspace_root, &name);
+    }
+
     let config = Config::from_env().context("failed to load configuration")?;
 
     let pool = db::create_pool(&config)
@@ -384,6 +395,7 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
         .context("failed to run migrations")?;
 
     match action {
+        PluginAction::New { .. } => unreachable!("handled above"),
         PluginAction::List => {
             plugin::cli::cmd_plugin_list(&pool, &config.plugins_dir).await?;
         }
