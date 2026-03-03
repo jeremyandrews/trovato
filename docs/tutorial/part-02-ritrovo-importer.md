@@ -418,4 +418,396 @@ trovato-test: build_source_fields
 
 ---
 
-With the importer running, Ritrovo will accumulate hundreds of conferences automatically. The next part covers building the taxonomy that lets visitors filter by topic and region.
+## 2.3 Hierarchical Topic Taxonomy
+
+The importer stores each conference's topic as a `field_topics` array. In section 2.2, that array held raw confs.tech slug strings like `"rust"` and `"javascript"`. In this section, you'll replace those strings with **category tag UUIDs** from a proper taxonomy — which unlocks hierarchical filtering ("show me all Languages conferences") via the `HasTagOrDescendants` gather operator.
+
+### The Category System
+
+Trovato's category system organises tags into named vocabularies.
+
+| Table | What it holds |
+|---|---|
+| `category` | A named vocabulary (e.g. "Conference Topics") |
+| `category_tag` | A single term inside a vocabulary (e.g. "Rust") |
+| `category_tag_hierarchy` | Parent→child edges (allows multi-level trees) |
+
+A category tag is identified by a UUID generated at insert time. Items reference tags by UUID in their JSONB `fields`, typically as an array: `field_topics: ["<uuid1>", "<uuid2>"]`. The `HasTagOrDescendants` filter understands these UUIDs and their parent-child relationships.
+
+### Defining the Taxonomy at Compile Time
+
+The importer defines its full topic hierarchy as a static array of `TermDef` structs compiled into the WASM binary:
+
+```rust
+struct TermDef {
+    slug:   &'static str,       // machine name (matches confs.tech keys)
+    label:  &'static str,       // human-readable label in the UI
+    parent: Option<&'static str>, // parent slug, or None for roots
+    weight: i32,                // display ordering
+}
+
+const TAXONOMY: &[TermDef] = &[
+    // Root terms
+    TermDef { slug: "languages",      label: "Languages",      parent: None,                   weight: 0 },
+    TermDef { slug: "infrastructure", label: "Infrastructure", parent: None,                   weight: 1 },
+    TermDef { slug: "ai-data",        label: "AI & Data",      parent: None,                   weight: 2 },
+    TermDef { slug: "web-platform",   label: "Web Platform",   parent: None,                   weight: 3 },
+    TermDef { slug: "security",       label: "Security",       parent: None,                   weight: 4 },
+    TermDef { slug: "general",        label: "General",        parent: None,                   weight: 5 },
+    // Languages > Systems
+    TermDef { slug: "lang-systems",   label: "Systems",        parent: Some("languages"),      weight: 0 },
+    TermDef { slug: "rust",           label: "Rust",           parent: Some("lang-systems"),   weight: 0 },
+    TermDef { slug: "cpp",            label: "C++",            parent: Some("lang-systems"),   weight: 1 },
+    TermDef { slug: "dotnet",         label: ".NET",           parent: Some("lang-systems"),   weight: 2 },
+    // Languages > JVM
+    TermDef { slug: "lang-jvm",       label: "JVM",            parent: Some("languages"),      weight: 1 },
+    TermDef { slug: "java",           label: "Java",           parent: Some("lang-jvm"),       weight: 0 },
+    // ... (full list in plugins/ritrovo_importer/src/lib.rs)
+];
+```
+
+The array is ordered so every parent term appears before its children. The `parent` field uses the slug string — the plugin resolves it to a UUID at install time.
+
+Some confs.tech slugs (like `sre` and `scala`) are intentionally absent from `TAXONOMY`. Conferences with those topics simply have an empty `field_topics` array — they are still imported, just not reachable via topic browse pages.
+
+### Seeding on First Install
+
+`tap_install` calls `seed_taxonomy()`, which:
+
+1. Creates the `topics` category (with `ON CONFLICT DO NOTHING` for idempotency).
+2. Iterates `TAXONOMY` in order.
+3. For each term, checks `ritrovo_state` for an existing `topic_term.{slug}` key — if present, the term was already created and is skipped.
+4. Inserts a new `category_tag` row and reads back the generated UUID via `RETURNING id`.
+5. Stores the UUID in `ritrovo_state` as `topic_term.{slug}`.
+6. Inserts a `category_tag_hierarchy` edge linking the tag to its parent (or to `NULL` for roots).
+
+```rust
+fn seed_taxonomy() -> u32 {
+    let now = current_timestamp();
+
+    // Ensure the vocabulary exists.
+    let _ = host::execute_raw(
+        "INSERT INTO category (id, label, description, hierarchy, weight) \
+         VALUES ($1, 'Conference Topics', NULL, 2, 0) \
+         ON CONFLICT (id) DO NOTHING",
+        &[serde_json::json!(TOPICS_CATEGORY_ID)],
+    );
+
+    let mut created = 0u32;
+    for term in TAXONOMY {
+        let state_key = format!("topic_term.{}", term.slug);
+
+        if load_state_str(&state_key).is_some() {
+            continue; // already seeded
+        }
+
+        // Insert term and retrieve UUID.
+        let result = host::query_raw(
+            "INSERT INTO category_tag (id, category_id, label, description, weight, created, changed) \
+             VALUES (gen_random_uuid(), $1, $2, NULL, $3, $4, $4) RETURNING id::text AS id",
+            &[ /* TOPICS_CATEGORY_ID, term.label, term.weight, now */ ],
+        );
+        let Some(uuid_str) = /* parse RETURNING result */ else { continue; };
+
+        save_state(&state_key, &uuid_str);
+        created += 1;
+
+        // Link to parent.
+        if let Some(parent_slug) = term.parent {
+            let parent_key = format!("topic_term.{parent_slug}");
+            if let Some(parent_uuid) = load_state_str(&parent_key) {
+                let _ = host::execute_raw(
+                    "INSERT INTO category_tag_hierarchy (tag_id, parent_id)
+                     SELECT $1::uuid, $2::uuid WHERE NOT EXISTS (...)",
+                    &[/* uuid_str, parent_uuid */],
+                );
+            }
+        }
+    }
+    created
+}
+```
+
+Because `TAXONOMY` is ordered parents-first, each parent's UUID is guaranteed to be in `ritrovo_state` before its children need it.
+
+### Storing Tag UUIDs in field_topics
+
+The queue worker now resolves each topic slug to its UUID before inserting or updating:
+
+```rust
+pub fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
+    let topic = input["topic"].as_str()...;
+
+    // Look up UUID — returns None for unmapped slugs like "sre".
+    let topic_uuid = topic_term_uuid(topic);
+
+    // Update or insert, passing the Option<&str> through.
+    let merged = merge_topics(&info.topics, topic_uuid.as_deref());
+    // ...
+}
+```
+
+`topic_term_uuid(slug)` checks the `ritrovo_state` table for `topic_term.{slug}`. It returns `None` for any slug not present in `TAXONOMY`.
+
+`merge_topics(existing, new_uuid: Option<&str>)` adds the UUID to the existing array only if it isn't already there, then sorts. When `new_uuid` is `None` (unmapped slug), the existing array is returned unchanged:
+
+```rust
+fn merge_topics(existing: &[String], new_uuid: Option<&str>) -> Vec<String> {
+    let mut topics: Vec<String> = existing.to_vec();
+    if let Some(uuid) = new_uuid && !topics.iter().any(|t| t == uuid) {
+        topics.push(uuid.to_string());
+    }
+    topics.sort();
+    topics
+}
+```
+
+This means conferences tagged with both `rust` and `systems` by two separate confs.tech files accumulate both UUIDs — and a query for "Languages" (the grandparent of both) will still find them.
+
+### The HasTagOrDescendants Operator
+
+Trovato's gather engine supports a `has_tag_or_descendants` filter operator. When the gather service encounters this operator, it first expands the given tag UUID into the full set of descendant UUIDs using a recursive CTE:
+
+```sql
+WITH RECURSIVE descendants AS (
+    SELECT tag_id FROM category_tag_hierarchy WHERE parent_id = $1
+    UNION ALL
+    SELECT h.tag_id FROM category_tag_hierarchy h
+    JOIN descendants d ON h.parent_id = d.tag_id
+)
+SELECT tag_id FROM descendants
+UNION ALL
+SELECT $1::uuid  -- include the tag itself
+```
+
+The filter is then rewritten to `HasAnyTag` with the full expanded list. A query for "Languages" (`uuid = xxxxxxxx-…`) automatically matches conferences tagged with "Systems", "Rust", "C++", ".NET", "JVM", "Java", "JavaScript", "Python", "Go", and any other term descending from "Languages".
+
+> **Null handling:** When a `has_tag_or_descendants` filter has a null value — as happens when an exposed filter has no user input — the gather service skips the filter entirely rather than erroring. This lets the same gather definition work both as an exposed filter form (no value → show all) and as a driven query (value provided → filter by topic).
+
+### The /topics/{slug} Browse Route
+
+The kernel's `ritrovo_topics` module exposes `/topics/{slug}`. It is a **plugin-gated** route: when the `ritrovo_importer` plugin is disabled, the route returns 404.
+
+The handler:
+
+1. Validates the slug (non-empty, ≤ 128 chars, alphanumeric + `-`/`_` only).
+2. Queries `ritrovo_state` for `topic_term.{slug}`.
+3. Returns 404 if the slug is unknown.
+4. Redirects (302) to `/gather/ritrovo.by_topic?topic=<uuid>`, preserving any extra query parameters (e.g. `?page=2`).
+
+```rust
+async fn by_topic(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    if slug.is_empty() || slug.len() > 128
+        || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM ritrovo_state WHERE name = $1",
+    )
+    .bind(format!("topic_term.{slug}"))
+    .fetch_optional(state.db()).await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (uuid,) = row.ok_or(StatusCode::NOT_FOUND)?;
+
+    let mut url = format!("/gather/ritrovo.by_topic?topic={}", urlencoding::encode(&uuid));
+    for (k, v) in &params {
+        url.push('&');
+        url.push_str(&urlencoding::encode(k));
+        url.push('=');
+        url.push_str(&urlencoding::encode(v));
+    }
+    Ok(Redirect::temporary(&url))
+}
+```
+
+The redirect approach means the browse route reuses the gather engine's full HTML rendering pipeline — no duplication of display logic.
+
+> **URL design choice:** `/topics/rust` redirects to `/gather/ritrovo.by_topic?topic=<uuid>`. The gather URL is bookmarkable and works independently of the slug route. Deep-linking into a specific page of results (`/gather/ritrovo.by_topic?topic=<uuid>&page=3`) works without going through the slug route again.
+
+---
+
+## 2.4 Advanced Gathers
+
+Trovato's gather system converts a declarative JSON query definition into a paginated, optionally-filtered SQL query. In this section you'll see how the importer seeds its five gather queries, and how two kinds of dynamic filter values — contextual values and exposed filters — allow a single query definition to serve both public browse pages and editor search forms.
+
+### What a Gather Query Looks Like
+
+A gather query is stored in the `gather_query` table with two JSONB columns:
+
+- **`definition`** — the query: filters, sorts, joins, item type
+- **`display`** — rendering configuration: format (table/card/tile), items per page, pager style, empty text
+
+Here is a complete example:
+
+```json
+{
+    "definition": {
+        "base_table": "item",
+        "item_type": "conference",
+        "filters": [
+            {
+                "field": "fields.field_start_date",
+                "operator": "greater_or_equal",
+                "value": "current_date"
+            },
+            {
+                "field": "fields.field_country",
+                "operator": "equals",
+                "value": null,
+                "exposed": true,
+                "exposed_label": "Country"
+            }
+        ],
+        "sorts": [{ "field": "fields.field_start_date", "direction": "asc" }],
+        "stage_aware": true
+    },
+    "display": {
+        "format": "table",
+        "items_per_page": 20,
+        "pager": { "enabled": true, "style": "full", "show_count": true },
+        "empty_text": "No upcoming conferences found."
+    }
+}
+```
+
+### Filter Value Types
+
+Gather filters support three kinds of values:
+
+| Kind | JSON representation | When resolved |
+|---|---|---|
+| **Literal** | `"Germany"`, `true`, `"2026-01-01"` | Compiled into the SQL — fixed for all requests |
+| **Contextual** | `"current_date"` or `{"url_arg": "country"}` | Resolved at request time from context |
+| **Null** | `null` | Skipped (filter omitted from SQL) unless the user submits a value via an exposed filter form |
+
+**`current_date`** resolves to today's date string (`"YYYY-MM-DD"`) at the moment of each request. This makes it possible to write "conferences starting on or after today" without a literal date.
+
+**`{"url_arg": "name"}`** reads the named key from the gather URL's query string. For example, `value: {"url_arg": "topic"}` takes its value from the `?topic=…` parameter. If the parameter is absent, the filter resolves to null and is skipped — the query returns unfiltered results.
+
+**`null`** on an unexposed filter is meaningless (the filter would always be skipped). On an **exposed** filter it acts as "no default value" — the user can supply one through the rendered filter form, but the gather renders all results when the form is empty.
+
+### The Five Seeded Gathers
+
+`tap_install` seeds these five queries with `ON CONFLICT (query_id) DO NOTHING` — re-running install after the user has customised a query will not overwrite their changes.
+
+#### ritrovo.upcoming_conferences
+
+Upcoming conferences (start date ≥ today), sortable and filterable via exposed filter form.
+
+```
+Hard filters:   field_start_date ≥ current_date
+Exposed filters: field_topics (HasTagOrDescendants, UUID)
+                 field_country (equals)
+                 field_online  (equals)
+                 field_language (equals)
+Sort:           field_start_date ASC
+```
+
+This is the main public listing page, reachable at `/conferences`. When the exposed filters are empty (no user input), all four filter slots resolve to null and are skipped — the query returns every upcoming conference.
+
+#### ritrovo.open_cfps
+
+Conferences currently accepting talk proposals, sorted by deadline (soonest first).
+
+```
+Hard filters:   field_cfp_end_date ≥ current_date
+                field_cfp_url is_not_null
+Sort:           field_cfp_end_date ASC (nulls last)
+```
+
+The `is_not_null` filter on `field_cfp_url` ensures only conferences with a submission link are shown — no CFP URL means there's nothing to link to.
+
+#### ritrovo.by_topic
+
+Upcoming conferences filtered by a single topic UUID, including all descendant topics via recursive CTE.
+
+```
+Hard filters:   field_start_date ≥ current_date
+                field_topics has_tag_or_descendants = url_arg("topic")
+Sort:           field_start_date ASC
+```
+
+This gather is driven by the `/topics/{slug}` route, which resolves the slug to a UUID and redirects to `/gather/ritrovo.by_topic?topic=<uuid>`. The `url_arg("topic")` value reads the `?topic=` query-string parameter at request time.
+
+#### ritrovo.by_country and ritrovo.by_city
+
+Location gathers driven by URL path segments.
+
+```
+ritrovo.by_country:
+  Hard filters:  field_start_date ≥ current_date
+                 field_country equals url_arg("country")
+
+ritrovo.by_city:
+  Hard filters:  field_start_date ≥ current_date
+                 field_country equals url_arg("country")
+                 field_city    equals url_arg("city")
+```
+
+Two separate gathers are used (rather than one gather with an optional city filter) to avoid the empty-string problem: if a single gather had an optional `url_arg("city")` filter, a request without `?city=` would resolve to an empty string, which would match no conferences — not the same as "all conferences in this country". The two-gather design sidesteps this entirely: the kernel routes `/location/{country}` to `by_country` and `/location/{country}/{city}` to `by_city`.
+
+### The /conferences, /cfps, and /location Routes
+
+The kernel's `ritrovo_topics` route module provides five plugin-gated routes. Three of them are simple redirects that preserve existing query parameters (for bookmarkable filter URLs):
+
+```
+GET /conferences          →  302  /gather/ritrovo.upcoming_conferences[?…params]
+GET /cfps                 →  302  /gather/ritrovo.open_cfps[?…params]
+GET /location/{country}   →  302  /gather/ritrovo.by_country?country=<encoded>[&…params]
+GET /location/{country}/{city} → 302 /gather/ritrovo.by_city?country=<encoded>&city=<encoded>[&…params]
+```
+
+All five routes share a `gate_ritrovo_importer` middleware layer that returns 404 when the plugin is disabled. The gating is registered in `routes/mod.rs` via the `plugin_gate!` macro and declared for documentation in `plugin/gate.rs` under `GATED_ROUTE_PLUGINS`.
+
+A unit test in `plugin::gate` enforces that the documentation constant stays in sync with the runtime gates — if you add a new gated plugin but forget to update `GATED_ROUTE_PLUGINS`, the test fails:
+
+```rust
+#[test]
+fn gated_route_plugins_matches_runtime_gates() {
+    let doc_names: HashSet<&str> = GATED_ROUTE_PLUGINS.iter().map(|g| g.name).collect();
+    let runtime_names: HashSet<&str> = crate::routes::RUNTIME_GATED_NAMES.iter().copied().collect();
+    assert_eq!(doc_names, runtime_names,
+        "GATED_ROUTE_PLUGINS and RUNTIME_GATED_NAMES are out of sync");
+}
+```
+
+### Seeding Queries From a Plugin
+
+Seeding gather queries from `tap_install` follows the same idempotent pattern as taxonomy seeding: insert with `ON CONFLICT DO NOTHING`, log the count.
+
+The main subtlety is JSONB parameter binding. The `execute_raw` host function accepts parameters as a JSON array where each element is the literal value for `$1`, `$2`, etc. To pass a JSONB object, serialize it to a JSON string first and cast it in SQL with `::jsonb`:
+
+```rust
+host::execute_raw(
+    "INSERT INTO gather_query (query_id, label, definition, display, ...)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, ...)
+     ON CONFLICT (query_id) DO NOTHING",
+    &[
+        serde_json::json!("ritrovo.by_topic"),
+        serde_json::json!("Conferences by Topic"),
+        serde_json::json!(definition_value.to_string()),  // serialised to string; SQL casts to jsonb
+        serde_json::json!(display_value.to_string()),
+        // ...
+    ],
+)
+```
+
+Calling `.to_string()` on a `serde_json::Value` produces a valid JSON text string. The `::jsonb` cast in SQL parses it back into a JSONB column. This pattern works across the plugin boundary because the host function only understands simple JSON scalars for its parameter array.
+
+---
+
+With the taxonomy, gather queries, and browse routes in place, Ritrovo visitors can:
+
+- Browse all upcoming conferences at `/conferences`
+- Drill into a topic tree at `/topics/rust` (or `/topics/languages` for everything under that branch)
+- Find open CFPs at `/cfps`
+- Filter by country at `/location/Germany` and by city at `/location/Germany/Berlin`
+
+The gather engine handles filtering, pagination, and rendering — the plugin only had to declare the query shapes and install the routes.
