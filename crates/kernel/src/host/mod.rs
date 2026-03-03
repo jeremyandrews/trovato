@@ -9,6 +9,7 @@ mod db;
 mod http;
 mod item;
 mod logging;
+mod queue;
 mod request_context;
 mod user;
 mod variables;
@@ -24,6 +25,7 @@ pub use db::register_db_functions;
 pub use http::register_http_functions;
 pub use item::register_item_functions;
 pub use logging::register_logging_functions;
+pub use queue::register_queue_functions;
 pub use request_context::register_request_context_functions;
 pub use user::register_user_functions;
 pub use variables::register_variables_functions;
@@ -38,6 +40,7 @@ pub fn register_all(linker: &mut Linker<PluginState>) -> Result<()> {
     register_item_functions(linker)?;
     register_db_functions(linker)?;
     register_ai_functions(linker)?;
+    register_queue_functions(linker)?;
     register_http_functions(linker)?;
     Ok(())
 }

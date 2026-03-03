@@ -116,6 +116,43 @@ impl TapDispatcher {
         results.pop()
     }
 
+    /// Dispatch a tap to a specific named plugin.
+    ///
+    /// Useful for queue worker dispatch where the kernel knows which plugin
+    /// owns each queue item.  Returns `None` if the plugin does not implement
+    /// the tap or is not loaded.
+    pub async fn dispatch_to_plugin(
+        &self,
+        tap_name: &str,
+        input_json: &str,
+        plugin_name: &str,
+        state: RequestState,
+    ) -> Option<TapResult> {
+        let handlers = self.registry.get_handlers(tap_name);
+        let handler = handlers
+            .iter()
+            .find(|h| h.plugin.info.name == plugin_name)?;
+
+        match self
+            .invoke_handler(tap_name, input_json, handler, state)
+            .await
+        {
+            Ok(output) => Some(TapResult {
+                plugin_name: plugin_name.to_string(),
+                output,
+            }),
+            Err(e) => {
+                error!(
+                    plugin = %plugin_name,
+                    tap = %tap_name,
+                    error = %e,
+                    "tap invocation failed"
+                );
+                None
+            }
+        }
+    }
+
     /// Invoke a single handler.
     async fn invoke_handler(
         &self,

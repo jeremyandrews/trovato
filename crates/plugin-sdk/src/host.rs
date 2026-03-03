@@ -56,6 +56,18 @@ unsafe extern "C" {
     );
 }
 
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/queue")]
+unsafe extern "C" {
+    #[link_name = "push"]
+    fn __queue_push(
+        queue_name_ptr: i32,
+        queue_name_len: i32,
+        payload_ptr: i32,
+        payload_len: i32,
+    ) -> i32;
+}
+
 // --------------------------------------------------------------------------
 // Ergonomic wrappers
 // --------------------------------------------------------------------------
@@ -148,6 +160,37 @@ pub fn http_request(
         let json = String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)?;
         serde_json::from_str(&json).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
     }
+}
+
+/// Push a job onto a named plugin queue.
+///
+/// The kernel associates the job with the calling plugin automatically.
+/// The cron task will drain the queue and call `tap_queue_worker` with
+/// each job's payload.
+///
+/// # Errors
+///
+/// Returns a negative error code if the kernel rejects the push (bad JSON,
+/// DB error, etc.).
+#[cfg(target_arch = "wasm32")]
+pub fn queue_push(queue_name: &str, payload: &serde_json::Value) -> Result<(), i32> {
+    let payload_json =
+        serde_json::to_string(payload).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let result = unsafe {
+        __queue_push(
+            queue_name.as_ptr() as i32,
+            queue_name.len() as i32,
+            payload_json.as_ptr() as i32,
+            payload_json.len() as i32,
+        )
+    };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Push a job onto a named plugin queue (stub for native testing, always succeeds).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn queue_push(_queue_name: &str, _payload: &serde_json::Value) -> Result<(), i32> {
+    Ok(())
 }
 
 /// Log a message through the kernel's tracing system.

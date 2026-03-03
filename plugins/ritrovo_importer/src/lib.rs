@@ -2,10 +2,16 @@
 //!
 //! Imports tech conference data from the
 //! [confs.tech](https://github.com/tech-conferences/conference-data)
-//! open-source dataset. Runs daily via `tap_cron`, fetching JSON files
-//! by topic, deduplicating against existing items via a computed
-//! `source_id`, and inserting new conferences as unpublished items on
-//! the live stage.
+//! open-source dataset.
+//!
+//! Architecture:
+//! - `tap_install`: runs a full historical import (2015–current year) by
+//!   pushing all fetched data onto the `ritrovo_import` queue.
+//! - `tap_cron`: fetches the current and next year's data for a rotating
+//!   subset of topics, using ETags to skip unchanged files, then pushes
+//!   each topic's payload onto the queue.
+//! - `tap_queue_info`: declares the `ritrovo_import` queue (concurrency 4).
+//! - `tap_queue_worker`: validates and upserts a single topic's conferences.
 
 use std::collections::HashMap;
 
@@ -18,6 +24,9 @@ const PLUGIN_NAME: &str = "ritrovo_importer";
 /// Base URL for raw conference JSON from the confs.tech GitHub repo.
 const DATA_BASE_URL: &str =
     "https://raw.githubusercontent.com/tech-conferences/conference-data/main/conferences";
+
+/// First year of conference data available in confs.tech.
+const FIRST_IMPORT_YEAR: u16 = 2015;
 
 /// Topics to import, corresponding to filenames in the confs.tech repo.
 const TOPICS: &[&str] = &[
@@ -52,26 +61,34 @@ const TOPICS: &[&str] = &[
 /// well within the 150-second cron dispatch timeout).
 const TOPICS_PER_CYCLE: usize = 5;
 
-/// Minimum interval between imports (24 hours in seconds).
+/// Minimum interval between cron import runs (24 hours in seconds).
 const IMPORT_INTERVAL_SECS: i64 = 86_400;
 
-/// Variables key tracking last import timestamp.
-const VAR_LAST_IMPORT: &str = "ritrovo_importer.last_import";
+/// State key tracking last import timestamp.
+const STATE_LAST_IMPORT: &str = "last_import";
 
-/// Variables key tracking the topic offset for round-robin.
-const VAR_TOPIC_OFFSET: &str = "ritrovo_importer.topic_offset";
+/// State key tracking the topic offset for round-robin scheduling.
+const STATE_TOPIC_OFFSET: &str = "topic_offset";
+
+/// Prefix for ETag state keys: `"etag.{topic}.{year}"`.
+const STATE_ETAG_PREFIX: &str = "etag";
+
+/// Queue name declared in `tap_queue_info`.
+const QUEUE_NAME: &str = "ritrovo_import";
 
 // ─── Conference field definitions ────────────────────────────────────
 //
 // The `conference` item type is created by the user via the admin UI
 // (see tutorial Part 1 Step 2). This plugin does NOT auto-register it
 // via `tap_item_info` — the importer assumes the type already exists
-// when `tap_cron` runs.
-//
-// `conference_fields()` documents the fields the importer reads/writes
-// and is used in unit tests to validate field expectations.
+// when `tap_cron` or `tap_queue_worker` runs.
 
 /// Build the field definitions for the conference content type.
+///
+/// Called by unit tests to verify field declarations. The importer does not
+/// register the content type itself (the tutorial user creates it via the
+/// admin UI), so this function is not called from production code paths.
+#[cfg_attr(not(test), allow(dead_code))]
 fn conference_fields() -> Vec<FieldDefinition> {
     vec![
         FieldDefinition::new(
@@ -155,16 +172,78 @@ fn conference_fields() -> Vec<FieldDefinition> {
 
 /// Called once when the plugin is first enabled in the admin UI.
 ///
-/// Logs a startup message so the tutorial reader can confirm the tap fired.
-/// The actual conference import begins automatically on the next cron cycle.
+/// Triggers a full historical import by pushing all available years and
+/// topics onto the queue. The queue worker (`tap_queue_worker`) processes
+/// each batch, so the actual DB writes happen asynchronously in subsequent
+/// cron cycles.
 #[plugin_tap]
 pub fn tap_install() -> serde_json::Value {
     host::log(
         "info",
         PLUGIN_NAME,
-        "ritrovo_importer installed — import will begin on next cron cycle",
+        "ritrovo_importer installed — starting full historical import",
     );
-    serde_json::json!({ "status": "ok" })
+
+    let current_year = current_year_approx();
+    let mut pushed = 0u32;
+    let mut errors = 0u32;
+
+    for year in FIRST_IMPORT_YEAR..=current_year {
+        for topic in TOPICS {
+            let url = format!("{DATA_BASE_URL}/{year}/{topic}.json");
+
+            let response = match host::http_request(
+                &trovato_sdk::types::HttpRequest::get(&url).timeout(15_000),
+            ) {
+                Ok(r) if r.status == 200 => r,
+                Ok(r) if r.status == 404 => continue,
+                Ok(r) => {
+                    errors += 1;
+                    host::log("warn", PLUGIN_NAME, &format!("HTTP {} for {url}", r.status));
+                    continue;
+                }
+                Err(_) => {
+                    errors += 1;
+                    continue;
+                }
+            };
+
+            // Store ETag for future conditional requests.
+            if let Some(etag) = response
+                .headers
+                .get("etag")
+                .or_else(|| response.headers.get("ETag"))
+            {
+                set_state(&etag_key(topic, year), etag);
+            }
+
+            let payload = serde_json::json!({
+                "topic": topic,
+                "year": year,
+                "conferences": response.body,
+            });
+
+            match host::queue_push(QUEUE_NAME, &payload) {
+                Ok(()) => pushed += 1,
+                Err(_) => errors += 1,
+            }
+        }
+    }
+
+    host::log(
+        "info",
+        PLUGIN_NAME,
+        &format!(
+            "historical import queued: {pushed} batches across {years} years",
+            years = (current_year - FIRST_IMPORT_YEAR + 1)
+        ),
+    );
+
+    serde_json::json!({
+        "status": "ok",
+        "queued": pushed,
+        "errors": errors,
+    })
 }
 
 // ─── Permissions ─────────────────────────────────────────────────────
@@ -199,27 +278,24 @@ pub fn tap_menu() -> Vec<MenuDefinition> {
 
 // ─── Cron: daily import ──────────────────────────────────────────────
 
-/// Daily cron handler that fetches conferences from confs.tech.
+/// Daily cron handler that pushes conference fetch jobs onto the queue.
 ///
-/// Processes a rotating subset of topics per cycle (round-robin) to
-/// stay within cron timeout limits. Skips if less than 24 hours since
-/// last import. Deduplicates via `source_id` and accumulates topics
-/// for conferences that appear in multiple topic files.
+/// Processes a rotating subset of topics per cycle (round-robin) to stay
+/// within cron timeout limits. Uses conditional HTTP (`If-None-Match`) to
+/// skip topics whose upstream data has not changed since the last import.
+/// Deduplication and DB writes happen in `tap_queue_worker`.
 #[plugin_tap]
 pub fn tap_cron(input: CronInput) -> serde_json::Value {
     let now = input.timestamp;
 
-    // Check if enough time has passed since last import
     if !should_import(now) {
         return serde_json::json!({"status": "skipped", "reason": "too_soon"});
     }
 
-    // Derive import years from current timestamp (Fix #3)
     let current_year = timestamp_to_year(now);
     let import_years = [current_year, current_year + 1];
 
-    // Determine which topics to process this cycle (Fix #11)
-    let topic_offset = load_topic_offset();
+    let topic_offset = load_state_usize(STATE_TOPIC_OFFSET, TOPICS.len());
     let cycle_topics: Vec<&str> = TOPICS
         .iter()
         .cycle()
@@ -228,93 +304,232 @@ pub fn tap_cron(input: CronInput) -> serde_json::Value {
         .copied()
         .collect();
 
-    let mut imported = 0u64;
-    let mut updated = 0u64;
-    let mut skipped = 0u64;
-    let mut errors = 0u64;
-
-    // Load existing source_ids and their topics for dedup (Fix #8)
-    let existing = load_existing_conferences();
+    let mut queued = 0u32;
+    let mut skipped_304 = 0u32;
+    let mut errors = 0u32;
 
     for year in &import_years {
         for topic in &cycle_topics {
-            let url = format!("{DATA_BASE_URL}/{year}/{topic}.json");
-
-            let response = match host::http_request(
-                &trovato_sdk::types::HttpRequest::get(&url).timeout(15_000),
-            ) {
-                Ok(r) if r.status == 200 => r,
-                Ok(r) if r.status == 404 => continue,
-                Ok(r) => {
-                    errors += 1;
-                    log_warning(&format!("HTTP {status} fetching {url}", status = r.status));
-                    continue;
-                }
-                Err(_code) => {
-                    errors += 1;
-                    continue;
-                }
-            };
-
-            let conferences: Vec<ConfsTechEntry> = match serde_json::from_str(&response.body) {
-                Ok(c) => c,
-                Err(e) => {
-                    errors += 1;
-                    log_warning(&format!("JSON parse error for {url}: {e}"));
-                    continue;
-                }
-            };
-
-            for conf in &conferences {
-                let source_id = compute_source_id(conf);
-
-                // Validate required fields
-                if conf.name.is_empty() || conf.start_date.is_empty() || conf.end_date.is_empty() {
-                    skipped += 1;
-                    continue;
-                }
-
-                // Date sanity check
-                if conf.end_date < conf.start_date {
-                    skipped += 1;
-                    log_warning(&format!("Skipping '{}': end_date < start_date", conf.name));
-                    continue;
-                }
-
-                if let Some(info) = existing.get(&source_id) {
-                    // Update existing item, merging topics (Fix #8)
-                    let merged_topics = merge_topics(&info.topics, topic);
-                    if update_conference(&info.item_id, conf, &merged_topics, now) {
-                        updated += 1;
-                    }
-                } else {
-                    // Insert new conference on live stage, unpublished (Fix #4)
-                    if insert_conference(conf, &source_id, topic, now) {
-                        imported += 1;
-                    } else {
-                        errors += 1;
-                    }
-                }
+            match fetch_topic_for_queue(topic, *year) {
+                FetchResult::Queued => queued += 1,
+                FetchResult::NotModified => skipped_304 += 1,
+                FetchResult::NotFound => {}
+                FetchResult::Error => errors += 1,
             }
         }
     }
 
-    // Advance topic offset for next cycle
     let next_offset = (topic_offset + TOPICS_PER_CYCLE) % TOPICS.len();
-    save_topic_offset(next_offset);
+    save_state(STATE_TOPIC_OFFSET, &next_offset.to_string());
 
-    // Only record import timestamp on at least partial success (Fix #12)
-    if imported > 0 || updated > 0 {
-        record_import_time(now);
+    if queued > 0 || skipped_304 > 0 {
+        save_state(STATE_LAST_IMPORT, &now.to_string());
     }
 
     serde_json::json!({
         "status": "completed",
+        "queued": queued,
+        "skipped_304": skipped_304,
+        "errors": errors,
+        "topics_processed": cycle_topics,
+    })
+}
+
+/// Result of fetching a single topic for the queue.
+enum FetchResult {
+    /// Payload pushed onto the queue.
+    Queued,
+    /// Server returned 304 Not Modified — no work needed.
+    NotModified,
+    /// Server returned 404 — topic/year combo doesn't exist.
+    NotFound,
+    /// HTTP or serialization error.
+    Error,
+}
+
+/// Fetch one topic+year and push the raw JSON onto the queue.
+///
+/// Uses the stored ETag as `If-None-Match` for conditional requests.
+/// On a 200 response, stores the new ETag and pushes the payload.
+fn fetch_topic_for_queue(topic: &str, year: u16) -> FetchResult {
+    let url = format!("{DATA_BASE_URL}/{year}/{topic}.json");
+    let etag_key = etag_key(topic, year);
+    let stored_etag = load_state_str(&etag_key);
+
+    let mut request = trovato_sdk::types::HttpRequest::get(&url).timeout(15_000);
+    if let Some(ref etag) = stored_etag {
+        request = request.header("If-None-Match", etag);
+    }
+
+    let Ok(response) = host::http_request(&request) else {
+        return FetchResult::Error;
+    };
+
+    match response.status {
+        304 => FetchResult::NotModified,
+        404 => FetchResult::NotFound,
+        200 => {
+            // Persist the new ETag for the next cron run.
+            if let Some(etag) = response
+                .headers
+                .get("etag")
+                .or_else(|| response.headers.get("ETag"))
+            {
+                set_state(&etag_key, etag);
+            }
+
+            let payload = serde_json::json!({
+                "topic": topic,
+                "year": year,
+                "conferences": response.body,
+            });
+
+            match host::queue_push(QUEUE_NAME, &payload) {
+                Ok(()) => FetchResult::Queued,
+                Err(_) => FetchResult::Error,
+            }
+        }
+        status => {
+            host::log("warn", PLUGIN_NAME, &format!("HTTP {status} for {url}"));
+            FetchResult::Error
+        }
+    }
+}
+
+// ─── Queue declaration ────────────────────────────────────────────────
+
+/// Declare the queue this plugin owns.
+///
+/// The kernel calls this at startup to discover plugin-managed queues.
+/// The `concurrency` field controls how many `tap_queue_worker` calls
+/// the kernel may dispatch in parallel.
+#[plugin_tap]
+pub fn tap_queue_info() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "name": QUEUE_NAME,
+            "concurrency": 4
+        }
+    ])
+}
+
+// ─── Queue worker ─────────────────────────────────────────────────────
+
+/// Process one queued import batch.
+///
+/// The kernel calls this once per item in the `ritrovo_import` queue,
+/// passing a payload of the form:
+///
+/// ```json
+/// { "topic": "rust", "year": 2026, "conferences": "[...]" }
+/// ```
+///
+/// Each conference entry is validated, deduplicated against existing
+/// items via `field_source_id`, then inserted or updated.
+#[plugin_tap]
+pub fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
+    let topic = match input.get("topic").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            host::log(
+                "warn",
+                PLUGIN_NAME,
+                "tap_queue_worker: missing 'topic' field",
+            );
+            return serde_json::json!({"status": "error", "reason": "missing_topic"});
+        }
+    };
+
+    let year = match input.get("year").and_then(|v| v.as_u64()) {
+        Some(y) => y as u16,
+        None => {
+            host::log(
+                "warn",
+                PLUGIN_NAME,
+                "tap_queue_worker: missing 'year' field",
+            );
+            return serde_json::json!({"status": "error", "reason": "missing_year"});
+        }
+    };
+
+    // The `conferences` field contains the raw JSON body as a string.
+    let body = match input.get("conferences").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            host::log(
+                "warn",
+                PLUGIN_NAME,
+                "tap_queue_worker: missing 'conferences' field",
+            );
+            return serde_json::json!({"status": "error", "reason": "missing_conferences"});
+        }
+    };
+
+    let conferences: Vec<ConfsTechEntry> = match serde_json::from_str(&body) {
+        Ok(c) => c,
+        Err(e) => {
+            host::log(
+                "warn",
+                PLUGIN_NAME,
+                &format!("JSON parse error for {topic}/{year}: {e}"),
+            );
+            return serde_json::json!({"status": "error", "reason": "parse_error"});
+        }
+    };
+
+    let now = current_timestamp();
+    let existing = load_existing_conferences();
+
+    let mut imported = 0u64;
+    let mut updated = 0u64;
+    let mut skipped = 0u64;
+    let mut invalid = 0u64;
+
+    for conf in &conferences {
+        match validate_conference(conf) {
+            Ok(()) => {}
+            Err(reason) => {
+                host::log(
+                    "warn",
+                    PLUGIN_NAME,
+                    &format!(
+                        "Skipping '{}': {reason}",
+                        if conf.name.is_empty() {
+                            "(unnamed)"
+                        } else {
+                            &conf.name
+                        }
+                    ),
+                );
+                invalid += 1;
+                continue;
+            }
+        }
+
+        let source_id = compute_source_id(conf);
+
+        if let Some(info) = existing.get(&source_id) {
+            let merged_topics = merge_topics(&info.topics, &topic);
+            if update_conference(&info.item_id, conf, &merged_topics, now) {
+                updated += 1;
+            } else {
+                skipped += 1;
+            }
+        } else if insert_conference(conf, &source_id, &topic, now) {
+            imported += 1;
+        } else {
+            invalid += 1;
+        }
+    }
+
+    serde_json::json!({
+        "status": "ok",
+        "topic": topic,
+        "year": year,
         "imported": imported,
         "updated": updated,
         "skipped": skipped,
-        "errors": errors,
-        "topics_processed": cycle_topics,
+        "invalid": invalid,
     })
 }
 
@@ -324,6 +539,7 @@ pub fn tap_cron(input: CronInput) -> serde_json::Value {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConfsTechEntry {
+    #[serde(default)]
     name: String,
     #[serde(default)]
     url: String,
@@ -349,134 +565,180 @@ struct ConfsTechEntry {
     coc_url: Option<String>,
 }
 
-/// Info about an existing conference in the database.
+/// Info about an existing conference item in the database.
 struct ExistingConference {
     item_id: String,
     topics: Vec<String>,
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────
+// ─── Validation ───────────────────────────────────────────────────────
+
+/// Validate a conference entry from the confs.tech dataset.
+///
+/// Returns `Ok(())` if the entry is valid, or `Err(reason)` with a
+/// human-readable description of the first rule violated.
+fn validate_conference(conf: &ConfsTechEntry) -> Result<(), String> {
+    if conf.name.is_empty() {
+        return Err("missing required field: name".to_string());
+    }
+    if conf.start_date.is_empty() {
+        return Err("missing required field: startDate".to_string());
+    }
+    if conf.end_date.is_empty() {
+        return Err("missing required field: endDate".to_string());
+    }
+
+    if !is_valid_date(&conf.start_date) {
+        return Err(format!("invalid startDate format: '{}'", conf.start_date));
+    }
+    if !is_valid_date(&conf.end_date) {
+        return Err(format!("invalid endDate format: '{}'", conf.end_date));
+    }
+
+    if conf.end_date < conf.start_date {
+        return Err(format!(
+            "endDate '{}' is before startDate '{}'",
+            conf.end_date, conf.start_date
+        ));
+    }
+
+    if let Some(ref cfp_end) = conf.cfp_end_date {
+        if !cfp_end.is_empty() && !is_valid_date(cfp_end) {
+            return Err(format!("invalid cfpEndDate format: '{cfp_end}'"));
+        }
+        if !cfp_end.is_empty() && cfp_end.as_str() > conf.start_date.as_str() {
+            return Err(format!(
+                "cfpEndDate '{cfp_end}' is after startDate '{}'",
+                conf.start_date
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Check that a date string matches `YYYY-MM-DD` and has a plausible year.
+fn is_valid_date(date: &str) -> bool {
+    if date.len() != 10 {
+        return false;
+    }
+    let bytes = date.as_bytes();
+    // Check digit positions and separators.
+    for (i, &b) in bytes.iter().enumerate() {
+        match i {
+            4 | 7 => {
+                if b != b'-' {
+                    return false;
+                }
+            }
+            _ => {
+                if !b.is_ascii_digit() {
+                    return false;
+                }
+            }
+        }
+    }
+    // Plausible year range (2010–2035).
+    let year_str = &date[..4];
+    if let Ok(y) = year_str.parse::<u16>() {
+        (2010..=2035).contains(&y)
+    } else {
+        false
+    }
+}
+
+// ─── State helpers ────────────────────────────────────────────────────
+
+/// Build the ETag state key for a given topic and year.
+fn etag_key(topic: &str, year: u16) -> String {
+    format!("{STATE_ETAG_PREFIX}.{topic}.{year}")
+}
+
+/// Load a string value from the plugin's persistent state table.
+fn load_state_str(key: &str) -> Option<String> {
+    let result = host::query_raw(
+        "SELECT value FROM ritrovo_state WHERE name = $1",
+        &[serde_json::json!(key)],
+    );
+    result
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| row.get("value").and_then(|v| v.as_str()).map(String::from))
+}
+
+/// Load a `usize` from the plugin state, returning 0 (mod `modulus`) on
+/// missing or parse error.
+fn load_state_usize(key: &str, modulus: usize) -> usize {
+    load_state_str(key)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0)
+        % modulus
+}
+
+/// Persist a string value in the plugin's persistent state table.
+fn save_state(key: &str, value: &str) {
+    let _ = host::execute_raw(
+        "INSERT INTO ritrovo_state (name, value) VALUES ($1, $2) \
+         ON CONFLICT (name) DO UPDATE SET value = $2",
+        &[serde_json::json!(key), serde_json::json!(value)],
+    );
+}
+
+/// Convenience wrapper that calls `save_state`.
+fn set_state(key: &str, value: &str) {
+    save_state(key, value);
+}
+
+/// Check if enough time has passed since the last import run.
+fn should_import(now: i64) -> bool {
+    let last_ts = load_state_str(STATE_LAST_IMPORT)
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    (now - last_ts) >= IMPORT_INTERVAL_SECS
+}
+
+// ─── Time helpers ─────────────────────────────────────────────────────
 
 /// Derive the calendar year from a Unix timestamp.
 fn timestamp_to_year(ts: i64) -> u16 {
-    // 365.2425 days/year average; safe approximation for year extraction
+    // 365.2425 days/year average; safe approximation for year extraction.
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     let year = (1970 + ts / 31_556_952) as u16;
     year
 }
 
-/// Compute a stable dedup key from a conference entry.
+/// Return an approximation of the current year without a timestamp input.
 ///
-/// Format: `slugified(name)-startdate-slugified(city|online)`
-fn compute_source_id(conf: &ConfsTechEntry) -> String {
-    let name_slug = slugify(&conf.name);
-    let city_slug = conf
-        .city
-        .as_deref()
-        .map(slugify)
-        .unwrap_or_else(|| "online".to_string());
-    format!("{name_slug}-{}-{city_slug}", conf.start_date)
-}
-
-/// Simple ASCII slugification: lowercase, replace non-alphanumeric with hyphens,
-/// collapse multiple hyphens, trim leading/trailing hyphens.
-fn slugify(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_was_hyphen = true; // suppress leading hyphens
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            result.push(c.to_ascii_lowercase());
-            last_was_hyphen = false;
-        } else if !last_was_hyphen {
-            result.push('-');
-            last_was_hyphen = true;
-        }
-    }
-    // Trim trailing hyphen
-    if result.ends_with('-') {
-        result.pop();
-    }
+/// Used in `tap_install` where no `CronInput` is available.
+fn current_year_approx() -> u16 {
+    // Use the DB clock — WASM doesn't provide a reliable system clock.
+    let result = host::query_raw("SELECT EXTRACT(YEAR FROM NOW())::int AS y", &[]);
     result
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| row.get("y").and_then(|v| v.as_i64()))
+        .and_then(|y| u16::try_from(y).ok())
+        .unwrap_or(2026) // safe fallback
 }
 
-/// Merge a new topic into an existing topic list, deduplicating.
-fn merge_topics(existing: &[String], new_topic: &str) -> Vec<String> {
-    let mut topics: Vec<String> = existing.to_vec();
-    if !topics.iter().any(|t| t == new_topic) {
-        topics.push(new_topic.to_string());
-    }
-    topics.sort();
-    topics
+/// Return the current Unix timestamp via the DB clock.
+///
+/// Used in `tap_queue_worker` where no `CronInput` is available.
+fn current_timestamp() -> i64 {
+    let result = host::query_raw("SELECT EXTRACT(EPOCH FROM NOW())::bigint AS ts", &[]);
+    result
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| row.get("ts").and_then(|v| v.as_i64()))
+        .unwrap_or(0)
 }
 
-/// Check if we should run the import (>= 24h since last run).
-fn should_import(now: i64) -> bool {
-    let last_import_json = host::query_raw(
-        "SELECT value FROM variable WHERE name = $1",
-        &[serde_json::json!(VAR_LAST_IMPORT)],
-    );
+// ─── Database helpers ─────────────────────────────────────────────────
 
-    match last_import_json {
-        Ok(json_str) => {
-            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
-            let last_ts = rows
-                .first()
-                .and_then(|r| r.get("value"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(0);
-            (now - last_ts) >= IMPORT_INTERVAL_SECS
-        }
-        Err(_) => true,
-    }
-}
-
-/// Record the current import timestamp.
-fn record_import_time(now: i64) {
-    let ts_str = now.to_string();
-    let _ = host::execute_raw(
-        "INSERT INTO variable (name, value) VALUES ($1, $2) \
-         ON CONFLICT (name) DO UPDATE SET value = $2",
-        &[
-            serde_json::json!(VAR_LAST_IMPORT),
-            serde_json::json!(ts_str),
-        ],
-    );
-}
-
-/// Load the topic offset for round-robin scheduling.
-fn load_topic_offset() -> usize {
-    let result = host::query_raw(
-        "SELECT value FROM variable WHERE name = $1",
-        &[serde_json::json!(VAR_TOPIC_OFFSET)],
-    );
-    match result {
-        Ok(json_str) => {
-            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
-            rows.first()
-                .and_then(|r| r.get("value"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0)
-                % TOPICS.len()
-        }
-        Err(_) => 0,
-    }
-}
-
-/// Save the topic offset for the next cycle.
-fn save_topic_offset(offset: usize) {
-    let _ = host::execute_raw(
-        "INSERT INTO variable (name, value) VALUES ($1, $2) \
-         ON CONFLICT (name) DO UPDATE SET value = $2",
-        &[
-            serde_json::json!(VAR_TOPIC_OFFSET),
-            serde_json::json!(offset.to_string()),
-        ],
-    );
-}
-
-/// Load existing conferences into a map of source_id → (item_id, topics).
+/// Load existing conferences into a map of source_id → info.
 fn load_existing_conferences() -> HashMap<String, ExistingConference> {
     let mut existing = HashMap::new();
 
@@ -519,9 +781,7 @@ fn load_existing_conferences() -> HashMap<String, ExistingConference> {
     existing
 }
 
-/// Build the JSONB fields from a conference entry (shared by insert and update).
-///
-/// Uses consistent field format: bare values for all simple types (Fix #9).
+/// Build the JSONB fields map for a conference (shared by insert and update).
 fn build_source_fields(
     conf: &ConfsTechEntry,
     source_id: &str,
@@ -565,9 +825,6 @@ fn build_source_fields(
 
 /// Insert a new conference item as unpublished on the live stage.
 ///
-/// Uses `LIVE_STAGE_UUID` with `status=0` (unpublished) so items are
-/// visible to editors but not anonymous visitors (Fix #4).
-///
 /// Returns true on success.
 fn insert_conference(conf: &ConfsTechEntry, source_id: &str, topic: &str, now: i64) -> bool {
     let topics = vec![topic.to_string()];
@@ -594,26 +851,20 @@ fn insert_conference(conf: &ConfsTechEntry, source_id: &str, topic: &str, now: i
         ],
     );
 
-    match result {
-        Ok(1) => true,
-        Ok(_) => false,
-        Err(_) => false,
-    }
+    matches!(result, Ok(1))
 }
 
 /// Update an existing conference with fresh data from the source.
 ///
-/// Only updates source-derived fields (dates, URLs, topics, etc.),
-/// preserving manually-edited fields like description and editor notes.
-///
-/// Returns true if the update was executed.
+/// Only updates source-derived fields, preserving manually-edited fields
+/// like description and editor notes. Returns true if the update executed.
 fn update_conference(
     item_id: &str,
     conf: &ConfsTechEntry,
     merged_topics: &[String],
     now: i64,
 ) -> bool {
-    // Reuse shared field builder — omit source_id since it doesn't change (Fix #6)
+    // Reuse shared field builder — omit source_id since it doesn't change.
     let updates = build_source_fields(conf, "", merged_topics);
 
     let result = host::execute_raw(
@@ -633,9 +884,49 @@ fn update_conference(
     matches!(result, Ok(1))
 }
 
-/// Log a warning message via the kernel logging host function (Fix #5).
-fn log_warning(msg: &str) {
-    host::log("warn", PLUGIN_NAME, msg);
+// ─── Slug / dedup helpers ─────────────────────────────────────────────
+
+/// Compute a stable dedup key from a conference entry.
+///
+/// Format: `slugified(name)-startdate-slugified(city|online)`
+fn compute_source_id(conf: &ConfsTechEntry) -> String {
+    let name_slug = slugify(&conf.name);
+    let city_slug = conf
+        .city
+        .as_deref()
+        .map(slugify)
+        .unwrap_or_else(|| "online".to_string());
+    format!("{name_slug}-{}-{city_slug}", conf.start_date)
+}
+
+/// Simple ASCII slugification: lowercase, replace non-alphanumeric with
+/// hyphens, collapse runs, trim leading/trailing hyphens.
+fn slugify(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut last_was_hyphen = true; // suppress leading hyphens
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            last_was_hyphen = false;
+        } else if !last_was_hyphen {
+            result.push('-');
+            last_was_hyphen = true;
+        }
+    }
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
+}
+
+/// Merge a new topic into an existing topic list, deduplicating and sorting.
+fn merge_topics(existing: &[String], new_topic: &str) -> Vec<String> {
+    let mut topics: Vec<String> = existing.to_vec();
+    if !topics.iter().any(|t| t == new_topic) {
+        topics.push(new_topic.to_string());
+    }
+    topics.sort();
+    topics
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────
@@ -644,6 +935,8 @@ fn log_warning(msg: &str) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    // ── conference_fields ────────────────────────────────────────────
 
     #[test]
     fn conference_has_fifteen_fields() {
@@ -676,6 +969,8 @@ mod tests {
         assert_eq!(topics.cardinality, -1);
     }
 
+    // ── tap_perm / tap_menu ──────────────────────────────────────────
+
     #[test]
     fn perm_returns_five_permissions() {
         let perms = __inner_tap_perm();
@@ -696,6 +991,19 @@ mod tests {
         assert_eq!(menus[1].path, "/admin/config/importer");
     }
 
+    // ── tap_queue_info ───────────────────────────────────────────────
+
+    #[test]
+    fn queue_info_returns_ritrovo_import_queue() {
+        let info = __inner_tap_queue_info();
+        let queues = info.as_array().unwrap();
+        assert_eq!(queues.len(), 1);
+        assert_eq!(queues[0]["name"], "ritrovo_import");
+        assert_eq!(queues[0]["concurrency"], 4);
+    }
+
+    // ── tap_cron ─────────────────────────────────────────────────────
+
     #[test]
     fn cron_returns_completed_with_stub() {
         let input = CronInput {
@@ -703,11 +1011,169 @@ mod tests {
         };
         let result = __inner_tap_cron(input);
         // With stub host functions (query_raw returns "[]"), should_import
-        // returns true (no previous timestamp found), http_request stub
-        // returns "[]" body which parses as empty conference list → completed
-        // with 0 imported but no errors.
-        assert_eq!(result["status"], "completed", "unexpected status: {result}");
+        // returns true (no previous timestamp found). http_request stub
+        // returns body "[]" which pushes empty payloads — no errors.
+        assert_eq!(result["status"], "completed", "unexpected: {result}");
     }
+
+    // ── tap_queue_worker ─────────────────────────────────────────────
+
+    #[test]
+    fn queue_worker_rejects_missing_topic() {
+        let input = serde_json::json!({"year": 2026, "conferences": "[]"});
+        let result = __inner_tap_queue_worker(input);
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["reason"], "missing_topic");
+    }
+
+    #[test]
+    fn queue_worker_rejects_missing_year() {
+        let input = serde_json::json!({"topic": "rust", "conferences": "[]"});
+        let result = __inner_tap_queue_worker(input);
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["reason"], "missing_year");
+    }
+
+    #[test]
+    fn queue_worker_rejects_bad_json() {
+        let input = serde_json::json!({"topic": "rust", "year": 2026, "conferences": "not-json"});
+        let result = __inner_tap_queue_worker(input);
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["reason"], "parse_error");
+    }
+
+    #[test]
+    fn queue_worker_skips_invalid_entries() {
+        // Missing startDate and endDate.
+        let conferences = serde_json::json!([{"name": "BadConf"}]).to_string();
+        let input = serde_json::json!({
+            "topic": "rust",
+            "year": 2026,
+            "conferences": conferences,
+        });
+        let result = __inner_tap_queue_worker(input);
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["invalid"], 1);
+        assert_eq!(result["imported"], 0);
+    }
+
+    #[test]
+    fn queue_worker_accepts_valid_entry() {
+        let conferences = serde_json::json!([{
+            "name": "RustConf",
+            "startDate": "2026-09-01",
+            "endDate": "2026-09-03",
+            "city": "Portland",
+            "country": "USA",
+        }])
+        .to_string();
+        let input = serde_json::json!({
+            "topic": "rust",
+            "year": 2026,
+            "conferences": conferences,
+        });
+        let result = __inner_tap_queue_worker(input);
+        assert_eq!(result["status"], "ok");
+        // Stub execute_raw always returns Ok(0), so insert returns false (0 rows
+        // affected != 1). The entry counts as invalid in the stub context.
+        assert_eq!(
+            result["invalid"].as_u64().unwrap() + result["imported"].as_u64().unwrap(),
+            1
+        );
+    }
+
+    // ── validate_conference ───────────────────────────────────────────
+
+    fn make_valid() -> ConfsTechEntry {
+        ConfsTechEntry {
+            name: "RustConf".to_string(),
+            url: "https://rustconf.com".to_string(),
+            start_date: "2026-09-01".to_string(),
+            end_date: "2026-09-03".to_string(),
+            city: Some("Portland".to_string()),
+            country: Some("USA".to_string()),
+            online: None,
+            cfp_url: None,
+            cfp_end_date: None,
+            locales: None,
+            twitter: None,
+            coc_url: None,
+        }
+    }
+
+    #[test]
+    fn validate_valid_entry_ok() {
+        assert!(validate_conference(&make_valid()).is_ok());
+    }
+
+    #[test]
+    fn validate_missing_name() {
+        let mut c = make_valid();
+        c.name = String::new();
+        assert!(validate_conference(&c).is_err());
+    }
+
+    #[test]
+    fn validate_missing_start_date() {
+        let mut c = make_valid();
+        c.start_date = String::new();
+        assert!(validate_conference(&c).is_err());
+    }
+
+    #[test]
+    fn validate_end_before_start() {
+        let mut c = make_valid();
+        c.end_date = "2026-08-31".to_string();
+        assert!(validate_conference(&c).is_err());
+    }
+
+    #[test]
+    fn validate_cfp_after_start() {
+        let mut c = make_valid();
+        c.cfp_end_date = Some("2026-10-01".to_string());
+        let err = validate_conference(&c).unwrap_err();
+        assert!(err.contains("cfpEndDate"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_bad_date_format() {
+        let mut c = make_valid();
+        c.start_date = "01-09-2026".to_string(); // wrong format
+        assert!(validate_conference(&c).is_err());
+    }
+
+    #[test]
+    fn validate_year_out_of_range() {
+        let mut c = make_valid();
+        c.start_date = "1999-01-01".to_string();
+        c.end_date = "1999-01-02".to_string();
+        assert!(validate_conference(&c).is_err());
+    }
+
+    // ── is_valid_date ─────────────────────────────────────────────────
+
+    #[test]
+    fn is_valid_date_ok() {
+        assert!(is_valid_date("2026-09-01"));
+        assert!(is_valid_date("2010-01-01"));
+        assert!(is_valid_date("2035-12-31"));
+    }
+
+    #[test]
+    fn is_valid_date_bad_format() {
+        assert!(!is_valid_date("09-01-2026")); // wrong order
+        assert!(!is_valid_date("2026/09/01")); // wrong separator
+        assert!(!is_valid_date("2026-9-1")); // missing leading zeros
+        assert!(!is_valid_date("not-a-date"));
+    }
+
+    #[test]
+    fn is_valid_date_year_range() {
+        assert!(!is_valid_date("1999-01-01"));
+        assert!(!is_valid_date("2050-01-01"));
+    }
+
+    // ── slugify ───────────────────────────────────────────────────────
 
     #[test]
     fn slugify_basic() {
@@ -726,6 +1192,8 @@ mod tests {
     fn slugify_no_trailing_hyphen() {
         assert_eq!(slugify("test--value--"), "test-value");
     }
+
+    // ── compute_source_id ─────────────────────────────────────────────
 
     #[test]
     fn compute_source_id_with_city() {
@@ -765,6 +1233,8 @@ mod tests {
         assert_eq!(compute_source_id(&conf), "vue-js-nation-2025-01-29-online");
     }
 
+    // ── build_source_fields ───────────────────────────────────────────
+
     #[test]
     fn build_fields_minimal() {
         let conf = ConfsTechEntry {
@@ -786,7 +1256,6 @@ mod tests {
         assert_eq!(fields["field_source_id"], "testconf-2026-01-01-online");
         assert_eq!(fields["field_online"], false);
         assert_eq!(fields["field_topics"][0], "rust");
-        // URL should not be present when empty
         assert!(fields.get("field_url").is_none());
     }
 
@@ -818,6 +1287,36 @@ mod tests {
         assert_eq!(fields["field_coc_url"], "https://rustconf.com/coc");
     }
 
+    // ── merge_topics ──────────────────────────────────────────────────
+
+    #[test]
+    fn merge_topics_deduplicates() {
+        let existing = vec!["rust".to_string(), "security".to_string()];
+        assert_eq!(merge_topics(&existing, "rust"), vec!["rust", "security"]);
+        assert_eq!(
+            merge_topics(&existing, "devops"),
+            vec!["devops", "rust", "security"]
+        );
+    }
+
+    #[test]
+    fn merge_topics_empty_existing() {
+        let existing: Vec<String> = vec![];
+        assert_eq!(merge_topics(&existing, "rust"), vec!["rust"]);
+    }
+
+    // ── timestamp_to_year ─────────────────────────────────────────────
+
+    #[test]
+    fn timestamp_to_year_works() {
+        // 2025-01-01 00:00:00 UTC = 1735689600
+        assert_eq!(timestamp_to_year(1_735_689_600), 2025);
+        // 2026-06-15 12:00:00 UTC ≈ 1781870400
+        assert_eq!(timestamp_to_year(1_781_870_400), 2026);
+    }
+
+    // ── perm permission names ─────────────────────────────────────────
+
     #[test]
     fn perm_format_matches_kernel_fallback() {
         let perms = __inner_tap_perm();
@@ -834,29 +1333,5 @@ mod tests {
                 "missing permission: {name}"
             );
         }
-    }
-
-    #[test]
-    fn timestamp_to_year_works() {
-        // 2025-01-01 00:00:00 UTC = 1735689600
-        assert_eq!(timestamp_to_year(1_735_689_600), 2025);
-        // 2026-06-15 12:00:00 UTC ≈ 1781870400
-        assert_eq!(timestamp_to_year(1_781_870_400), 2026);
-    }
-
-    #[test]
-    fn merge_topics_deduplicates() {
-        let existing = vec!["rust".to_string(), "security".to_string()];
-        assert_eq!(merge_topics(&existing, "rust"), vec!["rust", "security"]);
-        assert_eq!(
-            merge_topics(&existing, "devops"),
-            vec!["devops", "rust", "security"]
-        );
-    }
-
-    #[test]
-    fn merge_topics_empty_existing() {
-        let existing: Vec<String> = vec![];
-        assert_eq!(merge_topics(&existing, "rust"), vec!["rust"]);
     }
 }

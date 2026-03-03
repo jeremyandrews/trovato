@@ -287,6 +287,20 @@ impl CronService {
             }
         }
 
+        // Dispatch tap_queue_worker for pending plugin queue items.
+        //
+        // After tap_cron runs, plugins may have pushed jobs via queue_push.
+        // We drain up to MAX_QUEUE_ITEMS_PER_CYCLE items per plugin and call
+        // tap_queue_worker on each. Items are deleted after successful dispatch.
+        if let Some(ref dispatcher) = self.tap_dispatcher
+            && dispatcher.registry().has_tap("tap_queue_worker")
+        {
+            match self.dispatch_plugin_queues(dispatcher).await {
+                Ok(()) => tasks_run.push("tap_queue_worker".to_string()),
+                Err(e) => warn!(error = %e, "plugin queue dispatch failed"),
+            }
+        }
+
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
             match pagefind::maybe_rebuild_index(&self.pool).await {
@@ -372,6 +386,112 @@ impl CronService {
     /// Get the queue for pushing items.
     pub fn queue(&self) -> &Arc<RedisQueue> {
         &self.queue
+    }
+
+    /// Drain pending plugin queue items and dispatch `tap_queue_worker`.
+    ///
+    /// For each distinct plugin with items in `plugin_queue`, we pop up to
+    /// `MAX_QUEUE_ITEMS_PER_CYCLE` items and call `tap_queue_worker` on each.
+    /// Successfully dispatched items are deleted; failed items are left for
+    /// the next cycle.
+    async fn dispatch_plugin_queues(&self, dispatcher: &crate::tap::TapDispatcher) -> Result<()> {
+        /// Maximum items to process per plugin per cron cycle.
+        const MAX_QUEUE_ITEMS_PER_CYCLE: i64 = 100;
+
+        // Collect distinct plugin names that have pending items.
+        let plugins: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT DISTINCT plugin_name
+            FROM plugin_queue
+            ORDER BY plugin_name
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to query plugin_queue")?;
+
+        for plugin_name in &plugins {
+            // Skip plugins that don't implement tap_queue_worker.
+            if !dispatcher
+                .registry()
+                .get_handlers("tap_queue_worker")
+                .iter()
+                .any(|h| &h.plugin.info.name == plugin_name)
+            {
+                continue;
+            }
+
+            // Fetch a batch of items for this plugin.
+            let rows = sqlx::query(
+                r#"
+                SELECT id, payload
+                FROM plugin_queue
+                WHERE plugin_name = $1
+                ORDER BY created_at
+                LIMIT $2
+                "#,
+            )
+            .bind(plugin_name)
+            .bind(MAX_QUEUE_ITEMS_PER_CYCLE)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch plugin queue items")?;
+
+            let items: Vec<(i64, serde_json::Value)> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    use sqlx::Row;
+                    let id: i64 = row.try_get("id").ok()?;
+                    let payload: serde_json::Value = row.try_get("payload").ok()?;
+                    Some((id, payload))
+                })
+                .collect();
+
+            for (item_id, payload) in items {
+                // Infallible: payload is already well-formed JSON.
+                let input_json =
+                    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+
+                let state = RequestState::new(
+                    crate::tap::UserContext::anonymous(),
+                    crate::tap::RequestServices::for_background(
+                        self.pool.clone(),
+                        self.ai_providers.clone(),
+                        self.ai_budgets.clone(),
+                        self.http.clone(),
+                    ),
+                );
+
+                match dispatcher
+                    .dispatch_to_plugin("tap_queue_worker", &input_json, plugin_name, state)
+                    .await
+                {
+                    Some(_) => {
+                        // Delete the processed item.
+                        if let Err(e) = sqlx::query("DELETE FROM plugin_queue WHERE id = $1")
+                            .bind(item_id)
+                            .execute(&self.pool)
+                            .await
+                        {
+                            warn!(
+                                error = %e,
+                                item_id = item_id,
+                                "failed to delete processed queue item"
+                            );
+                        }
+                    }
+                    None => {
+                        warn!(
+                            plugin = %plugin_name,
+                            item_id = item_id,
+                            "tap_queue_worker failed; item left for retry"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get the last cron run status.
