@@ -10,11 +10,53 @@
     {% if exposed_filters is defined and exposed_filters | length > 0 %}
     <form method="get" action="{{ base_path | default(value='/gather/' ~ query.query_id) }}" class="gather-exposed-filters">
         {% for filter in exposed_filters %}
+        {% set current_value = filter_values[filter.field] | default(value="") %}
         <div class="form-group form-group--inline">
             <label for="filter-{{ filter.field }}">{{ filter.label }}</label>
+
+            {% if filter.widget_type == "boolean" %}
+            {# Boolean widget: Any / Yes / No select #}
+            <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
+                <option value="">Any</option>
+                <option value="true"{% if current_value == "true" %} selected{% endif %}>Yes</option>
+                <option value="false"{% if current_value == "false" %} selected{% endif %}>No</option>
+            </select>
+
+            {% elif filter.widget_type == "taxonomy_select" %}
+            {# Taxonomy select: hierarchical terms from a category vocabulary #}
+            <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
+                <option value="">Any</option>
+                {% for opt in filter.options %}
+                <option value="{{ opt.value }}"{% if current_value == opt.value %} selected{% endif %}>
+                    {%- for i in range(end=opt.depth) %}&nbsp;&nbsp;{% endfor %}{{ opt.label -}}
+                </option>
+                {% endfor %}
+            </select>
+
+            {% elif filter.widget_type == "dynamic_options" %}
+            {# Dynamic options: dropdown below threshold, datalist autocomplete above #}
+            {% if filter.is_autocomplete %}
             <input type="text" id="filter-{{ filter.field }}" name="{{ filter.field }}"
-                   value="{% if filter_values is defined and filter_values[filter.field] is defined %}{{ filter_values[filter.field] }}{% endif %}"
-                   class="form-control">
+                   value="{{ current_value }}" class="form-control"
+                   list="{{ filter.field }}-options">
+            <datalist id="{{ filter.field }}-options">
+                {% for opt in filter.options %}<option value="{{ opt }}">{% endfor %}
+            </datalist>
+            {% else %}
+            <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
+                <option value="">Any</option>
+                {% for opt in filter.options %}
+                <option value="{{ opt }}"{% if current_value == opt %} selected{% endif %}>{{ opt }}</option>
+                {% endfor %}
+            </select>
+            {% endif %}
+
+            {% else %}
+            {# Default text input #}
+            <input type="text" id="filter-{{ filter.field }}" name="{{ filter.field }}"
+                   value="{{ current_value }}" class="form-control">
+            {% endif %}
+
         </div>
         {% endfor %}
         <div class="form-actions">

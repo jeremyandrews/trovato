@@ -38,6 +38,7 @@ fn query_definition_with_filters() {
                 value: FilterValue::Integer(1),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             },
             QueryFilter {
                 field: "title".to_string(),
@@ -45,6 +46,7 @@ fn query_definition_with_filters() {
                 value: FilterValue::String("rust".to_string()),
                 exposed: true,
                 exposed_label: Some("Search".to_string()),
+                widget: Default::default(),
             },
         ],
         ..Default::default()
@@ -96,6 +98,7 @@ fn query_definition_serialization() {
             value: FilterValue::Integer(1),
             exposed: false,
             exposed_label: None,
+            widget: Default::default(),
         }],
         sorts: vec![QuerySort {
             field: "created".to_string(),
@@ -491,6 +494,7 @@ fn gate_test_recent_articles_query_definition() {
                     value: FilterValue::Integer(1),
                     exposed: false,
                     exposed_label: None,
+                    widget: Default::default(),
                 },
                 // Category filter with hierarchy support
                 QueryFilter {
@@ -499,6 +503,7 @@ fn gate_test_recent_articles_query_definition() {
                     value: FilterValue::Uuid(tech_tag_id),
                     exposed: true,
                     exposed_label: Some("Category".to_string()),
+                    widget: Default::default(),
                 },
             ],
             sorts: vec![
@@ -600,6 +605,7 @@ fn jsonb_field_in_query_definition() {
             value: FilterValue::Boolean(true),
             exposed: false,
             exposed_label: None,
+            widget: Default::default(),
         }],
         ..Default::default()
     };

@@ -12,8 +12,8 @@ use super::types::{
     FilterOperator, FilterValue, JoinType, QueryDefinition, QueryFilter, SortDirection,
 };
 use sea_query::{
-    extension::postgres::PgExpr, Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order,
-    PostgresQueryBuilder, Query, SelectStatement, SimpleExpr,
+    Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order, PostgresQueryBuilder, Query,
+    SelectStatement, SimpleExpr, extension::postgres::PgExpr,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -677,6 +677,7 @@ mod tests {
                 value: FilterValue::Integer(1),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             sorts: vec![QuerySort {
                 field: "created".to_string(),
@@ -763,6 +764,7 @@ mod tests {
                 value: FilterValue::String("rust".to_string()),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -918,6 +920,7 @@ mod tests {
                 value: FilterValue::String("rust programming".to_string()),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -946,6 +949,7 @@ mod tests {
                 value: FilterValue::String("".to_string()),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -969,6 +973,7 @@ mod tests {
                 value: FilterValue::String("rust's | ! & (test)".to_string()),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1005,6 +1010,7 @@ mod tests {
                 value: FilterValue::String("100%_done".to_string()),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1148,6 +1154,7 @@ mod tests {
                 value: FilterValue::Uuid(tag_id),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1178,6 +1185,7 @@ mod tests {
                 value: FilterValue::Uuid(uuid::Uuid::nil()),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1210,6 +1218,7 @@ mod tests {
                 value: FilterValue::String("test".to_string()),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };

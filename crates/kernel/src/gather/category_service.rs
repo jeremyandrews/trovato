@@ -124,6 +124,14 @@ impl CategoryService {
         Ok(tags)
     }
 
+    /// List all tags in a category with hierarchy depth for display.
+    ///
+    /// Returns tags ordered root-first (depth 0) then children, suitable for
+    /// populating a `<select>` with indented options.
+    pub async fn list_tags_with_depth(&self, category_id: &str) -> Result<Vec<TagWithDepth>> {
+        Tag::list_with_depth(&self.pool, category_id).await
+    }
+
     /// Create a new tag.
     pub async fn create_tag(&self, input: CreateTag) -> Result<Tag> {
         let category_id = input.category_id.clone();

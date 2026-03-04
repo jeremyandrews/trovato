@@ -245,6 +245,86 @@ impl Tag {
         Ok(tags)
     }
 
+    /// List all tags in a category with hierarchy depth, ordered for display.
+    ///
+    /// Returns tags in DFS pre-order so each parent immediately precedes its
+    /// children — suitable for a `<select>` with indented options. Tags with
+    /// no hierarchy entry (flat categories) are included at depth 0.
+    ///
+    /// For DAG vocabularies where a tag has multiple parents, the tag is
+    /// shown once at its shallowest position.
+    pub async fn list_with_depth(pool: &PgPool, category_id: &str) -> Result<Vec<TagWithDepth>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: Uuid,
+            category_id: String,
+            label: String,
+            description: Option<String>,
+            weight: i16,
+            created: i64,
+            changed: i64,
+            depth: i32,
+        }
+
+        let rows = sqlx::query_as::<_, Row>(
+            r#"
+            WITH RECURSIVE tree AS (
+                -- Base case: root tags (parent_id IS NULL) or flat tags (no
+                -- hierarchy row). LEFT JOIN ensures flat tags are included at
+                -- depth 0 rather than silently dropped.
+                SELECT t.id, t.category_id, t.label, t.description, t.weight,
+                       t.created, t.changed, 0 AS depth,
+                       -- sort_path encodes the full ancestry as a text array so
+                       -- siblings stay grouped under their parent (DFS pre-order).
+                       ARRAY[lpad((t.weight::int + 32768)::text, 5, '0') || t.label] AS sort_path
+                FROM category_tag t
+                LEFT JOIN category_tag_hierarchy h ON t.id = h.tag_id
+                WHERE t.category_id = $1 AND h.parent_id IS NULL
+
+                UNION ALL
+
+                -- Recursive case: children of already-visited nodes
+                SELECT t.id, t.category_id, t.label, t.description, t.weight,
+                       t.created, t.changed, tr.depth + 1,
+                       tr.sort_path || (lpad((t.weight::int + 32768)::text, 5, '0') || t.label)
+                FROM category_tag t
+                INNER JOIN category_tag_hierarchy h ON t.id = h.tag_id
+                INNER JOIN tree tr ON h.parent_id = tr.id
+                WHERE t.category_id = $1
+            ),
+            primary_occ AS (
+                -- For DAGs: keep each tag once at its shallowest (first) path.
+                SELECT DISTINCT ON (id) *
+                FROM tree
+                ORDER BY id, sort_path
+            )
+            SELECT id, category_id, label, description, weight, created, changed, depth
+            FROM primary_occ
+            ORDER BY sort_path
+            "#,
+        )
+        .bind(category_id)
+        .fetch_all(pool)
+        .await
+        .context("failed to list tags with depth")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| TagWithDepth {
+                tag: Tag {
+                    id: r.id,
+                    category_id: r.category_id,
+                    label: r.label,
+                    description: r.description,
+                    weight: r.weight,
+                    created: r.created,
+                    changed: r.changed,
+                },
+                depth: r.depth,
+            })
+            .collect())
+    }
+
     /// Create a new tag.
     pub async fn create(pool: &PgPool, input: CreateTag) -> Result<Self> {
         let now = chrono::Utc::now().timestamp();

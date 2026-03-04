@@ -93,6 +93,7 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                                 value: FilterValue::Integer(1),
                                 exposed: false,
                                 exposed_label: None,
+                                widget: Default::default(),
                             }],
                             sorts: vec![QuerySort {
                                 field: "fields.field_start_date".to_string(),

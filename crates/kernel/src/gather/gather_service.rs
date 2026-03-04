@@ -27,6 +27,12 @@ const MAX_INCLUDE_DEPTH: u8 = 3;
 /// Maximum entries in the gather query cache.
 const MAX_CAPACITY: u64 = 1_000;
 
+/// TTL for the distinct-values cache (5 minutes).
+const DISTINCT_VALUES_TTL: Duration = Duration::from_secs(300);
+
+/// Maximum entries in the distinct-values cache.
+const DISTINCT_VALUES_CAPACITY: u64 = 500;
+
 /// Service for executing Gather queries.
 pub struct GatherService {
     pool: PgPool,
@@ -34,6 +40,8 @@ pub struct GatherService {
     extensions: Arc<GatherExtensionRegistry>,
     /// Registered queries by query_id (TTL-bounded).
     queries: Cache<String, GatherQuery>,
+    /// Cache of distinct field values per `"item_type::source_field"`.
+    distinct_values_cache: Cache<String, Vec<String>>,
 }
 
 impl GatherService {
@@ -51,6 +59,10 @@ impl GatherService {
             queries: Cache::builder()
                 .max_capacity(MAX_CAPACITY)
                 .time_to_live(ttl)
+                .build(),
+            distinct_values_cache: Cache::builder()
+                .max_capacity(DISTINCT_VALUES_CAPACITY)
+                .time_to_live(DISTINCT_VALUES_TTL)
                 .build(),
         })
     }
@@ -102,6 +114,73 @@ impl GatherService {
     /// List all registered queries.
     pub fn list_queries(&self) -> Vec<GatherQuery> {
         self.queries.iter().map(|(_k, v)| v).collect()
+    }
+
+    /// Maximum number of distinct values returned by [`fetch_distinct_values`].
+    const DISTINCT_VALUES_LIMIT: i64 = 200;
+
+    /// Fetch distinct non-empty values for a field within an item type.
+    ///
+    /// Only JSONB fields (path prefix `"fields."`) are supported. Returns an
+    /// empty list for unrecognised or unsafe field names.
+    ///
+    /// Results are capped at [`DISTINCT_VALUES_LIMIT`] and cached for
+    /// [`DISTINCT_VALUES_TTL`] per `(item_type, source_field)` pair.
+    ///
+    /// **Stage note:** This query filters by `status = 1` but does not filter
+    /// by `stage_id`. Widget options therefore reflect published-status items
+    /// across all stages. This is intentional: widgets show the universe of
+    /// possible values; the query itself applies stage filtering to results.
+    pub async fn fetch_distinct_values(
+        &self,
+        source_field: &str,
+        item_type: &str,
+    ) -> Result<Vec<String>> {
+        if item_type.is_empty() {
+            tracing::debug!(
+                source_field,
+                "dynamic_options widget has no item_type; \
+                 distinct values query skipped (would return nothing)"
+            );
+            return Ok(Vec::new());
+        }
+
+        let cache_key = format!("{item_type}::{source_field}");
+
+        if let Some(cached) = self.distinct_values_cache.get(&cache_key) {
+            return Ok(cached);
+        }
+
+        // Only JSONB paths (e.g. "fields.field_country") are supported.
+        let Some(jsonb_key) = source_field.strip_prefix("fields.") else {
+            return Ok(Vec::new());
+        };
+
+        // Validate the key portion so it is safe to use as a bind parameter.
+        if !is_valid_field_name(jsonb_key) {
+            return Ok(Vec::new());
+        }
+
+        let values: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT fields->>$1 \
+             FROM item \
+             WHERE type = $2 \
+               AND status = 1 \
+               AND fields->>$1 IS NOT NULL \
+               AND fields->>$1 <> '' \
+             ORDER BY 1 \
+             LIMIT $3",
+        )
+        .bind(jsonb_key)
+        .bind(item_type)
+        .bind(Self::DISTINCT_VALUES_LIMIT)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch distinct field values")?;
+
+        self.distinct_values_cache.insert(cache_key, values.clone());
+
+        Ok(values)
     }
 
     /// Load queries from database into memory cache.
@@ -371,6 +450,7 @@ impl GatherService {
                     ),
                     exposed: filter.exposed,
                     exposed_label: filter.exposed_label,
+                    widget: Default::default(),
                 });
             } else {
                 resolved_filters.push(filter);
@@ -504,6 +584,7 @@ impl GatherService {
                     value: FilterValue::List(filter_values),
                     exposed: false,
                     exposed_label: None,
+                    widget: Default::default(),
                 });
 
                 // Resolve contextual values in child definition
@@ -651,6 +732,7 @@ impl GatherService {
                         value: FilterValue::Integer(1),
                         exposed: false,
                         exposed_label: None,
+                        widget: Default::default(),
                     }],
                     sorts: vec![QuerySort {
                         field: "created".to_string(),
@@ -686,6 +768,7 @@ impl GatherService {
                             value: FilterValue::Integer(1),
                             exposed: false,
                             exposed_label: None,
+                            widget: Default::default(),
                         },
                         QueryFilter {
                             field: "type".to_string(),
@@ -693,6 +776,7 @@ impl GatherService {
                             value: FilterValue::String(String::new()),
                             exposed: true,
                             exposed_label: Some("Content type".to_string()),
+                            widget: Default::default(),
                         },
                     ],
                     sorts: vec![QuerySort {
@@ -729,6 +813,7 @@ impl GatherService {
                             value: FilterValue::Integer(1),
                             exposed: false,
                             exposed_label: None,
+                            widget: Default::default(),
                         },
                         QueryFilter {
                             field: "author_id".to_string(),
@@ -736,6 +821,7 @@ impl GatherService {
                             value: FilterValue::Contextual(ContextualValue::CurrentUser),
                             exposed: false,
                             exposed_label: None,
+                            widget: Default::default(),
                         },
                     ],
                     sorts: vec![QuerySort {
@@ -795,6 +881,7 @@ impl GatherService {
                         value: FilterValue::String(String::new()),
                         exposed: true,
                         exposed_label: Some("Name".to_string()),
+                        widget: Default::default(),
                     }],
                     sorts: vec![QuerySort {
                         field: "created".to_string(),
@@ -848,6 +935,7 @@ impl GatherService {
                         value: FilterValue::String(String::new()),
                         exposed: true,
                         exposed_label: Some("Path".to_string()),
+                        widget: Default::default(),
                     }],
                     sorts: vec![QuerySort {
                         field: "alias".to_string(),
@@ -1263,6 +1351,7 @@ mod tests {
                 value: FilterValue::Contextual(ContextualValue::CurrentUser),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1285,6 +1374,7 @@ mod tests {
                 value: FilterValue::Contextual(ContextualValue::CurrentUser),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1308,6 +1398,7 @@ mod tests {
                 value: FilterValue::Contextual(ContextualValue::CurrentTime),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1339,6 +1430,7 @@ mod tests {
                 value: FilterValue::Contextual(ContextualValue::UrlArg("category".to_string())),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1362,6 +1454,7 @@ mod tests {
                 value: FilterValue::Contextual(ContextualValue::CurrentDate),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };
@@ -1482,6 +1575,7 @@ mod tests {
                 value: FilterValue::Integer(1),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             ..Default::default()
         };

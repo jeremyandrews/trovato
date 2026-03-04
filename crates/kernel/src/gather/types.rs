@@ -78,6 +78,46 @@ pub struct QueryField {
     pub label: Option<String>,
 }
 
+/// Widget type used to render an exposed filter.
+///
+/// Each variant controls which HTML control is rendered for the filter in the
+/// exposed-filter form. Missing `"widget"` keys in JSON deserialize to the
+/// default `Text` variant so all existing query definitions are unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExposedWidget {
+    /// Plain `<input type="text">` (default).
+    #[default]
+    Text,
+    /// `<select>` with Any / Yes / No options for boolean fields.
+    Boolean,
+    /// `<select>` populated from a category vocabulary, indented by depth.
+    TaxonomySelect {
+        /// Category machine name to load terms from.
+        vocabulary: String,
+    },
+    /// Dropdown when distinct values ≤ threshold, `<datalist>` autocomplete above.
+    DynamicOptions {
+        /// Field path used to query distinct values (e.g. `"fields.field_country"`).
+        source_field: String,
+        /// Threshold for switching from `<select>` to autocomplete `<datalist>`.
+        #[serde(default = "default_autocomplete_threshold")]
+        autocomplete_threshold: usize,
+    },
+}
+
+fn default_autocomplete_threshold() -> usize {
+    30
+}
+
+impl ExposedWidget {
+    /// Returns `true` when this is the default `Text` widget (used for
+    /// `skip_serializing_if` so unchanged queries stay compact).
+    pub fn is_text(&self) -> bool {
+        matches!(self, ExposedWidget::Text)
+    }
+}
+
 /// Filter condition for queries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryFilter {
@@ -96,6 +136,13 @@ pub struct QueryFilter {
 
     /// Label for exposed filter UI.
     pub exposed_label: Option<String>,
+
+    /// Widget type for rendering this exposed filter.
+    ///
+    /// Defaults to `Text` when the key is absent so all existing query
+    /// definitions deserialize without modification.
+    #[serde(default, skip_serializing_if = "ExposedWidget::is_text")]
+    pub widget: ExposedWidget,
 }
 
 /// Comparison operators for filtering.
@@ -697,6 +744,7 @@ mod tests {
                 value: FilterValue::Integer(1),
                 exposed: false,
                 exposed_label: None,
+                widget: Default::default(),
             }],
             sorts: vec![QuerySort {
                 field: "created".to_string(),
@@ -1029,5 +1077,131 @@ mod tests {
         let def: QueryDefinition = serde_json::from_str(json).unwrap();
         assert_eq!(def.item_type, Some("argus_feed".into()));
         assert_eq!(def.sorts[0].direction, SortDirection::Asc);
+    }
+
+    // ── ExposedWidget serde ───────────────────────────────────────────
+
+    #[test]
+    fn exposed_widget_defaults_to_text_when_key_absent() {
+        // Existing query definitions without a "widget" key must deserialize
+        // to the Text variant so nothing breaks.
+        let json = r#"{"field":"status","operator":"equals","value":1,"exposed":false,"exposed_label":null}"#;
+        let filter: QueryFilter = serde_json::from_str(json).unwrap();
+        assert_eq!(filter.widget, ExposedWidget::Text);
+    }
+
+    #[test]
+    fn exposed_widget_boolean_roundtrip() {
+        let json = r#"{"type":"boolean"}"#;
+        let w: ExposedWidget = serde_json::from_str(json).unwrap();
+        assert_eq!(w, ExposedWidget::Boolean);
+
+        let back = serde_json::to_string(&w).unwrap();
+        assert_eq!(back, r#"{"type":"boolean"}"#);
+    }
+
+    #[test]
+    fn exposed_widget_taxonomy_select_roundtrip() {
+        let json = r#"{"type":"taxonomy_select","vocabulary":"topic"}"#;
+        let w: ExposedWidget = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            w,
+            ExposedWidget::TaxonomySelect {
+                vocabulary: "topic".to_string()
+            }
+        );
+
+        let back = serde_json::to_string(&w).unwrap();
+        assert!(back.contains("taxonomy_select"));
+        assert!(back.contains("topic"));
+    }
+
+    #[test]
+    fn exposed_widget_dynamic_options_roundtrip() {
+        let json = r#"{"type":"dynamic_options","source_field":"fields.field_country"}"#;
+        let w: ExposedWidget = serde_json::from_str(json).unwrap();
+        match &w {
+            ExposedWidget::DynamicOptions {
+                source_field,
+                autocomplete_threshold,
+            } => {
+                assert_eq!(source_field, "fields.field_country");
+                assert_eq!(*autocomplete_threshold, 30); // default
+            }
+            other => panic!("expected DynamicOptions, got {other:?}"),
+        }
+
+        let back = serde_json::to_string(&w).unwrap();
+        assert!(back.contains("dynamic_options"));
+    }
+
+    #[test]
+    fn exposed_widget_dynamic_options_custom_threshold() {
+        let json =
+            r#"{"type":"dynamic_options","source_field":"fields.lang","autocomplete_threshold":5}"#;
+        let w: ExposedWidget = serde_json::from_str(json).unwrap();
+        match w {
+            ExposedWidget::DynamicOptions {
+                autocomplete_threshold,
+                ..
+            } => assert_eq!(autocomplete_threshold, 5),
+            other => panic!("expected DynamicOptions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exposed_widget_is_text_returns_correct_values() {
+        assert!(ExposedWidget::Text.is_text());
+        assert!(!ExposedWidget::Boolean.is_text());
+        assert!(
+            !ExposedWidget::TaxonomySelect {
+                vocabulary: "x".into()
+            }
+            .is_text()
+        );
+        assert!(
+            !ExposedWidget::DynamicOptions {
+                source_field: "fields.x".into(),
+                autocomplete_threshold: 30,
+            }
+            .is_text()
+        );
+    }
+
+    #[test]
+    fn query_filter_text_widget_not_serialized() {
+        // The Text widget should be omitted from JSON output (skip_serializing_if)
+        // to keep existing query definitions compact.
+        let filter = QueryFilter {
+            field: "status".to_string(),
+            operator: FilterOperator::Equals,
+            value: FilterValue::Integer(1),
+            exposed: false,
+            exposed_label: None,
+            widget: ExposedWidget::Text,
+        };
+        let json = serde_json::to_string(&filter).unwrap();
+        assert!(
+            !json.contains("widget"),
+            "Text widget should not appear: {json}"
+        );
+    }
+
+    #[test]
+    fn query_filter_non_text_widget_is_serialized() {
+        let filter = QueryFilter {
+            field: "field_online".to_string(),
+            operator: FilterOperator::Equals,
+            value: FilterValue::Null(()),
+            exposed: true,
+            exposed_label: Some("Online Only".to_string()),
+            widget: ExposedWidget::Boolean,
+        };
+        let json = serde_json::to_string(&filter).unwrap();
+        assert!(
+            json.contains("widget"),
+            "Boolean widget should appear: {json}"
+        );
+        assert!(json.contains("boolean"));
     }
 }

@@ -2,7 +2,10 @@
 //!
 //! REST endpoints for executing gather queries.
 
-use crate::gather::{FilterValue, GatherQuery, QueryContext, QueryDefinition, QueryDisplay};
+use crate::gather::{
+    ExposedWidget, FilterValue, GatherQuery, QueryContext, QueryDefinition, QueryDisplay,
+};
+use crate::models::TagWithDepth;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
@@ -305,12 +308,21 @@ pub async fn execute_and_render(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
+    // Pre-fetch widget data (taxonomy terms, distinct values) for exposed filters.
+    let preload = preload_widget_data(state, &gather_query).await;
+
     // Render gather content (either via theme template or fallback HTML)
-    let content_html =
-        render_gather_with_theme(state, &gather_query, &result, &filter_values, base_path)
-            .unwrap_or_else(|| {
-                render_gather_content_html(&gather_query, &result, &filter_values, base_path)
-            });
+    let content_html = render_gather_with_theme(
+        state,
+        &gather_query,
+        &result,
+        &filter_values,
+        base_path,
+        &preload,
+    )
+    .unwrap_or_else(|| {
+        render_gather_content_html(&gather_query, &result, &filter_values, base_path, &preload)
+    });
 
     // Wrap in page layout with site context
     let mut context = tera::Context::new();
@@ -318,12 +330,7 @@ pub async fn execute_and_render(
 
     let page_html = state
         .theme()
-        .render_page(
-            base_path,
-            &gather_query.label,
-            &content_html,
-            &mut context,
-        )
+        .render_page(base_path, &gather_query.label, &content_html, &mut context)
         .unwrap_or_else(|_| render_gather_html(&gather_query, &result));
 
     Ok(Html(page_html))
@@ -335,6 +342,7 @@ fn render_gather_with_theme(
     result: &crate::gather::GatherResult,
     filter_values: &HashMap<String, String>,
     base_path: &str,
+    preload: &WidgetPreloadData,
 ) -> Option<String> {
     // Try to find a template for this query
     let suggestions = [
@@ -358,8 +366,8 @@ fn render_gather_with_theme(
     context.insert("has_prev", &result.has_prev);
     context.insert("base_path", base_path);
 
-    // Exposed filters for template rendering
-    let exposed_filters = collect_exposed_filters(query);
+    // Exposed filters for template rendering (includes widget type + options)
+    let exposed_filters = collect_exposed_filters(query, preload);
     context.insert("exposed_filters", &exposed_filters);
     context.insert("filter_values", filter_values);
 
@@ -378,6 +386,79 @@ fn render_gather_with_theme(
     }
 
     state.theme().tera().render(&template, &context).ok()
+}
+
+// -------------------------------------------------------------------------
+// Widget preloading
+// -------------------------------------------------------------------------
+
+/// Pre-fetched data needed by exposed-filter widgets during rendering.
+struct WidgetPreloadData {
+    /// Tags (with depth) for `TaxonomySelect` widgets, keyed by vocabulary name.
+    taxonomy_options: HashMap<String, Vec<TagWithDepth>>,
+    /// Distinct values for `DynamicOptions` widgets, keyed by source field path.
+    dynamic_options: HashMap<String, Vec<String>>,
+}
+
+/// Pre-fetch all widget data required by the exposed filters of `query`.
+///
+/// Called once per request before any rendering so that both the theme
+/// template path and the fallback HTML path share the same data.
+async fn preload_widget_data(state: &AppState, query: &GatherQuery) -> WidgetPreloadData {
+    let item_type = query.definition.item_type.as_deref().unwrap_or("");
+    let mut taxonomy_options: HashMap<String, Vec<TagWithDepth>> = HashMap::new();
+    let mut dynamic_options: HashMap<String, Vec<String>> = HashMap::new();
+
+    for filter in query.definition.filters.iter().filter(|f| f.exposed) {
+        match &filter.widget {
+            ExposedWidget::TaxonomySelect { vocabulary } => {
+                if !taxonomy_options.contains_key(vocabulary) {
+                    let tags = state
+                        .categories()
+                        .list_tags_with_depth(vocabulary)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                vocabulary,
+                                error = %e,
+                                "failed to preload taxonomy options for widget"
+                            );
+                            Vec::new()
+                        });
+                    if tags.is_empty() {
+                        tracing::warn!(
+                            vocabulary,
+                            "taxonomy_select widget: vocabulary not found or has no terms"
+                        );
+                    }
+                    taxonomy_options.insert(vocabulary.clone(), tags);
+                }
+            }
+            ExposedWidget::DynamicOptions { source_field, .. } => {
+                if !dynamic_options.contains_key(source_field) {
+                    let values = state
+                        .gather()
+                        .fetch_distinct_values(source_field, item_type)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                source_field,
+                                error = %e,
+                                "failed to preload dynamic options for widget"
+                            );
+                            Vec::new()
+                        });
+                    dynamic_options.insert(source_field.clone(), values);
+                }
+            }
+            ExposedWidget::Text | ExposedWidget::Boolean => {}
+        }
+    }
+
+    WidgetPreloadData {
+        taxonomy_options,
+        dynamic_options,
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -409,13 +490,7 @@ fn build_page_url_prefix(base_path: &str, filter_values: &HashMap<String, String
     let active: Vec<String> = filter_values
         .iter()
         .filter(|(k, v)| !["page", "stage"].contains(&k.as_str()) && !v.is_empty())
-        .map(|(k, v)| {
-            format!(
-                "{}={}",
-                urlencoding::encode(k),
-                urlencoding::encode(v)
-            )
-        })
+        .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
         .collect();
 
     let joined = active.join("&");
@@ -457,28 +532,88 @@ fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
     }
 }
 
-/// Collect exposed filter metadata from a query definition.
-fn collect_exposed_filters(query: &GatherQuery) -> Vec<serde_json::Value> {
+/// Collect exposed filter metadata from a query definition, including widget
+/// type information and pre-fetched option lists for select/autocomplete widgets.
+fn collect_exposed_filters(
+    query: &GatherQuery,
+    preload: &WidgetPreloadData,
+) -> Vec<serde_json::Value> {
     query
         .definition
         .filters
         .iter()
         .filter(|f| f.exposed)
         .map(|f| {
-            serde_json::json!({
-                "field": f.field,
-                "label": f.exposed_label.as_deref().unwrap_or(&f.field),
-                "operator": format!("{:?}", f.operator),
-            })
+            let label = f.exposed_label.as_deref().unwrap_or(&f.field);
+            match &f.widget {
+                ExposedWidget::Boolean => serde_json::json!({
+                    "field": f.field,
+                    "label": label,
+                    "widget_type": "boolean",
+                }),
+                ExposedWidget::TaxonomySelect { vocabulary } => {
+                    let options: Vec<serde_json::Value> = preload
+                        .taxonomy_options
+                        .get(vocabulary)
+                        .map(|tags| {
+                            tags.iter()
+                                .map(|twd| {
+                                    serde_json::json!({
+                                        "value": twd.tag.id,
+                                        "label": twd.tag.label,
+                                        "depth": twd.depth,
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    serde_json::json!({
+                        "field": f.field,
+                        "label": label,
+                        "widget_type": "taxonomy_select",
+                        "options": options,
+                    })
+                }
+                ExposedWidget::DynamicOptions {
+                    source_field,
+                    autocomplete_threshold,
+                } => {
+                    let values = preload
+                        .dynamic_options
+                        .get(source_field)
+                        .cloned()
+                        .unwrap_or_default();
+                    let is_autocomplete = values.len() > *autocomplete_threshold;
+                    serde_json::json!({
+                        "field": f.field,
+                        "label": label,
+                        "widget_type": "dynamic_options",
+                        "options": values,
+                        "is_autocomplete": is_autocomplete,
+                    })
+                }
+                ExposedWidget::Text => serde_json::json!({
+                    "field": f.field,
+                    "label": label,
+                    "widget_type": "text",
+                }),
+            }
         })
         .collect()
 }
 
-/// Render exposed filter form as HTML.
+/// Render exposed filter form as HTML (fallback path, no theme template).
+///
+/// Renders appropriate controls for each widget type:
+/// - `Boolean` → `<select>` with Any / Yes / No
+/// - `TaxonomySelect` → `<select>` indented by hierarchy depth
+/// - `DynamicOptions` → `<select>` (≤ threshold) or `<datalist>` autocomplete (> threshold)
+/// - `Text` → plain `<input type="text">`
 fn render_exposed_filter_form(
     query: &GatherQuery,
     filter_values: &HashMap<String, String>,
     base_path: &str,
+    preload: &WidgetPreloadData,
 ) -> String {
     let exposed: Vec<_> = query
         .definition
@@ -491,27 +626,113 @@ fn render_exposed_filter_form(
         return String::new();
     }
 
-    let mut html = String::new();
-    html.push_str(&format!(
+    let mut html = format!(
         "<form method=\"get\" action=\"{}\" class=\"gather-exposed-filters\">\n",
         escape_html(base_path)
-    ));
+    );
 
     for filter in &exposed {
         let label = filter.exposed_label.as_deref().unwrap_or(&filter.field);
-        let value = filter_values
+        let field_escaped = escape_html(&filter.field);
+        let label_escaped = escape_html(label);
+        let current = filter_values
             .get(&filter.field)
-            .map(|v| escape_html(v))
-            .unwrap_or_default();
+            .map(String::as_str)
+            .unwrap_or("");
+
         html.push_str(&format!(
             "<div class=\"form-group form-group--inline\">\
-             <label for=\"filter-{field}\">{label}</label>\
-             <input type=\"text\" id=\"filter-{field}\" name=\"{field}\" value=\"{value}\" class=\"form-control\">\
-             </div>\n",
-            field = escape_html(&filter.field),
-            label = escape_html(label),
-            value = value,
+             <label for=\"filter-{field_escaped}\">{label_escaped}</label>\n"
         ));
+
+        match &filter.widget {
+            ExposedWidget::Boolean => {
+                let sel_true = if current == "true" { " selected" } else { "" };
+                let sel_false = if current == "false" { " selected" } else { "" };
+                html.push_str(&format!(
+                    "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
+                     class=\"form-control\">\n\
+                     <option value=\"\">Any</option>\n\
+                     <option value=\"true\"{sel_true}>Yes</option>\n\
+                     <option value=\"false\"{sel_false}>No</option>\n\
+                     </select>\n"
+                ));
+            }
+            ExposedWidget::TaxonomySelect { vocabulary } => {
+                html.push_str(&format!(
+                    "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
+                     class=\"form-control\">\n\
+                     <option value=\"\">Any</option>\n"
+                ));
+
+                let tags = preload
+                    .taxonomy_options
+                    .get(vocabulary)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+
+                for twd in tags {
+                    let indent = "\u{00a0}\u{00a0}".repeat(twd.depth as usize);
+                    let tag_id = twd.tag.id.to_string();
+                    let selected = if current == tag_id { " selected" } else { "" };
+                    let label_text = escape_html(&twd.tag.label);
+                    html.push_str(&format!(
+                        "<option value=\"{id}\"{selected}>{indent}{label_text}</option>\n",
+                        id = escape_html(&tag_id),
+                    ));
+                }
+                html.push_str("</select>\n");
+            }
+            ExposedWidget::DynamicOptions {
+                source_field,
+                autocomplete_threshold,
+            } => {
+                let values = preload
+                    .dynamic_options
+                    .get(source_field)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+
+                if values.len() > *autocomplete_threshold {
+                    // Autocomplete: text input + datalist
+                    html.push_str(&format!(
+                        "<input type=\"text\" id=\"filter-{field_escaped}\" \
+                         name=\"{field_escaped}\" value=\"{value}\" \
+                         class=\"form-control\" list=\"{field_escaped}-options\">\n\
+                         <datalist id=\"{field_escaped}-options\">\n",
+                        value = escape_html(current),
+                    ));
+                    for v in values {
+                        html.push_str(&format!("<option value=\"{}\"></option>\n", escape_html(v)));
+                    }
+                    html.push_str("</datalist>\n");
+                } else {
+                    // Dropdown select
+                    html.push_str(&format!(
+                        "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
+                         class=\"form-control\">\n\
+                         <option value=\"\">Any</option>\n"
+                    ));
+                    for v in values {
+                        let selected = if current == v { " selected" } else { "" };
+                        let v_esc = escape_html(v);
+                        html.push_str(&format!(
+                            "<option value=\"{v_esc}\"{selected}>{v_esc}</option>\n"
+                        ));
+                    }
+                    html.push_str("</select>\n");
+                }
+            }
+            ExposedWidget::Text => {
+                html.push_str(&format!(
+                    "<input type=\"text\" id=\"filter-{field_escaped}\" \
+                     name=\"{field_escaped}\" value=\"{value}\" class=\"form-control\">\n",
+                    value = escape_html(current),
+                ));
+            }
+        }
+
+        html.push_str("</div>\n");
     }
 
     html.push_str(&format!(
@@ -521,6 +742,7 @@ fn render_exposed_filter_form(
          </div>\n</form>\n",
         escape_html(base_path)
     ));
+
     html
 }
 
@@ -530,6 +752,7 @@ fn render_gather_content_html(
     result: &crate::gather::GatherResult,
     filter_values: &HashMap<String, String>,
     base_path: &str,
+    preload: &WidgetPreloadData,
 ) -> String {
     let mut html = String::new();
 
@@ -541,7 +764,12 @@ fn render_gather_content_html(
     }
 
     // Exposed filter form
-    html.push_str(&render_exposed_filter_form(query, filter_values, base_path));
+    html.push_str(&render_exposed_filter_form(
+        query,
+        filter_values,
+        base_path,
+        preload,
+    ));
 
     // Results
     if result.items.is_empty() {
@@ -657,7 +885,12 @@ fn compute_page_list(current: u32, total: u32) -> Vec<serde_json::Value> {
 /// Full standalone fallback page (used when theme engine fails).
 fn render_gather_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
     let base_path = format!("/gather/{}", query.query_id);
-    let content = render_gather_content_html(query, result, &HashMap::new(), &base_path);
+    let empty_preload = WidgetPreloadData {
+        taxonomy_options: HashMap::new(),
+        dynamic_options: HashMap::new(),
+    };
+    let content =
+        render_gather_content_html(query, result, &HashMap::new(), &base_path, &empty_preload);
     format!(
         "<!DOCTYPE html>\n<html>\n<head>\n<title>{}</title>\n\
         <style>\nbody {{ font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }}\n\
@@ -728,5 +961,375 @@ mod pager_tests {
         let pages = compute_page_list(10, 10);
         let max = pages.iter().filter_map(|v| v.as_u64()).max().unwrap_or(0);
         assert_eq!(max, 10);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Widget render tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod widget_tests {
+    use super::{WidgetPreloadData, collect_exposed_filters, render_exposed_filter_form};
+    use crate::gather::{
+        ExposedWidget, FilterOperator, FilterValue, GatherQuery, QueryDefinition, QueryDisplay,
+        QueryFilter,
+    };
+    use crate::models::{Tag, TagWithDepth};
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    // ── Helpers ───────────────────────────────────────────────────────
+
+    fn make_query(filters: Vec<QueryFilter>) -> GatherQuery {
+        GatherQuery {
+            query_id: "test_q".to_string(),
+            label: "Test Query".to_string(),
+            description: None,
+            definition: QueryDefinition {
+                filters,
+                ..Default::default()
+            },
+            display: QueryDisplay::default(),
+            plugin: "test".to_string(),
+            created: 0,
+            changed: 0,
+        }
+    }
+
+    fn make_filter(field: &str, widget: ExposedWidget, label: &str) -> QueryFilter {
+        QueryFilter {
+            field: field.to_string(),
+            operator: FilterOperator::Equals,
+            value: FilterValue::Null(()),
+            exposed: true,
+            exposed_label: Some(label.to_string()),
+            widget,
+        }
+    }
+
+    fn make_tag(label: &str, depth: i32) -> TagWithDepth {
+        TagWithDepth {
+            tag: Tag {
+                id: Uuid::nil(),
+                category_id: "topic".to_string(),
+                label: label.to_string(),
+                description: None,
+                weight: 0,
+                created: 0,
+                changed: 0,
+            },
+            depth,
+        }
+    }
+
+    fn empty_preload() -> WidgetPreloadData {
+        WidgetPreloadData {
+            taxonomy_options: HashMap::new(),
+            dynamic_options: HashMap::new(),
+        }
+    }
+
+    // ── Boolean widget ────────────────────────────────────────────────
+
+    #[test]
+    fn boolean_widget_renders_select_with_three_options() {
+        let query = make_query(vec![make_filter(
+            "field_online",
+            ExposedWidget::Boolean,
+            "Online Only",
+        )]);
+        let html =
+            render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &empty_preload());
+        assert!(html.contains("<select"), "expected <select>: {html}");
+        assert!(html.contains(">Any<"), "expected Any option: {html}");
+        assert!(html.contains(">Yes<"), "expected Yes option: {html}");
+        assert!(html.contains(">No<"), "expected No option: {html}");
+        // No option should be pre-selected when value is empty
+        assert!(!html.contains("selected"), "unexpected selected: {html}");
+    }
+
+    #[test]
+    fn boolean_widget_preselects_yes_when_value_is_true() {
+        let query = make_query(vec![make_filter(
+            "field_online",
+            ExposedWidget::Boolean,
+            "Online Only",
+        )]);
+        let mut values = HashMap::new();
+        values.insert("field_online".to_string(), "true".to_string());
+
+        let html = render_exposed_filter_form(&query, &values, "/gather/test_q", &empty_preload());
+        assert!(
+            html.contains("value=\"true\" selected"),
+            "expected Yes selected: {html}"
+        );
+        assert!(
+            !html.contains("value=\"false\" selected"),
+            "false should not be selected: {html}"
+        );
+    }
+
+    #[test]
+    fn boolean_widget_preselects_no_when_value_is_false() {
+        let query = make_query(vec![make_filter(
+            "field_online",
+            ExposedWidget::Boolean,
+            "Online Only",
+        )]);
+        let mut values = HashMap::new();
+        values.insert("field_online".to_string(), "false".to_string());
+
+        let html = render_exposed_filter_form(&query, &values, "/gather/test_q", &empty_preload());
+        assert!(
+            html.contains("value=\"false\" selected"),
+            "expected No selected: {html}"
+        );
+    }
+
+    // ── TaxonomySelect widget ─────────────────────────────────────────
+
+    #[test]
+    fn taxonomy_select_renders_options_from_preload() {
+        let query = make_query(vec![make_filter(
+            "field_topics",
+            ExposedWidget::TaxonomySelect {
+                vocabulary: "topic".to_string(),
+            },
+            "Topic",
+        )]);
+        let mut preload = empty_preload();
+        preload.taxonomy_options.insert(
+            "topic".to_string(),
+            vec![make_tag("Science", 0), make_tag("Physics", 1)],
+        );
+
+        let html = render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &preload);
+        assert!(html.contains("<select"), "expected <select>: {html}");
+        assert!(html.contains(">Any<"), "expected Any option: {html}");
+        assert!(html.contains("Science"), "expected Science: {html}");
+        assert!(html.contains("Physics"), "expected Physics: {html}");
+    }
+
+    #[test]
+    fn taxonomy_select_indents_child_terms() {
+        let query = make_query(vec![make_filter(
+            "field_topics",
+            ExposedWidget::TaxonomySelect {
+                vocabulary: "topic".to_string(),
+            },
+            "Topic",
+        )]);
+        let mut preload = empty_preload();
+        preload.taxonomy_options.insert(
+            "topic".to_string(),
+            vec![make_tag("Root", 0), make_tag("Child", 1)],
+        );
+
+        let html = render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &preload);
+
+        // Depth-0 term must have no leading non-breaking spaces.
+        let nbsp2 = "\u{00a0}\u{00a0}";
+        assert!(
+            !html.contains(&format!("{nbsp2}Root")),
+            "depth-0 term should not be indented: {html}"
+        );
+
+        // Depth-1 term must be prefixed with exactly 2 non-breaking spaces,
+        // NOT 4 (which would indicate the double-indent bug).
+        let nbsp4 = "\u{00a0}\u{00a0}\u{00a0}\u{00a0}";
+        assert!(
+            html.contains(&format!("{nbsp2}Child")),
+            "depth-1 term should have 2-nbsp indent: {html}"
+        );
+        assert!(
+            !html.contains(&format!("{nbsp4}Child")),
+            "depth-1 term must not have 4-nbsp (double-indent bug): {html}"
+        );
+    }
+
+    #[test]
+    fn taxonomy_select_renders_any_when_preload_empty() {
+        let query = make_query(vec![make_filter(
+            "field_topics",
+            ExposedWidget::TaxonomySelect {
+                vocabulary: "topic".to_string(),
+            },
+            "Topic",
+        )]);
+        // No entries in preload — vocabulary not loaded
+        let html =
+            render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &empty_preload());
+        assert!(html.contains("<select"), "expected <select>: {html}");
+        assert!(html.contains(">Any<"), "expected Any option: {html}");
+    }
+
+    // ── DynamicOptions widget ─────────────────────────────────────────
+
+    #[test]
+    fn dynamic_options_renders_select_below_threshold() {
+        let query = make_query(vec![make_filter(
+            "field_country",
+            ExposedWidget::DynamicOptions {
+                source_field: "fields.field_country".to_string(),
+                autocomplete_threshold: 30,
+            },
+            "Country",
+        )]);
+        let mut preload = empty_preload();
+        // 3 values — well below threshold of 30
+        preload.dynamic_options.insert(
+            "fields.field_country".to_string(),
+            vec![
+                "Germany".to_string(),
+                "Spain".to_string(),
+                "USA".to_string(),
+            ],
+        );
+
+        let html = render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &preload);
+        assert!(html.contains("<select"), "expected <select>: {html}");
+        assert!(!html.contains("<datalist"), "unexpected <datalist>: {html}");
+        assert!(html.contains("Germany"), "expected Germany: {html}");
+    }
+
+    #[test]
+    fn dynamic_options_renders_datalist_above_threshold() {
+        let values: Vec<String> = (1..=31).map(|i| format!("Country{i}")).collect();
+
+        let query = make_query(vec![make_filter(
+            "field_country",
+            ExposedWidget::DynamicOptions {
+                source_field: "fields.field_country".to_string(),
+                autocomplete_threshold: 30,
+            },
+            "Country",
+        )]);
+        let mut preload = empty_preload();
+        preload
+            .dynamic_options
+            .insert("fields.field_country".to_string(), values);
+
+        let html = render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &preload);
+        assert!(html.contains("<datalist"), "expected <datalist>: {html}");
+        assert!(
+            html.contains("Country1"),
+            "expected option Country1: {html}"
+        );
+    }
+
+    #[test]
+    fn dynamic_options_preselects_current_value_in_select() {
+        let query = make_query(vec![make_filter(
+            "field_country",
+            ExposedWidget::DynamicOptions {
+                source_field: "fields.field_country".to_string(),
+                autocomplete_threshold: 30,
+            },
+            "Country",
+        )]);
+        let mut preload = empty_preload();
+        preload.dynamic_options.insert(
+            "fields.field_country".to_string(),
+            vec!["Germany".to_string(), "Spain".to_string()],
+        );
+        let mut values = HashMap::new();
+        values.insert("field_country".to_string(), "Spain".to_string());
+
+        let html = render_exposed_filter_form(&query, &values, "/gather/test_q", &preload);
+        assert!(
+            html.contains("value=\"Spain\" selected"),
+            "expected Spain selected: {html}"
+        );
+        assert!(
+            !html.contains("value=\"Germany\" selected"),
+            "Germany should not be selected: {html}"
+        );
+    }
+
+    // ── Text widget (default) ─────────────────────────────────────────
+
+    #[test]
+    fn text_widget_renders_input() {
+        let query = make_query(vec![make_filter("title", ExposedWidget::Text, "Title")]);
+        let html =
+            render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &empty_preload());
+        assert!(
+            html.contains("type=\"text\""),
+            "expected text input: {html}"
+        );
+        assert!(!html.contains("<select"), "unexpected <select>: {html}");
+    }
+
+    // ── collect_exposed_filters ───────────────────────────────────────
+
+    #[test]
+    fn collect_exposed_filters_returns_widget_type() {
+        let query = make_query(vec![
+            make_filter("field_online", ExposedWidget::Boolean, "Online Only"),
+            make_filter(
+                "field_topics",
+                ExposedWidget::TaxonomySelect {
+                    vocabulary: "topic".to_string(),
+                },
+                "Topic",
+            ),
+            make_filter("title", ExposedWidget::Text, "Title"),
+        ]);
+
+        let filters = collect_exposed_filters(&query, &empty_preload());
+        assert_eq!(filters.len(), 3);
+
+        assert_eq!(filters[0]["widget_type"], "boolean");
+        assert_eq!(filters[0]["field"], "field_online");
+        assert_eq!(filters[0]["label"], "Online Only");
+
+        assert_eq!(filters[1]["widget_type"], "taxonomy_select");
+        assert_eq!(filters[2]["widget_type"], "text");
+    }
+
+    #[test]
+    fn collect_exposed_filters_skips_non_exposed() {
+        let mut filter = make_filter("hidden", ExposedWidget::Boolean, "Hidden");
+        filter.exposed = false;
+        let query = make_query(vec![filter]);
+
+        let filters = collect_exposed_filters(&query, &empty_preload());
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn collect_exposed_filters_dynamic_options_includes_is_autocomplete() {
+        let query = make_query(vec![make_filter(
+            "field_country",
+            ExposedWidget::DynamicOptions {
+                source_field: "fields.field_country".to_string(),
+                autocomplete_threshold: 2,
+            },
+            "Country",
+        )]);
+        let mut preload = empty_preload();
+        // 3 values > threshold of 2 → autocomplete mode
+        preload.dynamic_options.insert(
+            "fields.field_country".to_string(),
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+        );
+
+        let filters = collect_exposed_filters(&query, &preload);
+        assert_eq!(filters[0]["widget_type"], "dynamic_options");
+        assert_eq!(filters[0]["is_autocomplete"], true);
+    }
+
+    #[test]
+    fn render_form_empty_when_no_exposed_filters() {
+        // A query with only non-exposed filters should produce an empty string
+        let mut filter = make_filter("status", ExposedWidget::Text, "Status");
+        filter.exposed = false;
+        let query = make_query(vec![filter]);
+
+        let html =
+            render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &empty_preload());
+        assert!(html.is_empty(), "expected empty string, got: {html}");
     }
 }

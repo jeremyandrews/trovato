@@ -250,6 +250,7 @@ mod tests {
             value,
             exposed: false,
             exposed_label: None,
+            widget: Default::default(),
         }
     }
 

@@ -718,13 +718,15 @@ fn seed_taxonomy() -> u32 {
 
 /// Seed the ritrovo gather queries into the `gather_query` table.
 ///
-/// Idempotent: `ON CONFLICT (query_id) DO NOTHING` means re-running
-/// `tap_install` after the user has customised a query will not overwrite
-/// their changes.
+/// Idempotent. On conflict the `definition` and `changed` columns are
+/// overwritten so that plugin upgrades (e.g. adding widget types) propagate
+/// to existing installations automatically. Label, display, and plugin are
+/// also kept current. The `created` timestamp is preserved via `DO UPDATE`
+/// (not included in the SET clause).
 fn seed_gather_queries(now: i64) {
     let mut seeded = 0u32;
 
-    // Helper closure: insert one gather query row.
+    // Helper closure: upsert one gather query row.
     let mut insert = |query_id: &str,
                       label: &str,
                       description: Option<&str>,
@@ -734,7 +736,12 @@ fn seed_gather_queries(now: i64) {
             "INSERT INTO gather_query \
              (query_id, label, description, definition, display, plugin, created, changed) \
              VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $7) \
-             ON CONFLICT (query_id) DO NOTHING",
+             ON CONFLICT (query_id) DO UPDATE \
+               SET label       = EXCLUDED.label, \
+                   description = EXCLUDED.description, \
+                   definition  = EXCLUDED.definition, \
+                   display     = EXCLUDED.display, \
+                   changed     = EXCLUDED.changed",
             &[
                 serde_json::json!(query_id),
                 serde_json::json!(label),
@@ -770,28 +777,32 @@ fn seed_gather_queries(now: i64) {
                     "operator": "has_tag_or_descendants",
                     "value": null,
                     "exposed": true,
-                    "exposed_label": "Topic (UUID)"
+                    "exposed_label": "Topic",
+                    "widget": {"type": "taxonomy_select", "vocabulary": "topic"}
                 },
                 {
                     "field": "fields.field_country",
-                    "operator": "contains",
+                    "operator": "equals",
                     "value": null,
                     "exposed": true,
-                    "exposed_label": "Country"
+                    "exposed_label": "Country",
+                    "widget": {"type": "dynamic_options", "source_field": "fields.field_country"}
                 },
                 {
                     "field": "fields.field_online",
                     "operator": "equals",
                     "value": null,
                     "exposed": true,
-                    "exposed_label": "Online Only"
+                    "exposed_label": "Online Only",
+                    "widget": {"type": "boolean"}
                 },
                 {
                     "field": "fields.field_language",
-                    "operator": "contains",
+                    "operator": "equals",
                     "value": null,
                     "exposed": true,
-                    "exposed_label": "Language"
+                    "exposed_label": "Language",
+                    "widget": {"type": "dynamic_options", "source_field": "fields.field_language"}
                 }
             ],
             "sorts": [{"field": "fields.field_start_date", "direction": "asc"}],
