@@ -753,24 +753,22 @@ Gather filters support three kinds of values:
 
 ### The Five Seeded Gathers
 
-`tap_install` seeds these five queries with `ON CONFLICT (query_id) DO NOTHING` — re-running install after the user has customised a query will not overwrite their changes.
+`tap_install` seeds these five queries. On conflict it uses `DO UPDATE SET definition = EXCLUDED.definition, changed = EXCLUDED.changed` — reinstalling or upgrading the plugin propagates definition changes (including new filter widgets) to existing databases automatically.
 
 #### ritrovo.upcoming_conferences
 
-Upcoming conferences (start date ≥ today), sortable and filterable via exposed filter form.
+Upcoming conferences (start date ≥ today), filterable via an exposed filter form.
 
 ```
-Hard filters:   field_start_date ≥ current_date
-Exposed filters: field_topics (HasTagOrDescendants, UUID)
-                 field_country (contains, case-insensitive)
-                 field_online  (equals)
-                 field_language (contains, case-insensitive)
-Sort:           field_start_date ASC
+Hard filters:    field_start_date ≥ current_date
+Exposed filters: field_topics   has_tag_or_descendants  widget: taxonomy_select (vocabulary: "topic")
+                 field_country  equals                  widget: dynamic_options (source: fields.field_country)
+                 field_online   equals                  widget: boolean
+                 field_language equals                  widget: dynamic_options (source: fields.field_language)
+Sort:            field_start_date ASC
 ```
 
-This is the main public listing page, reachable at `/conferences`. When the exposed filters are empty (no user input), all four filter slots resolve to null and are skipped — the query returns every upcoming conference.
-
-`field_country` and `field_language` use `contains` (SQL `ILIKE`) rather than `equals` so that typing "Germany" matches conferences whose country field says "Germany" even with mixed casing, and partial strings like "Ger" will also match. This makes the filter form usable without knowing exact capitalization.
+This is the main public listing page, reachable at `/conferences`. When all exposed filters are empty (no user input), every filter resolves to null and is skipped — the query returns every upcoming conference. See "Exposed Filter Widgets" below for how each widget type works.
 
 The conference list is rendered as **cards** rather than a table. When the Trovato theme engine looks for a template to render a gather query, it first checks for a query-specific override at `templates/gather/query--{query_id}.html` before falling back to the generic `query.html`. The importer ships `templates/gather/query--ritrovo.upcoming_conferences.html`, which extends `query.html` and overrides the `query_content` block with a card grid:
 
@@ -827,6 +825,93 @@ ritrovo.by_city:
 
 Two separate gathers are used (rather than one gather with an optional city filter) to avoid the empty-string problem: if a single gather had an optional `url_arg("city")` filter, a request without `?city=` would resolve to an empty string, which would match no conferences — not the same as "all conferences in this country". The two-gather design sidesteps this entirely: the kernel routes `/location/{country}` to `by_country` and `/location/{country}/{city}` to `by_city`.
 
+### Exposed Filter Widgets
+
+The `ritrovo.upcoming_conferences` gather has four exposed filters, each using a different widget type. Without explicit widget configuration, every exposed filter renders as a plain text input — acceptable for free-text searches but awkward for boolean fields and fields with a small set of known values.
+
+Each filter declares its widget in the `"widget"` key of its filter JSON:
+
+```json
+{
+    "field": "fields.field_online",
+    "operator": "equals",
+    "value": null,
+    "exposed": true,
+    "exposed_label": "Online Only",
+    "widget": { "type": "boolean" }
+}
+```
+
+The `"widget"` key is optional — omitting it is equivalent to `{ "type": "text" }`. Existing query definitions without a `"widget"` key continue to work unchanged.
+
+#### Boolean widget — `field_online`
+
+```json
+"widget": { "type": "boolean" }
+```
+
+Renders a `<select>` with three options: **Any** (empty, filter skipped), **Yes** (`true`), **No** (`false`). When the user chooses "Yes", the form submits `?fields.field_online=true`. The gather's `parse_filter_params` parses `"true"` as a JSON boolean, producing a `FilterValue::Boolean(true)` that the `equals` operator compares correctly.
+
+This is the right widget for any field that stores `true`/`false` — it's more usable than a text box asking users to type the word "true".
+
+#### Taxonomy select widget — `field_topics`
+
+```json
+"widget": { "type": "taxonomy_select", "vocabulary": "topic" }
+```
+
+Renders a `<select>` populated from the `topic` category vocabulary. The kernel loads all tags with their hierarchy depth using `CategoryService::list_tags_with_depth()`, which returns them in DFS pre-order so that each parent immediately precedes its children. Child terms are indented with non-breaking spaces proportional to depth:
+
+```
+Any
+Languages
+  Systems
+    Rust
+    C++
+    .NET
+  JVM
+    Java
+  Scripting
+    Python
+    JavaScript
+    ...
+Infrastructure
+  Cloud & DevOps
+  ...
+```
+
+When the user selects "Systems", the form submits the UUID of the "Systems" tag. The `has_tag_or_descendants` operator then expands that UUID to include "Rust", "C++", ".NET", and any future child terms — the user selected a high-level concept and automatically gets all its concrete children.
+
+The taxonomy select is the right widget whenever a filter uses `has_tag` or `has_tag_or_descendants`: it shows meaningful human labels, not raw UUIDs.
+
+#### Dynamic options widget — `field_country` and `field_language`
+
+```json
+"widget": {
+    "type": "dynamic_options",
+    "source_field": "fields.field_country",
+    "autocomplete_threshold": 30
+}
+```
+
+The kernel queries distinct non-null, non-empty values for `fields.field_country` across all published `conference` items (up to 200), caches the list for five minutes, and passes it to the renderer. The renderer then chooses:
+
+- **≤ threshold (30)** — a `<select>` dropdown listing every distinct value with an "Any" option at the top.
+- **> threshold (30)** — a `<input type="text">` with a `<datalist>` for browser-native autocomplete. The user can type freely and the browser offers matching suggestions.
+
+This dual-mode design handles two real situations: a small conference dataset early on (a handful of countries → clean dropdown) and a large dataset later (many countries → autocomplete).
+
+Both `field_country` and `field_language` use the `equals` operator, not `contains`. This is intentional: the dropdown and datalist surface exact values that are already in the database, so filtering by exact match is correct — there's no reason to do a partial `ILIKE` search when you're selecting from a known list. A text-input filter with `contains` was the old behaviour before widgets were introduced.
+
+#### Widget rendering paths
+
+The widget data is pre-fetched once per request in `preload_widget_data()` — taxonomy tags from the database, distinct values from the cache — and then passed to whichever rendering path is active:
+
+- **Tera theme templates** receive the widget type and option list as structured JSON in the `exposed_filters` context variable and branch on `filter.widget_type`.
+- **Fallback HTML renderer** (`render_exposed_filter_form`) generates the same HTML directly in Rust when no theme template exists.
+
+Both paths produce identical HTML, so switching between a custom template and the default fallback does not change the widget behaviour.
+
 ### The /conferences, /cfps, and /location Routes
 
 The kernel's `ritrovo_topics` route module provides five plugin-gated routes. `/conferences` and `/cfps` render their gather queries directly under their own paths — pager links, filter form submissions, and browser history all stay on the friendly URL. `/location` routes resolve path segments to gather parameters and redirect:
@@ -873,34 +958,47 @@ fn gated_route_plugins_matches_runtime_gates() {
 
 ### Seeding Queries From a Plugin
 
-Seeding gather queries from `tap_install` follows the same idempotent pattern as taxonomy seeding: insert with `ON CONFLICT DO NOTHING`, log the count.
+Seeding gather queries from `tap_install` is an **upsert**, not a simple insert. When the plugin upgrades — for example, to add widget types to its exposed filters — the new `definition` must replace the old one in existing databases. Using `ON CONFLICT DO NOTHING` would silently leave old rows untouched.
 
-The main subtlety is JSONB parameter binding. The `execute_raw` host function accepts parameters as a JSON array where each element is the literal value for `$1`, `$2`, etc. To pass a JSONB object, serialize it to a JSON string first and cast it in SQL with `::jsonb`:
+The importer therefore uses `DO UPDATE`:
 
 ```rust
 host::execute_raw(
-    "INSERT INTO gather_query (query_id, label, definition, display, ...)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, ...)
-     ON CONFLICT (query_id) DO NOTHING",
+    "INSERT INTO gather_query (query_id, label, description, definition, display, plugin, created, changed)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $7)
+     ON CONFLICT (query_id) DO UPDATE
+       SET label       = EXCLUDED.label,
+           description = EXCLUDED.description,
+           definition  = EXCLUDED.definition,
+           display     = EXCLUDED.display,
+           changed     = EXCLUDED.changed",
     &[
         serde_json::json!("ritrovo.by_topic"),
         serde_json::json!("Conferences by Topic"),
+        serde_json::json!(description),
         serde_json::json!(definition_value.to_string()),  // serialised to string; SQL casts to jsonb
         serde_json::json!(display_value.to_string()),
-        // ...
+        serde_json::json!("ritrovo_importer"),
+        serde_json::json!(now),
     ],
 )
 ```
 
-Calling `.to_string()` on a `serde_json::Value` produces a valid JSON text string. The `::jsonb` cast in SQL parses it back into a JSONB column. This pattern works across the plugin boundary because the host function only understands simple JSON scalars for its parameter array.
+The `created` timestamp is not in the `SET` clause, so it is preserved from the original insert. The `changed` timestamp is updated, making it easy to see when a query was last modified by a plugin upgrade.
+
+The main subtlety is JSONB parameter binding. The `execute_raw` host function accepts parameters as a JSON array where each element is the literal value for `$1`, `$2`, etc. To pass a JSONB object, serialize it to a JSON string first and cast it in SQL with `::jsonb`. Calling `.to_string()` on a `serde_json::Value` produces a valid JSON text string. This pattern works across the plugin boundary because the host function only understands simple JSON scalars for its parameter array.
 
 ---
 
-With the taxonomy, gather queries, and browse routes in place, Ritrovo visitors can:
+With the taxonomy, gather queries, browse routes, and filter widgets in place, Ritrovo visitors can:
 
-- Browse all upcoming conferences at `/conferences`
+- Browse all upcoming conferences at `/conferences`, filtering with purpose-built controls:
+  - A hierarchical topic selector (Any → Languages → Rust)
+  - A country dropdown or autocomplete based on values actually in the database
+  - An Online Only selector (Any / Yes / No)
+  - A language dropdown or autocomplete
 - Drill into a topic tree at `/topics/rust` (or `/topics/languages` for everything under that branch)
 - Find open CFPs at `/cfps`
 - Filter by country at `/location/Germany` and by city at `/location/Germany/Berlin`
 
-The gather engine handles filtering, pagination, and rendering — the plugin only had to declare the query shapes and install the routes.
+The gather engine handles filtering, pagination, widget data loading, and rendering — the plugin only had to declare the query shapes, widget types, and routes.
