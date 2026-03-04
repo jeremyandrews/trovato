@@ -457,6 +457,9 @@ pub fn tap_install() -> serde_json::Value {
     // 2. Seed the gather queries used by the topic/CFP browse pages.
     seed_gather_queries(now);
 
+    // 2a. Redirect the raw gather URL to the pretty path.
+    seed_redirects(now);
+
     // 3. Queue historical import.
     let current_year = timestamp_to_year(now) as u16;
     let mut pushed = 0u32;
@@ -946,6 +949,46 @@ fn seed_gather_queries(now: i64) {
         "info",
         PLUGIN_NAME,
         &format!("seed_gather_queries: {seeded}/5 queries seeded"),
+    );
+}
+
+/// Seed 301 redirects from raw gather URLs to their pretty paths.
+///
+/// `/gather/ritrovo.upcoming_conferences` → `/conferences`
+/// `/gather/ritrovo.open_cfps`            → `/cfps`
+///
+/// Uses `ON CONFLICT DO NOTHING` so manually edited redirects are preserved.
+fn seed_redirects(now: i64) {
+    let redirects: &[(&str, &str)] = &[
+        ("/gather/ritrovo.upcoming_conferences", "/conferences"),
+        ("/gather/ritrovo.open_cfps", "/cfps"),
+    ];
+
+    let mut seeded = 0u32;
+    for (source, destination) in redirects {
+        let result = host::execute_raw(
+            "INSERT INTO redirect (source, destination, status_code, language, created) \
+             SELECT $1, $2, 301, 'en', $3 \
+             WHERE NOT EXISTS ( \
+               SELECT 1 FROM redirect WHERE source = $1 AND language = 'en' \
+             )",
+            &[
+                serde_json::json!(source),
+                serde_json::json!(destination),
+                serde_json::json!(now),
+            ],
+        );
+        if matches!(result, Ok(1)) {
+            seeded += 1;
+        }
+    }
+    host::log(
+        "info",
+        PLUGIN_NAME,
+        &format!(
+            "seed_redirects: {seeded}/{} redirects seeded",
+            redirects.len()
+        ),
     );
 }
 
