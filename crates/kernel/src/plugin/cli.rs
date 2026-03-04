@@ -342,6 +342,34 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
         .get(name)
         .with_context(|| format!("plugin '{}' not found in {}", name, plugins_dir.display()))?;
 
+    let already_installed = status::is_installed(pool, name).await?;
+
+    // Check dependencies before touching the filesystem — bail here so the
+    // plugin directory is not modified on a failed install attempt.
+    if !already_installed {
+        let installed_names = status::get_enabled_names(pool).await?;
+        let installed_set: std::collections::HashSet<String> =
+            installed_names.into_iter().collect();
+
+        for dep in &info.dependencies {
+            if !installed_set.contains(dep) {
+                bail!(
+                    "plugin '{name}' depends on '{dep}' which is not installed. \
+                     Install '{dep}' first with: trovato plugin install {dep}",
+                );
+            }
+        }
+
+        for dep in &info.migrations.depends_on {
+            if !installed_set.contains(dep) {
+                bail!(
+                    "plugin '{name}' migration depends on '{dep}' which is not installed. \
+                     Install '{dep}' first with: trovato plugin install {dep}",
+                );
+            }
+        }
+    }
+
     // Copy the compiled WASM into the plugin directory (always overwrite so
     // reinstalls pick up the latest build).
     // `cargo build --target wasm32-wasip1` outputs to target/wasm32-wasip1/release/;
@@ -370,33 +398,6 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
         );
     }
 
-    let already_installed = status::is_installed(pool, name).await?;
-
-    if !already_installed {
-        // Check that all declared dependencies are installed before proceeding
-        let installed_names = status::get_enabled_names(pool).await?;
-        let installed_set: std::collections::HashSet<String> =
-            installed_names.into_iter().collect();
-
-        for dep in &info.dependencies {
-            if !installed_set.contains(dep) {
-                bail!(
-                    "plugin '{name}' depends on '{dep}' which is not installed. \
-                     Install '{dep}' first with: trovato plugin install {dep}",
-                );
-            }
-        }
-
-        for dep in &info.migrations.depends_on {
-            if !installed_set.contains(dep) {
-                bail!(
-                    "plugin '{name}' migration depends on '{dep}' which is not installed. \
-                     Install '{dep}' first with: trovato plugin install {dep}",
-                );
-            }
-        }
-    }
-
     // Run any pending migrations (safe to call whether or not already installed;
     // idempotent via ON CONFLICT DO NOTHING in the migration tracker).
     if !info.migrations.files.is_empty() {
@@ -420,8 +421,8 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
         // Insert into plugin_status
         status::install_plugin(pool, name, &info.version).await?;
         println!("Plugin '{}' v{} installed and enabled.", name, info.version);
+        println!("tap_install will fire on next server startup.");
     }
-    println!("tap_install will fire on next server startup.");
     Ok(())
 }
 

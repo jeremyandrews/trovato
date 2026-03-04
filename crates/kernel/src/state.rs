@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use redis::Client as RedisClient;
 use sqlx::PgPool;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::middleware::language::{
     AcceptLanguageNegotiator, LanguageNegotiator, UrlPrefixNegotiator,
@@ -330,34 +330,61 @@ impl AppState {
             tap_registry.clone(),
         ));
 
+        use crate::tap::{RequestServices, RequestState, UserContext};
+
         // Dispatch tap_install for enabled plugins that haven't had it called yet.
         // This covers both auto-installed plugins (first server start after adding
         // a plugin with default_enabled=true) and CLI-installed plugins (first
         // server start after `trovato plugin install <name>`).
-        use crate::tap::{RequestServices, RequestState, UserContext};
-        let tap_install_http = reqwest::Client::new();
+        //
+        // Runs in a background task so the HTTP server starts immediately rather
+        // than blocking for up to 150 s per plugin.
         let pending = plugin_status::get_pending_tap_install(&db)
             .await
             .context("failed to query pending tap_install")?;
-        for plugin_name in &pending {
-            let install_state = RequestState::new(
-                UserContext::anonymous(),
-                RequestServices::for_background(db.clone(), None, None, tap_install_http.clone()),
-            );
-            let result = tap_dispatcher
-                .dispatch_to_plugin("tap_install", "{}", plugin_name, install_state)
-                .await;
-            if result.is_some() {
-                info!(plugin = %plugin_name, "tap_install dispatched");
-            } else {
-                info!(
-                    plugin = %plugin_name,
-                    "tap_install not implemented — skipping"
-                );
-            }
-            plugin_status::mark_tap_install_called(&db, plugin_name)
-                .await
-                .context("failed to mark tap_install_called")?;
+        if !pending.is_empty() {
+            let tap_install_db = db.clone();
+            let tap_install_dispatcher = tap_dispatcher.clone();
+            tokio::spawn(async move {
+                let http = reqwest::Client::new();
+                for plugin_name in &pending {
+                    let install_state = RequestState::new(
+                        UserContext::anonymous(),
+                        RequestServices::for_background(
+                            tap_install_db.clone(),
+                            None,
+                            None,
+                            http.clone(),
+                        ),
+                    );
+                    // dispatch_to_plugin returns None when the plugin does not
+                    // export tap_install (harmless) OR when the WASM call fails
+                    // (the dispatcher already logs an error in that case).
+                    // Mark called in either case — to retry, set
+                    // tap_install_called = FALSE in plugin_status and restart.
+                    let result = tap_install_dispatcher
+                        .dispatch_to_plugin("tap_install", "{}", plugin_name, install_state)
+                        .await;
+                    if result.is_some() {
+                        info!(plugin = %plugin_name, "tap_install dispatched");
+                    } else {
+                        warn!(
+                            plugin = %plugin_name,
+                            "tap_install not implemented or failed — check error log; \
+                             reset tap_install_called = FALSE in plugin_status to retry"
+                        );
+                    }
+                    if let Err(e) =
+                        plugin_status::mark_tap_install_called(&tap_install_db, plugin_name).await
+                    {
+                        error!(
+                            plugin = %plugin_name,
+                            error = %e,
+                            "failed to mark tap_install_called"
+                        );
+                    }
+                }
+            });
         }
 
         // Create menu registry from plugins by invoking tap_menu

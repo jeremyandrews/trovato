@@ -457,6 +457,9 @@ pub fn tap_install() -> serde_json::Value {
     // 2. Seed the gather queries used by the topic/CFP browse pages.
     seed_gather_queries(now);
 
+    // 3a. Register the /conferences URL alias for the upcoming conferences page.
+    seed_url_aliases(now);
+
     // 3. Queue historical import.
     let current_year = timestamp_to_year(now) as u16;
     let mut pushed = 0u32;
@@ -542,7 +545,17 @@ fn push_conference_batches(topic: &str, year: u16, body: &str) -> (u32, u32) {
             }
         }
     } else {
-        // Fallback: push raw (will error at worker if still too large).
+        // Fallback: body is not a valid JSON array — push raw and let the
+        // worker surface the parse error.  Log here so the operator can
+        // identify which topic/year produced malformed JSON.
+        host::log(
+            "warn",
+            PLUGIN_NAME,
+            &format!(
+                "push_conference_batches: failed to parse JSON array for {topic}/{year}, \
+                 pushing raw payload"
+            ),
+        );
         let payload = serde_json::json!({
             "topic": topic,
             "year": year,
@@ -581,6 +594,31 @@ fn seed_taxonomy() -> u32 {
 
         // Skip if already seeded.
         if load_state_str(&state_key).is_some() {
+            continue;
+        }
+
+        // Guard against duplicate labels from a previous partial run where the
+        // DB row was inserted but save_state was not reached (e.g. WASM
+        // interrupted between the two steps).  Recover the existing UUID rather
+        // than inserting a second row with a different UUID.
+        let existing = host::query_raw(
+            "SELECT id::text AS id FROM category_tag \
+             WHERE category_id = $1 AND label = $2 \
+             LIMIT 1",
+            &[
+                serde_json::json!(TOPICS_CATEGORY_ID),
+                serde_json::json!(term.label),
+            ],
+        );
+        if let Some(existing_uuid) = existing
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+            .and_then(|rows| rows.into_iter().next())
+            .and_then(|row| row.get("id").and_then(|v| v.as_str()).map(String::from))
+        {
+            // Row already exists — save the UUID into state and skip the insert.
+            save_state(&state_key, &existing_uuid);
+            created += 1;
             continue;
         }
 
@@ -736,7 +774,7 @@ fn seed_gather_queries(now: i64) {
                 },
                 {
                     "field": "fields.field_country",
-                    "operator": "equals",
+                    "operator": "contains",
                     "value": null,
                     "exposed": true,
                     "exposed_label": "Country"
@@ -750,7 +788,7 @@ fn seed_gather_queries(now: i64) {
                 },
                 {
                     "field": "fields.field_language",
-                    "operator": "equals",
+                    "operator": "contains",
                     "value": null,
                     "exposed": true,
                     "exposed_label": "Language"
@@ -914,6 +952,40 @@ fn seed_gather_queries(now: i64) {
     );
 }
 
+/// Seed URL aliases for the ritrovo gather pages.
+///
+/// Uses `ON CONFLICT DO NOTHING` so manual customizations are preserved.
+fn seed_url_aliases(now: i64) {
+    const LIVE_STAGE_ID: &str = "0193a5a0-0000-7000-8000-000000000001";
+    let aliases: &[(&str, &str)] = &[(
+        "/conferences",
+        "/gather/ritrovo.upcoming_conferences",
+    )];
+
+    let mut seeded = 0u32;
+    for (alias, source) in aliases {
+        let result = host::execute_raw(
+            "INSERT INTO url_alias (source, alias, language, created, stage_id) \
+             VALUES ($1, $2, 'en', $3, $4::uuid) \
+             ON CONFLICT (alias, language, stage_id) DO NOTHING",
+            &[
+                serde_json::json!(source),
+                serde_json::json!(alias),
+                serde_json::json!(now),
+                serde_json::json!(LIVE_STAGE_ID),
+            ],
+        );
+        if matches!(result, Ok(1)) {
+            seeded += 1;
+        }
+    }
+    host::log(
+        "info",
+        PLUGIN_NAME,
+        &format!("seed_url_aliases: {seeded}/{} aliases seeded", aliases.len()),
+    );
+}
+
 /// Look up the category_tag UUID for a confs.tech topic slug.
 ///
 /// Returns `None` if the slug has no taxonomy mapping (e.g. `sre`, `scala`)
@@ -1060,7 +1132,14 @@ fn fetch_topic_for_queue(topic: &str, year: u16) -> FetchResult {
                 set_state(&etag_key, etag);
             }
 
-            let (p, _e) = push_conference_batches(topic, year, &response.body);
+            let (p, e) = push_conference_batches(topic, year, &response.body);
+            if e > 0 {
+                host::log(
+                    "warn",
+                    PLUGIN_NAME,
+                    &format!("fetch_topic: {e} batch(es) failed to push for {topic}/{year}"),
+                );
+            }
             if p > 0 {
                 FetchResult::Queued
             } else {
@@ -1507,7 +1586,7 @@ fn insert_conference(
            gen_random_uuid(), \
            'conference', \
            $1, \
-           0, \
+           1, \
            '00000000-0000-0000-0000-000000000000'::uuid, \
            $2::uuid, \
            $3, \

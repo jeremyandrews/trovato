@@ -2,7 +2,7 @@
     <ul class="pager__items">
         {% if pager.current_page > 1 %}
         <li class="pager__item pager__item--previous">
-            <a href="{{ pager.base_url }}?page={{ pager.current_page - 1 }}">Previous</a>
+            <a href="{{ pager.page_url_prefix }}page={{ pager.current_page - 1 }}">Previous</a>
         </li>
         {% endif %}
 
@@ -13,14 +13,14 @@
             {% elif page == "..." %}
             <span class="pager__ellipsis">...</span>
             {% else %}
-            <a href="{{ pager.base_url }}?page={{ page }}">{{ page }}</a>
+            <a href="{{ pager.page_url_prefix }}page={{ page }}">{{ page }}</a>
             {% endif %}
         </li>
         {% endfor %}
 
         {% if pager.current_page < pager.total_pages %}
         <li class="pager__item pager__item--next">
-            <a href="{{ pager.base_url }}?page={{ pager.current_page + 1 }}">Next</a>
+            <a href="{{ pager.page_url_prefix }}page={{ pager.current_page + 1 }}">Next</a>
         </li>
         {% endif %}
     </ul>

@@ -8,7 +8,7 @@
     {% endif %}
 
     {% if exposed_filters is defined and exposed_filters | length > 0 %}
-    <form method="get" action="/gather/{{ query.query_id }}" class="gather-exposed-filters">
+    <form method="get" action="{{ base_path | default(value='/gather/' ~ query.query_id) }}" class="gather-exposed-filters">
         {% for filter in exposed_filters %}
         <div class="form-group form-group--inline">
             <label for="filter-{{ filter.field }}">{{ filter.label }}</label>
@@ -19,6 +19,7 @@
         {% endfor %}
         <div class="form-actions">
             <button type="submit" class="btn">Apply</button>
+            <a href="{{ base_path | default(value='/gather/' ~ query.query_id) }}" class="btn btn--secondary">Clear</a>
         </div>
     </form>
     {% endif %}

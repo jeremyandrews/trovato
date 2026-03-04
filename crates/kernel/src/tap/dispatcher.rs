@@ -12,6 +12,17 @@ use wasmtime::{Instance, Store, TypedFunc};
 use super::{RequestState, TapHandler, TapRegistry};
 use crate::plugin::{PluginRuntime, PluginState};
 
+/// Background tap names that may make many network or DB calls.
+///
+/// These receive a 150-second epoch deadline instead of the 10-second default
+/// used for request-scoped taps.  **Add new long-running background taps here.**
+const BACKGROUND_TAPS: &[&str] = &[
+    "tap_install",
+    "tap_cron",
+    "tap_queue_worker",
+    "tap_queue_info",
+];
+
 /// Result from a single tap invocation.
 #[derive(Debug)]
 pub struct TapResult {
@@ -172,13 +183,14 @@ impl TapDispatcher {
 
         // Set epoch deadline to prevent infinite loops.
         // The engine's epoch is incremented by a background thread every second.
-        // Background taps (install, cron, queue) may make many HTTP/DB calls and
-        // need a longer deadline than request-scoped taps.
-        let epoch_deadline = match tap_name {
-            "tap_install" | "tap_cron" | "tap_queue_worker" | "tap_queue_info" => 150,
-            _ => 10,
-        };
-        store.set_epoch_deadline(epoch_deadline);
+        // Background taps may make many network/DB calls and need a longer deadline
+        // than request-scoped taps.  Add new long-running background taps to
+        // BACKGROUND_TAPS so they receive the extended limit automatically.
+        store.set_epoch_deadline(if BACKGROUND_TAPS.contains(&tap_name) {
+            150
+        } else {
+            10
+        });
 
         // Instantiate the module
         let instance = self

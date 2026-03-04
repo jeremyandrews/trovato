@@ -12,8 +12,8 @@ use super::types::{
     FilterOperator, FilterValue, JoinType, QueryDefinition, QueryFilter, SortDirection,
 };
 use sea_query::{
-    Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order, PostgresQueryBuilder, Query,
-    SelectStatement, SimpleExpr,
+    extension::postgres::PgExpr, Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order,
+    PostgresQueryBuilder, Query, SelectStatement, SimpleExpr,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -223,7 +223,7 @@ impl GatherQueryBuilder {
             }
             FilterOperator::Contains => {
                 let value = filter.value.as_string()?;
-                Some(field_expr.like(format!("%{}%", escape_like_wildcards(&value))))
+                Some(field_expr.ilike(format!("%{}%", escape_like_wildcards(&value))))
             }
             FilterOperator::StartsWith => {
                 let value = filter.value.as_string()?;

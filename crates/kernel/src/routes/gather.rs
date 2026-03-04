@@ -70,7 +70,7 @@ struct GatherResultResponse {
 // -------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct ExecuteParams {
+pub struct ExecuteParams {
     #[serde(default = "default_page")]
     page: u32,
     #[serde(default = "default_stage")]
@@ -244,13 +244,29 @@ async fn render_query_html(
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
+    let base_path = format!("/gather/{query_id}");
+    execute_and_render(&state, &session, &query_id, params, &base_path).await
+}
+
+/// Execute a gather query and render it as an HTML page.
+///
+/// `base_path` controls the URL used for pager links and form actions,
+/// allowing callers like `/conferences` to serve content under their own path
+/// rather than the canonical `/gather/{query_id}` path.
+pub async fn execute_and_render(
+    state: &AppState,
+    session: &Session,
+    query_id: &str,
+    params: ExecuteParams,
+    base_path: &str,
+) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let query_context = QueryContext {
         current_user_id: user_id,
         url_args: params.filters.clone(),
     };
 
-    let gather_query = state.gather().get_query(&query_id).ok_or_else(|| {
+    let gather_query = state.gather().get_query(query_id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(JsonError {
@@ -265,7 +281,7 @@ async fn render_query_html(
     let result = state
         .gather()
         .execute(
-            &query_id,
+            query_id,
             params.page,
             exposed_filters,
             stage_id,
@@ -290,18 +306,20 @@ async fn render_query_html(
         .collect();
 
     // Render gather content (either via theme template or fallback HTML)
-    let content_html = render_gather_with_theme(&state, &gather_query, &result, &filter_values)
-        .unwrap_or_else(|| render_gather_content_html(&gather_query, &result, &filter_values));
+    let content_html =
+        render_gather_with_theme(state, &gather_query, &result, &filter_values, base_path)
+            .unwrap_or_else(|| {
+                render_gather_content_html(&gather_query, &result, &filter_values, base_path)
+            });
 
     // Wrap in page layout with site context
-    let gather_path = format!("/gather/{query_id}");
     let mut context = tera::Context::new();
-    super::helpers::inject_site_context(&state, &session, &mut context, &gather_path).await;
+    super::helpers::inject_site_context(state, session, &mut context, base_path).await;
 
     let page_html = state
         .theme()
         .render_page(
-            &gather_path,
+            base_path,
             &gather_query.label,
             &content_html,
             &mut context,
@@ -316,6 +334,7 @@ fn render_gather_with_theme(
     query: &GatherQuery,
     result: &crate::gather::GatherResult,
     filter_values: &HashMap<String, String>,
+    base_path: &str,
 ) -> Option<String> {
     // Try to find a template for this query
     let suggestions = [
@@ -337,6 +356,7 @@ fn render_gather_with_theme(
     context.insert("total_pages", &result.total_pages);
     context.insert("has_next", &result.has_next);
     context.insert("has_prev", &result.has_prev);
+    context.insert("base_path", base_path);
 
     // Exposed filters for template rendering
     let exposed_filters = collect_exposed_filters(query);
@@ -345,12 +365,13 @@ fn render_gather_with_theme(
 
     // Pager info
     if query.display.pager.enabled && result.total_pages > 1 {
+        let page_url_prefix = build_page_url_prefix(base_path, filter_values);
         context.insert(
             "pager",
             &serde_json::json!({
                 "current_page": result.page,
                 "total_pages": result.total_pages,
-                "base_url": format!("/gather/{}", query.query_id),
+                "page_url_prefix": page_url_prefix,
                 "pages": compute_page_list(result.page, result.total_pages),
             }),
         );
@@ -367,6 +388,7 @@ fn parse_filter_params(params: &HashMap<String, String>) -> HashMap<String, Filt
     params
         .iter()
         .filter(|(k, _)| !["page", "stage"].contains(&k.as_str()))
+        .filter(|(_, v)| !v.is_empty())
         .filter_map(|(k, v)| {
             // Try to parse as JSON, otherwise treat as string
             let filter_value = if let Ok(json) = serde_json::from_str::<serde_json::Value>(v) {
@@ -377,6 +399,31 @@ fn parse_filter_params(params: &HashMap<String, String>) -> HashMap<String, Filt
             filter_value.map(|fv| (k.clone(), fv))
         })
         .collect()
+}
+
+/// Build the URL prefix used for pager links, preserving active filter params.
+///
+/// Returns `/gather/{query_id}?{encoded_filters}&` when filters are present,
+/// or `/gather/{query_id}?` when no filters are active. Callers append `page=N`.
+fn build_page_url_prefix(base_path: &str, filter_values: &HashMap<String, String>) -> String {
+    let active: Vec<String> = filter_values
+        .iter()
+        .filter(|(k, v)| !["page", "stage"].contains(&k.as_str()) && !v.is_empty())
+        .map(|(k, v)| {
+            format!(
+                "{}={}",
+                urlencoding::encode(k),
+                urlencoding::encode(v)
+            )
+        })
+        .collect();
+
+    let joined = active.join("&");
+    if active.is_empty() {
+        format!("{base_path}?")
+    } else {
+        format!("{base_path}?{joined}&")
+    }
 }
 
 fn json_to_filter_value(value: serde_json::Value) -> Option<FilterValue> {
@@ -431,6 +478,7 @@ fn collect_exposed_filters(query: &GatherQuery) -> Vec<serde_json::Value> {
 fn render_exposed_filter_form(
     query: &GatherQuery,
     filter_values: &HashMap<String, String>,
+    base_path: &str,
 ) -> String {
     let exposed: Vec<_> = query
         .definition
@@ -445,8 +493,8 @@ fn render_exposed_filter_form(
 
     let mut html = String::new();
     html.push_str(&format!(
-        "<form method=\"get\" action=\"/gather/{}\" class=\"gather-exposed-filters\">\n",
-        escape_html(&query.query_id)
+        "<form method=\"get\" action=\"{}\" class=\"gather-exposed-filters\">\n",
+        escape_html(base_path)
     ));
 
     for filter in &exposed {
@@ -466,7 +514,13 @@ fn render_exposed_filter_form(
         ));
     }
 
-    html.push_str("<div class=\"form-actions\"><button type=\"submit\" class=\"btn\">Apply</button></div>\n</form>\n");
+    html.push_str(&format!(
+        "<div class=\"form-actions\">\
+         <button type=\"submit\" class=\"btn\">Apply</button>\
+         <a href=\"{}\" class=\"btn btn--secondary\">Clear</a>\
+         </div>\n</form>\n",
+        escape_html(base_path)
+    ));
     html
 }
 
@@ -475,6 +529,7 @@ fn render_gather_content_html(
     query: &GatherQuery,
     result: &crate::gather::GatherResult,
     filter_values: &HashMap<String, String>,
+    base_path: &str,
 ) -> String {
     let mut html = String::new();
 
@@ -486,7 +541,7 @@ fn render_gather_content_html(
     }
 
     // Exposed filter form
-    html.push_str(&render_exposed_filter_form(query, filter_values));
+    html.push_str(&render_exposed_filter_form(query, filter_values, base_path));
 
     // Results
     if result.items.is_empty() {
@@ -543,15 +598,21 @@ fn render_gather_content_html(
             ));
         }
 
+        let prefix = build_page_url_prefix(base_path, filter_values);
         if result.has_prev {
             html.push_str(&format!(
-                "<a href=\"?page={}\">Previous</a>\n",
+                "<a href=\"{}page={}\">Previous</a>\n",
+                prefix,
                 result.page - 1
             ));
         }
 
         if result.has_next {
-            html.push_str(&format!("<a href=\"?page={}\">Next</a>\n", result.page + 1));
+            html.push_str(&format!(
+                "<a href=\"{}page={}\">Next</a>\n",
+                prefix,
+                result.page + 1
+            ));
         }
 
         html.push_str("</div>\n");
@@ -562,14 +623,22 @@ fn render_gather_content_html(
 
 /// Build a list of page numbers (and `"..."` ellipsis sentinels) for pager templates.
 ///
-/// Always includes the first page, last page, and a window of 2 pages either side
+/// Always includes page 1, the last page, and a window of 2 pages either side
 /// of the current page.  Gaps are filled with the string `"..."`.
+/// Returns an empty list when `total == 0`.
 fn compute_page_list(current: u32, total: u32) -> Vec<serde_json::Value> {
+    if total == 0 {
+        return vec![];
+    }
+
     let window = 2u32;
     let mut shown = std::collections::BTreeSet::new();
     shown.insert(1u32);
     shown.insert(total);
-    for p in current.saturating_sub(window)..=std::cmp::min(current + window, total) {
+    // Clamp lower bound to 1 so page 0 is never inserted when current < window.
+    let lo = current.saturating_sub(window).max(1);
+    let hi = std::cmp::min(current + window, total);
+    for p in lo..=hi {
         shown.insert(p);
     }
 
@@ -587,7 +656,8 @@ fn compute_page_list(current: u32, total: u32) -> Vec<serde_json::Value> {
 
 /// Full standalone fallback page (used when theme engine fails).
 fn render_gather_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
-    let content = render_gather_content_html(query, result, &HashMap::new());
+    let base_path = format!("/gather/{}", query.query_id);
+    let content = render_gather_content_html(query, result, &HashMap::new(), &base_path);
     format!(
         "<!DOCTYPE html>\n<html>\n<head>\n<title>{}</title>\n\
         <style>\nbody {{ font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }}\n\
@@ -597,4 +667,66 @@ fn render_gather_html(query: &GatherQuery, result: &crate::gather::GatherResult)
         escape_html(&query.label),
         content
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod pager_tests {
+    use super::compute_page_list;
+
+    fn nums(list: &[serde_json::Value]) -> Vec<String> {
+        list.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_when_total_zero() {
+        assert!(compute_page_list(0, 0).is_empty());
+        assert!(compute_page_list(1, 0).is_empty());
+    }
+
+    #[test]
+    fn single_page() {
+        assert_eq!(nums(&compute_page_list(1, 1)), vec!["1"]);
+    }
+
+    #[test]
+    fn no_page_zero_near_start() {
+        // current=1, window=2 would produce 0 without the max(1) clamp
+        let pages = compute_page_list(1, 10);
+        let first = pages.first().unwrap().as_u64();
+        assert_eq!(first, Some(1), "first page must be 1, got {pages:?}");
+    }
+
+    #[test]
+    fn ellipsis_in_middle() {
+        // pages 1..10, current=5 → [1, "...", 3, 4, 5, 6, 7, "...", 10]
+        let pages = compute_page_list(5, 10);
+        let s = nums(&pages);
+        assert!(
+            s.contains(&"\"...\"".to_string()),
+            "expected ellipsis: {s:?}"
+        );
+        assert!(s.contains(&"1".to_string()));
+        assert!(s.contains(&"10".to_string()));
+        assert!(s.contains(&"5".to_string()));
+    }
+
+    #[test]
+    fn no_ellipsis_when_contiguous() {
+        // pages 1..5, current=3 → [1,2,3,4,5] no gaps
+        let pages = compute_page_list(3, 5);
+        let s = nums(&pages);
+        assert!(
+            !s.contains(&"\"...\"".to_string()),
+            "unexpected ellipsis: {s:?}"
+        );
+        assert_eq!(s, vec!["1", "2", "3", "4", "5"]);
+    }
+
+    #[test]
+    fn near_end_no_page_beyond_total() {
+        let pages = compute_page_list(10, 10);
+        let max = pages.iter().filter_map(|v| v.as_u64()).max().unwrap_or(0);
+        assert_eq!(max, 10);
+    }
 }

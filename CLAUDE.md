@@ -106,20 +106,21 @@ See `docs/security-audit.md` for the full dependency audit policy and Epic 27 st
 
 ## Database Backups
 
-`pg_dump` is not on the default PATH — use the full path from Homebrew's `libpq` formula:
+`pg_dump` is not on the default PATH — use the full path from Homebrew's `libpq` formula.
+Use `$(brew --prefix libpq)/bin/` rather than a hardcoded version path:
 
 ```bash
 # Backup (custom format, ~100K for a tutorial-sized DB)
-/opt/homebrew/Cellar/libpq/18.1/bin/pg_dump \
+$(brew --prefix libpq)/bin/pg_dump \
   postgres://trovato:trovato@localhost:5432/trovato \
   -Fc -f backups/<name>-$(date +%Y%m%d).dump
 
 # Restore — drop and recreate for a clean slate (--clean only drops objects IN the dump,
 # leaving behind tables added after the snapshot was taken)
-/opt/homebrew/Cellar/libpq/18.1/bin/dropdb postgres://trovato:trovato@localhost:5432/trovato
-/opt/homebrew/Cellar/libpq/18.1/bin/psql postgres://localhost:5432/postgres \
+$(brew --prefix libpq)/bin/dropdb --if-exists postgres://trovato:trovato@localhost:5432/trovato
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/postgres \
   -c "CREATE DATABASE trovato OWNER trovato;"
-/opt/homebrew/Cellar/libpq/18.1/bin/pg_restore \
+$(brew --prefix libpq)/bin/pg_restore \
   -d postgres://trovato:trovato@localhost:5432/trovato \
   backups/<name>.dump
 ```

@@ -100,7 +100,7 @@ INFO trovato::state: tap_install dispatched plugin="ritrovo_importer"
 `tap_install` seeds the topic taxonomy, the five gather queries, and queues the historical conference import. After a restart you can verify it ran:
 
 ```bash
-/opt/homebrew/Cellar/libpq/18.1/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT COUNT(*) FROM ritrovo_state;"
 # Should return > 0 (one row per taxonomy term seeded)
 ```
@@ -336,7 +336,7 @@ The confs.tech JSON schema maps to `conference` item fields as follows:
 | *(computed)* | `field_source_id` | see dedup section |
 | *(from queue payload)* | `field_topics` | accumulated across topic files |
 
-Newly inserted conferences are created as **unpublished** (`status = 0`) on the live stage. This lets Ritrovo editors review and publish them before they appear in public gathers.
+Newly inserted conferences are created as **published** (`status = 1`) on the live stage, so they appear immediately in the public browse pages without requiring a manual publish step.
 
 ### Historical Import: tap_install
 
@@ -717,13 +717,29 @@ Upcoming conferences (start date ≥ today), sortable and filterable via exposed
 ```
 Hard filters:   field_start_date ≥ current_date
 Exposed filters: field_topics (HasTagOrDescendants, UUID)
-                 field_country (equals)
+                 field_country (contains, case-insensitive)
                  field_online  (equals)
-                 field_language (equals)
+                 field_language (contains, case-insensitive)
 Sort:           field_start_date ASC
 ```
 
 This is the main public listing page, reachable at `/conferences`. When the exposed filters are empty (no user input), all four filter slots resolve to null and are skipped — the query returns every upcoming conference.
+
+`field_country` and `field_language` use `contains` (SQL `ILIKE`) rather than `equals` so that typing "Germany" matches conferences whose country field says "Germany" even with mixed casing, and partial strings like "Ger" will also match. This makes the filter form usable without knowing exact capitalization.
+
+The conference list is rendered as **cards** rather than a table. When the Trovato theme engine looks for a template to render a gather query, it first checks for a query-specific override at `templates/gather/query--{query_id}.html` before falling back to the generic `query.html`. The importer ships `templates/gather/query--ritrovo.upcoming_conferences.html`, which extends `query.html` and overrides the `query_content` block with a card grid:
+
+```
+.conf-card
+  ├── title (linked to /item/{id})
+  ├── dates (field_start_date – field_end_date)
+  ├── location (field_city, field_country)
+  ├── description (field_description, if present)
+  └── actions
+        ├── View details → /item/{id}
+        ├── Website ↗ (field_url, if present)
+        └── CFP open until {date} — Submit a talk (if field_cfp_url + field_cfp_end_date)
+```
 
 #### ritrovo.open_cfps
 
@@ -768,14 +784,18 @@ Two separate gathers are used (rather than one gather with an optional city filt
 
 ### The /conferences, /cfps, and /location Routes
 
-The kernel's `ritrovo_topics` route module provides five plugin-gated routes. Three of them are simple redirects that preserve existing query parameters (for bookmarkable filter URLs):
+The kernel's `ritrovo_topics` route module provides five plugin-gated routes. `/conferences` and `/cfps` render their gather queries directly under their own paths — pager links, filter form submissions, and browser history all stay on the friendly URL. `/location` routes resolve path segments to gather parameters and redirect:
 
 ```
-GET /conferences          →  302  /gather/ritrovo.upcoming_conferences[?…params]
-GET /cfps                 →  302  /gather/ritrovo.open_cfps[?…params]
-GET /location/{country}   →  302  /gather/ritrovo.by_country?country=<encoded>[&…params]
-GET /location/{country}/{city} → 302 /gather/ritrovo.by_city?country=<encoded>&city=<encoded>[&…params]
+GET /conferences               →  200  (renders ritrovo.upcoming_conferences in-place)
+GET /cfps                      →  200  (renders ritrovo.open_cfps in-place)
+GET /location/{country}        →  302  /gather/ritrovo.by_country?country=<encoded>[&…params]
+GET /location/{country}/{city} →  302  /gather/ritrovo.by_city?country=<encoded>&city=<encoded>[&…params]
 ```
+
+The in-place render pattern passes `base_path="/conferences"` to `execute_and_render`, which sets the form `action` and pager link prefix to `/conferences`. This means filtering by country and navigating to page 2 produces `GET /conferences?fields.field_country=Germany&page=2` — the URL stays on `/conferences` throughout.
+
+> **URL design choice:** `/location` routes redirect because the gather URL (`/gather/ritrovo.by_country?country=Germany`) is self-contained and bookmarkable on its own. `/conferences` renders in-place instead, because the filter form is exposed there — a redirect on every filter submission would lose the user's form state and make browser history unhelpful.
 
 All five routes share a `gate_ritrovo_importer` middleware layer that returns 404 when the plugin is disabled. The gating is registered in `routes/mod.rs` via the `plugin_gate!` macro and declared for documentation in `plugin/gate.rs` under `GATED_ROUTE_PLUGINS`.
 

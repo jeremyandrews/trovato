@@ -10,30 +10,27 @@
 //! | Path | Gather query |
 //! |------|-------------|
 //! | `GET /topics/:slug` | `ritrovo.by_topic` (UUID looked up from ritrovo_state) |
-//! | `GET /conferences` | `ritrovo.upcoming_conferences` |
-//! | `GET /cfps` | `ritrovo.open_cfps` |
+//! | `GET /conferences` | `ritrovo.upcoming_conferences` (rendered in-place) |
+//! | `GET /cfps` | `ritrovo.open_cfps` (rendered in-place) |
 //! | `GET /location/:country` | `ritrovo.by_country` |
 //! | `GET /location/:country/:city` | `ritrovo.by_city` |
 //!
-//! The topic route resolves the human-readable slug to the `category_tag` UUID
-//! stored in `ritrovo_state` by the importer's `tap_install` tap, then
-//! redirects to the corresponding gather URL with the UUID as a query
-//! parameter.  Location routes redirect straight to the gather URL with the
-//! URL-encoded path segments as query parameters.
-//!
-//! `/conferences` and `/cfps` redirect to their canonical gather URLs and
-//! preserve any existing query-string parameters (exposed filter values,
-//! pagination).
+//! The topic and location routes resolve path segments to gather filter values
+//! and redirect to the corresponding gather URLs.  `/conferences` and `/cfps`
+//! render their gather queries directly under their own paths so that pager
+//! links, filter forms, and browser history all stay on the friendly URL.
 
 use axum::{
     Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::Redirect,
+    response::{Html, Json, Redirect},
     routing::get,
 };
 use std::collections::HashMap;
+use tower_sessions::Session;
 
+use crate::routes::gather::{ExecuteParams, execute_and_render};
 use crate::state::AppState;
 
 /// Build the router for Ritrovo browse routes.
@@ -95,21 +92,29 @@ async fn by_topic(
     Ok(Redirect::temporary(&gather_url))
 }
 
-/// Upcoming conferences listing (redirects to the gather page).
+/// Upcoming conferences listing.
 ///
-/// Preserves any query-string parameters so that bookmarked filter URLs
-/// like `/conferences?country=Germany&page=2` work correctly after redirect.
-async fn conferences(Query(params): Query<HashMap<String, String>>) -> Redirect {
-    let mut url = "/gather/ritrovo.upcoming_conferences".to_string();
-    append_params(&mut url, &params);
-    Redirect::temporary(&url)
+/// Renders the `ritrovo.upcoming_conferences` gather query directly under
+/// `/conferences` so that pager links, filter forms, and browser history
+/// all stay on this path rather than bouncing to `/gather/…`.
+async fn conferences(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<ExecuteParams>,
+) -> Result<Html<String>, (StatusCode, Json<crate::routes::helpers::JsonError>)> {
+    execute_and_render(&state, &session, "ritrovo.upcoming_conferences", params, "/conferences")
+        .await
 }
 
-/// Open CFPs listing (redirects to the gather page).
-async fn cfps(Query(params): Query<HashMap<String, String>>) -> Redirect {
-    let mut url = "/gather/ritrovo.open_cfps".to_string();
-    append_params(&mut url, &params);
-    Redirect::temporary(&url)
+/// Open CFPs listing.
+///
+/// Renders the `ritrovo.open_cfps` gather query directly under `/cfps`.
+async fn cfps(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<ExecuteParams>,
+) -> Result<Html<String>, (StatusCode, Json<crate::routes::helpers::JsonError>)> {
+    execute_and_render(&state, &session, "ritrovo.open_cfps", params, "/cfps").await
 }
 
 /// Browse conferences by country.
@@ -119,12 +124,21 @@ async fn by_country(
     Path(country): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Redirect {
-    let mut url = format!(
-        "/gather/ritrovo.by_country?country={}",
+    let extra: String = params
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "&{}={}",
+                urlencoding::encode(k),
+                urlencoding::encode(v)
+            )
+        })
+        .collect();
+    Redirect::temporary(&format!(
+        "/gather/ritrovo.by_country?country={}{}",
         urlencoding::encode(&country),
-    );
-    append_params(&mut url, &params);
-    Redirect::temporary(&url)
+        extra
+    ))
 }
 
 /// Browse conferences by country and city.
@@ -134,25 +148,20 @@ async fn by_country_city(
     Path((country, city)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Redirect {
-    let mut url = format!(
-        "/gather/ritrovo.by_city?country={}&city={}",
+    let extra: String = params
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "&{}={}",
+                urlencoding::encode(k),
+                urlencoding::encode(v)
+            )
+        })
+        .collect();
+    Redirect::temporary(&format!(
+        "/gather/ritrovo.by_city?country={}&city={}{}",
         urlencoding::encode(&country),
         urlencoding::encode(&city),
-    );
-    append_params(&mut url, &params);
-    Redirect::temporary(&url)
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────
-
-/// Append URL query parameters to `url`, preceded by `&`.
-///
-/// Skips keys that are already part of the base URL to avoid duplicates.
-fn append_params(url: &mut String, params: &HashMap<String, String>) {
-    for (k, v) in params {
-        url.push('&');
-        url.push_str(&urlencoding::encode(k));
-        url.push('=');
-        url.push_str(&urlencoding::encode(v));
-    }
+        extra
+    ))
 }
