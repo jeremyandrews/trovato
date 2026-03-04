@@ -315,6 +315,51 @@ When a conference is found by `source_id`, the worker **updates** it using JSONB
 
 When a conference appears in a new topic file for the first time, the worker merges the topic into the existing `field_topics` array rather than replacing it. RustConf filed under both "rust" and "systems" will have `field_topics: ["rust", "systems"]`.
 
+### Concurrent Worker Safety
+
+The HashMap dedup is sufficient for sequential processing, but the queue runs with `concurrency = 4`. This creates a race window: if four workers each process a different topic file that contains the same conference, they all load the HashMap **before** any insert commits, all see the conference as missing, and all INSERT — producing 3–4 copies with different `field_topics` arrays.
+
+The importer defends against this with two layers:
+
+**Database-level uniqueness.** Migration `002_dedup_conferences.sql` creates a unique partial index:
+
+```sql
+CREATE UNIQUE INDEX uniq_item_conference_source_id
+    ON item ((fields->>'field_source_id'))
+    WHERE type = 'conference'
+      AND fields->>'field_source_id' IS NOT NULL
+      AND fields->>'field_source_id' != '';
+```
+
+This makes it impossible for any two `conference` items to share a `field_source_id`, regardless of which code path inserted them.
+
+**Upsert on insert.** `insert_conference` uses `INSERT … ON CONFLICT DO UPDATE` rather than a plain `INSERT`. When a concurrent worker races past the HashMap check, the conflicting insert becomes an update that merges `field_topics` at the SQL level:
+
+```sql
+ON CONFLICT ((fields->>'field_source_id'))
+WHERE type = 'conference'
+  AND fields->>'field_source_id' IS NOT NULL
+  AND fields->>'field_source_id' != ''
+DO UPDATE SET
+  title   = EXCLUDED.title,
+  changed = EXCLUDED.changed,
+  fields  = item.fields
+         || (EXCLUDED.fields - 'field_topics')
+         || jsonb_build_object(
+              'field_topics',
+              (SELECT COALESCE(jsonb_agg(t ORDER BY t), '[]'::jsonb)
+               FROM (
+                 SELECT jsonb_array_elements_text(item.fields->'field_topics')
+                 UNION
+                 SELECT jsonb_array_elements_text(EXCLUDED.fields->'field_topics')
+               ) u(t))
+            )
+```
+
+The `UNION` (not `UNION ALL`) deduplicates topic UUIDs before aggregating, so however many workers race to insert the same conference, the result is always a single row with all the correct topics merged in.
+
+> **Design note:** The HashMap path (`update_conference`) is still the primary hot path — it handles sequential imports and day-to-day cron runs cheaply. The upsert is the safety net that makes concurrent imports correct even when the application-level check races.
+
 ### Field Mapping
 
 The confs.tech JSON schema maps to `conference` item fields as follows:
