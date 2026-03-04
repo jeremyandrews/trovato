@@ -761,7 +761,7 @@ Upcoming conferences (start date ≥ today), filterable via an exposed filter fo
 
 ```
 Hard filters:    field_start_date ≥ current_date
-Exposed filters: field_topics   has_tag_or_descendants  widget: taxonomy_select (vocabulary: "topic")
+Exposed filters: field_topics   has_tag_or_descendants  widget: taxonomy_select (vocabulary: "topics")
                  field_country  equals                  widget: dynamic_options (source: fields.field_country)
                  field_online   equals                  widget: boolean
                  field_language equals                  widget: dynamic_options (source: fields.field_language)
@@ -857,7 +857,7 @@ This is the right widget for any field that stores `true`/`false` — it's more 
 #### Taxonomy select widget — `field_topics`
 
 ```json
-"widget": { "type": "taxonomy_select", "vocabulary": "topic" }
+"widget": { "type": "taxonomy_select", "vocabulary": "topics" }
 ```
 
 Renders a `<select>` populated from the `topic` category vocabulary. The kernel loads all tags with their hierarchy depth using `CategoryService::list_tags_with_depth()`, which returns them in DFS pre-order so that each parent immediately precedes its children. Child terms are indented with non-breaking spaces proportional to depth:

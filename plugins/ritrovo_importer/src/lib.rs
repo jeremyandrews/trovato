@@ -778,7 +778,7 @@ fn seed_gather_queries(now: i64) {
                     "value": null,
                     "exposed": true,
                     "exposed_label": "Topic",
-                    "widget": {"type": "taxonomy_select", "vocabulary": "topic"}
+                    "widget": {"type": "taxonomy_select", "vocabulary": "topics"}
                 },
                 {
                     "field": "fields.field_country",
