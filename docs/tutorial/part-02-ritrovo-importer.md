@@ -97,7 +97,7 @@ When the server next starts with the plugin enabled, it calls `tap_install` **on
 INFO trovato::state: tap_install dispatched plugin="ritrovo_importer"
 ```
 
-`tap_install` seeds the topic taxonomy, the five gather queries, and queues the historical conference import. After a restart you can verify it ran:
+`tap_install` seeds the topic taxonomy, the five gather queries, 301 redirects from the raw gather URLs to their pretty paths, and queues the historical conference import. After a restart you can verify it ran:
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
@@ -841,6 +841,21 @@ GET /location/{country}/{city} →  302  /gather/ritrovo.by_city?country=<encode
 The in-place render pattern passes `base_path="/conferences"` to `execute_and_render`, which sets the form `action` and pager link prefix to `/conferences`. This means filtering by country and navigating to page 2 produces `GET /conferences?fields.field_country=Germany&page=2` — the URL stays on `/conferences` throughout.
 
 > **URL design choice:** `/location` routes redirect because the gather URL (`/gather/ritrovo.by_country?country=Germany`) is self-contained and bookmarkable on its own. `/conferences` renders in-place instead, because the filter form is exposed there — a redirect on every filter submission would lose the user's form state and make browser history unhelpful.
+
+### Sealing the Raw Gather URLs
+
+`/conferences` renders in-place, but `/gather/ritrovo.upcoming_conferences` is still a valid path — the gather engine serves it too. A user arriving there (via a bookmark, browser history, or an old link) would see the filter form submit back to the raw gather URL, breaking the stable-URL contract.
+
+`tap_install` therefore calls `seed_redirects()`, which inserts two 301 redirects into the `redirect` table:
+
+```
+/gather/ritrovo.upcoming_conferences  →  301  /conferences
+/gather/ritrovo.open_cfps             →  301  /cfps
+```
+
+The kernel's redirects middleware intercepts these paths before routing and sends the browser to the canonical URL. Any subsequent filter submission or page navigation then stays on `/conferences` or `/cfps` as intended.
+
+The function uses `INSERT … WHERE NOT EXISTS` rather than `ON CONFLICT` because the `redirect` table has no unique constraint on `(source, language)` — a manual redirect created through the admin UI would otherwise be silently clobbered.
 
 All five routes share a `gate_ritrovo_importer` middleware layer that returns 404 when the plugin is disabled. The gating is registered in `routes/mod.rs` via the `plugin_gate!` macro and declared for documentation in `plugin/gate.rs` under `GATED_ROUTE_PLUGINS`.
 
