@@ -6356,3 +6356,300 @@ So that contributors can trust the docs as an accurate picture of what's done an
 
 ---
 
+## Epic 33: Ritrovo Part 2 — Conference Importer Plugin
+
+**Goal:** Build the `ritrovo_importer` WASM plugin that imports tech conferences from confs.tech into Trovato: plugin scaffold and SDK basics, cron-driven import with queue workers, hierarchical topic taxonomy, and advanced gathers with exposed filters.
+
+**Scope:**
+- Story 33.1: Plugin scaffold & SDK basics (`trovato plugin new`, tap stubs, manifest)
+- Story 33.2: Cron-driven conference import (HTTP fetch, ETag deduplication, queue workers)
+- Story 33.3: Hierarchical topic taxonomy (seeded on install, 3-level tree, 26 confs.tech mappings)
+- Story 33.4: Advanced gathers with exposed & contextual filters (`/conferences`, `/cfps`, topic/country/language filters)
+
+**Gate:**
+- 5,000+ conferences imported from confs.tech on first cron run
+- `/conferences` and `/cfps` render with exposed filters from pretty URLs
+- Topic taxonomy seeded; `HasTagOrDescendants` filter works hierarchically
+- No duplicate conferences (unique partial index + upsert)
+- Tutorial Part 2 text walks a reader from `plugin new` to a live search page
+
+**Cross-references:** Epic 7 (Gather), Epic 8 (Taxonomy), Epic 13 (Queue/Cron), Epic 22 (Plugin migrations)
+
+---
+
+### Story 33.1: Plugin Scaffold & SDK Basics
+
+As a **tutorial reader building Ritrovo**,
+I want a `trovato plugin new` command that generates a working plugin scaffold,
+so that I can start writing plugin logic without hand-authoring boilerplate.
+
+**Acceptance Criteria:**
+
+1. `trovato plugin new ritrovo_importer` generates: `Cargo.toml`, `src/lib.rs`, `manifest.toml`, `migrations/` directory
+2. Generated plugin compiles to `.wasm` with `cargo build --target wasm32-wasip1 --release`
+3. Plugin appears in admin plugin list at `/admin/plugins` after placement in `plugins/`
+4. `tap_plugin_install` fires on first enable; log message confirms
+5. Plugin registers four tap stubs: `tap_cron`, `tap_queue_info`, `tap_queue_worker`, `tap_plugin_install`
+
+**Tasks:**
+- [ ] Implement `trovato plugin new <name>` CLI subcommand
+- [ ] Generate `Cargo.toml`, `src/lib.rs` stubs, `manifest.toml`, `migrations/`
+- [ ] Verify compilation and plugin discovery
+- [ ] Write tutorial text covering WASM plugin model, tap registration, host function boundary
+
+---
+
+### Story 33.2: Cron-Driven Conference Import
+
+As a **Ritrovo site operator**,
+I want the `ritrovo_importer` plugin to automatically fetch and import conferences from confs.tech daily,
+so that the site stays current without manual data entry.
+
+**Acceptance Criteria:**
+
+1. `tap_cron` fetches conference JSON from confs.tech for all 26 topic files via `http_request()` host function
+2. Conditional HTTP: `If-None-Match` / ETag headers; 304 response skips processing for that topic
+3. Conferences pushed onto import queue; `tap_queue_worker` processes with concurrency = 4
+4. Upsert logic: `ON CONFLICT ((fields->>'field_source_id'))` merges `field_topics` via SQL UNION
+5. Unique partial index on `field_source_id` prevents race-condition duplicates
+
+**Tasks:**
+- [ ] Implement `tap_cron` HTTP fetch with ETag
+- [ ] Implement `tap_queue_info` / `tap_queue_worker` for conference upsert
+- [ ] Migration 001: `ritrovo_state` table for ETag persistence
+- [ ] Migration 002: deduplicate existing records + unique partial index
+- [ ] Write integration tests
+
+---
+
+### Story 33.3: Hierarchical Topic Taxonomy
+
+As a **Ritrovo visitor**,
+I want conferences tagged with topics in a browsable hierarchy (Languages > Systems > Rust),
+so that I can discover conferences by interest area without knowing the exact tag name.
+
+**Acceptance Criteria:**
+
+1. Three-level topic taxonomy seeded during `tap_plugin_install`
+2. All 26 confs.tech topic slugs mapped to taxonomy terms
+3. `field_topics` on `conference` item type holds category term references
+4. `HasTagOrDescendants` filter returns conferences under a parent topic and all subtopics
+
+**Tasks:**
+- [ ] Seed topic taxonomy hierarchy in `tap_install`
+- [ ] Map confs.tech topic slugs to taxonomy term IDs during import
+- [ ] Verify hierarchical filtering via `HasTagOrDescendants`
+
+---
+
+### Story 33.4: Advanced Gathers with Exposed & Contextual Filters
+
+As a **Ritrovo visitor**,
+I want to filter conferences by topic, country, online-only, and CFP deadline from the listing page,
+so that I can find events relevant to my interests without scrolling through hundreds of results.
+
+**Acceptance Criteria:**
+
+1. "Upcoming Conferences" Gather at `/conferences` with four exposed filters: Topic, Country, Online only, Language
+2. "Open CFPs" Gather at `/cfps` with CFP deadline and topic filters
+3. Exposed filter form renders above results; filters compose as AND
+4. Pagination works correctly with active filters
+5. Filter state preserved in URL query string (bookmarkable)
+6. Migration 003 removes stale `/conferences` url_alias that conflicts with direct-render route
+7. 301 redirects seeded from raw gather URLs to pretty paths
+
+**Tasks:**
+- [ ] Seed five gather queries in `tap_install`
+- [ ] Seed 301 redirects in `tap_install`
+- [ ] Migration 003: remove conflicting url_alias
+- [ ] Write tutorial text covering gather query definition and exposed filters
+
+---
+
+## Epic 34: Gather Exposed Filter Widget System
+
+**Goal:** Replace the one-size-fits-all `<input type="text">` exposed filter with a pluggable widget type system. Filters declare their widget type in the gather query JSON; the kernel renders appropriate controls: a Yes/No/Any select for booleans, a hierarchical term select for taxonomy fields, and a dynamic dropdown (or autocomplete) populated from distinct field values in the database.
+
+**Scope:**
+- Story 34.1: Boolean exposed filter widget (`Yes` / `No` / `Any`)
+- Story 34.2: Taxonomy term select widget (hierarchical, loaded from category vocabulary)
+- Story 34.3: Dynamic options widget (dropdown below threshold, autocomplete above)
+
+**Gate:**
+- `field_online` on `/conferences` renders as a Yes/No/Any `<select>`
+- `field_topics` renders as a hierarchical term select with readable labels
+- `field_country` and `field_language` render as dropdowns (or autocomplete when > threshold distinct values)
+- Widget type is declared in gather query JSON; no kernel hardcoding of field names
+- All existing exposed filter tests pass; new tests cover each widget type
+
+**Design Philosophy:** Gather "exposes" filters to visitors. The kernel should render usable controls, not raw text inputs for every data type. This is a pure kernel enhancement — no plugin changes are required except updating gather query JSON to opt into the new widget types.
+
+**Cross-references:** Epic 7 (Gather/exposed filters), Epic 8 (Taxonomy/CategoryService), Epic 33 (ritrovo_importer uses new widgets)
+
+---
+
+### Story 34.1: Boolean Exposed Filter Widget
+
+As a **Ritrovo visitor**,
+I want the "Online Only" filter to show a Yes / No / Any dropdown instead of a text box,
+so that I can filter without guessing whether to type `true`, `1`, or `yes`.
+
+**Acceptance Criteria:**
+
+1. `QueryFilter` gains an optional `widget` field (`"widget": "boolean"` in JSON); default is text input
+2. When `widget == "boolean"`, the exposed filter renders as:
+   ```html
+   <select name="{field}">
+     <option value="">Any</option>
+     <option value="true" [selected]>Yes</option>
+     <option value="false" [selected]>No</option>
+   </select>
+   ```
+3. Submitted values `"true"` / `"false"` are parsed to `FilterValue::Bool` by `parse_filter_params`
+4. `collect_exposed_filters` includes `"widget": "boolean"` in the returned JSON for templates
+5. `render_exposed_filter_form` correctly selects the current value on re-render
+6. Ritrovo `field_online` filter updated to `"widget": "boolean"`
+7. Existing exposed filter tests unaffected (text widget remains default)
+
+**Tasks:**
+- [ ] Add `ExposedWidget` enum to `crates/kernel/src/gather/types.rs` with `Text` (default) and `Boolean` variants (AC: #1)
+  - [ ] `#[serde(default)]` on `QueryFilter.widget` so existing JSON without `"widget"` deserializes to `Text`
+- [ ] Update `parse_filter_params` to map `"true"`/`"false"` → `FilterValue::Bool` for boolean widgets (AC: #3)
+- [ ] Update `render_exposed_filter_form` in `crates/kernel/src/routes/gather.rs` to branch on `ExposedWidget::Boolean` (AC: #2, #5)
+- [ ] Update `collect_exposed_filters` to include widget type in returned metadata (AC: #4)
+- [ ] Update ritrovo_importer `field_online` filter JSON to `"widget": "boolean"` (AC: #6)
+- [ ] Write unit tests for boolean widget render and value parsing (AC: #7)
+
+**Dev Notes:**
+
+- `ExposedWidget` enum lives in `gather/types.rs` alongside `QueryFilter`; `render_exposed_filter_form` is in `routes/gather.rs`
+- Use `#[serde(rename_all = "snake_case")]` on the enum; `"boolean"` maps to `ExposedWidget::Boolean`
+- `parse_filter_params` currently returns `HashMap<String, String>`; the boolean parsing needs to happen at query execution time, not form parsing — check how `FilterValue` is resolved from URL params in `gather_service.rs`
+- `// Infallible:` comment if any `write!` on `String` remains in the render function
+
+### Project Structure Notes
+
+- `crates/kernel/src/gather/types.rs` — `QueryFilter` struct, new `ExposedWidget` enum
+- `crates/kernel/src/routes/gather.rs` — `render_exposed_filter_form`, `collect_exposed_filters`, `parse_filter_params`
+- `plugins/ritrovo_importer/src/lib.rs` — gather query JSON for `field_online`
+- `crates/kernel/tests/` — new widget unit tests (or extend existing gather tests)
+
+### References
+
+- [Source: crates/kernel/src/gather/types.rs#QueryFilter] — current struct definition
+- [Source: crates/kernel/src/routes/gather.rs#render_exposed_filter_form] — current text-only render (lines 477–524)
+- [Source: plugins/ritrovo_importer/src/lib.rs] — `field_online` filter definition
+
+---
+
+### Story 34.2: Taxonomy Term Select Widget
+
+As a **Ritrovo visitor**,
+I want the "Topic" filter to show a human-readable dropdown of taxonomy terms instead of a UUID input,
+so that I can filter conferences by topic without looking up term IDs.
+
+**Acceptance Criteria:**
+
+1. `ExposedWidget` gains a `TaxonomySelect { vocabulary: String }` variant; JSON: `"widget": {"type": "taxonomy_select", "vocabulary": "topic"}`
+2. At render time, all terms from the specified vocabulary are loaded from `CategoryService`
+3. Terms render as a `<select>` with an "Any" (blank) option first, then terms indented by depth:
+   ```html
+   <select name="{field}">
+     <option value="">Any</option>
+     <option value="{term_id}">Top-Level Term</option>
+     <option value="{term_id}">&nbsp;&nbsp;Child Term</option>
+     <option value="{term_id}">&nbsp;&nbsp;&nbsp;&nbsp;Grandchild Term</option>
+   </select>
+   ```
+4. Submitted value is the term ID (integer string); the filter operator is `HasTagOrDescendants` so selecting a parent includes all subtopics
+5. Selected term is highlighted on re-render
+6. Ritrovo `field_topics` filter updated to use `taxonomy_select` widget with `"vocabulary": "topic"`
+7. If the vocabulary has no terms (install not yet run), the select renders with only "Any"
+
+**Tasks:**
+- [ ] Add `TaxonomySelect { vocabulary: String }` variant to `ExposedWidget` in `types.rs` (AC: #1)
+  - [ ] Handle serde for struct-variant: `{"type": "taxonomy_select", "vocabulary": "..."}` format
+- [ ] Pass `CategoryService` reference (or `Arc<AppState>`) into `render_exposed_filter_form` (AC: #2)
+  - [ ] Refactor function signature or add a new `render_taxonomy_select` helper
+- [ ] Load all terms for vocabulary, sort by hierarchy depth + name, render indented `<select>` (AC: #3)
+- [ ] Ensure submitted term ID is correctly routed to `HasTagOrDescendants` filter (AC: #4)
+- [ ] Update ritrovo_importer `field_topics` gather filter JSON (AC: #6)
+- [ ] Handle empty vocabulary gracefully (AC: #7)
+- [ ] Write tests: term select renders correctly, selected value preserved, empty vocabulary
+
+**Dev Notes:**
+
+- `render_exposed_filter_form` currently takes `(query, filter_values, base_path)` — needs `AppState` or `CategoryService` for DB access; prefer passing `&AppState` since it's already available in the gather route handler
+- `CategoryService` has methods to load terms by vocabulary; check `crates/kernel/src/services/category_service.rs`
+- Term depth can be determined from the hierarchy (parent chain length) or stored on the term record — check schema
+- The `field_topics` filter uses `HasTagOrDescendants` operator; ensure value parsing treats the submitted term ID as an integer for the operator
+- If calling async `CategoryService` from a sync render function becomes awkward, pre-fetch terms before calling render and pass them in
+
+### Project Structure Notes
+
+- `crates/kernel/src/gather/types.rs` — `ExposedWidget::TaxonomySelect`
+- `crates/kernel/src/routes/gather.rs` — `render_exposed_filter_form` signature update
+- `crates/kernel/src/services/category_service.rs` — term loading methods to use
+- `plugins/ritrovo_importer/src/lib.rs` — `field_topics` filter JSON
+
+### References
+
+- [Source: crates/kernel/src/gather/types.rs] — `ExposedWidget` (after Story 34.1)
+- [Source: crates/kernel/src/routes/gather.rs#render_exposed_filter_form] — function to extend
+- [Source: crates/kernel/src/services/category_service.rs] — term loading API
+
+---
+
+### Story 34.3: Dynamic Options Widget (Dropdown / Autocomplete)
+
+As a **Ritrovo visitor**,
+I want the "Country" and "Language" filters to show a dropdown of real values,
+so that I can pick from what actually exists in the database instead of guessing the exact spelling.
+
+**Acceptance Criteria:**
+
+1. `ExposedWidget` gains a `DynamicOptions { source_field: String, autocomplete_threshold: usize }` variant; JSON: `"widget": {"type": "dynamic_options", "source_field": "fields.field_country", "autocomplete_threshold": 30}`
+2. At render time, the kernel fetches `DISTINCT` values for `source_field` from the `item` table (filtered to the same item type as the gather query, published only)
+3. When distinct count ≤ `autocomplete_threshold`: renders a `<select>` with "Any" + sorted options
+4. When distinct count > `autocomplete_threshold`: renders `<input type="text" list="{field}-options">` + `<datalist>` with the full option list (client-side filtering by browser)
+5. Submitted value is treated as an exact `Equals` match (case-insensitive at SQL level)
+6. Selected value is preserved on re-render for both widget variants
+7. Ritrovo `field_country` and `field_language` filters updated to use `dynamic_options` widget
+8. Options are cached per `(query_id, field)` with a short TTL (e.g., 5 minutes) to avoid a DB query on every page load
+9. Distinct value query excludes NULL and empty-string values
+
+**Tasks:**
+- [ ] Add `DynamicOptions { source_field: String, autocomplete_threshold: usize }` to `ExposedWidget` (AC: #1)
+  - [ ] `#[serde(default = "default_threshold")]` sets threshold to 30 when omitted
+- [ ] Implement `fetch_distinct_values(field, item_type, db_pool) -> Vec<String>` in a gather helper (AC: #2, #9)
+  - [ ] Use parameterized SeaQuery or raw SQL with validated field name (`is_valid_field_name` check)
+  - [ ] Exclude NULL and `''` values
+- [ ] Add per-`(source_field, item_type)` cache with 5-minute TTL in `GatherService` or route helper (AC: #8)
+- [ ] Update `render_exposed_filter_form` to handle `DynamicOptions`: call fetch (or cache hit), branch on count vs threshold (AC: #3, #4)
+- [ ] Update ritrovo_importer `field_country` and `field_language` filter JSON (AC: #7)
+- [ ] Write tests: below-threshold renders `<select>`, above-threshold renders `<datalist>`, cache hit avoids DB, empty result set handled
+
+**Dev Notes:**
+
+- `is_valid_field_name` from `crates/kernel/src/routes/helpers.rs` must validate `source_field` before use in SQL to prevent injection
+- For JSONB fields like `fields.field_country`, the distinct query is: `SELECT DISTINCT fields->>'field_country' FROM item WHERE type = $1 AND status = 1 AND fields->>'field_country' IS NOT NULL AND fields->>'field_country' != '' ORDER BY 1`
+- The `autocomplete_threshold` controls the crossover: ≤ threshold → `<select>`, > threshold → `<datalist>`. The datalist approach keeps the implementation server-side (no separate API endpoint needed) but ships all values in the HTML. For very large option sets (> 500), consider an async fetch endpoint in a future story.
+- Cache key: `(source_field, item_type)` tuple; use `moka` like other service caches; TTL 300s is reasonable (same as item cache)
+- This story intentionally uses `<datalist>` rather than a custom autocomplete JS widget to stay framework-free for v1
+
+### Project Structure Notes
+
+- `crates/kernel/src/gather/types.rs` — `ExposedWidget::DynamicOptions`
+- `crates/kernel/src/routes/gather.rs` — `render_exposed_filter_form`, new `fetch_distinct_values` helper
+- `crates/kernel/src/gather/gather_service.rs` — optional: add options cache here
+- `plugins/ritrovo_importer/src/lib.rs` — `field_country` and `field_language` filter JSON
+
+### References
+
+- [Source: crates/kernel/src/gather/types.rs] — `ExposedWidget` (after Stories 34.1–34.2)
+- [Source: crates/kernel/src/routes/gather.rs] — render function and fetch helper location
+- [Source: crates/kernel/src/routes/helpers.rs] — `is_valid_field_name` for SQL safety
+- [Source: docs/coding-standards.md] — SeaQuery/parameterized query requirement
+
+---
+

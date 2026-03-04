@@ -478,3 +478,28 @@ development_status:
   32-2-user-service: done
   32-3-role-service: done
   epic-32-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Ritrovo: Reference Application, Demo & Tutorial (Part 2)
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 33: Ritrovo Part 2 — Conference Importer Plugin
+  # WASM plugin scaffold, cron-driven import, topic taxonomy, advanced gathers
+  epic-33: done
+  33-1-plugin-scaffold-sdk-basics: done       # trovato plugin new, tap stubs, manifest
+  33-2-cron-driven-conference-import: done    # HTTP fetch, ETag, queue workers, upsert
+  33-3-hierarchical-topic-taxonomy: done      # topic tree seeded, 26 confs.tech mappings
+  33-4-advanced-gathers: done                 # /conferences + /cfps with exposed filters, 301 redirects
+  epic-33-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Phase 15: Gather UX Enhancements
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 34: Gather Exposed Filter Widget System
+  # Pluggable widget types: boolean select, taxonomy term select, dynamic dropdown/autocomplete
+  epic-34: backlog
+  34-1-boolean-exposed-filter-widget: ready-for-dev
+  34-2-taxonomy-term-select-widget: ready-for-dev
+  34-3-dynamic-options-widget: ready-for-dev
+  epic-34-retrospective: optional
