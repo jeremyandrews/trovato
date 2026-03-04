@@ -457,9 +457,6 @@ pub fn tap_install() -> serde_json::Value {
     // 2. Seed the gather queries used by the topic/CFP browse pages.
     seed_gather_queries(now);
 
-    // 3a. Register the /conferences URL alias for the upcoming conferences page.
-    seed_url_aliases(now);
-
     // 3. Queue historical import.
     let current_year = timestamp_to_year(now) as u16;
     let mut pushed = 0u32;
@@ -949,40 +946,6 @@ fn seed_gather_queries(now: i64) {
         "info",
         PLUGIN_NAME,
         &format!("seed_gather_queries: {seeded}/5 queries seeded"),
-    );
-}
-
-/// Seed URL aliases for the ritrovo gather pages.
-///
-/// Uses `ON CONFLICT DO NOTHING` so manual customizations are preserved.
-fn seed_url_aliases(now: i64) {
-    const LIVE_STAGE_ID: &str = "0193a5a0-0000-7000-8000-000000000001";
-    let aliases: &[(&str, &str)] = &[(
-        "/conferences",
-        "/gather/ritrovo.upcoming_conferences",
-    )];
-
-    let mut seeded = 0u32;
-    for (alias, source) in aliases {
-        let result = host::execute_raw(
-            "INSERT INTO url_alias (source, alias, language, created, stage_id) \
-             VALUES ($1, $2, 'en', $3, $4::uuid) \
-             ON CONFLICT (alias, language, stage_id) DO NOTHING",
-            &[
-                serde_json::json!(source),
-                serde_json::json!(alias),
-                serde_json::json!(now),
-                serde_json::json!(LIVE_STAGE_ID),
-            ],
-        );
-        if matches!(result, Ok(1)) {
-            seeded += 1;
-        }
-    }
-    host::log(
-        "info",
-        PLUGIN_NAME,
-        &format!("seed_url_aliases: {seeded}/{} aliases seeded", aliases.len()),
     );
 }
 

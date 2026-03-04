@@ -17,4 +17,6 @@ weight = 0
 [migrations]
 files = [
     "migrations/001_create_ritrovo_state.sql",
+    "migrations/002_dedup_conferences.sql",
+    "migrations/003_remove_conferences_alias.sql",
 ]
