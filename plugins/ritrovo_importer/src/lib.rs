@@ -1580,6 +1580,10 @@ fn insert_conference(
     let topics: Vec<String> = topic_uuid.map(|u| vec![u.to_string()]).unwrap_or_default();
     let fields = build_source_fields(conf, source_id, &topics);
 
+    // Use an upsert so that concurrent queue workers processing different topic
+    // files don't create duplicate conference items.  On conflict, source-derived
+    // fields are refreshed and `field_topics` is merged (SQL-side UNION dedup)
+    // so both the existing and incoming topic UUIDs are preserved.
     let result = host::execute_raw(
         "INSERT INTO item (id, type, title, status, author_id, stage_id, created, changed, fields) \
          VALUES (\
@@ -1592,7 +1596,26 @@ fn insert_conference(
            $3, \
            $3, \
            $4::jsonb\
-         )",
+         ) \
+         ON CONFLICT ((fields->>'field_source_id')) \
+         WHERE type = 'conference' \
+           AND fields->>'field_source_id' IS NOT NULL \
+           AND fields->>'field_source_id' != '' \
+         DO UPDATE SET \
+           title   = EXCLUDED.title, \
+           changed = EXCLUDED.changed, \
+           fields  = item.fields \
+                  || (EXCLUDED.fields - 'field_topics') \
+                  || jsonb_build_object(\
+                       'field_topics', \
+                       (SELECT COALESCE(jsonb_agg(t ORDER BY t), '[]'::jsonb) \
+                        FROM (\
+                          SELECT jsonb_array_elements_text(item.fields->'field_topics') \
+                          UNION \
+                          SELECT jsonb_array_elements_text(EXCLUDED.fields->'field_topics') \
+                        ) u(t)\
+                       )\
+                     )",
         &[
             serde_json::json!(conf.name),
             serde_json::json!(LIVE_STAGE_UUID),
