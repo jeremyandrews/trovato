@@ -265,6 +265,7 @@ fn query_display_custom() {
         empty_text: Some("No items found".to_string()),
         header: Some("Results".to_string()),
         footer: None,
+        canonical_url: None,
     };
 
     assert_eq!(display.format, DisplayFormat::Grid);
@@ -533,6 +534,7 @@ fn gate_test_recent_articles_query_definition() {
             empty_text: Some("No articles found in this category.".to_string()),
             header: None,
             footer: None,
+            canonical_url: None,
         },
         plugin: "blog".to_string(),
         created: chrono::Utc::now().timestamp(),

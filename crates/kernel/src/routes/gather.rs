@@ -247,15 +247,20 @@ async fn render_query_html(
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
-    let base_path = format!("/gather/{query_id}");
+    // Use canonical_url from the query definition when available so that pager
+    // links and filter form actions stay on the friendly URL (e.g. /conferences)
+    // rather than /gather/{query_id}.
+    let canonical = state
+        .gather()
+        .get_query(&query_id)
+        .and_then(|q| q.display.canonical_url);
+    let base_path = canonical.unwrap_or_else(|| format!("/gather/{query_id}"));
     execute_and_render(&state, &session, &query_id, params, &base_path).await
 }
 
 /// Execute a gather query and render it as an HTML page.
 ///
-/// `base_path` controls the URL used for pager links and form actions,
-/// allowing callers like `/conferences` to serve content under their own path
-/// rather than the canonical `/gather/{query_id}` path.
+/// `base_path` controls the URL used for pager links and form actions.
 pub async fn execute_and_render(
     state: &AppState,
     session: &Session,

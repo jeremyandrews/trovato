@@ -401,6 +401,13 @@ pub struct QueryDisplay {
 
     /// Footer content.
     pub footer: Option<String>,
+
+    /// Canonical URL for this query (e.g. `/conferences`).
+    ///
+    /// When set, the gather route handler uses this as `base_path` instead of
+    /// `/gather/{query_id}`, so pager links and filter form actions stay on
+    /// the friendly URL rather than the internal gather path.
+    pub canonical_url: Option<String>,
 }
 
 fn default_items_per_page() -> u32 {
@@ -416,6 +423,7 @@ impl Default for QueryDisplay {
             empty_text: None,
             header: None,
             footer: None,
+            canonical_url: None,
         }
     }
 }

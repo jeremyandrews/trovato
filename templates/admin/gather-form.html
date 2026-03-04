@@ -100,6 +100,12 @@
         </div>
 
         <div class="form-item">
+            <label for="canonical_url" class="form-item__label">Canonical URL</label>
+            <input type="text" id="canonical_url" class="form-text" value="" placeholder="/conferences">
+            <p class="form-item__description">Optional. When set, pager links and filter form actions use this URL instead of /gather/{query_id}.</p>
+        </div>
+
+        <div class="form-item">
             <label class="form-item__label">Pager</label>
             <label><input type="checkbox" id="pager_enabled" checked> Enable pager</label>
             <label style="margin-left: 1rem;"><input type="checkbox" id="pager_show_count"> Show result count</label>

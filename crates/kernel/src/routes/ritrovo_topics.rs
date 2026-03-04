@@ -10,35 +10,30 @@
 //! | Path | Gather query |
 //! |------|-------------|
 //! | `GET /topics/:slug` | `ritrovo.by_topic` (UUID looked up from ritrovo_state) |
-//! | `GET /conferences` | `ritrovo.upcoming_conferences` (rendered in-place) |
-//! | `GET /cfps` | `ritrovo.open_cfps` (rendered in-place) |
 //! | `GET /location/:country` | `ritrovo.by_country` |
 //! | `GET /location/:country/:city` | `ritrovo.by_city` |
 //!
 //! The topic and location routes resolve path segments to gather filter values
-//! and redirect to the corresponding gather URLs.  `/conferences` and `/cfps`
-//! render their gather queries directly under their own paths so that pager
-//! links, filter forms, and browser history all stay on the friendly URL.
+//! and redirect to the corresponding gather URLs.
+//!
+//! `/conferences` and `/cfps` are served via URL aliases + `canonical_url` on
+//! the gather query's display config — no dedicated route needed.
 
 use axum::{
     Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{Html, Json, Redirect},
+    response::Redirect,
     routing::get,
 };
 use std::collections::HashMap;
-use tower_sessions::Session;
 
-use crate::routes::gather::{ExecuteParams, execute_and_render};
 use crate::state::AppState;
 
 /// Build the router for Ritrovo browse routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/topics/{slug}", get(by_topic))
-        .route("/conferences", get(conferences))
-        .route("/cfps", get(cfps))
         .route("/location/{country}", get(by_country))
         .route("/location/{country}/{city}", get(by_country_city))
 }
@@ -90,37 +85,6 @@ async fn by_topic(
     }
 
     Ok(Redirect::temporary(&gather_url))
-}
-
-/// Upcoming conferences listing.
-///
-/// Renders the `ritrovo.upcoming_conferences` gather query directly under
-/// `/conferences` so that pager links, filter forms, and browser history
-/// all stay on this path rather than bouncing to `/gather/…`.
-async fn conferences(
-    State(state): State<AppState>,
-    session: Session,
-    Query(params): Query<ExecuteParams>,
-) -> Result<Html<String>, (StatusCode, Json<crate::routes::helpers::JsonError>)> {
-    execute_and_render(
-        &state,
-        &session,
-        "ritrovo.upcoming_conferences",
-        params,
-        "/conferences",
-    )
-    .await
-}
-
-/// Open CFPs listing.
-///
-/// Renders the `ritrovo.open_cfps` gather query directly under `/cfps`.
-async fn cfps(
-    State(state): State<AppState>,
-    session: Session,
-    Query(params): Query<ExecuteParams>,
-) -> Result<Html<String>, (StatusCode, Json<crate::routes::helpers::JsonError>)> {
-    execute_and_render(&state, &session, "ritrovo.open_cfps", params, "/cfps").await
 }
 
 /// Browse conferences by country.

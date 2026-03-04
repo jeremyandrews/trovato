@@ -115,6 +115,7 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                             empty_text: Some("No conferences found.".to_string()),
                             header: None,
                             footer: None,
+                            canonical_url: None,
                         },
                         plugin: "core".to_string(),
                         created: now,

@@ -55,7 +55,8 @@
         format: 'table',
         items_per_page: 10,
         pager: { enabled: true, show_count: false, style: 'full' },
-        empty_text: ''
+        empty_text: '',
+        canonical_url: ''
     };
 
     // DOM references (populated in init)
@@ -75,6 +76,7 @@
     var displayFormatSelect;
     var itemsPerPageInput;
     var emptyTextInput;
+    var canonicalUrlInput;
     var pagerEnabledCheckbox;
     var pagerShowCountCheckbox;
 
@@ -103,6 +105,7 @@
         displayFormatSelect    = document.getElementById('display_format');
         itemsPerPageInput      = document.getElementById('items_per_page');
         emptyTextInput         = document.getElementById('empty_text');
+        canonicalUrlInput      = document.getElementById('canonical_url');
         pagerEnabledCheckbox   = document.getElementById('pager_enabled');
         pagerShowCountCheckbox = document.getElementById('pager_show_count');
 
@@ -150,6 +153,7 @@
                 display.format         = parsed.format         || display.format;
                 display.items_per_page = parsed.items_per_page || display.items_per_page;
                 display.empty_text     = parsed.empty_text !== undefined ? parsed.empty_text : display.empty_text;
+                display.canonical_url  = parsed.canonical_url !== undefined ? parsed.canonical_url : display.canonical_url;
                 if (parsed.pager) {
                     display.pager.enabled    = parsed.pager.enabled !== undefined ? parsed.pager.enabled : display.pager.enabled;
                     display.pager.show_count = parsed.pager.show_count !== undefined ? parsed.pager.show_count : display.pager.show_count;
@@ -169,6 +173,7 @@
         if (displayFormatSelect)    displayFormatSelect.value    = display.format;
         if (itemsPerPageInput)      itemsPerPageInput.value      = display.items_per_page;
         if (emptyTextInput)         emptyTextInput.value         = display.empty_text;
+        if (canonicalUrlInput)      canonicalUrlInput.value      = display.canonical_url;
         if (pagerEnabledCheckbox)   pagerEnabledCheckbox.checked = display.pager.enabled;
         if (pagerShowCountCheckbox) pagerShowCountCheckbox.checked = display.pager.show_count;
         if (baseTableSelect)        baseTableSelect.value        = definition.base_table;
@@ -714,6 +719,13 @@
         if (emptyTextInput) {
             emptyTextInput.addEventListener('input', function () {
                 display.empty_text = emptyTextInput.value;
+                syncToHiddenInputs();
+            });
+        }
+
+        if (canonicalUrlInput) {
+            canonicalUrlInput.addEventListener('input', function () {
+                display.canonical_url = canonicalUrlInput.value;
                 syncToHiddenInputs();
             });
         }

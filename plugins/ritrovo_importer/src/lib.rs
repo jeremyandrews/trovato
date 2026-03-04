@@ -812,7 +812,8 @@ fn seed_gather_queries(now: i64) {
             "format": "table",
             "items_per_page": 20,
             "pager": {"enabled": true, "style": "full", "show_count": true},
-            "empty_text": "No upcoming conferences found."
+            "empty_text": "No upcoming conferences found.",
+            "canonical_url": "/conferences"
         }),
     );
 
@@ -847,7 +848,8 @@ fn seed_gather_queries(now: i64) {
             "format": "table",
             "items_per_page": 20,
             "pager": {"enabled": true, "style": "full", "show_count": true},
-            "empty_text": "No open CFPs at this time."
+            "empty_text": "No open CFPs at this time.",
+            "canonical_url": "/cfps"
         }),
     );
 
