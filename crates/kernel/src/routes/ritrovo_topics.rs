@@ -102,8 +102,14 @@ async fn conferences(
     session: Session,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<crate::routes::helpers::JsonError>)> {
-    execute_and_render(&state, &session, "ritrovo.upcoming_conferences", params, "/conferences")
-        .await
+    execute_and_render(
+        &state,
+        &session,
+        "ritrovo.upcoming_conferences",
+        params,
+        "/conferences",
+    )
+    .await
 }
 
 /// Open CFPs listing.
@@ -126,13 +132,7 @@ async fn by_country(
 ) -> Redirect {
     let extra: String = params
         .iter()
-        .map(|(k, v)| {
-            format!(
-                "&{}={}",
-                urlencoding::encode(k),
-                urlencoding::encode(v)
-            )
-        })
+        .map(|(k, v)| format!("&{}={}", urlencoding::encode(k), urlencoding::encode(v)))
         .collect();
     Redirect::temporary(&format!(
         "/gather/ritrovo.by_country?country={}{}",
@@ -150,13 +150,7 @@ async fn by_country_city(
 ) -> Redirect {
     let extra: String = params
         .iter()
-        .map(|(k, v)| {
-            format!(
-                "&{}={}",
-                urlencoding::encode(k),
-                urlencoding::encode(v)
-            )
-        })
+        .map(|(k, v)| format!("&{}={}", urlencoding::encode(k), urlencoding::encode(v)))
         .collect();
     Redirect::temporary(&format!(
         "/gather/ritrovo.by_city?country={}&city={}{}",

@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tower_sessions::Session;
 use uuid::Uuid;
 
@@ -281,6 +281,10 @@ pub async fn execute_and_render(
     let exposed_filters = parse_filter_params(&params.filters);
     let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
 
+    // Pre-fetch widget data before executing — borrows exposed_filters for faceted
+    // scoping, then releases the borrow so execute() can take ownership.
+    let preload = preload_widget_data(state, &gather_query, &exposed_filters).await;
+
     let result = state
         .gather()
         .execute(
@@ -307,9 +311,6 @@ pub async fn execute_and_render(
         .filter(|(k, _)| !["page", "stage"].contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-
-    // Pre-fetch widget data (taxonomy terms, distinct values) for exposed filters.
-    let preload = preload_widget_data(state, &gather_query).await;
 
     // Render gather content (either via theme template or fallback HTML)
     let content_html = render_gather_with_theme(
@@ -402,10 +403,19 @@ struct WidgetPreloadData {
 
 /// Pre-fetch all widget data required by the exposed filters of `query`.
 ///
+/// Uses `active_filters` to apply faceted scoping: each widget's option list
+/// is restricted to values that produce at least one result when combined with
+/// the other currently-active filter selections.
+///
 /// Called once per request before any rendering so that both the theme
 /// template path and the fallback HTML path share the same data.
-async fn preload_widget_data(state: &AppState, query: &GatherQuery) -> WidgetPreloadData {
+async fn preload_widget_data(
+    state: &AppState,
+    query: &GatherQuery,
+    active_filters: &HashMap<String, FilterValue>,
+) -> WidgetPreloadData {
     let item_type = query.definition.item_type.as_deref().unwrap_or("");
+    let all_exposed = &query.definition.filters;
     let mut taxonomy_options: HashMap<String, Vec<TagWithDepth>> = HashMap::new();
     let mut dynamic_options: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -413,7 +423,7 @@ async fn preload_widget_data(state: &AppState, query: &GatherQuery) -> WidgetPre
         match &filter.widget {
             ExposedWidget::TaxonomySelect { vocabulary } => {
                 if !taxonomy_options.contains_key(vocabulary) {
-                    let tags = state
+                    let all_tags = state
                         .categories()
                         .list_tags_with_depth(vocabulary)
                         .await
@@ -425,20 +435,47 @@ async fn preload_widget_data(state: &AppState, query: &GatherQuery) -> WidgetPre
                             );
                             Vec::new()
                         });
-                    if tags.is_empty() {
+                    if all_tags.is_empty() {
                         tracing::warn!(
                             vocabulary,
                             "taxonomy_select widget: vocabulary not found or has no terms"
                         );
                     }
-                    taxonomy_options.insert(vocabulary.clone(), tags);
+                    let reachable = state
+                        .gather()
+                        .fetch_faceted_reachable_tag_ids(
+                            &filter.field,
+                            item_type,
+                            all_exposed,
+                            &filter.field,
+                            active_filters,
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                field = %filter.field,
+                                error = %e,
+                                "failed to fetch reachable tag IDs for faceted widget"
+                            );
+                            None
+                        });
+                    taxonomy_options.insert(
+                        vocabulary.clone(),
+                        filter_visible_tags(&all_tags, reachable),
+                    );
                 }
             }
             ExposedWidget::DynamicOptions { source_field, .. } => {
                 if !dynamic_options.contains_key(source_field) {
                     let values = state
                         .gather()
-                        .fetch_distinct_values(source_field, item_type)
+                        .fetch_faceted_distinct_values(
+                            source_field,
+                            item_type,
+                            all_exposed,
+                            &filter.field,
+                            active_filters,
+                        )
                         .await
                         .unwrap_or_else(|e| {
                             tracing::warn!(
@@ -459,6 +496,55 @@ async fn preload_widget_data(state: &AppState, query: &GatherQuery) -> WidgetPre
         taxonomy_options,
         dynamic_options,
     }
+}
+
+/// Filter a flat DFS-ordered taxonomy list to tags reachable given the current scope.
+///
+/// When `reachable` is `None` (no scope active), all tags are returned unchanged.
+/// When `reachable` is `Some(set)`, returns tags that are either directly in
+/// `reachable` or are an ancestor of a reachable tag (to preserve tree structure).
+fn filter_visible_tags(
+    all_tags: &[TagWithDepth],
+    reachable: Option<HashSet<Uuid>>,
+) -> Vec<TagWithDepth> {
+    let Some(reachable) = reachable else {
+        return all_tags.to_vec();
+    };
+
+    if reachable.is_empty() {
+        return Vec::new();
+    }
+
+    let n = all_tags.len();
+    let mut visible = vec![false; n];
+
+    // Forward pass: mark directly reachable tags.
+    for (i, twd) in all_tags.iter().enumerate() {
+        if reachable.contains(&twd.tag.id) {
+            visible[i] = true;
+        }
+    }
+
+    // Backward pass: for each visible tag with depth > 0, mark its direct parent
+    // (the last preceding tag whose depth is exactly one less).
+    for i in (0..n).rev() {
+        if visible[i] && all_tags[i].depth > 0 {
+            let parent_depth = all_tags[i].depth - 1;
+            for j in (0..i).rev() {
+                if all_tags[j].depth == parent_depth {
+                    visible[j] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    all_tags
+        .iter()
+        .zip(visible.iter())
+        .filter(|(_, v)| **v)
+        .map(|(t, _)| t.clone())
+        .collect()
 }
 
 // -------------------------------------------------------------------------

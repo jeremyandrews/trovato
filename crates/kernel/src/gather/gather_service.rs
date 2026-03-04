@@ -183,6 +183,217 @@ impl GatherService {
         Ok(values)
     }
 
+    /// Build scope conditions for faceted-option queries.
+    ///
+    /// Walks `all_exposed` and, for each filter whose field differs from
+    /// `exclude_field` and has an active value in `active`, produces either:
+    ///
+    /// - An equality condition `(jsonb_key, string_value)` for `Equals` filters.
+    /// - A tag-membership condition `(jsonb_key, uuid_strings)` for
+    ///   `HasTagOrDescendants` filters (the tag hierarchy is expanded here).
+    ///
+    /// Returns `(equals_scope, tag_scope)`.
+    async fn build_facet_scope(
+        &self,
+        all_exposed: &[QueryFilter],
+        exclude_field: &str,
+        active: &HashMap<String, FilterValue>,
+    ) -> Result<(Vec<(String, String)>, Vec<(String, Vec<String>)>)> {
+        let mut eq_scope: Vec<(String, String)> = Vec::new();
+        let mut tag_scope: Vec<(String, Vec<String>)> = Vec::new();
+
+        for filter in all_exposed {
+            if !filter.exposed || filter.field == exclude_field {
+                continue;
+            }
+            let Some(active_value) = active.get(&filter.field) else {
+                continue;
+            };
+            // Only JSONB paths (e.g. "fields.field_country") are supported.
+            let Some(jsonb_key) = filter.field.strip_prefix("fields.") else {
+                continue;
+            };
+            if !is_valid_field_name(jsonb_key) {
+                continue;
+            }
+            match filter.operator {
+                FilterOperator::Equals => {
+                    if let Some(s) = active_value.as_string() {
+                        eq_scope.push((jsonb_key.to_string(), s));
+                    }
+                }
+                FilterOperator::HasTagOrDescendants => {
+                    if let Some(tag_id) = active_value.as_uuid() {
+                        let ids = self.categories.get_tag_with_descendants(tag_id).await?;
+                        let id_strings: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+                        if !id_strings.is_empty() {
+                            tag_scope.push((jsonb_key.to_string(), id_strings));
+                        }
+                    }
+                }
+                _ => {
+                    // Other operators (GreaterOrEqual, IsNotNull, etc.) are not
+                    // used as exposed filters in current schemas; skip them.
+                }
+            }
+        }
+
+        Ok((eq_scope, tag_scope))
+    }
+
+    /// Fetch distinct values for `source_field` constrained by other active filters.
+    ///
+    /// Falls back to the cached [`fetch_distinct_values`] when no scope conditions
+    /// apply (initial page load with no active selections). Runs a live uncached
+    /// query when other filters are active so option lists stay consistent with
+    /// the current result set.
+    pub async fn fetch_faceted_distinct_values(
+        &self,
+        source_field: &str,
+        item_type: &str,
+        all_exposed: &[QueryFilter],
+        exclude_field: &str,
+        active: &HashMap<String, FilterValue>,
+    ) -> Result<Vec<String>> {
+        let (eq_scope, tag_scope) = self
+            .build_facet_scope(all_exposed, exclude_field, active)
+            .await?;
+
+        if eq_scope.is_empty() && tag_scope.is_empty() {
+            return self.fetch_distinct_values(source_field, item_type).await;
+        }
+
+        if item_type.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let Some(jsonb_key) = source_field.strip_prefix("fields.") else {
+            return Ok(Vec::new());
+        };
+        if !is_valid_field_name(jsonb_key) {
+            return Ok(Vec::new());
+        }
+
+        // Build SQL with validated scope conditions interpolated as key names.
+        let mut sql = "SELECT DISTINCT fields->>$1 \
+             FROM item \
+             WHERE type = $2 \
+               AND status = 1 \
+               AND fields->>$1 IS NOT NULL \
+               AND fields->>$1 <> ''"
+            .to_string();
+        let mut param_idx = 3i32;
+        for (key, _) in &eq_scope {
+            // key validated by is_valid_field_name above
+            sql.push_str(&format!(" AND fields->>'{key}' = ${param_idx}"));
+            param_idx += 1;
+        }
+        for (key, _) in &tag_scope {
+            // key validated by is_valid_field_name above
+            sql.push_str(&format!(
+                " AND EXISTS (\
+                    SELECT 1 FROM jsonb_array_elements_text(fields->'{key}') t \
+                    WHERE t = ANY(${param_idx}))"
+            ));
+            param_idx += 1;
+        }
+        sql.push_str(&format!(
+            " ORDER BY 1 LIMIT {}",
+            Self::DISTINCT_VALUES_LIMIT
+        ));
+
+        let mut q = sqlx::query_scalar::<_, String>(&sql)
+            .bind(jsonb_key)
+            .bind(item_type);
+        for (_, val) in &eq_scope {
+            q = q.bind(val.clone());
+        }
+        for (_, ids) in &tag_scope {
+            q = q.bind(ids.clone());
+        }
+
+        q.fetch_all(&self.pool)
+            .await
+            .context("failed to fetch faceted distinct values")
+    }
+
+    /// Fetch UUIDs of tags appearing in `tag_field` for items matching the scope.
+    ///
+    /// Returns `None` when no scope conditions are active, signalling the caller
+    /// to show the full taxonomy without filtering. Returns `Some(set)` (possibly
+    /// empty) when scope conditions are active.
+    pub async fn fetch_faceted_reachable_tag_ids(
+        &self,
+        tag_field: &str,
+        item_type: &str,
+        all_exposed: &[QueryFilter],
+        exclude_field: &str,
+        active: &HashMap<String, FilterValue>,
+    ) -> Result<Option<HashSet<Uuid>>> {
+        let (eq_scope, tag_scope) = self
+            .build_facet_scope(all_exposed, exclude_field, active)
+            .await?;
+
+        if eq_scope.is_empty() && tag_scope.is_empty() {
+            return Ok(None);
+        }
+
+        if item_type.is_empty() {
+            return Ok(Some(HashSet::new()));
+        }
+
+        let Some(jsonb_key) = tag_field.strip_prefix("fields.") else {
+            return Ok(None);
+        };
+        if !is_valid_field_name(jsonb_key) {
+            return Ok(None);
+        }
+
+        // key validated by is_valid_field_name above
+        let mut sql = format!(
+            "SELECT DISTINCT t.value \
+             FROM item \
+             CROSS JOIN LATERAL jsonb_array_elements_text(fields->'{jsonb_key}') AS t(value) \
+             WHERE type = $1 \
+               AND status = 1"
+        );
+        let mut param_idx = 2i32;
+        for (key, _) in &eq_scope {
+            // key validated by is_valid_field_name above
+            sql.push_str(&format!(" AND fields->>'{key}' = ${param_idx}"));
+            param_idx += 1;
+        }
+        for (key, _) in &tag_scope {
+            // key validated by is_valid_field_name above
+            sql.push_str(&format!(
+                " AND EXISTS (\
+                    SELECT 1 FROM jsonb_array_elements_text(fields->'{key}') tt \
+                    WHERE tt = ANY(${param_idx}))"
+            ));
+            param_idx += 1;
+        }
+
+        let mut q = sqlx::query_scalar::<_, String>(&sql).bind(item_type);
+        for (_, val) in &eq_scope {
+            q = q.bind(val.clone());
+        }
+        for (_, ids) in &tag_scope {
+            q = q.bind(ids.clone());
+        }
+
+        let tag_strings: Vec<String> = q
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch reachable tag IDs")?;
+
+        let tag_ids: HashSet<Uuid> = tag_strings
+            .iter()
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect();
+
+        Ok(Some(tag_ids))
+    }
+
     /// Load queries from database into memory cache.
     pub async fn load_queries(&self) -> Result<()> {
         #[derive(sqlx::FromRow)]
