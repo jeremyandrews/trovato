@@ -318,7 +318,7 @@ curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
 `[CLI]`
 
 ```bash
-# The /conferences URL works (serves the plugin's gather via pre-existing alias)
+# The /conferences URL works (serves the gather via the alias we just created)
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
 # Expect: 200
 
