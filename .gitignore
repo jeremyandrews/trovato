@@ -37,3 +37,6 @@ docker-data/
 # File uploads (runtime data)
 uploads/
 **/uploads/
+
+# Agent environment discovery (local to each dev machine)
+TOOLS.md

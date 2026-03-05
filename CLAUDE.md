@@ -132,6 +132,25 @@ Backups live in `backups/` (gitignored). Existing snapshots:
 | `backups/tutorial-part-01-20260303.dump` | DB after Tutorial Part 1 — three hand-created conferences, no importer data |
 | `backups/tutorial-part-02-20260304.dump` | DB after Tutorial Part 2 — 5,492 conferences imported, taxonomy seeded, ritrovo gather queries live |
 
+## TOOLS.md — Environment Discovery File
+
+`TOOLS.md` is an environment-specific discovery file. It records how to do things in this particular installation -- paths, URLs, working commands, database connection strings, admin credentials, API endpoints. It is NOT checked into git (add to `.gitignore`).
+
+**Build it as you go.** When you figure out how to do something (start the server, connect to the database, hit an API endpoint, access the admin UI), record it in `TOOLS.md` under a descriptive heading. Include the exact command or URL that worked, not a generic template.
+
+**Check it first.** Before trying to figure out how to do something, check `TOOLS.md`. If it's already there, use what's recorded. If it's not, figure it out, then record it.
+
+**Sections to expect:** Prerequisites (versions, paths), Server (start/stop/health check), Database (connection string, useful queries), Admin UI (base URL, login), API (endpoints discovered so far), Config (import/export commands), Build (cargo commands, test commands), Plugins (compile, install, debug).
+
+## Working Through the Tutorial
+
+The tutorial in `docs/tutorial/` has companion agent recipes in `docs/tutorial/recipes/`. When working through any tutorial part:
+
+1. **Run sync check first.** `bash docs/tutorial/recipes/sync-check.sh`. If any recipe is out of sync with its tutorial file, diff them, update the recipe to match, update the sync hash, and commit before proceeding.
+2. **Follow the recipe, not the tutorial.** The recipe has the same steps but is written for you -- it tells you what tools to use, how to verify each step, and where to look things up.
+3. **Record discoveries in TOOLS.md.** Every time you figure out a path, URL, command, or workaround, add it to `TOOLS.md` so you (or a future session) don't have to rediscover it.
+4. **If a recipe step is wrong or unclear, fix it.** Update the recipe, re-hash, commit. The recipes are meant to improve over time.
+
 ## Before Committing Checklist
 
 1. `cargo fmt --all`
