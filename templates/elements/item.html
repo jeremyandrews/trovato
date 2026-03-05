@@ -4,7 +4,7 @@
         <div class="item__meta">
             <span class="item__type">{{ item.type }}</span>
             {% if item.created %}
-            <time class="item__date" datetime="{{ item.created }}">{{ item.created }}</time>
+            <time class="item__date" datetime="{{ item.created }}">{{ item.created | format_date }}</time>
             {% endif %}
         </div>
     </header>

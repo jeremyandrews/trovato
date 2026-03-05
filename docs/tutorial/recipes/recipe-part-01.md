@@ -327,6 +327,28 @@ curl -s http://localhost:3000/api/query/upcoming_conferences/execute | jq '.tota
 # Expect: 3
 ```
 
+**Verify:** The conference card template renders correctly — each conference shows its title, dates, location, and description (not a raw timestamp):
+
+```bash
+# Verify card template is used (conf-card class present)
+curl -s http://localhost:3000/conferences | grep -c 'class="conf-card__title"'
+# Expect: 3 (one per conference)
+
+# Verify conference descriptions appear (not raw timestamps)
+curl -s http://localhost:3000/conferences | grep -o 'conf-card__desc">[^<]*' | head -3
+# Expect: three lines with conference descriptions, e.g.:
+#   conf-card__desc">A virtual conference dedicated to WebAssembly...
+#   conf-card__desc">The official Rust conference...
+#   conf-card__desc">Europe&#x27;s premier Rust conference...
+
+# Verify date ranges appear (dates are on their own line inside the span)
+curl -s http://localhost:3000/conferences | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} &ndash; [0-9]{4}-[0-9]{2}-[0-9]{2}' | head -3
+# Expect: three date ranges, e.g.:
+#   2026-07-22 &ndash; 2026-07-23
+#   2026-09-09 &ndash; 2026-09-11
+#   2026-10-15 &ndash; 2026-10-16
+```
+
 ---
 
 ## Step 5: Human-Friendly URLs

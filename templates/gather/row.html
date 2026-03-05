@@ -6,7 +6,7 @@
     {% endif %}
 
     {% if row.created %}
-    <time class="gather-row__date" datetime="{{ row.created }}">{{ row.created }}</time>
+    <time class="gather-row__date" datetime="{{ row.created }}">{{ row.created | format_date }}</time>
     {% endif %}
 
     {% if row.summary %}

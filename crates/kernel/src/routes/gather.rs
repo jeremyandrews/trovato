@@ -391,7 +391,14 @@ fn render_gather_with_theme(
         );
     }
 
-    state.theme().tera().render(&template, &context).ok()
+    state
+        .theme()
+        .tera()
+        .render(&template, &context)
+        .inspect_err(
+            |e| tracing::warn!(template = %template, error = ?e, "gather template render failed"),
+        )
+        .ok()
 }
 
 // -------------------------------------------------------------------------

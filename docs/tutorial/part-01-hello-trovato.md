@@ -494,7 +494,6 @@ Visit `http://localhost:3000/conferences` in your browser. You should see three 
 - The date range (e.g. `2026-09-09 – 2026-09-11`) and location (city, country)
 - The conference description
 - A "View details" link and an external "Website" link
-- If a CFP is configured, the submission deadline and a "Submit a talk" link
 
 Click a title through to confirm the detail page renders correctly before moving on to Step 5.
 
