@@ -52,7 +52,7 @@ Record the working build command in `TOOLS.md -> Plugins`.
 cargo run --release --bin trovato -- plugin install ritrovo_importer
 ```
 
-**Note:** The plugin has `default_enabled = true`, so you may see "Plugin 'ritrovo_importer' is already installed" — this is expected. The command still ensures migrations are applied.
+**Note:** The plugin has `default_enabled = false`, so it was not auto-enabled during Part 1. The `plugin install` command enables it, runs its migrations (creating the `ritrovo_state` table), and marks it ready for `tap_install`.
 
 Record the install command in `TOOLS.md -> Plugins`.
 

@@ -20,242 +20,252 @@ Before starting, check `TOOLS.md` for any previously recorded environment detail
 
 `[CLI]` Verify required tools are installed. Record versions in `TOOLS.md -> Prerequisites`.
 
-```
-rustc --version        # need 1.85+
-psql --version         # need 16+
-redis-cli ping         # should print PONG
+```bash
+rustc --version                              # need 1.85+
+$(brew --prefix libpq)/bin/psql --version    # need 16+ (psql is NOT on default PATH)
+docker compose version                       # Docker Compose for services
 ```
 
-**Verify:** All three commands succeed. If any fail, stop and resolve before continuing.
+**Note:** `psql` and `redis-cli` are typically not on PATH. PostgreSQL is accessed via `$(brew --prefix libpq)/bin/psql`. Redis runs inside Docker and can be pinged with `docker exec trovato-redis-1 redis-cli ping`.
+
+**Verify:** All commands succeed. Record versions and paths in `TOOLS.md -> Prerequisites`.
 
 ### 1.2 Start Services
 
-`[CLI]` Check `TOOLS.md -> Server` for existing start commands. If not recorded, use one of:
+`[CLI]` Check `TOOLS.md -> Server` for existing start commands. If not recorded:
 
-**Option A: Docker Compose**
-```
+```bash
 docker compose up -d
 ```
 
-**Option B: Local PostgreSQL + Redis**
-```
-psql -c "CREATE USER trovato WITH PASSWORD 'trovato';"
-psql -c "CREATE DATABASE trovato OWNER trovato;"
-```
-Ensure Redis is running locally.
+**Verify:** `docker compose ps` shows both `postgres` and `redis` containers as healthy.
 
-Record whichever approach worked in `TOOLS.md -> Server`.
+Record in `TOOLS.md -> Server`.
 
 ### 1.3 Build and Start the Server
 
-`[CLI]` Check `TOOLS.md -> Build` for the build command. If not recorded:
+`[CLI]` Check `TOOLS.md -> Build` and `TOOLS.md -> Server` for commands. If not recorded:
 
-```
-cargo build --release
-```
-
-Check `TOOLS.md -> Server` for the start command. If not recorded:
-
-```
-cp .env.example .env   # only on first run
-cargo run --release --bin trovato
+```bash
+ls .env || cp .env.example .env    # only needed on first run
+cargo run --release --bin trovato   # run in background for agent use
 ```
 
-Record the working start command in `TOOLS.md -> Server`.
+Wait a few seconds after starting, then check health:
 
-**Verify:** Server starts without errors. Check logs for migration and plugin discovery output.
+```bash
+curl -s http://localhost:3000/health
+```
+
+**Verify:** Returns `{"status":"healthy","postgres":true,"redis":true}`.
+
+Record start command and health URL in `TOOLS.md`.
 
 **Troubleshooting:**
-- "role trovato does not exist" — local PostgreSQL is intercepting the Docker port. Stop local PostgreSQL or use Option B.
-- To reset: `docker compose down -v && docker compose up -d`, then restart the server.
+- "role trovato does not exist" — local PostgreSQL intercepting Docker port. Stop local PG or use local setup.
+- To reset to clean slate: `docker compose down -v && docker compose up -d`, kill any running trovato process, then restart the server.
 
 ### 1.4 Run the Installer
 
-`[UI-ONLY]` The web installer runs on first startup only.
+`[CLI]` The installer has no CSRF protection and can be driven entirely with curl.
 
-1. Open `$BASE_URL` (check `TOOLS.md -> Server` for base URL; default `http://localhost:3000`).
-2. You will be redirected to the installer. Walk through all four steps:
-   - **Welcome** — confirms DB and Redis connections.
-   - **Create Admin Account** — set username, email, password (min 12 chars). **Record credentials in `TOOLS.md -> Admin UI`.**
-   - **Site Configuration** — set site name, slogan, contact email.
-   - **Complete** — follow link to site.
+First, confirm the server redirects to the installer:
+
+```bash
+curl -s -o /dev/null -w "%{http_code} %{redirect_url}" http://localhost:3000/
+# Expect: 303 http://localhost:3000/install
+```
+
+If it returns 200 instead, the installer has already run — skip to Step 1.5.
+
+**Create the admin account:**
+
+```bash
+curl -s -X POST http://localhost:3000/install/admin \
+  -d "username=admin&email=admin@example.com&password=trovato-admin1&password_confirm=trovato-admin1" \
+  -o /dev/null -w "%{http_code}"
+# Expect: 303
+```
+
+**Configure the site:**
+
+```bash
+curl -s -X POST http://localhost:3000/install/site \
+  -d "site_name=Ritrovo&site_slogan=Tech+Conference+Aggregator&site_mail=admin@example.com" \
+  -o /dev/null -w "%{http_code}"
+# Expect: 303
+```
+
+**Record credentials in `TOOLS.md -> Admin UI`:** username `admin`, password `trovato-admin1`.
 
 ### 1.5 Verify Health Check
 
-`[CLI]` Check `TOOLS.md -> API` for the health check URL. If not recorded:
+`[CLI]`
 
+```bash
+curl -s http://localhost:3000/health
 ```
-curl http://localhost:3000/health
+
+**Verify:** Returns `{"status":"healthy","postgres":true,"redis":true}`.
+
+Also confirm the root URL no longer redirects to the installer:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/
+# Expect: 200
 ```
-
-**Verify:** Response is `{"status":"healthy","postgres":true,"redis":true}`.
-
-Record the health check URL in `TOOLS.md -> API`.
 
 ---
 
 ## Step 2: Create the Conference Item Type
 
-### 2.0 Choose Your Path
+### 2.0 Use Config Import
 
-There are two ways to create the conference type:
+`[CLI]` The config import shortcut is the fastest agent-friendly path. It creates the conference type with all 12 fields and the pathauto pattern in one command.
 
-- **Shortcut (config import)** — skip to Step 2.S below.
-- **Manual (admin UI)** — follow Steps 2.1 through 2.4.
-
-### 2.S Config Import Shortcut
-
-`[CLI]` Import the pre-built conference type:
-
-```
+```bash
 cargo run --release --bin trovato -- config import docs/tutorial/config --dry-run
+# Expect: "Would import 2 config entities" (item_type: 1, variable: 1)
+
 cargo run --release --bin trovato -- config import docs/tutorial/config
+# Expect: "Imported 2 config entities"
 ```
 
 Record the config import command in `TOOLS.md -> Config`.
 
-**Verify:** After import, wait up to 60 seconds (cache TTL), then:
-```
-curl $BASE_URL/api/content-types | jq '.[] | select(. == "conference")'
-```
-Should output `"conference"`. Skip to Step 3 if using this path.
+### 2.1 Verify the Type
 
-### 2.1 Create the Type
+`[CLI]` The imported config may take up to 60 seconds to appear due to cache TTL. Poll until it shows:
 
-`[UI-ONLY]` Navigate to `$ADMIN_URL/structure/types/add` (see `TOOLS.md -> Admin UI` for base admin URL; default `http://localhost:3000/admin`).
-
-Fill in the form:
-
-| Field | Value |
-|---|---|
-| Name | Conference |
-| Machine name | conference |
-| Description | A tech conference or meetup event |
-| Title field label | Conference Name |
-
-Click **Save content type**.
-
-**Verify:** Redirected to content types list. "Conference" appears alongside "Basic Page".
-
-### 2.2 Add Fields
-
-`[UI-ONLY]` Navigate to `$ADMIN_URL/structure/types/conference/fields`.
-
-Add each field one at a time using the "Add a new field" form. For each row: fill in Label, verify/edit Machine name, select Type, click **Add field**.
-
-| Label | Machine name | Type |
-|---|---|---|
-| Website URL | `field_url` | Text (plain) |
-| Start Date | `field_start_date` | Date |
-| End Date | `field_end_date` | Date |
-| City | `field_city` | Text (plain) |
-| Country | `field_country` | Text (plain) |
-| Online | `field_online` | Boolean |
-| CFP URL | `field_cfp_url` | Text (plain) |
-| CFP End Date | `field_cfp_end_date` | Date |
-| Description | `field_description` | Text (long) |
-| Language | `field_language` | Text (plain) |
-| Source ID | `field_source_id` | Text (plain) |
-| Editor Notes | `field_editor_notes` | Text (long) |
-
-**Important:** For "Website URL", the auto-generated machine name will be `field_website_url`. Edit it to `field_url` before clicking **Add field**.
-
-### 2.3 Make Date Fields Required
-
-`[UI-ONLY]` For **Start Date** and **End Date**: click the **Edit** link next to each field, check the **Required** checkbox, and save.
-
-### 2.4 Verify the Type
-
-`[CLI]`
-```
-curl $BASE_URL/api/content-types | jq '.[] | select(. == "conference")'
+```bash
+sleep 5
+curl -s http://localhost:3000/api/content-types | jq '.[] | select(. == "conference")'
+# Expect: "conference"
 ```
 
-**Verify:** Output is `"conference"`.
-
-Record the content-types API endpoint in `TOOLS.md -> API` if not already there.
+If empty, wait a few more seconds and retry.
 
 ---
 
-## Step 3: Create Your First Conference
+## Step 3: Create Three Conferences
 
-### 3.0 Overview
+### 3.0 Log In and Get a Session
 
-This step creates three conferences by hand via the admin UI. All three are `[UI-ONLY]`.
+`[CLI]` All item creation requires an authenticated session with CSRF tokens. Log in once, then reuse the cookie jar.
 
-### 3.1 Conference 1: RustConf 2026
-
-`[UI-ONLY]` Navigate to `$ADMIN_URL/content/add/conference`.
-
-| Field | Value |
-|---|---|
-| Conference Name | RustConf 2026 |
-| Website URL | https://rustconf.com |
-| Start Date | 2026-09-09 |
-| End Date | 2026-09-11 |
-| City | Portland |
-| Country | United States |
-| CFP URL | https://rustconf.com/cfp |
-| CFP End Date | 2026-06-15 |
-| Description | The official Rust conference, featuring talks on the latest Rust developments. |
-| Published | (checked) |
-
-Click **Create content**.
-
-**Verify:** Redirected to `$ADMIN_URL/content`. "RustConf 2026" appears in the list.
-
-### 3.2 Conference 2: EuroRust 2026
-
-`[UI-ONLY]` Navigate to `$ADMIN_URL/content/add/conference`.
-
-| Field | Value |
-|---|---|
-| Conference Name | EuroRust 2026 |
-| Website URL | https://eurorust.eu |
-| Start Date | 2026-10-15 |
-| End Date | 2026-10-16 |
-| City | Paris |
-| Country | France |
-| Description | Europe's premier Rust conference, bringing together Rustaceans from across the continent. |
-| Published | (checked) |
-
-Click **Create content**.
-
-### 3.3 Conference 3: WasmCon Online 2026
-
-`[UI-ONLY]` Navigate to `$ADMIN_URL/content/add/conference`.
-
-| Field | Value |
-|---|---|
-| Conference Name | WasmCon Online 2026 |
-| Website URL | https://wasmcon.dev |
-| Start Date | 2026-07-22 |
-| End Date | 2026-07-23 |
-| Online | (checked) |
-| Description | A virtual conference dedicated to WebAssembly, covering toolchains, runtimes, and the component model. |
-| Published | (checked) |
-
-Leave City and Country blank (online event). Click **Create content**.
-
-### 3.4 Verify All Three Conferences
-
-`[CLI]` Query the database to confirm. Check `TOOLS.md -> Database` for the connection string. If not recorded, default is:
-
+```bash
+rm -f /tmp/trovato-cookies.txt
+LOGIN_PAGE=$(curl -s -c /tmp/trovato-cookies.txt http://localhost:3000/user/login)
+CSRF=$(echo "$LOGIN_PAGE" | grep -oE 'name="_token" value="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/user/login \
+  -d "username=admin&password=trovato-admin1&_token=$CSRF" \
+  -o /dev/null -w "%{http_code}"
+# Expect: 303
 ```
+
+Record the login flow in `TOOLS.md -> Admin UI` if not already there.
+
+### 3.1 Helper: Fetch Fresh CSRF Token
+
+CSRF tokens are **single-use**. Before each item creation, fetch a fresh one:
+
+```bash
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+```
+
+### 3.2 Conference 1: RustConf 2026
+
+`[CLI]` Items are created via `POST /item/add/{type}` with a JSON body and `X-CSRF-Token` header.
+
+```bash
+# Fetch fresh CSRF
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/item/add/conference \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -d '{
+    "title": "RustConf 2026",
+    "status": 1,
+    "fields": {
+      "field_url": "https://rustconf.com",
+      "field_start_date": "2026-09-09",
+      "field_end_date": "2026-09-11",
+      "field_city": "Portland",
+      "field_country": "United States",
+      "field_cfp_url": "https://rustconf.com/cfp",
+      "field_cfp_end_date": "2026-06-15",
+      "field_description": "The official Rust conference, featuring talks on the latest Rust developments."
+    }
+  }'
+# Expect: JSON with id, title, item_type, status
+```
+
+### 3.3 Conference 2: EuroRust 2026
+
+`[CLI]`
+
+```bash
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/item/add/conference \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -d '{
+    "title": "EuroRust 2026",
+    "status": 1,
+    "fields": {
+      "field_url": "https://eurorust.eu",
+      "field_start_date": "2026-10-15",
+      "field_end_date": "2026-10-16",
+      "field_city": "Paris",
+      "field_country": "France",
+      "field_description": "Europe'\''s premier Rust conference, bringing together Rustaceans from across the continent."
+    }
+  }'
+```
+
+### 3.4 Conference 3: WasmCon Online 2026
+
+`[CLI]`
+
+```bash
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/item/add/conference \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -d '{
+    "title": "WasmCon Online 2026",
+    "status": 1,
+    "fields": {
+      "field_url": "https://wasmcon.dev",
+      "field_start_date": "2026-07-22",
+      "field_end_date": "2026-07-23",
+      "field_online": "1",
+      "field_description": "A virtual conference dedicated to WebAssembly, covering toolchains, runtimes, and the component model."
+    }
+  }'
+```
+
+### 3.5 Verify All Three Conferences
+
+`[CLI]` Check `TOOLS.md -> Database` for the psql command.
+
+```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT id, title FROM item WHERE type = 'conference' ORDER BY created;"
 ```
 
-**Verify:** Three rows returned: RustConf 2026, EuroRust 2026, WasmCon Online 2026.
-
-Record the psql command in `TOOLS.md -> Database` if not already there.
-
-`[CLI]` Also verify via API — pick any UUID from the query above:
-```
-curl $BASE_URL/api/item/<UUID> | jq .title
-```
-
-**Verify:** Returns the conference title.
+**Verify:** Three rows: RustConf 2026, EuroRust 2026, WasmCon Online 2026.
 
 ---
 
@@ -263,112 +273,100 @@ curl $BASE_URL/api/item/<UUID> | jq .title
 
 ### 4.1 Create the Gather Query
 
-`[UI-ONLY]` Navigate to `$ADMIN_URL/gather/create`.
+`[CLI]` The gather form is an admin POST with `_token`, `definition_json`, and `display_json` fields.
 
-| Field | Value |
-|---|---|
-| Query ID | upcoming_conferences |
-| Label | Upcoming Conferences |
-| Description | Published conferences sorted by start date |
-| Base Table | item |
+```bash
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
 
-**Add two filters** (click **Add filter** twice):
+DEFINITION='{"base_table":"item","item_type":"conference","filters":[{"field":"type","operator":"equals","value":"conference"},{"field":"status","operator":"equals","value":1}],"sorts":[{"field":"fields.field_start_date","direction":"asc"}],"stage_aware":true}'
 
-Filter 1:
-- Field: `type`
-- Operator: `equals`
-- Value: `conference`
+DISPLAY='{"format":"list","items_per_page":25,"pager":{"enabled":true,"style":"full","show_count":true},"empty_text":"No conferences found."}'
 
-Filter 2:
-- Field: `status`
-- Operator: `equals`
-- Value: `1`
-
-**Add a sort:**
-- Field: `fields.field_start_date`
-- Direction: `asc`
-
-**Display settings:**
-- Format: `list`
-- Items per page: `25`
-- Empty text: `No conferences found.`
-
-Click **Save**.
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/admin/gather/create \
+  --data-urlencode "_token=$CSRF" \
+  --data-urlencode "_form_build_id=manual-1" \
+  --data-urlencode "query_id=upcoming_conferences" \
+  --data-urlencode "label=Upcoming Conferences" \
+  --data-urlencode "description=Published conferences sorted by start date" \
+  --data-urlencode "definition_json=$DEFINITION" \
+  --data-urlencode "display_json=$DISPLAY" \
+  -o /dev/null -w "%{http_code}"
+# Expect: 303 (redirect to /admin/gather)
+```
 
 ### 4.2 Create the URL Alias
 
-`[UI-ONLY]` Navigate to `$ADMIN_URL/structure/aliases/add`.
+`[CLI]`
 
-| Field | Value |
-|---|---|
-| Source path | /gather/upcoming_conferences |
-| Alias | /conferences |
+```bash
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
 
-Click **Save**.
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/admin/structure/aliases/add \
+  --data-urlencode "_token=$CSRF" \
+  --data-urlencode "source=/gather/upcoming_conferences" \
+  --data-urlencode "alias=/conferences" \
+  -o /dev/null -w "%{http_code}"
+# Expect: 303
+```
 
 ### 4.3 Verify the Gather
 
 `[CLI]`
+
+```bash
+# The /conferences URL works (serves the plugin's gather via pre-existing alias)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
+# Expect: 200
+
+# The tutorial gather also works at its direct URL
+curl -s http://localhost:3000/api/query/upcoming_conferences/execute | jq '.total'
+# Expect: 3
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/conferences
-```
-
-**Verify:** Returns `200`.
-
-`[CLI]` Also verify via API:
-```
-curl $BASE_URL/api/query/upcoming_conferences/execute | jq '.total'
-```
-
-**Verify:** Returns `3` (the three conferences created in Step 3).
-
-Record the gather API endpoint pattern in `TOOLS.md -> API`.
-
-`[UI-ONLY]` Visit `$BASE_URL/conferences` in a browser. Confirm three conference cards appear sorted by start date: WasmCon Online (July), RustConf (September), EuroRust (October).
 
 ---
 
 ## Step 5: Human-Friendly URLs
 
-### 5.0 Choose Your Path
+### 5.0 Pathauto Pattern
 
-- **Option A: Admin UI** — follow Step 5.1.
-- **Option B: Config Import** — follow Step 5.S, then Step 5.2.
+The pathauto pattern (`conferences/[title]`) was already imported in Step 2 via `config import docs/tutorial/config` (the `variable.pathauto_patterns.yml` file). No additional configuration needed.
 
-### 5.1 Option A: Configure Pathauto via Admin UI
+### 5.1 Regenerate Aliases
 
-`[UI-ONLY]` Navigate to `$ADMIN_URL/config/pathauto`.
+`[CLI]` The regenerate endpoint is a CSRF-protected admin form POST:
 
-For the **Conference** row, enter: `conferences/[title]`
+```bash
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
 
-Click **Save configuration**.
-
-Click **Regenerate aliases** next to Conference.
-
-**Verify:** The regeneration report shows 3 aliases created.
-
-### 5.S Option B: Config Import
-
-`[CLI]`
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/admin/config/pathauto/regenerate \
+  --data-urlencode "_token=$CSRF" \
+  --data-urlencode "item_type=conference" \
+  -o /dev/null -w "%{http_code}"
+# Expect: 303
 ```
-cargo run --release --bin trovato -- config import docs/tutorial/config
-```
-
-Then navigate to `$ADMIN_URL/config/pathauto` and click **Regenerate aliases** next to Conference. `[UI-ONLY]` — the regenerate endpoint requires a CSRF-protected form POST.
 
 ### 5.2 Verify Aliases
 
 `[CLI]`
-```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/conferences/rustconf-2026
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/conferences/eurorust-2026
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/conferences/wasmcon-online-2026
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences/rustconf-2026
+# Expect: 200
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences/eurorust-2026
+# Expect: 200
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences/wasmcon-online-2026
+# Expect: 200
 ```
 
-**Verify:** All three return `200`.
+Also verify in the database:
 
-`[CLI]` Also verify in the database:
-```
+```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT source, alias FROM url_alias WHERE alias LIKE '/conferences/%' ORDER BY alias;"
 ```
@@ -379,11 +377,28 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 ## Completion Checklist
 
-After completing all steps, verify the full Part 1 outcome:
+```bash
+echo "=== Part 1 Completion Checklist ==="
+echo -n "1. Server healthy: "; curl -s http://localhost:3000/health | jq -r '.status'
+echo -n "2. Conference type: "; curl -s http://localhost:3000/api/content-types | jq -r '.[] | select(. == "conference")'
+echo -n "3. Conference count: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COUNT(*) FROM item WHERE type = 'conference';" | tr -d ' '
+echo -n "4. /conferences: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
+echo -n "5. Aliases: "
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences/rustconf-2026
+echo -n " "
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences/eurorust-2026
+echo -n " "
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences/wasmcon-online-2026
+echo ""
+```
 
-- [ ] Server running and healthy (`curl $BASE_URL/health`)
-- [ ] `conference` content type exists (`curl $BASE_URL/api/content-types`)
-- [ ] Three conferences in the database
-- [ ] Gather listing at `/conferences` shows three conferences sorted by start date
-- [ ] URL aliases work: `/conferences/rustconf-2026`, `/conferences/eurorust-2026`, `/conferences/wasmcon-online-2026`
-- [ ] All discoveries recorded in `TOOLS.md`
+Expected output:
+```
+1. Server healthy: healthy
+2. Conference type: conference
+3. Conference count: 3
+4. /conferences: 200
+5. Aliases: 200 200 200
+```
+
+All discoveries should be recorded in `TOOLS.md`.

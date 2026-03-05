@@ -460,6 +460,9 @@ pub fn tap_install() -> serde_json::Value {
     // 2a. Redirect the raw gather URL to the pretty path.
     seed_redirects(now);
 
+    // 2b. Point the /conferences and /cfps URL aliases at the ritrovo queries.
+    seed_url_aliases(now);
+
     // 3. Queue historical import.
     let current_year = timestamp_to_year(now) as u16;
     let mut pushed = 0u32;
@@ -1001,6 +1004,55 @@ fn seed_redirects(now: i64) {
         &format!(
             "seed_redirects: {seeded}/{} redirects seeded",
             redirects.len()
+        ),
+    );
+}
+
+/// Upsert URL aliases so `/conferences` and `/cfps` resolve to the ritrovo
+/// gather queries.
+///
+/// Uses `ON CONFLICT DO UPDATE` so that the Part 1 tutorial alias
+/// (`/gather/upcoming_conferences`) is upgraded to the full ritrovo query on
+/// plugin install, and so re-running `tap_install` after an upgrade keeps the
+/// aliases current.
+///
+/// The LIVE stage UUID is the deterministic seed value
+/// `0193a5a0-0000-7000-8000-000000000001`.
+fn seed_url_aliases(now: i64) {
+    let live_stage = "0193a5a0-0000-7000-8000-000000000001";
+    let aliases: &[(&str, &str)] = &[
+        ("/gather/ritrovo.upcoming_conferences", "/conferences"),
+        ("/gather/ritrovo.open_cfps", "/cfps"),
+    ];
+
+    let mut seeded = 0u32;
+    for (source, alias) in aliases {
+        let result = host::execute_raw(
+            "INSERT INTO url_alias (source, alias, language, stage_id, created) \
+             VALUES ($1, $2, 'en', $3::uuid, $4) \
+             ON CONFLICT (alias, language, stage_id) DO UPDATE SET source = EXCLUDED.source",
+            &[
+                serde_json::json!(source),
+                serde_json::json!(alias),
+                serde_json::json!(live_stage),
+                serde_json::json!(now),
+            ],
+        );
+        match result {
+            Ok(_) => seeded += 1,
+            Err(code) => host::log(
+                "warn",
+                PLUGIN_NAME,
+                &format!("seed_url_aliases: failed to upsert '{alias}' (error code {code})"),
+            ),
+        }
+    }
+    host::log(
+        "info",
+        PLUGIN_NAME,
+        &format!(
+            "seed_url_aliases: {seeded}/{} aliases seeded",
+            aliases.len()
         ),
     );
 }

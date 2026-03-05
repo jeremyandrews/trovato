@@ -768,7 +768,7 @@ Exposed filters: field_topics   has_tag_or_descendants  widget: taxonomy_select 
 Sort:            field_start_date ASC
 ```
 
-This is the main public listing page, reachable at `/conferences`. When all exposed filters are empty (no user input), every filter resolves to null and is skipped — the query returns every upcoming conference. See "Exposed Filter Widgets" below for how each widget type works.
+This is the main public listing page, reachable at `/conferences`. The query's display config sets `"canonical_url": "/conferences"`, so all pager links and filter form actions stay on that path rather than the raw `/gather/ritrovo.upcoming_conferences` URL. When all exposed filters are empty (no user input), every filter resolves to null and is skipped — the query returns every upcoming conference. See "Exposed Filter Widgets" below for how each widget type works.
 
 The conference list is rendered as **cards** rather than a table. When the Trovato theme engine looks for a template to render a gather query, it first checks for a query-specific override at `templates/gather/query--{query_id}.html` before falling back to the generic `query.html`. The importer ships `templates/gather/query--ritrovo.upcoming_conferences.html`, which extends `query.html` and overrides the `query_content` block with a card grid:
 
@@ -914,22 +914,30 @@ Both paths produce identical HTML, so switching between a custom template and th
 
 ### The /conferences, /cfps, and /location Routes
 
-The kernel's `ritrovo_topics` route module provides five plugin-gated routes. `/conferences` and `/cfps` render their gather queries directly under their own paths — pager links, filter form submissions, and browser history all stay on the friendly URL. `/location` routes resolve path segments to gather parameters and redirect:
+The kernel's `ritrovo_topics` route module provides three plugin-gated routes. `/location` routes resolve path segments to gather parameters and redirect; `/conferences` and `/cfps` are served entirely through URL aliases and gather configuration:
 
 ```
-GET /conferences               →  200  (renders ritrovo.upcoming_conferences in-place)
-GET /cfps                      →  200  (renders ritrovo.open_cfps in-place)
 GET /location/{country}        →  302  /gather/ritrovo.by_country?country=<encoded>[&…params]
 GET /location/{country}/{city} →  302  /gather/ritrovo.by_city?country=<encoded>&city=<encoded>[&…params]
+GET /topics/{slug}             →  302  /gather/ritrovo.by_topic?topic=<uuid>[&…params]
 ```
 
-The in-place render pattern passes `base_path="/conferences"` to `execute_and_render`, which sets the form `action` and pager link prefix to `/conferences`. This means filtering by country and navigating to page 2 produces `GET /conferences?fields.field_country=Germany&page=2` — the URL stays on `/conferences` throughout.
+`/conferences` and `/cfps` work differently. The `ritrovo.upcoming_conferences` and `ritrovo.open_cfps` gather queries set a `canonical_url` field in their display configuration:
 
-> **URL design choice:** `/location` routes redirect because the gather URL (`/gather/ritrovo.by_country?country=Germany`) is self-contained and bookmarkable on its own. `/conferences` renders in-place instead, because the filter form is exposed there — a redirect on every filter submission would lose the user's form state and make browser history unhelpful.
+```json
+{ "canonical_url": "/conferences" }
+{ "canonical_url": "/cfps" }
+```
+
+When the gather route handler serves a query that has `canonical_url` set, it uses that path as `base_path` for all generated URLs — form actions, pager links, and filter parameters all stay on the friendly path. Filtering by country and navigating to page 2 produces `GET /conferences?fields.field_country=Germany&page=2`, not `GET /gather/ritrovo.upcoming_conferences?…`.
+
+The URL alias established in Part 1 (`/conferences` → `/gather/upcoming_conferences`) is upgraded by `tap_install` via an upsert on `url_alias`. After plugin install, `/conferences` resolves to `/gather/ritrovo.upcoming_conferences`, and the full filter-enabled query is served.
+
+> **Why not a dedicated route?** The earlier design used a thin Rust handler at `GET /conferences` that called `execute_and_render("ritrovo.upcoming_conferences", …, "/conferences")`. This was a kernel minimality violation — feature plumbing with no logic beyond setting a path string. `canonical_url` expresses the same intent in configuration, with no Rust required.
 
 ### Sealing the Raw Gather URLs
 
-`/conferences` renders in-place, but `/gather/ritrovo.upcoming_conferences` is still a valid path — the gather engine serves it too. A user arriving there (via a bookmark, browser history, or an old link) would see the filter form submit back to the raw gather URL, breaking the stable-URL contract.
+Even with `canonical_url` set, `/gather/ritrovo.upcoming_conferences` is still a valid path — the gather engine serves it too. A user arriving there (via a bookmark, browser history, or an old link) would see the filter form submit back to the raw gather URL, breaking the stable-URL contract.
 
 `tap_install` therefore calls `seed_redirects()`, which inserts two 301 redirects into the `redirect` table:
 
@@ -942,7 +950,7 @@ The kernel's redirects middleware intercepts these paths before routing and send
 
 The function uses `INSERT … WHERE NOT EXISTS` rather than `ON CONFLICT` because the `redirect` table has no unique constraint on `(source, language)` — a manual redirect created through the admin UI would otherwise be silently clobbered.
 
-All five routes share a `gate_ritrovo_importer` middleware layer that returns 404 when the plugin is disabled. The gating is registered in `routes/mod.rs` via the `plugin_gate!` macro and declared for documentation in `plugin/gate.rs` under `GATED_ROUTE_PLUGINS`.
+All three `/location` and `/topics` routes share a `gate_ritrovo_importer` middleware layer that returns 404 when the plugin is disabled. The gating is registered in `routes/mod.rs` via the `plugin_gate!` macro and declared for documentation in `plugin/gate.rs` under `GATED_ROUTE_PLUGINS`.
 
 A unit test in `plugin::gate` enforces that the documentation constant stays in sync with the runtime gates — if you add a new gated plugin but forget to update `GATED_ROUTE_PLUGINS`, the test fails:
 
