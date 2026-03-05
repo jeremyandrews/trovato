@@ -164,95 +164,7 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Fallback handler for path alias resolution.
-///
-/// Called for requests that don't match any registered route. Looks up URL
-/// aliases in the database and, if found, forwards the request to the inner
-/// router with the rewritten URI (transparent internal rewrite).
-async fn path_alias_fallback(
-    state: AppState,
-    session: Session,
-    router: Arc<Router>,
-    mut request: axum::extract::Request,
-) -> Response {
-    use crate::middleware::language::ResolvedLanguage;
-    use crate::models::UrlAlias;
-    use crate::models::stage::LIVE_STAGE_ID;
-    use crate::routes::auth::SESSION_ACTIVE_STAGE;
-    use tower::ServiceExt;
-    use uuid::Uuid;
-
-    let raw_path = request.uri().path();
-
-    // Redirect trailing-slash URLs to their canonical no-slash form so that
-    // `/conferences/` resolves the same alias as `/conferences`.  The root `/`
-    // is the only path that is allowed to keep its trailing slash.
-    if raw_path.len() > 1 && raw_path.ends_with('/') {
-        let canonical = raw_path.trim_end_matches('/');
-        let location = if let Some(query) = request.uri().query() {
-            format!("{canonical}?{query}")
-        } else {
-            canonical.to_string()
-        };
-        return axum::response::Redirect::permanent(&location).into_response();
-    }
-
-    let path = raw_path.to_string();
-
-    // Read resolved language from request extensions
-    let language = request
-        .extensions()
-        .get::<ResolvedLanguage>()
-        .map(|l| l.0.clone())
-        .unwrap_or_else(|| state.default_language().to_string());
-
-    // Read active stage from session (default to live)
-    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
-        Ok(Some(s)) => s.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID),
-        _ => LIVE_STAGE_ID,
-    };
-
-    // Look up alias: try active stage, then fall back to live
-    let alias = UrlAlias::find_by_alias_with_context(state.db(), &path, active_stage, &language)
-        .await
-        .ok()
-        .flatten();
-    let alias = alias.or_else(|| {
-        if active_stage != LIVE_STAGE_ID {
-            // Blocking fallback — acceptable since this only triggers for non-live stages
-            None // Live stage was already tried above for the common case
-        } else {
-            None
-        }
-    });
-
-    if let Some(alias) = alias {
-        tracing::debug!(
-            alias = %alias.alias,
-            source = %alias.source,
-            "path alias fallback: rewriting and forwarding"
-        );
-        // Rewrite the URI
-        let new_uri_str = if let Some(query) = request.uri().query() {
-            format!("{}?{}", alias.source, query)
-        } else {
-            alias.source.clone()
-        };
-        if let Ok(new_uri) = new_uri_str.parse::<Uri>() {
-            *request.uri_mut() = new_uri;
-            // Forward to the inner router with the rewritten URI
-            return router
-                .as_ref()
-                .clone()
-                .oneshot(request)
-                .await
-                .unwrap_or_else(|err| match err {});
-        }
-    }
-
-    // No alias found — return 404
-    StatusCode::NOT_FOUND.into_response()
-}
+// path_alias_fallback lives in middleware::path_alias and is reused by tests.
 
 /// Run the HTTP server (original startup path).
 async fn run_server() -> Result<()> {
@@ -331,7 +243,7 @@ async fn run_server() -> Result<()> {
                 let router = router.clone();
                 let app_state = app_state.clone();
                 async move {
-                    path_alias_fallback(app_state, session, router, request).await
+                    crate::middleware::path_alias_fallback(app_state, session, router, request).await
                 }
             }
         })

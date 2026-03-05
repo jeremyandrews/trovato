@@ -129,8 +129,14 @@ impl TestApp {
         .await
         .expect("Failed to create session layer");
 
-        // Build the REAL router with all kernel routes (must match main.rs)
-        let router = Router::new()
+        // Build the REAL router with all kernel routes (must match main.rs).
+        //
+        // Path alias resolution uses a fallback handler, not middleware, because
+        // in Axum 0.8 Router::layer() middleware runs AFTER route matching — URI
+        // rewrites in middleware cannot change which route is matched. The
+        // fallback receives all unmatched requests, resolves any URL alias, and
+        // re-dispatches to the inner router with the rewritten URI.
+        let inner_router: Router<trovato_kernel::state::AppState> = Router::new()
             .merge(trovato_kernel::routes::front::router())
             .merge(trovato_kernel::routes::install::router())
             .merge(trovato_kernel::routes::auth::router())
@@ -151,12 +157,26 @@ impl TestApp {
             .merge(trovato_kernel::routes::tile_admin::router())
             .merge(trovato_kernel::routes::static_files::router())
             // Plugin-gated routes — runtime middleware returns 404 when disabled
-            .merge(trovato_kernel::routes::gated_plugin_routes(&state))
-            // Path alias middleware runs first (last added = first executed)
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                trovato_kernel::middleware::resolve_path_alias,
-            ))
+            .merge(trovato_kernel::routes::gated_plugin_routes(&state));
+
+        let inner_with_state: Router = inner_router.clone().with_state(state.clone());
+        let shared_router = std::sync::Arc::new(inner_with_state);
+
+        let router = inner_router
+            .fallback({
+                let router = shared_router.clone();
+                let app_state = state.clone();
+                move |session: tower_sessions::Session, request: axum::extract::Request| {
+                    let router = router.clone();
+                    let app_state = app_state.clone();
+                    async move {
+                        trovato_kernel::middleware::path_alias_fallback(
+                            app_state, session, router, request,
+                        )
+                        .await
+                    }
+                }
+            })
             .layer(session_layer)
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .with_state(state.clone());

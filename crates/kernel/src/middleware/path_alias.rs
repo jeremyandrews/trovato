@@ -11,7 +11,7 @@ use axum::{
     extract::State,
     http::{Request, Uri},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use tower_sessions::Session;
 
@@ -147,6 +147,82 @@ fn rewrite_uri(original: &Uri, new_path: &str) -> Result<Uri, axum::http::uri::I
     } else {
         new_path.parse()
     }
+}
+
+/// Fallback handler for path alias resolution.
+///
+/// Called for requests that don't match any registered route. Looks up URL
+/// aliases in the database and, if found, forwards the request to the inner
+/// router with the rewritten URI (transparent internal rewrite).
+///
+/// In Axum 0.8, `Router::layer()` middleware runs after route matching, so
+/// URI rewriting in middleware cannot affect which route is matched. This
+/// fallback receives all unmatched requests and re-dispatches them to the
+/// inner router after resolving any URL alias.
+pub async fn path_alias_fallback(
+    state: AppState,
+    session: Session,
+    router: std::sync::Arc<axum::Router>,
+    mut request: Request<Body>,
+) -> Response {
+    use crate::models::stage::LIVE_STAGE_ID;
+    use crate::routes::auth::SESSION_ACTIVE_STAGE;
+    use tower::ServiceExt;
+
+    let raw_path = request.uri().path();
+
+    // Redirect trailing-slash URLs to their canonical no-slash form so that
+    // `/conferences/` resolves the same alias as `/conferences`.  The root `/`
+    // is the only path that is allowed to keep its trailing slash.
+    if raw_path.len() > 1 && raw_path.ends_with('/') {
+        let canonical = raw_path.trim_end_matches('/');
+        let location = if let Some(query) = request.uri().query() {
+            format!("{canonical}?{query}")
+        } else {
+            canonical.to_string()
+        };
+        return axum::response::Redirect::permanent(&location).into_response();
+    }
+
+    let path = raw_path.to_string();
+
+    // Read resolved language from request extensions
+    let language = request
+        .extensions()
+        .get::<ResolvedLanguage>()
+        .map(|l| l.0.clone())
+        .unwrap_or_else(|| state.default_language().to_string());
+
+    // Read active stage from session (default to live)
+    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
+        Ok(Some(s)) => s.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID),
+        _ => LIVE_STAGE_ID,
+    };
+
+    // Look up alias: try active stage, then fall back to live
+    let alias = lookup_alias(state.db(), &path, active_stage, &language).await;
+
+    if let Some(alias) = alias {
+        tracing::debug!(
+            alias = %alias.alias,
+            source = %alias.source,
+            "path alias fallback: rewriting and forwarding"
+        );
+        // Rewrite the URI
+        if let Ok(new_uri) = rewrite_uri(request.uri(), &alias.source) {
+            *request.uri_mut() = new_uri;
+            // Forward to the inner router with the rewritten URI
+            return router
+                .as_ref()
+                .clone()
+                .oneshot(request)
+                .await
+                .unwrap_or_else(|err| match err {});
+        }
+    }
+
+    // No alias found — return 404
+    axum::http::StatusCode::NOT_FOUND.into_response()
 }
 
 #[cfg(test)]

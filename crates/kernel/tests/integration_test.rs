@@ -5318,10 +5318,14 @@ fn conference_item_type_exists_with_correct_fields() {
             "field_city should be Text type"
         );
 
-        // CFP date (optional)
+        // CFP date (optional — `required` may be absent/null or explicitly false)
         let cfp_end = find_field("field_cfp_end_date").expect("field_cfp_end_date should exist");
         assert_eq!(cfp_end["field_type"], json!("Date"));
-        assert_eq!(cfp_end["required"], json!(false));
+        assert_ne!(
+            cfp_end.get("required").and_then(|v| v.as_bool()),
+            Some(true),
+            "field_cfp_end_date should not be required"
+        );
 
         // Exactly 2 required fields
         let required_count = fields
