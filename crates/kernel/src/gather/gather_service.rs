@@ -116,7 +116,7 @@ impl GatherService {
         self.queries.iter().map(|(_k, v)| v).collect()
     }
 
-    /// Maximum number of distinct values returned by [`fetch_distinct_values`].
+    /// Maximum number of distinct values returned by [`Self::fetch_distinct_values`].
     const DISTINCT_VALUES_LIMIT: i64 = 200;
 
     /// Fetch distinct non-empty values for a field within an item type.
@@ -124,8 +124,8 @@ impl GatherService {
     /// Only JSONB fields (path prefix `"fields."`) are supported. Returns an
     /// empty list for unrecognised or unsafe field names.
     ///
-    /// Results are capped at [`DISTINCT_VALUES_LIMIT`] and cached for
-    /// [`DISTINCT_VALUES_TTL`] per `(item_type, source_field)` pair.
+    /// Results are capped at `DISTINCT_VALUES_LIMIT` and cached for
+    /// `DISTINCT_VALUES_TTL` (5 min) per `(item_type, source_field)` pair.
     ///
     /// **Stage note:** This query filters by `status = 1` but does not filter
     /// by `stage_id`. Widget options therefore reflect published-status items
@@ -243,7 +243,7 @@ impl GatherService {
 
     /// Fetch distinct values for `source_field` constrained by other active filters.
     ///
-    /// Falls back to the cached [`fetch_distinct_values`] when no scope conditions
+    /// Falls back to the cached [`Self::fetch_distinct_values`] when no scope conditions
     /// apply (initial page load with no active selections). Runs a live uncached
     /// query when other filters are active so option lists stay consistent with
     /// the current result set.

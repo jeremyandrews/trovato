@@ -94,7 +94,8 @@ mod tests {
 
     #[test]
     fn register_queue_succeeds() {
-        let config = wasmtime::Config::new();
+        let mut config = wasmtime::Config::new();
+        config.async_support(true);
         let engine = Engine::new(&config).unwrap();
         let mut linker: Linker<PluginState> = Linker::new(&engine);
 
