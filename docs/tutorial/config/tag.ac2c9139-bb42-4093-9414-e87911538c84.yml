@@ -1,0 +1,9 @@
+id: ac2c9139-bb42-4093-9414-e87911538c84
+category_id: topics
+label: JVM
+description: null
+weight: 1
+created: 1772772163
+changed: 1772772163
+parents:
+- '7ada8d64-3511-4361-96aa-a400aafed588'

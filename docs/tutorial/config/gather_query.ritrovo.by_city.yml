@@ -1,0 +1,44 @@
+query_id: ritrovo.by_city
+label: Conferences by City
+description: Upcoming conferences filtered by country and city (from URL path segments)
+definition:
+  base_table: item
+  fields: []
+  filters:
+  - exposed: false
+    exposed_label: null
+    field: fields.field_start_date
+    operator: greater_or_equal
+    value: current_date
+  - exposed: false
+    exposed_label: null
+    field: fields.field_country
+    operator: equals
+    value:
+      url_arg: country
+  - exposed: false
+    exposed_label: null
+    field: fields.field_city
+    operator: equals
+    value:
+      url_arg: city
+  includes: {}
+  item_type: conference
+  relationships: []
+  sorts:
+  - direction: asc
+    field: fields.field_start_date
+    nulls: null
+  stage_aware: true
+display:
+  canonical_url: null
+  empty_text: No upcoming conferences found in this city.
+  footer: null
+  format: table
+  header: null
+  items_per_page: 20
+  pager:
+    enabled: true
+    show_count: true
+    style: full
+plugin: ritrovo_importer

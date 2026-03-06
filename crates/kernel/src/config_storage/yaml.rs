@@ -24,7 +24,8 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::{ConfigEntity, ConfigStorage, SearchFieldConfig, entity_types};
-use crate::models::{Category, ItemType, Language, Tag};
+use crate::gather::types::GatherQuery;
+use crate::models::{Category, ItemType, Language, Tag, UrlAlias};
 
 /// Entity type ordering used for both validation and dependency-ordered import.
 ///
@@ -37,6 +38,8 @@ const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::CATEGORY,
     entity_types::TAG,
     entity_types::SEARCH_FIELD_CONFIG,
+    entity_types::GATHER_QUERY,
+    entity_types::URL_ALIAS,
 ];
 
 /// Maximum config file size (10 MB). Files exceeding this are skipped during import
@@ -54,6 +57,23 @@ struct TagExport {
     tag: Tag,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     parents: Vec<Uuid>,
+}
+
+/// Gather query YAML representation.
+///
+/// The `definition` and `display` fields are stored as opaque JSON values
+/// rather than the typed structs. This avoids YAML tag issues with complex
+/// serde enum types (e.g., `ContextualValue::UrlArg` serializes as a YAML
+/// `!url_arg` tag that doesn't round-trip through standard YAML parsers).
+#[derive(Serialize, Deserialize)]
+struct GatherQueryExport {
+    query_id: String,
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    definition: serde_json::Value,
+    display: serde_json::Value,
+    plugin: String,
 }
 
 /// Variable YAML representation (shared between export and import).
@@ -149,6 +169,18 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
             value: value.clone(),
         }),
         ConfigEntity::Language(lang) => serde_yml::to_string(lang),
+        ConfigEntity::GatherQuery(q) => {
+            let export = GatherQueryExport {
+                query_id: q.query_id.clone(),
+                label: q.label.clone(),
+                description: q.description.clone(),
+                definition: serde_json::to_value(&q.definition).unwrap_or_default(),
+                display: serde_json::to_value(&q.display).unwrap_or_default(),
+                plugin: q.plugin.clone(),
+            };
+            serde_yml::to_string(&export)
+        }
+        ConfigEntity::UrlAlias(a) => serde_yml::to_string(a),
         // Tags need parent hierarchy — callers must use serialize_tag_entity.
         ConfigEntity::Tag(tag) => {
             warnings.push(format!(
@@ -747,6 +779,32 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity,
             let lang: Language = serde_yml::from_str(content).context("invalid language YAML")?;
             Ok((ConfigEntity::Language(lang), Vec::new()))
         }
+        entity_types::GATHER_QUERY => {
+            let export: GatherQueryExport =
+                serde_yml::from_str(content).context("invalid gather_query YAML")?;
+            if export.query_id.is_empty() {
+                anyhow::bail!("gather_query query_id must not be empty");
+            }
+            let definition = serde_json::from_value(export.definition)
+                .context("invalid gather_query definition")?;
+            let display =
+                serde_json::from_value(export.display).context("invalid gather_query display")?;
+            let query = GatherQuery {
+                query_id: export.query_id,
+                label: export.label,
+                description: export.description,
+                definition,
+                display,
+                plugin: export.plugin,
+                created: 0,
+                changed: 0,
+            };
+            Ok((ConfigEntity::GatherQuery(Box::new(query)), Vec::new()))
+        }
+        entity_types::URL_ALIAS => {
+            let alias: UrlAlias = serde_yml::from_str(content).context("invalid url_alias YAML")?;
+            Ok((ConfigEntity::UrlAlias(alias), Vec::new()))
+        }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
     }
 }
@@ -1118,6 +1176,8 @@ mod tests {
             entity_types::CATEGORY,
             entity_types::TAG,
             entity_types::SEARCH_FIELD_CONFIG,
+            entity_types::GATHER_QUERY,
+            entity_types::URL_ALIAS,
         ]
         .into_iter()
         .collect();

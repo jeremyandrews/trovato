@@ -445,9 +445,50 @@ impl GatherService {
     ///
     /// Called periodically by the background reload task to keep the
     /// cache fresh so that external database changes become visible.
-    /// Delegates to [`load_queries`](Self::load_queries).
+    /// Delegates to [`load_queries`](Self::load_queries), then ensures
+    /// redirects exist for queries with a `canonical_url`.
     pub async fn reload_from_db(&self) -> Result<()> {
-        self.load_queries().await
+        self.load_queries().await?;
+        self.sync_canonical_redirects().await;
+        Ok(())
+    }
+
+    /// Ensure 301 redirects exist from `/gather/{query_id}` to `canonical_url`
+    /// for every query that has one set.
+    ///
+    /// Idempotent — uses `ON CONFLICT DO NOTHING` so existing or manually
+    /// edited redirects are preserved. Silently skips if the `redirect`
+    /// table does not exist (plugin not installed).
+    async fn sync_canonical_redirects(&self) {
+        for (_key, query) in &self.queries {
+            let Some(ref canonical) = query.display.canonical_url else {
+                continue;
+            };
+            let source = format!("/gather/{}", query.query_id);
+            let result = sqlx::query(
+                "INSERT INTO redirect (id, source, destination, status_code, language, created) \
+                 SELECT gen_random_uuid(), $1, $2, 301, 'en', EXTRACT(EPOCH FROM NOW())::bigint \
+                 WHERE NOT EXISTS ( \
+                     SELECT 1 FROM redirect WHERE source = $1 AND language = 'en' \
+                 )",
+            )
+            .bind(&source)
+            .bind(canonical)
+            .execute(&self.pool)
+            .await;
+
+            if let Err(e) = result {
+                let msg = e.to_string();
+                // Ignore "relation does not exist" — redirects plugin not installed
+                if !msg.contains("redirect") || !msg.contains("does not exist") {
+                    tracing::warn!(
+                        query_id = %query.query_id,
+                        error = %e,
+                        "failed to sync canonical redirect"
+                    );
+                }
+            }
+        }
     }
 
     /// Execute a registered query by ID.

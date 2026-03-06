@@ -13,6 +13,8 @@
 //! - `category` - Category definitions
 //! - `tag` - Tag (term) definitions within categories
 //! - `variable` - Site configuration variables
+//! - `gather_query` - Gather query definitions (filters, sorts, display)
+//! - `url_alias` - URL path aliases
 //!
 //! # Usage
 //!
@@ -38,7 +40,8 @@ use uuid::Uuid;
 pub use direct::DirectConfigStorage;
 pub use stage_aware::StageAwareConfigStorage;
 
-use crate::models::{Category, ItemType, Language, Tag};
+use crate::gather::types::GatherQuery;
+use crate::models::{Category, ItemType, Language, Tag, UrlAlias};
 
 /// A configuration entity that can be stored and retrieved.
 ///
@@ -73,6 +76,14 @@ pub enum ConfigEntity {
     /// Language definition.
     #[serde(rename = "language")]
     Language(Language),
+
+    /// Gather query definition (filters, sorts, display).
+    #[serde(rename = "gather_query")]
+    GatherQuery(Box<GatherQuery>),
+
+    /// URL alias (path rewriting).
+    #[serde(rename = "url_alias")]
+    UrlAlias(UrlAlias),
 }
 
 impl ConfigEntity {
@@ -85,6 +96,8 @@ impl ConfigEntity {
             Self::Tag(_) => "tag",
             Self::Variable { .. } => "variable",
             Self::Language(_) => "language",
+            Self::GatherQuery(..) => "gather_query",
+            Self::UrlAlias(_) => "url_alias",
         }
     }
 
@@ -97,6 +110,8 @@ impl ConfigEntity {
             Self::Tag(t) => t.id.to_string(),
             Self::Variable { key, .. } => key.clone(),
             Self::Language(l) => l.id.clone(),
+            Self::GatherQuery(q) => q.query_id.clone(),
+            Self::UrlAlias(a) => a.id.to_string(),
         }
     }
 
@@ -184,6 +199,38 @@ impl ConfigEntity {
     pub fn into_language(self) -> Option<Language> {
         match self {
             Self::Language(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Try to extract a GatherQuery from this entity.
+    pub fn as_gather_query(&self) -> Option<&GatherQuery> {
+        match self {
+            Self::GatherQuery(q) => Some(q),
+            _ => None,
+        }
+    }
+
+    /// Consume and convert to GatherQuery if possible.
+    pub fn into_gather_query(self) -> Option<GatherQuery> {
+        match self {
+            Self::GatherQuery(q) => Some(*q),
+            _ => None,
+        }
+    }
+
+    /// Try to extract a UrlAlias from this entity.
+    pub fn as_url_alias(&self) -> Option<&UrlAlias> {
+        match self {
+            Self::UrlAlias(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Consume and convert to UrlAlias if possible.
+    pub fn into_url_alias(self) -> Option<UrlAlias> {
+        match self {
+            Self::UrlAlias(a) => Some(a),
             _ => None,
         }
     }
@@ -317,6 +364,12 @@ pub mod entity_types {
 
     /// Language definitions.
     pub const LANGUAGE: &str = "language";
+
+    /// Gather query definitions.
+    pub const GATHER_QUERY: &str = "gather_query";
+
+    /// URL alias definitions.
+    pub const URL_ALIAS: &str = "url_alias";
 }
 
 /// Helper to parse a tag ID from a string (UUID format).

@@ -12,8 +12,11 @@ use uuid::Uuid;
 use super::{
     ConfigEntity, ConfigFilter, ConfigStorage, SearchFieldConfig, entity_types, parse_tag_id,
 };
+use crate::gather::types::{GatherQuery, QueryDefinition, QueryDisplay};
+use crate::models::stage::LIVE_STAGE_ID;
 use crate::models::{
     Category, CreateCategory, CreateLanguage, ItemType, Language, Tag, UpdateCategory, UpdateTag,
+    UrlAlias,
 };
 
 /// Direct database implementation of ConfigStorage.
@@ -472,6 +475,191 @@ impl DirectConfigStorage {
         Ok(entities)
     }
 
+    // ---- GatherQuery helpers ----
+
+    async fn load_gather_query(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let row = sqlx::query_as::<_, GatherQueryRow>(
+            "SELECT query_id, label, description, definition, display, plugin, created, changed \
+             FROM gather_query WHERE query_id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch gather query")?;
+
+        row.map(|r| r.into_config_entity()).transpose()
+    }
+
+    async fn save_gather_query(&self, query: &GatherQuery) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let definition_json =
+            serde_json::to_value(&query.definition).context("failed to serialize definition")?;
+        let display_json =
+            serde_json::to_value(&query.display).context("failed to serialize display")?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO gather_query (query_id, label, description, definition, display, plugin, created, changed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (query_id) DO UPDATE SET
+                label = EXCLUDED.label,
+                description = EXCLUDED.description,
+                definition = EXCLUDED.definition,
+                display = EXCLUDED.display,
+                plugin = EXCLUDED.plugin,
+                changed = EXCLUDED.changed
+            "#,
+        )
+        .bind(&query.query_id)
+        .bind(&query.label)
+        .bind(&query.description)
+        .bind(&definition_json)
+        .bind(&display_json)
+        .bind(&query.plugin)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .context("failed to save gather query")?;
+
+        Ok(())
+    }
+
+    async fn delete_gather_query(&self, id: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM gather_query WHERE query_id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("failed to delete gather query")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn list_gather_queries(
+        &self,
+        filter: Option<&ConfigFilter>,
+    ) -> Result<Vec<ConfigEntity>> {
+        let rows = if let Some(f) = filter
+            && f.field.as_deref() == Some("plugin")
+            && let Some(ref plugin) = f.value
+        {
+            sqlx::query_as::<_, GatherQueryRow>(
+                "SELECT query_id, label, description, definition, display, plugin, created, changed \
+                 FROM gather_query WHERE plugin = $1 ORDER BY query_id",
+            )
+            .bind(plugin)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list gather queries by plugin")?
+        } else {
+            sqlx::query_as::<_, GatherQueryRow>(
+                "SELECT query_id, label, description, definition, display, plugin, created, changed \
+                 FROM gather_query ORDER BY query_id",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list all gather queries")?
+        };
+
+        let mut entities: Vec<ConfigEntity> = rows
+            .into_iter()
+            .filter_map(|r| r.into_config_entity().ok())
+            .collect();
+
+        if let Some(f) = filter {
+            if let Some(offset) = f.offset {
+                entities = entities.into_iter().skip(offset).collect();
+            }
+            if let Some(limit) = f.limit {
+                entities.truncate(limit);
+            }
+        }
+
+        Ok(entities)
+    }
+
+    // ---- UrlAlias helpers ----
+
+    async fn load_url_alias(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let uuid = id
+            .parse::<Uuid>()
+            .map_err(|e| anyhow::anyhow!("invalid url_alias ID '{id}': {e}"))?;
+
+        let alias = sqlx::query_as::<_, UrlAlias>(
+            "SELECT id, source, alias, language, stage_id, created \
+             FROM url_alias WHERE id = $1",
+        )
+        .bind(uuid)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch url alias")?;
+
+        Ok(alias.map(ConfigEntity::UrlAlias))
+    }
+
+    async fn save_url_alias(&self, alias: &UrlAlias) -> Result<()> {
+        let now = Utc::now().timestamp();
+
+        sqlx::query(
+            r#"
+            INSERT INTO url_alias (id, source, alias, language, stage_id, created)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (alias, language, stage_id) DO UPDATE SET
+                source = EXCLUDED.source
+            "#,
+        )
+        .bind(alias.id)
+        .bind(&alias.source)
+        .bind(&alias.alias)
+        .bind(&alias.language)
+        .bind(alias.stage_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .context("failed to save url alias")?;
+
+        Ok(())
+    }
+
+    async fn delete_url_alias(&self, id: &str) -> Result<bool> {
+        let uuid = id
+            .parse::<Uuid>()
+            .map_err(|e| anyhow::anyhow!("invalid url_alias ID '{id}': {e}"))?;
+
+        let result = sqlx::query("DELETE FROM url_alias WHERE id = $1")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await
+            .context("failed to delete url alias")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn list_url_aliases(&self, filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let aliases = sqlx::query_as::<_, UrlAlias>(
+            "SELECT id, source, alias, language, stage_id, created \
+             FROM url_alias WHERE stage_id = $1 ORDER BY alias",
+        )
+        .bind(LIVE_STAGE_ID)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list url aliases")?;
+
+        let mut entities: Vec<ConfigEntity> =
+            aliases.into_iter().map(ConfigEntity::UrlAlias).collect();
+
+        if let Some(f) = filter {
+            if let Some(offset) = f.offset {
+                entities = entities.into_iter().skip(offset).collect();
+            }
+            if let Some(limit) = f.limit {
+                entities.truncate(limit);
+            }
+        }
+
+        Ok(entities)
+    }
+
     async fn list_variables(&self, filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
         let rows =
             sqlx::query_as::<_, VariableRow>("SELECT key, value FROM site_config ORDER BY key")
@@ -511,6 +699,8 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TAG => self.load_tag(id).await,
             entity_types::VARIABLE => self.load_variable(id).await,
             entity_types::LANGUAGE => self.load_language(id).await,
+            entity_types::GATHER_QUERY => self.load_gather_query(id).await,
+            entity_types::URL_ALIAS => self.load_url_alias(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -523,6 +713,8 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::Tag(t) => self.save_tag(t).await,
             ConfigEntity::Variable { key, value } => self.save_variable(key, value).await,
             ConfigEntity::Language(l) => self.save_language(l).await,
+            ConfigEntity::GatherQuery(q) => self.save_gather_query(q).await,
+            ConfigEntity::UrlAlias(a) => self.save_url_alias(a).await,
         }
     }
 
@@ -534,6 +726,8 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TAG => self.delete_tag(id).await,
             entity_types::VARIABLE => self.delete_variable(id).await,
             entity_types::LANGUAGE => self.delete_language(id).await,
+            entity_types::GATHER_QUERY => self.delete_gather_query(id).await,
+            entity_types::URL_ALIAS => self.delete_url_alias(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -550,6 +744,8 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TAG => self.list_tags(filter).await,
             entity_types::VARIABLE => self.list_variables(filter).await,
             entity_types::LANGUAGE => self.list_languages(filter).await,
+            entity_types::GATHER_QUERY => self.list_gather_queries(filter).await,
+            entity_types::URL_ALIAS => self.list_url_aliases(filter).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -560,6 +756,41 @@ impl ConfigStorage for DirectConfigStorage {
 struct VariableRow {
     key: String,
     value: serde_json::Value,
+}
+
+/// Row type for gather_query queries.
+#[derive(sqlx::FromRow)]
+struct GatherQueryRow {
+    query_id: String,
+    label: String,
+    description: Option<String>,
+    definition: serde_json::Value,
+    display: serde_json::Value,
+    plugin: String,
+    created: i64,
+    changed: i64,
+}
+
+impl GatherQueryRow {
+    /// Convert a database row into a [`ConfigEntity::GatherQuery`].
+    fn into_config_entity(self) -> Result<ConfigEntity> {
+        let definition: QueryDefinition = serde_json::from_value(self.definition).context(
+            format!("failed to parse definition for '{}'", self.query_id),
+        )?;
+        let display: QueryDisplay = serde_json::from_value(self.display)
+            .context(format!("failed to parse display for '{}'", self.query_id))?;
+
+        Ok(ConfigEntity::GatherQuery(Box::new(GatherQuery {
+            query_id: self.query_id,
+            label: self.label,
+            description: self.description,
+            definition,
+            display,
+            plugin: self.plugin,
+            created: self.created,
+            changed: self.changed,
+        })))
+    }
 }
 
 #[cfg(test)]

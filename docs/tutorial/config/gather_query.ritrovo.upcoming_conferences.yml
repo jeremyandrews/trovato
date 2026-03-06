@@ -1,0 +1,65 @@
+query_id: ritrovo.upcoming_conferences
+label: Upcoming Conferences
+description: Conferences starting today or later, filterable by topic, country, and format
+definition:
+  base_table: item
+  fields: []
+  filters:
+  - exposed: false
+    exposed_label: null
+    field: fields.field_start_date
+    operator: greater_or_equal
+    value: current_date
+  - exposed: true
+    exposed_label: Topic
+    field: fields.field_topics
+    operator: has_tag_or_descendants
+    value: null
+    widget:
+      type: taxonomy_select
+      vocabulary: topics
+  - exposed: true
+    exposed_label: Country
+    field: fields.field_country
+    operator: equals
+    value: null
+    widget:
+      autocomplete_threshold: 30
+      source_field: fields.field_country
+      type: dynamic_options
+  - exposed: true
+    exposed_label: Online Only
+    field: fields.field_online
+    operator: equals
+    value: null
+    widget:
+      type: boolean
+  - exposed: true
+    exposed_label: Language
+    field: fields.field_language
+    operator: equals
+    value: null
+    widget:
+      autocomplete_threshold: 30
+      source_field: fields.field_language
+      type: dynamic_options
+  includes: {}
+  item_type: conference
+  relationships: []
+  sorts:
+  - direction: asc
+    field: fields.field_start_date
+    nulls: null
+  stage_aware: true
+display:
+  canonical_url: /conferences
+  empty_text: No upcoming conferences found.
+  footer: null
+  format: table
+  header: null
+  items_per_page: 20
+  pager:
+    enabled: true
+    show_count: true
+    style: full
+plugin: ritrovo_importer
