@@ -582,11 +582,11 @@ fn push_conference_batches(topic: &str, year: u16, body: &str) -> (u32, u32) {
 fn seed_taxonomy() -> u32 {
     let now = current_timestamp();
 
-    // Ensure the 'topics' category exists.
+    // Ensure the 'topics' category exists with the correct label.
     let _ = host::execute_raw(
         "INSERT INTO category (id, label, description, hierarchy, weight) \
          VALUES ($1, 'Conference Topics', NULL, 2, 0) \
-         ON CONFLICT (id) DO NOTHING",
+         ON CONFLICT (id) DO UPDATE SET label = 'Conference Topics'",
         &[serde_json::json!(TOPICS_CATEGORY_ID)],
     );
 

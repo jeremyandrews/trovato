@@ -653,7 +653,13 @@ fn test_part01_step04_conferences_url_alias() {
         .unwrap();
         let (source, lang, stage) =
             alias_row.expect("URL alias for /conferences must exist in database");
-        assert_eq!(source, "/gather/upcoming_conferences");
+        // After Part 2, the ritrovo_importer replaces this alias with
+        // /gather/ritrovo.upcoming_conferences. Accept either source.
+        assert!(
+            source == "/gather/upcoming_conferences"
+                || source == "/gather/ritrovo.upcoming_conferences",
+            "expected /gather/upcoming_conferences or /gather/ritrovo.upcoming_conferences, got {source}"
+        );
         assert_eq!(lang, "en");
         assert_eq!(stage, LIVE_STAGE_ID);
 
@@ -686,9 +692,12 @@ fn test_part01_step04_conferences_url_alias() {
         );
 
         let body = response_text(response).await;
+        // After Part 2, the gather has thousands of conferences; the hand-created
+        // ones may not be on page 1. Just verify the page renders as HTML with
+        // a gather container (not an error page).
         assert!(
-            body.contains("RustConf 2026") || body.contains("EuroRust 2026"),
-            "gather page should contain conference names"
+            body.contains("gather-query") || body.contains("conf-card"),
+            "gather page should render as HTML with gather content"
         );
     });
 }
@@ -862,8 +871,14 @@ fn test_part01_step05_pathauto_generates_conference_aliases() {
             .await
             .expect("failed to clear existing conference aliases");
 
+        // Use the three hand-created tutorial conferences (no field_source_id).
+        // After Part 2, the DB may have thousands of imported conferences; only
+        // test pathauto on the original three.
         let conferences: Vec<(uuid::Uuid, String, i64)> = sqlx::query_as(
-            "SELECT id, title, created FROM item WHERE type = 'conference' ORDER BY title",
+            "SELECT id, title, created FROM item WHERE type = 'conference' \
+             AND (fields->>'field_source_id' IS NULL OR fields->>'field_source_id' = '') \
+             AND title IN ('RustConf 2026', 'EuroRust 2026', 'WasmCon Online 2026') \
+             ORDER BY title",
         )
         .fetch_all(&app.db)
         .await
@@ -872,7 +887,7 @@ fn test_part01_step05_pathauto_generates_conference_aliases() {
         assert_eq!(
             conferences.len(),
             3,
-            "exactly 3 tutorial conferences must exist"
+            "exactly 3 hand-created tutorial conferences must exist"
         );
 
         // Call update_alias_item for each — this is exactly what the admin

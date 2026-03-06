@@ -422,6 +422,12 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
         status::install_plugin(pool, name, &info.version).await?;
         println!("Plugin '{}' v{} installed and enabled.", name, info.version);
         println!("tap_install will fire on next server startup.");
+    } else {
+        // Ensure the plugin is enabled (it may have been disabled or auto-inserted
+        // with default_enabled=false). Always update version to match current build.
+        status::set_status(pool, name, status::STATUS_ENABLED).await?;
+        status::install_plugin(pool, name, &info.version).await?;
+        println!("Plugin '{}' v{} re-enabled.", name, info.version);
     }
     Ok(())
 }

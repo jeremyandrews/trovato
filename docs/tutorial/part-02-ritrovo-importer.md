@@ -651,7 +651,7 @@ The handler:
 1. Validates the slug (non-empty, ≤ 128 chars, alphanumeric + `-`/`_` only).
 2. Queries `ritrovo_state` for `topic_term.{slug}`.
 3. Returns 404 if the slug is unknown.
-4. Redirects (302) to `/gather/ritrovo.by_topic?topic=<uuid>`, preserving any extra query parameters (e.g. `?page=2`).
+4. Redirects (307 Temporary) to `/gather/ritrovo.by_topic?topic=<uuid>`, preserving any extra query parameters (e.g. `?page=2`).
 
 ```rust
 async fn by_topic(
@@ -917,9 +917,9 @@ Both paths produce identical HTML, so switching between a custom template and th
 The kernel's `ritrovo_topics` route module provides three plugin-gated routes. `/location` routes resolve path segments to gather parameters and redirect; `/conferences` and `/cfps` are served entirely through URL aliases and gather configuration:
 
 ```
-GET /location/{country}        →  302  /gather/ritrovo.by_country?country=<encoded>[&…params]
-GET /location/{country}/{city} →  302  /gather/ritrovo.by_city?country=<encoded>&city=<encoded>[&…params]
-GET /topics/{slug}             →  302  /gather/ritrovo.by_topic?topic=<uuid>[&…params]
+GET /location/{country}        →  307  /gather/ritrovo.by_country?country=<encoded>[&…params]
+GET /location/{country}/{city} →  307  /gather/ritrovo.by_city?country=<encoded>&city=<encoded>[&…params]
+GET /topics/{slug}             →  307  /gather/ritrovo.by_topic?topic=<uuid>[&…params]
 ```
 
 `/conferences` and `/cfps` work differently. The `ritrovo.upcoming_conferences` and `ritrovo.open_cfps` gather queries set a `canonical_url` field in their display configuration:

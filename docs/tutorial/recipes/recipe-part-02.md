@@ -1,8 +1,8 @@
 # Recipe: Part 2 — The Ritrovo Importer Plugin
 
 > **Synced with:** `docs/tutorial/part-02-ritrovo-importer.md`
-> **Sync hash:** d12bf0a2
-> **Last verified:** 2026-03-05
+> **Sync hash:** 2f124186
+> **Last verified:** 2026-03-06
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
 
@@ -101,7 +101,14 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 **Verify:** Count should be significantly greater than 3 (the hand-created conferences). The tutorial expects ~5,492 conferences after a full import.
 
-If the count is still low, the queue may still be draining. Wait a few minutes and check again. The queue processes at concurrency 4.
+If the count is still 3, the queue workers haven't fired yet. Queue items are processed during cron runs. Trigger cron manually:
+
+```
+curl -s -X POST http://localhost:3000/cron/default-cron-key | jq '.status'
+# Expect: "completed"
+```
+
+One cron run may not drain the full queue. Run it multiple times until the conference count stabilizes (queue depth can be checked with `docker exec trovato-redis-1 redis-cli LLEN queue:ritrovo_import`). The queue is fully drained when it returns 0.
 
 ### 2.2.3 Verify Deduplication
 
@@ -109,10 +116,10 @@ If the count is still low, the queue may still be draining. Wait a few minutes a
 
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT fields->>'field_source_id' AS sid, COUNT(*) FROM item WHERE type = 'conference' AND fields->>'field_source_id' IS NOT NULL GROUP BY sid HAVING COUNT(*) > 1;"
+  -c "SELECT fields->>'field_source_id' AS sid, COUNT(*) FROM item WHERE type = 'conference' AND fields->>'field_source_id' IS NOT NULL AND fields->>'field_source_id' != '' GROUP BY fields->>'field_source_id' HAVING COUNT(*) > 1;"
 ```
 
-**Verify:** Zero rows returned (no duplicate source IDs).
+**Verify:** Zero rows returned (no duplicate non-empty source IDs).
 
 ### 2.2.4 Verify Field Mapping
 
@@ -163,7 +170,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
   -c "SELECT label FROM category WHERE id = 'topics';"
 ```
 
-**Verify:** Returns "Conference Topics".
+**Verify:** Returns "Conference Topics" (or "Topics" if the category existed before the plugin ran — this is benign).
 
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
@@ -186,19 +193,19 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 `[CLI]`
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/topics/rust
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
 ```
 
-**Verify:** Returns `302` (redirect to the gather query with topic UUID).
+**Verify:** Returns `307` (temporary redirect to the gather query with topic UUID).
 
 ```
-curl -sL -o /dev/null -w "%{http_code}" $BASE_URL/topics/rust
+curl -sL -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
 ```
 
 **Verify:** Returns `200` (following the redirect to the gather results).
 
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/topics/nonexistent-slug
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/nonexistent-slug
 ```
 
 **Verify:** Returns `404`.
@@ -227,23 +234,39 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 `[CLI]`
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/conferences
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
 ```
 
 **Verify:** Returns `200`. This now serves the full ritrovo.upcoming_conferences gather (upgraded from the Part 1 alias).
 
 `[CLI]` Verify the API returns results:
 ```
-curl $BASE_URL/api/query/ritrovo.upcoming_conferences/execute | jq '.total'
+curl http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq '.total'
 ```
 
 **Verify:** Returns a positive number (upcoming conferences from the imported dataset).
+
+`[CLI]` Verify the page renders conference cards with filter widgets:
+
+```
+# Conference cards are present
+curl -s http://localhost:3000/conferences | grep -c 'class="conf-card__title"'
+# Expect: 20 (default page size)
+
+# Exposed filter widgets are present (topic, country, online, language)
+curl -s http://localhost:3000/conferences | grep -oE 'name="fields\.[a-z_]+"' | sort -u
+# Expect:
+#   name="fields.field_country"
+#   name="fields.field_language"
+#   name="fields.field_online"
+#   name="fields.field_topics"
+```
 
 ### 2.4.3 Verify ritrovo.open_cfps
 
 `[CLI]`
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/cfps
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/cfps
 ```
 
 **Verify:** Returns `200`.
@@ -258,20 +281,20 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 Then test the location route with one of the returned countries (URL-encode if needed):
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/location/Germany
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/location/Germany
 ```
 
-**Verify:** Returns `302` (redirect to the by_country gather).
+**Verify:** Returns `307` (temporary redirect to the by_country gather).
 
 ```
-curl -sL -o /dev/null -w "%{http_code}" $BASE_URL/location/Germany
+curl -sL -o /dev/null -w "%{http_code}" http://localhost:3000/location/Germany
 ```
 
 **Verify:** Returns `200` (following redirect).
 
 ### 2.4.5 Verify Exposed Filter Widgets
 
-`[UI-ONLY]` Visit `$BASE_URL/conferences` in a browser. Confirm the filter form includes:
+`[UI-ONLY]` Visit `http://localhost:3000/conferences` in a browser. Confirm the filter form includes:
 - A **topic selector** (hierarchical dropdown with indented child terms)
 - A **country** dropdown or autocomplete
 - An **Online Only** selector (Any / Yes / No)
@@ -283,13 +306,13 @@ Test each filter by selecting a value and submitting. Verify the URL stays on `/
 
 `[CLI]`
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/gather/ritrovo.upcoming_conferences
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/gather/ritrovo.upcoming_conferences
 ```
 
 **Verify:** Returns `301` (redirect to `/conferences`).
 
 ```
-curl -s -o /dev/null -w "%{http_code}" $BASE_URL/gather/ritrovo.open_cfps
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/gather/ritrovo.open_cfps
 ```
 
 **Verify:** Returns `301` (redirect to `/cfps`).
@@ -307,7 +330,7 @@ After completing all steps, verify the full Part 2 outcome:
 - [ ] No duplicate `source_id` values
 - [ ] Topic taxonomy seeded with hierarchical terms (Languages > Systems > Rust, etc.)
 - [ ] `field_topics` contains UUID arrays, not raw slugs
-- [ ] `/topics/rust` returns 302 redirect to gather
+- [ ] `/topics/rust` returns 307 redirect to gather
 - [ ] Five gather queries exist with `plugin = 'ritrovo_importer'`
 - [ ] `/conferences` serves the full upcoming_conferences gather with exposed filter widgets
 - [ ] `/cfps` serves open CFPs listing

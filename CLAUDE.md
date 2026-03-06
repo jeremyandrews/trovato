@@ -132,7 +132,8 @@ Backups live in `backups/` (gitignored). Existing snapshots:
 |---|---|
 | `backups/tutorial-part-01-20260303.dump` | DB after Tutorial Part 1 (initial) — three hand-created conferences, no importer data |
 | `backups/tutorial-part-01-20260305.dump` | DB after Tutorial Part 1 (with card template fix) — same data, pathauto aliases regenerated |
-| `backups/tutorial-part-02-20260304.dump` | DB after Tutorial Part 2 — 5,492 conferences imported, taxonomy seeded, ritrovo gather queries live |
+| `backups/tutorial-part-02-20260304.dump` | DB after Tutorial Part 2 (earlier session) — 5,492 conferences imported, taxonomy seeded, ritrovo gather queries live |
+| `backups/tutorial-part-02-20260306.dump` | DB after Tutorial Part 2 (validated) — 5,492 conferences, plugin install fix applied |
 
 ## TOOLS.md — Environment Discovery File
 

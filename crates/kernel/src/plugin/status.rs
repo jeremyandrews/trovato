@@ -52,14 +52,16 @@ pub async fn is_installed(pool: &PgPool, name: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
-/// Install a plugin: insert into plugin_status with status=enabled.
+///// Install a plugin: insert into plugin_status with status=enabled.
+///
+/// On conflict (re-install), also sets status to enabled and updates the version.
 pub async fn install_plugin(pool: &PgPool, name: &str, version: &str) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
 
     sqlx::query(
         "INSERT INTO plugin_status (name, status, version, installed_at, updated_at) \
          VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (name) DO UPDATE SET version = $3, updated_at = $5",
+         ON CONFLICT (name) DO UPDATE SET status = $2, version = $3, updated_at = $5",
     )
     .bind(name)
     .bind(STATUS_ENABLED)
