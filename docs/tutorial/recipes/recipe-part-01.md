@@ -1,8 +1,8 @@
 # Recipe: Part 1 — Hello, Trovato
 
 > **Synced with:** `docs/tutorial/part-01-hello-trovato.md`
-> **Sync hash:** 5f3bfd1d
-> **Last verified:** 2026-03-05
+> **Sync hash:** 215ebc7d
+> **Last verified:** 2026-03-06
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
 
