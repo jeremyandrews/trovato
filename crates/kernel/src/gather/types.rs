@@ -408,6 +408,15 @@ pub struct QueryDisplay {
     /// `/gather/{query_id}`, so pager links and filter form actions stay on
     /// the friendly URL rather than the internal gather path.
     pub canonical_url: Option<String>,
+
+    /// Route aliases that redirect to this gather query.
+    ///
+    /// Each route maps URL path segments to gather query parameters.
+    /// Registered dynamically at startup. For example, a route with
+    /// path `/topics/{slug}` can resolve the slug to a tag UUID and
+    /// redirect to the gather query with that UUID as a filter value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<GatherRoute>,
 }
 
 fn default_items_per_page() -> u32 {
@@ -424,6 +433,7 @@ impl Default for QueryDisplay {
             header: None,
             footer: None,
             canonical_url: None,
+            routes: Vec::new(),
         }
     }
 }
@@ -494,6 +504,36 @@ pub enum PagerStyle {
     Mini,
     /// Infinite scroll / load more.
     Infinite,
+}
+
+/// A route alias that redirects to a gather query with parameter mapping.
+///
+/// Registered dynamically at startup from gather query display configs.
+/// For example, `/topics/{slug}` can redirect to a `by_topic` gather query
+/// after resolving the slug to a tag UUID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatherRoute {
+    /// URL path pattern with named segments, e.g. `/topics/{slug}`.
+    pub path: String,
+
+    /// Maps path segment names to gather query parameters.
+    #[serde(default)]
+    pub params: Vec<GatherRouteParam>,
+}
+
+/// A parameter mapping from a URL path segment to a gather query filter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatherRouteParam {
+    /// Path segment name (matches `{name}` in the route path).
+    pub segment: String,
+
+    /// Query parameter name passed to the gather URL.
+    pub param: String,
+
+    /// When set, the path segment is a tag slug in this category.
+    /// The system resolves it to a tag UUID before passing as the param value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_category: Option<String>,
 }
 
 /// Complete gather query (definition + display + metadata).

@@ -1114,6 +1114,7 @@ mod widget_tests {
                 category_id: "topic".to_string(),
                 label: label.to_string(),
                 description: None,
+                slug: None,
                 weight: 0,
                 created: 0,
                 changed: 0,

@@ -245,6 +245,7 @@ async fn config_storage_tag_crud() {
         category_id: category_id.clone(),
         label: "Test Tag".to_string(),
         description: Some("A test tag".to_string()),
+        slug: None,
         weight: 0,
         created: now,
         changed: now,

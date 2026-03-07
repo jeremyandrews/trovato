@@ -26,7 +26,6 @@ members = [
     "plugins/content_translation",
     "plugins/config_translation",
     "plugins/trovato_search",
-    "plugins/ritrovo_importer",
 ]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
 # Plugin cdylibs (argus, netgrasp, goose) excluded — build with --target wasm32-wasip1

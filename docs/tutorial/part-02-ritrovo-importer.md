@@ -115,7 +115,7 @@ When the server next starts with the plugin enabled, it calls `tap_install` **on
 INFO trovato::state: tap_install dispatched plugin="ritrovo_importer"
 ```
 
-`tap_install` discovers the taxonomy term UUIDs from the config-imported data (caching them in `ritrovo_state` for the queue worker) and queues the full historical conference import. After a restart you can verify it ran:
+`tap_install` discovers the taxonomy term UUIDs from the config-imported data (caching them in `ritrovo_state` for the import pipeline's queue worker — browse routes use `category_tag.slug` instead) and queues the full historical conference import. After a restart you can verify it ran:
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
@@ -512,16 +512,20 @@ A category tag is identified by a UUID generated at insert time. Items reference
 
 ### Defining the Taxonomy in Configuration
 
-The topic taxonomy is defined as YAML configuration files in `docs/tutorial/config/`. Each term is a separate file (e.g. `tag.{uuid}.yml`) with its label, category, weight, and parent reference:
+The topic taxonomy is defined as YAML configuration files in `docs/tutorial/config/`. Each term is a separate file (e.g. `tag.{uuid}.yml`) with its label, category, slug, weight, and parent references:
 
 ```yaml
 # tag.8835efe1-04a9-4dc4-bc4b-7d47ec387031.yml
 id: 8835efe1-04a9-4dc4-bc4b-7d47ec387031
 category_id: topics
 label: Ruby
-weight: 0
-parent_id: d953559d-2669-4bfb-b652-170b58993d2e  # Scripting
+slug: ruby
+weight: 4
+parents:
+- f95ddda0-58d4-4519-9965-91c86d74a459  # Web Languages
 ```
+
+The `slug` field is a URL-safe identifier used by **gather route aliases** (see "Gather Route Aliases" below) to resolve friendly URLs like `/topics/ruby` to the tag's UUID. Slugs are unique within a category and stored in the `category_tag.slug` column.
 
 The category itself is also a YAML file:
 
@@ -540,7 +544,7 @@ Some confs.tech slugs (like `sre` and `scala`) are intentionally absent from the
 
 ### Discovering Term UUIDs at Install Time
 
-When `tap_install` runs, it calls `discover_taxonomy_uuids()`, which looks up each term's UUID by label from the `category_tag` table and caches it in `ritrovo_state`:
+When `tap_install` runs, it calls `discover_taxonomy_uuids()`, which looks up each term's UUID by label from the `category_tag` table and caches it in `ritrovo_state`. This cache is used by the **import pipeline** (queue worker) to map confs.tech topic slugs to tag UUIDs when inserting conferences — it is separate from the browse route slug resolution, which uses the `category_tag.slug` column directly:
 
 ```rust
 fn discover_taxonomy_uuids() -> u32 {
@@ -627,48 +631,38 @@ The filter is then rewritten to `HasAnyTag` with the full expanded list. A query
 
 > **Null handling:** When a `has_tag_or_descendants` filter has a null value — as happens when an exposed filter has no user input — the gather service skips the filter entirely rather than erroring. This lets the same gather definition work both as an exposed filter form (no value → show all) and as a driven query (value provided → filter by topic).
 
-### The /topics/{slug} Browse Route
+### Gather Route Aliases
 
-The kernel's `ritrovo_topics` module exposes `/topics/{slug}`. It is a **plugin-gated** route: when the `ritrovo_importer` plugin is disabled, the route returns 404.
+The kernel's `gather_routes` module provides a generic mechanism for mapping friendly URLs to gather queries. Rather than hard-coding routes for each plugin, route aliases are declared in the gather query's `display.routes` YAML configuration and registered dynamically at startup.
 
-The handler:
+Each route alias defines a URL path pattern and a list of parameter mappings. Two mapping modes are supported:
+
+| Mode | Config | Behaviour |
+|---|---|---|
+| **Pass-through** | `segment` + `param` | Path segment value is passed directly as a gather query parameter |
+| **Tag slug lookup** | `segment` + `param` + `tag_category` | Path segment is resolved to a tag UUID via `category_tag.slug`, then the UUID is passed |
+
+For the `/topics/{slug}` route, the `ritrovo.by_topic` gather query declares:
+
+```yaml
+# gather_query.ritrovo.by_topic.yml (display section)
+display:
+  routes:
+  - path: /topics/{slug}
+    params:
+    - segment: slug
+      param: topic
+      tag_category: topics
+```
+
+When a request arrives at `/topics/rust`, the handler:
 
 1. Validates the slug (non-empty, ≤ 128 chars, alphanumeric + `-`/`_` only).
-2. Queries `ritrovo_state` for `topic_term.{slug}`.
+2. Looks up the tag by slug in the `category_tag` table: `SELECT ... WHERE category_id = 'topics' AND slug = 'rust'`.
 3. Returns 404 if the slug is unknown.
 4. Redirects (307 Temporary) to `/gather/ritrovo.by_topic?topic=<uuid>`, preserving any extra query parameters (e.g. `?page=2`).
 
-```rust
-async fn by_topic(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Redirect, StatusCode> {
-    if slug.is_empty() || slug.len() > 128
-        || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT value FROM ritrovo_state WHERE name = $1",
-    )
-    .bind(format!("topic_term.{slug}"))
-    .fetch_optional(state.db()).await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let (uuid,) = row.ok_or(StatusCode::NOT_FOUND)?;
-
-    let mut url = format!("/gather/ritrovo.by_topic?topic={}", urlencoding::encode(&uuid));
-    for (k, v) in &params {
-        url.push('&');
-        url.push_str(&urlencoding::encode(k));
-        url.push('=');
-        url.push_str(&urlencoding::encode(v));
-    }
-    Ok(Redirect::temporary(&url))
-}
-```
+The tag slug column (`category_tag.slug`, added by the `20260307000001_add_category_tag_slug` kernel migration) is what makes this generic — any category's tags can have slugs, so any gather query can use slug-based route aliases without plugin-specific code. Slugs are unique per category via a partial unique index.
 
 The redirect approach means the browse route reuses the gather engine's full HTML rendering pipeline — no duplication of display logic.
 
@@ -791,7 +785,7 @@ Hard filters:   field_start_date ≥ current_date
 Sort:           field_start_date ASC
 ```
 
-This gather is driven by the `/topics/{slug}` route, which resolves the slug to a UUID and redirects to `/gather/ritrovo.by_topic?topic=<uuid>`. The `url_arg("topic")` value reads the `?topic=` query-string parameter at request time.
+This gather is driven by a **gather route alias** declared in the query's `display.routes` config. The `/topics/{slug}` route resolves the slug to a tag UUID via `category_tag.slug` and redirects to `/gather/ritrovo.by_topic?topic=<uuid>`. The `url_arg("topic")` value reads the `?topic=` query-string parameter at request time.
 
 #### ritrovo.by_country and ritrovo.by_city
 
@@ -808,7 +802,7 @@ ritrovo.by_city:
                  field_city    equals url_arg("city")
 ```
 
-Two separate gathers are used (rather than one gather with an optional city filter) to avoid the empty-string problem: if a single gather had an optional `url_arg("city")` filter, a request without `?city=` would resolve to an empty string, which would match no conferences — not the same as "all conferences in this country". The two-gather design sidesteps this entirely: the kernel routes `/location/{country}` to `by_country` and `/location/{country}/{city}` to `by_city`.
+Two separate gathers are used (rather than one gather with an optional city filter) to avoid the empty-string problem: if a single gather had an optional `url_arg("city")` filter, a request without `?city=` would resolve to an empty string, which would match no conferences — not the same as "all conferences in this country". The two-gather design sidesteps this entirely: the gather route aliases map `/location/{country}` to `by_country` and `/location/{country}/{city}` to `by_city`.
 
 ### Exposed Filter Widgets
 
@@ -899,15 +893,40 @@ Both paths produce identical HTML, so switching between a custom template and th
 
 ### The /conferences, /cfps, and /location Routes
 
-The kernel's `ritrovo_topics` route module provides three plugin-gated routes. `/location` routes resolve path segments to gather parameters and redirect; `/conferences` and `/cfps` are served entirely through URL aliases and gather configuration:
+All browse routes are served through a combination of gather route aliases, URL aliases, and `canonical_url` — no plugin-specific kernel code required.
+
+**Location routes** are declared as gather route aliases in the query YAML:
+
+```yaml
+# gather_query.ritrovo.by_country.yml (display section)
+display:
+  routes:
+  - path: /location/{country}
+    params:
+    - segment: country
+      param: country
+```
+
+```yaml
+# gather_query.ritrovo.by_city.yml (display section)
+display:
+  routes:
+  - path: /location/{country}/{city}
+    params:
+    - segment: country
+      param: country
+    - segment: city
+      param: city
+```
+
+These use **pass-through** parameter mapping — the path segment values are URL-encoded and forwarded directly as gather query parameters:
 
 ```
-GET /location/{country}        →  307  /gather/ritrovo.by_country?country=<encoded>[&…params]
-GET /location/{country}/{city} →  307  /gather/ritrovo.by_city?country=<encoded>&city=<encoded>[&…params]
-GET /topics/{slug}             →  307  /gather/ritrovo.by_topic?topic=<uuid>[&…params]
+GET /location/Germany        →  307  /gather/ritrovo.by_country?country=Germany
+GET /location/Germany/Berlin →  307  /gather/ritrovo.by_city?country=Germany&city=Berlin
 ```
 
-`/conferences` and `/cfps` work differently. The `ritrovo.upcoming_conferences` and `ritrovo.open_cfps` gather queries set a `canonical_url` field in their display configuration:
+**`/conferences` and `/cfps`** work differently. The `ritrovo.upcoming_conferences` and `ritrovo.open_cfps` gather queries set a `canonical_url` field in their display configuration:
 
 ```json
 { "canonical_url": "/conferences" }
@@ -918,7 +937,7 @@ When the gather route handler serves a query that has `canonical_url` set, it us
 
 The URL alias for `/conferences` → `/gather/ritrovo.upcoming_conferences` is defined in the tutorial config YAML and imported via `config import`. The config import uses `ON CONFLICT DO UPDATE`, so re-importing safely updates the alias if it already exists from Part 1.
 
-> **Why not a dedicated route?** The earlier design used a thin Rust handler at `GET /conferences` that called `execute_and_render("ritrovo.upcoming_conferences", …, "/conferences")`. This was a kernel minimality violation — feature plumbing with no logic beyond setting a path string. `canonical_url` expresses the same intent in configuration, with no Rust required.
+> **Why not a dedicated route?** The earlier design used a thin Rust handler at `GET /conferences` that called `execute_and_render("ritrovo.upcoming_conferences", …, "/conferences")`. This was a kernel minimality violation — feature plumbing with no logic beyond setting a path string. `canonical_url` and `display.routes` express the same intent in configuration, with no Rust required.
 
 ### Sealing the Raw Gather URLs
 
@@ -935,19 +954,9 @@ The kernel's redirects middleware intercepts these paths before routing and send
 
 No plugin code is needed for this — the redirects are created by the kernel whenever it detects a `canonical_url` on a gather query, whether that query was imported via config or created through the admin UI.
 
-All three `/location` and `/topics` routes share a `gate_ritrovo_importer` middleware layer that returns 404 when the plugin is disabled. The gating is registered in `routes/mod.rs` via the `plugin_gate!` macro and declared for documentation in `plugin/gate.rs` under `GATED_ROUTE_PLUGINS`.
+Gather route aliases are **kernel infrastructure**, not plugin-gated. They are registered at startup from whatever gather queries exist in the database — if the queries are present (via config import), the routes work regardless of whether the plugin that populated the data is enabled. This is consistent with the principle that browse routes are configuration, not plugin features.
 
-A unit test in `plugin::gate` enforces that the documentation constant stays in sync with the runtime gates — if you add a new gated plugin but forget to update `GATED_ROUTE_PLUGINS`, the test fails:
-
-```rust
-#[test]
-fn gated_route_plugins_matches_runtime_gates() {
-    let doc_names: HashSet<&str> = GATED_ROUTE_PLUGINS.iter().map(|g| g.name).collect();
-    let runtime_names: HashSet<&str> = crate::routes::RUNTIME_GATED_NAMES.iter().copied().collect();
-    assert_eq!(doc_names, runtime_names,
-        "GATED_ROUTE_PLUGINS and RUNTIME_GATED_NAMES are out of sync");
-}
-```
+> **Note:** Because gather route aliases are built at startup, changes to `display.routes` in the config YAML require a config reimport followed by a server restart to take effect.
 
 ### Configuration vs Plugin: The Division of Labor
 

@@ -266,6 +266,7 @@ fn query_display_custom() {
         header: Some("Results".to_string()),
         footer: None,
         canonical_url: None,
+        routes: Vec::new(),
     };
 
     assert_eq!(display.format, DisplayFormat::Grid);
@@ -535,6 +536,7 @@ fn gate_test_recent_articles_query_definition() {
             header: None,
             footer: None,
             canonical_url: None,
+            routes: Vec::new(),
         },
         plugin: "blog".to_string(),
         created: chrono::Utc::now().timestamp(),

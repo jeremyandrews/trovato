@@ -534,6 +534,7 @@ async fn add_tag_submit(
         category_id: category_id.clone(),
         label: form.label.clone(),
         description: form.description.clone(),
+        slug: None,
         weight: form.weight.as_ref().and_then(|s| s.parse().ok()),
         parent_ids,
     };
@@ -698,6 +699,7 @@ async fn edit_tag_submit(
     let input = UpdateTag {
         label: Some(form.label.clone()),
         description: form.description.clone(),
+        slug: None,
         weight: form.weight.as_ref().and_then(|s| s.parse().ok()),
     };
 

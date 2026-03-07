@@ -277,6 +277,7 @@ impl DirectConfigStorage {
                 UpdateTag {
                     label: Some(tag.label.clone()),
                     description: tag.description.clone(),
+                    slug: tag.slug.clone(),
                     weight: Some(tag.weight),
                 },
             )
@@ -294,14 +295,15 @@ impl DirectConfigStorage {
 
             sqlx::query(
                 r#"
-                INSERT INTO category_tag (id, category_id, label, description, weight, created, changed)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO category_tag (id, category_id, label, description, slug, weight, created, changed)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 "#,
             )
             .bind(tag.id)
             .bind(&tag.category_id)
             .bind(&tag.label)
             .bind(&tag.description)
+            .bind(&tag.slug)
             .bind(tag.weight)
             .bind(now)
             .bind(now)

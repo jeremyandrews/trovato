@@ -44,6 +44,12 @@ pub struct Tag {
     /// Optional description.
     pub description: Option<String>,
 
+    /// URL-friendly slug for route lookups (e.g. "rust", "ai-data").
+    ///
+    /// Used by gather route aliases to resolve path segments to tag UUIDs.
+    /// Must be unique within a category when set.
+    pub slug: Option<String>,
+
     /// Sort weight within its level.
     pub weight: i16,
 
@@ -104,6 +110,7 @@ pub struct CreateTag {
     pub category_id: String,
     pub label: String,
     pub description: Option<String>,
+    pub slug: Option<String>,
     pub weight: Option<i16>,
     pub parent_ids: Option<Vec<Uuid>>,
 }
@@ -113,6 +120,7 @@ pub struct CreateTag {
 pub struct UpdateTag {
     pub label: Option<String>,
     pub description: Option<String>,
+    pub slug: Option<String>,
     pub weight: Option<i16>,
 }
 
@@ -222,7 +230,7 @@ impl Tag {
     /// Find a tag by ID.
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let tag = sqlx::query_as::<_, Self>(
-            "SELECT id, category_id, label, description, weight, created, changed FROM category_tag WHERE id = $1",
+            "SELECT id, category_id, label, description, slug, weight, created, changed FROM category_tag WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -232,10 +240,29 @@ impl Tag {
         Ok(tag)
     }
 
+    /// Find a tag by slug within a category.
+    pub async fn find_by_slug(
+        pool: &PgPool,
+        category_id: &str,
+        slug: &str,
+    ) -> Result<Option<Self>> {
+        let tag = sqlx::query_as::<_, Self>(
+            "SELECT id, category_id, label, description, slug, weight, created, changed \
+             FROM category_tag WHERE category_id = $1 AND slug = $2",
+        )
+        .bind(category_id)
+        .bind(slug)
+        .fetch_optional(pool)
+        .await
+        .context("failed to fetch tag by slug")?;
+
+        Ok(tag)
+    }
+
     /// List all tags in a category ordered by weight.
     pub async fn list_by_category(pool: &PgPool, category_id: &str) -> Result<Vec<Self>> {
         let tags = sqlx::query_as::<_, Self>(
-            "SELECT id, category_id, label, description, weight, created, changed FROM category_tag WHERE category_id = $1 ORDER BY weight, label",
+            "SELECT id, category_id, label, description, slug, weight, created, changed FROM category_tag WHERE category_id = $1 ORDER BY weight, label",
         )
         .bind(category_id)
         .fetch_all(pool)
@@ -260,6 +287,7 @@ impl Tag {
             category_id: String,
             label: String,
             description: Option<String>,
+            slug: Option<String>,
             weight: i16,
             created: i64,
             changed: i64,
@@ -272,7 +300,7 @@ impl Tag {
                 -- Base case: root tags (parent_id IS NULL) or flat tags (no
                 -- hierarchy row). LEFT JOIN ensures flat tags are included at
                 -- depth 0 rather than silently dropped.
-                SELECT t.id, t.category_id, t.label, t.description, t.weight,
+                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight,
                        t.created, t.changed, 0 AS depth,
                        -- sort_path encodes the full ancestry as a text array so
                        -- siblings stay grouped under their parent (DFS pre-order).
@@ -284,7 +312,7 @@ impl Tag {
                 UNION ALL
 
                 -- Recursive case: children of already-visited nodes
-                SELECT t.id, t.category_id, t.label, t.description, t.weight,
+                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight,
                        t.created, t.changed, tr.depth + 1,
                        tr.sort_path || (lpad((t.weight::int + 32768)::text, 5, '0') || t.label)
                 FROM category_tag t
@@ -298,7 +326,7 @@ impl Tag {
                 FROM tree
                 ORDER BY id, sort_path
             )
-            SELECT id, category_id, label, description, weight, created, changed, depth
+            SELECT id, category_id, label, description, slug, weight, created, changed, depth
             FROM primary_occ
             ORDER BY sort_path
             "#,
@@ -316,6 +344,7 @@ impl Tag {
                     category_id: r.category_id,
                     label: r.label,
                     description: r.description,
+                    slug: r.slug,
                     weight: r.weight,
                     created: r.created,
                     changed: r.changed,
@@ -335,14 +364,15 @@ impl Tag {
         // Insert tag
         sqlx::query(
             r#"
-            INSERT INTO category_tag (id, category_id, label, description, weight, created, changed)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO category_tag (id, category_id, label, description, slug, weight, created, changed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
         )
         .bind(id)
         .bind(&input.category_id)
         .bind(&input.label)
         .bind(&input.description)
+        .bind(&input.slug)
         .bind(input.weight.unwrap_or(0))
         .bind(now)
         .bind(now)
@@ -400,17 +430,19 @@ impl Tag {
 
         let label = input.label.unwrap_or(current.label);
         let description = input.description.or(current.description);
+        let slug = input.slug.or(current.slug);
         let weight = input.weight.unwrap_or(current.weight);
 
         sqlx::query(
             r#"
             UPDATE category_tag
-            SET label = $1, description = $2, weight = $3, changed = $4
-            WHERE id = $5
+            SET label = $1, description = $2, slug = $3, weight = $4, changed = $5
+            WHERE id = $6
             "#,
         )
         .bind(&label)
         .bind(&description)
+        .bind(&slug)
         .bind(weight)
         .bind(now)
         .bind(id)
@@ -436,7 +468,7 @@ impl Tag {
     pub async fn get_parents(pool: &PgPool, id: Uuid) -> Result<Vec<Self>> {
         let parents = sqlx::query_as::<_, Self>(
             r#"
-            SELECT t.id, t.category_id, t.label, t.description, t.weight, t.created, t.changed
+            SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed
             FROM category_tag t
             INNER JOIN category_tag_hierarchy h ON t.id = h.parent_id
             WHERE h.tag_id = $1
@@ -455,7 +487,7 @@ impl Tag {
     pub async fn get_children(pool: &PgPool, id: Uuid) -> Result<Vec<Self>> {
         let children = sqlx::query_as::<_, Self>(
             r#"
-            SELECT t.id, t.category_id, t.label, t.description, t.weight, t.created, t.changed
+            SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed
             FROM category_tag t
             INNER JOIN category_tag_hierarchy h ON t.id = h.tag_id
             WHERE h.parent_id = $1
@@ -474,7 +506,7 @@ impl Tag {
     pub async fn get_roots(pool: &PgPool, category_id: &str) -> Result<Vec<Self>> {
         let roots = sqlx::query_as::<_, Self>(
             r#"
-            SELECT t.id, t.category_id, t.label, t.description, t.weight, t.created, t.changed
+            SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed
             FROM category_tag t
             INNER JOIN category_tag_hierarchy h ON t.id = h.tag_id
             WHERE t.category_id = $1 AND h.parent_id IS NULL
@@ -497,6 +529,7 @@ impl Tag {
             category_id: String,
             label: String,
             description: Option<String>,
+            slug: Option<String>,
             weight: i16,
             created: i64,
             changed: i64,
@@ -507,7 +540,7 @@ impl Tag {
             r#"
             WITH RECURSIVE ancestors AS (
                 -- Base case: direct parents
-                SELECT t.id, t.category_id, t.label, t.description, t.weight, t.created, t.changed, 1 as depth
+                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, 1 as depth
                 FROM category_tag t
                 INNER JOIN category_tag_hierarchy h ON t.id = h.parent_id
                 WHERE h.tag_id = $1 AND h.parent_id IS NOT NULL
@@ -515,7 +548,7 @@ impl Tag {
                 UNION ALL
 
                 -- Recursive case: parents of parents
-                SELECT t.id, t.category_id, t.label, t.description, t.weight, t.created, t.changed, a.depth + 1
+                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, a.depth + 1
                 FROM category_tag t
                 INNER JOIN category_tag_hierarchy h ON t.id = h.parent_id
                 INNER JOIN ancestors a ON h.tag_id = a.id
@@ -539,6 +572,7 @@ impl Tag {
                     category_id: r.category_id,
                     label: r.label,
                     description: r.description,
+                    slug: r.slug,
                     weight: r.weight,
                     created: r.created,
                     changed: r.changed,
@@ -556,6 +590,7 @@ impl Tag {
             category_id: String,
             label: String,
             description: Option<String>,
+            slug: Option<String>,
             weight: i16,
             created: i64,
             changed: i64,
@@ -566,7 +601,7 @@ impl Tag {
             r#"
             WITH RECURSIVE descendants AS (
                 -- Base case: direct children
-                SELECT t.id, t.category_id, t.label, t.description, t.weight, t.created, t.changed, 1 as depth
+                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, 1 as depth
                 FROM category_tag t
                 INNER JOIN category_tag_hierarchy h ON t.id = h.tag_id
                 WHERE h.parent_id = $1
@@ -574,7 +609,7 @@ impl Tag {
                 UNION ALL
 
                 -- Recursive case: children of children
-                SELECT t.id, t.category_id, t.label, t.description, t.weight, t.created, t.changed, d.depth + 1
+                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, d.depth + 1
                 FROM category_tag t
                 INNER JOIN category_tag_hierarchy h ON t.id = h.tag_id
                 INNER JOIN descendants d ON h.parent_id = d.id
@@ -597,6 +632,7 @@ impl Tag {
                     category_id: r.category_id,
                     label: r.label,
                     description: r.description,
+                    slug: r.slug,
                     weight: r.weight,
                     created: r.created,
                     changed: r.changed,
@@ -806,6 +842,7 @@ mod tests {
             category_id: "tags".to_string(),
             label: "Rust".to_string(),
             description: Some("Rust programming language".to_string()),
+            slug: Some("rust".to_string()),
             weight: 0,
             created: 1000,
             changed: 1000,
@@ -825,6 +862,7 @@ mod tests {
             category_id: "topics".to_string(),
             label: "Programming".to_string(),
             description: None,
+            slug: None,
             weight: 0,
             created: 1000,
             changed: 1000,
@@ -855,6 +893,7 @@ mod tests {
             category_id: "topics".to_string(),
             label: "Technology".to_string(),
             description: None,
+            slug: Some("technology".to_string()),
             weight: Some(10),
             parent_ids: Some(vec![Uuid::nil()]),
         };

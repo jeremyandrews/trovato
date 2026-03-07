@@ -35,4 +35,10 @@ display:
     enabled: true
     show_count: true
     style: full
+  routes:
+  - path: /topics/{slug}
+    params:
+    - segment: slug
+      param: topic
+      tag_category: topics
 plugin: ritrovo_importer

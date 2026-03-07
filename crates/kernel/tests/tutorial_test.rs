@@ -116,6 +116,7 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                             header: None,
                             footer: None,
                             canonical_url: None,
+                            routes: Vec::new(),
                         },
                         plugin: "core".to_string(),
                         created: now,
@@ -653,12 +654,11 @@ fn test_part01_step04_conferences_url_alias() {
         .unwrap();
         let (source, lang, stage) =
             alias_row.expect("URL alias for /conferences must exist in database");
-        // After Part 2, the ritrovo_importer replaces this alias with
-        // /gather/ritrovo.upcoming_conferences. Accept either source.
+        // Accept either the Part 1 or Part 2 gather query as the alias source.
         assert!(
             source == "/gather/upcoming_conferences"
                 || source == "/gather/ritrovo.upcoming_conferences",
-            "expected /gather/upcoming_conferences or /gather/ritrovo.upcoming_conferences, got {source}"
+            "expected gather query source for /conferences alias, got {source}"
         );
         assert_eq!(lang, "en");
         assert_eq!(stage, LIVE_STAGE_ID);

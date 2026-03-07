@@ -48,10 +48,6 @@ pub const GATED_ROUTE_PLUGINS: &[GatedPlugin] = &[
         name: "oauth2",
         description: "OAuth2 authorization routes",
     },
-    GatedPlugin {
-        name: "ritrovo_importer",
-        description: "Conference browse routes: /topics/{slug}, /conferences, /cfps, /location/{country}[/{city}]",
-    },
 ];
 
 /// A plugin whose kernel routes are runtime-gated.

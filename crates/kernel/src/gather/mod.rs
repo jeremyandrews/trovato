@@ -31,7 +31,7 @@ pub use query_builder::{CategoryHierarchyQuery, GatherQueryBuilder};
 #[allow(unused_imports)]
 pub use types::{
     DisplayFormat, ExposedWidget, FilterOperator, FilterValue, GatherQuery, GatherResult,
-    IncludeDefinition, JoinType, NullsOrder, PagerConfig, PagerStyle, QueryContext,
-    QueryDefinition, QueryDisplay, QueryField, QueryFilter, QueryRelationship, QuerySort,
-    SortDirection,
+    GatherRoute, GatherRouteParam, IncludeDefinition, JoinType, NullsOrder, PagerConfig,
+    PagerStyle, QueryContext, QueryDefinition, QueryDisplay, QueryField, QueryFilter,
+    QueryRelationship, QuerySort, SortDirection,
 };

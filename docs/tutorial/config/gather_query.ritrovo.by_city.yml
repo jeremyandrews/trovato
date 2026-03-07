@@ -41,4 +41,11 @@ display:
     enabled: true
     show_count: true
     style: full
+  routes:
+  - path: /location/{country}/{city}
+    params:
+    - segment: country
+      param: country
+    - segment: city
+      param: city
 plugin: ritrovo_importer

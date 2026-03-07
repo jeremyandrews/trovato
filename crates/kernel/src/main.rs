@@ -224,7 +224,11 @@ async fn run_server() -> Result<()> {
         .merge(routes::tile_admin::router())
         .merge(routes::static_files::router())
         // Plugin-gated routes — runtime middleware returns 404 when disabled.
-        .merge(routes::gated_plugin_routes(&state));
+        .merge(routes::gated_plugin_routes(&state))
+        // Dynamic gather route aliases from query display configs.
+        .merge(routes::gather_routes::build_gather_route_router(
+            &state.gather().list_queries(),
+        ));
 
     // Wrap the inner router with state so we can clone it for the fallback.
     let inner_with_state: Router = inner_router.clone().with_state(state.clone());

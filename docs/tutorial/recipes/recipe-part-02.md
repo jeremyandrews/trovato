@@ -1,7 +1,7 @@
 # Recipe: Part 2 — The Ritrovo Importer Plugin
 
 > **Synced with:** `docs/tutorial/part-02-ritrovo-importer.md`
-> **Sync hash:** 3c51dadf
+> **Sync hash:** 824a6d8a
 > **Last verified:** 2026-03-07
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -91,7 +91,7 @@ and:
 discover_taxonomy_uuids: 23/23 terms found
 ```
 
-`[CLI]` Verify taxonomy discovery:
+`[CLI]` Verify taxonomy discovery (used by the import pipeline's queue worker — browse routes use `category_tag.slug` instead):
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT COUNT(*) FROM ritrovo_state;"
@@ -200,10 +200,10 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT ct.label, cth.parent_id IS NOT NULL AS has_parent FROM category_tag ct LEFT JOIN category_tag_hierarchy cth ON ct.id = cth.tag_id WHERE ct.category_id = 'topics' ORDER BY ct.weight, ct.label;"
+  -c "SELECT ct.label, ct.slug, cth.parent_id IS NOT NULL AS has_parent FROM category_tag ct LEFT JOIN category_tag_hierarchy cth ON ct.id = cth.tag_id WHERE ct.category_id = 'topics' ORDER BY ct.weight, ct.label;"
 ```
 
-**Verify:** Returns multiple rows with topic labels (Languages, Infrastructure, AI & Data, etc.) and hierarchy info.
+**Verify:** Returns multiple rows with topic labels (Languages, Infrastructure, AI & Data, etc.), slugs (e.g. `rust`, `java`, `ai-data`), and hierarchy info. Every tag should have a non-null `slug` value — these are used by gather route aliases to resolve `/topics/{slug}` URLs.
 
 ### 2.3.3 Verify Topic UUIDs in Imported Conferences
 
@@ -215,9 +215,10 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 **Verify:** Conferences have `field_topics` arrays containing UUID strings (not raw slug strings like "rust").
 
-### 2.3.4 Verify the /topics/{slug} Route
+### 2.3.4 Verify the /topics/{slug} Gather Route Alias
 
-`[CLI]`
+`[CLI]` The `/topics/{slug}` route is a **gather route alias** — declared in the `ritrovo.by_topic` query's `display.routes` config, not hard-coded. It resolves slugs to tag UUIDs via the `category_tag.slug` column.
+
 ```
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
 ```
@@ -297,9 +298,11 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/cfps
 
 **Verify:** Returns `200`.
 
-### 2.4.4 Verify Location Routes
+### 2.4.4 Verify Location Gather Route Aliases
 
-`[CLI]` First, find a country that has conferences:
+`[CLI]` Location routes are **gather route aliases** declared in the `ritrovo.by_country` and `ritrovo.by_city` query YAML configs using pass-through parameter mapping.
+
+First, find a country that has conferences:
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT DISTINCT fields->>'field_country' AS country FROM item WHERE type = 'conference' AND fields->>'field_country' IS NOT NULL LIMIT 5;"
@@ -317,6 +320,19 @@ curl -sL -o /dev/null -w "%{http_code}" http://localhost:3000/location/Germany
 ```
 
 **Verify:** Returns `200` (following redirect).
+
+`[CLI]` Test the two-segment city route (find a city from the dataset first):
+```
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT fields->>'field_country' AS country, fields->>'field_city' AS city FROM item WHERE type = 'conference' AND fields->>'field_city' IS NOT NULL AND fields->>'field_city' != '' LIMIT 1;"
+```
+
+Then test with the returned country/city:
+```
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/location/Germany/Berlin
+```
+
+**Verify:** Returns `307` (temporary redirect to the by_city gather).
 
 ### 2.4.5 Verify Exposed Filter Widgets
 
@@ -355,12 +371,12 @@ After completing all steps, verify the full Part 2 outcome:
 - [ ] Plugin tests pass (`cargo test -p ritrovo_importer`)
 - [ ] ~5,492 conferences imported (count may vary with dataset updates)
 - [ ] No duplicate `source_id` values
-- [ ] Topic taxonomy imported with hierarchical terms (Languages > Systems > Rust, etc.)
+- [ ] Topic taxonomy imported with hierarchical terms (Languages > Systems > Rust, etc.) and slugs
 - [ ] `field_topics` contains UUID arrays, not raw slugs
-- [ ] `/topics/rust` returns 307 redirect to gather
+- [ ] `/topics/rust` returns 307 redirect to gather (via gather route alias + `category_tag.slug`)
 - [ ] Five gather queries exist with `plugin = 'ritrovo_importer'`
 - [ ] `/conferences` serves the full upcoming_conferences gather with exposed filter widgets
 - [ ] `/cfps` serves open CFPs listing
-- [ ] `/location/{country}` routes work
+- [ ] `/location/{country}` and `/location/{country}/{city}` routes work
 - [ ] Raw gather URLs (`/gather/ritrovo.upcoming_conferences`, `/gather/ritrovo.open_cfps`) redirect 301 to canonical URLs
 - [ ] All discoveries recorded in `TOOLS.md`

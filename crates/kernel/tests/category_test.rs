@@ -83,6 +83,7 @@ fn tag_creation() {
         category_id: "categories".to_string(),
         label: "Technology".to_string(),
         description: Some("Technology articles".to_string()),
+        slug: None,
         weight: Some(10),
         parent_ids: None,
     };
@@ -99,6 +100,7 @@ fn tag_with_parents() {
         category_id: "categories".to_string(),
         label: "Rust".to_string(),
         description: None,
+        slug: None,
         weight: None,
         parent_ids: Some(vec![parent_id]),
     };
@@ -115,6 +117,7 @@ fn tag_with_multiple_parents() {
         category_id: "topics".to_string(),
         label: "Web Development".to_string(),
         description: None,
+        slug: None,
         weight: None,
         parent_ids: Some(vec![parent1, parent2]),
     };
@@ -128,6 +131,7 @@ fn tag_update() {
     let input = UpdateTag {
         label: Some("Updated Label".to_string()),
         description: Some("New description".to_string()),
+        slug: None,
         weight: Some(5),
     };
 
@@ -142,6 +146,7 @@ fn tag_serialization() {
         category_id: "tags".to_string(),
         label: "Rust".to_string(),
         description: Some("Rust programming".to_string()),
+        slug: None,
         weight: 0,
         created: 1000,
         changed: 2000,
@@ -168,6 +173,7 @@ fn tag_with_depth() {
         category_id: "categories".to_string(),
         label: "Programming".to_string(),
         description: None,
+        slug: None,
         weight: 0,
         created: 1000,
         changed: 1000,
@@ -186,6 +192,7 @@ fn tag_with_depth_serialization() {
         category_id: "categories".to_string(),
         label: "Technology".to_string(),
         description: None,
+        slug: None,
         weight: 0,
         created: 1000,
         changed: 1000,
@@ -224,6 +231,7 @@ fn tag_with_unicode() {
         category_id: "i18n".to_string(),
         label: "日本語".to_string(),
         description: Some("Japanese tag".to_string()),
+        slug: None,
         weight: 0,
         created: 1000,
         changed: 1000,
@@ -242,6 +250,7 @@ fn empty_parent_list_means_root() {
         category_id: "categories".to_string(),
         label: "Root Tag".to_string(),
         description: None,
+        slug: None,
         weight: None,
         parent_ids: Some(vec![]), // Empty list = root
     };

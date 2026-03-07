@@ -35,4 +35,9 @@ display:
     enabled: true
     show_count: true
     style: full
+  routes:
+  - path: /location/{country}
+    params:
+    - segment: country
+      param: country
 plugin: ritrovo_importer
