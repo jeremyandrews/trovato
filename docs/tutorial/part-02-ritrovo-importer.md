@@ -91,18 +91,36 @@ cargo run --release --bin trovato -- plugin install ritrovo_importer
 
 > **Note:** Because `ritrovo_importer` has `default_enabled = true` in its `info.toml`, the server auto-installs it into `plugin_status` on first startup — so you may see the message `Plugin 'ritrovo_importer' is already installed` and that is expected. The command still ensures any pending migrations are applied.
 
+### Import Configuration Before Starting
+
+Before starting the server, import the tutorial configuration files. These YAML files define the topic taxonomy, gather queries, and URL aliases that the importer plugin depends on:
+
+```bash
+cargo run --release --bin trovato -- config import docs/tutorial/config
+```
+
+This imports:
+- **1 category** — the "Conference Topics" vocabulary
+- **32 tags** — hierarchical topic terms (Languages > Systems > Rust, etc.)
+- **5 gather queries** — the browse pages (upcoming conferences, open CFPs, by topic/country/city)
+- **2 URL aliases** — `/conferences` and `/cfps` pointing to their gather queries
+
+> **Why config, not plugin?** Taxonomies, gather queries, and URL aliases are core Trovato concepts with first-class support in the config import/export system. The plugin only handles what the kernel can't: fetching external data from the confs.tech API and mapping it to conference items.
+
+### First Startup: tap_install
+
 When the server next starts with the plugin enabled, it calls `tap_install` **once** for any plugin where it has not previously run. You'll see this in the server logs:
 
 ```
 INFO trovato::state: tap_install dispatched plugin="ritrovo_importer"
 ```
 
-`tap_install` seeds the topic taxonomy, the five gather queries, 301 redirects from the raw gather URLs to their pretty paths, and queues the historical conference import. After a restart you can verify it ran:
+`tap_install` discovers the taxonomy term UUIDs from the config-imported data (caching them in `ritrovo_state` for the queue worker) and queues the full historical conference import. After a restart you can verify it ran:
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT COUNT(*) FROM ritrovo_state;"
-# Should return > 0 (one row per taxonomy term seeded)
+# Should return > 0 (one row per discovered taxonomy term, plus ETag entries)
 ```
 
 > **Note:** `tap_install` fires only once per server lifetime — subsequent restarts skip it for already-installed plugins. To re-run it (e.g. after resetting the database), delete the plugin's row from `plugin_status` and restart.
@@ -113,7 +131,7 @@ The generated scaffold includes stubs for the four taps the importer uses:
 
 | Tap | When called | What it does |
 |---|---|---|
-| `tap_install` | Once, on first enable | Seeds initial data, logs confirmation |
+| `tap_install` | Once, on first enable | Discovers taxonomy UUIDs, queues historical import |
 | `tap_cron` | Every cron cycle (~1 min) | Fetches conference data, pushes to queue |
 | `tap_queue_info` | At startup | Declares queue names and concurrency |
 | `tap_queue_worker` | Per queue job | Validates and inserts/updates conferences |
@@ -385,7 +403,7 @@ Newly inserted conferences are created as **published** (`status = 1`) on the li
 
 ### Historical Import: tap_install
 
-When the plugin is first enabled, `tap_install` runs a full historical backfill. It fetches every topic file for every year from 2015 to the current year, stores ETags, and pushes each successful response onto the queue:
+When the plugin is first enabled, `tap_install` first discovers taxonomy term UUIDs from the config-imported `category_tag` rows (caching them in `ritrovo_state` for the queue worker), then runs a full historical backfill. It fetches every topic file for every year from 2015 to the current year, stores ETags, and pushes each successful response onto the queue:
 
 ```rust
 for year in FIRST_IMPORT_YEAR..=current_year {   // 2015..=now
@@ -492,101 +510,68 @@ Trovato's category system organises tags into named vocabularies.
 
 A category tag is identified by a UUID generated at insert time. Items reference tags by UUID in their JSONB `fields`, typically as an array: `field_topics: ["<uuid1>", "<uuid2>"]`. The `HasTagOrDescendants` filter understands these UUIDs and their parent-child relationships.
 
-### Defining the Taxonomy at Compile Time
+### Defining the Taxonomy in Configuration
 
-The importer defines its full topic hierarchy as a static array of `TermDef` structs compiled into the WASM binary:
+The topic taxonomy is defined as YAML configuration files in `docs/tutorial/config/`. Each term is a separate file (e.g. `tag.{uuid}.yml`) with its label, category, weight, and parent reference:
 
-```rust
-struct TermDef {
-    slug:   &'static str,       // machine name (matches confs.tech keys)
-    label:  &'static str,       // human-readable label in the UI
-    parent: Option<&'static str>, // parent slug, or None for roots
-    weight: i32,                // display ordering
-}
-
-const TAXONOMY: &[TermDef] = &[
-    // Root terms
-    TermDef { slug: "languages",      label: "Languages",      parent: None,                   weight: 0 },
-    TermDef { slug: "infrastructure", label: "Infrastructure", parent: None,                   weight: 1 },
-    TermDef { slug: "ai-data",        label: "AI & Data",      parent: None,                   weight: 2 },
-    TermDef { slug: "web-platform",   label: "Web Platform",   parent: None,                   weight: 3 },
-    TermDef { slug: "security",       label: "Security",       parent: None,                   weight: 4 },
-    TermDef { slug: "general",        label: "General",        parent: None,                   weight: 5 },
-    // Languages > Systems
-    TermDef { slug: "lang-systems",   label: "Systems",        parent: Some("languages"),      weight: 0 },
-    TermDef { slug: "rust",           label: "Rust",           parent: Some("lang-systems"),   weight: 0 },
-    TermDef { slug: "cpp",            label: "C++",            parent: Some("lang-systems"),   weight: 1 },
-    TermDef { slug: "dotnet",         label: ".NET",           parent: Some("lang-systems"),   weight: 2 },
-    // Languages > JVM
-    TermDef { slug: "lang-jvm",       label: "JVM",            parent: Some("languages"),      weight: 1 },
-    TermDef { slug: "java",           label: "Java",           parent: Some("lang-jvm"),       weight: 0 },
-    // ... (full list in plugins/ritrovo_importer/src/lib.rs)
-];
+```yaml
+# tag.8835efe1-04a9-4dc4-bc4b-7d47ec387031.yml
+id: 8835efe1-04a9-4dc4-bc4b-7d47ec387031
+category_id: topics
+label: Ruby
+weight: 0
+parent_id: d953559d-2669-4bfb-b652-170b58993d2e  # Scripting
 ```
 
-The array is ordered so every parent term appears before its children. The `parent` field uses the slug string — the plugin resolves it to a UUID at install time.
+The category itself is also a YAML file:
 
-Some confs.tech slugs (like `sre` and `scala`) are intentionally absent from `TAXONOMY`. Conferences with those topics simply have an empty `field_topics` array — they are still imported, just not reachable via topic browse pages.
+```yaml
+# category.topics.yml
+id: topics
+label: Conference Topics
+description: Hierarchical topic taxonomy for tech conferences
+hierarchy: 2
+weight: 0
+```
 
-### Seeding on First Install
+These files are imported via `cargo run --release --bin trovato -- config import docs/tutorial/config` before the plugin is installed. The config import system handles dependency ordering (categories before tags) and uses `ON CONFLICT DO UPDATE` for idempotency.
 
-`tap_install` calls `seed_taxonomy()`, which:
+Some confs.tech slugs (like `sre` and `scala`) are intentionally absent from the taxonomy. Conferences with those topics simply have an empty `field_topics` array — they are still imported, just not reachable via topic browse pages.
 
-1. Creates the `topics` category (with `ON CONFLICT DO NOTHING` for idempotency).
-2. Iterates `TAXONOMY` in order.
-3. For each term, checks `ritrovo_state` for an existing `topic_term.{slug}` key — if present, the term was already created and is skipped.
-4. Inserts a new `category_tag` row and reads back the generated UUID via `RETURNING id`.
-5. Stores the UUID in `ritrovo_state` as `topic_term.{slug}`.
-6. Inserts a `category_tag_hierarchy` edge linking the tag to its parent (or to `NULL` for roots).
+### Discovering Term UUIDs at Install Time
+
+When `tap_install` runs, it calls `discover_taxonomy_uuids()`, which looks up each term's UUID by label from the `category_tag` table and caches it in `ritrovo_state`:
 
 ```rust
-fn seed_taxonomy() -> u32 {
-    let now = current_timestamp();
+fn discover_taxonomy_uuids() -> u32 {
+    let mut discovered = 0u32;
 
-    // Ensure the vocabulary exists.
-    let _ = host::execute_raw(
-        "INSERT INTO category (id, label, description, hierarchy, weight) \
-         VALUES ($1, 'Conference Topics', NULL, 2, 0) \
-         ON CONFLICT (id) DO NOTHING",
-        &[serde_json::json!(TOPICS_CATEGORY_ID)],
-    );
-
-    let mut created = 0u32;
-    for term in TAXONOMY {
-        let state_key = format!("topic_term.{}", term.slug);
+    for &(_confs_slug, term_slug, term_label) in SLUG_TO_TERM {
+        let state_key = format!("{STATE_TOPIC_TERM_PREFIX}.{term_slug}");
 
         if load_state_str(&state_key).is_some() {
-            continue; // already seeded
+            discovered += 1;
+            continue;
         }
 
-        // Insert term and retrieve UUID.
         let result = host::query_raw(
-            "INSERT INTO category_tag (id, category_id, label, description, weight, created, changed) \
-             VALUES (gen_random_uuid(), $1, $2, NULL, $3, $4, $4) RETURNING id::text AS id",
-            &[ /* TOPICS_CATEGORY_ID, term.label, term.weight, now */ ],
+            "SELECT id::text AS id FROM category_tag \
+             WHERE category_id = $1 AND label = $2 LIMIT 1",
+            &[
+                serde_json::json!(TOPICS_CATEGORY_ID),
+                serde_json::json!(term_label),
+            ],
         );
-        let Some(uuid_str) = /* parse RETURNING result */ else { continue; };
-
-        save_state(&state_key, &uuid_str);
-        created += 1;
-
-        // Link to parent.
-        if let Some(parent_slug) = term.parent {
-            let parent_key = format!("topic_term.{parent_slug}");
-            if let Some(parent_uuid) = load_state_str(&parent_key) {
-                let _ = host::execute_raw(
-                    "INSERT INTO category_tag_hierarchy (tag_id, parent_id)
-                     SELECT $1::uuid, $2::uuid WHERE NOT EXISTS (...)",
-                    &[/* uuid_str, parent_uuid */],
-                );
-            }
+        if let Some(uuid) = /* parse result */ {
+            save_state(&state_key, &uuid);
+            discovered += 1;
         }
     }
-    created
+    discovered
 }
 ```
 
-Because `TAXONOMY` is ordered parents-first, each parent's UUID is guaranteed to be in `ritrovo_state` before its children need it.
+The `SLUG_TO_TERM` constant maps confs.tech topic slugs to taxonomy term slugs and labels. This is the only taxonomy-related data compiled into the plugin — the actual category and tag definitions live in config YAML.
 
 ### Storing Tag UUIDs in field_topics
 
@@ -751,9 +736,9 @@ Gather filters support three kinds of values:
 
 **`null`** on an unexposed filter is meaningless (the filter would always be skipped). On an **exposed** filter it acts as "no default value" — the user can supply one through the rendered filter form, but the gather renders all results when the form is empty.
 
-### The Five Seeded Gathers
+### The Five Gather Queries
 
-`tap_install` seeds these five queries. On conflict it uses `DO UPDATE SET definition = EXCLUDED.definition, changed = EXCLUDED.changed` — reinstalling or upgrading the plugin propagates definition changes (including new filter widgets) to existing databases automatically.
+These five queries are defined as YAML configuration files in `docs/tutorial/config/` and imported via `config import`. Each file contains the query ID, label, definition (filters, sorts), and display configuration (format, pager, empty text). Re-importing updates existing queries via `ON CONFLICT DO UPDATE`, so changes propagate automatically.
 
 #### ritrovo.upcoming_conferences
 
@@ -931,7 +916,7 @@ GET /topics/{slug}             →  307  /gather/ritrovo.by_topic?topic=<uuid>[&
 
 When the gather route handler serves a query that has `canonical_url` set, it uses that path as `base_path` for all generated URLs — form actions, pager links, and filter parameters all stay on the friendly path. Filtering by country and navigating to page 2 produces `GET /conferences?fields.field_country=Germany&page=2`, not `GET /gather/ritrovo.upcoming_conferences?…`.
 
-The URL alias established in Part 1 (`/conferences` → `/gather/upcoming_conferences`) is upgraded by `tap_install` via an upsert on `url_alias`. After plugin install, `/conferences` resolves to `/gather/ritrovo.upcoming_conferences`, and the full filter-enabled query is served.
+The URL alias for `/conferences` → `/gather/ritrovo.upcoming_conferences` is defined in the tutorial config YAML and imported via `config import`. The config import uses `ON CONFLICT DO UPDATE`, so re-importing safely updates the alias if it already exists from Part 1.
 
 > **Why not a dedicated route?** The earlier design used a thin Rust handler at `GET /conferences` that called `execute_and_render("ritrovo.upcoming_conferences", …, "/conferences")`. This was a kernel minimality violation — feature plumbing with no logic beyond setting a path string. `canonical_url` expresses the same intent in configuration, with no Rust required.
 
@@ -939,7 +924,7 @@ The URL alias established in Part 1 (`/conferences` → `/gather/upcoming_confer
 
 Even with `canonical_url` set, `/gather/ritrovo.upcoming_conferences` is still a valid path — the gather engine serves it too. A user arriving there (via a bookmark, browser history, or an old link) would see the filter form submit back to the raw gather URL, breaking the stable-URL contract.
 
-`tap_install` therefore calls `seed_redirects()`, which inserts two 301 redirects into the `redirect` table:
+The kernel handles this automatically: when the gather service loads queries from the database, its `sync_canonical_redirects()` method creates 301 redirects for any query that has a `canonical_url` in its display config:
 
 ```
 /gather/ritrovo.upcoming_conferences  →  301  /conferences
@@ -948,7 +933,7 @@ Even with `canonical_url` set, `/gather/ritrovo.upcoming_conferences` is still a
 
 The kernel's redirects middleware intercepts these paths before routing and sends the browser to the canonical URL. Any subsequent filter submission or page navigation then stays on `/conferences` or `/cfps` as intended.
 
-The function uses `INSERT … WHERE NOT EXISTS` rather than `ON CONFLICT` because the `redirect` table has no unique constraint on `(source, language)` — a manual redirect created through the admin UI would otherwise be silently clobbered.
+No plugin code is needed for this — the redirects are created by the kernel whenever it detects a `canonical_url` on a gather query, whether that query was imported via config or created through the admin UI.
 
 All three `/location` and `/topics` routes share a `gate_ritrovo_importer` middleware layer that returns 404 when the plugin is disabled. The gating is registered in `routes/mod.rs` via the `plugin_gate!` macro and declared for documentation in `plugin/gate.rs` under `GATED_ROUTE_PLUGINS`.
 
@@ -964,37 +949,17 @@ fn gated_route_plugins_matches_runtime_gates() {
 }
 ```
 
-### Seeding Queries From a Plugin
+### Configuration vs Plugin: The Division of Labor
 
-Seeding gather queries from `tap_install` is an **upsert**, not a simple insert. When the plugin upgrades — for example, to add widget types to its exposed filters — the new `definition` must replace the old one in existing databases. Using `ON CONFLICT DO NOTHING` would silently leave old rows untouched.
+The Ritrovo tutorial demonstrates a clean separation of concerns:
 
-The importer therefore uses `DO UPDATE`:
+- **Configuration** (YAML files, imported via `config import`): taxonomy, gather queries, URL aliases. These are core Trovato concepts with first-class config support — they can be exported from one site and imported to another, version-controlled in git, and edited without touching plugin code.
 
-```rust
-host::execute_raw(
-    "INSERT INTO gather_query (query_id, label, description, definition, display, plugin, created, changed)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $7)
-     ON CONFLICT (query_id) DO UPDATE
-       SET label       = EXCLUDED.label,
-           description = EXCLUDED.description,
-           definition  = EXCLUDED.definition,
-           display     = EXCLUDED.display,
-           changed     = EXCLUDED.changed",
-    &[
-        serde_json::json!("ritrovo.by_topic"),
-        serde_json::json!("Conferences by Topic"),
-        serde_json::json!(description),
-        serde_json::json!(definition_value.to_string()),  // serialised to string; SQL casts to jsonb
-        serde_json::json!(display_value.to_string()),
-        serde_json::json!("ritrovo_importer"),
-        serde_json::json!(now),
-    ],
-)
-```
+- **Plugin** (WASM module, runs in sandbox): discovering taxonomy UUIDs from the imported config, fetching external data from the confs.tech API, validating and deduplicating conferences, queue management. These are import-specific operations that the kernel doesn't provide.
 
-The `created` timestamp is not in the `SET` clause, so it is preserved from the original insert. The `changed` timestamp is updated, making it easy to see when a query was last modified by a plugin upgrade.
+This separation means you can modify the gather query definitions (add new filters, change sort orders, update display config) by editing the YAML files and re-importing — no plugin rebuild required. The plugin only needs to change when the *import logic* changes (e.g. a new field from the upstream API, a different dedup strategy).
 
-The main subtlety is JSONB parameter binding. The `execute_raw` host function accepts parameters as a JSON array where each element is the literal value for `$1`, `$2`, etc. To pass a JSONB object, serialize it to a JSON string first and cast it in SQL with `::jsonb`. Calling `.to_string()` on a `serde_json::Value` produces a valid JSON text string. This pattern works across the plugin boundary because the host function only understands simple JSON scalars for its parameter array.
+> **Design principle:** The core kernel enables. Plugins implement. If it's a feature definition (a gather query, a taxonomy, a URL alias), it belongs in configuration. If it's an integration with an external system, it belongs in a plugin.
 
 ---
 
@@ -1009,4 +974,4 @@ With the taxonomy, gather queries, browse routes, and filter widgets in place, R
 - Find open CFPs at `/cfps`
 - Filter by country at `/location/Germany` and by city at `/location/Germany/Berlin`
 
-The gather engine handles filtering, pagination, widget data loading, and rendering — the plugin only had to declare the query shapes, widget types, and routes.
+The gather engine handles filtering, pagination, widget data loading, and rendering. The query definitions, taxonomy, and URL aliases are all managed as configuration — the plugin's only job is discovering taxonomy UUIDs and importing conference data from the external API.

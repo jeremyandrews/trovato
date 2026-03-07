@@ -1,8 +1,8 @@
 # Recipe: Part 2 — The Ritrovo Importer Plugin
 
 > **Synced with:** `docs/tutorial/part-02-ritrovo-importer.md`
-> **Sync hash:** 2f124186
-> **Last verified:** 2026-03-06
+> **Sync hash:** 3c51dadf
+> **Last verified:** 2026-03-07
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
 
@@ -44,7 +44,28 @@ rustup target add wasm32-wasip1
 
 Record the working build command in `TOOLS.md -> Plugins`.
 
-### 2.1.3 Install the Plugin
+### 2.1.3 Import Configuration
+
+`[CLI]` Import the tutorial configuration (taxonomy, gather queries, URL aliases) BEFORE installing the plugin:
+
+```
+cargo run --release --bin trovato -- config import docs/tutorial/config
+```
+
+**Verify:** Output shows `Imported 42 config entities` including 1 category, 32 tags, 5 gather queries, 2 URL aliases.
+
+`[CLI]` Confirm taxonomy and gathers are in the database:
+```
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT COUNT(*) FROM category_tag WHERE category_id = 'topics';"
+# Expect: 32
+
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT query_id FROM gather_query WHERE plugin = 'ritrovo_importer' ORDER BY query_id;"
+# Expect: 5 rows
+```
+
+### 2.1.4 Install the Plugin
 
 `[CLI]` Check `TOOLS.md -> Plugins` for the install command. If not recorded:
 
@@ -56,7 +77,7 @@ cargo run --release --bin trovato -- plugin install ritrovo_importer
 
 Record the install command in `TOOLS.md -> Plugins`.
 
-### 2.1.4 Restart the Server and Verify tap_install
+### 2.1.5 Restart the Server and Verify tap_install
 
 `[CLI]` Restart the server using the command from `TOOLS.md -> Server`.
 
@@ -65,13 +86,18 @@ Record the install command in `TOOLS.md -> Plugins`.
 INFO trovato::state: tap_install dispatched plugin="ritrovo_importer"
 ```
 
-`[CLI]` Verify taxonomy seeding:
+and:
+```
+discover_taxonomy_uuids: 23/23 terms found
+```
+
+`[CLI]` Verify taxonomy discovery:
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT COUNT(*) FROM ritrovo_state;"
 ```
 
-**Verify:** Returns > 0 (one row per taxonomy term seeded, plus state keys).
+**Verify:** Returns > 0 (one row per discovered taxonomy term, plus ETag entries).
 
 **Note:** `tap_install` fires only once per server lifetime. To re-run it (e.g. after DB reset), delete the plugin's row from `plugin_status` and restart.
 
@@ -161,7 +187,7 @@ cargo test -p ritrovo_importer
 - Items reference tags by UUID in `field_topics` array
 - `HasTagOrDescendants` filter expands UUIDs via recursive CTE
 
-### 2.3.2 Verify Taxonomy Was Seeded
+### 2.3.2 Verify Taxonomy Was Imported
 
 `[CLI]` Confirm the topic vocabulary and terms exist:
 
@@ -214,9 +240,9 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/nonexistent-
 
 ## 2.4 Advanced Gathers
 
-### 2.4.1 Verify the Five Seeded Gather Queries
+### 2.4.1 Verify the Five Gather Queries
 
-`[CLI]` Confirm all five gather queries were seeded by `tap_install`:
+`[CLI]` Confirm all five gather queries were imported via config:
 
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
@@ -323,12 +349,13 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/gather/ritrovo.open
 
 After completing all steps, verify the full Part 2 outcome:
 
+- [ ] Config imported (42 entities: 1 category, 32 tags, 5 gather queries, 2 URL aliases)
 - [ ] `ritrovo_importer` plugin is installed and `tap_install` has run
 - [ ] WASM binary builds successfully
 - [ ] Plugin tests pass (`cargo test -p ritrovo_importer`)
 - [ ] ~5,492 conferences imported (count may vary with dataset updates)
 - [ ] No duplicate `source_id` values
-- [ ] Topic taxonomy seeded with hierarchical terms (Languages > Systems > Rust, etc.)
+- [ ] Topic taxonomy imported with hierarchical terms (Languages > Systems > Rust, etc.)
 - [ ] `field_topics` contains UUID arrays, not raw slugs
 - [ ] `/topics/rust` returns 307 redirect to gather
 - [ ] Five gather queries exist with `plugin = 'ritrovo_importer'`
