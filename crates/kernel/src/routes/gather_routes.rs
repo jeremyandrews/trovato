@@ -1,7 +1,7 @@
 //! Generic gather route aliases.
 //!
 //! Builds dynamic routes from gather query display configs at startup. Each
-//! [`GatherRoute`] in a query's `display.routes` array creates an HTTP route
+//! Each route entry in a query's `display.routes` array creates an HTTP route
 //! that redirects to the corresponding gather URL with mapped query parameters.
 //!
 //! Two parameter mapping modes:
