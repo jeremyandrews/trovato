@@ -799,6 +799,15 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity,
                 created: 0,
                 changed: 0,
             };
+            for route in &query.display.routes {
+                if route.path.is_empty() || !route.path.starts_with('/') {
+                    anyhow::bail!(
+                        "gather query '{}' has invalid route path '{}': must start with '/'",
+                        query.query_id,
+                        route.path,
+                    );
+                }
+            }
             Ok((ConfigEntity::GatherQuery(Box::new(query)), Vec::new()))
         }
         entity_types::URL_ALIAS => {

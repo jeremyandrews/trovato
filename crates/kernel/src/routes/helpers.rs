@@ -298,6 +298,33 @@ pub async fn require_csrf_header(
     }
 }
 
+/// Maximum length for a tag slug (matches `category_tag.slug` `VARCHAR(128)`).
+pub const MAX_SLUG_LENGTH: usize = 128;
+
+/// Error message for invalid slug format.
+pub const SLUG_FORMAT_ERROR: &str = "Slug must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens.";
+
+/// Validate that a slug is URL-safe for use in gather route aliases.
+///
+/// A valid slug starts with `[a-z0-9]` and contains only lowercase ASCII
+/// letters, digits, and hyphens. Maximum length is [`MAX_SLUG_LENGTH`].
+pub fn is_valid_slug(slug: &str) -> bool {
+    if slug.is_empty() || slug.len() > MAX_SLUG_LENGTH {
+        return false;
+    }
+
+    let mut chars = slug.chars();
+
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 /// Validate that a machine name starts with a lowercase letter and contains
 /// only lowercase letters, digits, and underscores.
 pub fn is_valid_machine_name(name: &str) -> bool {
@@ -636,6 +663,28 @@ mod tests {
         assert!(validate_username("user name").is_err());
         assert!(validate_username("user@name").is_err());
         assert!(validate_username("user<script>").is_err());
+    }
+
+    #[test]
+    fn test_is_valid_slug_valid() {
+        assert!(is_valid_slug("rust"));
+        assert!(is_valid_slug("ai-data"));
+        assert!(is_valid_slug("123"));
+        assert!(is_valid_slug("a"));
+        assert!(is_valid_slug("web-3-tools"));
+        assert!(is_valid_slug(&"a".repeat(128)));
+    }
+
+    #[test]
+    fn test_is_valid_slug_invalid() {
+        assert!(!is_valid_slug(""));
+        assert!(!is_valid_slug("-starts-with-dash"));
+        assert!(!is_valid_slug("UPPERCASE"));
+        assert!(!is_valid_slug("has spaces"));
+        assert!(!is_valid_slug("under_score"));
+        assert!(!is_valid_slug("special!char"));
+        assert!(!is_valid_slug("Capitalized"));
+        assert!(!is_valid_slug(&"a".repeat(129)));
     }
 
     #[test]

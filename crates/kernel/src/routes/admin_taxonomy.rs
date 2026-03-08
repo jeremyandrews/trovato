@@ -12,8 +12,9 @@ use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, MACHINE_NAME_ERROR, is_valid_machine_name, render_admin_template, render_error,
-    render_not_found, render_server_error, require_admin, require_csrf,
+    CsrfOnlyForm, MACHINE_NAME_ERROR, SLUG_FORMAT_ERROR, is_valid_machine_name, is_valid_slug,
+    render_admin_template, render_error, render_not_found, render_server_error, require_admin,
+    require_csrf,
 };
 
 // =============================================================================
@@ -42,6 +43,7 @@ struct TagFormData {
     form_build_id: String,
     label: String,
     description: Option<String>,
+    slug: Option<String>,
     weight: Option<String>,
     parent_id: Option<String>,
 }
@@ -478,11 +480,32 @@ async fn add_tag_submit(
         return render_not_found();
     };
 
+    // Normalize slug: empty string → None, otherwise validate.
+    let slug = form
+        .slug
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
     // Validate
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
         errors.push("Name is required.".to_string());
+    }
+
+    if let Some(ref s) = slug
+        && !is_valid_slug(s)
+    {
+        errors.push(SLUG_FORMAT_ERROR.to_string());
+    }
+
+    // Check for duplicate slug within this category.
+    if errors.is_empty()
+        && let Some(ref s) = slug
+        && let Ok(Some(_)) = crate::models::Tag::find_by_slug(state.db(), &category_id, s).await
+    {
+        errors.push("A tag with this slug already exists in this category.".to_string());
     }
 
     if !errors.is_empty() {
@@ -510,6 +533,7 @@ async fn add_tag_submit(
             &serde_json::json!({
                 "label": form.label,
                 "description": form.description,
+                "slug": form.slug,
                 "weight": form.weight,
                 "parent_id": form.parent_id,
             }),
@@ -534,7 +558,7 @@ async fn add_tag_submit(
         category_id: category_id.clone(),
         label: form.label.clone(),
         description: form.description.clone(),
-        slug: None,
+        slug,
         weight: form.weight.as_ref().and_then(|s| s.parse().ok()),
         parent_ids,
     };
@@ -611,6 +635,7 @@ async fn edit_tag_form(
         &serde_json::json!({
             "label": tag.label,
             "description": tag.description,
+            "slug": tag.slug,
             "weight": tag.weight,
             "parent_id": current_parent_id,
         }),
@@ -652,11 +677,29 @@ async fn edit_tag_submit(
         return render_error("Category not found.");
     };
 
+    // For update: empty string signals "clear the slug" to Tag::update,
+    // None means "keep current value". Non-empty values are validated.
+    let slug_value = form.slug.as_deref().unwrap_or("");
+
     // Validate
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
         errors.push("Name is required.".to_string());
+    }
+
+    if !slug_value.is_empty() && !is_valid_slug(slug_value) {
+        errors.push(SLUG_FORMAT_ERROR.to_string());
+    }
+
+    // Check for duplicate slug within the same category (excluding this tag).
+    if errors.is_empty()
+        && !slug_value.is_empty()
+        && let Ok(Some(existing)) =
+            crate::models::Tag::find_by_slug(state.db(), &tag.category_id, slug_value).await
+        && existing.id != tag_id
+    {
+        errors.push("A tag with this slug already exists in this category.".to_string());
     }
 
     if !errors.is_empty() {
@@ -686,6 +729,7 @@ async fn edit_tag_submit(
             &serde_json::json!({
                 "label": form.label,
                 "description": form.description,
+                "slug": form.slug,
                 "weight": form.weight,
                 "parent_id": form.parent_id,
             }),
@@ -695,11 +739,11 @@ async fn edit_tag_submit(
         return render_admin_template(&state, "admin/tag-form.html", context).await;
     }
 
-    // Update tag
+    // Update tag — None keeps current slug, Some("") clears it, Some(value) sets it.
     let input = UpdateTag {
         label: Some(form.label.clone()),
         description: form.description.clone(),
-        slug: None,
+        slug: form.slug.clone(),
         weight: form.weight.as_ref().and_then(|s| s.parse().ok()),
     };
 

@@ -32,6 +32,15 @@
             <textarea id="description" name="description" class="form-textarea" rows="3">{{ values.description | default(value='') }}</textarea>
         </div>
 
+        <div class="form-item">
+            <label for="slug" class="form-item__label">URL slug</label>
+            <input type="text" id="slug" name="slug" class="form-text form-text--narrow"
+                   value="{{ values.slug | default(value='') }}"
+                   pattern="[a-z0-9][a-z0-9\-]*"
+                   maxlength="128">
+            <p class="form-item__description">Lowercase letters, digits, and hyphens (e.g. "rust", "ai-data"). Used in URL aliases. Leave empty if not needed.</p>
+        </div>
+
         {% if category.hierarchy > 0 %}
         <div class="form-item">
             <label for="parent_id" class="form-item__label">Parent tag</label>
@@ -47,9 +56,8 @@
 
         <div class="form-item">
             <label for="weight" class="form-item__label">Weight</label>
-            <input type="number" id="weight" name="weight" class="form-text"
-                   value="{{ values.weight | default(value='0') }}"
-                   style="max-width: 100px;">
+            <input type="number" id="weight" name="weight" class="form-text form-text--compact"
+                   value="{{ values.weight | default(value='0') }}">
             <p class="form-item__description">Lower weights appear first in listings.</p>
         </div>
 
@@ -68,6 +76,12 @@
     }
     .breadcrumb a {
         color: var(--primary);
+    }
+    .form-text--narrow {
+        max-width: 300px;
+    }
+    .form-text--compact {
+        max-width: 100px;
     }
 </style>
 {% endblock %}

@@ -1,8 +1,8 @@
 //! Generic gather route aliases.
 //!
 //! Builds dynamic routes from gather query display configs at startup. Each
-//! Each route entry in a query's `display.routes` array creates an HTTP route
-//! that redirects to the corresponding gather URL with mapped query parameters.
+//! route entry in a query's `display.routes` array creates an HTTP route that
+//! redirects to the corresponding gather URL with mapped query parameters.
 //!
 //! Two parameter mapping modes:
 //! - **Pass-through:** path segment value is passed directly as a query param.
@@ -12,7 +12,7 @@
 //! This replaces the former `ritrovo_topics.rs` module, which hard-coded
 //! routes for `/topics/{slug}` and `/location/{country}[/{city}]`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::{
@@ -25,6 +25,7 @@ use axum::{
 
 use crate::gather::types::{GatherQuery, GatherRouteParam};
 use crate::models::Tag;
+use crate::routes::helpers::is_valid_slug;
 use crate::state::AppState;
 
 /// Configuration for a single registered gather route.
@@ -42,6 +43,7 @@ struct RouteConfig {
 /// Each route is registered with a handler that captures its configuration.
 pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
     let mut router = Router::new();
+    let mut registered_paths: HashSet<String> = HashSet::new();
 
     for query in queries {
         for route in &query.display.routes {
@@ -56,6 +58,16 @@ pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
                     query_id = %query.query_id,
                     path = %route.path,
                     "skipping gather route with invalid path"
+                );
+                continue;
+            }
+
+            // Guard against duplicate paths — axum panics on route conflicts.
+            if !registered_paths.insert(route.path.clone()) {
+                tracing::warn!(
+                    query_id = %query.query_id,
+                    path = %route.path,
+                    "skipping duplicate gather route path"
                 );
                 continue;
             }
@@ -105,12 +117,7 @@ async fn handle_gather_route(
 
         if let Some(ref category_id) = mapping.tag_category {
             // Tag slug lookup: validate slug format, then resolve to UUID.
-            if raw_value.is_empty()
-                || raw_value.len() > 128
-                || !raw_value
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            {
+            if !is_valid_slug(raw_value) {
                 return StatusCode::NOT_FOUND.into_response();
             }
 
@@ -122,12 +129,18 @@ async fn handle_gather_route(
                 Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             }
         } else {
-            // Pass-through: URL-encode and pass directly.
+            // Pass-through: forward the raw value as a query parameter.
+            // Safety: the value is URL-encoded when assembling the redirect URL
+            // below, the gather engine uses parameterized SQL queries (never
+            // format!), and Tera auto-escapes HTML output. No additional
+            // validation is applied here because legitimate values (e.g. city
+            // names with spaces, accents, or apostrophes) must pass through.
             gather_params.push((mapping.param.clone(), raw_value.clone()));
         }
     }
 
-    // Build the redirect URL.
+    // Build the redirect URL. The query_id is validated on insert (must match
+    // `is_valid_machine_name`), so it is safe to interpolate into the path.
     let mut url = format!("/gather/{}", config.query_id);
     let mut first = true;
 

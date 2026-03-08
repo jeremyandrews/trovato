@@ -241,6 +241,8 @@ impl Tag {
     }
 
     /// Find a tag by slug within a category.
+    ///
+    /// Uses the partial unique index `idx_category_tag_category_slug` for lookups.
     pub async fn find_by_slug(
         pool: &PgPool,
         category_id: &str,
@@ -430,7 +432,12 @@ impl Tag {
 
         let label = input.label.unwrap_or(current.label);
         let description = input.description.or(current.description);
-        let slug = input.slug.or(current.slug);
+        // Empty string clears the slug; None keeps the current value.
+        let slug = match input.slug {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => current.slug,
+        };
         let weight = input.weight.unwrap_or(current.weight);
 
         sqlx::query(
@@ -554,7 +561,7 @@ impl Tag {
                 INNER JOIN ancestors a ON h.tag_id = a.id
                 WHERE h.parent_id IS NOT NULL
             )
-            SELECT DISTINCT id, category_id, label, description, weight, created, changed, depth
+            SELECT DISTINCT id, category_id, label, description, slug, weight, created, changed, depth
             FROM ancestors
             ORDER BY depth DESC
             "#,
@@ -614,7 +621,7 @@ impl Tag {
                 INNER JOIN category_tag_hierarchy h ON t.id = h.tag_id
                 INNER JOIN descendants d ON h.parent_id = d.id
             )
-            SELECT DISTINCT id, category_id, label, description, weight, created, changed, depth
+            SELECT DISTINCT id, category_id, label, description, slug, weight, created, changed, depth
             FROM descendants
             ORDER BY depth, weight, label
             "#,
@@ -900,5 +907,35 @@ mod tests {
 
         assert_eq!(input.category_id, "topics");
         assert_eq!(input.parent_ids.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn update_tag_slug_semantics() {
+        // Some(non-empty) → sets the slug
+        let input = UpdateTag {
+            label: None,
+            description: None,
+            slug: Some("new-slug".to_string()),
+            weight: None,
+        };
+        assert_eq!(input.slug, Some("new-slug".to_string()));
+
+        // Some("") → signal to clear the slug (handled in Tag::update)
+        let clear = UpdateTag {
+            label: None,
+            description: None,
+            slug: Some(String::new()),
+            weight: None,
+        };
+        assert_eq!(clear.slug, Some(String::new()));
+
+        // None → keep current value (handled in Tag::update)
+        let keep = UpdateTag {
+            label: None,
+            description: None,
+            slug: None,
+            weight: None,
+        };
+        assert!(keep.slug.is_none());
     }
 }
