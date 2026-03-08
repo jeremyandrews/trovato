@@ -1,0 +1,117 @@
+{% extends "gather/query.html" %}
+
+{% block query_content %}
+<div class="conf-list">
+    {% for row in rows %}
+    <article class="conf-card">
+        <h3 class="conf-card__title">
+            <a href="/item/{{ row.id }}">{{ row.title }}</a>
+        </h3>
+
+        <div class="conf-card__meta">
+            {% if row.fields.field_start_date %}
+            <span class="conf-card__dates">
+                {{ row.fields.field_start_date }}{% if row.fields.field_end_date %} &ndash; {{ row.fields.field_end_date }}{% endif %}
+            </span>
+            {% endif %}
+            {% if row.fields.field_city %}
+            <span class="conf-card__location">
+                {{ row.fields.field_city }}{% if row.fields.field_country %}, {{ row.fields.field_country }}{% endif %}
+            </span>
+            {% endif %}
+            {% if row.fields.field_online is defined and row.fields.field_online == "1" and not row.fields.field_city %}
+            <span class="conf-card__location">Online</span>
+            {% endif %}
+        </div>
+
+        {% if row.fields.field_description %}
+        <p class="conf-card__desc">{{ row.fields.field_description }}</p>
+        {% endif %}
+
+        <div class="conf-card__actions">
+            <a href="/item/{{ row.id }}" class="conf-card__more">View details &rarr;</a>
+            {% if row.fields.field_url %}
+            <a href="{{ row.fields.field_url }}" class="conf-card__website" target="_blank" rel="noopener noreferrer">Website &nearr;</a>
+            {% endif %}
+        </div>
+    </article>
+    {% endfor %}
+</div>
+
+{% if not rows %}
+<p class="gather-empty">No conferences found.</p>
+{% endif %}
+
+<style>
+    .conf-list {
+        display: grid;
+        gap: 1.25rem;
+    }
+
+    .conf-card {
+        padding: 1.25rem 1.5rem;
+        border: 1px solid var(--gray-200);
+        border-radius: 0.5rem;
+        background: var(--white, #fff);
+    }
+
+    .conf-card__title {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.125rem;
+    }
+
+    .conf-card__title a {
+        text-decoration: none;
+    }
+
+    .conf-card__title a:hover {
+        text-decoration: underline;
+    }
+
+    .conf-card__meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 1.25rem;
+        font-size: 0.875rem;
+        color: var(--gray-600);
+        margin-bottom: 0.75rem;
+    }
+
+    .conf-card__dates {
+        font-weight: 500;
+    }
+
+    .conf-card__desc {
+        margin: 0 0 0.75rem 0;
+        color: var(--gray-700);
+        font-size: 0.9375rem;
+        line-height: 1.5;
+    }
+
+    .conf-card__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 1rem;
+        font-size: 0.875rem;
+        align-items: center;
+    }
+
+    .conf-card__more {
+        font-weight: 500;
+        text-decoration: none;
+    }
+
+    .conf-card__more:hover {
+        text-decoration: underline;
+    }
+
+    .conf-card__website {
+        color: var(--gray-500);
+        text-decoration: none;
+    }
+
+    .conf-card__website:hover {
+        text-decoration: underline;
+    }
+</style>
+{% endblock %}
