@@ -983,4 +983,8 @@ With the taxonomy, gather queries, browse routes, and filter widgets in place, R
 - Find open CFPs at `/cfps`
 - Filter by country at `/location/Germany` and by city at `/location/Germany/Berlin`
 
+[<img src="images/2.1-conferences-listing.png" width="600" alt="Figure 2.1: Upcoming Conferences with exposed filter bar">](images/2.1-conferences-listing.png)
+
+[<img src="images/2.2-conferences-filtered.png" width="600" alt="Figure 2.2: Conferences filtered by Security topic, non-online, English language">](images/2.2-conferences-filtered.png)
+
 The gather engine handles filtering, pagination, widget data loading, and rendering. The query definitions, taxonomy, and URL aliases are all managed as configuration — the plugin's only job is discovering taxonomy UUIDs and importing conference data from the external API.
