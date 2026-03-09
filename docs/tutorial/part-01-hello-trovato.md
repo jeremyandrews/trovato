@@ -101,7 +101,6 @@ Open `http://localhost:3000` in your browser. You will be redirected to the web 
 4. **Complete** -- links to the site and admin dashboard.
 
 [<img src="images/1.1-installer-welcome.png" width="400" alt="Figure 1.1: Installer Welcome — requirements check">](images/1.1-installer-welcome.png)
-[<img src="images/1.2-installer-create-admin.png" width="400" alt="Figure 1.2: Create Admin Account form">](images/1.2-installer-create-admin.png)
 
 ### Verify the Health Check
 
@@ -510,7 +509,7 @@ Visit `http://localhost:3000/conferences` in your browser. You should see three 
 
 Click a title through to confirm the detail page renders correctly before moving on to Step 5.
 
-[<img src="images/1.3-conferences-listing.png" width="600" alt="Figure 1.3: Upcoming Conferences listing at /conferences">](images/1.3-conferences-listing.png)
+[<img src="images/1.2-conferences-listing.png" width="600" alt="Figure 1.2: Upcoming Conferences listing at /conferences">](images/1.2-conferences-listing.png)
 
 The Gather is also available as JSON via the REST API:
 
