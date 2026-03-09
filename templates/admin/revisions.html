@@ -1,0 +1,46 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Revisions: {{ item_title }}</h2>
+    <a href="/item/{{ item_id }}" class="button">View item</a>
+</div>
+
+<div class="admin-card">
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Title</th>
+                <th>Log message</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for rev in revisions %}
+            <tr>
+                <td>
+                    {{ rev.date }}
+                    {% if rev.is_current %}<span class="badge badge--success">current</span>{% endif %}
+                </td>
+                <td>{{ rev.title }}</td>
+                <td>{{ rev.log | default(value="-") }}</td>
+                <td>
+                    {% if not rev.is_current %}
+                    <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" style="display:inline">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="button button--small">Revert</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not revisions %}
+            <tr>
+                <td colspan="4">No revisions found.</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

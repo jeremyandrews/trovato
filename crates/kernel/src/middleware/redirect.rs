@@ -30,6 +30,8 @@ pub async fn check_redirect(
     if path.starts_with("/admin")
         || path.starts_with("/api")
         || path.starts_with("/static")
+        || path.starts_with("/files")
+        || path.starts_with("/file")
         || path.starts_with("/install")
         || path.starts_with("/oauth")
         || path == "/health"

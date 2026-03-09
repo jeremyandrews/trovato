@@ -107,6 +107,17 @@ impl Tile {
         Ok(tile)
     }
 
+    /// Find a tile by machine name.
+    pub async fn find_by_machine_name(pool: &PgPool, machine_name: &str) -> Result<Option<Self>> {
+        let tile = sqlx::query_as::<_, Tile>("SELECT * FROM tile WHERE machine_name = $1")
+            .bind(machine_name)
+            .fetch_optional(pool)
+            .await
+            .context("failed to fetch tile by machine_name")?;
+
+        Ok(tile)
+    }
+
     /// List all tiles, ordered by region then weight.
     pub async fn list_all(pool: &PgPool) -> Result<Vec<Self>> {
         let tiles = sqlx::query_as::<_, Tile>(

@@ -6,7 +6,7 @@ use axum::{
     Extension, Form, Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Redirect},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -394,6 +394,101 @@ async fn view_item(
         children_html.push_str(&output);
     }
 
+    // Resolve forward RecordReference fields to linked item titles/URLs
+    let mut referenced_items: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    if let Some(ct) = state.content_types().get(&item.item_type) {
+        for field_def in &ct.fields {
+            if matches!(
+                field_def.field_type,
+                trovato_sdk::types::FieldType::RecordReference(_)
+            ) && let Some(val) = item.fields.get(&field_def.field_name)
+            {
+                let ids: Vec<&str> = if let Some(s) = val.as_str() {
+                    vec![s]
+                } else if let Some(arr) = val.as_array() {
+                    arr.iter().filter_map(|v| v.as_str()).collect()
+                } else {
+                    vec![]
+                };
+                let mut refs = Vec::new();
+                for id_str in ids {
+                    if let Ok(ref_id) = id_str.parse::<Uuid>()
+                        && let Ok(Some(ref_item)) = state.items().load(ref_id).await
+                    {
+                        refs.push(serde_json::json!({
+                            "id": ref_item.id,
+                            "title": ref_item.title,
+                            "type": ref_item.item_type,
+                        }));
+                    }
+                }
+                if !refs.is_empty() {
+                    referenced_items.insert(field_def.field_name.clone(), refs);
+                }
+            }
+        }
+    }
+
+    // Resolve reverse references: items of other types that reference this item.
+    //
+    // NOTE: This scans up to 50 items per content type with RecordReference fields.
+    // Acceptable for tutorial-sized datasets but would need a JSONB containment query
+    // (e.g., `fields @> '{"field_conferences": ["<uuid>"]}'`) for production scale.
+    let mut reverse_references: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    let id_str = item.id.to_string();
+    for ct in state.content_types().list_all().await {
+        // Skip content types with no RecordReference fields
+        let has_ref_field = ct.fields.iter().any(|f| {
+            matches!(
+                f.field_type,
+                trovato_sdk::types::FieldType::RecordReference(_)
+            )
+        });
+        if !has_ref_field {
+            continue;
+        }
+        if let Ok((items_found, _)) = state
+            .items()
+            .list_filtered(Some(&ct.machine_name), None, None, 50, 0)
+            .await
+        {
+            for found_item in items_found {
+                for field_def in &ct.fields {
+                    if !matches!(
+                        field_def.field_type,
+                        trovato_sdk::types::FieldType::RecordReference(_)
+                    ) {
+                        continue;
+                    }
+                    let references_us =
+                        if let Some(val) = found_item.fields.get(&field_def.field_name) {
+                            if let Some(s) = val.as_str() {
+                                s == id_str
+                            } else if let Some(arr) = val.as_array() {
+                                arr.iter().any(|v| v.as_str() == Some(id_str.as_str()))
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                    if references_us {
+                        reverse_references
+                            .entry(ct.machine_name.clone())
+                            .or_default()
+                            .push(serde_json::json!({
+                                "id": found_item.id,
+                                "title": found_item.title,
+                                "type": found_item.item_type,
+                            }));
+                    }
+                }
+            }
+        }
+    }
+
     // Resolve item template via theme engine
     let suggestions = [
         format!("elements/item--{}--{}", item.item_type, item.id),
@@ -406,9 +501,26 @@ async fn view_item(
         .resolve_template(&suggestion_refs)
         .unwrap_or_else(|| "elements/item.html".to_string());
 
+    // Build safe_urls map: only http/https URLs from item fields, keyed by field name.
+    // Prevents javascript: URI injection in template href attributes where Tera
+    // autoescape does not protect (it escapes HTML entities, not URI schemes).
+    let mut safe_urls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Some(fields) = item.fields.as_object() {
+        for (key, val) in fields {
+            if let Some(url) = val.as_str()
+                && (url.starts_with("http://") || url.starts_with("https://"))
+            {
+                safe_urls.insert(key.clone(), url.to_string());
+            }
+        }
+    }
+
     let mut context = tera::Context::new();
     context.insert("item", &item);
     context.insert("children", &children_html);
+    context.insert("referenced_items", &referenced_items);
+    context.insert("reverse_references", &reverse_references);
+    context.insert("safe_urls", &safe_urls);
 
     let item_html = state
         .theme()
@@ -422,6 +534,19 @@ async fn view_item(
     // Wrap in page layout with site context
     let item_path = format!("/item/{id}");
     super::helpers::inject_site_context(&state, &session, &mut context, &item_path).await;
+
+    // Build breadcrumbs: Home > Content Type Label > Item Title
+    let type_label = state
+        .content_types()
+        .get(&item.item_type)
+        .map(|ct| ct.label.clone())
+        .unwrap_or_else(|| item.item_type.clone());
+    let breadcrumbs = vec![
+        serde_json::json!({"path": "/", "title": "Home"}),
+        serde_json::json!({"path": null, "title": type_label}),
+        serde_json::json!({"path": null, "title": item.title}),
+    ];
+    context.insert("breadcrumbs", &breadcrumbs);
 
     let page_html = state
         .theme()
@@ -858,100 +983,61 @@ async fn delete_item(
 }
 
 /// List revision history for an item.
+///
+/// Requires authentication — revision history may contain draft titles and
+/// internal log messages not intended for anonymous visitors.
 async fn list_revisions(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
-) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
-    let _user = get_user_context(&session, &state).await;
+) -> Response {
+    if let Err(redirect) = super::helpers::require_login(&state, &session).await {
+        return redirect;
+    }
 
-    // Load item
     let item = match state.items().load(id).await {
         Ok(Some(i)) => i,
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "Item not found".to_string(),
-                }),
-            ));
-        }
+        Ok(None) => return super::helpers::render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to load item");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            ));
+            return super::helpers::render_server_error("Failed to load item");
         }
     };
 
-    // Get revisions
-    let revisions = state.items().get_revisions(id).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to get revisions");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
+    let revisions = match state.items().get_revisions(id).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to get revisions");
+            return super::helpers::render_server_error("Failed to load revisions");
+        }
+    };
 
-    // Build HTML
-    let mut html = String::new();
-    html.push_str("<!DOCTYPE html><html><head>");
-    html.push_str(&format!(
-        "<title>Revisions: {}</title>",
-        html_escape(&item.title)
-    ));
-    html.push_str("<style>body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; } table { width: 100%; border-collapse: collapse; } th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; } .btn { padding: 5px 10px; background: #007bff; color: white; text-decoration: none; border-radius: 3px; }</style>");
-    html.push_str("</head><body>");
-
-    html.push_str(&format!("<h1>Revisions: {}</h1>", html_escape(&item.title)));
-    html.push_str(&format!(
-        r#"<p><a href="/item/{id}">← Back to item</a></p>"#
-    ));
-
-    // Generate CSRF token for revert forms
     let csrf_token = generate_csrf_token(&session).await;
 
-    html.push_str("<table><thead><tr><th>Date</th><th>Title</th><th>Log</th><th>Actions</th></tr></thead><tbody>");
+    // Build revision data for template
+    let rev_data: Vec<serde_json::Value> = revisions
+        .iter()
+        .map(|rev| {
+            let date = chrono::DateTime::from_timestamp(rev.created, 0)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            serde_json::json!({
+                "id": rev.id,
+                "date": date,
+                "title": rev.title,
+                "log": rev.log,
+                "is_current": Some(rev.id) == item.current_revision_id,
+            })
+        })
+        .collect();
 
-    for rev in revisions {
-        let date = chrono::DateTime::from_timestamp(rev.created, 0)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-        let current = if Some(rev.id) == item.current_revision_id {
-            " (current)"
-        } else {
-            ""
-        };
-        let log = rev.log.as_deref().unwrap_or("-");
-        let revert_btn = if Some(rev.id) != item.current_revision_id {
-            format!(
-                r#"<form method="post" action="/item/{}/revert/{}" style="display:inline"><input type="hidden" name="_token" value="{}"><button type="submit" class="btn">Revert</button></form>"#,
-                id,
-                rev.id,
-                html_escape(&csrf_token)
-            )
-        } else {
-            String::new()
-        };
+    let mut context = tera::Context::new();
+    context.insert("item_id", &id);
+    context.insert("item_title", &item.title);
+    context.insert("revisions", &rev_data);
+    context.insert("csrf_token", &csrf_token);
 
-        html.push_str(&format!(
-            "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            date,
-            current,
-            html_escape(&rev.title),
-            html_escape(log),
-            revert_btn
-        ));
-    }
-
-    html.push_str("</tbody></table></body></html>");
-
-    Ok(Html(html))
+    super::helpers::render_admin_template(&state, "admin/revisions.html", context).await
 }
 
 /// Revert to a previous revision.

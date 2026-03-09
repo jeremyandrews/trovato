@@ -1,4 +1,4 @@
-# generated: 2026-02-13
+# generated: 2026-03-08
 # project: trovato
 # project_key: NOKEY
 # tracking_system: file-system
@@ -11,11 +11,15 @@
 #   - in-progress: Epic actively being worked on
 #   - done: All stories in epic completed
 #
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
 # Story Status:
 #   - backlog: Story only exists in epic file
 #   - ready-for-dev: Story file created in stories folder
 #   - in-progress: Developer actively working on implementation
-#   - review: Ready for code review
+#   - review: Ready for code review (via Dev's code-review workflow)
 #   - done: Story completed
 #
 # Retrospective Status:
@@ -28,478 +32,89 @@
 # - Stories can be worked in parallel if team capacity allows
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+#
+# SOURCE: _bmad-output/planning-artifacts/epics-ritrovo-parts-03-04.md
+# SCOPE: Ritrovo Tutorial Parts 3 (Look & Feel) and Part 4 (The Editorial Engine)
 
-generated: 2026-02-13
+generated: 2026-03-08
 project: trovato
 project_key: NOKEY
 tracking_system: file-system
 story_location: _bmad-output/implementation-artifacts
 
 development_status:
-  # Epic 1: Platform Architecture Validation (Phase 0) - COMPLETE
-  epic-1: done
-  1-1-benchmark-host-binary-setup: done
-  1-2-test-plugin-for-benchmarking: done
-  1-3-handle-based-vs-full-serialization-benchmark: done
-  1-4-store-pooling-concurrency-benchmark: done
-  1-5-async-host-function-validation: done
-  1-6-architecture-recommendation-document: done
-  epic-1-retrospective: done
-
-  # Epic 2: User Authentication & Access Control (Phase 1) - COMPLETE
-  epic-2: done
-  2-1-axum-server-with-database-connections: done
-  2-2-user-table-and-crud-operations: done
-  2-3-user-login-with-session: done
-  2-4-user-logout: done
-  2-5-session-with-stage-tracking: done
-  2-6-role-and-permission-system: done
-  2-7-password-reset-flow: done
-  2-8-account-lockout-after-failed-attempts: done
-  2-9-health-check-endpoint: done
-  2-10-remember-me-functionality: done
-  epic-2-retrospective: done
-
-  # Epic 3: Plugin Development Platform (Phase 2) - COMPLETE
-  epic-3: done
-  3-1-plugin-sdk-crate-structure: done
-  3-2-plugin-tap-proc-macro: done
-  3-3-wit-interface-definition: done
-  3-4-plugin-info-manifest-parser: done
-  3-5-wasm-plugin-loader: done
-  3-6-plugin-dependency-resolution: done
-  3-7-tap-registry: done
-  3-8-requeststate-and-lazy-plugin-instantiation: done
-  3-9-host-function-item-api: done
-  3-10-host-function-database-api: done
-  3-11-host-function-user-api: done
-  3-12-host-function-cache-api: done
-  3-13-host-function-variables-and-request-context: done
-  3-14-host-function-logging: done
-  3-15-tap-dispatcher: done
-  3-16-menu-registry: done
-  3-17-reference-blog-plugin: done
-  3-18-plugin-error-messages-dx: done
-  epic-3-retrospective: done
-
-  # Epic 4: Content Modeling & Basic CRUD (Phase 3) - COMPLETE
-  epic-4: done
-  4-1-item-type-table-and-schema: done
-  4-2-item-table-with-jsonb-fields: done
-  4-3-content-type-definition-via-code: done
-  4-4-create-item: done
-  4-5-load-item: done
-  4-6-update-item: done
-  4-7-delete-item: done
-  4-8-revision-history-view: done
-  4-9-revert-to-previous-revision: done
-  4-10-text-format-filter-pipeline: done
-  4-11-auto-generated-admin-forms: done
-  epic-4-retrospective: done
-
-  # Epic 5: Content Access Control (Phase 3) - COMPLETE
-  epic-5: done
-  5-1-item-access-tap-interface: done
-  5-2-access-result-aggregation: done
-  5-3-edit-own-content-pattern: done
-  5-4-unpublished-content-visibility: done
-  5-5-access-denied-page: done
-  5-6-profiling-middleware: done
-  5-7-queue-api-trait-design: done
-  epic-5-retrospective: done
-
-  # Epic 6: Content Staging Workflow (Phase 3) - COMPLETE
-  epic-6: done
-  6-1-stage-table-schema: done
-  6-2-stage-association-table: done
-  6-3-stage-deletion-tracking: done
-  6-4-create-stage: done
-  6-5-stage-aware-item-loading: done
-  6-6-edit-item-in-stage: done
-  6-7-publish-stage: done
-  6-8-publish-conflict-detection: done
-  6-9-publish-ui-feedback: done
-  epic-6-retrospective: done
-
-  # Epic 7: Dynamic Content Listings - Gather (Phase 4) - COMPLETE
-  epic-7: done
-  7-1-view-definition-types: done
-  7-2-seaquery-view-builder: done
-  7-3-filter-operators: done
-  7-4-jsonb-field-queries: done
-  7-5-stage-aware-gather-queries: done
-  7-6-exposed-filters-from-url: done
-  7-7-pager-support: done
-  7-8-execute-gather-and-return-results: done
-  epic-7-retrospective: done
-
-  # Epic 8: Content Categorization (Phase 4) - COMPLETE
-  epic-8: done
-  8-1-category-vocabulary-table: done
-  8-2-category-term-table-with-hierarchy: done
-  8-3-vocabulary-admin-ui: done
-  8-4-term-admin-ui: done
-  8-5-recursive-cte-for-hierarchy-queries: done
-  8-6-category-field-type: done
-  8-7-breadcrumb-generation: done
-  8-8-category-filter-in-gather: done
-  8-9-inter-plugin-communication: done
-  epic-8-retrospective: done
-
-  # Epic 9: Form API (Phase 5) - COMPLETE
-  epic-9: done
-  9-1-form-definition-types: done
-  9-2-form-rendering-to-html: done
-  9-3-form-validation-pipeline: done
-  9-4-form-submission-pipeline: done
-  9-5-tap-form-alter-support: done
-  9-6-csrf-token-protection: done
-  9-7-form-state-cache: done
-  9-8-ajax-form-operations: done
-  9-9-inline-validation-ux: done
-  9-10-exposed-filter-forms-in-gather: done
-  epic-9-retrospective: done
-
-  # Epic 10: Themed Content Presentation (Phase 5) - COMPLETE
-  epic-10: done
-  10-1-tera-template-engine-setup: done
-  10-2-template-suggestions: done
-  10-3-preprocess-taps: done
-  10-4-renderelement-to-html-conversion: done
-  10-5-text-format-rendering: done
-  10-6-base-page-template: done
-  epic-10-retrospective: done
-
-  # Epic 11: File & Media Management (Phase 6) - COMPLETE
-  epic-11: done
-  11-1-file-managed-table: done
-  11-2-file-storage-trait: done
-  11-3-file-upload-endpoint: done
-  11-4-inline-drag-and-drop-upload: done
-  11-5-file-reference-tracking: done
-  11-6-temporary-file-cleanup: done
-  11-7-s3-storage-backend: backlog  # Deferred - LocalFileStorage sufficient for MVP
-  epic-11-retrospective: done
-
-  # Epic 12: Content Search (Phase 6) - COMPLETE
-  epic-12: done
-  12-1-search-vector-column: done
-  12-2-search-field-configuration: done
-  12-3-search-index-trigger: done
-  12-4-search-query-endpoint: done
-  12-5-search-own-drafts: done
-  12-6-search-results-display: done
-  epic-12-retrospective: done
-
-  # Epic 13: Scheduled Operations & Background Tasks (Phase 6) - COMPLETE
-  epic-13: done
-  13-1-cron-endpoint: done
-  13-2-distributed-lock-for-cron: done
-  13-3-lock-heartbeat: done
-  13-4-queue-implementation: done
-  13-5-queue-worker: done
-  13-6-plugin-cron-tap: done
-  13-7-batch-api-design: done
-  epic-13-retrospective: done
-
-  # Epic 14: Production Readiness (Phase 6) - COMPLETE
-  epic-14: done
-  14-1-rate-limiting-middleware: done
-  14-2-rate-limit-configuration: done
-  14-3-prometheus-metrics-endpoint: done
-  14-4-metrics-access-control: done
-  14-5-load-testing-setup: backlog  # Deferred - infrastructure ready, tests not written
-  14-6-performance-baseline-documentation: backlog  # Deferred
-  epic-14-retrospective: done
-
   # ═══════════════════════════════════════════════════════════
-  # Phase 7: Testing & Exposure
+  # Part 3: Look & Feel
   # ═══════════════════════════════════════════════════════════
 
-  # Epic 15: Drupal 6 Alignment Audit (parallel research)
-  # Scope: D6 + CCK + Views alignment, plus Workspaces→Stages, Gander→Profiling
-  epic-15: done
-  15-1-core-concept-mapping: done               # 2026-02-17 docs/alignment/drupal6-mapping.md
-  15-2-intentional-divergence-documentation: done  # 2026-02-17 docs/alignment/intentional-divergences.md
-  15-3-gap-analysis-and-prioritization: done     # 2026-02-17 docs/alignment/gap-analysis.md
-  15-4-alignment-roadmap: done                   # 2026-02-17 docs/alignment/roadmap.md
-  15-5-path-alias-system: done  # URL aliases for human-readable URLs
-  epic-15-retrospective: optional
+  # Epic 1: Site Presentation & Media (FR1-FR7; NFR1-NFR3)
+  epic-1: in-progress
+  1-1-conference-detail-template-via-render-tree: ready-for-dev
+  1-2-cfp-gather-template: ready-for-dev
+  1-3-file-upload-on-item-forms: ready-for-dev
+  1-4-file-lifecycle-management: ready-for-dev
+  epic-1-retrospective: optional
 
-  # Epic 16: Admin Interface Completion - COMPLETE
-  epic-16: done
-  16-1-user-list-and-search: done
-  16-2-user-create-and-edit: done
-  16-3-user-delete-with-safety: done
-  16-4-role-management: done
-  16-5-permission-matrix: done
-  16-6-content-list-with-filters: done
-  16-7-content-quick-edit-actions: done
-  16-8-category-management-ui: done
-  16-9-file-management-ui: done
-  16-10-admin-dashboard-enhancement: done
-  epic-16-retrospective: optional
+  # Epic 2: Speaker Profiles & Relationships (FR8-FR10)
+  epic-2: in-progress
+  2-1-speaker-content-type-definition: ready-for-dev
+  2-2-recordreference-rendering-on-detail-pages: ready-for-dev
+  2-3-speaker-pathauto-url-aliases: ready-for-dev
+  epic-2-retrospective: optional
 
-  # Epic 17: Installer & Setup Experience (Phase 8) - COMPLETE
-  epic-17: done
-  17-1-installation-detection: done  # Middleware redirects to /install when not installed
-  17-2-database-configuration-step: done  # Requirements check at /install/welcome (DB configured via env)
-  17-3-admin-account-creation: done  # /install/admin creates first admin user
-  17-4-site-configuration: done  # /install/site configures site name, slogan, email
-  17-5-installation-complete: done  # /install/complete shows success and next steps
-  epic-17-retrospective: optional
+  # Epic 3: Site Layout & Navigation (FR5, FR11-FR17; NFR11)
+  epic-3: in-progress
+  3-1-base-page-layout-with-slot-regions: ready-for-dev
+  3-2-tile-config-import-and-rendering: ready-for-dev
+  3-3-tile-path-based-visibility-rules: ready-for-dev
+  3-4-main-navigation-menu: ready-for-dev
+  3-5-footer-menu: ready-for-dev
+  3-6-active-menu-highlighting-and-breadcrumbs: ready-for-dev
+  epic-3-retrospective: optional
 
-  # Epic 18: Display & Theming Layer - COMPLETE
-  epic-18: done
-  18-1-json-api-content-endpoints: done  # GET /api/item/{id}, /api/items with filters
-  18-2-json-api-for-categories: done     # Already existed: /api/categories, /api/category/*, /api/tag/*
-  18-3-theme-template-system: done       # ThemeEngine with suggestions (item--{type}, page--{path})
-  18-4-page-layout-templates: done       # base.html, page.html, page--admin.html with regions
-  18-5-comment-entity-and-storage: done  # Comment table, model, and full CRUD API
-  18-6-comment-display: done  # templates/elements/comments.html with threaded display
-  18-7-comment-submission: done  # Comment form with reply support in comments.html
-  18-8-comment-moderation: done  # Admin UI at /admin/content/comments with approve/unpublish/delete
-  epic-18-retrospective: optional
-
-  # Epic 19: CI & Test Infrastructure - COMPLETE
-  epic-19: done
-  19-1-github-actions-workflow: done
-  19-2-cargo-fmt-enforcement: done
-  19-3-cargo-clippy-checks: done  # Non-blocking until existing warnings fixed
-  19-4-integration-test-suite: done  # 63 tests exist, CI runs them
-  19-5-test-coverage-tracking: done  # Added cargo-llvm-cov + Codecov
-  19-6-pre-commit-hooks: done
-  19-7-wasm-plugin-test-infrastructure: done  # 30+ plugin tests
-  epic-19-retrospective: optional
+  # Epic 4: Conference Search (FR18-FR21; NFR8)
+  epic-4: in-progress
+  4-1-search-index-field-weight-configuration: ready-for-dev
+  4-2-search-results-page: ready-for-dev
+  4-3-search-json-api: ready-for-dev
+  4-4-search-box-tile: ready-for-dev
+  epic-4-retrospective: optional
 
   # ═══════════════════════════════════════════════════════════
-  # Phase 8: Polish & Onboarding
+  # Part 4: The Editorial Engine
   # ═══════════════════════════════════════════════════════════
 
-  # Epic 20: Use Case Exploration
-  # Validates Trovato against real workloads: traditional site, headless API, and three plugin projects
-  # NOTE: 20.1-20.2 validated kernel features. 20.3-20.5 require plugin infrastructure (Epic 22A)
-  # so that Argus/Netgrasp/Goose are real plugins, not kernel hacks.
-  epic-20: done
-  20-1-traditional-website-use-case: done    # 2026-02-15
-  20-2-headless-cms-use-case: done           # 2026-02-15
-  20-3-argus-composite-gather-responses: done     # 2026-02-17 WASM plugin with composite gather includes
-  20-4-netgrasp-lean-runtime-validation: done      # 2026-02-17 WASM plugin, kernel hacks removed from state.rs
-  20-5-goose-high-throughput-metrics: done         # 2026-02-17 WASM plugin for load testing metrics
-  # Backlog: Goose gather queries + URL aliases (deferred — value is high-throughput writes, not preset queries)
-  epic-20-retrospective: optional
+  # Epic 5: User Accounts & Authentication (FR22-FR24; NFR4-NFR6)
+  epic-5: in-progress
+  5-1-user-registration-and-login: ready-for-dev
+  5-2-session-management-and-fixation-protection: ready-for-dev
+  5-3-user-profile-page: ready-for-dev
+  epic-5-retrospective: optional
 
-  # ═══════════════════════════════════════════════════════════
-  # Phase 9: Advanced Features
-  # ═══════════════════════════════════════════════════════════
+  # Epic 6: Roles & Access Control Plugin (FR25-FR29; NFR7)
+  epic-6: in-progress
+  6-1-role-definitions-and-permission-mapping-via-config-import: ready-for-dev
+  6-2-ritrovo-access-wasm-plugin: ready-for-dev
+  6-3-access-aggregation-and-item-visibility: ready-for-dev
+  6-4-field-level-access-via-render-tree: ready-for-dev
+  epic-6-retrospective: optional
 
-  # Epic 21: Complete Stage Workflow
-  # v1.0: Interface contracts (21.1, 21.2, 21.7) - foundation for post-MVP staging
-  # Post-MVP: Full config staging UI
-  epic-21: done
-  21-1-config-storage-trait: done              # v1.0 REQUIRED - ConfigStorage trait, DirectConfigStorage, 8 tests
-  21-2-config-revision-schema: done            # v1.0 Schema only - scaffolding for post-MVP
-  21-3-stage-aware-content-types-fields: done         # Post-MVP Tier 1
-  21-4-stage-aware-categories: done             # Post-MVP Tier 1
-  21-5-stage-aware-menus-aliases: done         # 2026-02-17 menu_link table, stage-aware alias middleware, publish phase 4
-  21-6-conflict-detection-warn-only: done # Post-MVP - detect and warn, no merge UI
-  21-7-atomic-publish-ordering: done           # v1.0 FRAMEWORK - phase callbacks for publish order
-  21-8-stage-hierarchy-support: done           # 2026-02-17 stage table, hierarchy ancestry, overlay loading
-  epic-21-retrospective: optional
+  # Epic 7: Editorial Workflow & Revisions (FR30-FR41; NFR9-NFR10)
+  epic-7: in-progress
+  7-1-stage-definitions-via-config-import: ready-for-dev
+  7-2-workflow-transition-graph: ready-for-dev
+  7-3-importer-targets-incoming-stage: ready-for-dev
+  7-4-stage-aware-gathers-and-search: ready-for-dev
+  7-5-revision-tracking: ready-for-dev
+  7-6-draft-while-live-and-cross-stage-updates: ready-for-dev
+  7-7-emergency-unpublish: ready-for-dev
+  7-8-extensibility-demo: ready-for-dev
+  epic-7-retrospective: optional
 
-  # Epic 22: Modern CMS Features - "Core Enables, Plugins Implement"
-  # Section A: Kernel Infrastructure (v1.0 REQUIRED) - DO FIRST, unblocks Epic 20.3-20.5
-  # Section B: Standard Plugins (ship with Trovato)
-  # Section C: Multilingual (v1.0 REQUIRED)
-  epic-22: done
-
-  # --- Section A: Kernel Infrastructure (NEXT UP) ---
-  22-1-plugin-migration-system: done             # 2026-02-16 Plugin migrations, status tracking, CLI management
-  22-2-gather-extension-api: done               # 2026-02-16 GatherExtensionRegistry, tap_gather_extend, built-in handlers
-  22-3-compound-field-type: done                 # 2026-02-16 Compound field type with admin widget, validation, sanitization
-  22-4-config-export-import: done                # 2026-02-16 YAML export/import of config entities
-  22-5-language-column-infrastructure: done  # 2026-02-16 language table, column, negotiator trait
-
-  # --- Use Case Plugins (after 22.1 + 22.2) ---
-  # Develop as real WASM plugins here first, then move to their respective project repos.
-  # These validate the plugin infrastructure against real workloads.
-  20-3-argus-plugin: done                        # 2026-02-17 WASM plugin with 7 content types, includes, roles
-  20-4-netgrasp-plugin: done                    # 2026-02-17 WASM plugin with 6 content types, queries, aliases, roles
-  # 20-5-goose-high-throughput-metrics          # Listed above in Epic 20 → eventually lives in Goose repo
-
-  # --- Section B: Standard Plugins ---
-  22-6-media-plugin: done                           # 2026-02-17 WASM plugin + content type
-  22-7-redirects-plugin: done                       # 2026-02-17 WASM plugin + kernel redirect middleware
-  22-8-oauth2-provider-plugin: done                 # 2026-02-17 WASM plugin + kernel OAuth2 service/routes/middleware
-  22-9-image-styles-plugin: done                    # 2026-02-17 WASM plugin + kernel image processing service/routes
-  22-10-scheduled-publishing-plugin: done            # 2026-02-17 WASM plugin + kernel cron handler
-  22-11-webhooks-plugin: done                       # 2026-02-17 WASM plugin + kernel webhook dispatch/delivery
-  22-12-audit-log-plugin: done                      # 2026-02-17 WASM plugin + kernel audit service
-  22-13-content-locking-plugin: done                # 2026-02-17 WASM plugin + kernel lock service/routes
-  22-14-refactor-categories-comments-to-plugins: done  # 2026-02-17 WASM plugins for categories + comments
-
-  # --- Section C: Multilingual ---
-  22-15-content-translation-plugin: done     # 2026-02-17 WASM plugin + kernel translation service
-  22-16-locale-plugin: done                  # 2026-02-17 WASM plugin + kernel locale service + .po parser
-  22-17-config-translation-plugin: done      # 2026-02-17 WASM plugin + kernel config translation wrapper
-
-  epic-22-retrospective: optional
-
-  # Epic 23: Gather UI & Query Consolidation
-  # Admin UI for managing Gather query definitions + migrating hardcoded queries
-  epic-23: done
-  23-1-gather-admin-list-page: done            # 2026-02-17 /admin/gather list with clone/delete
-  23-2-gather-query-builder-ui: done           # 2026-02-17 gather-form.html + gather-builder.js
-  23-3-live-preview-panel: done                # 2026-02-17 AJAX preview with debounce
-  23-4-relationship-editor: done               # 2026-02-17 relationship blocks in builder UI
-  23-5-display-configuration: done             # 2026-02-17 format, items_per_page, pager, empty text
-  23-6-performance-guardrails: done            # 2026-02-17 MAX_ITEMS_PER_PAGE, statement_timeout, join depth
-  23-7-core-content-gather-views: done         # 2026-02-17 4 default content views registered
-  23-8-admin-entity-gather-views: done         # 2026-02-17 5 admin entity views (stage_aware: false)
-  23-9-search-integration: done                # 2026-02-17 FullTextSearch filter operator
-  23-10-include-sub-query-editor: done         # 2026-02-17 includes UI in gather builder
-  epic-23-retrospective: optional
-
-  # Epic 24: Block Editor — Standard Plugin (Editor.js Integration)
-  # Block-based content editing with Editor.js, storing structured JSON in Compound fields
-  epic-24: done
-  24-1-block-type-registry: done               # 2026-02-17 BlockTypeRegistry with 8 standard types
-  24-2-server-side-block-validation: done       # 2026-02-17 ammonia sanitization, type-specific validation
-  24-3-editor-js-field-widget: done            # 2026-02-17 block-editor.js with format mapping
-  24-4-image-upload-endpoint: done             # 2026-02-17 POST /api/block-editor/upload
-  24-5-server-side-block-rendering: done       # 2026-02-17 render_blocks() for 8 block types
-  24-6-code-block-syntax-highlighting: done    # 2026-02-17 syntect integration
-  24-7-embed-block-whitelist-rendering: done   # 2026-02-17 YouTube/Vimeo whitelist, safe fallback
-  24-8-read-only-mode-content-preview: done    # 2026-02-17 POST /api/block-editor/preview
-  24-9-block-editor-documentation: done        # 2026-02-17 docs/block-editor/ (3 files)
-  epic-24-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Phase 10: Code Quality & Standards
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 25: Coding Standards & Enforcement
-  # Define, document, and enforce consistent coding standards with automated tooling
-  epic-25: done
-  25-1-configure-rustfmt: done
-  25-2-configure-clippy-lints: done
-  25-3-define-naming-conventions: done
-  25-4-define-plugin-conventions: done
-  25-5-define-error-handling-standards: done
-  25-6-define-documentation-standards: done
-  25-7-write-coding-standards-document: done
-  25-8-enforce-in-ci: done
-  25-9-pre-commit-hooks: done
-  25-10-retrofit-existing-code: done
-  25-11-ongoing-maintenance-plan: done
-  epic-25-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Phase 11: Kernel Governance
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 26: Kernel Minimality Audit
-  # Audit kernel boundary, extract feature services, establish ongoing governance
-  epic-26: done
-  26-1-audit-and-classify-kernel-subsystems: done
-  26-2-identify-extraction-candidates-with-plans: done
-  26-3-execute-service-extractions: done
-  26-4-resolve-kernel-interface-modifications: done
-  26-5-define-plugin-sdk-versioning-scheme: done
-  26-6-update-claude-md-with-kernel-minimality-rules: done
-  26-7-create-pr-template-with-kernel-justification-checklist: done
-  26-8-create-kernel-line-count-tracking-script: done
-  26-9-document-quarterly-boundary-review-process: done
-  epic-26-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Phase 12: Security
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 27: Security Hardening Review
-  # Deep-dive audit of XSS, SQL injection, CSRF, auth, WASM sandbox, file uploads
-  epic-27: done
-  27-1-xss-audit-and-hardening: done
-  27-2-sql-injection-audit: done
-  27-3-csrf-audit: done
-  27-4-authentication-and-session-security-audit: done
-  27-5-wasm-plugin-sandbox-audit: done
-  27-6-file-upload-security-audit: done
-  27-7-security-regression-tests: done
-  27-8-add-cargo-audit-to-ci: done
-  27-9-update-claude-md-with-security-rules: done
-  epic-27-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Phase 13: User Self-Service & v1.0 Polish
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 28: User Self-Service & v1.0 Polish
-  # Public registration, self-service account management, pathauto, admin tabs, doc updates
-  epic-28: done
-  28-1-public-user-registration: done
-  28-2-user-self-service-account-management: done
-  28-3-automatic-path-alias-generation: done
-  28-4-admin-local-tasks: done
-  28-5-update-alignment-documentation: done
-  epic-28-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Ritrovo: Reference Application, Demo & Tutorial
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 29: Ritrovo Part 1 — Hello, Trovato
-  # Install, define conference type, create content, first Gather
-  epic-29: done
-  29-1-define-conference-item-type: done
-  29-2-admin-ui-manual-conference-creation: done
-  29-3-upcoming-conferences-gather: done
-  epic-29-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Phase 14: AI as a Building Block
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 31: AI as a Building Block
-  # Provider registry, host functions, token budgets, permissions, chatbot, MCP
-  epic-31: done
-  31-1-ai-provider-registry-and-secure-key-store: done
-  31-2-wasm-ai-host-functions: done
-  31-3-token-budget-management: done
-  31-4-ai-permissions: done
-  31-5-chatbot: done
-  31-6-mcp-integration: done
-  epic-31-retrospective: optional
-
-  # Epic 32: Service Layer Integration
-  # Service layers for Comment, User, and Role with tap hooks, caching, and permission cache invalidation
-  epic-32: done
-  32-1-comment-service: done
-  32-2-user-service: done
-  32-3-role-service: done
-  epic-32-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Ritrovo: Reference Application, Demo & Tutorial (Part 2)
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 33: Ritrovo Part 2 — Conference Importer Plugin
-  # WASM plugin scaffold, cron-driven import, topic taxonomy, advanced gathers
-  epic-33: done
-  33-1-plugin-scaffold-sdk-basics: done       # trovato plugin new, tap stubs, manifest
-  33-2-cron-driven-conference-import: done    # HTTP fetch, ETag, queue workers, upsert
-  33-3-hierarchical-topic-taxonomy: done      # topic tree seeded, 26 confs.tech mappings
-  33-4-advanced-gathers: done                 # /conferences + /cfps with exposed filters, 301 redirects
-  epic-33-retrospective: optional
-
-  # ═══════════════════════════════════════════════════════════
-  # Phase 15: Gather UX Enhancements
-  # ═══════════════════════════════════════════════════════════
-
-  # Epic 34: Gather Exposed Filter Widget System
-  # Pluggable widget types: boolean select, taxonomy term select, dynamic dropdown/autocomplete
-  epic-34: backlog
-  34-1-boolean-exposed-filter-widget: ready-for-dev
-  34-2-taxonomy-term-select-widget: ready-for-dev
-  34-3-dynamic-options-widget: ready-for-dev
-  epic-34-retrospective: optional
+  # Epic 8: Admin Content Management (FR42-FR45; NFR12)
+  epic-8: in-progress
+  8-1-admin-content-list-with-filters: ready-for-dev
+  8-2-bulk-stage-operations: ready-for-dev
+  8-3-import-queue-management: ready-for-dev
+  8-4-role-based-tile-visibility: ready-for-dev
+  epic-8-retrospective: optional

@@ -42,6 +42,12 @@ settings:
     - field_name: field_cfp_end_date
       field_type: Date
       label: CFP End Date
+    - field_name: field_logo
+      field_type: File
+      label: Logo
+    - field_name: field_venue_photo
+      field_type: File
+      label: Venue Photo
     - field_name: field_description
       field_type: TextLong
       label: Description

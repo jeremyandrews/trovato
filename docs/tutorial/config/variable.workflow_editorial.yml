@@ -1,0 +1,21 @@
+# Editorial workflow transition graph
+# Defines allowed stage transitions and required permissions
+key: workflow.editorial
+value:
+  transitions:
+    - from: incoming
+      to: curated
+      permission: "edit any content"
+      label: "Promote to Curated"
+    - from: curated
+      to: live
+      permission: "administer site"
+      label: "Publish"
+    - from: live
+      to: curated
+      permission: "administer site"
+      label: "Unpublish to Curated"
+    - from: curated
+      to: incoming
+      permission: "edit any content"
+      label: "Demote to Incoming"

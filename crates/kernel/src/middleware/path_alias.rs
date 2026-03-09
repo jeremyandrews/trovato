@@ -54,6 +54,8 @@ pub async fn resolve_path_alias(
     if path.starts_with("/admin")
         || path.starts_with("/api")
         || path.starts_with("/static")
+        || path.starts_with("/files")
+        || path.starts_with("/file")
         || path.starts_with("/install")
         || path.starts_with("/user")
         || path.starts_with("/item")

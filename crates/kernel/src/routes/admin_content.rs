@@ -32,6 +32,52 @@ fn extract_content_fields(
     result
 }
 
+/// Extract file UUIDs from item fields.
+///
+/// File fields store a UUID string referencing `file_managed.id`. Call this
+/// *before* moving `fields_json` into a `CreateItem`/`UpdateItem`, then pass
+/// the returned IDs to [`promote_file_ids`] after the save succeeds.
+fn extract_file_ids(
+    state: &AppState,
+    fields: &serde_json::Map<String, serde_json::Value>,
+    content_type_name: &str,
+) -> Vec<uuid::Uuid> {
+    let Some(ct) = state.content_types().get(content_type_name) else {
+        return Vec::new();
+    };
+
+    let mut file_ids = Vec::new();
+    for field_def in &ct.fields {
+        if matches!(field_def.field_type, trovato_sdk::types::FieldType::File)
+            && let Some(val) = fields.get(&field_def.field_name)
+            && let Some(id_str) = val.as_str()
+            && let Ok(id) = id_str.parse::<uuid::Uuid>()
+        {
+            file_ids.push(id);
+        }
+    }
+    file_ids
+}
+
+/// Promote extracted file IDs to permanent status.
+///
+/// Temporary uploads must be promoted so the cleanup cron does not delete them.
+async fn promote_file_ids(state: &AppState, file_ids: &[uuid::Uuid]) {
+    if file_ids.is_empty() {
+        return;
+    }
+    match state.files().mark_permanent_batch(file_ids).await {
+        Ok(count) => {
+            if count > 0 {
+                tracing::debug!(count, "promoted file(s) to permanent");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to promote files to permanent");
+        }
+    }
+}
+
 /// Content form data.
 #[derive(Debug, Deserialize)]
 struct ContentFormData {
@@ -227,6 +273,7 @@ async fn add_content_submit(
         return render_admin_template(&state, "admin/content-form.html", context).await;
     }
 
+    let file_ids = extract_file_ids(&state, &fields_json, &type_name);
     let input = CreateItem {
         item_type: type_name.clone(),
         title: form.title.clone(),
@@ -247,6 +294,9 @@ async fn add_content_submit(
     let user_ctx = admin_user_context(&user);
     match state.items().create(input, &user_ctx).await {
         Ok(item) => {
+            // Promote temporary file uploads to permanent
+            promote_file_ids(&state, &file_ids).await;
+
             // Auto-generate URL alias if pattern configured for this type
             if let Err(e) = crate::services::pathauto::auto_alias_item(
                 state.db(),
@@ -437,6 +487,7 @@ async fn edit_content_submit(
         return render_admin_template(&state, "admin/content-form.html", context).await;
     }
 
+    let file_ids = extract_file_ids(&state, &fields_json, &item.item_type);
     let input = crate::models::UpdateItem {
         title: Some(form.title.clone()),
         status: Some(if form.status.is_some() { 1 } else { 0 }),
@@ -449,6 +500,9 @@ async fn edit_content_submit(
     let user_ctx = admin_user_context(&user);
     match state.items().update(item_id, input, &user_ctx).await {
         Ok(updated) => {
+            // Promote temporary file uploads to permanent
+            promote_file_ids(&state, &file_ids).await;
+
             // Auto-update URL alias from pathauto pattern
             if let Some(ref updated_item) = updated
                 && let Err(e) = crate::services::pathauto::update_alias_item(
@@ -529,6 +583,115 @@ async fn delete_content(
     }
 }
 
+/// Bulk action form data.
+#[derive(Debug, Deserialize)]
+struct BulkActionForm {
+    #[serde(rename = "_token")]
+    token: String,
+    action: String,
+    #[serde(rename = "ids[]", default)]
+    ids: Vec<uuid::Uuid>,
+}
+
+/// Bulk operations on content items.
+///
+/// POST /admin/content/bulk
+async fn bulk_content_action(
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<BulkActionForm>,
+) -> Response {
+    let user = match require_admin(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+
+    // Validate action before processing
+    if !matches!(form.action.as_str(), "publish" | "unpublish" | "delete") {
+        if let Err(e) = session
+            .insert(
+                CONTENT_FLASH_KEY,
+                format!("Unknown action: {}", html_escape(&form.action)),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set flash message");
+        }
+        return Redirect::to("/admin/content").into_response();
+    }
+
+    if form.ids.is_empty() {
+        if let Err(e) = session
+            .insert(CONTENT_FLASH_KEY, "No items selected.")
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set flash message");
+        }
+        return Redirect::to("/admin/content").into_response();
+    }
+
+    let user_ctx = admin_user_context(&user);
+
+    let mut success_count = 0u32;
+    let mut fail_count = 0u32;
+    match form.action.as_str() {
+        "publish" | "unpublish" => {
+            let new_status: i16 = if form.action == "publish" { 1 } else { 0 };
+            for id in &form.ids {
+                let update = crate::models::UpdateItem {
+                    title: None,
+                    status: Some(new_status),
+                    fields: None,
+                    promote: None,
+                    sticky: None,
+                    log: Some(format!("Bulk {}", form.action)),
+                };
+                match state.items().update(*id, update, &user_ctx).await {
+                    Ok(_) => success_count += 1,
+                    Err(e) => {
+                        tracing::warn!(item_id = %id, error = %e, "bulk action failed");
+                        fail_count += 1;
+                    }
+                }
+            }
+        }
+        "delete" => {
+            for id in &form.ids {
+                match state.items().delete(*id, &user_ctx).await {
+                    Ok(true) => success_count += 1,
+                    Ok(false) => fail_count += 1,
+                    Err(e) => {
+                        tracing::warn!(item_id = %id, error = %e, "bulk delete failed");
+                        fail_count += 1;
+                    }
+                }
+            }
+        }
+        _ => unreachable!(), // Validated above
+    }
+
+    let action_label = match form.action.as_str() {
+        "publish" => "published",
+        "unpublish" => "unpublished",
+        "delete" => "deleted",
+        _ => unreachable!(),
+    };
+    let msg = if fail_count > 0 {
+        format!("{success_count} item(s) {action_label}. {fail_count} item(s) failed.")
+    } else {
+        format!("{success_count} item(s) {action_label}.")
+    };
+    if let Err(e) = session.insert(CONTENT_FLASH_KEY, msg).await {
+        tracing::warn!(error = %e, "failed to set flash message");
+    }
+
+    Redirect::to("/admin/content").into_response()
+}
+
+/// Build admin content routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/content", get(list_content))
@@ -542,4 +705,5 @@ pub fn router() -> Router<AppState> {
             get(edit_content_form).post(edit_content_submit),
         )
         .route("/admin/content/{id}/delete", post(delete_content))
+        .route("/admin/content/bulk", post(bulk_content_action))
 }

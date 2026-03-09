@@ -1,0 +1,4 @@
+# Search field config — conference title (highest weight)
+bundle: conference
+field_name: title
+weight: A

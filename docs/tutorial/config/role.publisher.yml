@@ -1,0 +1,13 @@
+# Publisher role — editor permissions plus publish/unpublish
+name: publisher
+label: Publisher
+permissions:
+  - access content
+  - create content
+  - edit own content
+  - edit any content
+  - delete any content
+  - access files
+  - administer files
+  - use filtered_html
+  - use full_html

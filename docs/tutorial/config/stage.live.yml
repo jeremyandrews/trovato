@@ -1,0 +1,8 @@
+# Live stage — public, well-known UUID: 0193a5a0-0000-7000-8000-000000000001
+# This stage is created automatically by the installer. Included here for reference.
+id: "0193a5a0-0000-7000-8000-000000000001"
+category_id: stages
+label: Live
+visibility: public
+is_default: false
+weight: 10

@@ -1,0 +1,7 @@
+# Footer menu — Contact link
+menu_name: footer
+path: /contact
+title: Contact
+weight: 5
+hidden: false
+plugin: core

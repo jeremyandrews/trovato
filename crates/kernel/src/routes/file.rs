@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/file/upload", post(upload_file))
         .route("/file/{id}", get(get_file_info))
+        .route("/files/{*path}", get(serve_uploaded_file))
         .route("/api/block-editor/upload", post(block_editor_upload))
         .route("/api/block-editor/preview", post(block_editor_preview))
 }
@@ -225,6 +226,62 @@ async fn get_file_info(State(state): State<AppState>, Path(id): Path<Uuid>) -> R
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             warn!(error = %e, "failed to get file info");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// Serve an uploaded file from the uploads directory.
+///
+/// GET /files/{*path}
+///
+/// Path segments map to the storage URI after the `local://` prefix.
+/// Rejects directory traversal attempts.
+async fn serve_uploaded_file(State(state): State<AppState>, Path(path): Path<String>) -> Response {
+    let path = path.trim_start_matches('/');
+
+    // Reject directory traversal and path injection attempts.
+    // Axum's Path extractor URL-decodes, so %2e%2e becomes ".." before we see it.
+    if path.is_empty()
+        || path.contains("..")
+        || path.contains('\0')
+        || path.contains('\\')
+        || path.starts_with('/')
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let uri = format!("local://{path}");
+
+    match state.files().load_file_data(&uri).await {
+        Ok(Some(data)) => {
+            let content_type =
+                guess_mime_type(path).unwrap_or_else(|| "application/octet-stream".to_string());
+
+            // Use inline disposition for images/PDFs, attachment for everything else
+            // to prevent browsers from executing downloaded content.
+            let disposition =
+                if content_type.starts_with("image/") || content_type == "application/pdf" {
+                    "inline"
+                } else {
+                    "attachment"
+                };
+
+            // Infallible: Response::builder() with hard-coded valid status and headers cannot fail
+            #[allow(clippy::unwrap_used)]
+            axum::http::Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, &content_type)
+                .header(axum::http::header::CACHE_CONTROL, "public, max-age=604800")
+                .header(axum::http::header::CONTENT_DISPOSITION, disposition)
+                .header("X-Content-Type-Options", "nosniff")
+                .body(axum::body::Body::from(data))
+                .unwrap()
+                .into_response()
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            warn!(error = %e, path = %path, "failed to serve uploaded file");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

@@ -1,0 +1,4 @@
+# Search field config — conference description
+bundle: conference
+field_name: field_description
+weight: B

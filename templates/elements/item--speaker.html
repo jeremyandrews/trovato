@@ -1,0 +1,108 @@
+<article class="item item--speaker">
+    <header class="item__header">
+        <h1 class="item__title">{{ item.title }}</h1>
+        {% if item.fields.field_company %}
+        <div class="speaker-detail__company">{{ item.fields.field_company }}</div>
+        {% endif %}
+    </header>
+
+    {% if item.fields.field_photo %}
+    <div class="speaker-detail__photo">
+        <img src="/file/{{ item.fields.field_photo }}/download" alt="{{ item.title }}">
+    </div>
+    {% endif %}
+
+    {% if item.fields.field_bio %}
+    <div class="speaker-detail__bio">
+        {{ item.fields.field_bio }}
+    </div>
+    {% endif %}
+
+    {% if safe_urls.field_website is defined and safe_urls.field_website %}
+    <div class="speaker-detail__links">
+        <a href="{{ safe_urls.field_website }}" target="_blank" rel="noopener noreferrer">Website &nearr;</a>
+    </div>
+    {% endif %}
+
+    {% if referenced_items.field_conferences is defined and referenced_items.field_conferences %}
+    <div class="speaker-detail__conferences">
+        <h2>Conferences</h2>
+        <ul>
+            {% for conf in referenced_items.field_conferences %}
+            <li><a href="/item/{{ conf.id }}">{{ conf.title }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="item__content">
+        {{ children | safe }} {# SAFE: kernel render pipeline output — child elements already rendered and sanitized #}
+    </div>
+</article>
+
+<style>
+    .speaker-detail__company {
+        font-size: 1rem;
+        color: var(--gray-600);
+        margin-top: 0.25rem;
+    }
+
+    .speaker-detail__photo {
+        margin: 1.5rem 0;
+    }
+
+    .speaker-detail__photo img {
+        max-width: 200px;
+        border-radius: 0.5rem;
+    }
+
+    .speaker-detail__bio {
+        margin: 1.5rem 0;
+        line-height: 1.6;
+        color: var(--gray-700);
+    }
+
+    .speaker-detail__links {
+        margin: 1rem 0;
+    }
+
+    .speaker-detail__links a {
+        display: inline-block;
+        padding: 0.375rem 0.75rem;
+        border: 1px solid var(--gray-300);
+        border-radius: 0.375rem;
+        text-decoration: none;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+
+    .speaker-detail__links a:hover {
+        background: var(--gray-100);
+    }
+
+    .speaker-detail__conferences {
+        margin: 1.5rem 0;
+    }
+
+    .speaker-detail__conferences h2 {
+        font-size: 1.25rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .speaker-detail__conferences ul {
+        list-style: none;
+        padding: 0;
+    }
+
+    .speaker-detail__conferences li {
+        padding: 0.25rem 0;
+    }
+
+    .speaker-detail__conferences a {
+        text-decoration: none;
+    }
+
+    .speaker-detail__conferences a:hover {
+        text-decoration: underline;
+    }
+</style>

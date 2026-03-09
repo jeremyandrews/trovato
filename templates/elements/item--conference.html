@@ -1,0 +1,146 @@
+<article class="item item--conference">
+    <header class="item__header">
+        <h1 class="item__title">{{ item.title }}</h1>
+        <div class="conf-detail__meta">
+            {% if item.fields.field_start_date %}
+            <span class="conf-detail__dates">
+                {{ item.fields.field_start_date }}{% if item.fields.field_end_date %} &ndash; {{ item.fields.field_end_date }}{% endif %}
+            </span>
+            {% endif %}
+            {% if item.fields.field_city %}
+            <span class="conf-detail__location">
+                {{ item.fields.field_city }}{% if item.fields.field_country %}, {{ item.fields.field_country }}{% endif %}
+            </span>
+            {% elif item.fields.field_online is defined and item.fields.field_online == "1" %}
+            <span class="conf-detail__location">Online</span>
+            {% endif %}
+        </div>
+    </header>
+
+    {% if item.fields.field_logo %}
+    <div class="conf-detail__logo">
+        <img src="/file/{{ item.fields.field_logo }}/download" alt="{{ item.title }} logo">
+    </div>
+    {% endif %}
+
+    {% if item.fields.field_description %}
+    <div class="conf-detail__description">
+        {{ item.fields.field_description }}
+    </div>
+    {% endif %}
+
+    {% if item.fields.field_venue_photo %}
+    <div class="conf-detail__venue">
+        <img src="/file/{{ item.fields.field_venue_photo }}/download" alt="Venue photo">
+    </div>
+    {% endif %}
+
+    <div class="conf-detail__links">
+        {% if safe_urls.field_url is defined and safe_urls.field_url %}
+        <a href="{{ safe_urls.field_url }}" class="conf-detail__link" target="_blank" rel="noopener noreferrer">Website &nearr;</a>
+        {% endif %}
+        {% if safe_urls.field_cfp_url is defined and safe_urls.field_cfp_url %}
+        <a href="{{ safe_urls.field_cfp_url }}" class="conf-detail__link conf-detail__link--cfp" target="_blank" rel="noopener noreferrer">Submit a Talk &nearr;</a>
+        {% endif %}
+    </div>
+
+    {% if item.fields.field_cfp_end_date %}
+    <div class="conf-detail__cfp-deadline">
+        <strong>CFP Deadline:</strong> {{ item.fields.field_cfp_end_date }}
+    </div>
+    {% endif %}
+
+    {% if reverse_references.speaker is defined and reverse_references.speaker %}
+    <div class="conf-detail__speakers">
+        <h2>Speakers</h2>
+        <ul>
+            {% for spk in reverse_references.speaker %}
+            <li><a href="/item/{{ spk.id }}">{{ spk.title }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="item__content">
+        {{ children | safe }} {# SAFE: kernel render pipeline output — child elements already rendered and sanitized #}
+    </div>
+</article>
+
+<style>
+    .conf-detail__meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 1.25rem;
+        font-size: 1rem;
+        color: var(--gray-600);
+        margin-top: 0.5rem;
+    }
+
+    .conf-detail__dates {
+        font-weight: 500;
+    }
+
+    .conf-detail__description {
+        margin: 1.5rem 0;
+        line-height: 1.6;
+        color: var(--gray-700);
+    }
+
+    .conf-detail__links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
+        margin: 1rem 0;
+    }
+
+    .conf-detail__link {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        border: 1px solid var(--gray-300);
+        border-radius: 0.375rem;
+        text-decoration: none;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+
+    .conf-detail__link:hover {
+        background: var(--gray-100);
+    }
+
+    .conf-detail__link--cfp {
+        border-color: var(--primary, #2563eb);
+        color: var(--primary, #2563eb);
+    }
+
+    .conf-detail__cfp-deadline {
+        font-size: 0.875rem;
+        color: var(--gray-600);
+        margin-bottom: 1.5rem;
+    }
+
+    .conf-detail__speakers {
+        margin: 1.5rem 0;
+    }
+
+    .conf-detail__speakers h2 {
+        font-size: 1.25rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .conf-detail__speakers ul {
+        list-style: none;
+        padding: 0;
+    }
+
+    .conf-detail__speakers li {
+        padding: 0.25rem 0;
+    }
+
+    .conf-detail__speakers a {
+        text-decoration: none;
+    }
+
+    .conf-detail__speakers a:hover {
+        text-decoration: underline;
+    }
+</style>

@@ -1293,14 +1293,14 @@ parents:
         assert_eq!(it.title_label.as_deref(), Some("Conference Name"));
         assert_eq!(it.plugin, "core");
 
-        // Verify all 12 fields deserialize with correct types and required flags
+        // Verify all 14 fields deserialize with correct types and required flags
         let fields: Vec<trovato_sdk::types::FieldDefinition> = it
             .settings
             .get("fields")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .expect("settings.fields should deserialize");
 
-        assert_eq!(fields.len(), 12, "expected 12 fields, got {}", fields.len());
+        assert_eq!(fields.len(), 14, "expected 14 fields, got {}", fields.len());
 
         // Required fields
         let start = fields

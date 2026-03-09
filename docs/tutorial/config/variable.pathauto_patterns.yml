@@ -7,3 +7,4 @@
 key: pathauto_patterns
 value:
   conference: conferences/[title]
+  speaker: speakers/[title]

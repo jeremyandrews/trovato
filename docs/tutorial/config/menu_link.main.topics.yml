@@ -1,0 +1,7 @@
+# Main menu — Topics link
+menu_name: main
+path: /topics
+title: Topics
+weight: 15
+hidden: false
+plugin: core

@@ -148,7 +148,8 @@ pub async fn require_permission_json(
 
 /// Inject site-wide context variables into a Tera context.
 ///
-/// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`, `sidebar_tiles`
+/// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`, `current_path`,
+/// `header_tiles`, `navigation_tiles`, `sidebar_tiles`, `footer_tiles`
 ///
 /// The `path` parameter is the current request path, used for sidebar tile
 /// visibility filtering.
@@ -174,7 +175,21 @@ pub async fn inject_site_context(
     context.insert("site_name", &site_name);
     context.insert("site_slogan", &site_slogan);
 
-    // Public menus sorted by weight
+    // Load main navigation menu links from database (not plugin registry)
+    let main_menu_links =
+        crate::models::MenuLink::find_by_menu_and_stage(state.db(), "main", LIVE_STAGE_ID)
+            .await
+            .unwrap_or_default();
+    context.insert("main_menu", &main_menu_links);
+
+    // Load footer menu links from database
+    let footer_menu_links =
+        crate::models::MenuLink::find_by_menu_and_stage(state.db(), "footer", LIVE_STAGE_ID)
+            .await
+            .unwrap_or_default();
+    context.insert("footer_menu", &footer_menu_links);
+
+    // Public plugin-registered menus (legacy, sorted by weight)
     let mut menus: Vec<_> = state
         .menu_registry()
         .root_menus()
@@ -205,13 +220,17 @@ pub async fn inject_site_context(
         }
     }
 
-    // Load sidebar tiles filtered by request path and user roles
-    let sidebar_tiles_html = state
-        .tiles()
-        .render_region("sidebar", LIVE_STAGE_ID, path, &user_roles)
-        .await
-        .unwrap_or_default();
-    context.insert("sidebar_tiles", &sidebar_tiles_html);
+    // Load tiles for all regions filtered by request path and user roles
+    for region in &["header", "navigation", "sidebar", "footer"] {
+        let region_html = state
+            .tiles()
+            .render_region(region, LIVE_STAGE_ID, path, &user_roles)
+            .await
+            .unwrap_or_default();
+        context.insert(format!("{region}_tiles"), &region_html);
+    }
+    // Keep sidebar_tiles for backwards compatibility (page.html uses it)
+    context.insert("current_path", &path);
 }
 
 /// Render an admin template with common context (enabled_plugins).

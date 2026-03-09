@@ -1,0 +1,7 @@
+# Main menu — Call for Papers link
+menu_name: main
+path: /open-cfps
+title: Call for Papers
+weight: 10
+hidden: false
+plugin: core

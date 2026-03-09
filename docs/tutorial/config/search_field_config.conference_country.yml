@@ -1,0 +1,4 @@
+# Search field config — conference country
+bundle: conference
+field_name: field_country
+weight: C

@@ -1,0 +1,114 @@
+{% extends "gather/query.html" %}
+
+{% block query_content %}
+<div class="cfp-list">
+    {% for row in rows %}
+    <article class="cfp-card">
+        <h3 class="cfp-card__title">
+            <a href="/item/{{ row.id }}">{{ row.title }}</a>
+        </h3>
+
+        <div class="cfp-card__meta">
+            {% if row.fields.field_cfp_end_date %}
+            <span class="cfp-card__deadline">
+                <strong>Deadline:</strong> {{ row.fields.field_cfp_end_date }}
+            </span>
+            {% endif %}
+            {% if row.fields.field_start_date %}
+            <span class="cfp-card__dates">
+                {{ row.fields.field_start_date }}{% if row.fields.field_end_date %} &ndash; {{ row.fields.field_end_date }}{% endif %}
+            </span>
+            {% endif %}
+            {% if row.fields.field_city %}
+            <span class="cfp-card__location">
+                {{ row.fields.field_city }}{% if row.fields.field_country %}, {{ row.fields.field_country }}{% endif %}
+            </span>
+            {% elif row.fields.field_online is defined and row.fields.field_online == "1" %}
+            <span class="cfp-card__location">Online</span>
+            {% endif %}
+        </div>
+
+        <div class="cfp-card__actions">
+            <a href="/item/{{ row.id }}" class="cfp-card__more">View details &amp; submit &rarr;</a>
+        </div>
+    </article>
+    {% endfor %}
+</div>
+
+{% if not rows %}
+<p class="gather-empty">No open CFPs at this time.</p>
+{% endif %}
+
+<style>
+    .cfp-list {
+        display: grid;
+        gap: 1.25rem;
+    }
+
+    .cfp-card {
+        padding: 1.25rem 1.5rem;
+        border: 1px solid var(--gray-200);
+        border-radius: 0.5rem;
+        background: var(--white, #fff);
+    }
+
+    .cfp-card__title {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.125rem;
+    }
+
+    .cfp-card__title a {
+        text-decoration: none;
+    }
+
+    .cfp-card__title a:hover {
+        text-decoration: underline;
+    }
+
+    .cfp-card__meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 1.25rem;
+        font-size: 0.875rem;
+        color: var(--gray-600);
+        margin-bottom: 0.75rem;
+    }
+
+    .cfp-card__deadline {
+        color: var(--primary, #2563eb);
+        font-weight: 500;
+    }
+
+    .cfp-card__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 1rem;
+        font-size: 0.875rem;
+        align-items: center;
+    }
+
+    .cfp-card__submit {
+        display: inline-block;
+        padding: 0.375rem 0.75rem;
+        border: 1px solid var(--primary, #2563eb);
+        border-radius: 0.375rem;
+        color: var(--primary, #2563eb);
+        text-decoration: none;
+        font-weight: 500;
+    }
+
+    .cfp-card__submit:hover {
+        background: var(--primary, #2563eb);
+        color: var(--white, #fff);
+    }
+
+    .cfp-card__more {
+        font-weight: 500;
+        text-decoration: none;
+    }
+
+    .cfp-card__more:hover {
+        text-decoration: underline;
+    }
+</style>
+{% endblock %}

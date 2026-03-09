@@ -1,0 +1,4 @@
+# Search field config — speaker bio
+bundle: speaker
+field_name: field_bio
+weight: B

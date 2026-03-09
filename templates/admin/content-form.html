@@ -2,8 +2,10 @@
 {% import "admin/macros/tabs.html" as tabs %}
 
 {% set has_compound = false %}
+{% set has_file = false %}
 {% for field in content_type.fields %}
 {% if field.field_type.Compound %}{% set_global has_compound = true %}{% endif %}
+{% if field.field_type == "File" %}{% set_global has_file = true %}{% endif %}
 {% endfor %}
 
 {% block head %}
@@ -76,9 +78,20 @@
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
                    {% if field.required %}required{% endif %}>
             {% elif field.field_type == "File" %}
-            <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" disabled
-                   placeholder="File uploads not yet available">
-            <p class="form-item__description">File upload support is coming in a future release.</p>
+            {% set file_val = "" %}
+            {% if values.fields[field.field_name] is defined %}{% set file_val = values.fields[field.field_name] %}{% elif item and item.fields[field.field_name] is defined %}{% set file_val = item.fields[field.field_name] %}{% endif %}
+            <div class="file-upload-widget" data-field="{{ field.field_name }}">
+                <input type="hidden" id="{{ field.field_name }}" name="{{ field.field_name }}" value="{{ file_val }}">
+                <div class="file-upload-widget__preview" {% if not file_val %}style="display:none"{% endif %}>
+                    {% if file_val %}<span class="file-upload-widget__filename">File attached</span>{% endif %}
+                    <button type="button" class="button button--small file-upload-widget__remove">Remove</button>
+                </div>
+                <div class="file-upload-widget__input" {% if file_val %}style="display:none"{% endif %}>
+                    <input type="file" class="file-upload-widget__file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.gz">
+                    <span class="file-upload-widget__status"></span>
+                </div>
+                <p class="form-item__description">Max 10 MB. Allowed: images, PDFs, documents, archives.</p>
+            </div>
             {% elif field.field_type.RecordReference %}
             <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" placeholder="UUID"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
@@ -132,5 +145,8 @@
 {{ super() }}
 {% if has_compound %}
 <script src="/static/js/compound-field.js"></script>
+{% endif %}
+{% if has_file %}
+<script src="/static/js/file-upload.js"></script>
 {% endif %}
 {% endblock %}

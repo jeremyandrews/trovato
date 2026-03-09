@@ -1,0 +1,6 @@
+# Incoming stage — internal, default for new imported content
+category_id: stages
+label: Incoming
+visibility: internal
+is_default: true
+weight: 0

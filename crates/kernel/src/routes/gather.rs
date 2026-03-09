@@ -334,6 +334,13 @@ pub async fn execute_and_render(
     let mut context = tera::Context::new();
     super::helpers::inject_site_context(state, session, &mut context, base_path).await;
 
+    // Build breadcrumbs: Home > Query Label
+    let breadcrumbs = vec![
+        serde_json::json!({"path": "/", "title": "Home"}),
+        serde_json::json!({"path": null, "title": gather_query.label}),
+    ];
+    context.insert("breadcrumbs", &breadcrumbs);
+
     let page_html = state
         .theme()
         .render_page(base_path, &gather_query.label, &content_html, &mut context)

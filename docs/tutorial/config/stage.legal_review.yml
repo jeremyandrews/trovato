@@ -1,0 +1,6 @@
+# Legal Review stage — extensibility demo, internal stage between Curated and Live
+category_id: stages
+label: Legal Review
+visibility: internal
+is_default: false
+weight: 7

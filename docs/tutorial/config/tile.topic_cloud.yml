@@ -1,0 +1,15 @@
+# Topic cloud sidebar tile — Sidebar slot
+machine_name: topic_cloud
+label: Topics
+region: sidebar
+tile_type: custom_html
+config:
+  body: |
+    <div class="topic-cloud" data-category="topics">
+      <p><em>Browse by topic to find conferences in your area of interest.</em></p>
+    </div>
+  format: full_html
+visibility: {}
+weight: 10
+status: 1
+plugin: core

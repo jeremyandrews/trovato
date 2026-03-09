@@ -1,0 +1,4 @@
+# Search field config — speaker title (highest weight)
+bundle: speaker
+field_name: title
+weight: A

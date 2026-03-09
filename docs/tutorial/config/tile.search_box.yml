@@ -1,0 +1,16 @@
+# Search box tile — Header slot, visible on all pages
+machine_name: search_box
+label: Search
+region: header
+tile_type: custom_html
+config:
+  body: |
+    <form class="search-form" action="/search" method="get">
+      <input type="text" name="q" placeholder="Search conferences..." class="search-form__input" aria-label="Search">
+      <button type="submit" class="search-form__button">Search</button>
+    </form>
+  format: full_html
+visibility: {}
+weight: 10
+status: 1
+plugin: core

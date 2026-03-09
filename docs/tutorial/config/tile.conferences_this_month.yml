@@ -1,0 +1,11 @@
+# Conferences this month sidebar tile — Sidebar slot
+machine_name: conferences_this_month
+label: Conferences This Month
+region: sidebar
+tile_type: gather_query
+config:
+  query_id: ritrovo.upcoming_conferences
+visibility: {}
+weight: 0
+status: 1
+plugin: core
