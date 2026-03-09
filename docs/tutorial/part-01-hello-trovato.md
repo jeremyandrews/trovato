@@ -2,6 +2,16 @@
 
 Welcome to the Ritrovo tutorial. Over the next eight parts you will build a fully functional tech conference aggregator using Trovato. By the end of Part 1 you will have a running Trovato instance with a `conference` content type, three hand-created conferences, a Gather listing that displays them at `/conferences`, and human-friendly URL aliases like `/conferences/rustconf-2026`.
 
+**In this part:**
+
+| Step | What you'll do |
+|---|---|
+| [Step 1: Install Trovato](#step-1-install-trovato) | Get a running instance with PostgreSQL, Redis, and the web installer |
+| [Step 2: Create the Conference Item Type](#step-2-create-the-conference-item-type) | Define the content structure with 12 fields |
+| [Step 3: Create Your First Conference](#step-3-create-your-first-conference) | Add three conferences by hand through the admin UI |
+| [Step 4: Build Your First Gather](#step-4-build-your-first-gather) | Create a public listing page at `/conferences` |
+| [Step 5: Human-Friendly URLs](#step-5-human-friendly-urls) | Configure pathauto to generate clean aliases |
+
 ---
 
 ## Step 1: Install Trovato
@@ -90,19 +100,8 @@ Open `http://localhost:3000` in your browser. You will be redirected to the web 
 3. **Site Configuration** -- set site name, slogan, and contact email.
 4. **Complete** -- links to the site and admin dashboard.
 
-<details>
-<summary>Figure 1.1: Installer Step 1 — requirements check (click to expand)</summary>
-
-![Figure 1.1: Installer Step 1 — requirements check confirms PostgreSQL, Redis, and migrations are ready](images/1.1-installer-welcome.png)
-
-</details>
-
-<details>
-<summary>Figure 1.2: Create Admin Account form (click to expand)</summary>
-
-![Figure 1.2: Installer Step 2 — Create Admin Account form](images/1.2-installer-create-admin.png)
-
-</details>
+[<img src="images/1.1-installer-welcome.png" width="400" alt="Figure 1.1: Installer Welcome — requirements check">](images/1.1-installer-welcome.png)
+[<img src="images/1.2-installer-create-admin.png" width="400" alt="Figure 1.2: Create Admin Account form">](images/1.2-installer-create-admin.png)
 
 ### Verify the Health Check
 
@@ -113,7 +112,7 @@ curl http://localhost:3000/health
 # {"status":"healthy","postgres":true,"redis":true}
 ```
 
-You now have a working Trovato instance with an admin account.
+> **Checkpoint:** You now have a working Trovato instance with an admin account.
 
 ---
 
@@ -188,7 +187,7 @@ Confirm the type exists via the API:
 curl http://localhost:3000/api/content-types | jq '.[] | select(. == "conference")'
 ```
 
-You should see `"conference"` in the output.
+> **Checkpoint:** You should see `"conference"` in the output. The content type is ready.
 
 ### Field Types Reference
 
@@ -329,7 +328,7 @@ One more -- this time an online-only conference, which exercises the `field_onli
 
 Notice that **City** and **Country** are left blank -- this is an online event, so a physical location doesn't apply. Click **Create content**.
 
-You now have three conferences in your content listing at `/admin/content`.
+> **Checkpoint:** You now have three conferences in your content listing at `/admin/content`.
 
 ### What Happened on Submit
 
@@ -511,12 +510,7 @@ Visit `http://localhost:3000/conferences` in your browser. You should see three 
 
 Click a title through to confirm the detail page renders correctly before moving on to Step 5.
 
-<details>
-<summary>Figure 1.3: Upcoming Conferences listing at /conferences (click to expand)</summary>
-
-![Figure 1.3: The Upcoming Conferences listing at /conferences](images/1.3-conferences-listing.png)
-
-</details>
+[<img src="images/1.3-conferences-listing.png" width="600" alt="Figure 1.3: Upcoming Conferences listing at /conferences">](images/1.3-conferences-listing.png)
 
 The Gather is also available as JSON via the REST API:
 
@@ -543,6 +537,8 @@ If no conferences match the filters (for example, if you delete all conferences)
 ### Exposed Filters (Preview)
 
 In the Gather definition, each filter has an "Exposed" option. If you enable it, the filter becomes a URL query parameter that visitors can use to narrow results. For example, you could expose a filter on `fields.field_country` so visitors can filter conferences by country. We'll revisit exposed filters in a later part of this tutorial when we build a more advanced search experience.
+
+> **Checkpoint:** Visitors can browse `/conferences` and see all three conferences. The listing works end to end.
 
 ---
 
