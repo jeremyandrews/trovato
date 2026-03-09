@@ -90,9 +90,17 @@ Open `http://localhost:3000` in your browser. You will be redirected to the web 
 3. **Site Configuration** -- set site name, slogan, and contact email.
 4. **Complete** -- links to the site and admin dashboard.
 
+<details>
+<summary>Figure 1.1: Installer Step 1 — requirements check (click to expand)</summary>
+
 ![Figure 1.1: Installer Step 1 — requirements check confirms PostgreSQL, Redis, and migrations are ready](images/1.1-installer-welcome.png)
+</details>
+
+<details>
+<summary>Figure 1.2: Create Admin Account form (click to expand)</summary>
 
 ![Figure 1.2: Installer Step 2 — Create Admin Account form](images/1.2-installer-create-admin.png)
+</details>
 
 ### Verify the Health Check
 
@@ -501,7 +509,11 @@ Visit `http://localhost:3000/conferences` in your browser. You should see three 
 
 Click a title through to confirm the detail page renders correctly before moving on to Step 5.
 
+<details>
+<summary>Figure 1.3: Upcoming Conferences listing at /conferences (click to expand)</summary>
+
 ![Figure 1.3: The Upcoming Conferences listing at /conferences](images/1.3-conferences-listing.png)
+</details>
 
 The Gather is also available as JSON via the REST API:
 
