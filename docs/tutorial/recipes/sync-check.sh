@@ -38,6 +38,8 @@ check_sync() {
 exit_code=0
 check_sync "Part 1" "$TUTORIAL_DIR/part-01-hello-trovato.md" "$RECIPE_DIR/recipe-part-01.md" || exit_code=1
 check_sync "Part 2" "$TUTORIAL_DIR/part-02-ritrovo-importer.md" "$RECIPE_DIR/recipe-part-02.md" || exit_code=1
+check_sync "Part 3" "$TUTORIAL_DIR/part-03-look-and-feel.md" "$RECIPE_DIR/recipe-part-03.md" || exit_code=1
+check_sync "Part 4" "$TUTORIAL_DIR/part-04-editorial-engine.md" "$RECIPE_DIR/recipe-part-04.md" || exit_code=1
 
 if [[ $exit_code -eq 0 ]]; then
     echo ""
