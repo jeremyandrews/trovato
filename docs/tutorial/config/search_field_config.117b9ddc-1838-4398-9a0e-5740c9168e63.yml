@@ -1,4 +1,5 @@
 # Search field config — speaker title (highest weight)
+id: 117b9ddc-1838-4398-9a0e-5740c9168e63
 bundle: speaker
 field_name: title
 weight: A

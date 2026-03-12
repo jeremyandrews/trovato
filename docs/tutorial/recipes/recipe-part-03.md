@@ -1,8 +1,8 @@
 # Recipe: Part 3 — Look & Feel
 
 > **Synced with:** `docs/tutorial/part-03-look-and-feel.md`
-> **Sync hash:** 290f21ac
-> **Last verified:** 2026-03-09
+> **Sync hash:** cb61177f
+> **Last verified:** 2026-03-12
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
 
@@ -80,7 +80,7 @@ curl -s http://localhost:3000/cfps | grep -c 'class="cfp-card'
 `[CLI]` Verify the page template has slot regions:
 
 ```bash
-grep -c 'page-sidebar\|page-footer\|site-header\|main-nav' templates/page.html
+grep -c 'page-sidebar\|page-footer\|site-header\|site-nav' templates/page.html
 ```
 
 **Verify:** Returns > 0. Record template paths in `TOOLS.md -> Templates`.
@@ -117,11 +117,14 @@ sleep 5
 
 ### 2.3 Verify File Upload Endpoint
 
-`[CLI]` The file upload endpoint exists:
+`[CLI]` The file upload endpoint exists (POST-only, multipart):
 
 ```bash
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/file/upload -F "dummy=test"
+# Expect: 401 (unauthorized — requires auth, needs multipart encoding)
+
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/file/upload
-# Expect: 401 (unauthorized — requires auth)
+# Expect: 405 (GET not allowed — POST only)
 ```
 
 ### 2.4 Upload a File via Admin
@@ -164,7 +167,7 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/files/../etc/passwd
 # Expect: 404
 
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/files/
-# Expect: 404
+# Expect: 308 → /files → 404 (trailing-slash redirect then not found)
 ```
 
 Record file upload endpoints and allowed MIME types in `TOOLS.md -> Files/Media`.
@@ -181,7 +184,7 @@ Record file upload endpoints and allowed MIME types in `TOOLS.md -> Files/Media`
 cat docs/tutorial/config/item_type.speaker.yml | head -5
 ```
 
-**Verify:** Shows `id: speaker` with field definitions.
+**Verify:** Shows `type: speaker` with field definitions.
 
 ### 3.2 Import Config
 
@@ -256,7 +259,7 @@ curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
 ```bash
 # Find a conference referenced by a speaker
 $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT DISTINCT jsonb_array_elements_text(fields->'field_conferences') FROM item WHERE type = 'speaker' LIMIT 1;" | tr -d ' '
+  -c "SELECT DISTINCT fields->>'field_conferences' FROM item WHERE type = 'speaker' AND fields->>'field_conferences' IS NOT NULL LIMIT 1;" | tr -d ' '
 ```
 
 Visit that conference's detail page and look for the reverse reference section:
@@ -294,25 +297,29 @@ grep -c 'header_tiles\|navigation_tiles\|sidebar_tiles\|footer_tiles' templates/
 `[CLI]`
 
 ```bash
-curl -s http://localhost:3000/conferences | grep -o 'class="main-nav[^"]*"' | head -3
+curl -s http://localhost:3000/conferences | grep -o 'class="site-nav[^"]*"' | head -3
 ```
 
-**Verify:** Navigation classes present. If no database menu links exist yet, the template falls back to plugin-registered menus.
+**Verify:** Navigation classes present (e.g., `site-nav`, `site-nav__link`). If no database menu links exist yet, the template falls back to plugin-registered menus.
 
 ### 4.4 Create Menu Links
 
-`[UI-ONLY]` If the admin UI has a menu management page at `/admin/structure/menus`, create the main menu links:
+`[CLI]` Menu links are not yet config-importable. Insert directly via SQL:
 
-| Title | Path | Menu | Weight |
-|---|---|---|---|
-| Conferences | /conferences | main | 0 |
-| Open CFPs | /open-cfps | main | 10 |
-| Topics | /topics | main | 15 |
-| Speakers | /speakers | main | 5 |
-| About | /about | footer | 0 |
-| Contact | /contact | footer | 5 |
+```bash
+NOW=$(date +%s)
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<SQL
+INSERT INTO menu_link (menu_name, path, title, weight, created, changed) VALUES
+  ('main', '/conferences', 'Conferences', 0, $NOW, $NOW),
+  ('main', '/speakers', 'Speakers', 5, $NOW, $NOW),
+  ('main', '/cfps', 'Open CFPs', 10, $NOW, $NOW),
+  ('main', '/topics', 'Topics', 15, $NOW, $NOW),
+  ('footer', '/about', 'About', 0, $NOW, $NOW),
+  ('footer', '/contact', 'Contact', 5, $NOW, $NOW);
+SQL
+```
 
-Reference: `docs/tutorial/config/menu_link.*.yml`
+**Verify:** `INSERT 0 6`. Wait 5s for cache, then confirm navigation appears (see Step 4.6).
 
 ### 4.5 Verify Breadcrumbs
 
@@ -330,20 +337,20 @@ curl -s http://localhost:3000/item/$ID | grep -o 'class="breadcrumb[^"]*"' | hea
 `[CLI]`
 
 ```bash
-curl -s http://localhost:3000/conferences | grep -o 'main-nav__item--active'
+curl -s http://localhost:3000/conferences | grep -o 'site-nav__link--active'
 ```
 
 **Verify:** Active class present on the Conferences menu item when viewing `/conferences`.
 
 ### 4.7 Verify Sidebar
 
-`[CLI]`
+`[CLI]` The sidebar region only renders when tiles are assigned to it:
 
 ```bash
-curl -s http://localhost:3000/conferences | grep -o 'class="page-sidebar[^"]*"' | head -1
+curl -s http://localhost:3000/conferences | grep -o 'class="page-layout__sidebar[^"]*"' | head -1
 ```
 
-**Verify:** Sidebar region present.
+**Verify:** If tiles exist in the sidebar slot, the region appears. With no tiles configured yet, the sidebar is intentionally empty — that's expected. Tiles are not config-importable; they must be created via admin UI or SQL.
 
 Record tile and menu configuration in `TOOLS.md -> Layout`.
 
@@ -359,7 +366,7 @@ Record tile and menu configuration in `TOOLS.md -> Layout`.
 ls docs/tutorial/config/search_field_config.*.yml
 ```
 
-**Verify:** Six files (conference_title, conference_description, conference_city, conference_country, speaker_title, speaker_bio).
+**Verify:** Six files with UUID-based names (conference title/description/city/country + speaker title/bio).
 
 ### 5.2 Import Search Config
 
@@ -373,20 +380,34 @@ cargo run --release --bin trovato -- config import docs/tutorial/config
 
 ### 5.3 Rebuild Search Index
 
-`[CLI]`
+`[CLI]` There is no CLI subcommand for reindexing. Use the admin endpoint for each content type:
 
 ```bash
-cargo run --release --bin trovato -- search reindex
+# Reindex conferences
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/admin/structure/types/conference/search/reindex \
+  -d "_token=$CSRF" -o /dev/null -w "%{http_code}"
+# Expect: 303
+
+# Reindex speakers
+CSRF=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  http://localhost:3000/admin | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/admin/structure/types/speaker/search/reindex \
+  -d "_token=$CSRF" -o /dev/null -w "%{http_code}"
+# Expect: 303
 ```
 
-**Verify:** Output indicates items indexed.
+**Verify:** Both return 303. The reindex touches item timestamps to re-fire the DB trigger that populates `search_vector`.
 
 ### 5.4 Verify Search via API
 
 `[CLI]`
 
 ```bash
-curl -s 'http://localhost:3000/api/search?q=rust' | jq '{total: .total, first: .items[0].title}'
+curl -s 'http://localhost:3000/api/search?q=rust' | jq '{total: .total, first: .results[0].title}'
 ```
 
 **Verify:** Returns results with conference titles matching "rust".
@@ -397,11 +418,11 @@ curl -s 'http://localhost:3000/api/search?q=rust' | jq '{total: .total, first: .
 
 ```bash
 # Title match (weight A) should rank high
-curl -s 'http://localhost:3000/api/search?q=rust' | jq '.items[0].title'
-# Expect: Something with "Rust" in the title (e.g., "RustConf 2026")
+curl -s 'http://localhost:3000/api/search?q=rust' | jq '.results[0].title'
+# Expect: Something with "Rust" in the title (e.g., "Rust Belt Rust")
 
 # City match (weight C)
-curl -s 'http://localhost:3000/api/search?q=berlin' | jq '.items | length'
+curl -s 'http://localhost:3000/api/search?q=berlin' | jq '.results | length'
 # Expect: > 0
 ```
 
@@ -427,7 +448,7 @@ echo "=== Part 3 Completion Checklist ==="
 echo -n "1. Conference template: "; curl -s http://localhost:3000/item/$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id') | grep -c 'conf-detail'
 echo -n "2. CFP template: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/cfps
 echo -n "3. Speaker type: "; curl -s http://localhost:3000/api/content-types | jq -r '.[] | select(. == "speaker")'
-echo -n "4. File endpoint: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/file/upload
+echo -n "4. File endpoint: "; curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/file/upload -F "dummy=test"
 echo -n "5. Page layout: "; curl -s http://localhost:3000/ | grep -c 'site-header\|page-sidebar\|page-footer'
 echo -n "6. Breadcrumbs: "; curl -s http://localhost:3000/item/$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id') | grep -c 'breadcrumb'
 echo -n "7. Search API: "; curl -s 'http://localhost:3000/api/search?q=conference' | jq -r '.total'

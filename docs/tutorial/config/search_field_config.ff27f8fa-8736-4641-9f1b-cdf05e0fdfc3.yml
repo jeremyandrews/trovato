@@ -1,4 +1,5 @@
 # Search field config — conference country
+id: ff27f8fa-8736-4641-9f1b-cdf05e0fdfc3
 bundle: conference
 field_name: field_country
 weight: C

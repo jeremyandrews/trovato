@@ -1,4 +1,5 @@
 # Search field config — conference city
+id: 4a999bbf-fc35-41e0-a057-33f45052af1f
 bundle: conference
 field_name: field_city
 weight: C

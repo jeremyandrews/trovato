@@ -329,20 +329,18 @@ The main navigation and footer menus are loaded from the `menu_link` database ta
 The page template renders the main menu in the Navigation region:
 
 ```html
-{% if main_menu %}
-<nav class="main-nav">
-    <ul class="main-nav__list">
-        {% for item in main_menu %}
-        <li class="main-nav__item{% if current_path == item.path %} main-nav__item--active{% endif %}">
-            <a href="{{ item.path }}">{{ item.title }}</a>
-        </li>
-        {% endfor %}
-    </ul>
+{% if main_menu is defined and main_menu %}
+<nav class="site-nav">
+    {% for link in main_menu %}
+    <a href="{{ link.path }}" class="site-nav__link{% if current_path == link.path %} site-nav__link--active{% endif %}">
+        {{ link.title }}
+    </a>
+    {% endfor %}
 </nav>
 {% endif %}
 ```
 
-**Active highlighting** -- The template compares each menu item's path against `current_path`. The active item gets an `--active` CSS modifier class.
+**Active highlighting** -- The template compares each menu link's path against `current_path`. The active link gets a `site-nav__link--active` CSS modifier class.
 
 If no database menu links exist, the template falls back to plugin-registered routes (the same menu items that appeared in Parts 1 and 2).
 
@@ -414,14 +412,14 @@ Visit the homepage and inspect the page structure:
 curl -s http://localhost:3000/ | grep -o 'class="site-header[^"]*"' | head -1
 
 # Check for navigation menu
-curl -s http://localhost:3000/conferences | grep -o 'class="main-nav[^"]*"' | head -3
+curl -s http://localhost:3000/conferences | grep -o 'class="site-nav[^"]*"' | head -3
 
 # Check for breadcrumbs on a conference detail page
 ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
 curl -s http://localhost:3000/item/$ID | grep -o 'class="breadcrumb[^"]*"' | head -1
 
-# Check for sidebar
-curl -s http://localhost:3000/conferences | grep -o 'class="page-sidebar[^"]*"' | head -1
+# Check for sidebar (only appears if tiles are configured)
+curl -s http://localhost:3000/conferences | grep -o 'class="page-layout__sidebar[^"]*"' | head -1
 ```
 
 ---
@@ -460,12 +458,7 @@ This imports six search field configuration entities:
 
 ### Rebuilding the Search Index
 
-After importing search field config, the search index needs to be rebuilt so that existing items get their `search_vector` column populated. Trigger this via the admin UI at `/admin/config/search` or the CLI:
-
-```bash
-# Rebuild the search index
-cargo run --release --bin trovato -- search reindex
-```
+After importing search field config, the search index needs to be rebuilt so that existing items get their `search_vector` column populated. Trigger this via the admin UI at `/admin/structure/types/{type}/search` — click the "Reindex" button for each content type that has search fields configured.
 
 ### How Search Works
 

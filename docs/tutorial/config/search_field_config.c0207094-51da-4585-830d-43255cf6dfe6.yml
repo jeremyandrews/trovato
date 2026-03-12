@@ -1,4 +1,5 @@
 # Search field config — conference description
+id: c0207094-51da-4585-830d-43255cf6dfe6
 bundle: conference
 field_name: field_description
 weight: B

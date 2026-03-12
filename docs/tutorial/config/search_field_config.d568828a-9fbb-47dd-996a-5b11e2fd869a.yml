@@ -1,4 +1,5 @@
 # Search field config — speaker bio
+id: d568828a-9fbb-47dd-996a-5b11e2fd869a
 bundle: speaker
 field_name: field_bio
 weight: B
