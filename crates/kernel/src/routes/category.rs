@@ -1,23 +1,27 @@
 //! Category API routes.
 //!
-//! REST endpoints for managing categories and tags.
+//! REST endpoints for managing categories and tags, plus an HTML browse page
+//! for the "topics" category that renders tags as a link grid.
 
 use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
-use crate::routes::helpers::JsonError;
+use crate::routes::helpers::{JsonError, inject_site_context};
 use crate::state::AppState;
 use axum::{
     Router,
     extract::{Path, State},
     http::StatusCode,
-    response::Json,
+    response::{Html, Json},
     routing::{delete, get, post, put},
 };
 use serde::{Deserialize, Serialize};
+use tower_sessions::Session;
 use uuid::Uuid;
 
 /// Create the category router.
 pub fn router() -> Router<AppState> {
     Router::new()
+        // HTML browse page for topics
+        .route("/topics", get(browse_topics))
         // Category routes
         .route("/api/categories", get(list_categories))
         .route("/api/category", post(create_category))
@@ -598,4 +602,49 @@ async fn get_breadcrumb(
             })
             .collect(),
     ))
+}
+
+// -------------------------------------------------------------------------
+// HTML browse page
+// -------------------------------------------------------------------------
+
+/// Render a browsable topics index page.
+///
+/// Lists all tags in the "topics" category as a link grid pointing to
+/// `/topics/{slug}`.
+async fn browse_topics(State(state): State<AppState>, session: Session) -> Html<String> {
+    let tags = state
+        .categories()
+        .list_tags("topics")
+        .await
+        .unwrap_or_default();
+
+    let mut content = String::from("<div class=\"topics-grid\">");
+    for tag in &tags {
+        let slug = tag.slug.as_deref().unwrap_or_default();
+        if slug.is_empty() {
+            continue;
+        }
+        let label = crate::routes::helpers::html_escape(&tag.label);
+        // Infallible: writing to String never fails
+        use std::fmt::Write;
+        // Infallible: write! to String never fails
+        #[allow(clippy::unwrap_used)]
+        write!(
+            content,
+            "<a href=\"/topics/{slug}\" class=\"topic-chip\">{label}</a>"
+        )
+        .unwrap();
+    }
+    content.push_str("</div>");
+
+    let mut context = tera::Context::new();
+    inject_site_context(&state, &session, &mut context, "/topics").await;
+
+    let html = state
+        .theme()
+        .render_page("/topics", "Topics", &content, &mut context)
+        .unwrap_or_else(|_| format!("<html><body>{content}</body></html>"));
+
+    Html(html)
 }

@@ -5275,8 +5275,8 @@ fn conference_item_type_exists_with_correct_fields() {
 
         assert_eq!(
             fields.len(),
-            12,
-            "conference should have 12 field definitions"
+            14,
+            "conference should have 14 field definitions (12 original + field_logo + field_venue_photo)"
         );
 
         // Verify metadata

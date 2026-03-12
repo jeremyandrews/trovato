@@ -182,7 +182,7 @@ fn test_part01_step01_health_check() {
 //
 // The tutorial claims:
 // - "conference" type exists and is visible via /api/content-types
-// - 12 fields with specific names, types, and required status
+// - 14 fields with specific names, types, and required status
 // - title_label is "Conference Name"
 // =============================================================================
 
@@ -214,7 +214,7 @@ fn test_part01_step02_conference_type_in_api() {
 }
 
 #[test]
-fn test_part01_step02_conference_has_12_fields() {
+fn test_part01_step02_conference_has_14_fields() {
     run_test(async {
         let app = shared_app().await;
         seed_tutorial_data(app).await;
@@ -229,11 +229,11 @@ fn test_part01_step02_conference_has_12_fields() {
             .as_array()
             .expect("settings.fields must be an array");
 
-        // Tutorial Step 2 creates 12 fields via admin UI
+        // Tutorial creates 14 fields: 12 original + field_logo + field_venue_photo (Part 3)
         assert_eq!(
             fields.len(),
-            12,
-            "conference type should have 12 fields, found {}",
+            14,
+            "conference type should have 14 fields, found {}",
             fields.len()
         );
 
@@ -251,6 +251,8 @@ fn test_part01_step02_conference_has_12_fields() {
             "field_language",
             "field_source_id",
             "field_editor_notes",
+            "field_logo",
+            "field_venue_photo",
         ];
 
         let actual_names: Vec<&str> = fields
