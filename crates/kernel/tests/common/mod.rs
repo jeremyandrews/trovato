@@ -378,6 +378,8 @@ impl TestApp {
             FieldDefinition::new("field_source_id", FieldType::Text { max_length: None })
                 .label("Source ID"),
             FieldDefinition::new("field_editor_notes", FieldType::TextLong).label("Editor Notes"),
+            FieldDefinition::new("field_logo", FieldType::File).label("Logo"),
+            FieldDefinition::new("field_venue_photo", FieldType::File).label("Venue Photo"),
         ];
 
         let settings = serde_json::json!({
