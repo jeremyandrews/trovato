@@ -20,11 +20,12 @@ Trovato already has a user system -- you created an admin account during the ins
 Users in Trovato are stored in the `users` table with:
 
 - **UUID** identifier (UUIDv7, time-sortable like items)
-- **Username** -- unique, used for login and profile URLs
-- **Email** -- unique, used for account recovery
-- **Password hash** -- Argon2id with RFC 9106 parameters (m=65536 KiB, t=3 iterations, p=4 parallelism)
-- **Roles** -- stored as a JSONB array of role names
-- **Status** -- active/blocked
+- **Name** (`name` column) -- unique username, used for login
+- **Email** (`mail` column) -- unique, used for account recovery
+- **Password hash** (`pass` column) -- Argon2id with RFC 9106 parameters (m=65536 KiB, t=3 iterations, p=4 parallelism)
+- **Admin flag** (`is_admin`) -- superuser bypass for all permission checks
+- **Status** -- 1=active, 0=blocked
+- **Roles** -- assigned via `user_roles` join table (many-to-many with `roles`)
 - **Data** -- JSONB extension field for profile information
 
 ### Session Architecture
@@ -46,11 +47,11 @@ Sessions expire after inactivity (configurable via `SESSION_TTL`). Logout is alw
 
 ### Enabling Registration
 
-By default, Trovato allows user registration. You can configure the registration mode via the `user_registration` variable. The tutorial config at `docs/tutorial/config/variable.user_registration.yml` sets it to open:
+By default, Trovato disables user registration. The tutorial config at `docs/tutorial/config/variable.allow_user_registration.yml` enables it:
 
 ```yaml
-id: user_registration
-allow_user_registration: true
+key: allow_user_registration
+value: true
 ```
 
 Import it:
@@ -61,7 +62,7 @@ cargo run --release --bin trovato -- config import docs/tutorial/config
 
 ### Creating Test Users
 
-For the editorial workflow demonstration, create three test users with different roles. You can register them through the form at `/user/register` or via curl:
+For the editorial workflow demonstration, create three test users with different roles. Register via the form at `/user/register` or via curl:
 
 ```bash
 # Get the registration form and extract CSRF token
@@ -72,12 +73,19 @@ CSRF=$(echo "$REG_PAGE" | grep -oE 'name="_token" value="[a-f0-9]+"' | grep -oE 
 # Register editor_alice
 curl -s -b /tmp/trovato-register.txt -c /tmp/trovato-register.txt \
   -X POST http://localhost:3000/user/register \
-  -d "username=editor_alice&email=alice@example.com&password=tutorial-editor1&password_confirm=tutorial-editor1&_token=$CSRF" \
-  -o /dev/null -w "%{http_code}"
-# Expect: 303
+  -d "username=editor_alice&mail=alice@example.com&password=tutorial-editor1&confirm_password=tutorial-editor1&_token=$CSRF" \
+  | grep -o 'Registration successful'
+# Expect: Registration successful
 ```
 
-Repeat for `publisher_bob` and `viewer_carol`, fetching a fresh CSRF token each time.
+Repeat for `publisher_bob` and `viewer_carol`, fetching a fresh CSRF token each time. Note: the registration endpoint has a rate limit of 3 per hour per IP — clear the Redis key `rate:register:unknown` between registrations if needed.
+
+Users are created in **inactive** status pending email verification. Since there is no mail server in the tutorial, activate them via SQL:
+
+```bash
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "UPDATE users SET status = 1 WHERE name IN ('editor_alice', 'publisher_bob', 'viewer_carol');"
+```
 
 ### Login and Logout
 
@@ -99,19 +107,14 @@ The page template's user menu now shows the username, "My Account", and a "Logou
 
 ### User Profile
 
-Each user has a public profile at `/user/{username}`:
-
-```bash
-curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/user/editor_alice
-# 200
-```
+Logged-in users can manage their account at `/user/profile`. This page shows the profile edit form (name, email, timezone) and a password change form. It requires authentication -- unauthenticated requests redirect to `/user/login`.
 
 ### Verify
 
 ```bash
 # Confirm users exist
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT username, email FROM users WHERE username IN ('editor_alice', 'publisher_bob', 'viewer_carol');"
+  -c "SELECT name, mail FROM users WHERE name IN ('editor_alice', 'publisher_bob', 'viewer_carol');"
 # Expect: three rows
 ```
 
@@ -152,27 +155,32 @@ For the editorial workflow, Ritrovo needs two additional roles:
 
 | Role | Purpose | Key Permissions |
 |---|---|---|
-| **editor** | Reviews and curates content | `access content`, `create conference`, `edit any conference`, `edit any speaker`, `access files`, `use filtered_html` |
-| **publisher** | Publishes content to Live | Editor permissions + `delete any conference`, `delete any speaker`, `administer files`, `use full_html` |
+| **editor** | Reviews and curates content | `access content`, `create content`, `edit own content`, `edit any content`, `access files`, `use filtered_html` |
+| **publisher** | Publishes content to Live | Editor permissions + `delete any content`, `administer files`, `use full_html` |
 
-The role definitions live at `docs/tutorial/config/role.editor.yml` and `docs/tutorial/config/role.publisher.yml`.
-
-> **Note:** Role and permission assignment is managed through the admin UI at `/admin/people/roles`. The YAML config files document the intended permission sets but cannot be imported via `config import` (the kernel's ConfigStorage does not yet support the `role` entity type).
+The role definitions live at `docs/tutorial/config/role.editor.yml` and `docs/tutorial/config/role.publisher.yml`. These YAML files document the intended permission sets but cannot be imported via `config import` (the kernel's ConfigStorage does not yet support the `role` entity type). Roles and permissions must be configured through the admin UI at `/admin/people/roles` and `/admin/people/permissions`.
 
 ### Assigning Roles to Test Users
 
-Log in as admin and navigate to the user management interface:
+There is no admin UI for assigning roles to users — the `/admin/people` list does not have an Edit action with role checkboxes. Instead, assign roles directly via SQL:
 
-1. Go to `/admin/people`.
-2. Find `editor_alice` and click **Edit**.
-3. Under **Roles**, check **Editor**.
-4. Save.
+```sql
+-- Assign editor role to editor_alice
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.name = 'editor_alice' AND r.name = 'editor';
 
-Repeat for `publisher_bob` (assign **Publisher**) and leave `viewer_carol` with no extra roles (she has only the implicit `authenticated` role).
+-- Assign publisher role to publisher_bob
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.name = 'publisher_bob' AND r.name = 'publisher';
+```
+
+Leave `viewer_carol` with no extra roles (she has only the implicit `authenticated` role).
 
 ### Permission Model
 
-Permissions in Trovato are strings like `"access content"`, `"edit any conference"`, `"use filtered_html"`. Plugins declare permissions via the `tap_perm` tap. The kernel aggregates permissions from all enabled plugins and maps them to roles.
+Permissions in Trovato are strings like `"access content"`, `"edit any content"`, `"use filtered_html"`. Plugins declare permissions via the `tap_perm` tap. The kernel aggregates permissions from all enabled plugins and maps them to roles.
 
 When the kernel checks whether a user can perform an action:
 
@@ -180,7 +188,14 @@ When the kernel checks whether a user can perform an action:
 2. For each role, it checks whether the role has the required permission.
 3. If any role grants the permission, the user can proceed.
 
-For items specifically, the access check can be more nuanced: `tap_item_access` lets plugins return **Grant**, **Deny**, or **Neutral** for each access check. The kernel aggregates: any Grant with no Deny = access allowed. Any Deny = access denied. All Neutral = fall back to default (deny for internal stages, allow for public).
+For items specifically, the access check is layered:
+
+1. **Admin bypass:** `is_admin` users always have access.
+2. **Published view:** Anyone with `"access content"` can view published items.
+3. **Plugin hook:** `tap_item_access` lets plugins return **Grant**, **Deny**, or **Neutral**. Any Deny = denied. Any Grant with no Deny = allowed.
+4. **Role-based fallback:** The kernel checks both generic and type-specific permission patterns: `"edit any content"`, `"edit any conference"`, `"edit own content"` (for the item's author), and `"edit conference content"`. Any match grants access.
+
+> **Note:** Admin pages (`/admin/*`) require `is_admin` — they are not accessible through role permissions. Editors and publishers use the item routes (`/item/{id}/edit`, `/item/{id}/revisions`) directly, not the admin UI.
 
 ### Verify
 
@@ -194,6 +209,18 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
 # As admin -- should see /admin/content
 curl -s -b /tmp/trovato-cookies.txt -o /dev/null -w "%{http_code}" http://localhost:3000/admin/content
 # 200
+
+# As editor_alice -- can edit items but not access admin pages
+# (log in as alice first, store cookie jar at /tmp/trovato-alice.txt)
+ID=$(psql -tA -c "SELECT id FROM item WHERE type = 'conference' LIMIT 1;")
+curl -s -b /tmp/trovato-alice.txt -o /dev/null -w "%{http_code}" http://localhost:3000/item/$ID/edit
+# 200
+curl -s -b /tmp/trovato-alice.txt -o /dev/null -w "%{http_code}" http://localhost:3000/admin/content
+# 403
+
+# As viewer_carol -- can view but not edit
+curl -s -b /tmp/trovato-carol.txt -o /dev/null -w "%{http_code}" http://localhost:3000/item/$ID/edit
+# 403
 ```
 
 ---
@@ -227,31 +254,36 @@ This filtering happens transparently in the SQL -- the Gather definition doesn't
 Not all stage changes are valid. The editorial workflow defines which transitions are allowed:
 
 ```
-incoming → curated     (requires: "use editorial workflow")
-curated  → live        (requires: "publish content")
-live     → curated     (requires: "unpublish content")
-curated  → incoming    (requires: "use editorial workflow")
+incoming → curated     (requires: "edit any content")
+curated  → live        (requires: "administer site")
+live     → curated     (requires: "administer site")
+curated  → incoming    (requires: "edit any content")
 ```
 
-An editor can move content from Incoming to Curated (review), but cannot publish directly to Live. A publisher can promote Curated content to Live. Invalid transitions (like Incoming → Live) are rejected by the kernel.
+An editor (who has `edit any content`) can move content between Incoming and Curated. Only an administrator (who has `administer site`) can promote content to Live or unpublish it. Invalid transitions (like Incoming → Live) are rejected by the kernel.
 
-The workflow is configured in `docs/tutorial/config/variable.workflow_editorial.yml`:
+The workflow is configured in `docs/tutorial/config/variable.workflow.editorial.yml`:
 
 ```yaml
-id: workflow_editorial
-transitions:
-  - from: incoming
-    to: curated
-    permission: use editorial workflow
-  - from: curated
-    to: live
-    permission: publish content
-  - from: live
-    to: curated
-    permission: unpublish content
-  - from: curated
-    to: incoming
-    permission: use editorial workflow
+key: workflow.editorial
+value:
+  transitions:
+    - from: incoming
+      to: curated
+      permission: "edit any content"
+      label: "Promote to Curated"
+    - from: curated
+      to: live
+      permission: "administer site"
+      label: "Publish"
+    - from: live
+      to: curated
+      permission: "administer site"
+      label: "Unpublish to Curated"
+    - from: curated
+      to: incoming
+      permission: "edit any content"
+      label: "Demote to Incoming"
 ```
 
 ### Import Pipeline and Stages
@@ -290,22 +322,24 @@ Search is also stage-aware. An anonymous search for "rust" returns only Live con
 
 One of Trovato's strengths is that stages are configuration, not code. You can add a new stage without writing any Rust.
 
-Add a "Legal Review" stage between Curated and Live:
+To add a "Legal Review" stage between Curated and Live, you would:
 
-1. Create a stage configuration: `docs/tutorial/config/stage.legal_review.yml`
-2. Update the workflow to route `curated → legal_review → live` instead of `curated → live`
-3. Re-import the config
+1. Create the stage in the database (a `category_tag` row in the `stages` category plus a `stage_config` row with `visibility: internal`). A reference config is at `docs/tutorial/config/stage.legal_review.yml`.
+2. Update `variable.workflow.editorial.yml` to replace the `curated → live` transition with `curated → legal_review` and `legal_review → live`, then re-import.
 
-No code changes, no plugin rebuild, no server restart (beyond the config import). The new workflow path works immediately.
+No code changes, no plugin rebuild. The new workflow path works as soon as the config is imported and the stage exists in the database.
 
-The reference configuration already includes this stage in the tutorial config files.
+Note: Stage creation is not yet supported by `config import` — stages must be created via SQL or the admin UI. The workflow variable *is* importable.
 
 ### Verify
 
 ```bash
 # Check stages exist
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT id, label FROM stage ORDER BY weight;"
+  -c "SELECT ct.id, ct.label, sc.machine_name, sc.visibility
+      FROM stage_config sc
+      JOIN category_tag ct ON sc.tag_id = ct.id
+      ORDER BY ct.weight;"
 ```
 
 <details>
@@ -315,8 +349,9 @@ When a stage-aware Gather runs, the kernel wraps the query with a CTE that filte
 
 ```sql
 WITH visible_stages AS (
-    SELECT id FROM stage
-    WHERE visibility = 'public'
+    SELECT ct.id FROM category_tag ct
+    JOIN stage_config sc ON ct.id = sc.tag_id
+    WHERE sc.visibility = 'public'
     -- For authenticated users with permissions, this also includes 'internal' stages
 )
 SELECT i.*
@@ -389,13 +424,15 @@ The Trovato design spec defines five key revision scenarios:
 ### Verify
 
 ```bash
-# Pick a conference
-ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
+# Pick a conference that has revisions (plugin-imported items don't get revision rows —
+# only items created or edited via the kernel API have revision history)
+ID=$($(brew --prefix libpq)/bin/psql -tA postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT id FROM item WHERE type = 'conference' AND current_revision_id IS NOT NULL LIMIT 1;")
 
 # Check revision count
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT COUNT(*) FROM item_revision WHERE item_id = '$ID';"
-# At least 1 (the initial creation)
+# At least 1
 
 # View the revision history page (requires auth)
 curl -s -b /tmp/trovato-cookies.txt -o /dev/null -w "%{http_code}" http://localhost:3000/item/$ID/revisions
@@ -493,7 +530,7 @@ By the end of Part 4, you have:
 - **Multi-user authentication** with Argon2id password hashing, Redis sessions, and session fixation protection.
 - **Five roles** -- anonymous, authenticated, editor, publisher, and administrator -- with permission-based access control.
 - **Three editorial stages** -- Incoming (internal), Curated (internal), and Live (public) -- with enforced workflow transitions.
-- **Full revision history** on every item, with revert capability and audit trail.
+- **Revision history** on items created or edited through the kernel API, with revert capability and audit trail.
 - **Admin content management** with type and status filters, bulk operations (publish/unpublish/delete), and per-item quick actions.
 - **Stage-aware content visibility** in Gathers and search -- anonymous users see only Live content.
 

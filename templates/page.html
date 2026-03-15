@@ -1,144 +1,7 @@
 {% extends "base.html" %}
 
 {% block head %}
-<style>
-    .site-header {
-        background: white;
-        border-bottom: 1px solid var(--gray-200);
-        padding: 0.75rem 0;
-    }
-
-    .site-header .container {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-
-    .site-branding {
-        display: flex;
-        flex-direction: column;
-    }
-
-    .site-branding__name {
-        font-weight: 600;
-        font-size: 1.125rem;
-        color: var(--gray-900);
-        text-decoration: none;
-    }
-
-    .site-branding__name:hover {
-        text-decoration: none;
-        color: var(--primary);
-    }
-
-    .site-branding__slogan {
-        font-size: 0.8rem;
-        color: var(--gray-500);
-        margin-top: -2px;
-    }
-
-    .site-nav {
-        display: flex;
-        align-items: center;
-        gap: 0.25rem;
-    }
-
-    .site-nav__link {
-        padding: 0.375rem 0.75rem;
-        border-radius: 0.375rem;
-        color: var(--gray-700);
-        font-size: 0.875rem;
-        text-decoration: none;
-        transition: background-color 0.15s;
-    }
-
-    .site-nav__link:hover {
-        background: var(--gray-100);
-        text-decoration: none;
-    }
-
-    .site-nav__link--active {
-        font-weight: 600;
-        color: var(--primary);
-    }
-
-    .site-nav__divider {
-        width: 1px;
-        height: 1rem;
-        background: var(--gray-200);
-        margin: 0 0.25rem;
-    }
-
-    .site-footer {
-        text-align: center;
-        padding: 2rem;
-        color: var(--gray-500);
-        font-size: 0.875rem;
-        border-top: 1px solid var(--gray-200);
-        margin-top: 2rem;
-    }
-
-    .page-layout {
-        display: flex;
-        gap: 2rem;
-    }
-
-    .page-layout__main {
-        flex: 1;
-        min-width: 0;
-    }
-
-    .page-layout__sidebar {
-        width: 300px;
-        flex-shrink: 0;
-    }
-
-    .tile {
-        background: white;
-        border: 1px solid var(--gray-200);
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin-bottom: 1rem;
-    }
-
-    .tile__title {
-        font-weight: 600;
-        font-size: 0.875rem;
-        color: var(--gray-700);
-        margin: 0 0 0.5rem 0;
-        padding-bottom: 0.5rem;
-        border-bottom: 1px solid var(--gray-200);
-    }
-
-    .breadcrumb {
-        font-size: 0.8125rem;
-        color: var(--gray-500);
-        margin-bottom: 1rem;
-    }
-
-    .breadcrumb a {
-        color: var(--gray-500);
-        text-decoration: none;
-    }
-
-    .breadcrumb a:hover {
-        text-decoration: underline;
-    }
-
-    .breadcrumb__separator {
-        margin: 0 0.25rem;
-    }
-
-    @media (max-width: 768px) {
-        .page-layout {
-            flex-direction: column;
-        }
-
-        .page-layout__sidebar {
-            width: 100%;
-        }
-    }
-</style>
+{# All page-layout styles live in static/css/theme.css #}
 {% endblock %}
 
 {% block header %}
@@ -166,9 +29,9 @@
             <div class="site-nav__divider"></div>
             {% if user_authenticated %}
             <a href="/admin" class="site-nav__link">Admin</a>
-            <form method="post" action="/user/logout" style="display:inline">
+            <form method="post" action="/user/logout" class="site-nav__logout-form">
                 <input type="hidden" name="_token" value="{{ csrf_token }}">
-                <button type="submit" class="site-nav__link" style="background:none;border:none;cursor:pointer;font:inherit;color:inherit;padding:0;">Logout</button>
+                <button type="submit" class="site-nav__link site-nav__logout">Logout</button>
             </form>
             {% else %}
             <a href="/user/login" class="site-nav__link">Login</a>

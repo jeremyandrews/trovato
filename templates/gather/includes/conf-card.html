@@ -1,0 +1,36 @@
+{# Shared conference card component.
+   Used by: query--ritrovo.upcoming_conferences.html,
+            query--ritrovo.by_topic.html
+   Expects `row` variable from the enclosing {% for row in rows %} loop. #}
+<article class="card card--conf">
+    <h3 class="card__title">
+        <a href="/item/{{ row.id }}">{{ row.title }}</a>
+    </h3>
+
+    <div class="card__meta">
+        {% if row.fields.field_start_date %}
+        <span class="card__dates">
+            {{ row.fields.field_start_date }}{% if row.fields.field_end_date %} &ndash; {{ row.fields.field_end_date }}{% endif %}
+        </span>
+        {% endif %}
+        {% if row.fields.field_city %}
+        <span class="card__location">
+            {{ row.fields.field_city }}{% if row.fields.field_country %}, {{ row.fields.field_country }}{% endif %}
+        </span>
+        {% endif %}
+        {% if row.fields.field_online is defined and row.fields.field_online == "1" and not row.fields.field_city %}
+        <span class="card__location">Online</span>
+        {% endif %}
+    </div>
+
+    {% if row.fields.field_description %}
+    <p class="card__desc">{{ row.fields.field_description }}</p>
+    {% endif %}
+
+    <div class="card__actions">
+        <a href="/item/{{ row.id }}" class="card__more">View details &rarr;</a>
+        {% if row.fields.field_url %}
+        <a href="{{ row.fields.field_url }}" class="card__website" target="_blank" rel="noopener noreferrer">Website &nearr;</a>
+        {% endif %}
+    </div>
+</article>

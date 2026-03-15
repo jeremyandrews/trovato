@@ -83,6 +83,20 @@ pub struct ExecuteParams {
     filters: HashMap<String, String>,
 }
 
+impl ExecuteParams {
+    /// Create params directly (used by gather route aliases that render inline).
+    ///
+    /// `page` is clamped to a minimum of 1. `stage` is parsed downstream with
+    /// a fallback to `LIVE_STAGE_ID` if invalid.
+    pub fn new(page: u32, stage: String, filters: HashMap<String, String>) -> Self {
+        Self {
+            page: page.max(1),
+            stage,
+            filters,
+        }
+    }
+}
+
 fn default_page() -> u32 {
     1
 }

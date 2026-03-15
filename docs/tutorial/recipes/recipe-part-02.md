@@ -1,7 +1,7 @@
 # Recipe: Part 2 — The Ritrovo Importer Plugin
 
 > **Synced with:** `docs/tutorial/part-02-ritrovo-importer.md`
-> **Sync hash:** 0036c49d
+> **Sync hash:** b405692c
 > **Last verified:** 2026-03-07
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -223,13 +223,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
 ```
 
-**Verify:** Returns `307` (temporary redirect to the gather query with topic UUID).
-
-```
-curl -sL -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
-```
-
-**Verify:** Returns `200` (following the redirect to the gather results).
+**Verify:** Returns `200` (gather route alias renders the query inline at the pretty URL).
 
 ```
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/nonexistent-slug
@@ -277,7 +271,7 @@ curl http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq '
 
 ```
 # Conference cards are present
-curl -s http://localhost:3000/conferences | grep -c 'class="conf-card__title"'
+curl -s http://localhost:3000/conferences | grep -c 'class="card card--conf"'
 # Expect: 20 (default page size)
 
 # Exposed filter widgets are present (topic, country, online, language)
@@ -313,13 +307,7 @@ Then test the location route with one of the returned countries (URL-encode if n
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/location/Germany
 ```
 
-**Verify:** Returns `307` (temporary redirect to the by_country gather).
-
-```
-curl -sL -o /dev/null -w "%{http_code}" http://localhost:3000/location/Germany
-```
-
-**Verify:** Returns `200` (following redirect).
+**Verify:** Returns `200` (gather route alias renders inline).
 
 `[CLI]` Test the two-segment city route (find a city from the dataset first):
 ```
@@ -332,7 +320,7 @@ Then test with the returned country/city:
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/location/Germany/Berlin
 ```
 
-**Verify:** Returns `307` (temporary redirect to the by_city gather).
+**Verify:** Returns `200` (gather route alias renders inline).
 
 ### 2.4.5 Verify Exposed Filter Widgets
 
@@ -373,7 +361,7 @@ After completing all steps, verify the full Part 2 outcome:
 - [ ] No duplicate `source_id` values
 - [ ] Topic taxonomy imported with hierarchical terms (Languages > Systems > Rust, etc.) and slugs
 - [ ] `field_topics` contains UUID arrays, not raw slugs
-- [ ] `/topics/rust` returns 307 redirect to gather (via gather route alias + `category_tag.slug`)
+- [ ] `/topics/rust` returns 200 with inline gather results (via gather route alias + `category_tag.slug`)
 - [ ] Five gather queries exist with `plugin = 'ritrovo_importer'`
 - [ ] `/conferences` serves the full upcoming_conferences gather with exposed filter widgets
 - [ ] `/cfps` serves open CFPs listing

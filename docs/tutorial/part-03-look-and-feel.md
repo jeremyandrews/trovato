@@ -535,27 +535,186 @@ This gives you sub-millisecond search across thousands of items.
 
 ---
 
+## Step 6: Theme & Visual Design
+
+Steps 1-5 gave the site all its structural pieces -- templates, speakers, navigation, search. But the site still renders with the default base theme and has inline `<style>` blocks scattered across templates. This step consolidates all visual design into a single premium theme, adds a polished front page, creates content pages, and ensures visual consistency across the site.
+
+### The Design System
+
+The theme file at `static/css/theme.css` defines a complete design system using CSS custom properties (design tokens):
+
+```css
+:root {
+    --primary: #6366f1;         /* Indigo/violet primary */
+    --accent: #f59e0b;          /* Amber/orange accent */
+    --teal: #14b8a6;            /* Teal for speakers */
+    --rose: #f43f5e;            /* Rose for tags/topics */
+    --gradient-primary: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a78bfa 100%);
+    --shadow-md: 0 12px 20px -4px rgba(0,0,0,0.08), ...;
+    /* ... 40+ tokens for colors, radii, shadows, transitions, gradients */
+}
+```
+
+Every component in the site references these tokens rather than hard-coding colors. Changing `--primary` rebrands the entire site.
+
+The naming convention follows BEM (Block-Element-Modifier): `.card__title`, `.speaker-card__photo--placeholder`, `.site-nav__link--active`. This makes CSS classes self-documenting and avoids specificity wars.
+
+### Consolidating Inline Styles
+
+Trovato's default templates include inline `<style>` blocks for basic styling. The premium theme moves all public-facing styles into `theme.css`:
+
+- `gather/query.html`, `gather/row.html`, `gather/pager.html` -- Gather chrome
+- `gather/query--ritrovo.open_cfps.html` -- CFP card styles
+- `gather/query--ritrovo.upcoming_conferences.html` -- Conference card styles
+- `elements/comments.html` -- Comment thread styles
+
+The `base.html` template retains its inline `<style>` as a safety net -- if `theme.css` fails to load, the page is still usable. Since `theme.css` loads after the inline block (line 248 of `base.html`), it wins in the CSS cascade.
+
+### The Front Page
+
+The front page template at `templates/page--front.html` extends `page.html` and overrides two blocks:
+
+- **`header`** -- Calls `{{ super() }}` to keep the site header, then adds a hero section with animated floating orbs, a grid overlay, stats bar, and two call-to-action buttons.
+- **`content`** -- Four colorful stat cards (Conferences, Open CFPs, Speakers, Topics) and a split panel highlighting the technology stack.
+
+The hero uses pure CSS animations (`@keyframes float`) and `backdrop-filter` for depth -- no JavaScript required.
+
+### Shared Card Component
+
+Conference listings, CFP listings, topic results, and speaker grids all render as card-based layouts. Without care, the card HTML and CSS would be duplicated across every gather query template.
+
+The theme uses a two-layer pattern to eliminate this duplication:
+
+**CSS base class (`theme.css`):** A shared `.card` class provides the container, hover animation, shadow, and border-radius. Variant modifier classes add type-specific accents:
+
+- `.card--conf` -- Adds a gradient left border that fades in on hover
+- `.card--cfp` -- Adds a solid amber left border
+- `.card--speaker` -- Switches to flex layout for the photo + info pattern
+
+Shared sub-elements (`.card__title`, `.card__meta`, `.card__dates`, `.card__location`, `.card__desc`, `.card__actions`, `.card__more`, `.card__website`) are defined once and used by all card types.
+
+**Template include (`gather/includes/conf-card.html`):** The conference card HTML lives in a single include file. Every gather query that shows conferences uses:
+
+```html
+{% for row in rows %}
+{% include "gather/includes/conf-card.html" %}
+{% endfor %}
+```
+
+This means `query--ritrovo.upcoming_conferences.html`, `query--ritrovo.by_topic.html`, and any future conference listing query all share the same card markup. A change to the card layout is a single-file edit.
+
+### Site-Wide Page Context
+
+Every page that renders through Tera templates needs site context -- the site name, slogan, navigation menus, footer menus, authentication state, and CSRF token. The `inject_site_context()` helper in `routes/helpers.rs` provides this. It must be called before rendering any page that extends `page.html`.
+
+The auth handlers (`login_form`, `render_login_error`, `render_register_form`, `render_profile`) all call `inject_site_context()` so that login, registration, and profile pages display the same site header, navigation, and footer as every other page. Without this, users navigating to `/user/login` would see a bare page with no navigation back to the site.
+
+### About and Contact Pages
+
+The About and Contact pages need rich layout HTML (grids with icons, multi-column cards). But the render pipeline's `FilterPipeline::for_format_safe()` only allows `plain_text` and `filtered_html` formats. The `filtered_html` format uses ammonia sanitization which strips `<div>`, `<svg>`, `class` attributes, and `style` attributes -- exactly the elements needed for a rich layout.
+
+The solution uses the template resolution chain. Instead of storing layout HTML in the database body field, create UUID-specific templates:
+
+```
+templates/elements/item--page--{uuid-of-about}.html
+templates/elements/item--page--{uuid-of-contact}.html
+```
+
+These templates contain the rich layout HTML directly, bypassing the filter pipeline. The database items exist as `page` type content (so they have URL aliases and appear in admin), but the template handles all rendering. This approach:
+
+- Respects the security model -- no weakening of `for_format_safe()`
+- Keeps rich layouts in version-controlled template files
+- Uses Trovato's existing template specificity chain
+
+### Topics: Alphabetical Sort
+
+The topics browse page (`/topics`) originally displayed tags sorted by weight (their database ordering). For a directory site, alphabetical ordering is more intuitive. The `browse_topics` handler in `routes/category.rs` sorts tags after loading:
+
+```rust
+tags.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+```
+
+### Gather Route Inline Rendering
+
+Gather route aliases (e.g., `/topics/{slug}`) originally redirected with HTTP 307 to `/gather/{query_id}?param={value}`. This exposed ugly UUID-based URLs in the browser address bar. The updated `gather_routes.rs` handler calls `execute_and_render()` directly, rendering the gather query inline at the pretty URL. Visitors who click ".NET" on the topics page stay at `/topics/dotnet` and see conference cards -- no redirect, no UUID in the URL.
+
+The by-topic query also gets its own template (`gather/query--ritrovo.by_topic.html`) that renders conference cards instead of a raw table, matching the visual style of the main conferences listing.
+
+### Hiding Duplicate Field Output
+
+Item templates like `item--conference.html` explicitly render key fields (dates, location, links) in structured layouts. But the template also includes `{{ children | safe }}`, which renders **all** fields through the kernel's generic field renderer. This creates duplicate content -- dates appear in both the structured header and the raw field list.
+
+The theme hides these duplicates with CSS:
+
+```css
+.item--conference .item__content .field,
+.item--speaker .item__content .field {
+    display: none;
+}
+```
+
+This keeps the generic `children` output available (plugins can add fields that the template doesn't know about) while hiding the duplicate rendering of fields that the template already handles.
+
+### Verify
+
+```bash
+# Front page has hero section
+curl -s http://localhost:3000/ | grep -c 'hero__title'
+# > 0
+
+# Topics are alphabetical (first should be .NET)
+curl -s http://localhost:3000/topics | grep -o 'topic-chip">[^<]*' | head -1
+# topic-chip">.NET
+
+# /topics/rust renders inline (200, not 307)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
+# 200
+
+# /topics/rust shows conference cards, not a table
+curl -s http://localhost:3000/topics/rust | grep -c 'card--conf'
+# > 0
+
+# About page renders with rich layout
+curl -s http://localhost:3000/about | grep -c 'page-grid'
+# > 0
+
+# Login page has site header
+curl -s http://localhost:3000/user/login | grep -c 'site-header'
+# > 0
+```
+
+---
+
 ## What You've Built
 
 By the end of Part 3, you have:
 
-- **Styled templates** for conference detail pages, speaker profiles, and CFP listings -- all rendering through the safe Render Tree pipeline.
+- **A premium visual theme** with a design token system, gradient accents, layered shadows, and smooth transitions -- all in a single `theme.css` file.
+- **A shared card component** with a CSS base class (`.card`) and Tera template include (`gather/includes/conf-card.html`) so that all card-based listings share markup and styles without duplication.
+- **A polished front page** with an animated hero section, feature cards, and technology showcase.
+- **Styled templates** for conference detail pages, speaker profiles, CFP listings, and topic browsing -- all rendering through the safe Render Tree pipeline.
+- **Content pages** (About, Contact) using UUID-specific templates to bypass filter pipeline limitations for rich layout HTML.
 - **File uploads** with MIME validation, magic byte checking, and a temp-to-permanent lifecycle.
 - **A second content type** (Speaker) linked to conferences via RecordReference fields, with automatic forward and reverse reference rendering.
 - **A five-region page layout** with header, navigation, content, sidebar, and footer slots.
 - **Navigation menus** with active highlighting and breadcrumbs.
 - **Tile-based dynamic content** in sidebar and footer regions with path-based visibility rules.
 - **Full-text search** with weighted fields, relevance ranking, and a search API.
+- **Pretty topic URLs** that render conference cards inline at `/topics/{slug}` without redirects.
 
 You also now understand:
 
+- How CSS design tokens create a maintainable, rebrandable theme.
+- How shared CSS base classes and Tera `{% include %}` eliminate template and style duplication across card-based listings.
 - How the Render Tree pipeline ensures safe HTML output without plugins producing raw markup.
-- How template resolution follows a specificity chain (item-specific → type-specific → default).
+- How template resolution follows a specificity chain (item-specific → type-specific → default) and how UUID-specific templates solve the rich content problem.
+- How `inject_site_context()` ensures consistent page chrome (header, nav, footer) across all pages including auth forms.
 - How `safe_urls` prevents `javascript:` URI injection in template `href` attributes.
 - How RecordReference fields create bidirectional relationships without denormalization.
 - How PostgreSQL tsvector provides efficient full-text search with configurable field weights.
+- How gather route aliases render inline for clean, user-friendly URLs.
 
-The site now looks and navigates like a real application. Part 4 adds editorial discipline: users, roles, stages, workflows, and revision history.
+The site now looks, navigates, and feels like a production application. Part 4 adds editorial discipline: users, roles, stages, workflows, and revision history.
 
 ---
 

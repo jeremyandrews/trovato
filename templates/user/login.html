@@ -1,56 +1,50 @@
-{% extends "base.html" %}
+{% extends "page.html" %}
 
 {% block title %}Log in{% endblock %}
 
 {% block content %}
-<div style="max-width: 400px; margin: 100px auto; padding: 2rem;">
-    <h1 style="margin-bottom: 1.5rem;">Log in</h1>
+<div class="login-page">
+    <div class="login-card">
+        <div class="login-card__header">
+            <h1 class="login-card__title">Welcome back</h1>
+            <p class="login-card__subtitle">Sign in to your account</p>
+        </div>
 
-    {% if success %}
-    <div style="background: #efe; border: 1px solid #0a0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-        {{ success | escape }}
+        {% if success %}
+        <div class="message message--success">{{ success | escape }}</div>
+        {% endif %}
+
+        {% if error %}
+        <div class="message message--error">{{ error | escape }}</div>
+        {% endif %}
+
+        <form method="post" action="/user/login" class="login-form">
+            <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+            <div class="login-form__field">
+                <label for="username" class="login-form__label">Username</label>
+                <input type="text" id="username" name="username" class="login-form__input" required autofocus placeholder="Enter your username">
+            </div>
+
+            <div class="login-form__field">
+                <label for="password" class="login-form__label">Password</label>
+                <input type="password" id="password" name="password" class="login-form__input" required placeholder="Enter your password">
+            </div>
+
+            <div class="login-form__options">
+                <label class="login-form__remember">
+                    <input type="checkbox" name="remember_me" value="1">
+                    <span>Remember me</span>
+                </label>
+                <a href="/user/password-reset" class="login-form__forgot">Forgot password?</a>
+            </div>
+
+            <button type="submit" class="login-form__submit">Sign in</button>
+        </form>
+
+        <div class="login-card__footer">
+            Don't have an account? <a href="/user/register">Create one</a>
+        </div>
     </div>
-    {% endif %}
-
-    {% if error %}
-    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-        {{ error | escape }}
-    </div>
-    {% endif %}
-
-    <form method="post" action="/user/login">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-
-        <div class="form-item" style="margin-bottom: 1rem;">
-            <label for="username" class="form-item__label">Username</label>
-            <input type="text" id="username" name="username" class="form-text"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required autofocus>
-        </div>
-
-        <div class="form-item" style="margin-bottom: 1rem;">
-            <label for="password" class="form-item__label">Password</label>
-            <input type="password" id="password" name="password" class="form-text"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
-        </div>
-
-        <div class="form-item" style="margin-bottom: 1.5rem;">
-            <label style="display: flex; align-items: center; gap: 0.5rem;">
-                <input type="checkbox" name="remember_me" value="1">
-                Remember me
-            </label>
-        </div>
-
-        <button type="submit" class="button button--primary"
-                style="width: 100%; padding: 0.75rem; font-size: 1rem; cursor: pointer;">
-            Log in
-        </button>
-    </form>
-
-    <p style="margin-top: 1.5rem; text-align: center;">
-        <a href="/user/password-reset">Forgot your password?</a>
-    </p>
-    <p style="text-align: center;">
-        <a href="/user/register">Create new account</a>
-    </p>
 </div>
 {% endblock %}

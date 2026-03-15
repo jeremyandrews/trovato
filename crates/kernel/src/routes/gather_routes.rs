@@ -2,7 +2,7 @@
 //!
 //! Builds dynamic routes from gather query display configs at startup. Each
 //! route entry in a query's `display.routes` array creates an HTTP route that
-//! redirects to the corresponding gather URL with mapped query parameters.
+//! renders the corresponding gather query inline with mapped query parameters.
 //!
 //! Two parameter mapping modes:
 //! - **Pass-through:** path segment value is passed directly as a query param.
@@ -16,22 +16,25 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::{
-    Router,
-    extract::{Path, Query, State},
+    Json, Router,
+    extract::{OriginalUri, Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Response},
     routing::get,
 };
+use tower_sessions::Session;
 
 use crate::gather::types::{GatherQuery, GatherRouteParam};
 use crate::models::Tag;
-use crate::routes::helpers::is_valid_slug;
+use crate::models::stage::LIVE_STAGE_ID;
+use crate::routes::gather::ExecuteParams;
+use crate::routes::helpers::{is_valid_slug, render_not_found, render_server_error};
 use crate::state::AppState;
 
 /// Configuration for a single registered gather route.
 #[derive(Debug, Clone)]
 struct RouteConfig {
-    /// Gather query ID to redirect to.
+    /// Gather query ID to render.
     query_id: String,
     /// Parameter mappings from path segments to query params.
     params: Vec<GatherRouteParam>,
@@ -83,10 +86,15 @@ pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
                 &route.path,
                 get(
                     move |state: State<AppState>,
+                          session: Session,
+                          uri: OriginalUri,
                           path: Path<HashMap<String, String>>,
                           query_params: Query<HashMap<String, String>>| {
                         let config = config_clone.clone();
-                        async move { handle_gather_route(state, path, query_params, &config).await }
+                        async move {
+                            handle_gather_route(state, session, uri, path, query_params, &config)
+                                .await
+                        }
                     },
                 ),
             );
@@ -98,68 +106,81 @@ pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
 
 /// Handle a gather route alias request.
 ///
-/// Extracts path segments, resolves tag slugs if needed, and redirects
-/// to the gather URL with the appropriate query parameters.
+/// Extracts path segments, resolves tag slugs if needed, and renders the
+/// gather query inline at the current URL (no redirect).
 async fn handle_gather_route(
     State(state): State<AppState>,
+    session: Session,
+    OriginalUri(uri): OriginalUri,
     Path(segments): Path<HashMap<String, String>>,
     Query(extra_params): Query<HashMap<String, String>>,
     config: &RouteConfig,
 ) -> Response {
-    let mut gather_params: Vec<(String, String)> = Vec::new();
+    let mut resolved_params: HashMap<String, String> = HashMap::new();
 
     for mapping in &config.params {
         let Some(raw_value) = segments.get(&mapping.segment) else {
             // Path segment not present — should not happen with correct route
             // registration, but return 404 to be safe.
-            return StatusCode::NOT_FOUND.into_response();
+            return render_not_found();
         };
 
         if let Some(ref category_id) = mapping.tag_category {
             // Tag slug lookup: validate slug format, then resolve to UUID.
             if !is_valid_slug(raw_value) {
-                return StatusCode::NOT_FOUND.into_response();
+                return render_not_found();
             }
 
             match Tag::find_by_slug(state.db(), category_id, raw_value).await {
                 Ok(Some(tag)) => {
-                    gather_params.push((mapping.param.clone(), tag.id.to_string()));
+                    resolved_params.insert(mapping.param.clone(), tag.id.to_string());
                 }
-                Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                Ok(None) => return render_not_found(),
+                Err(_) => return render_server_error("Failed to look up tag"),
             }
         } else {
             // Pass-through: forward the raw value as a query parameter.
-            // Safety: the value is URL-encoded when assembling the redirect URL
-            // below, the gather engine uses parameterized SQL queries (never
+            // Safety: the gather engine uses parameterized SQL queries (never
             // format!), and Tera auto-escapes HTML output. No additional
             // validation is applied here because legitimate values (e.g. city
             // names with spaces, accents, or apostrophes) must pass through.
-            gather_params.push((mapping.param.clone(), raw_value.clone()));
+            resolved_params.insert(mapping.param.clone(), raw_value.clone());
         }
     }
 
-    // Build the redirect URL. The query_id is validated on insert (must match
-    // `is_valid_machine_name`), so it is safe to interpolate into the path.
-    let mut url = format!("/gather/{}", config.query_id);
-    let mut first = true;
+    // Merge extra query params (e.g. page) with resolved params.
+    // Resolved params take precedence over extra params.
+    let mut all_filters: HashMap<String, String> = extra_params;
+    all_filters.extend(resolved_params);
 
-    for (key, value) in &gather_params {
-        url.push(if first { '?' } else { '&' });
-        first = false;
-        url.push_str(&urlencoding::encode(key));
-        url.push('=');
-        url.push_str(&urlencoding::encode(value));
+    // Extract page from query params, clamping to minimum 1.
+    let page = all_filters
+        .remove("page")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
+
+    // Gather route aliases always show Live content — ignore any user-supplied
+    // stage parameter to prevent anonymous access to internal stages.
+    all_filters.remove("stage");
+    let stage = LIVE_STAGE_ID.to_string();
+
+    let params = ExecuteParams::new(page, stage, all_filters);
+
+    // Use the request path (without query string) as the base path so that
+    // pager links and form actions stay on the pretty URL.
+    let base_path = uri.path().to_string();
+
+    match super::gather::execute_and_render(&state, &session, &config.query_id, params, &base_path)
+        .await
+    {
+        Ok(Html(html)) => Html(html).into_response(),
+        Err((status, Json(err))) => {
+            if status == StatusCode::NOT_FOUND {
+                render_not_found()
+            } else {
+                render_server_error(&err.error)
+            }
+        }
     }
-
-    // Preserve extra query params (e.g. page).
-    for (key, value) in &extra_params {
-        url.push(if first { '?' } else { '&' });
-        first = false;
-        url.push_str(&urlencoding::encode(key));
-        url.push('=');
-        url.push_str(&urlencoding::encode(value));
-    }
-
-    Redirect::temporary(&url).into_response()
 }

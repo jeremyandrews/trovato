@@ -1032,6 +1032,7 @@ async fn list_revisions(
         .collect();
 
     let mut context = tera::Context::new();
+    context.insert("path", &format!("/item/{id}/revisions"));
     context.insert("item_id", &id);
     context.insert("item_title", &item.title);
     context.insert("revisions", &rev_data);

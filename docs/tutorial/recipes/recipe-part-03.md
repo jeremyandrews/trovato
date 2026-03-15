@@ -1,8 +1,8 @@
 # Recipe: Part 3 — Look & Feel
 
 > **Synced with:** `docs/tutorial/part-03-look-and-feel.md`
-> **Sync hash:** cb61177f
-> **Last verified:** 2026-03-12
+> **Sync hash:** acf5dc93
+> **Last verified:** 2026-03-13
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
 
@@ -71,7 +71,7 @@ curl -s http://localhost:3000/item/$ID | grep -o 'class="conf-detail[^"]*"' | he
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/cfps
 # Expect: 200
 
-curl -s http://localhost:3000/cfps | grep -c 'class="cfp-card'
+curl -s http://localhost:3000/cfps | grep -c 'class="card card--cfp'
 # Expect: > 0 (if open CFPs exist)
 ```
 
@@ -200,16 +200,65 @@ curl -s http://localhost:3000/api/content-types | jq '.[] | select(. == "speaker
 
 ### 3.3 Create Speakers
 
-`[UI-ONLY]` Navigate to `/admin/content/add/speaker`. Create 2-3 speakers with:
-- A name (title)
-- A bio (field_bio)
-- A company (field_company)
-- Conference references — paste UUIDs from:
+`[CLI]` Create a batch of speakers via SQL for a populated speakers page. First, get the admin user ID and some conference UUIDs:
 
 ```bash
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT id, title FROM item WHERE type = 'conference' ORDER BY title LIMIT 10;"
+AUTHOR=$($(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT id FROM users LIMIT 1;" | tr -d ' ')
+
+# Get 17 conference UUIDs (one per speaker)
+CONFS=($($(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT id FROM item WHERE type = 'conference' ORDER BY random() LIMIT 17;" | tr -d ' '))
 ```
+
+Insert speakers:
+
+```bash
+NOW=$(date +%s)
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<SQL
+INSERT INTO item (id, type, title, author_id, status, created, changed, fields) VALUES
+  (gen_random_uuid(), 'speaker', 'Alice Chen', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Systems programmer specializing in Rust and WebAssembly.","field_company":"Ferrous Systems","field_website":"https://example.com/alice","field_conferences":"${CONFS[0]}"}'),
+  (gen_random_uuid(), 'speaker', 'Bob Martinez', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Open source maintainer and JavaScript performance expert.","field_company":"Mozilla","field_website":"https://example.com/bob","field_conferences":"${CONFS[1]}"}'),
+  (gen_random_uuid(), 'speaker', 'Priya Patel', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Cloud infrastructure architect focused on Kubernetes and service mesh.","field_company":"Google Cloud","field_conferences":"${CONFS[2]}"}'),
+  (gen_random_uuid(), 'speaker', 'Marcus Johnson', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Security researcher specializing in application security and threat modeling.","field_company":"CrowdStrike","field_conferences":"${CONFS[3]}"}'),
+  (gen_random_uuid(), 'speaker', 'Elena Rodriguez', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Machine learning engineer building responsible AI systems.","field_company":"Anthropic","field_conferences":"${CONFS[4]}"}'),
+  (gen_random_uuid(), 'speaker', 'Dr. Sarah Kim', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Distributed systems professor and Raft consensus protocol contributor.","field_company":"MIT CSAIL","field_conferences":"${CONFS[5]}"}'),
+  (gen_random_uuid(), 'speaker', 'James O''Brien', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Mobile platform engineer specializing in cross-platform frameworks.","field_company":"Apple","field_conferences":"${CONFS[6]}"}'),
+  (gen_random_uuid(), 'speaker', 'Yuki Tanaka', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Database internals expert and PostgreSQL committer.","field_company":"Neon","field_conferences":"${CONFS[7]}"}'),
+  (gen_random_uuid(), 'speaker', 'Omar Hassan', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"DevOps advocate building developer experience platforms.","field_company":"Shopify","field_conferences":"${CONFS[8]}"}'),
+  (gen_random_uuid(), 'speaker', 'Lisa Zhang', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Frontend architect and design systems lead.","field_company":"Vercel","field_conferences":"${CONFS[9]}"}'),
+  (gen_random_uuid(), 'speaker', 'Ryan Cooper', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"API design consultant and GraphQL specification contributor.","field_company":"Apollo","field_conferences":"${CONFS[10]}"}'),
+  (gen_random_uuid(), 'speaker', 'Sofia Andersson', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Accessibility specialist making the web inclusive for everyone.","field_company":"Spotify","field_conferences":"${CONFS[11]}"}'),
+  (gen_random_uuid(), 'speaker', 'David Okonkwo', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Video streaming engineer optimizing codec performance at scale.","field_company":"Netflix","field_conferences":"${CONFS[12]}"}'),
+  (gen_random_uuid(), 'speaker', 'Claire Dubois', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Compiler engineer working on LLVM and static analysis tools.","field_company":"JetBrains","field_conferences":"${CONFS[13]}"}'),
+  (gen_random_uuid(), 'speaker', 'Raj Krishnamurthy', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Data engineering leader building real-time analytics pipelines.","field_company":"Databricks","field_conferences":"${CONFS[14]}"}'),
+  (gen_random_uuid(), 'speaker', 'Thomas Müller', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Embedded systems developer and RISC-V ecosystem contributor.","field_company":"SiFive","field_conferences":"${CONFS[15]}"}'),
+  (gen_random_uuid(), 'speaker', 'Amara Osei', '$AUTHOR', 1, $NOW, $NOW,
+   '{"field_bio":"Real-time communications engineer building WebRTC infrastructure.","field_company":"Twilio","field_conferences":"${CONFS[16]}"}');
+SQL
+```
+
+**Verify:** `INSERT 0 17`.
+
+> **Note:** Direct SQL inserts bypass revision history and pathauto alias generation. The search index trigger fires on INSERT, so search works immediately. Pathauto aliases are generated in Step 3.5 below. Revision history is not critical for tutorial seed data.
+
+Alternatively, `[UI-ONLY]` create speakers one at a time via `/admin/content/add/speaker`.
 
 ### 3.4 Verify Speaker Template
 
@@ -441,6 +490,139 @@ Record search commands in `TOOLS.md -> Search`.
 
 ---
 
+## Step 6: Theme & Visual Design
+
+### 6.1 Understand the Design System
+
+`[REFERENCE]` No action needed. Key concepts:
+- `static/css/theme.css` defines 40+ CSS custom properties (design tokens) for colors, shadows, gradients, transitions
+- BEM naming convention: `.block__element--modifier`
+- Shared `.card` base class with variant modifiers (`.card--conf`, `.card--cfp`, `.card--speaker`) eliminates CSS duplication
+- Conference card HTML lives in `templates/gather/includes/conf-card.html` — all conference listings include it
+- All public-facing inline `<style>` blocks have been moved to theme.css
+- `base.html` retains its inline styles as a safety net; `theme.css` overrides via cascade
+
+### 6.2 Verify Theme Loads
+
+`[CLI]`
+
+```bash
+# Theme file exists and is substantial
+wc -l static/css/theme.css
+# Expect: > 2000 lines
+
+# Front page loads with hero section
+curl -s http://localhost:3000/ | grep -c 'hero__title'
+# Expect: > 0
+
+# Site header has glassmorphic class
+curl -s http://localhost:3000/ | grep -c 'site-header'
+# Expect: > 0
+```
+
+### 6.3 Verify Login Page Has Site Chrome
+
+`[CLI]` The auth handlers call `inject_site_context()`, so login/register/profile pages have the site header, nav, and footer:
+
+```bash
+curl -s http://localhost:3000/user/login | grep -c 'site-header'
+# Expect: > 0
+
+curl -s http://localhost:3000/user/login | grep -c 'site-nav'
+# Expect: > 0
+```
+
+### 6.4 Create About and Contact Pages
+
+`[CLI]` These pages use UUID-specific templates for rich layout HTML. The UUIDs must match the template filenames in the repo:
+
+```bash
+AUTHOR=$($(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT id FROM users LIMIT 1;" | tr -d ' ')
+NOW=$(date +%s)
+
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<SQL
+INSERT INTO item (id, type, title, author_id, status, created, changed, fields) VALUES
+  ('019ce25f-4f22-7fb2-92ac-2eb2313d6833', 'page', 'About Ritrovo', '$AUTHOR', 1, $NOW, $NOW, '{}'),
+  ('019ce25f-da06-7ac1-9c69-7ecd4dfeb304', 'page', 'Contact', '$AUTHOR', 1, $NOW, $NOW, '{}')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO url_alias (source_path, alias_path, created) VALUES
+  ('/item/019ce25f-4f22-7fb2-92ac-2eb2313d6833', '/about', $NOW),
+  ('/item/019ce25f-da06-7ac1-9c69-7ecd4dfeb304', '/contact', $NOW)
+ON CONFLICT (alias_path) DO NOTHING;
+SQL
+```
+
+**Verify:** Restart the server (templates are cached at startup), then:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/about
+# Expect: 200
+
+curl -s http://localhost:3000/about | grep -c 'page-grid'
+# Expect: > 0
+
+curl -s http://localhost:3000/contact | grep -c 'contact-grid'
+# Expect: > 0
+```
+
+The rich layout (grids, icons, cards) comes from the UUID-specific templates, not the database body field. This avoids fighting `FilterPipeline::for_format_safe()`.
+
+### 6.5 Verify Topics Alphabetical Sort
+
+`[CLI]`
+
+```bash
+curl -s http://localhost:3000/topics | grep -o 'topic-chip">[^<]*' | head -3
+```
+
+**Verify:** Tags appear alphabetically (first should be `.NET`, then `Accessibility`, then `AI & Data`).
+
+### 6.6 Verify Gather Route Inline Rendering
+
+`[CLI]` Topic URLs render inline at the pretty path (no 307 redirect):
+
+```bash
+# Should be 200, not 307
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
+# Expect: 200
+
+# Should show conference cards, not a raw table
+curl -s http://localhost:3000/topics/rust | grep -c 'card--conf'
+# Expect: > 0
+```
+
+### 6.7 Verify Conference Cards Hide Duplicate Fields
+
+`[CLI]` The CSS hides raw field output on detail pages where the template already renders fields explicitly:
+
+```bash
+# Raw fields exist in HTML but are hidden by CSS
+ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
+curl -s http://localhost:3000/item/$ID | grep -c 'class="field '
+# Expect: > 0 (fields present in DOM, hidden by CSS rule)
+```
+
+### 6.8 Visual Spot-Check
+
+`[UI-ONLY]` Open the following pages in a browser and verify they look polished and consistent:
+
+1. **Front page** (`/`) — Hero with animated orbs, feature cards, split panel
+2. **Conferences** (`/conferences`) — Card list with dates, locations, actions
+3. **Speakers** (`/speakers`) — Grid of speaker cards with photo placeholders
+4. **Topics** (`/topics`) — Alphabetical chip grid with gradient hover
+5. **Topic detail** (`/topics/rust`) — Conference cards for that topic, pretty URL
+6. **CFPs** (`/cfps`) — CFP cards with amber accent border
+7. **About** (`/about`) — Grid with icons and descriptions
+8. **Contact** (`/contact`) — Three contact cards
+9. **Login** (`/user/login`) — Card form with site header and footer
+10. **Conference detail** (click any conference) — Styled metadata, links, no duplicate fields
+
+Record the visual state in `TOOLS.md -> Theme`.
+
+---
+
 ## Completion Checklist
 
 ```bash
@@ -452,6 +634,10 @@ echo -n "4. File endpoint: "; curl -s -o /dev/null -w "%{http_code}" -X POST htt
 echo -n "5. Page layout: "; curl -s http://localhost:3000/ | grep -c 'site-header\|page-sidebar\|page-footer'
 echo -n "6. Breadcrumbs: "; curl -s http://localhost:3000/item/$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id') | grep -c 'breadcrumb'
 echo -n "7. Search API: "; curl -s 'http://localhost:3000/api/search?q=conference' | jq -r '.total'
+echo -n "8. Hero front page: "; curl -s http://localhost:3000/ | grep -c 'hero__title'
+echo -n "9. About page: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/about
+echo -n "10. Topics inline: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust
+echo -n "11. Login chrome: "; curl -s http://localhost:3000/user/login | grep -c 'site-header'
 echo ""
 ```
 
@@ -464,6 +650,10 @@ Expected output:
 5. Page layout: > 0
 6. Breadcrumbs: > 0
 7. Search API: > 0
+8. Hero front page: > 0
+9. About page: 200
+10. Topics inline: 200
+11. Login chrome: > 0
 ```
 
 Create a database backup:

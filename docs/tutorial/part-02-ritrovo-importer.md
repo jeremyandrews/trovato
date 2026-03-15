@@ -660,13 +660,13 @@ When a request arrives at `/topics/rust`, the handler:
 1. Validates the slug (non-empty, ≤ 128 chars, alphanumeric + `-`/`_` only).
 2. Looks up the tag by slug in the `category_tag` table: `SELECT ... WHERE category_id = 'topics' AND slug = 'rust'`.
 3. Returns 404 if the slug is unknown.
-4. Redirects (307 Temporary) to `/gather/ritrovo.by_topic?topic=<uuid>`, preserving any extra query parameters (e.g. `?page=2`).
+4. Renders the gather query inline at `/topics/rust`, preserving any extra query parameters (e.g. `?page=2`).
 
 The tag slug column (`category_tag.slug`, added by the `20260307000001_add_category_tag_slug` kernel migration) is what makes this generic — any category's tags can have slugs, so any gather query can use slug-based route aliases without plugin-specific code. Slugs are unique per category via a partial unique index.
 
-The redirect approach means the browse route reuses the gather engine's full HTML rendering pipeline — no duplication of display logic.
+The inline rendering approach means the pretty URL stays in the browser address bar while reusing the gather engine's full HTML rendering pipeline — no duplication of display logic and no ugly UUID-based redirect URLs.
 
-> **URL design choice:** `/topics/rust` redirects to `/gather/ritrovo.by_topic?topic=<uuid>`. The gather URL is bookmarkable and works independently of the slug route. Deep-linking into a specific page of results (`/gather/ritrovo.by_topic?topic=<uuid>&page=3`) works without going through the slug route again.
+> **URL design choice:** `/topics/rust` renders the gather query inline. The raw gather URL (`/gather/ritrovo.by_topic?topic=<uuid>`) is also bookmarkable and works independently of the slug route, but the 301 canonical redirect (see §2.4) sends users back to the pretty URL.
 
 ---
 
@@ -752,7 +752,7 @@ This is the main public listing page, reachable at `/conferences`. The query's d
 The conference list is rendered as **cards** rather than a table. When the Trovato theme engine looks for a template to render a gather query, it first checks for a query-specific override at `templates/gather/query--{query_id}.html` before falling back to the generic `query.html`. The importer ships `templates/gather/query--ritrovo.upcoming_conferences.html`, which extends `query.html` and overrides the `query_content` block with a card grid:
 
 ```
-.conf-card
+.card.card--conf
   ├── title (linked to /item/{id})
   ├── dates (field_start_date – field_end_date)
   ├── location (field_city, field_country)
@@ -919,11 +919,11 @@ display:
       param: city
 ```
 
-These use **pass-through** parameter mapping — the path segment values are URL-encoded and forwarded directly as gather query parameters:
+These use **pass-through** parameter mapping — the path segment values are forwarded directly as gather query parameters and the query renders inline:
 
 ```
-GET /location/Germany        →  307  /gather/ritrovo.by_country?country=Germany
-GET /location/Germany/Berlin →  307  /gather/ritrovo.by_city?country=Germany&city=Berlin
+GET /location/Germany        →  200  (renders ritrovo.by_country inline with country=Germany)
+GET /location/Germany/Berlin →  200  (renders ritrovo.by_city inline with country=Germany&city=Berlin)
 ```
 
 **`/conferences` and `/cfps`** work differently. The `ritrovo.upcoming_conferences` and `ritrovo.open_cfps` gather queries set a `canonical_url` field in their display configuration:

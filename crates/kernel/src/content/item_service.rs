@@ -294,9 +294,37 @@ impl ItemService {
             return Ok(true);
         }
 
-        // Fall back to role-based permission
-        let permission = format!("{} {} content", operation, item.item_type);
-        Ok(user.has_permission(&permission))
+        // Fall back to role-based permissions. Check both type-specific and
+        // generic patterns, plus own-vs-any variants:
+        //   "{op} any content"             — generic, any author
+        //   "{op} own content"             — generic, own items only
+        //   "{op} any {type}"              — type-specific, any author
+        //   "{op} own {type}"              — type-specific, own items only
+        //   "{op} {type} content"          — legacy pattern
+        let is_own = user.id == item.author_id;
+        let checks: &[String] = &[
+            format!("{operation} any content"),
+            format!("{operation} any {}", item.item_type),
+            format!("{operation} {} content", item.item_type),
+        ];
+        for perm in checks {
+            if user.has_permission(perm) {
+                return Ok(true);
+            }
+        }
+        // "own" variants only apply when the user authored the item
+        if is_own {
+            let own_checks: &[String] = &[
+                format!("{operation} own content"),
+                format!("{operation} own {}", item.item_type),
+            ];
+            for perm in own_checks {
+                if user.has_permission(perm) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// List items by type.

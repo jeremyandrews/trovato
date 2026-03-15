@@ -613,11 +613,14 @@ async fn get_breadcrumb(
 /// Lists all tags in the "topics" category as a link grid pointing to
 /// `/topics/{slug}`.
 async fn browse_topics(State(state): State<AppState>, session: Session) -> Html<String> {
-    let tags = state
+    let mut tags = state
         .categories()
         .list_tags("topics")
         .await
         .unwrap_or_default();
+    // Re-sort case-insensitively for the browse page. list_tags returns
+    // weight-based order; alphabetical is more intuitive for a directory.
+    tags.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
 
     let mut content = String::from("<div class=\"topics-grid\">");
     for tag in &tags {

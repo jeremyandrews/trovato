@@ -99,6 +99,7 @@ async fn login_form(State(state): State<AppState>, session: Session) -> Response
     // Render login form
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
+    super::helpers::inject_site_context(&state, &session, &mut context, "/user/login").await;
 
     match state.theme().tera().render("user/login.html", &context) {
         Ok(html) => Html(html).into_response(),
@@ -175,6 +176,7 @@ async fn render_login_error(state: &AppState, session: &Session, error: &str) ->
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
     context.insert("error", error);
+    super::helpers::inject_site_context(state, session, &mut context, "/user/login").await;
 
     match state.theme().tera().render("user/login.html", &context) {
         Ok(html) => Html(html).into_response(),
@@ -473,12 +475,13 @@ async fn register_form(State(state): State<AppState>, session: Session) -> Respo
 
     let csrf_token = generate_csrf_token(&session).await;
 
-    render_register_form(&state, &csrf_token, None, None, None).await
+    render_register_form(&state, &session, &csrf_token, None, None, None).await
 }
 
 /// Render the registration form with optional context.
 async fn render_register_form(
     state: &AppState,
+    session: &Session,
     csrf_token: &str,
     errors: Option<&[String]>,
     success: Option<&str>,
@@ -495,6 +498,7 @@ async fn render_register_form(
     if let Some(values) = values {
         context.insert("values", values);
     }
+    super::helpers::inject_site_context(state, session, &mut context, "/user/register").await;
 
     match state.theme().tera().render("user/register.html", &context) {
         Ok(html) => Html(html).into_response(),
@@ -550,7 +554,15 @@ async fn register_form_submit(
 
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await;
-        return render_register_form(&state, &csrf_token, Some(&errors), None, Some(&values)).await;
+        return render_register_form(
+            &state,
+            &session,
+            &csrf_token,
+            Some(&errors),
+            None,
+            Some(&values),
+        )
+        .await;
     }
 
     // Create inactive user
@@ -565,7 +577,7 @@ async fn register_form_submit(
                  verification email. Please contact the site administrator to \
                  activate your account."
             };
-            render_register_form(&state, &csrf_token, None, Some(message), None).await
+            render_register_form(&state, &session, &csrf_token, None, Some(message), None).await
         }
         Err(e) => {
             tracing::error!(error = %e, "registration failed");
@@ -577,7 +589,15 @@ async fn register_form_submit(
                 "An unexpected error occurred. Please try again later."
             };
             let errors = vec![msg.to_string()];
-            render_register_form(&state, &csrf_token, Some(&errors), None, Some(&values)).await
+            render_register_form(
+                &state,
+                &session,
+                &csrf_token,
+                Some(&errors),
+                None,
+                Some(&values),
+            )
+            .await
         }
     }
 }
@@ -1078,8 +1098,12 @@ async fn get_current_user(state: &AppState, session: &Session) -> Result<User, R
 ///
 /// Uses separate CSRF tokens for the profile and password forms since
 /// tokens are single-use (consumed on verification).
+// Each optional param (errors/success/error/values) represents a distinct render
+// state; bundling them into a struct would obscure call-site intent.
+#[allow(clippy::too_many_arguments)]
 async fn render_profile(
     state: &AppState,
+    session: &Session,
     profile_csrf: &str,
     password_csrf: &str,
     user: &User,
@@ -1108,6 +1132,7 @@ async fn render_profile(
     if let Some(error) = error {
         context.insert("error", error);
     }
+    super::helpers::inject_site_context(state, session, &mut context, "/user/profile").await;
 
     match state.theme().tera().render("user/profile.html", &context) {
         Ok(html) => Html(html).into_response(),
@@ -1137,6 +1162,7 @@ async fn profile_form(State(state): State<AppState>, session: Session) -> Respon
     let (profile_csrf, password_csrf) = profile_csrf_pair(&session).await;
     render_profile(
         &state,
+        &session,
         &profile_csrf,
         &password_csrf,
         &user,
@@ -1249,6 +1275,7 @@ async fn profile_update(
         let (pc, pwc) = profile_csrf_pair(&session).await;
         return render_profile(
             &state,
+            &session,
             &pc,
             &pwc,
             &user,
@@ -1363,6 +1390,7 @@ async fn profile_update(
             };
             render_profile(
                 &state,
+                &session,
                 &pc,
                 &pwc,
                 &updated_user,
@@ -1377,6 +1405,7 @@ async fn profile_update(
             let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
+                &session,
                 &pc,
                 &pwc,
                 &user,
@@ -1392,6 +1421,7 @@ async fn profile_update(
             let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
+                &session,
                 &pc,
                 &pwc,
                 &user,
@@ -1457,7 +1487,18 @@ async fn password_change(
 
     if !errors.is_empty() {
         let (pc, pwc) = profile_csrf_pair(&session).await;
-        return render_profile(&state, &pc, &pwc, &user, Some(&errors), None, None, None).await;
+        return render_profile(
+            &state,
+            &session,
+            &pc,
+            &pwc,
+            &user,
+            Some(&errors),
+            None,
+            None,
+            None,
+        )
+        .await;
     }
 
     // Password change is a self-service action.
@@ -1478,6 +1519,7 @@ async fn password_change(
             let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
+                &session,
                 &pc,
                 &pwc,
                 &user,
@@ -1492,6 +1534,7 @@ async fn password_change(
             let (pc, pwc) = profile_csrf_pair(&session).await;
             render_profile(
                 &state,
+                &session,
                 &pc,
                 &pwc,
                 &user,

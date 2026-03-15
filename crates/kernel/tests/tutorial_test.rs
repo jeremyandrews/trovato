@@ -698,7 +698,7 @@ fn test_part01_step04_conferences_url_alias() {
         // ones may not be on page 1. Just verify the page renders as HTML with
         // a gather container (not an error page).
         assert!(
-            body.contains("gather-query") || body.contains("conf-card"),
+            body.contains("gather-query") || body.contains("card--conf"),
             "gather page should render as HTML with gather content"
         );
     });
