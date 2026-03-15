@@ -40,6 +40,9 @@ check_sync "Part 1" "$TUTORIAL_DIR/part-01-hello-trovato.md" "$RECIPE_DIR/recipe
 check_sync "Part 2" "$TUTORIAL_DIR/part-02-ritrovo-importer.md" "$RECIPE_DIR/recipe-part-02.md" || exit_code=1
 check_sync "Part 3" "$TUTORIAL_DIR/part-03-look-and-feel.md" "$RECIPE_DIR/recipe-part-03.md" || exit_code=1
 check_sync "Part 4" "$TUTORIAL_DIR/part-04-editorial-engine.md" "$RECIPE_DIR/recipe-part-04.md" || exit_code=1
+check_sync "Part 5" "$TUTORIAL_DIR/part-05-forms-and-input.md" "$RECIPE_DIR/recipe-part-05.md" || exit_code=1
+check_sync "Part 6" "$TUTORIAL_DIR/part-06-community.md" "$RECIPE_DIR/recipe-part-06.md" || exit_code=1
+check_sync "Part 7" "$TUTORIAL_DIR/part-07-going-global.md" "$RECIPE_DIR/recipe-part-07.md" || exit_code=1
 
 if [[ $exit_code -eq 0 ]]; then
     echo ""
