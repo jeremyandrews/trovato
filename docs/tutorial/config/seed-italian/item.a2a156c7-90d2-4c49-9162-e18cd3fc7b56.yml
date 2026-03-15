@@ -1,0 +1,25 @@
+# Data Engineering Summit Italia — needs_translation (Italian only)
+id: 'a2a156c7-90d2-4c49-9162-e18cd3fc7b56'
+type: conference
+title: Data Engineering Summit Italia 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>Il Data Engineering Summit Italia è l'evento dedicato all'ingegneria dei dati. Talk su Apache Spark, Kafka, data lakehouse, pipeline in tempo reale e governance dei dati aziendali.</p>"
+      format: filtered_html
+  field_start_date: '2026-07-03'
+  field_end_date: '2026-07-04'
+  field_city: Milano
+  field_country: IT
+  field_online: false
+  field_url: https://dataengineering.it
+  field_language: it
+  field_topics:
+    - 2844d31c-e767-404d-8aac-9efbf03e6dce
+    - d8308e31-4664-4eea-871b-26ad8fdf8766
+  primary_language: it
+  translation_status: needs_translation

@@ -1,0 +1,28 @@
+# Italian Agile Days — translated (both EN + IT complete)
+id: '66997692-1471-4aeb-8e8b-c5b91273951c'
+type: conference
+title: Italian Agile Days 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>Italian Agile Days è la conferenza italiana sulle metodologie agili e lean. Due giorni di sessioni su Scrum, Kanban, DevOps e trasformazione digitale a Brescia.</p>"
+      format: filtered_html
+    en:
+      value: "<p>Italian Agile Days is the Italian conference on agile and lean methodologies. Two days of sessions on Scrum, Kanban, DevOps, and digital transformation in Brescia.</p>"
+      format: filtered_html
+  field_start_date: '2026-11-14'
+  field_end_date: '2026-11-15'
+  field_city: Brescia
+  field_country: IT
+  field_online: false
+  field_url: https://www.agileday.it
+  field_language: it
+  field_topics:
+    - 25119316-f777-47d8-8593-86ee5609c2cd
+    - c3d8982d-9060-4f05-8545-729a8cff7656
+  primary_language: it
+  translation_status: translated

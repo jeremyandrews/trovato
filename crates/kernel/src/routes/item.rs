@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::content::{FilterPipeline, FormBuilder};
 use crate::form::csrf::generate_csrf_token;
+use crate::middleware::language::ResolvedLanguage;
 use crate::models::{CreateItem, UpdateItem, UrlAlias};
 use crate::state::AppState;
 use crate::tap::UserContext;
@@ -210,13 +211,14 @@ fn permitted_text_formats(user: &UserContext) -> Vec<String> {
 /// View an item.
 async fn view_item(
     State(state): State<AppState>,
+    Extension(lang): Extension<ResolvedLanguage>,
     session: Session,
     Path(id): Path<Uuid>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
     // Load item with view tap invocation
-    let (item, render_outputs) = match state.items().load_for_view(id, &user).await {
+    let (mut item, render_outputs) = match state.items().load_for_view(id, &user).await {
         Ok(Some(data)) => data,
         Ok(None) => {
             return Err((
@@ -236,6 +238,12 @@ async fn view_item(
             ));
         }
     };
+
+    // Overlay translation if the active language differs from the default
+    let active_language = lang.0;
+    if active_language != state.default_language() {
+        super::helpers::apply_translation_overlay(state.items(), &mut item, &active_language).await;
+    }
 
     // Render fields through filter pipeline
     let mut children_html = String::new();
@@ -521,6 +529,7 @@ async fn view_item(
     context.insert("referenced_items", &referenced_items);
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
+    context.insert("active_language", &active_language);
 
     let item_html = state
         .theme()
@@ -621,7 +630,7 @@ async fn create_item(
     State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
-    resolved_lang: Option<Extension<crate::middleware::language::ResolvedLanguage>>,
+    Extension(lang): Extension<ResolvedLanguage>,
     Path(item_type): Path<String>,
     Json(request): Json<CreateItemRequest>,
 ) -> Result<Json<ItemResponse>, (StatusCode, Json<JsonError>)> {
@@ -660,9 +669,7 @@ async fn create_item(
         ));
     }
 
-    let language = resolved_lang
-        .map(|Extension(lang)| lang.0)
-        .unwrap_or_else(|| state.default_language().to_string());
+    let language = lang.0;
 
     let input = CreateItem {
         item_type: item_type.clone(),

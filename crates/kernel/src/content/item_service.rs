@@ -31,6 +31,23 @@ struct ItemServiceInner {
     cache: Cache<Uuid, Item>,
 }
 
+/// A translation record for an item in a specific language.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+pub struct ItemTranslation {
+    /// The item this translation belongs to.
+    pub item_id: Uuid,
+    /// The language code (e.g., "fr", "de").
+    pub language: String,
+    /// The translated title.
+    pub title: String,
+    /// Translated field values (JSONB overlay).
+    pub fields: serde_json::Value,
+    /// Unix timestamp when the translation was created.
+    pub created: i64,
+    /// Unix timestamp when the translation was last changed.
+    pub changed: i64,
+}
+
 /// Input for checking item access.
 ///
 /// SYNC: An identical struct exists in `crates/plugin-sdk/src/types.rs` for
@@ -128,6 +145,42 @@ impl ItemService {
         }
 
         Ok(None)
+    }
+
+    /// Load a translation for an item in a specific language.
+    ///
+    /// Returns `None` if no translation exists for the given language.
+    pub async fn load_translation(
+        &self,
+        item_id: Uuid,
+        language: &str,
+    ) -> Result<Option<ItemTranslation>> {
+        let row = sqlx::query_as::<_, ItemTranslation>(
+            "SELECT item_id, language, title, fields, created, changed \
+             FROM item_translation WHERE item_id = $1 AND language = $2",
+        )
+        .bind(item_id)
+        .bind(language)
+        .fetch_optional(&self.inner.pool)
+        .await
+        .context("failed to load item translation")?;
+
+        Ok(row)
+    }
+
+    /// List all translations that exist for an item, ordered by language.
+    ///
+    /// Returns `(language, title)` pairs for use in admin translation listing.
+    pub async fn list_translations(&self, item_id: Uuid) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT language, title FROM item_translation \
+             WHERE item_id = $1 ORDER BY language",
+        )
+        .bind(item_id)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("failed to list translations")?;
+        Ok(rows)
     }
 
     /// Load an item and invoke tap_item_view for rendering.

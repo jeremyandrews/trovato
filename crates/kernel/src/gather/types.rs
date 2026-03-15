@@ -315,6 +315,14 @@ pub struct QueryContext {
 
     /// URL arguments available for UrlArg resolution.
     pub url_args: HashMap<String, String>,
+
+    /// Optional language code for translation overlay.
+    ///
+    /// When set to a non-default language, the gather query builder will
+    /// LEFT JOIN `item_translation` and COALESCE `title` and `fields` so
+    /// that translated content is returned when available, falling back to
+    /// the original values.
+    pub language: Option<String>,
 }
 
 /// Sort specification.

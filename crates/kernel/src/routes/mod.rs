@@ -9,9 +9,11 @@ pub mod admin_content;
 pub mod admin_content_type;
 pub mod admin_pathauto;
 pub mod admin_taxonomy;
+pub mod admin_translation;
 pub mod admin_user;
 pub mod api_chat;
 pub mod api_token;
+pub mod api_v1;
 pub mod auth;
 pub mod batch;
 pub mod category;
@@ -65,6 +67,7 @@ macro_rules! plugin_gate {
 plugin_gate!(gate_categories, "categories");
 plugin_gate!(gate_comments, "comments");
 plugin_gate!(gate_content_locking, "content_locking");
+plugin_gate!(gate_content_translation, "content_translation");
 plugin_gate!(gate_image_styles, "image_styles");
 plugin_gate!(gate_oauth2, "oauth2");
 
@@ -76,6 +79,7 @@ pub(crate) const RUNTIME_GATED_NAMES: &[&str] = &[
     "categories",
     "comments",
     "content_locking",
+    "content_translation",
     "image_styles",
     "oauth2",
 ];
@@ -112,6 +116,12 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
             lock::router().route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 gate_content_locking,
+            )),
+        )
+        .merge(
+            admin_translation::router().route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                gate_content_translation,
             )),
         )
         .merge(

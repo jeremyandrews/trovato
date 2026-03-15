@@ -1,0 +1,11 @@
+name = "ritrovo_translate"
+description = "Language detection and translation workflow for conferences"
+version = "1.0.0"
+dependencies = ["content_translation"]
+
+[taps]
+implements = [
+    "tap_item_view",
+    "tap_item_insert",
+]
+weight = 0

@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{OriginalUri, Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
@@ -25,6 +25,7 @@ use axum::{
 use tower_sessions::Session;
 
 use crate::gather::types::{GatherQuery, GatherRouteParam};
+use crate::middleware::language::ResolvedLanguage;
 use crate::models::Tag;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::gather::ExecuteParams;
@@ -87,13 +88,22 @@ pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
                 get(
                     move |state: State<AppState>,
                           session: Session,
+                          Extension(resolved_lang): Extension<ResolvedLanguage>,
                           uri: OriginalUri,
                           path: Path<HashMap<String, String>>,
                           query_params: Query<HashMap<String, String>>| {
                         let config = config_clone.clone();
                         async move {
-                            handle_gather_route(state, session, uri, path, query_params, &config)
-                                .await
+                            handle_gather_route(
+                                state,
+                                session,
+                                resolved_lang,
+                                uri,
+                                path,
+                                query_params,
+                                &config,
+                            )
+                            .await
                         }
                     },
                 ),
@@ -111,6 +121,7 @@ pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
 async fn handle_gather_route(
     State(state): State<AppState>,
     session: Session,
+    resolved_lang: ResolvedLanguage,
     OriginalUri(uri): OriginalUri,
     Path(segments): Path<HashMap<String, String>>,
     Query(extra_params): Query<HashMap<String, String>>,
@@ -171,8 +182,22 @@ async fn handle_gather_route(
     // pager links and form actions stay on the pretty URL.
     let base_path = uri.path().to_string();
 
-    match super::gather::execute_and_render(&state, &session, &config.query_id, params, &base_path)
-        .await
+    // Resolve language: skip the translation JOIN for the default language.
+    let language = if resolved_lang.0 != state.default_language() {
+        Some(resolved_lang.0)
+    } else {
+        None
+    };
+
+    match super::gather::execute_and_render(
+        &state,
+        &session,
+        &config.query_id,
+        params,
+        &base_path,
+        language,
+    )
+    .await
     {
         Ok(Html(html)) => Html(html).into_response(),
         Err((status, Json(err))) => {

@@ -1,0 +1,10 @@
+name = "ritrovo_cfp"
+description = "CFP deadline badge and validation for conferences"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_item_view",
+]
+weight = 0

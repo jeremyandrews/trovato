@@ -175,6 +175,11 @@ pub async fn inject_site_context(
     context.insert("site_name", &site_name);
     context.insert("site_slogan", &site_slogan);
 
+    // Language context variables (defaults — route handlers may override active_language)
+    context.insert("available_languages", state.known_languages());
+    context.insert("default_language", state.default_language());
+    context.insert("active_language", state.default_language());
+
     // Load main navigation menu links from database (not plugin registry)
     let main_menu_links =
         crate::models::MenuLink::find_by_menu_and_stage(state.db(), "main", LIVE_STAGE_ID)
@@ -577,6 +582,68 @@ pub fn is_valid_timezone(tz: &str) -> bool {
         && tz
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '+' || c == '-')
+}
+
+/// Build `<link rel="alternate" hreflang="...">` data for template rendering.
+///
+/// The default language uses the unprefixed path; non-default languages get a
+/// `/{lang}` prefix. An `x-default` entry always points to the unprefixed URL.
+pub fn build_hreflang_links(
+    path: &str,
+    languages: &[String],
+    default_language: &str,
+) -> Vec<serde_json::Value> {
+    let mut links = Vec::with_capacity(languages.len() + 1);
+
+    for lang in languages {
+        let href = if lang == default_language {
+            path.to_string()
+        } else {
+            format!("/{lang}{path}")
+        };
+        links.push(serde_json::json!({ "lang": lang, "href": href }));
+    }
+
+    // x-default always points to the unprefixed URL
+    links.push(serde_json::json!({ "lang": "x-default", "href": path }));
+
+    links
+}
+
+/// Apply a translation overlay to an item's title and fields.
+///
+/// If a translation exists for `language`, the item's title is replaced
+/// (when the translated title is non-empty) and translated JSONB fields
+/// are merged into the item's existing fields. Errors are logged and
+/// silently ignored so the caller falls back to the default language.
+pub async fn apply_translation_overlay(
+    items: &crate::content::ItemService,
+    item: &mut crate::models::Item,
+    language: &str,
+) {
+    match items.load_translation(item.id, language).await {
+        Ok(Some(translation)) => {
+            if !translation.title.is_empty() {
+                item.title = translation.title;
+            }
+            if let Some(translated_fields) = translation.fields.as_object()
+                && let Some(item_fields) = item.fields.as_object_mut()
+            {
+                for (key, value) in translated_fields {
+                    item_fields.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(
+                item_id = %item.id,
+                language = %language,
+                error = %e,
+                "failed to load item translation, falling back to default"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

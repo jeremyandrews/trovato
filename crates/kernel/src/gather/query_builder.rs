@@ -29,6 +29,11 @@ pub struct GatherQueryBuilder {
     definition: QueryDefinition,
     stage_ids: Vec<Uuid>,
     extensions: Option<Arc<GatherExtensionRegistry>>,
+    /// Optional language code for translation overlay.
+    ///
+    /// When set, the builder LEFT JOINs `item_translation` and COALESCEs
+    /// `title` and `fields` so translated content is returned when available.
+    language: Option<String>,
 }
 
 impl GatherQueryBuilder {
@@ -38,6 +43,7 @@ impl GatherQueryBuilder {
             definition,
             stage_ids: vec![stage_id],
             extensions: None,
+            language: None,
         }
     }
 
@@ -50,12 +56,23 @@ impl GatherQueryBuilder {
             definition,
             stage_ids,
             extensions: None,
+            language: None,
         }
     }
 
     /// Set the extension registry for custom filter/sort/relationship handling.
     pub fn with_extensions(mut self, extensions: Arc<GatherExtensionRegistry>) -> Self {
         self.extensions = Some(extensions);
+        self
+    }
+
+    /// Set the language for translation overlay.
+    ///
+    /// When set, the query will LEFT JOIN `item_translation` on the base
+    /// table's `id` column and COALESCE `title` and `fields` from the
+    /// translation row, falling back to the original item values.
+    pub fn with_language(mut self, language: Option<String>) -> Self {
+        self.language = language;
         self
     }
 
@@ -68,6 +85,9 @@ impl GatherQueryBuilder {
 
         // FROM base table
         query.from(Alias::new(&self.definition.base_table));
+
+        // Translation overlay: LEFT JOIN item_translation when language is set
+        self.add_translation_join(&mut query);
 
         // JOINs
         self.add_joins(&mut query);
@@ -94,7 +114,15 @@ impl GatherQueryBuilder {
         query.limit(per_page as u64);
         query.offset(offset);
 
-        query.to_string(PostgresQueryBuilder)
+        let mut sql = query.to_string(PostgresQueryBuilder);
+
+        // Post-process: replace placeholders with COALESCE expressions for
+        // translated title and fields when a translation JOIN is active.
+        if self.language.is_some() && self.is_item_table() {
+            sql = self.apply_translation_coalesce(sql);
+        }
+
+        sql
     }
 
     /// Build a COUNT query for total results.
@@ -106,6 +134,10 @@ impl GatherQueryBuilder {
 
         // FROM base table
         query.from(Alias::new(&self.definition.base_table));
+
+        // Translation overlay does not affect COUNT — the JOIN does not
+        // change the number of rows (it's a LEFT JOIN matched on item_id
+        // + language, which is at most one row per item).
 
         // JOINs
         self.add_joins(&mut query);
@@ -143,6 +175,79 @@ impl GatherQueryBuilder {
             query.and_where(col.eq(self.stage_ids[0]));
         } else {
             query.and_where(col.is_in(self.stage_ids.clone()));
+        }
+    }
+
+    /// Returns `true` when the base table is `"item"` — the only table
+    /// that has a corresponding `item_translation` table.
+    fn is_item_table(&self) -> bool {
+        self.definition.base_table == "item"
+    }
+
+    /// Add a LEFT JOIN to `item_translation` when a language is set and the
+    /// base table is `item`.
+    ///
+    /// The join matches on `item.id = item_translation.item_id` and the
+    /// requested language code. Because `(item_id, language)` is unique in
+    /// `item_translation`, this produces at most one translation row per
+    /// item and does not change result cardinality.
+    fn add_translation_join(&self, query: &mut SelectStatement) {
+        let Some(ref lang) = self.language else {
+            return;
+        };
+        if !self.is_item_table() {
+            return;
+        }
+
+        // LEFT JOIN item_translation AS _tr
+        //   ON item.id = _tr.item_id AND _tr.language = '<lang>'
+        let on_condition = Expr::col((Alias::new(&self.definition.base_table), Alias::new("id")))
+            .equals((Alias::new("_tr"), Alias::new("item_id")))
+            .and(Expr::col((Alias::new("_tr"), Alias::new("language"))).eq(lang.as_str()));
+
+        query.join_as(
+            sea_query::JoinType::LeftJoin,
+            Alias::new("item_translation"),
+            Alias::new("_tr"),
+            on_condition,
+        );
+    }
+
+    /// Post-process the generated SQL to replace `item.title` and
+    /// `item.fields` references with COALESCE expressions that prefer
+    /// translated values.
+    ///
+    /// Strategy: when SELECT uses `item.*`, we append override columns
+    /// that shadow the base columns in the `row_to_json(t)` wrapper.
+    /// When specific fields are selected, the COALESCE is applied
+    /// inline by `add_select_fields`.
+    ///
+    /// For the `SELECT item.*` case we append:
+    /// ```sql
+    /// , COALESCE(_tr.title, item.title) AS title
+    /// , COALESCE(_tr.fields || item.fields, item.fields) AS fields
+    /// ```
+    ///
+    /// The `_tr.fields || item.fields` merge uses PostgreSQL's `||`
+    /// operator on JSONB: translated keys override originals, but
+    /// untranslated keys are preserved from the base item.
+    fn apply_translation_coalesce(&self, sql: String) -> String {
+        // The SeaQuery output for SELECT item.* produces:
+        //   SELECT "item".*
+        // We append COALESCE columns that the row_to_json wrapper will
+        // pick up (later columns override earlier ones in row_to_json).
+        let base = &self.definition.base_table;
+        let select_all = format!("SELECT \"{base}\".*");
+
+        if sql.starts_with(&select_all) {
+            let coalesce_cols = format!(
+                "{select_all}, \
+                 COALESCE(\"_tr\".\"title\", \"{base}\".\"title\") AS \"title\", \
+                 COALESCE(\"_tr\".\"fields\" || \"{base}\".\"fields\", \"{base}\".\"fields\") AS \"fields\""
+            );
+            sql.replacen(&select_all, &coalesce_cols, 1)
+        } else {
+            sql
         }
     }
 
@@ -1293,6 +1398,134 @@ mod tests {
         assert!(
             sql.contains("tag_descendants"),
             "should reference descendants CTE: {sql}"
+        );
+    }
+
+    // ── Translation overlay tests ────────────────────────────────────
+
+    #[test]
+    fn translation_join_absent_without_language() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("item_translation"),
+            "no language → no translation JOIN: {sql}"
+        );
+        assert!(!sql.contains("_tr"), "no language → no _tr alias: {sql}");
+    }
+
+    #[test]
+    fn translation_join_present_with_language() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("fr".to_string()));
+        let sql = builder.build(1, 10);
+
+        assert!(
+            sql.contains("item_translation"),
+            "language set → should JOIN item_translation: {sql}"
+        );
+        assert!(
+            sql.contains("\"_tr\""),
+            "translation table should be aliased as _tr: {sql}"
+        );
+        assert!(
+            sql.contains("'fr'"),
+            "JOIN should filter on language 'fr': {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_coalesce_title_and_fields() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("de".to_string()));
+        let sql = builder.build(1, 10);
+
+        assert!(
+            sql.contains("COALESCE(\"_tr\".\"title\", \"item\".\"title\") AS \"title\""),
+            "should COALESCE title: {sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(\"_tr\".\"fields\" || \"item\".\"fields\", \"item\".\"fields\") AS \"fields\""),
+            "should COALESCE fields with JSONB merge: {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_join_skipped_for_non_item_table() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("fr".to_string()));
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("item_translation"),
+            "non-item table should not JOIN item_translation: {sql}"
+        );
+        assert!(
+            !sql.contains("COALESCE"),
+            "non-item table should not have COALESCE: {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_count_query_no_join() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("fr".to_string()));
+        let sql = builder.build_count();
+
+        // COUNT query should NOT include translation JOIN (cardinality unchanged)
+        assert!(
+            !sql.contains("item_translation"),
+            "count query should not JOIN item_translation: {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_with_language_none_same_as_no_language() {
+        let def1 = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder1 = GatherQueryBuilder::new(def1, LIVE_STAGE_ID).with_language(None);
+        let sql1 = builder1.build(1, 10);
+
+        let def2 = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder2 = GatherQueryBuilder::new(def2, LIVE_STAGE_ID);
+        let sql2 = builder2.build(1, 10);
+
+        assert_eq!(
+            sql1, sql2,
+            "with_language(None) should produce identical SQL"
         );
     }
 }

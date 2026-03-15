@@ -10,6 +10,7 @@ use tracing::debug;
 
 use crate::content::FilterPipeline;
 use crate::form::Form;
+use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
 use trovato_sdk::render::RenderElement;
@@ -27,7 +28,10 @@ pub struct ThemeEngine {
 
 impl ThemeEngine {
     /// Create a new theme engine loading templates from the given directory.
-    pub fn new(template_dir: &Path) -> Result<Self> {
+    ///
+    /// If a `LocaleService` is provided, a `trans` filter is registered that
+    /// translates interface strings.
+    pub fn new(template_dir: &Path, locale: Option<Arc<LocaleService>>) -> Result<Self> {
         let pattern = template_dir.join("**/*.html");
         let pattern_str = pattern
             .to_str()
@@ -36,7 +40,7 @@ impl ThemeEngine {
         let mut tera = Tera::new(pattern_str).context("failed to initialize Tera templates")?;
 
         // Register custom filters
-        Self::register_filters(&mut tera);
+        Self::register_filters(&mut tera, locale);
 
         let template_names: Vec<_> = tera.get_template_names().collect();
         debug!(count = template_names.len(), "loaded templates");
@@ -59,7 +63,7 @@ impl ThemeEngine {
     }
 
     /// Register custom Tera filters.
-    fn register_filters(tera: &mut Tera) {
+    fn register_filters(tera: &mut Tera, locale: Option<Arc<LocaleService>>) {
         // Filter for text format processing
         tera.register_filter(
             "text_format",
@@ -100,6 +104,23 @@ impl ThemeEngine {
                 Ok(value.clone())
             },
         );
+
+        // Filter for translating interface strings via LocaleService.
+        // Usage: {{ "Subscribe" | trans(lang=active_language) }}
+        if let Some(locale_service) = locale {
+            tera.register_filter(
+                "trans",
+                move |value: &tera::Value,
+                      args: &std::collections::HashMap<String, tera::Value>| {
+                    let source = tera::try_get_value!("trans", "value", String, value);
+                    let lang = args.get("lang").and_then(|v| v.as_str()).unwrap_or("en");
+                    let context = args.get("context").and_then(|v| v.as_str()).unwrap_or("");
+                    Ok(tera::Value::String(
+                        locale_service.translate(&source, context, lang),
+                    ))
+                },
+            );
+        }
     }
 
     /// Get the underlying Tera instance for custom operations.
@@ -435,7 +456,7 @@ mod tests {
     #[test]
     fn test_format_date_filter_with_valid_timestamp() {
         let mut tera = Tera::default();
-        ThemeEngine::register_filters(&mut tera);
+        ThemeEngine::register_filters(&mut tera, None);
 
         tera.add_raw_template("test", "{{ ts | format_date }}")
             .unwrap();
@@ -448,7 +469,7 @@ mod tests {
     #[test]
     fn test_format_date_filter_with_zero() {
         let mut tera = Tera::default();
-        ThemeEngine::register_filters(&mut tera);
+        ThemeEngine::register_filters(&mut tera, None);
 
         tera.add_raw_template("test", "{{ ts | format_date }}")
             .unwrap();
@@ -461,7 +482,7 @@ mod tests {
     #[test]
     fn test_format_date_filter_with_string() {
         let mut tera = Tera::default();
-        ThemeEngine::register_filters(&mut tera);
+        ThemeEngine::register_filters(&mut tera, None);
 
         tera.add_raw_template("test", "{{ ts | format_date }}")
             .unwrap();

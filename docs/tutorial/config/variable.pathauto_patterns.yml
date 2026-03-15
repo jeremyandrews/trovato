@@ -8,3 +8,7 @@ key: pathauto_patterns
 value:
   conference: conferences/[title]
   speaker: speakers/[title]
+  # Italian patterns use the language prefix; the URL prefix negotiator
+  # handles /it/ routing and language detection automatically.
+  conference__it: it/conferenze/[title]
+  speaker__it: it/relatori/[title]

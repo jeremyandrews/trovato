@@ -1,0 +1,12 @@
+name = "ritrovo_access"
+description = "Editorial workflow access control for conferences"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_item_access",
+    "tap_item_view",
+]
+weight = 0

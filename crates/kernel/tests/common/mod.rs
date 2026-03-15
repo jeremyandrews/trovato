@@ -177,6 +177,12 @@ impl TestApp {
                     }
                 }
             })
+            // Middleware layers (must match main.rs ordering):
+            // TraceLayer → session → negotiate_language → routes
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::negotiate_language,
+            ))
             .layer(session_layer)
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .with_state(state.clone());

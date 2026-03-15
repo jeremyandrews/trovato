@@ -480,11 +480,39 @@ impl AppState {
             .await
             .context("failed to register default gather queries")?;
 
+        // Load languages early so locale service can pre-load translations
+        // and the trans filter is available when theme engine is created.
+        let languages = crate::models::Language::list_all(&db)
+            .await
+            .context("failed to load languages")?;
+        let known_languages: Vec<String> = languages.iter().map(|l| l.id.clone()).collect();
+        let default_language = languages
+            .iter()
+            .find(|l| l.is_default)
+            .map(|l| l.id.clone())
+            .unwrap_or_else(|| "en".to_string());
+        info!(
+            count = known_languages.len(),
+            default = %default_language,
+            "loaded languages"
+        );
+
+        // Initialize locale service (before theme engine so trans filter is available)
+        let locale = if enabled_set.contains("locale") {
+            let locale_service = services::locale::LocaleService::new(db.clone());
+            if let Err(e) = locale_service.load_language(&default_language).await {
+                tracing::warn!(error = %e, "failed to pre-load locale translations");
+            }
+            Some(Arc::new(locale_service))
+        } else {
+            None
+        };
+
         // Create theme engine
         let template_dir = Self::resolve_template_dir();
         info!(?template_dir, "loading templates from directory");
         let theme = Arc::new(
-            ThemeEngine::new(&template_dir)
+            ThemeEngine::new(&template_dir, locale.clone())
                 .inspect_err(
                     |e| tracing::warn!(error = ?e, "failed to load templates, using empty engine"),
                 )
@@ -558,22 +586,7 @@ impl AppState {
         // Create tile service
         let tiles = Arc::new(services::tile::TileService::new(db.clone()));
 
-        // Load languages and build negotiator chain
-        let languages = crate::models::Language::list_all(&db)
-            .await
-            .context("failed to load languages")?;
-        let known_languages: Vec<String> = languages.iter().map(|l| l.id.clone()).collect();
-        let default_language = languages
-            .iter()
-            .find(|l| l.is_default)
-            .map(|l| l.id.clone())
-            .unwrap_or_else(|| "en".to_string());
-        info!(
-            count = known_languages.len(),
-            default = %default_language,
-            "loaded languages"
-        );
-
+        // Build language negotiator chain (languages were loaded earlier for locale)
         let mut language_negotiators: Vec<Arc<dyn LanguageNegotiator>> = vec![
             Arc::new(UrlPrefixNegotiator::new(
                 known_languages.clone(),
@@ -657,17 +670,6 @@ impl AppState {
                     None
                 }
             }
-        } else {
-            None
-        };
-
-        let locale = if enabled_set.contains("locale") {
-            let locale_service = services::locale::LocaleService::new(db.clone());
-            // Pre-load translations for default language
-            if let Err(e) = locale_service.load_language(&default_language).await {
-                tracing::warn!(error = %e, "failed to pre-load locale translations");
-            }
-            Some(Arc::new(locale_service))
         } else {
             None
         };

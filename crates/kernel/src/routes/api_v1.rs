@@ -1,0 +1,665 @@
+//! Versioned REST API (v1) for Ritrovo conferences.
+//!
+//! Provides a stable, paginated JSON API with envelope responses.
+//! All list endpoints return `{ data, total, page, per_page }`.
+//! Single-resource endpoints return `{ data }`.
+//! Error endpoints return `{ error, status }`.
+
+use axum::{
+    Extension, Json, Router,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use tower_sessions::Session;
+use uuid::Uuid;
+
+use crate::gather::{FilterValue, QueryContext};
+use crate::middleware::language::ResolvedLanguage;
+use crate::models::Subscription;
+use crate::models::stage::LIVE_STAGE_ID;
+use crate::routes::auth::SESSION_USER_ID;
+use crate::routes::helpers::require_csrf_header;
+use crate::state::AppState;
+
+// -------------------------------------------------------------------------
+// Gather query ID constants
+// -------------------------------------------------------------------------
+
+/// Gather query ID for upcoming conference listings.
+const QUERY_UPCOMING_CONFERENCES: &str = "upcoming_conferences";
+
+/// Gather query ID for conferences filtered by topic.
+const QUERY_CONFERENCES_BY_TOPIC: &str = "conferences_by_topic";
+
+/// Gather query ID for speaker listings.
+const QUERY_SPEAKERS: &str = "speakers";
+
+// -------------------------------------------------------------------------
+// Response envelope types
+// -------------------------------------------------------------------------
+
+/// Paginated list envelope.
+#[derive(Debug, Serialize)]
+struct ListEnvelope<T: Serialize> {
+    data: Vec<T>,
+    total: u64,
+    page: i64,
+    per_page: i64,
+}
+
+/// Single-resource envelope.
+#[derive(Debug, Serialize)]
+struct DataEnvelope<T: Serialize> {
+    data: T,
+}
+
+/// Error envelope.
+#[derive(Debug, Serialize)]
+struct ErrorEnvelope {
+    error: String,
+    status: u16,
+}
+
+// -------------------------------------------------------------------------
+// Query parameter types
+// -------------------------------------------------------------------------
+
+/// Common query params for list endpoints.
+#[derive(Debug, Deserialize)]
+struct ListParams {
+    #[serde(default = "default_page")]
+    page: i64,
+    #[serde(default = "default_per_page")]
+    per_page: i64,
+    topic: Option<String>,
+    country: Option<String>,
+    online: Option<String>,
+    lang: Option<String>,
+    stage: Option<String>,
+    q: Option<String>,
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+fn default_per_page() -> i64 {
+    25
+}
+
+/// Create the v1 API router.
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/conferences", get(list_conferences))
+        .route("/api/v1/conferences/{id}", get(get_conference))
+        .route("/api/v1/topics", get(list_topics))
+        .route(
+            "/api/v1/topics/{id}/conferences",
+            get(list_topic_conferences),
+        )
+        .route("/api/v1/search", get(search))
+        .route("/api/v1/speakers", get(list_speakers))
+        .route("/api/v1/speakers/{id}", get(get_speaker))
+        .route(
+            "/api/v1/conferences/{id}/subscribe",
+            post(subscribe).delete(unsubscribe),
+        )
+}
+
+// -------------------------------------------------------------------------
+// Helper functions
+// -------------------------------------------------------------------------
+
+/// Build an error response with envelope.
+fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        status,
+        Json(ErrorEnvelope {
+            error: message.to_string(),
+            status: status.as_u16(),
+        }),
+    )
+}
+
+/// Clamp per_page to a sane range.
+fn clamp_per_page(per_page: i64) -> i64 {
+    per_page.clamp(1, 100)
+}
+
+// -------------------------------------------------------------------------
+// Conference endpoints
+// -------------------------------------------------------------------------
+
+/// List conferences with optional filtering and pagination.
+///
+/// `GET /api/v1/conferences?page=1&per_page=25&topic=...&country=...`
+async fn list_conferences(
+    State(state): State<AppState>,
+    session: Session,
+    Extension(lang): Extension<ResolvedLanguage>,
+    Query(params): Query<ListParams>,
+) -> impl IntoResponse {
+    let per_page = clamp_per_page(params.per_page);
+    let page = params.page.max(1);
+
+    // Try the "upcoming_conferences" gather query if available
+    let query_id = QUERY_UPCOMING_CONFERENCES;
+    if state.gather().get_query(query_id).is_some() {
+        let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+        let mut url_args = HashMap::new();
+        if let Some(ref topic) = params.topic {
+            url_args.insert("topic".to_string(), topic.clone());
+        }
+        if let Some(ref country) = params.country {
+            url_args.insert("country".to_string(), country.clone());
+        }
+        let language = if lang.0 != state.default_language() {
+            Some(lang.0.clone())
+        } else {
+            None
+        };
+        let context = QueryContext {
+            current_user_id: user_id,
+            url_args,
+            language,
+        };
+
+        let exposed_filters = build_exposed_filters(&params);
+
+        let stage_id = params
+            .stage
+            .as_deref()
+            .and_then(|s| s.parse::<Uuid>().ok())
+            .unwrap_or(LIVE_STAGE_ID);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let page_u32 = page as u32;
+
+        match state
+            .gather()
+            .execute(query_id, page_u32, exposed_filters, stage_id, &context)
+            .await
+        {
+            Ok(result) => {
+                return Json(ListEnvelope {
+                    data: result.items,
+                    total: result.total,
+                    page,
+                    per_page,
+                })
+                .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to execute gather query");
+            }
+        }
+    }
+
+    // Fallback: use ItemService directly
+    let offset = (page - 1) * per_page;
+    match state
+        .items()
+        .list_filtered(Some("conference"), Some(1), None, per_page, offset)
+        .await
+    {
+        Ok((items, total)) => {
+            let data: Vec<serde_json::Value> = items
+                .into_iter()
+                .map(|item| {
+                    serde_json::json!({
+                        "id": item.id,
+                        "title": item.title,
+                        "type": item.item_type,
+                        "status": item.status,
+                        "created": item.created,
+                        "changed": item.changed,
+                        "fields": item.fields,
+                    })
+                })
+                .collect();
+
+            let _ = &lang; // acknowledge language for future translation overlay
+            Json(ListEnvelope {
+                data,
+                total: total as u64,
+                page,
+                per_page,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list conferences");
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load conferences",
+            )
+            .into_response()
+        }
+    }
+}
+
+/// Get a single conference by ID.
+///
+/// `GET /api/v1/conferences/{id}`
+async fn get_conference(
+    State(state): State<AppState>,
+    Extension(lang): Extension<ResolvedLanguage>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let mut item = match state.items().load(id).await {
+        Ok(Some(item)) if item.item_type == "conference" => item,
+        Ok(_) => {
+            return error_response(StatusCode::NOT_FOUND, "Conference not found").into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load conference");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load conference",
+            )
+            .into_response();
+        }
+    };
+
+    // Translation overlay (shared with item::view_item)
+    if lang.0 != state.default_language() {
+        super::helpers::apply_translation_overlay(state.items(), &mut item, &lang.0).await;
+    }
+
+    Json(DataEnvelope {
+        data: serde_json::json!({
+            "id": item.id,
+            "title": item.title,
+            "type": item.item_type,
+            "status": item.status,
+            "created": item.created,
+            "changed": item.changed,
+            "fields": item.fields,
+        }),
+    })
+    .into_response()
+}
+
+// -------------------------------------------------------------------------
+// Topic endpoints
+// -------------------------------------------------------------------------
+
+/// List all topics (categories).
+///
+/// `GET /api/v1/topics`
+///
+/// Returns all categories in a single page (categories are a small bounded set).
+async fn list_topics(State(state): State<AppState>) -> impl IntoResponse {
+    match state.categories().list_categories().await {
+        Ok(categories) => {
+            let data: Vec<serde_json::Value> = categories
+                .into_iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "id": c.id,
+                        "label": c.label,
+                        "description": c.description,
+                    })
+                })
+                .collect();
+            let total = data.len() as u64;
+            Json(ListEnvelope {
+                data,
+                total,
+                page: 1,
+                per_page: total as i64,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list categories");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load topics")
+                .into_response()
+        }
+    }
+}
+
+/// List conferences for a specific topic.
+///
+/// `GET /api/v1/topics/{id}/conferences`
+async fn list_topic_conferences(
+    State(state): State<AppState>,
+    session: Session,
+    Path(topic_id): Path<Uuid>,
+    Query(params): Query<ListParams>,
+) -> impl IntoResponse {
+    let per_page = clamp_per_page(params.per_page);
+    let page = params.page.max(1);
+
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let mut url_args = HashMap::new();
+    url_args.insert("topic".to_string(), topic_id.to_string());
+
+    let context = QueryContext {
+        current_user_id: user_id,
+        url_args,
+        language: None,
+    };
+
+    let query_id = if state
+        .gather()
+        .get_query(QUERY_CONFERENCES_BY_TOPIC)
+        .is_some()
+    {
+        QUERY_CONFERENCES_BY_TOPIC
+    } else {
+        QUERY_UPCOMING_CONFERENCES
+    };
+
+    let mut exposed_filters = HashMap::new();
+    exposed_filters.insert(
+        "field_topics".to_string(),
+        FilterValue::String(topic_id.to_string()),
+    );
+
+    #[allow(clippy::cast_possible_truncation)]
+    let page_u32 = page as u32;
+
+    match state
+        .gather()
+        .execute(query_id, page_u32, exposed_filters, LIVE_STAGE_ID, &context)
+        .await
+    {
+        Ok(result) => Json(ListEnvelope {
+            data: result.items,
+            total: result.total,
+            page,
+            per_page,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to execute topic query");
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load topic conferences",
+            )
+            .into_response()
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Search endpoint
+// -------------------------------------------------------------------------
+
+/// Search across all content.
+///
+/// `GET /api/v1/search?q=rust&page=1&per_page=25`
+async fn search(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<ListParams>,
+) -> impl IntoResponse {
+    let per_page = clamp_per_page(params.per_page);
+    let page = params.page.max(1);
+
+    let query = params.q.as_deref().unwrap_or("");
+    if query.is_empty() {
+        return Json(ListEnvelope {
+            data: Vec::<serde_json::Value>::new(),
+            total: 0,
+            page,
+            per_page,
+        })
+        .into_response();
+    }
+
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let offset = (page - 1) * per_page;
+    match state
+        .search()
+        .search(query, &[LIVE_STAGE_ID], user_id, per_page, offset)
+        .await
+    {
+        Ok(results) => {
+            let data: Vec<serde_json::Value> = results
+                .results
+                .into_iter()
+                .map(|item| {
+                    serde_json::json!({
+                        "id": item.id,
+                        "title": item.title,
+                        "type": item.item_type,
+                        "snippet": item.snippet,
+                    })
+                })
+                .collect();
+
+            Json(ListEnvelope {
+                data,
+                total: results.total as u64,
+                page,
+                per_page,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "search failed");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Search failed").into_response()
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Speaker endpoints
+// -------------------------------------------------------------------------
+
+/// List speakers.
+///
+/// `GET /api/v1/speakers?page=1&per_page=25`
+async fn list_speakers(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<ListParams>,
+) -> impl IntoResponse {
+    let per_page = clamp_per_page(params.per_page);
+    let page = params.page.max(1);
+
+    if state.gather().get_query(QUERY_SPEAKERS).is_some() {
+        let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+        let context = QueryContext {
+            current_user_id: user_id,
+            url_args: HashMap::new(),
+            language: None,
+        };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let page_u32 = page as u32;
+
+        match state
+            .gather()
+            .execute(
+                QUERY_SPEAKERS,
+                page_u32,
+                HashMap::new(),
+                LIVE_STAGE_ID,
+                &context,
+            )
+            .await
+        {
+            Ok(result) => {
+                return Json(ListEnvelope {
+                    data: result.items,
+                    total: result.total,
+                    page,
+                    per_page,
+                })
+                .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to list speakers");
+            }
+        }
+    }
+
+    // Fallback: list speaker content type items
+    let offset = (page - 1) * per_page;
+    match state
+        .items()
+        .list_filtered(Some("speaker"), Some(1), None, per_page, offset)
+        .await
+    {
+        Ok((items, total)) => {
+            let data: Vec<serde_json::Value> = items
+                .into_iter()
+                .map(|item| {
+                    serde_json::json!({
+                        "id": item.id,
+                        "title": item.title,
+                        "fields": item.fields,
+                    })
+                })
+                .collect();
+
+            Json(ListEnvelope {
+                data,
+                total: total as u64,
+                page,
+                per_page,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list speakers");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load speakers")
+                .into_response()
+        }
+    }
+}
+
+/// Get a single speaker by ID.
+///
+/// `GET /api/v1/speakers/{id}`
+async fn get_speaker(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    match state.items().load(id).await {
+        Ok(Some(item)) => Json(DataEnvelope {
+            data: serde_json::json!({
+                "id": item.id,
+                "title": item.title,
+                "type": item.item_type,
+                "fields": item.fields,
+                "created": item.created,
+                "changed": item.changed,
+            }),
+        })
+        .into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Speaker not found").into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load speaker");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load speaker")
+                .into_response()
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Subscription endpoints
+// -------------------------------------------------------------------------
+
+/// Subscribe to a conference.
+///
+/// `POST /api/v1/conferences/{id}/subscribe`
+async fn subscribe(
+    State(state): State<AppState>,
+    session: Session,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_csrf_header(&session, &headers).await {
+        return resp.into_response();
+    }
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let Some(user_id) = user_id else {
+        return error_response(StatusCode::UNAUTHORIZED, "Authentication required").into_response();
+    };
+
+    // Verify the conference exists
+    match state.items().load(id).await {
+        Ok(Some(item)) if item.item_type == "conference" => {}
+        _ => {
+            return error_response(StatusCode::NOT_FOUND, "Conference not found").into_response();
+        }
+    }
+
+    match Subscription::subscribe(state.db(), user_id, id).await {
+        Ok(()) => Json(DataEnvelope {
+            data: serde_json::json!({ "subscribed": true, "item_id": id }),
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to subscribe");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to subscribe").into_response()
+        }
+    }
+}
+
+/// Unsubscribe from a conference.
+///
+/// `DELETE /api/v1/conferences/{id}/subscribe`
+async fn unsubscribe(
+    State(state): State<AppState>,
+    session: Session,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if let Err(resp) = require_csrf_header(&session, &headers).await {
+        return resp.into_response();
+    }
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let Some(user_id) = user_id else {
+        return error_response(StatusCode::UNAUTHORIZED, "Authentication required").into_response();
+    };
+
+    match Subscription::unsubscribe(state.db(), user_id, id).await {
+        Ok(_) => Json(DataEnvelope {
+            data: serde_json::json!({ "subscribed": false, "item_id": id }),
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to unsubscribe");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to unsubscribe")
+                .into_response()
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Internal helpers
+// -------------------------------------------------------------------------
+
+/// Build exposed filter values from query parameters.
+fn build_exposed_filters(params: &ListParams) -> HashMap<String, FilterValue> {
+    let mut filters = HashMap::new();
+
+    if let Some(ref topic) = params.topic {
+        filters.insert(
+            "field_topics".to_string(),
+            FilterValue::String(topic.clone()),
+        );
+    }
+
+    if let Some(ref country) = params.country {
+        filters.insert(
+            "field_country".to_string(),
+            FilterValue::String(country.clone()),
+        );
+    }
+
+    if let Some(ref online) = params.online {
+        filters.insert(
+            "field_online".to_string(),
+            FilterValue::String(online.clone()),
+        );
+    }
+
+    filters
+}

@@ -611,7 +611,8 @@ impl GatherService {
         // Build and execute queries
         let per_page = display.items_per_page;
         let builder = GatherQueryBuilder::new_with_stages(builder_def, stage_ids.to_vec())
-            .with_extensions(self.extensions.clone());
+            .with_extensions(self.extensions.clone())
+            .with_language(context.language.clone());
 
         // Execute count and main queries with a statement timeout for safety.
         // Use a transaction so SET LOCAL applies correctly and resets on commit/rollback.
@@ -1594,6 +1595,7 @@ mod tests {
         let context = QueryContext {
             current_user_id: Some(user_id),
             url_args: HashMap::new(),
+            language: None,
         };
 
         let def = QueryDefinition {
@@ -1673,6 +1675,7 @@ mod tests {
         let context = QueryContext {
             current_user_id: None,
             url_args,
+            language: None,
         };
 
         let def = QueryDefinition {

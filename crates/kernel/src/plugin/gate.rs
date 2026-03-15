@@ -41,6 +41,10 @@ pub const GATED_ROUTE_PLUGINS: &[GatedPlugin] = &[
         description: "Content lock API routes",
     },
     GatedPlugin {
+        name: "content_translation",
+        description: "Content translation admin UI routes",
+    },
+    GatedPlugin {
         name: "image_styles",
         description: "Image style derivative routes",
     },

@@ -42,6 +42,7 @@ pub async fn run_gather(
     let context = QueryContext {
         current_user_id: Some(user_ctx.id),
         url_args: HashMap::new(),
+        language: None,
     };
 
     let result = state

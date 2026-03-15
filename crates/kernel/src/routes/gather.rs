@@ -5,12 +5,13 @@
 use crate::gather::{
     ExposedWidget, FilterValue, GatherQuery, QueryContext, QueryDefinition, QueryDisplay,
 };
+use crate::middleware::language::ResolvedLanguage;
 use crate::models::TagWithDepth;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 use axum::{
-    Router,
+    Extension, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, Json},
@@ -22,6 +23,18 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use super::helpers::{JsonError, html_escape as escape_html};
+
+/// Determine the language for `QueryContext` from a resolved language extension.
+///
+/// Returns `Some(lang)` when the active language differs from the site default,
+/// signalling that translation overlay should be applied.
+fn language_for_context(lang: &ResolvedLanguage, default: &str) -> Option<String> {
+    if lang.0 != default {
+        Some(lang.0.clone())
+    } else {
+        None
+    }
+}
 
 /// Create the gather router.
 pub fn router() -> Router<AppState> {
@@ -167,13 +180,16 @@ async fn get_query(
 async fn execute_query(
     State(state): State<AppState>,
     session: Session,
+    Extension(resolved_lang): Extension<ResolvedLanguage>,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Json<GatherResultResponse>, (StatusCode, Json<JsonError>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let language = language_for_context(&resolved_lang, state.default_language());
     let context = QueryContext {
         current_user_id: user_id,
         url_args: params.filters.clone(),
+        language,
     };
 
     // Parse exposed filter values
@@ -207,12 +223,15 @@ async fn execute_query(
 async fn execute_adhoc_query(
     State(state): State<AppState>,
     session: Session,
+    Extension(resolved_lang): Extension<ResolvedLanguage>,
     Json(request): Json<AdhocQueryRequest>,
 ) -> Result<Json<GatherResultResponse>, (StatusCode, Json<JsonError>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let language = language_for_context(&resolved_lang, state.default_language());
     let context = QueryContext {
         current_user_id: user_id,
         url_args: HashMap::new(),
+        language,
     };
 
     // Convert JSON filter values to FilterValue
@@ -258,6 +277,7 @@ async fn execute_adhoc_query(
 async fn render_query_html(
     State(state): State<AppState>,
     session: Session,
+    Extension(resolved_lang): Extension<ResolvedLanguage>,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
@@ -269,23 +289,28 @@ async fn render_query_html(
         .get_query(&query_id)
         .and_then(|q| q.display.canonical_url);
     let base_path = canonical.unwrap_or_else(|| format!("/gather/{query_id}"));
-    execute_and_render(&state, &session, &query_id, params, &base_path).await
+    let language = language_for_context(&resolved_lang, state.default_language());
+    execute_and_render(&state, &session, &query_id, params, &base_path, language).await
 }
 
 /// Execute a gather query and render it as an HTML page.
 ///
 /// `base_path` controls the URL used for pager links and form actions.
+/// `language` is an optional language code for translation overlay; when
+/// `None`, queries return the original (default-language) content.
 pub async fn execute_and_render(
     state: &AppState,
     session: &Session,
     query_id: &str,
     params: ExecuteParams,
     base_path: &str,
+    language: Option<String>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let query_context = QueryContext {
         current_user_id: user_id,
         url_args: params.filters.clone(),
+        language,
     };
 
     let gather_query = state.gather().get_query(query_id).ok_or_else(|| {
@@ -347,6 +372,11 @@ pub async fn execute_and_render(
     // Wrap in page layout with site context
     let mut context = tera::Context::new();
     super::helpers::inject_site_context(state, session, &mut context, base_path).await;
+
+    // Override active_language when translation overlay is active
+    if let Some(ref lang) = query_context.language {
+        context.insert("active_language", lang);
+    }
 
     // Build breadcrumbs: Home > Query Label
     let breadcrumbs = vec![
@@ -1080,6 +1110,28 @@ mod pager_tests {
         let pages = compute_page_list(10, 10);
         let max = pages.iter().filter_map(|v| v.as_u64()).max().unwrap_or(0);
         assert_eq!(max, 10);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Language context tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod language_context_tests {
+    use super::language_for_context;
+    use crate::middleware::language::ResolvedLanguage;
+
+    #[test]
+    fn none_when_resolved_matches_default() {
+        let lang = ResolvedLanguage("en".to_string());
+        assert_eq!(language_for_context(&lang, "en"), None);
+    }
+
+    #[test]
+    fn some_when_resolved_differs_from_default() {
+        let lang = ResolvedLanguage("fr".to_string());
+        assert_eq!(language_for_context(&lang, "en"), Some("fr".to_string()));
     }
 }
 

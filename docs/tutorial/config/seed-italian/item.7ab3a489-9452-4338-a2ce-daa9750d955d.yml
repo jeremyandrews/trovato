@@ -1,0 +1,25 @@
+# Conferenza Italiana sul Software Libero — needs_translation (Italian only)
+id: '7ab3a489-9452-4338-a2ce-daa9750d955d'
+type: conference
+title: Conferenza Italiana sul Software Libero 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>La Conferenza Italiana sul Software Libero celebra l'open source e il software libero. Talk su licenze, contribuzione a progetti OSS, e la cultura del codice aperto nella pubblica amministrazione italiana.</p>"
+      format: filtered_html
+  field_start_date: '2026-09-18'
+  field_end_date: '2026-09-19'
+  field_city: Torino
+  field_country: IT
+  field_online: false
+  field_url: https://softwarelibero.it
+  field_language: it
+  field_topics:
+    - ff2184e0-a346-4135-8d2f-309b22120244
+    - c3d8982d-9060-4f05-8545-729a8cff7656
+  primary_language: it
+  translation_status: needs_translation
