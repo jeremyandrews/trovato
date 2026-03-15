@@ -28,7 +28,8 @@
             {% endif %}
             <div class="site-nav__divider"></div>
             {% if user_authenticated %}
-            <a href="/admin" class="site-nav__link">Admin</a>
+            {% if user_is_admin %}<a href="/admin" class="site-nav__link">Admin</a>{% endif %}
+            <a href="/user/profile" class="site-nav__link">Profile</a>
             <form method="post" action="/user/logout" class="site-nav__logout-form">
                 <input type="hidden" name="_token" value="{{ csrf_token }}">
                 <button type="submit" class="site-nav__link site-nav__logout">Logout</button>

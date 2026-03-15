@@ -216,14 +216,17 @@ pub async fn inject_site_context(
     }
 
     let mut user_roles = vec!["anonymous user".to_string()];
+    let mut is_admin = false;
     if let Some(id) = user_id {
         user_roles.push("authenticated user".to_string());
         if let Ok(Some(user)) = state.users().find_by_id(id).await
             && user.is_admin
         {
             user_roles.push("administrator".to_string());
+            is_admin = true;
         }
     }
+    context.insert("user_is_admin", &is_admin);
 
     // Load tiles for all regions filtered by request path and user roles
     for region in &["header", "navigation", "sidebar", "footer"] {
