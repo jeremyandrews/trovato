@@ -1,8 +1,8 @@
 # Recipe: Part 5 — Forms & User Input
 
 > **Synced with:** `docs/tutorial/part-05-forms-and-input.md`
-> **Sync hash:** b1bc0a8b
-> **Last verified:** 2026-03-15
+> **Sync hash:** 4e44171c
+> **Last verified:** 2026-03-15 (plugins implemented and installed)
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
 
@@ -174,25 +174,28 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 ### 5.2 Build the Plugin
 
-> **Not yet implemented.** The `ritrovo_cfp` plugin source does not exist yet. Skip steps 5.2–5.5 until it is written.
-
 `[CLI]`
 
 ```bash
 cd plugins/ritrovo_cfp
 cargo build --target wasm32-wasip1 --release
-cp target/wasm32-wasip1/release/ritrovo_cfp.wasm ../../plugin-dist/
+mkdir -p ../../plugin-dist
+cp ../../target/wasm32-wasip1/release/ritrovo_cfp.wasm ../../plugin-dist/
 ```
 
 **Verify:** `plugin-dist/ritrovo_cfp.wasm` exists.
+
+> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/ritrovo_cfp/target/`.
 
 ### 5.3 Install the Plugin
 
 `[CLI]`
 
 ```bash
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_cfp.wasm
+cargo run --release --bin trovato -- plugin install ritrovo_cfp
 ```
+
+> Restart the server after installing so `tap_install` fires.
 
 ### 5.4 Verify Plugin Installation
 
@@ -200,7 +203,7 @@ cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_cfp.wasm
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugins WHERE name = 'ritrovo_cfp';"
+  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_cfp';"
 ```
 
 **Verify:** ritrovo_cfp, status 1 (enabled).
@@ -235,25 +238,28 @@ Record plugin build and install commands in `TOOLS.md -> Plugins`.
 
 ### 6.2 Build the Plugin
 
-> **Not yet implemented.** The `ritrovo_access` plugin source does not exist yet. Skip steps 6.2–6.6 until it is written.
-
 `[CLI]`
 
 ```bash
 cd plugins/ritrovo_access
 cargo build --target wasm32-wasip1 --release
-cp target/wasm32-wasip1/release/ritrovo_access.wasm ../../plugin-dist/
+mkdir -p ../../plugin-dist
+cp ../../target/wasm32-wasip1/release/ritrovo_access.wasm ../../plugin-dist/
 ```
 
 **Verify:** `plugin-dist/ritrovo_access.wasm` exists.
+
+> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/ritrovo_access/target/`.
 
 ### 6.3 Install the Plugin
 
 `[CLI]`
 
 ```bash
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_access.wasm
+cargo run --release --bin trovato -- plugin install ritrovo_access
 ```
+
+> Restart the server after installing so `tap_install` fires.
 
 ### 6.4 Verify Plugin Installation
 
@@ -261,7 +267,7 @@ cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_access.w
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugins WHERE name = 'ritrovo_access';"
+  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_access';"
 ```
 
 **Verify:** ritrovo_access, status 1 (enabled).
@@ -358,8 +364,8 @@ curl -s -b /tmp/trovato-test.txt -c /tmp/trovato-test.txt -X POST http://localho
   -d "username=admin&password=trovato-admin1&_token=$TC" -o /dev/null -w "%{http_code}"
 echo ""
 echo -n "4. Profile accessible: "; curl -s -b /tmp/trovato-test.txt -o /dev/null -w "%{http_code}" http://localhost:3000/user/profile
-echo -n "5. ritrovo_cfp plugin: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugins WHERE name = 'ritrovo_cfp'), 'not installed');" | tr -d ' '
-echo -n "6. ritrovo_access plugin: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugins WHERE name = 'ritrovo_access'), 'not installed');" | tr -d ' '
+echo -n "5. ritrovo_cfp plugin: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugin_status WHERE name = 'ritrovo_cfp'), 'not installed');" | tr -d ' '
+echo -n "6. ritrovo_access plugin: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugin_status WHERE name = 'ritrovo_access'), 'not installed');" | tr -d ' '
 echo ""
 ```
 
@@ -369,8 +375,8 @@ Expected output:
 2. Text format perms: >= 2
 3. Profile page: 303
 4. Profile accessible: 200
-5. ritrovo_cfp plugin: 1 (or "not installed" if plugin not yet written)
-6. ritrovo_access plugin: 1 (or "not installed" if plugin not yet written)
+5. ritrovo_cfp plugin: 1
+6. ritrovo_access plugin: 1
 ```
 
 Create a database backup:

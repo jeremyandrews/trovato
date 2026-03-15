@@ -397,7 +397,7 @@ The 6-hour TTL on form state means users can start a submission, go to lunch, an
 
 The `ritrovo_cfp` plugin tracks Call for Papers deadlines and provides visual indicators on conference pages. It is the second Ritrovo plugin (after `ritrovo_importer` from Part 2) and demonstrates computed render elements and cross-plugin event triggers.
 
-> **Not yet implemented.** The `ritrovo_cfp` plugin source does not exist yet. This step describes its design and the SDK features it will use. When the plugin is written, it will live at `plugins/ritrovo_cfp/`.
+> The `ritrovo_cfp` plugin lives at `plugins/ritrovo_cfp/`. This step describes its design and the SDK features it uses.
 
 ### What It Does
 
@@ -506,7 +506,7 @@ The kernel does not validate the content of injected render elements against `SA
 
 The `ritrovo_access` plugin adds fine-grained access control: stage-based item visibility and field-level rendering control. It demonstrates the `tap_item_access` and `tap_perm` taps.
 
-> **Not yet implemented.** The `ritrovo_access` plugin source does not exist yet. This step describes its design. When written, it will live at `plugins/ritrovo_access/`.
+> The `ritrovo_access` plugin lives at `plugins/ritrovo_access/`. This step describes its design.
 
 ### What It Does
 
