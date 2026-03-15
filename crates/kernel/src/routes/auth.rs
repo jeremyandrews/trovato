@@ -164,7 +164,7 @@ async fn login_form_submit(
 
     // Perform login
     match do_login(&state, &session, &request).await {
-        Ok(_) => Redirect::to("/admin").into_response(),
+        Ok(_) => Redirect::to("/").into_response(),
         Err(e) => render_login_error(&state, &session, e.message()).await,
     }
 }
@@ -466,7 +466,7 @@ async fn register_form(State(state): State<AppState>, session: Session) -> Respo
         .flatten()
         .is_some()
     {
-        return Redirect::to("/admin").into_response();
+        return Redirect::to("/").into_response();
     }
 
     if !is_registration_enabled(&state).await {
