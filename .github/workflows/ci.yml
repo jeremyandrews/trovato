@@ -214,6 +214,11 @@ jobs:
                 MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
                   | grep -vi 'database views\|sql views\|materialized view' || true)
                 ;;
+              '\btaxonomy\b'|'\bvocabulary\b')
+                # Allow serde aliases for backward-compatible deserialization of existing DB data
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -v 'serde(alias' || true)
+                ;;
               *)
                 MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ || true)
                 ;;
