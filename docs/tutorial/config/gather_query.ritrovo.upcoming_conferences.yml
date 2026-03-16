@@ -16,8 +16,8 @@ definition:
     operator: has_tag_or_descendants
     value: null
     widget:
-      type: taxonomy_select
-      vocabulary: topics
+      type: category_select
+      category: topics
   - exposed: true
     exposed_label: Country
     field: fields.field_country

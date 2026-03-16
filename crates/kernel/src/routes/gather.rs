@@ -458,8 +458,8 @@ fn render_gather_with_theme(
 
 /// Pre-fetched data needed by exposed-filter widgets during rendering.
 struct WidgetPreloadData {
-    /// Tags (with depth) for `TaxonomySelect` widgets, keyed by vocabulary name.
-    taxonomy_options: HashMap<String, Vec<TagWithDepth>>,
+    /// Tags (with depth) for `CategorySelect` widgets, keyed by category name.
+    category_options: HashMap<String, Vec<TagWithDepth>>,
     /// Distinct values for `DynamicOptions` widgets, keyed by source field path.
     dynamic_options: HashMap<String, Vec<String>>,
 }
@@ -479,29 +479,29 @@ async fn preload_widget_data(
 ) -> WidgetPreloadData {
     let item_type = query.definition.item_type.as_deref().unwrap_or("");
     let all_exposed = &query.definition.filters;
-    let mut taxonomy_options: HashMap<String, Vec<TagWithDepth>> = HashMap::new();
+    let mut category_options: HashMap<String, Vec<TagWithDepth>> = HashMap::new();
     let mut dynamic_options: HashMap<String, Vec<String>> = HashMap::new();
 
     for filter in query.definition.filters.iter().filter(|f| f.exposed) {
         match &filter.widget {
-            ExposedWidget::TaxonomySelect { vocabulary } => {
-                if !taxonomy_options.contains_key(vocabulary) {
+            ExposedWidget::CategorySelect { category } => {
+                if !category_options.contains_key(category) {
                     let all_tags = state
                         .categories()
-                        .list_tags_with_depth(vocabulary)
+                        .list_tags_with_depth(category)
                         .await
                         .unwrap_or_else(|e| {
                             tracing::warn!(
-                                vocabulary,
+                                category,
                                 error = %e,
-                                "failed to preload taxonomy options for widget"
+                                "failed to preload category options for widget"
                             );
                             Vec::new()
                         });
                     if all_tags.is_empty() {
                         tracing::warn!(
-                            vocabulary,
-                            "taxonomy_select widget: vocabulary not found or has no terms"
+                            category,
+                            "category_select widget: category not found or has no tags"
                         );
                     }
                     let reachable = state
@@ -522,10 +522,8 @@ async fn preload_widget_data(
                             );
                             None
                         });
-                    taxonomy_options.insert(
-                        vocabulary.clone(),
-                        filter_visible_tags(&all_tags, reachable),
-                    );
+                    category_options
+                        .insert(category.clone(), filter_visible_tags(&all_tags, reachable));
                 }
             }
             ExposedWidget::DynamicOptions { source_field, .. } => {
@@ -556,12 +554,12 @@ async fn preload_widget_data(
     }
 
     WidgetPreloadData {
-        taxonomy_options,
+        category_options,
         dynamic_options,
     }
 }
 
-/// Filter a flat DFS-ordered taxonomy list to tags reachable given the current scope.
+/// Filter a flat DFS-ordered category tag list to tags reachable given the current scope.
 ///
 /// When `reachable` is `None` (no scope active), all tags are returned unchanged.
 /// When `reachable` is `Some(set)`, returns tags that are either directly in
@@ -700,10 +698,10 @@ fn collect_exposed_filters(
                     "label": label,
                     "widget_type": "boolean",
                 }),
-                ExposedWidget::TaxonomySelect { vocabulary } => {
+                ExposedWidget::CategorySelect { category } => {
                     let options: Vec<serde_json::Value> = preload
-                        .taxonomy_options
-                        .get(vocabulary)
+                        .category_options
+                        .get(category)
                         .map(|tags| {
                             tags.iter()
                                 .map(|twd| {
@@ -719,7 +717,7 @@ fn collect_exposed_filters(
                     serde_json::json!({
                         "field": f.field,
                         "label": label,
-                        "widget_type": "taxonomy_select",
+                        "widget_type": "category_select",
                         "options": options,
                     })
                 }
@@ -755,7 +753,7 @@ fn collect_exposed_filters(
 ///
 /// Renders appropriate controls for each widget type:
 /// - `Boolean` → `<select>` with Any / Yes / No
-/// - `TaxonomySelect` → `<select>` indented by hierarchy depth
+/// - `CategorySelect` → `<select>` indented by hierarchy depth
 /// - `DynamicOptions` → `<select>` (≤ threshold) or `<datalist>` autocomplete (> threshold)
 /// - `Text` → plain `<input type="text">`
 fn render_exposed_filter_form(
@@ -807,7 +805,7 @@ fn render_exposed_filter_form(
                      </select>\n"
                 ));
             }
-            ExposedWidget::TaxonomySelect { vocabulary } => {
+            ExposedWidget::CategorySelect { category } => {
                 html.push_str(&format!(
                     "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
                      class=\"form-control\">\n\
@@ -815,8 +813,8 @@ fn render_exposed_filter_form(
                 ));
 
                 let tags = preload
-                    .taxonomy_options
-                    .get(vocabulary)
+                    .category_options
+                    .get(category)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
 
@@ -1035,7 +1033,7 @@ fn compute_page_list(current: u32, total: u32) -> Vec<serde_json::Value> {
 fn render_gather_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
     let base_path = format!("/gather/{}", query.query_id);
     let empty_preload = WidgetPreloadData {
-        taxonomy_options: HashMap::new(),
+        category_options: HashMap::new(),
         dynamic_options: HashMap::new(),
     };
     let content =
@@ -1198,7 +1196,7 @@ mod widget_tests {
 
     fn empty_preload() -> WidgetPreloadData {
         WidgetPreloadData {
-            taxonomy_options: HashMap::new(),
+            category_options: HashMap::new(),
             dynamic_options: HashMap::new(),
         }
     }
@@ -1260,19 +1258,19 @@ mod widget_tests {
         );
     }
 
-    // ── TaxonomySelect widget ─────────────────────────────────────────
+    // ── CategorySelect widget ──────────────────────────────────────────
 
     #[test]
-    fn taxonomy_select_renders_options_from_preload() {
+    fn category_select_renders_options_from_preload() {
         let query = make_query(vec![make_filter(
             "field_topics",
-            ExposedWidget::TaxonomySelect {
-                vocabulary: "topic".to_string(),
+            ExposedWidget::CategorySelect {
+                category: "topic".to_string(),
             },
             "Topic",
         )]);
         let mut preload = empty_preload();
-        preload.taxonomy_options.insert(
+        preload.category_options.insert(
             "topic".to_string(),
             vec![make_tag("Science", 0), make_tag("Physics", 1)],
         );
@@ -1285,16 +1283,16 @@ mod widget_tests {
     }
 
     #[test]
-    fn taxonomy_select_indents_child_terms() {
+    fn category_select_indents_child_terms() {
         let query = make_query(vec![make_filter(
             "field_topics",
-            ExposedWidget::TaxonomySelect {
-                vocabulary: "topic".to_string(),
+            ExposedWidget::CategorySelect {
+                category: "topic".to_string(),
             },
             "Topic",
         )]);
         let mut preload = empty_preload();
-        preload.taxonomy_options.insert(
+        preload.category_options.insert(
             "topic".to_string(),
             vec![make_tag("Root", 0), make_tag("Child", 1)],
         );
@@ -1322,15 +1320,15 @@ mod widget_tests {
     }
 
     #[test]
-    fn taxonomy_select_renders_any_when_preload_empty() {
+    fn category_select_renders_any_when_preload_empty() {
         let query = make_query(vec![make_filter(
             "field_topics",
-            ExposedWidget::TaxonomySelect {
-                vocabulary: "topic".to_string(),
+            ExposedWidget::CategorySelect {
+                category: "topic".to_string(),
             },
             "Topic",
         )]);
-        // No entries in preload — vocabulary not loaded
+        // No entries in preload — category not loaded
         let html =
             render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &empty_preload());
         assert!(html.contains("<select"), "expected <select>: {html}");
@@ -1442,8 +1440,8 @@ mod widget_tests {
             make_filter("field_online", ExposedWidget::Boolean, "Online Only"),
             make_filter(
                 "field_topics",
-                ExposedWidget::TaxonomySelect {
-                    vocabulary: "topic".to_string(),
+                ExposedWidget::CategorySelect {
+                    category: "topic".to_string(),
                 },
                 "Topic",
             ),
@@ -1457,7 +1455,7 @@ mod widget_tests {
         assert_eq!(filters[0]["field"], "field_online");
         assert_eq!(filters[0]["label"], "Online Only");
 
-        assert_eq!(filters[1]["widget_type"], "taxonomy_select");
+        assert_eq!(filters[1]["widget_type"], "category_select");
         assert_eq!(filters[2]["widget_type"], "text");
     }
 

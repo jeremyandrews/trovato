@@ -93,19 +93,19 @@ cargo run --release --bin trovato -- plugin install ritrovo_importer
 
 ### Import Configuration Before Starting
 
-Before starting the server, import the tutorial configuration files. These YAML files define the topic taxonomy, gather queries, and URL aliases that the importer plugin depends on:
+Before starting the server, import the tutorial configuration files. These YAML files define the topic category, gather queries, and URL aliases that the importer plugin depends on:
 
 ```bash
 cargo run --release --bin trovato -- config import docs/tutorial/config
 ```
 
 This imports:
-- **1 category** — the "Conference Topics" vocabulary
+- **1 category** — "Conference Topics"
 - **32 tags** — hierarchical topic terms (Languages > Systems > Rust, etc.)
 - **5 gather queries** — the browse pages (upcoming conferences, open CFPs, by topic/country/city)
 - **2 URL aliases** — `/conferences` and `/cfps` pointing to their gather queries
 
-> **Why config, not plugin?** Taxonomies, gather queries, and URL aliases are core Trovato concepts with first-class support in the config import/export system. The plugin only handles what the kernel can't: fetching external data from the confs.tech API and mapping it to conference items.
+> **Why config, not plugin?** Categories, gather queries, and URL aliases are core Trovato concepts with first-class support in the config import/export system. The plugin only handles what the kernel can't: fetching external data from the confs.tech API and mapping it to conference items.
 
 ### First Startup: tap_install
 
@@ -115,12 +115,12 @@ When the server next starts with the plugin enabled, it calls `tap_install` **on
 INFO trovato::state: tap_install dispatched plugin="ritrovo_importer"
 ```
 
-`tap_install` discovers the taxonomy term UUIDs from the config-imported data (caching them in `ritrovo_state` for the import pipeline's queue worker — browse routes use `category_tag.slug` instead) and queues the full historical conference import. After a restart you can verify it ran:
+`tap_install` discovers the category tag UUIDs from the config-imported data (caching them in `ritrovo_state` for the import pipeline's queue worker — browse routes use `category_tag.slug` instead) and queues the full historical conference import. After a restart you can verify it ran:
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "SELECT COUNT(*) FROM ritrovo_state;"
-# Should return > 0 (one row per discovered taxonomy term, plus ETag entries)
+# Should return > 0 (one row per discovered category tag, plus ETag entries)
 ```
 
 > **Note:** `tap_install` fires only once per server lifetime — subsequent restarts skip it for already-installed plugins. To re-run it (e.g. after resetting the database), delete the plugin's row from `plugin_status` and restart.
@@ -131,7 +131,7 @@ The generated scaffold includes stubs for the four taps the importer uses:
 
 | Tap | When called | What it does |
 |---|---|---|
-| `tap_install` | Once, on first enable | Discovers taxonomy UUIDs, queues historical import |
+| `tap_install` | Once, on first enable | Discovers category tag UUIDs, queues historical import |
 | `tap_cron` | Every cron cycle (~1 min) | Fetches conference data, pushes to queue |
 | `tap_queue_info` | At startup | Declares queue names and concurrency |
 | `tap_queue_worker` | Per queue job | Validates and inserts/updates conferences |
@@ -403,7 +403,7 @@ Newly inserted conferences are created as **published** (`status = 1`) on the li
 
 ### Historical Import: tap_install
 
-When the plugin is first enabled, `tap_install` first discovers taxonomy term UUIDs from the config-imported `category_tag` rows (caching them in `ritrovo_state` for the queue worker), then runs a full historical backfill. It fetches every topic file for every year from 2015 to the current year, stores ETags, and pushes each successful response onto the queue:
+When the plugin is first enabled, `tap_install` first discovers category tag UUIDs from the config-imported `category_tag` rows (caching them in `ritrovo_state` for the queue worker), then runs a full historical backfill. It fetches every topic file for every year from 2015 to the current year, stores ETags, and pushes each successful response onto the queue:
 
 ```rust
 for year in FIRST_IMPORT_YEAR..=current_year {   // 2015..=now
@@ -494,25 +494,25 @@ trovato-test: build_source_fields
 
 ---
 
-## 2.3 Hierarchical Topic Taxonomy
+## 2.3 Hierarchical Topic Category
 
-The importer stores each conference's topic as a `field_topics` array. In section 2.2, that array held raw confs.tech slug strings like `"rust"` and `"javascript"`. In this section, you'll replace those strings with **category tag UUIDs** from a proper taxonomy — which unlocks hierarchical filtering ("show me all Languages conferences") via the `HasTagOrDescendants` gather operator.
+The importer stores each conference's topic as a `field_topics` array. In section 2.2, that array held raw confs.tech slug strings like `"rust"` and `"javascript"`. In this section, you'll replace those strings with **category tag UUIDs** from a proper category hierarchy — which unlocks hierarchical filtering ("show me all Languages conferences") via the `HasTagOrDescendants` gather operator.
 
 ### The Category System
 
-Trovato's category system organises tags into named vocabularies.
+Trovato's category system organises tags into named groupings.
 
 | Table | What it holds |
 |---|---|
-| `category` | A named vocabulary (e.g. "Conference Topics") |
-| `category_tag` | A single term inside a vocabulary (e.g. "Rust") |
+| `category` | A named grouping (e.g. "Conference Topics") |
+| `category_tag` | A single tag within a category (e.g. "Rust") |
 | `category_tag_hierarchy` | Parent→child edges (allows multi-level trees) |
 
 A category tag is identified by a UUID generated at insert time. Items reference tags by UUID in their JSONB `fields`, typically as an array: `field_topics: ["<uuid1>", "<uuid2>"]`. The `HasTagOrDescendants` filter understands these UUIDs and their parent-child relationships.
 
-### Defining the Taxonomy in Configuration
+### Defining the Category in Configuration
 
-The topic taxonomy is defined as YAML configuration files in `docs/tutorial/config/`. Each term is a separate file (e.g. `tag.{uuid}.yml`) with its label, category, slug, weight, and parent references:
+The topic category is defined as YAML configuration files in `docs/tutorial/config/`. Each tag is a separate file (e.g. `tag.{uuid}.yml`) with its label, category, slug, weight, and parent references:
 
 ```yaml
 # tag.8835efe1-04a9-4dc4-bc4b-7d47ec387031.yml
@@ -533,21 +533,21 @@ The category itself is also a YAML file:
 # category.topics.yml
 id: topics
 label: Conference Topics
-description: Hierarchical topic taxonomy for tech conferences
+description: Hierarchical topic category for tech conferences
 hierarchy: 2
 weight: 0
 ```
 
 These files are imported via `cargo run --release --bin trovato -- config import docs/tutorial/config` before the plugin is installed. The config import system handles dependency ordering (categories before tags) and uses `ON CONFLICT DO UPDATE` for idempotency.
 
-Some confs.tech slugs (like `sre` and `scala`) are intentionally absent from the taxonomy. Conferences with those topics simply have an empty `field_topics` array — they are still imported, just not reachable via topic browse pages.
+Some confs.tech slugs (like `sre` and `scala`) are intentionally absent from the category. Conferences with those topics simply have an empty `field_topics` array — they are still imported, just not reachable via topic browse pages.
 
-### Discovering Term UUIDs at Install Time
+### Discovering Tag UUIDs at Install Time
 
-When `tap_install` runs, it calls `discover_taxonomy_uuids()`, which looks up each term's UUID by label from the `category_tag` table and caches it in `ritrovo_state`. This cache is used by the **import pipeline** (queue worker) to map confs.tech topic slugs to tag UUIDs when inserting conferences — it is separate from the browse route slug resolution, which uses the `category_tag.slug` column directly:
+When `tap_install` runs, it calls `discover_category_uuids()`, which looks up each tag's UUID by label from the `category_tag` table and caches it in `ritrovo_state`. This cache is used by the **import pipeline** (queue worker) to map confs.tech topic slugs to tag UUIDs when inserting conferences — it is separate from the browse route slug resolution, which uses the `category_tag.slug` column directly:
 
 ```rust
-fn discover_taxonomy_uuids() -> u32 {
+fn discover_category_uuids() -> u32 {
     let mut discovered = 0u32;
 
     for &(_confs_slug, term_slug, term_label) in SLUG_TO_TERM {
@@ -575,7 +575,7 @@ fn discover_taxonomy_uuids() -> u32 {
 }
 ```
 
-The `SLUG_TO_TERM` constant maps confs.tech topic slugs to taxonomy term slugs and labels. This is the only taxonomy-related data compiled into the plugin — the actual category and tag definitions live in config YAML.
+The `SLUG_TO_TERM` constant maps confs.tech topic slugs to category tag slugs and labels. This is the only category-related data compiled into the plugin — the actual category and tag definitions live in config YAML.
 
 ### Storing Tag UUIDs in field_topics
 
@@ -594,7 +594,7 @@ pub fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
 }
 ```
 
-`topic_term_uuid(slug)` checks the `ritrovo_state` table for `topic_term.{slug}`. It returns `None` for any slug not present in `TAXONOMY`.
+`topic_term_uuid(slug)` checks the `ritrovo_state` table for `topic_term.{slug}`. It returns `None` for any slug not present in `SLUG_TO_TERM`.
 
 `merge_topics(existing, new_uuid: Option<&str>)` adds the UUID to the existing array only if it isn't already there, then sorts. When `new_uuid` is `None` (unmapped slug), the existing array is returned unchanged:
 
@@ -740,7 +740,7 @@ Upcoming conferences (start date ≥ today), filterable via an exposed filter fo
 
 ```
 Hard filters:    field_start_date ≥ current_date
-Exposed filters: field_topics   has_tag_or_descendants  widget: taxonomy_select (vocabulary: "topics")
+Exposed filters: field_topics   has_tag_or_descendants  widget: category_select (category: "topics")
                  field_country  equals                  widget: dynamic_options (source: fields.field_country)
                  field_online   equals                  widget: boolean
                  field_language equals                  widget: dynamic_options (source: fields.field_language)
@@ -833,13 +833,13 @@ Renders a `<select>` with three options: **Any** (empty, filter skipped), **Yes*
 
 This is the right widget for any field that stores `true`/`false` — it's more usable than a text box asking users to type the word "true".
 
-#### Taxonomy select widget — `field_topics`
+#### Category select widget — `field_topics`
 
 ```json
-"widget": { "type": "taxonomy_select", "vocabulary": "topics" }
+"widget": { "type": "category_select", "category": "topics" }
 ```
 
-Renders a `<select>` populated from the `topic` category vocabulary. The kernel loads all tags with their hierarchy depth using `CategoryService::list_tags_with_depth()`, which returns them in DFS pre-order so that each parent immediately precedes its children. Child terms are indented with non-breaking spaces proportional to depth:
+Renders a `<select>` populated from the "topics" category. The kernel loads all tags with their hierarchy depth using `CategoryService::list_tags_with_depth()`, which returns them in DFS pre-order so that each parent immediately precedes its children. Child terms are indented with non-breaking spaces proportional to depth:
 
 ```
 Any
@@ -861,7 +861,7 @@ Infrastructure
 
 When the user selects "Systems", the form submits the UUID of the "Systems" tag. The `has_tag_or_descendants` operator then expands that UUID to include "Rust", "C++", ".NET", and any future child terms — the user selected a high-level concept and automatically gets all its concrete children.
 
-The taxonomy select is the right widget whenever a filter uses `has_tag` or `has_tag_or_descendants`: it shows meaningful human labels, not raw UUIDs.
+The category select is the right widget whenever a filter uses `has_tag` or `has_tag_or_descendants`: it shows meaningful human labels, not raw UUIDs.
 
 #### Dynamic options widget — `field_country` and `field_language`
 
@@ -884,7 +884,7 @@ Both `field_country` and `field_language` use the `equals` operator, not `contai
 
 #### Widget rendering paths
 
-The widget data is pre-fetched once per request in `preload_widget_data()` — taxonomy tags from the database, distinct values from the cache — and then passed to whichever rendering path is active:
+The widget data is pre-fetched once per request in `preload_widget_data()` — category tags from the database, distinct values from the cache — and then passed to whichever rendering path is active:
 
 - **Tera theme templates** receive the widget type and option list as structured JSON in the `exposed_filters` context variable and branch on `filter.widget_type`.
 - **Fallback HTML renderer** (`render_exposed_filter_form`) generates the same HTML directly in Rust when no theme template exists.
@@ -962,17 +962,17 @@ Gather route aliases are **kernel infrastructure**, not plugin-gated. They are r
 
 The Ritrovo tutorial demonstrates a clean separation of concerns:
 
-- **Configuration** (YAML files, imported via `config import`): taxonomy, gather queries, URL aliases. These are core Trovato concepts with first-class config support — they can be exported from one site and imported to another, version-controlled in git, and edited without touching plugin code.
+- **Configuration** (YAML files, imported via `config import`): categories, gather queries, URL aliases. These are core Trovato concepts with first-class config support — they can be exported from one site and imported to another, version-controlled in git, and edited without touching plugin code.
 
-- **Plugin** (WASM module, runs in sandbox): discovering taxonomy UUIDs from the imported config, fetching external data from the confs.tech API, validating and deduplicating conferences, queue management. These are import-specific operations that the kernel doesn't provide.
+- **Plugin** (WASM module, runs in sandbox): discovering category tag UUIDs from the imported config, fetching external data from the confs.tech API, validating and deduplicating conferences, queue management. These are import-specific operations that the kernel doesn't provide.
 
 This separation means you can modify the gather query definitions (add new filters, change sort orders, update display config) by editing the YAML files and re-importing — no plugin rebuild required. The plugin only needs to change when the *import logic* changes (e.g. a new field from the upstream API, a different dedup strategy).
 
-> **Design principle:** The core kernel enables. Plugins implement. If it's a feature definition (a gather query, a taxonomy, a URL alias), it belongs in configuration. If it's an integration with an external system, it belongs in a plugin.
+> **Design principle:** The core kernel enables. Plugins implement. If it's a feature definition (a gather query, a category, a URL alias), it belongs in configuration. If it's an integration with an external system, it belongs in a plugin.
 
 ---
 
-With the taxonomy, gather queries, browse routes, and filter widgets in place, Ritrovo visitors can:
+With the category, gather queries, browse routes, and filter widgets in place, Ritrovo visitors can:
 
 - Browse all upcoming conferences at `/conferences`, filtering with purpose-built controls:
   - A hierarchical topic selector (Any → Languages → Rust)
@@ -987,4 +987,4 @@ With the taxonomy, gather queries, browse routes, and filter widgets in place, R
 
 [<img src="images/2.2-conferences-filtered.png" width="600" alt="Figure 2.2: Conferences filtered by Security topic, non-online, English language">](images/2.2-conferences-filtered.png)
 
-The gather engine handles filtering, pagination, widget data loading, and rendering. The query definitions, taxonomy, and URL aliases are all managed as configuration — the plugin's only job is discovering taxonomy UUIDs and importing conference data from the external API.
+The gather engine handles filtering, pagination, widget data loading, and rendering. The query definitions, category, and URL aliases are all managed as configuration — the plugin's only job is discovering category tag UUIDs and importing conference data from the external API.

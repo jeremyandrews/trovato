@@ -320,7 +320,7 @@ impl GatherService {
     /// Fetch UUIDs of tags appearing in `tag_field` for items matching the scope.
     ///
     /// Returns `None` when no scope conditions are active, signalling the caller
-    /// to show the full taxonomy without filtering. Returns `Some(set)` (possibly
+    /// to show the full category tree without filtering. Returns `Some(set)` (possibly
     /// empty) when scope conditions are active.
     pub async fn fetch_faceted_reachable_tag_ids(
         &self,

@@ -1,5 +1,5 @@
 id: topics
 label: Conference Topics
-description: Hierarchical topic taxonomy for tech conferences
+description: Hierarchical topic category for tech conferences
 hierarchy: 2
 weight: 0

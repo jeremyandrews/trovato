@@ -22,8 +22,8 @@
                 <option value="false"{% if current_value == "false" %} selected{% endif %}>No</option>
             </select>
 
-            {% elif filter.widget_type == "taxonomy_select" %}
-            {# Taxonomy select: hierarchical terms from a category vocabulary #}
+            {% elif filter.widget_type == "category_select" %}
+            {# Category select: hierarchical terms from a category #}
             <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
                 <option value="">Any</option>
                 {% for opt in filter.options %}

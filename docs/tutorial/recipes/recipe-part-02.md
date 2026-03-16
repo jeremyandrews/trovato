@@ -1,7 +1,7 @@
 # Recipe: Part 2 — The Ritrovo Importer Plugin
 
 > **Synced with:** `docs/tutorial/part-02-ritrovo-importer.md`
-> **Sync hash:** b405692c
+> **Sync hash:** d36baa27
 > **Last verified:** 2026-03-07
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -181,15 +181,15 @@ cargo test -p ritrovo_importer
 ### 2.3.1 Understand the Category System
 
 `[REFERENCE]` No action needed. Key concepts:
-- `category` table = named vocabulary (e.g. "Conference Topics")
+- `category` table = named grouping (e.g. "Conference Topics")
 - `category_tag` table = individual terms (e.g. "Rust")
 - `category_tag_hierarchy` table = parent-child edges
 - Items reference tags by UUID in `field_topics` array
 - `HasTagOrDescendants` filter expands UUIDs via recursive CTE
 
-### 2.3.2 Verify Taxonomy Was Imported
+### 2.3.2 Verify Category Was Imported
 
-`[CLI]` Confirm the topic vocabulary and terms exist:
+`[CLI]` Confirm the topic category and tags exist:
 
 ```
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \

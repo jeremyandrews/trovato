@@ -91,10 +91,12 @@ pub enum ExposedWidget {
     Text,
     /// `<select>` with Any / Yes / No options for boolean fields.
     Boolean,
-    /// `<select>` populated from a category vocabulary, indented by depth.
-    TaxonomySelect {
-        /// Category machine name to load terms from.
-        vocabulary: String,
+    /// `<select>` populated from a category's tag tree, indented by depth.
+    #[serde(alias = "taxonomy_select")]
+    CategorySelect {
+        /// Category machine name to load tags from.
+        #[serde(alias = "vocabulary")]
+        category: String,
     },
     /// Dropdown when distinct values ≤ threshold, `<datalist>` autocomplete above.
     DynamicOptions {
@@ -1157,18 +1159,18 @@ mod tests {
     }
 
     #[test]
-    fn exposed_widget_taxonomy_select_roundtrip() {
-        let json = r#"{"type":"taxonomy_select","vocabulary":"topic"}"#;
+    fn exposed_widget_category_select_roundtrip() {
+        let json = r#"{"type":"category_select","category":"topic"}"#;
         let w: ExposedWidget = serde_json::from_str(json).unwrap();
         assert_eq!(
             w,
-            ExposedWidget::TaxonomySelect {
-                vocabulary: "topic".to_string()
+            ExposedWidget::CategorySelect {
+                category: "topic".to_string()
             }
         );
 
         let back = serde_json::to_string(&w).unwrap();
-        assert!(back.contains("taxonomy_select"));
+        assert!(back.contains("category_select"));
         assert!(back.contains("topic"));
     }
 
@@ -1210,8 +1212,8 @@ mod tests {
         assert!(ExposedWidget::Text.is_text());
         assert!(!ExposedWidget::Boolean.is_text());
         assert!(
-            !ExposedWidget::TaxonomySelect {
-                vocabulary: "x".into()
+            !ExposedWidget::CategorySelect {
+                category: "x".into()
             }
             .is_text()
         );
