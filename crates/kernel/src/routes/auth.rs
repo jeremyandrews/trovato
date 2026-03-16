@@ -388,6 +388,14 @@ async fn login(
 
 /// Logout handler.
 ///
+/// GET /user/logout — redirect to login page.
+///
+/// Logout must be POST (CSRF-protected). A GET here means someone typed
+/// the URL directly or followed a stale link. Redirect rather than error.
+async fn logout_redirect() -> Response {
+    Redirect::to("/user/login").into_response()
+}
+
 /// POST /user/logout
 /// - Validates CSRF token
 /// - Records logout via UserService (dispatches tap_user_logout)
@@ -1553,7 +1561,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/user/login", get(login_form).post(login_form_submit))
         .route("/user/login/json", post(login))
-        .route("/user/logout", post(logout))
+        .route("/user/logout", get(logout_redirect).post(logout))
         .route(
             "/user/register",
             get(register_form).post(register_form_submit),
