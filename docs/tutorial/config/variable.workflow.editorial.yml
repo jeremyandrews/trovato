@@ -9,11 +9,11 @@ value:
       label: "Promote to Curated"
     - from: curated
       to: live
-      permission: "administer site"
+      permission: "publish conferences"
       label: "Publish"
     - from: live
       to: curated
-      permission: "administer site"
+      permission: "publish conferences"
       label: "Unpublish to Curated"
     - from: curated
       to: incoming

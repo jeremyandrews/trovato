@@ -1,4 +1,4 @@
-# Editor role — can create and edit conference content
+# Editor role — can create, edit, and review conference content
 name: editor
 label: Editor
 permissions:
@@ -8,3 +8,6 @@ permissions:
   - edit any content
   - access files
   - use filtered_html
+  - view incoming conferences
+  - view curated conferences
+  - edit conferences

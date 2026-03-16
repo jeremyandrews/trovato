@@ -1,7 +1,7 @@
 # Recipe: Part 5 — Forms & User Input
 
 > **Synced with:** `docs/tutorial/part-05-forms-and-input.md`
-> **Sync hash:** 4e44171c
+> **Sync hash:** 519e0632
 > **Last verified:** 2026-03-15 (plugins implemented and installed)
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -231,8 +231,8 @@ Record plugin build and install commands in `TOOLS.md -> Plugins`.
 ### 6.1 Review Plugin Design
 
 `[REFERENCE]` Key behaviors:
-- `tap_item_access`: Deny for anonymous on Incoming/Curated; Grant for editors on Incoming/Curated; Neutral for Live
-- `tap_perm`: Declares 7 permissions: `view incoming`, `view curated`, `edit conferences`, `publish conferences`, `post comments`, `edit own comments`, `edit any comments`
+- `tap_item_access`: Kernel denies anonymous on internal stages; plugin checks authenticated users' permissions for Incoming/Curated; Neutral for Live
+- `tap_perm`: Declares 7 permissions: `view incoming conferences`, `view curated conferences`, `edit conferences`, `publish conferences`, `post comments`, `edit own comments`, `edit any comments`
 - `tap_item_view`: Strips `editor_notes` field from render tree for non-editors
 - Grant/Deny/Neutral aggregation: any Deny wins → any Grant → Neutral falls through
 
@@ -272,37 +272,90 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 **Verify:** ritrovo_access, status 1 (enabled).
 
-### 6.5 Verify Declared Permissions
+### 6.5 Verify Plugin Is Active
 
-`[CLI]` After enabling the plugin, its declared permissions should appear:
+`[CLI]` After enabling the plugin, verify it has the expected taps:
 
 ```bash
-# Check that the plugin's permissions are registered
-# (permissions are populated after the first tap_perm dispatch)
+# Check that the plugin is installed and has the expected taps
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT DISTINCT permission FROM role_permissions WHERE permission IN ('view incoming', 'view curated', 'edit conferences', 'publish conferences', 'post comments');"
+  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_access';"
+# Expect: ritrovo_access, 1
+
+# The plugin declares 7 permissions via tap_perm — these will be visible
+# in the admin permissions UI after the plugin is enabled. They are NOT
+# in role_permissions yet (that happens in the next step).
 ```
 
-### 6.6 Test Stage-Based Access Control
+### 6.6 Assign Plugin Permissions to Roles
+
+`[CLI]` After installing `ritrovo_access`, assign its permissions to the viewer, editor, and publisher roles:
+
+```bash
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<'SQL'
+-- Viewer: can see all editorial stages
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.perm
+FROM roles r, (VALUES
+  ('view incoming conferences'), ('view curated conferences')
+) AS p(perm)
+WHERE r.name = 'viewer'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Editor: viewer permissions + edit conferences
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.perm
+FROM roles r, (VALUES
+  ('view incoming conferences'), ('view curated conferences'),
+  ('edit conferences')
+) AS p(perm)
+WHERE r.name = 'editor'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Publisher: editor permissions + publish conferences
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.perm
+FROM roles r, (VALUES
+  ('view incoming conferences'), ('view curated conferences'),
+  ('edit conferences'), ('publish conferences')
+) AS p(perm)
+WHERE r.name = 'publisher'
+ON CONFLICT (role_id, permission) DO NOTHING;
+SQL
+```
+
+**Verify:** Check the full permission matrix:
+
+```bash
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT r.name AS role, rp.permission FROM role_permissions rp JOIN roles r ON rp.role_id = r.id WHERE r.name IN ('viewer', 'editor', 'publisher') ORDER BY r.name, rp.permission;"
+```
+
+### 6.7 Test Stage-Based Access Control
 
 `[CLI]` Move an item to the Incoming stage and verify anonymous users cannot access it:
 
 ```bash
 # Look up stage IDs by machine name
 INCOMING_ID=$($(brew --prefix libpq)/bin/psql -tA postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT id FROM stage WHERE machine_name = 'incoming';")
+  -c "SELECT tag_id FROM stage_config WHERE machine_name = 'incoming';")
 LIVE_ID=$($(brew --prefix libpq)/bin/psql -tA postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT id FROM stage WHERE machine_name = 'live';")
+  -c "SELECT tag_id FROM stage_config WHERE machine_name = 'live';")
+
+# Pick a test conference
+ID=$($(brew --prefix libpq)/bin/psql -tA postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT id FROM item WHERE type = 'conference' LIMIT 1;")
 
 # Move a test conference to Incoming
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "UPDATE item SET stage_id = '$INCOMING_ID' WHERE id = '$ID';"
 
-# Anonymous access should be denied
+# Anonymous access should be denied (kernel denies anonymous on internal stages).
+# The kernel returns 404 (not 403) to avoid revealing the item exists.
 curl -s -o /dev/null -w "%{http_code}" "http://localhost:3000/item/$ID"
-# Expect: 403
+# Expect: 404
 
-# Editor should have access
+# Editor should have access (has view incoming conferences permission)
 curl -s -b /tmp/trovato-alice.txt -o /dev/null -w "%{http_code}" "http://localhost:3000/item/$ID"
 # Expect: 200
 
@@ -310,6 +363,8 @@ curl -s -b /tmp/trovato-alice.txt -o /dev/null -w "%{http_code}" "http://localho
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
   -c "UPDATE item SET stage_id = '$LIVE_ID' WHERE id = '$ID';"
 ```
+
+> **Note:** After changing stage_id via SQL, you may need to restart the server to clear the item cache. Stage changes through the kernel API handle cache invalidation automatically.
 
 Record plugin testing patterns in `TOOLS.md -> Plugins`.
 

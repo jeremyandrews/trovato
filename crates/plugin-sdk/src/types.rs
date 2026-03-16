@@ -232,8 +232,8 @@ impl FieldDefinition {
 
 /// Input for `tap_item_access`.
 ///
-/// Sent by the kernel when checking item access permissions. Contains only
-/// the fields needed for access decisions — not the full Item.
+/// Sent by the kernel when checking item access permissions. Contains the item
+/// metadata, user context, and stage information needed for access decisions.
 ///
 /// SYNC: An identical struct exists in `crates/kernel/src/content/item_service.rs`.
 /// The kernel serializes its copy; plugins deserialize this one. Both must have
@@ -245,6 +245,22 @@ pub struct ItemAccessInput {
     pub author_id: Uuid,
     pub operation: String,
     pub user_id: Uuid,
+
+    /// Whether the user is authenticated (false = anonymous).
+    #[serde(default)]
+    pub user_authenticated: bool,
+
+    /// The user's granted permissions (empty for anonymous).
+    #[serde(default)]
+    pub user_permissions: Vec<String>,
+
+    /// Stage UUID (None if item has no explicit stage).
+    #[serde(default)]
+    pub stage_id: Option<Uuid>,
+
+    /// Stage machine name (e.g., "incoming", "curated", "live").
+    #[serde(default)]
+    pub stage_machine_name: Option<String>,
 }
 
 /// Access control result from `tap_item_access`.

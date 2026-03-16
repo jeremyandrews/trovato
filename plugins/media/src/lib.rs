@@ -84,28 +84,35 @@ mod tests {
         assert!(file_field.required);
     }
 
+    fn access_input(
+        item_type: &str,
+        operation: &str,
+        author_id: Uuid,
+        user_id: Uuid,
+    ) -> ItemAccessInput {
+        ItemAccessInput {
+            item_id: Uuid::nil(),
+            item_type: item_type.into(),
+            author_id,
+            operation: operation.into(),
+            user_id,
+            user_authenticated: true,
+            user_permissions: vec![],
+            stage_id: None,
+            stage_machine_name: None,
+        }
+    }
+
     #[test]
     fn access_grant_for_author() {
         let author = Uuid::nil();
-        let input = ItemAccessInput {
-            item_id: Uuid::nil(),
-            item_type: "media".into(),
-            author_id: author,
-            operation: "edit".into(),
-            user_id: author,
-        };
+        let input = access_input("media", "edit", author, author);
         assert_eq!(__inner_tap_item_access(input), AccessResult::Grant);
     }
 
     #[test]
     fn access_neutral_for_non_media() {
-        let input = ItemAccessInput {
-            item_id: Uuid::nil(),
-            item_type: "blog".into(),
-            author_id: Uuid::nil(),
-            operation: "edit".into(),
-            user_id: Uuid::nil(),
-        };
+        let input = access_input("blog", "edit", Uuid::nil(), Uuid::nil());
         assert_eq!(__inner_tap_item_access(input), AccessResult::Neutral);
     }
 

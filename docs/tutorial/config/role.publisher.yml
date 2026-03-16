@@ -11,3 +11,7 @@ permissions:
   - administer files
   - use filtered_html
   - use full_html
+  - view incoming conferences
+  - view curated conferences
+  - edit conferences
+  - publish conferences

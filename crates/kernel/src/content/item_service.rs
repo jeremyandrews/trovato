@@ -9,15 +9,25 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use moka::sync::Cache;
 use sqlx::PgPool;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
 use crate::models::{CreateItem, Item, ItemRevision, UpdateItem};
 use crate::tap::{RequestState, TapDispatcher, UserContext};
 use trovato_sdk::types::AccessResult;
 
 /// Maximum entries in the item cache.
 const MAX_CAPACITY: u64 = 50_000;
+
+/// Maximum entries in the stage cache (stages are few and rarely change).
+const STAGE_CACHE_CAPACITY: u64 = 16;
+
+/// TTL for stage cache entries. Short because stage visibility changes are
+/// security-relevant — a stage changed from Public to Internal should take
+/// effect quickly. 30 seconds is a balance between avoiding per-item DB
+/// queries and limiting the window of stale visibility data.
+const STAGE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Service for item CRUD operations with tap integration.
 #[derive(Clone)]
@@ -29,6 +39,8 @@ struct ItemServiceInner {
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
     cache: Cache<Uuid, Item>,
+    /// Cached stage lookups — stages rarely change and there are typically only 3.
+    stage_cache: Cache<Uuid, Stage>,
 }
 
 /// A translation record for an item in a specific language.
@@ -60,6 +72,22 @@ pub struct ItemAccessInput {
     pub author_id: Uuid,
     pub operation: String,
     pub user_id: Uuid,
+
+    /// Whether the user is authenticated (false = anonymous).
+    #[serde(default)]
+    pub user_authenticated: bool,
+
+    /// The user's granted permissions (empty for anonymous).
+    #[serde(default)]
+    pub user_permissions: Vec<String>,
+
+    /// Stage UUID (None if item has no explicit stage).
+    #[serde(default)]
+    pub stage_id: Option<Uuid>,
+
+    /// Stage machine name (e.g., "incoming", "curated", "live").
+    #[serde(default)]
+    pub stage_machine_name: Option<String>,
 }
 
 impl ItemService {
@@ -72,6 +100,10 @@ impl ItemService {
                 cache: Cache::builder()
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
+                    .build(),
+                stage_cache: Cache::builder()
+                    .max_capacity(STAGE_CACHE_CAPACITY)
+                    .time_to_live(STAGE_CACHE_TTL)
                     .build(),
             }),
         }
@@ -293,30 +325,101 @@ impl ItemService {
     }
 
     /// Check if a user has access to perform an operation on an item.
+    ///
+    /// Access resolution order:
+    /// 1. Admin bypass (always allowed)
+    /// 2. Stage visibility — anonymous users are denied on internal stages
+    /// 3. Published fast-path — public-stage + published + "access content"
+    /// 4. Plugin `tap_item_access` — Deny wins, then Grant
+    /// 5. Role-based fallback — generic and type-specific permission patterns
+    ///
+    /// **Design note:** The published-view fast-path (step 3) runs before plugin
+    /// dispatch. This means plugins cannot Deny published items on public stages
+    /// via `tap_item_access` for "view" operations. This is intentional — it
+    /// optimizes the overwhelmingly common case (anonymous/authenticated users
+    /// viewing Live content) and matches the CMS convention that "published =
+    /// publicly visible." If a plugin needs to restrict specific Live items,
+    /// it should use item status (unpublish) rather than access denial.
     pub async fn check_access(
         &self,
         item: &Item,
         operation: &str,
         user: &UserContext,
     ) -> Result<bool> {
-        // Admin always has access
+        // 1. Admin always has access
         if user.is_admin() {
             return Ok(true);
         }
 
-        // Published content is viewable by anyone with "access content" permission
-        // This is the standard CMS pattern - published = publicly visible
-        if operation == "view" && item.is_published() && user.has_permission("access content") {
+        // 2. Resolve stage visibility. Use cached lookups — stages are few
+        //    and rarely change, but check_access runs on every item view.
+        let (is_internal, stage_machine_name) = if item.stage_id == LIVE_STAGE_ID {
+            // Live stage is always public — no DB lookup needed.
+            (false, Some("live".to_string()))
+        } else if let Some(stage) = self.inner.stage_cache.get(&item.stage_id) {
+            (
+                stage.visibility == StageVisibility::Internal,
+                Some(stage.machine_name.clone()),
+            )
+        } else {
+            match Stage::find_by_id(&self.inner.pool, item.stage_id).await {
+                Ok(Some(stage)) => {
+                    let internal = stage.visibility == StageVisibility::Internal;
+                    let name = stage.machine_name.clone();
+                    self.inner.stage_cache.insert(item.stage_id, stage);
+                    (internal, Some(name))
+                }
+                Ok(None) => {
+                    warn!(
+                        stage_id = %item.stage_id,
+                        item_id = %item.id,
+                        "stage not found for item, treating as public"
+                    );
+                    (false, None)
+                }
+                Err(e) => {
+                    // DB errors must not silently upgrade access — deny and log.
+                    warn!(
+                        stage_id = %item.stage_id,
+                        item_id = %item.id,
+                        error = %e,
+                        "failed to resolve stage visibility, denying access"
+                    );
+                    return Ok(false);
+                }
+            }
+        };
+
+        // Anonymous users cannot access items on internal stages
+        if is_internal && !user.authenticated {
+            return Ok(false);
+        }
+
+        // 3. Published content on public/live stages is viewable by anyone
+        //    with "access content". Skip this fast-path for internal stages
+        //    so plugins can enforce stage-specific permissions.
+        if operation == "view"
+            && !is_internal
+            && item.is_published()
+            && user.has_permission("access content")
+        {
             return Ok(true);
         }
 
-        // Build access check input
+        // 4. Build access check input with full context for plugins.
+        //    stage_id and stage_machine_name are Option in the SDK for
+        //    forward-compatibility, but the kernel always populates them
+        //    here since every item has a stage_id.
         let input = ItemAccessInput {
             item_id: item.id,
             item_type: item.item_type.clone(),
             author_id: item.author_id,
             operation: operation.to_string(),
             user_id: user.id,
+            user_authenticated: user.authenticated,
+            user_permissions: user.permissions.clone(),
+            stage_id: Some(item.stage_id),
+            stage_machine_name,
         };
 
         let input_json = serde_json::to_string(&input).context("serialize access input")?;
@@ -347,7 +450,7 @@ impl ItemService {
             return Ok(true);
         }
 
-        // Fall back to role-based permissions. Check both type-specific and
+        // 5. Fall back to role-based permissions. Check both type-specific and
         // generic patterns, plus own-vs-any variants:
         //   "{op} any content"             — generic, any author
         //   "{op} own content"             — generic, own items only
@@ -459,9 +562,16 @@ impl ItemService {
         self.inner.cache.invalidate(&id);
     }
 
-    /// Clear all cached items.
+    /// Clear all cached items and stages.
     pub fn clear_cache(&self) {
         self.inner.cache.invalidate_all();
+        self.inner.stage_cache.invalidate_all();
+    }
+
+    /// Clear cached stage data. Call when stage config changes (visibility,
+    /// machine name, etc.) so access checks use fresh data.
+    pub fn clear_stage_cache(&self) {
+        self.inner.stage_cache.invalidate_all();
     }
 
     /// Get cache size.
@@ -484,6 +594,10 @@ mod tests {
             author_id: Uuid::nil(),
             operation: "view".to_string(),
             user_id: Uuid::nil(),
+            user_authenticated: false,
+            user_permissions: vec![],
+            stage_id: None,
+            stage_machine_name: None,
         };
 
         let json = serde_json::to_string(&input).unwrap();
@@ -492,10 +606,15 @@ mod tests {
 
     #[test]
     fn item_access_input_deserialization() {
+        // Old-format JSON (without new fields) should deserialize via #[serde(default)]
         let json = r#"{"item_id":"00000000-0000-0000-0000-000000000000","item_type":"page","author_id":"00000000-0000-0000-0000-000000000000","operation":"edit","user_id":"00000000-0000-0000-0000-000000000000"}"#;
         let input: ItemAccessInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.item_type, "page");
         assert_eq!(input.operation, "edit");
+        assert!(!input.user_authenticated);
+        assert!(input.user_permissions.is_empty());
+        assert!(input.stage_id.is_none());
+        assert!(input.stage_machine_name.is_none());
     }
 
     #[test]
@@ -503,6 +622,7 @@ mod tests {
         let id1 = Uuid::now_v7();
         let id2 = Uuid::now_v7();
         let id3 = Uuid::now_v7();
+        let stage = Uuid::now_v7();
 
         let input = ItemAccessInput {
             item_id: id1,
@@ -510,6 +630,10 @@ mod tests {
             author_id: id2,
             operation: "delete".to_string(),
             user_id: id3,
+            user_authenticated: true,
+            user_permissions: vec!["edit any content".to_string()],
+            stage_id: Some(stage),
+            stage_machine_name: Some("curated".to_string()),
         };
 
         let json = serde_json::to_string(&input).unwrap();
@@ -519,5 +643,9 @@ mod tests {
         assert_eq!(parsed.author_id, id2);
         assert_eq!(parsed.user_id, id3);
         assert_eq!(parsed.operation, "delete");
+        assert!(parsed.user_authenticated);
+        assert_eq!(parsed.user_permissions, vec!["edit any content"]);
+        assert_eq!(parsed.stage_id, Some(stage));
+        assert_eq!(parsed.stage_machine_name.as_deref(), Some("curated"));
     }
 }

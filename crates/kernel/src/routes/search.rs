@@ -171,6 +171,9 @@ async fn search_html(
     context.insert("prev_page", &(page - 1));
     context.insert("next_page", &(page + 1));
 
+    // Inject site context for page layout (header, nav, footer)
+    super::helpers::inject_site_context(&state, &session, &mut context, "/search").await;
+
     // Render template
     match state.theme().tera().render("search.html", &context) {
         Ok(html) => Html(html).into_response(),

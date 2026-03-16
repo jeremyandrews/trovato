@@ -1,7 +1,7 @@
 # Recipe: Part 4 — The Editorial Engine
 
 > **Synced with:** `docs/tutorial/part-04-editorial-engine.md`
-> **Sync hash:** b126f472
+> **Sync hash:** acfcc301
 > **Last verified:** 2026-03-13
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -145,12 +145,17 @@ cat docs/tutorial/config/role.publisher.yml
 ```
 
 Key permissions:
-- **editor**: access content, create/edit conferences and speakers, access files, use filtered_html
-- **publisher**: editor permissions + delete any, administer files, use full_html
+- **viewer**: access content, view incoming conferences, view curated conferences
+- **editor**: viewer permissions + create/edit conferences and speakers, access files, use filtered_html, edit conferences
+- **publisher**: editor permissions + delete any, administer files, use full_html, publish conferences
+
+> **Note:** The `view incoming conferences`, `view curated conferences`, `edit conferences`, and `publish conferences` permissions are declared by the `ritrovo_access` plugin (Part 5). They are included in the role YAML files to document the final intended state. At this point in the tutorial, only the base permissions are assigned; the ritrovo_access permissions are added in Part 5 after the plugin is installed.
 
 ### 2.2 Note: Role Config Not Importable
 
 `[REFERENCE]` ConfigStorage does not yet support the `role` entity type. The YAML files serve as reference documentation. Roles can be created via `/admin/people/roles/add` and permissions assigned via `/admin/people/permissions`, but there is no admin UI for assigning roles to users — use SQL for that.
+
+> Also review `docs/tutorial/config/role.viewer.yml` — the viewer role for viewer_carol.
 
 ### 2.3 Log In as Admin
 
@@ -169,9 +174,21 @@ curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
 
 ### 2.4 Create Roles
 
-`[CLI]` Create the editor and publisher roles via the admin API:
+`[CLI]` Create the viewer, editor, and publisher roles via the admin API:
 
 ```bash
+# Create viewer role
+FORM_PAGE=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt http://localhost:3000/admin/people/roles/add)
+CSRF=$(echo "$FORM_PAGE" | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+FBID=$(echo "$FORM_PAGE" | grep -oE 'name="_form_build_id" value="[^"]+"' | sed 's/.*value="//' | sed 's/"//')
+curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/admin/people/roles/add \
+  --data-urlencode "_token=$CSRF" \
+  --data-urlencode "_form_build_id=$FBID" \
+  --data-urlencode "name=viewer" \
+  -o /dev/null -w "%{http_code}"
+# Expect: 303
+
 # Create editor role
 FORM_PAGE=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt http://localhost:3000/admin/people/roles/add)
 CSRF=$(echo "$FORM_PAGE" | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
@@ -203,7 +220,18 @@ curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<'SQL'
--- Editor permissions (from role.editor.yml)
+-- Viewer permissions (from role.viewer.yml — base permissions only;
+-- ritrovo_access permissions added in Part 5 after plugin install)
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.perm
+FROM roles r, (VALUES
+  ('access content')
+) AS p(perm)
+WHERE r.name = 'viewer'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Editor permissions (from role.editor.yml — base permissions only;
+-- ritrovo_access permissions added in Part 5 after plugin install)
 INSERT INTO role_permissions (role_id, permission)
 SELECT r.id, p.perm
 FROM roles r, (VALUES
@@ -213,7 +241,8 @@ FROM roles r, (VALUES
 WHERE r.name = 'editor'
 ON CONFLICT (role_id, permission) DO NOTHING;
 
--- Publisher permissions (from role.publisher.yml)
+-- Publisher permissions (from role.publisher.yml — base permissions only;
+-- ritrovo_access permissions added in Part 5 after plugin install)
 INSERT INTO role_permissions (role_id, permission)
 SELECT r.id, p.perm
 FROM roles r, (VALUES
@@ -224,6 +253,12 @@ FROM roles r, (VALUES
 ) AS p(perm)
 WHERE r.name = 'publisher'
 ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Assign viewer role to viewer_carol
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.name = 'viewer_carol' AND r.name = 'viewer'
+ON CONFLICT DO NOTHING;
 
 -- Assign editor role to editor_alice
 INSERT INTO user_roles (user_id, role_id)
@@ -248,7 +283,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
   -c "SELECT u.name, r.name AS role FROM users u LEFT JOIN user_roles ur ON u.id = ur.user_id LEFT JOIN roles r ON ur.role_id = r.id WHERE u.name IN ('editor_alice', 'publisher_bob', 'viewer_carol') ORDER BY u.name;"
 ```
 
-**Verify:** editor_alice has editor role, publisher_bob has publisher role, viewer_carol has no extra roles (NULL).
+**Verify:** editor_alice has editor role, publisher_bob has publisher role, viewer_carol has viewer role.
 
 ### 2.7 Test Access Control
 
@@ -369,8 +404,8 @@ cat docs/tutorial/config/variable.workflow.editorial.yml
 
 The workflow defines four transitions:
 - `incoming → curated` (requires: `edit any content`)
-- `curated → live` (requires: `administer site`)
-- `live → curated` (requires: `administer site`)
+- `curated → live` (requires: `publish conferences`)
+- `live → curated` (requires: `publish conferences`)
 - `curated → incoming` (requires: `edit any content`)
 
 ### 3.5 Verify Stage-Aware Gathers

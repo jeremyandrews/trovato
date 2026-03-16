@@ -116,66 +116,55 @@ mod tests {
         }
     }
 
+    fn access_input(
+        item_type: &str,
+        operation: &str,
+        author_id: Uuid,
+        user_id: Uuid,
+    ) -> ItemAccessInput {
+        ItemAccessInput {
+            item_id: Uuid::nil(),
+            item_type: item_type.into(),
+            author_id,
+            operation: operation.into(),
+            user_id,
+            user_authenticated: true,
+            user_permissions: vec![],
+            stage_id: None,
+            stage_machine_name: None,
+        }
+    }
+
     #[test]
     fn access_neutral_for_non_blog() {
-        let input = ItemAccessInput {
-            item_id: Uuid::nil(),
-            item_type: "page".into(),
-            author_id: Uuid::nil(),
-            operation: "edit".into(),
-            user_id: Uuid::nil(),
-        };
+        let input = access_input("page", "edit", Uuid::nil(), Uuid::nil());
         assert_eq!(__inner_tap_item_access(input), AccessResult::Neutral);
     }
 
     #[test]
     fn access_grant_for_author() {
         let author = Uuid::nil();
-        let input = ItemAccessInput {
-            item_id: Uuid::nil(),
-            item_type: "blog".into(),
-            author_id: author,
-            operation: "edit".into(),
-            user_id: author,
-        };
+        let input = access_input("blog", "edit", author, author);
         assert_eq!(__inner_tap_item_access(input), AccessResult::Grant);
     }
 
     #[test]
     fn access_neutral_for_non_author() {
-        let input = ItemAccessInput {
-            item_id: Uuid::nil(),
-            item_type: "blog".into(),
-            author_id: Uuid::from_u128(1),
-            operation: "edit".into(),
-            user_id: Uuid::from_u128(2),
-        };
+        let input = access_input("blog", "edit", Uuid::from_u128(1), Uuid::from_u128(2));
         assert_eq!(__inner_tap_item_access(input), AccessResult::Neutral);
     }
 
     #[test]
     fn access_grant_for_author_view() {
         let author = Uuid::nil();
-        let input = ItemAccessInput {
-            item_id: Uuid::nil(),
-            item_type: "blog".into(),
-            author_id: author,
-            operation: "view".into(),
-            user_id: author,
-        };
+        let input = access_input("blog", "view", author, author);
         assert_eq!(__inner_tap_item_access(input), AccessResult::Grant);
     }
 
     #[test]
     fn access_grant_for_author_delete() {
         let author = Uuid::nil();
-        let input = ItemAccessInput {
-            item_id: Uuid::nil(),
-            item_type: "blog".into(),
-            author_id: author,
-            operation: "delete".into(),
-            user_id: author,
-        };
+        let input = access_input("blog", "delete", author, author);
         assert_eq!(__inner_tap_item_access(input), AccessResult::Grant);
     }
 

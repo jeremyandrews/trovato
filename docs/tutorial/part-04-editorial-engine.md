@@ -151,14 +151,17 @@ These roles exist automatically -- you don't need to create them.
 
 ### Custom Roles
 
-For the editorial workflow, Ritrovo needs two additional roles:
+For the editorial workflow, Ritrovo needs three additional roles:
 
 | Role | Purpose | Key Permissions |
 |---|---|---|
-| **editor** | Reviews and curates content | `access content`, `create content`, `edit own content`, `edit any content`, `access files`, `use filtered_html` |
-| **publisher** | Publishes content to Live | Editor permissions + `delete any content`, `administer files`, `use full_html` |
+| **viewer** | Can view content on all editorial stages | `access content`, `view incoming conferences`, `view curated conferences` |
+| **editor** | Reviews and curates content | Viewer permissions + `create content`, `edit own content`, `edit any content`, `access files`, `use filtered_html`, `edit conferences` |
+| **publisher** | Publishes content to Live | Editor permissions + `delete any content`, `administer files`, `use full_html`, `publish conferences` |
 
-The role definitions live at `docs/tutorial/config/role.editor.yml` and `docs/tutorial/config/role.publisher.yml`. These YAML files document the intended permission sets but cannot be imported via `config import` (the kernel's ConfigStorage does not yet support the `role` entity type). Roles and permissions must be configured through the admin UI at `/admin/people/roles` and `/admin/people/permissions`.
+The role definitions live at `docs/tutorial/config/role.viewer.yml`, `role.editor.yml`, and `role.publisher.yml`. These YAML files document the intended permission sets but cannot be imported via `config import` (the kernel's ConfigStorage does not yet support the `role` entity type). Roles and permissions must be configured through the admin UI at `/admin/people/roles` and `/admin/people/permissions`.
+
+Note that the `view incoming conferences`, `view curated conferences`, `edit conferences`, and `publish conferences` permissions are declared by the `ritrovo_access` plugin (installed in Part 5). They must be added to role permissions after that plugin is installed. The role YAML files document the final intended state including these permissions.
 
 ### Assigning Roles to Test Users
 
@@ -174,9 +177,14 @@ WHERE u.name = 'editor_alice' AND r.name = 'editor';
 INSERT INTO user_roles (user_id, role_id)
 SELECT u.id, r.id FROM users u, roles r
 WHERE u.name = 'publisher_bob' AND r.name = 'publisher';
+
+-- Assign viewer role to viewer_carol
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.name = 'viewer_carol' AND r.name = 'viewer';
 ```
 
-Leave `viewer_carol` with no extra roles (she has only the implicit `authenticated` role).
+> **Note:** At this point the viewer role only has `access content` — functionally identical to bare `authenticated`. The viewer role becomes meaningful in Part 5 when the `ritrovo_access` plugin is installed and `view incoming conferences` / `view curated conferences` are assigned. Creating the role now ensures viewer_carol has the right role binding before those permissions are added.
 
 ### Permission Model
 
@@ -191,9 +199,10 @@ When the kernel checks whether a user can perform an action:
 For items specifically, the access check is layered:
 
 1. **Admin bypass:** `is_admin` users always have access.
-2. **Published view:** Anyone with `"access content"` can view published items.
-3. **Plugin hook:** `tap_item_access` lets plugins return **Grant**, **Deny**, or **Neutral**. Any Deny = denied. Any Grant with no Deny = allowed.
-4. **Role-based fallback:** The kernel checks both generic and type-specific permission patterns: `"edit any content"`, `"edit any conference"`, `"edit own content"` (for the item's author), and `"edit conference content"`. Any match grants access.
+2. **Stage visibility:** If the item is on an internal stage (Incoming or Curated), anonymous users are denied immediately. The "published view" shortcut (step 3) is skipped for internal stages.
+3. **Published view:** For items on public stages, anyone with `"access content"` can view published items.
+4. **Plugin hook:** `tap_item_access` lets plugins return **Grant**, **Deny**, or **Neutral**. The kernel passes the user's permissions, authentication status, and the item's stage info to plugins so they can make informed decisions. Any Deny = denied. Any Grant with no Deny = allowed.
+5. **Role-based fallback:** The kernel checks both generic and type-specific permission patterns: `"edit any content"`, `"edit any conference"`, `"edit own content"` (for the item's author), and `"edit conference content"`. Any match grants access.
 
 > **Note:** Admin pages (`/admin/*`) require `is_admin` — they are not accessible through role permissions. Editors and publishers use the item routes (`/item/{id}/edit`, `/item/{id}/revisions`) directly, not the admin UI.
 
@@ -237,15 +246,15 @@ Every item in Trovato has a `stage_id` that determines its visibility. Until now
 | **Curated** | Internal | Editor-reviewed content, ready for publisher approval |
 | **Live** | Public | Published content, visible to all visitors |
 
-"Internal" means only users with the right permissions can see items on that stage. Anonymous visitors and basic authenticated users see only Live content.
+"Internal" means only authenticated users with the right permissions can see items on that stage. The kernel denies anonymous users on internal stages before dispatching to any plugins. The `ritrovo_access` plugin (installed in Part 5) then checks whether authenticated users have the `view incoming conferences` or `view curated conferences` permissions.
 
 ### How Stages Work
 
 Stages are stored as the `stage_id` column on the `item` table -- a foreign key to a stage definition. The kernel's Gather engine wraps every query with a stage visibility filter:
 
 - **Anonymous users** see only items where `stage_id` points to a Public stage.
-- **Editors** see items on Internal and Public stages.
-- **Publishers** see all stages.
+- **Viewers** (with `view incoming conferences` + `view curated conferences`) see items on all three tutorial stages.
+- **Editors** and **Publishers** inherit viewer permissions and also see all three stages, plus have additional editing/publishing capabilities.
 
 This filtering happens transparently in the SQL -- the Gather definition doesn't need to specify stage logic explicitly. The `stage_aware: true` flag in the Gather's definition JSON enables this behavior.
 
@@ -255,12 +264,12 @@ Not all stage changes are valid. The editorial workflow defines which transition
 
 ```
 incoming → curated     (requires: "edit any content")
-curated  → live        (requires: "administer site")
-live     → curated     (requires: "administer site")
+curated  → live        (requires: "publish conferences")
+live     → curated     (requires: "publish conferences")
 curated  → incoming    (requires: "edit any content")
 ```
 
-An editor (who has `edit any content`) can move content between Incoming and Curated. Only an administrator (who has `administer site`) can promote content to Live or unpublish it. Invalid transitions (like Incoming → Live) are rejected by the kernel.
+An editor (who has `edit any content`) can move content between Incoming and Curated. A publisher (who has `publish conferences`) can promote content to Live or unpublish it. Invalid transitions (like Incoming → Live) are rejected by the kernel.
 
 The workflow is configured in `docs/tutorial/config/variable.workflow.editorial.yml`:
 
@@ -274,11 +283,11 @@ value:
       label: "Promote to Curated"
     - from: curated
       to: live
-      permission: "administer site"
+      permission: "publish conferences"
       label: "Publish"
     - from: live
       to: curated
-      permission: "administer site"
+      permission: "publish conferences"
       label: "Unpublish to Curated"
     - from: curated
       to: incoming
@@ -528,7 +537,7 @@ curl -s -b /tmp/trovato-cookies.txt http://localhost:3000/admin/content | grep -
 By the end of Part 4, you have:
 
 - **Multi-user authentication** with Argon2id password hashing, Redis sessions, and session fixation protection.
-- **Five roles** -- anonymous, authenticated, editor, publisher, and administrator -- with permission-based access control.
+- **Six roles** -- anonymous, authenticated, viewer, editor, publisher, and administrator -- with permission-based access control.
 - **Three editorial stages** -- Incoming (internal), Curated (internal), and Live (public) -- with enforced workflow transitions.
 - **Revision history** on items created or edited through the kernel API, with revert capability and audit trail.
 - **Admin content management** with type and status filters, bulk operations (publish/unpublish/delete), and per-item quick actions.
@@ -559,7 +568,7 @@ Ritrovo is now a full editorial CMS: conferences flow in from the importer, edit
 | Revision diff UI | Part 5+ | Visual diff display is a UI enhancement |
 | Content scheduling | Future | Time-based stage transitions |
 | Config import for roles/stages | Future | ConfigStorage does not yet support these entity types |
-| ritrovo_access WASM plugin | Part 5 | Field-level access control via render tree |
+| ritrovo_access WASM plugin | Part 5 | Stage-based access control and field-level visibility |
 
 ---
 

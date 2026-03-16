@@ -458,15 +458,17 @@ This event is consumed by the `ritrovo_notify` plugin in Part 6. The two plugins
 The `ritrovo_cfp` plugin follows the same WASM build pattern as `ritrovo_importer`:
 
 ```bash
-cd plugins/ritrovo_cfp
-cargo build --target wasm32-wasip1 --release
-cp target/wasm32-wasip1/release/ritrovo_cfp.wasm ../../plugin-dist/
+cargo build --target wasm32-wasip1 -p ritrovo_cfp --release
+mkdir -p plugin-dist
+cp target/wasm32-wasip1/release/ritrovo_cfp.wasm plugin-dist/
 ```
 
-Install it through the plugin admin UI at `/admin/plugins/install` or via the CLI:
+> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/ritrovo_cfp/target/`.
+
+Install via the CLI:
 
 ```bash
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_cfp.wasm
+cargo run --release --bin trovato -- plugin install ritrovo_cfp
 ```
 
 ### SDK Features Used
@@ -482,7 +484,7 @@ cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_cfp.wasm
 ```bash
 # After installing the plugin, verify it appears in the plugin list
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugins WHERE name = 'ritrovo_cfp';"
+  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_cfp';"
 # Expect: ritrovo_cfp, 1 (enabled)
 
 # Check that a conference with a future CFP date renders the badge
@@ -518,17 +520,18 @@ The `ritrovo_access` plugin adds fine-grained access control: stage-based item v
 
 ### Stage-Based Access Decisions
 
-The plugin implements `tap_item_access` to enforce stage visibility:
+The kernel enforces the first layer of stage access: anonymous users are denied on internal stages before any plugin dispatch. The plugin then handles authenticated users by checking their permissions:
 
 | User | Incoming | Curated | Live |
 |---|---|---|---|
-| Anonymous | Deny | Deny | Neutral (falls through to kernel's "access content" check) |
-| Authenticated (no role) | Deny | Deny | Neutral |
-| Editor | Grant | Grant | Neutral |
-| Publisher | Grant | Grant | Neutral |
+| Anonymous | Deny (kernel) | Deny (kernel) | Neutral (kernel's "access content" check) |
+| Authenticated (no stage perms) | Deny (plugin) | Deny (plugin) | Neutral |
+| Viewer | Grant (has `view incoming conferences`) | Grant (has `view curated conferences`) | Neutral |
+| Editor | Grant (has `view incoming conferences` + `edit conferences`) | Grant (has `view curated conferences` + `edit conferences`) | Neutral |
+| Publisher | Grant (has all viewer/editor perms + `publish conferences`) | Grant | Neutral |
 | Admin | (bypassed -- admin check runs first) | | |
 
-Returning **Neutral** for Live items means the kernel's built-in "access content" permission check handles them. The plugin only needs to handle the stages where its opinion differs from the default.
+Returning **Neutral** for Live items means the kernel's built-in "access content" permission check handles them. The plugin only needs to handle internal stages where its opinion differs from the default.
 
 ### Grant/Deny/Neutral Aggregation
 
@@ -545,8 +548,8 @@ This means a Deny is absolute -- a single plugin can block access regardless of 
 The plugin declares permissions via `tap_perm`:
 
 ```
-view incoming
-view curated
+view incoming conferences
+view curated conferences
 edit conferences
 publish conferences
 post comments
@@ -554,7 +557,7 @@ edit own comments
 edit any comments
 ```
 
-These permissions appear in the admin permissions UI at `/admin/people/permissions` after the plugin is installed. They can then be assigned to roles.
+These permissions appear in the admin permissions UI at `/admin/people/permissions` after the plugin is installed. They must then be assigned to the appropriate roles (viewer, editor, publisher) so that stage-based access control works correctly.
 
 ### Field-Level Access: Stripping editor_notes
 
@@ -571,23 +574,62 @@ This approach is different from database-level filtering (which would prevent th
 ### Building the Plugin
 
 ```bash
-cd plugins/ritrovo_access
-cargo build --target wasm32-wasip1 --release
-cp target/wasm32-wasip1/release/ritrovo_access.wasm ../../plugin-dist/
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_access.wasm
+cargo build --target wasm32-wasip1 -p ritrovo_access --release
+mkdir -p plugin-dist
+cp target/wasm32-wasip1/release/ritrovo_access.wasm plugin-dist/
+cargo run --release --bin trovato -- plugin install ritrovo_access
 ```
+
+> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/ritrovo_access/target/`.
 
 ### Verify
 
 ```bash
 # Plugin installed and enabled
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugins WHERE name = 'ritrovo_access';"
+  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_access';"
 # Expect: ritrovo_access, 1
 
 # Anonymous cannot see Incoming items
 # (Move a test item to Incoming stage first, then check)
 ```
+
+### Assigning Plugin Permissions to Roles
+
+After installing `ritrovo_access`, its declared permissions must be assigned to the viewer, editor, and publisher roles so stage-based access control works:
+
+```sql
+-- Viewer: can see all editorial stages
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.perm
+FROM roles r, (VALUES
+  ('view incoming conferences'), ('view curated conferences')
+) AS p(perm)
+WHERE r.name = 'viewer'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Editor: viewer permissions + edit conferences
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.perm
+FROM roles r, (VALUES
+  ('view incoming conferences'), ('view curated conferences'),
+  ('edit conferences')
+) AS p(perm)
+WHERE r.name = 'editor'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Publisher: editor permissions + publish conferences
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.perm
+FROM roles r, (VALUES
+  ('view incoming conferences'), ('view curated conferences'),
+  ('edit conferences'), ('publish conferences')
+) AS p(perm)
+WHERE r.name = 'publisher'
+ON CONFLICT (role_id, permission) DO NOTHING;
+```
+
+These match the permission sets documented in the role YAML configs (`docs/tutorial/config/role.*.yml`).
 
 <details>
 <summary>Under the Hood: The Layered Access Model</summary>
@@ -598,16 +640,22 @@ The complete item access check in `check_access()`:
 1. Admin bypass
    → User has is_admin? GRANT (skip everything else)
 
-2. Published view shortcut
+2. Stage visibility
+   → Item is on an internal stage (Incoming/Curated)?
+   → User is anonymous? DENY (kernel enforcement, before any plugin dispatch)
+   → Skip the "published view shortcut" for internal stages
+
+3. Published view shortcut (public stages only)
    → Item is published (status=1) AND on a Public stage?
    → User has "access content" permission? GRANT
 
-3. Plugin hooks (tap_item_access)
-   → Dispatch to all plugins
+4. Plugin hooks (tap_item_access)
+   → Dispatch to all plugins with enriched context:
+     user_authenticated, user_permissions, stage_id, stage_machine_name
    → Aggregate: any Deny wins, then any Grant, else Neutral
-   → ritrovo_access checks stage + role here
+   → ritrovo_access checks stage + user permissions here
 
-4. Role-based fallback
+5. Role-based fallback
    → Check five permission patterns:
      - "{op} any content"
      - "{op} any {type}"
@@ -617,7 +665,7 @@ The complete item access check in `check_access()`:
    → Any match? GRANT. None? DENY.
 ```
 
-The published view shortcut (step 2) means that for the common case -- anonymous users viewing Live content -- access is decided without dispatching to any plugins. Plugin hooks only fire when the shortcut does not apply.
+The stage visibility check (step 2) ensures anonymous users never see internal-stage content, even without any plugins installed. The published view shortcut (step 3) handles the common case -- authenticated users viewing Live content -- without dispatching to plugins. Plugin hooks only fire when neither shortcut applies.
 
 </details>
 
