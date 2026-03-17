@@ -14,17 +14,32 @@ use uuid::Uuid;
 /// to stay in sync with the kernel's canonical definition.
 pub const LIVE_STAGE_UUID: &str = "0193a5a0-0000-7000-8000-000000000001";
 
+/// Returns the live stage UUID as a parsed `Uuid`.
+///
+/// # Panics
+///
+/// Panics if `LIVE_STAGE_UUID` is not a valid UUID (infallible with the hardcoded constant).
+#[allow(clippy::expect_used)] // Infallible: parsing a hardcoded valid UUID constant
+pub fn live_stage_id() -> Uuid {
+    Uuid::parse_str(LIVE_STAGE_UUID).expect("LIVE_STAGE_UUID is a valid UUID")
+}
+
 /// A complete item (content record) for full-serialization taps.
 ///
 /// Plugins receive this struct serialized as JSON for view/alter/insert/update taps.
-/// Phase 0 benchmarks proved full-serialization is 1.2-1.6x faster than handle-based
-/// field access.
+///
+/// SYNC: field names and types must match `crates/kernel/src/models/item.rs`.
+/// The kernel serializes its `Item` via `serde_json::to_string()` and plugins
+/// deserialize into this struct. Extra kernel fields (promote, sticky, language,
+/// item_group_id) are ignored by serde. SDK-only helpers are fine as long as
+/// they have `#[serde(default)]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     /// Unique identifier (UUIDv7, time-sortable).
     pub id: Uuid,
 
     /// Content type machine name (e.g., "blog", "page").
+    #[serde(rename = "type")]
     pub item_type: String,
 
     /// Item title.
@@ -32,6 +47,7 @@ pub struct Item {
 
     /// Dynamic fields as key-value pairs.
     /// Values are JSON (can be TextValue, RecordRef, arrays, etc.).
+    #[serde(default)]
     pub fields: HashMap<String, serde_json::Value>,
 
     /// Publication status (0 = unpublished, 1 = published).
@@ -40,13 +56,13 @@ pub struct Item {
     /// Author user ID.
     pub author_id: Uuid,
 
-    /// Revision ID for staged content.
+    /// Current revision ID (null for items without revisions).
     #[serde(default)]
-    pub revision_id: Option<Uuid>,
+    pub current_revision_id: Option<Uuid>,
 
-    /// Stage ID (None = live).
-    #[serde(default)]
-    pub stage_id: Option<String>,
+    /// Stage UUID referencing a stage category tag.
+    #[serde(default = "live_stage_id")]
+    pub stage_id: Uuid,
 
     /// Unix timestamp when created.
     pub created: i64,
@@ -170,6 +186,11 @@ pub enum FieldType {
         min_items: Option<usize>,
         max_items: Option<usize>,
     },
+    /// An ordered array of content blocks rendered as HTML via `render_blocks()`.
+    ///
+    /// Storage format: JSON array of `{type, weight, data}` in JSONB `fields`.
+    /// Block validation is handled by `BlockTypeRegistry`.
+    Blocks,
 }
 
 /// A content type definition returned by `tap_item_info`.

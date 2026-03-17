@@ -440,8 +440,8 @@ mod tests {
             fields: HashMap::new(),
             status: 1,
             author_id: Uuid::nil(),
-            revision_id: None,
-            stage_id: None,
+            current_revision_id: None,
+            stage_id: trovato_sdk::types::live_stage_id(),
             created: 0,
             changed: 0,
         };

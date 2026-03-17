@@ -336,6 +336,24 @@ impl FormBuilder {
                 )
             }
 
+            FieldType::Blocks => {
+                // Block editor: hidden input + container div for Editor.js
+                let existing_json = value
+                    .map(|v| serde_json::to_string(v).unwrap_or_default())
+                    .unwrap_or_else(|| "[]".to_string());
+                let existing_escaped = html_escape(&existing_json);
+
+                format!(
+                    r#"
+                    <div class="form-group">
+                        <label>{label}{required_star}</label>
+                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}">
+                        <div data-block-editor data-block-editor-input="{field_name}"></div>
+                    </div>
+                    "#
+                )
+            }
+
             FieldType::Compound {
                 allowed_types,
                 min_items,

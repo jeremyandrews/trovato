@@ -2,12 +2,12 @@
 
 Part 4 built the editorial engine: users, roles, stages, revisions, and admin content management. But content creation still relies on auto-generated admin forms and the importer plugin. Part 5 opens the front door to user input.
 
-You will tour the **Form API** -- the structured pipeline that builds, validates, and processes forms. You will learn how text formats (`plain_text`, `filtered_html`, `full_html`) control what HTML users can produce, how AJAX callbacks power conditional fields and multi-value "Add another" buttons, and how multi-step forms persist state across requests via PostgreSQL. You will design two new WASM plugins: `ritrovo_cfp` for CFP deadline tracking with computed badges, and `ritrovo_access` for field-level visibility control through render tree manipulation.
+You will tour the **Form API** -- the structured pipeline that builds, validates, and processes forms. You will learn how the **block editor** replaces freeform WYSIWYG with structured content editing, how text formats (`plain_text`, `filtered_html`, `full_html`) control what HTML users can produce, how the `block_editor` and `ritrovo_access` plugins extend the kernel through taps, and how file uploads are secured at the boundary.
 
-> **Implementation note:** The Form API core (types, service, AJAX, CSRF) exists in `crates/kernel/src/form/`. The current admin content forms use a temporary `FormBuilder` that will migrate to the Form API as it matures. The `ritrovo_cfp` and `ritrovo_access` plugins described in Steps 5-6 are designed but not yet implemented -- this part walks through their architecture so you understand the tap points and SDK features they demonstrate.
+> **Implementation note:** The Form API core (types, service, AJAX, CSRF) exists in `crates/kernel/src/form/`. The block editor infrastructure -- block types, rendering, validation, and the Editor.js integration -- is fully implemented. The `block_editor` plugin activates the client-side editor and its API routes. The `ritrovo_access` plugin provides stage-based access control and is also fully implemented.
 
 **Start state:** Auto-generated admin forms, three test users with roles, three editorial stages, revision tracking.
-**End state:** Form API pipeline, rich text editing with text format permissions, AJAX-enhanced forms, multi-step conference submission, two new plugin designs (`ritrovo_cfp` and `ritrovo_access`), user profile editing.
+**End state:** Form API pipeline, block-based content editing with Editor.js, text format permissions, block rendering with syntax highlighting, file upload security, two installed plugins (`block_editor` and `ritrovo_access`), user profile editing.
 
 ---
 
@@ -95,13 +95,13 @@ The dispatch flow:
 
 ```
 FormService::build("conference_edit_form")
-  → Form::new() with CSRF token
-  → serde_json::to_string(&form)
-  → TapDispatcher::dispatch("tap_form_alter", form_json)
-      → plugin_a returns modified form JSON
-      → plugin_b returns modified form JSON
-  → Last valid response wins
-  → Return final Form
+  -> Form::new() with CSRF token
+  -> serde_json::to_string(&form)
+  -> TapDispatcher::dispatch("tap_form_alter", form_json)
+      -> plugin_a returns modified form JSON
+      -> plugin_b returns modified form JSON
+  -> Last valid response wins
+  -> Return final Form
 ```
 
 This is intentionally simple. The "last writer wins" model means plugin order matters -- plugins with higher weight get the final say. The `plugins` table's `weight` column controls this order.
@@ -112,11 +112,331 @@ Plugin authors should make additive changes (adding fields, wrapping existing el
 
 ---
 
-## Step 2: Rich Text Editing
+## Step 2: Block-Based Content Editing
 
-Until now, conference descriptions have been plain text. Trovato supports three text formats that control what HTML users can produce.
+Until now, conference descriptions have been plain text or simple HTML in a textarea. Trovato replaces the traditional WYSIWYG approach with a **block editor** -- a structured content model where each piece of content is a typed block with a defined schema.
 
-### Text Formats
+### 2.1: Why Blocks
+
+Traditional WYSIWYG editors (TinyMCE, CKEditor) produce freeform HTML. The author has total control over the markup, which creates problems:
+
+- **Inconsistent structure** -- One editor wraps text in `<div>`, another in `<p>`, a third pastes from Word with inline styles.
+- **Difficult to repurpose** -- Extracting the "first image" or "summary paragraph" from arbitrary HTML requires fragile parsing.
+- **Hard to validate** -- The server cannot enforce that a description has a heading, or that code blocks specify a language, because everything is just one big HTML string.
+
+Block-based editing solves this by constraining content into typed, schema-validated units. Each block has a known structure that the server can validate, render, and transform independently.
+
+### 2.2: The Eight Standard Block Types
+
+Trovato ships eight block types, all defined in `crates/kernel/src/content/block_types.rs`:
+
+| Block Type | Purpose | Required Data |
+|---|---|---|
+| `paragraph` | Body text with inline formatting | `text` (string, sanitized HTML) |
+| `heading` | Section heading (h1-h6) | `text` (string), `level` (integer 1-6) |
+| `image` | Image with caption | `file.url` (string), optional `caption`, `alt` |
+| `list` | Ordered or unordered list | `style` ("ordered" or "unordered"), `items` (string array) |
+| `quote` | Blockquote with attribution | `text` (string), optional `caption` |
+| `code` | Code snippet with language | `code` (string), optional `language` |
+| `delimiter` | Horizontal rule separator | (none) |
+| `embed` | External media (YouTube, Vimeo) | `service` (string), `source` (URL) |
+
+Each block type has a JSON Schema that defines its expected data shape and an `allowed_formats` list that controls which text formats can be used for its text fields. The paragraph, heading, quote, and list types allow `filtered_html` and `plain_text`. Image, code, delimiter, and embed types have no text format (their content is either URLs or raw code, not rich text).
+
+Here is how a paragraph block renders:
+
+```
+Storage: {"type": "paragraph", "weight": 0, "data": {"text": "<p>A conference about <b>Rust</b>.</p>"}}
+HTML:    <p>A conference about <b>Rust</b>.</p>
+```
+
+And a code block:
+
+```
+Storage: {"type": "code", "weight": 3, "data": {"code": "fn main() {}", "language": "rust"}}
+HTML:    <pre><code class="language-rust">...(syntax highlighted)...</code></pre>
+```
+
+### 2.3: Block Storage Format
+
+Blocks are stored as a flat JSON array in the item's JSONB `fields` column. Each element has three keys:
+
+```json
+[
+  {"type": "heading", "weight": 0, "data": {"text": "About This Conference", "level": 2}},
+  {"type": "paragraph", "weight": 1, "data": {"text": "RustConf brings together..."}},
+  {"type": "image", "weight": 2, "data": {"file": {"url": "/files/uploads/rustconf-stage.jpg"}, "caption": "Main stage"}},
+  {"type": "code", "weight": 3, "data": {"code": "cargo run --release", "language": "bash"}},
+  {"type": "delimiter", "weight": 4, "data": {}}
+]
+```
+
+- **`type`** -- One of the eight standard types (or a custom type registered by a plugin).
+- **`weight`** -- Integer that controls display order. Blocks render in ascending weight order.
+- **`data`** -- Type-specific payload validated against the block type's JSON Schema.
+
+This is the `FieldType::Blocks` variant in the SDK's `FieldType` enum. It differs from `FieldType::Compound`, which stores `{"sections": [{type, weight, data}]}` -- a wrapper object with a `sections` key. Blocks fields store the array directly, without the wrapper.
+
+The conference content type config at `docs/tutorial/config/item_type.conference.yml` defines `field_description` as `Blocks`:
+
+```yaml
+    - field_name: field_description
+      field_type: Blocks
+      label: Description
+```
+
+### 2.4: Enabling the `block_editor` Plugin
+
+The block editor's client-side functionality is gated behind the `block_editor` plugin. The kernel provides all the infrastructure (block types, rendering, validation), but the plugin activates the Editor.js widget and its API routes.
+
+The plugin source is minimal -- it lives at `plugins/block_editor/src/lib.rs` and declares a single permission:
+
+```rust
+#[plugin_tap]
+pub fn tap_perm() -> Vec<PermissionDefinition> {
+    vec![PermissionDefinition::new(
+        "use block editor",
+        "Use the block editor for content with Blocks fields",
+    )]
+}
+```
+
+Build and install:
+
+```bash
+cargo build --target wasm32-wasip1 -p block_editor --release
+mkdir -p plugin-dist
+cp target/wasm32-wasip1/release/block_editor.wasm plugin-dist/
+cargo run --release --bin trovato -- plugin install block_editor
+```
+
+> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/block_editor/target/`.
+
+After installation, the plugin gates two API routes via the `plugin_gate!` macro in `crates/kernel/src/plugin/gate.rs`:
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/block-editor/upload` | POST | Image upload for the editor |
+| `/api/block-editor/preview` | POST | Server-side block rendering preview |
+
+These routes return 404 when the plugin is not installed. When it is installed, they require authentication and the `use block editor` permission.
+
+### Verify
+
+```bash
+# Plugin installed and enabled
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT name, status FROM plugin_status WHERE name = 'block_editor';"
+# Expect: block_editor, 1
+
+# Permission is declared
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT name FROM permissions WHERE name = 'use block editor';"
+# Expect: use block editor
+```
+
+### 2.5: Using the Block Editor in the Admin Form
+
+When a content type has a `Blocks` field, the admin content form at `templates/admin/content-form.html` detects it and loads the Editor.js integration.
+
+The template logic:
+
+1. **Detection** -- The template iterates over `content_type.fields` and sets `has_blocks = true` if any field has `field_type == "Blocks"`.
+
+2. **CSS** -- When `has_blocks` is true, the template loads `/static/css/block-editor.css`.
+
+3. **Hidden input** -- Each Blocks field renders as a hidden `<input>` containing the current blocks as JSON, plus a `<div data-block-editor>` container:
+
+    ```html
+    <input type="hidden" id="field_description" name="field_description"
+           value="{{ item.fields.field_description | json_encode() | escape }}">
+    <div data-block-editor data-block-editor-input="field_description"></div>
+    ```
+
+4. **Editor.js CDN scripts** -- The template loads pinned versions of Editor.js and its tool plugins from jsDelivr:
+
+    ```html
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/editorjs@2.30.7/dist/editorjs.umd.bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/header@2.8.8/dist/header.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/list@2.0.2/dist/list.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/quote@2.7.6/dist/quote.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/code@2.9.3/dist/code.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/image@2.10.1/dist/image.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/delimiter@1.4.2/dist/delimiter.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/embed@2.7.6/dist/embed.umd.js"></script>
+    <script src="/static/js/block-editor.js"></script>
+    ```
+
+5. **Auto-initialization** -- The `block-editor.js` script (`static/js/block-editor.js`) finds all `[data-block-editor]` containers on `DOMContentLoaded`, reads the associated hidden input, and initializes an Editor.js instance.
+
+The script maps between Trovato's block format (`{type, weight, data}`) and Editor.js's format (`{id, type, data}`). On form submission, it intercepts the submit event, calls `editor.save()` on every active editor, converts the output back to Trovato format, serializes it into the hidden inputs, and then submits the form.
+
+If Editor.js fails to load (CDN unavailable, JavaScript disabled), the script falls back to a plain `<textarea>` where the user can edit the JSON directly.
+
+### 2.6: Image Upload via Blocks
+
+The image block tool uses the `/api/block-editor/upload` endpoint. When a user adds an image block and selects a file:
+
+1. Editor.js calls `POST /api/block-editor/upload` with `multipart/form-data`.
+2. The server validates: authentication, file size, MIME type (JPEG, PNG, GIF, WebP only), and magic bytes.
+3. On success, the server returns Editor.js's expected format:
+
+    ```json
+    {"success": 1, "file": {"url": "/files/uploads/2026-03/rustconf-stage.jpg"}}
+    ```
+
+4. The URL is stored in the block's `data.file.url` field and rendered as an `<img>` tag.
+
+The upload handler in `crates/kernel/src/routes/file.rs` reuses the kernel's file service (`FileService`) with an additional MIME type allowlist restricted to images:
+
+```rust
+const BLOCK_EDITOR_IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+```
+
+### 2.7: Server-Side Preview
+
+The `/api/block-editor/preview` endpoint accepts a JSON body with a `blocks` array and returns rendered HTML:
+
+```bash
+curl -s -b /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/api/block-editor/preview \
+  -H "Content-Type: application/json" \
+  -d '{"blocks": [{"type": "paragraph", "weight": 0, "data": {"text": "Hello world"}}]}' \
+  | jq '.html'
+# "<p>Hello world</p>"
+```
+
+The preview uses the same `render_blocks()` function as the public item view, so the preview is an exact representation of how the content will appear to visitors. The client-side script renders the preview in a sandboxed iframe (`sandbox="allow-same-origin"`) for defense-in-depth.
+
+---
+
+## Step 3: Block Rendering on Display
+
+When a visitor views a conference at `/item/{id}` or its pathauto alias, the item handler detects Blocks fields and renders them with the server-side block renderer.
+
+### 3.1: The `render_blocks()` Pipeline
+
+The rendering pipeline in `crates/kernel/src/content/block_render.rs`:
+
+1. Iterates over the block array.
+2. Dispatches each block to a type-specific renderer based on the `type` field.
+3. Concatenates the rendered HTML fragments into a single string.
+
+Each block type produces semantic HTML:
+
+| Block Type | Rendered HTML |
+|---|---|
+| `paragraph` | `<p>sanitized text</p>` |
+| `heading` | `<h2>text</h2>` (level-aware, clamped 1-6) |
+| `image` | `<figure><img src="..." alt="..."><figcaption>caption</figcaption></figure>` |
+| `list` | `<ol>` or `<ul>` with `<li>` items |
+| `quote` | `<blockquote><p>text</p><cite>caption</cite></blockquote>` |
+| `code` | `<pre><code class="language-...">highlighted</code></pre>` |
+| `delimiter` | `<hr>` |
+| `embed` | `<div class="embed-responsive"><iframe ...></iframe></div>` (whitelisted) or `<a href="...">` (non-whitelisted) |
+
+Text content in paragraph, heading, quote, and list blocks is sanitized via `ammonia::clean()`, which strips dangerous tags while preserving safe inline formatting (`<b>`, `<i>`, `<a>`, `<br>`, etc.).
+
+Image URLs and captions are HTML-escaped via `html_escape()` (not ammonia) because they are attribute values and plain text, not rich HTML.
+
+In the item view handler (`crates/kernel/src/routes/item.rs`), the detection works by checking each field against the content type's field definitions:
+
+```rust
+let is_blocks_field = content_type_fields.iter().any(|f| {
+    f.field_name == *name
+        && matches!(f.field_type, trovato_sdk::types::FieldType::Blocks)
+});
+if is_blocks_field {
+    if let Some(blocks) = value.as_array() {
+        let rendered = crate::content::render_blocks(blocks);
+        // Wrap in a div with field-specific class
+    }
+}
+```
+
+Unknown block types are silently skipped -- they produce no output. This is intentional: if a plugin registers a custom block type and is later disabled, the blocks remain in storage but do not render until the plugin is re-enabled with a custom renderer.
+
+### 3.2: Syntax Highlighting for Code Blocks
+
+Code blocks with a `language` field get server-side syntax highlighting via the `syntect` crate. The renderer:
+
+1. Loads the default syntax set and theme set (cached in `LazyLock` statics to avoid reloading per request).
+2. Looks up the syntax definition by language token or name.
+3. If found, produces highlighted HTML with `<span>` tags and inline styles via syntect's `highlighted_html_for_string()`.
+4. If the language is unknown or highlighting fails, falls back to plain HTML-escaped text in `<pre><code>`.
+
+The default theme is "InspiredGitHub" with a fallback to "base16-ocean.dark". Both ship with syntect's default theme set.
+
+```
+Input:  {"type": "code", "data": {"code": "fn main() {\n    println!(\"hello\");\n}", "language": "rust"}}
+Output: <pre><code class="language-rust"><span style="...">fn</span> <span style="...">main</span>() ...</code></pre>
+```
+
+### 3.3: Embed Security
+
+Embed blocks render external content. Without controls, an embed block could inject arbitrary iframes. Trovato uses a URL whitelist:
+
+```rust
+const EMBED_WHITELIST: &[&str] = &[
+    "youtube.com/watch",
+    "youtube.com/embed/",
+    "youtu.be/",
+    "vimeo.com/",
+    "player.vimeo.com/",
+];
+```
+
+The whitelist matching normalizes URLs by stripping the protocol prefix and `www.` before checking against the patterns.
+
+| URL | Result |
+|---|---|
+| `https://youtube.com/watch?v=abc123` | Rendered as `<iframe>` with `allowfullscreen` |
+| `https://vimeo.com/123456` | Rendered as `<iframe>` |
+| `https://evil.example.com/payload` | Rendered as a safe `<a href="...">` link (no iframe) |
+| `javascript:alert('xss')` | Rendered as `<span>` (plain text, no href) |
+
+Non-whitelisted HTTP(S) URLs become clickable links. Non-HTTP URLs (like `javascript:`) are rendered as plain text in a `<span>` -- no `href` attribute at all. This is defense-in-depth: even if an attacker manages to insert an embed block with a malicious URL, it cannot execute code in the visitor's browser.
+
+### Verify
+
+```bash
+# Render a test block array via the preview endpoint
+curl -s -b /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/api/block-editor/preview \
+  -H "Content-Type: application/json" \
+  -d '{"blocks": [
+    {"type": "heading", "weight": 0, "data": {"text": "Test", "level": 2}},
+    {"type": "paragraph", "weight": 1, "data": {"text": "Hello <b>world</b>"}},
+    {"type": "code", "weight": 2, "data": {"code": "let x = 42;", "language": "rust"}}
+  ]}' | jq -r '.html'
+# Expect: HTML with <h2>, <p>, and syntax-highlighted <pre><code>
+```
+
+<details>
+<summary>Under the Hood: Block Processing on Form Submission</summary>
+
+When a content form with Blocks fields is submitted, the `process_blocks_fields()` function in `crates/kernel/src/content/compound.rs` handles the server-side processing:
+
+1. **Parse** -- The hidden input value (a JSON string) is parsed into a `Vec<Value>`.
+2. **Size check** -- The raw JSON must be under 512 KB (`MAX_BLOCKS_JSON_BYTES`).
+3. **Count check** -- The array must have no more than 100 blocks (`MAX_BLOCKS_COUNT`).
+4. **Validate** -- Each block is validated against `BlockTypeRegistry::validate_block()`, which checks required fields, data types, and sanitization.
+5. **Sanitize** -- `BlockTypeRegistry::sanitize_blocks()` runs ammonia on all text-bearing fields in-place.
+6. **Store** -- The validated, sanitized block array replaces the raw string in the item's fields JSON.
+
+If any block fails validation, the error messages are returned to the user and the item is not saved.
+
+</details>
+
+---
+
+## Step 4: Text Formats & Sanitization
+
+Block-based editing handles structured content, but some text fields (like Editor Notes) still use traditional text formats. This step covers how text formats work alongside the block editor.
+
+### 4.1: Text Formats in Context
+
+Trovato supports three text formats for traditional text fields (TextValue, TextLong):
 
 | Format | Sanitization | Who Can Use |
 |---|---|---|
@@ -124,54 +444,31 @@ Until now, conference descriptions have been plain text. Trovato supports three 
 | `filtered_html` | Ammonia-sanitized (safe subset of HTML) | Users with `use filtered_html` permission |
 | `full_html` | No sanitization (trusted HTML) | Users with `use full_html` permission |
 
-The editor and publisher roles from Part 4 already have the appropriate permissions: editors can use `filtered_html`, publishers can use `full_html`.
+Within Blocks fields, text sanitization is handled at the block level by ammonia -- each block type's text fields are sanitized individually during `process_blocks_fields()`. The block editor does not use text format selectors. Instead, all block text content is treated as `filtered_html` equivalent: ammonia strips dangerous tags while preserving safe formatting.
 
-### How Text Format Storage Works
+Traditional text fields (like `field_editor_notes`, which is `TextLong`) still use the format selector dropdown, where the available formats depend on the user's permissions.
 
-Each text field stores both the value and its format in the JSONB fields column:
+### 4.2: Format Permissions by Role
 
-```json
-{
-  "field_description": {
-    "value": "<p>A conference about <strong>Rust</strong>.</p>",
-    "format": "filtered_html"
-  }
-}
-```
+The editor and publisher roles from Part 4 have the appropriate permissions:
 
-When the render pipeline displays this field, it checks the format:
-- `plain_text`: HTML-escapes the value
-- `filtered_html`: Runs through ammonia's sanitizer, which strips dangerous tags and attributes while preserving safe formatting (`<p>`, `<strong>`, `<em>`, `<a>`, `<ul>`, `<ol>`, `<li>`, etc.)
-- `full_html`: Passes through unmodified (only for trusted editors)
+| Role | Available Formats |
+|---|---|
+| Anonymous / Authenticated (no format perms) | `plain_text` only |
+| Editor (has `use filtered_html`) | `plain_text`, `filtered_html` |
+| Publisher (has `use filtered_html` + `use full_html`) | All three formats |
 
-### The ammonia Sanitizer
+When the content edit form renders a traditional text field, the `FormBuilder` checks these permissions via `with_permitted_formats()` and shows only the formats the user is allowed to use.
 
-Trovato uses the `ammonia` crate for HTML sanitization. When `FilterPipeline::for_format_safe()` processes `filtered_html` content, ammonia:
+### 4.3: FilterPipeline Safety
 
-- Strips `<script>`, `<style>`, `<iframe>`, `<object>`, `<embed>`, and other dangerous tags
-- Removes `on*` event handler attributes (`onclick`, `onerror`, etc.)
-- Blocks `javascript:` URIs in `href` and `src` attributes
-- Preserves safe formatting tags: `<p>`, `<br>`, `<strong>`, `<em>`, `<a>`, `<ul>`, `<ol>`, `<li>`, `<h2>`-`<h6>`, `<blockquote>`, `<code>`, `<pre>`
+The kernel provides two filter pipeline constructors:
 
-This is defense-in-depth: even if a user's browser has a WYSIWYG editor that produces unexpected HTML, the server sanitizes it before storage.
+- **`FilterPipeline::for_format_safe()`** -- Used for user and plugin content. Validates the format string against a known allowlist (`plain_text`, `filtered_html`, `full_html`) and applies the appropriate sanitization. If the format is unrecognized, it falls back to `plain_text` (maximum escaping).
 
-### Format Selection in Forms
+- **`FilterPipeline::for_format()`** -- Used internally by the kernel for trusted content. Accepts any format string. **Never use this with user-supplied or plugin-supplied format strings** -- it would allow a plugin to bypass sanitization by claiming a made-up format name.
 
-The content edit form renders a format selector dropdown next to each text field. The available formats are filtered by the current user's permissions:
-
-- A user without text format permissions sees only `plain_text`
-- An editor (with `use filtered_html`) sees `plain_text` and `filtered_html`
-- A publisher (with `use full_html`) sees all three formats
-
-The `FormBuilder` checks these permissions via `with_permitted_formats()`.
-
-### WYSIWYG Editor Integration
-
-For `filtered_html` fields, the edit form can attach a JavaScript WYSIWYG editor (such as TinyMCE, CKEditor, or Trix) that provides a toolbar for bold, italic, links, and lists. The editor produces HTML that the server sanitizes through ammonia on save.
-
-The WYSIWYG integration is a progressive enhancement -- if JavaScript is disabled, the user sees a plain `<textarea>` and can enter HTML manually. The sanitization pipeline handles both cases identically.
-
-> **Note:** WYSIWYG editor integration depends on the JavaScript library bundled with the theme. The kernel provides the server-side sanitization pipeline; the client-side editor is a frontend concern.
+This is a critical security boundary. The coding standards explicitly prohibit using `for_format()` with untrusted format strings.
 
 ### Verify
 
@@ -182,370 +479,161 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 # Expect: editor has 'use filtered_html', publisher has both 'use filtered_html' and 'use full_html'
 ```
 
-<details>
-<summary>Under the Hood: FilterPipeline and Format Safety</summary>
-
-The kernel provides two filter pipeline constructors:
-
-- `FilterPipeline::for_format_safe()` -- Used for user and plugin content. Validates the format string against a known allowlist (`plain_text`, `filtered_html`, `full_html`) and applies the appropriate sanitization. If the format is unrecognized, it falls back to `plain_text` (maximum escaping).
-
-- `FilterPipeline::for_format()` -- Used internally by the kernel for trusted content. Accepts any format string. **Never use this with user-supplied or plugin-supplied format strings** -- it would allow a plugin to bypass sanitization by claiming a made-up format name.
-
-This is a critical security boundary. The `CLAUDE.md` coding standards explicitly prohibit using `for_format()` with untrusted format strings.
-
-</details>
-
 ---
 
-## Step 3: AJAX Form Interactions
+## Step 5: Block Validation & Custom Block Types
 
-Content forms can be enhanced with AJAX interactions that update parts of the form without a full page reload.
+The eight standard block types cover common content needs, but the system is designed for extensibility.
 
-### The AJAX Infrastructure
+### 5.1: `BlockTypeRegistry` and JSON Schema Validation
 
-The Form API includes an AJAX subsystem with three components:
+The `BlockTypeRegistry` in `crates/kernel/src/content/block_types.rs` is the central authority for block type definitions. Each registered type has:
 
-1. **`AjaxConfig`** on form elements -- specifies which callback to trigger, on which event, and which DOM element to update.
+- **`type_name`** -- Machine name (e.g., `"paragraph"`, `"code"`).
+- **`label`** -- Human-readable label (e.g., `"Paragraph"`, `"Code"`).
+- **`schema`** -- JSON Schema describing the expected data shape.
+- **`allowed_formats`** -- Which text formats this block can use.
+- **`plugin`** -- Which plugin provides this block type (`"core"` for the standard eight).
 
-2. **`FormService::ajax_callback()`** -- handles AJAX requests by loading form state, processing the trigger, and returning an `AjaxResponse`.
+At startup, `BlockTypeRegistry::with_standard_types()` registers all eight standard types. Validation happens in `validate_block()`, which dispatches to type-specific logic:
 
-3. **`AjaxResponse`** -- a list of commands (replace, append, remove, invoke, alert, redirect) that the client-side JavaScript executes.
+- **Text blocks** (paragraph, heading, quote, list) -- Check that text fields exist and pass ammonia sanitization without changes (no disallowed HTML).
+- **Image** -- `file.url` must be present and non-empty.
+- **Code** -- `code` field must exist.
+- **Embed** -- Both `service` and `source` fields must exist.
+- **Heading** -- `level` must be an integer between 1 and 6.
+- **Delimiter** -- No validation needed (empty data object is valid).
 
-### Conditional Fields
+Unknown block types are rejected with an error: `"unknown block type 'carousel'"`.
 
-A conference form might show CFP-related fields only when the user indicates the conference has an open CFP. This uses an AJAX callback triggered by a checkbox change:
+### 5.2: Registering Custom Block Types
+
+Plugins can register custom block types by adding entries to the registry. The pattern:
 
 ```rust
-.element("has_cfp", FormElement::checkbox()
-    .title("This conference has a Call for Papers")
-    .ajax(AjaxConfig::new("toggle_cfp_fields")
-        .event("change")
-        .wrapper("#cfp-fields")))
-.element("cfp_fields", FormElement::container()
-    .child("cfp_url", FormElement::textfield()
-        .title("CFP Submission URL"))
-    .child("cfp_end_date", FormElement::textfield()
-        .title("CFP Deadline")
-        .placeholder("YYYY-MM-DD")))
+registry.register(BlockTypeDefinition {
+    type_name: "custom_widget".to_string(),
+    label: "Custom Widget".to_string(),
+    schema: serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title": { "type": "string" },
+            "color": { "type": "string", "enum": ["red", "green", "blue"] }
+        },
+        "required": ["title"]
+    }),
+    allowed_formats: vec![],
+    plugin: "my_plugin".to_string(),
+});
 ```
 
-When the user checks "This conference has a Call for Papers," the client sends an AJAX request. The server processes the `toggle_cfp_fields` trigger and returns commands to show or hide the `#cfp-fields` container.
+Custom block types go through the same validation and sanitization pipeline as standard types. The registry's `validate_block()` method checks that the type is registered before applying any validation logic. For custom types (not one of the eight standard names), registration alone passes validation -- custom validation logic is the plugin's responsibility.
 
-### Add Another (Multi-Value Fields)
+> **Implementation note:** The registry infrastructure and `register()` method are complete. The tap point for plugins to register custom block types at startup (`tap_block_types`) is planned but not yet wired. Plugins can currently register types by contributing to the registry during initialization.
 
-RecordReference and other multi-value fields use the built-in `add_` and `remove_` triggers:
+### 5.3: Client-Side Tool Registration in Editor.js
 
-- `add_{field_name}` -- Increments the item count in form state and returns an `append` command with HTML for the new field
-- `remove_{field_name}_{index}` -- Decrements the count and returns a `remove` command
+For a custom block type to appear in the block editor UI, it needs a corresponding Editor.js tool. The `block-editor.js` script builds the tool configuration in `buildToolConfig()`, which maps block type names to Editor.js tool classes:
 
-The form state cache tracks the current count in its `extra` map, so the form survives page reloads during editing.
-
-### AJAX Command Types
-
-The `AjaxResponse` supports these commands:
-
-| Command | Effect |
-|---|---|
-| `replace` | Replace a DOM element's content |
-| `append` | Append content to a container |
-| `prepend` | Insert content before existing children |
-| `remove` | Remove a DOM element |
-| `invoke` | Call a JavaScript function |
-| `alert` | Show an alert message |
-| `redirect` | Navigate to a URL |
-| `css` | Add CSS classes |
-| `data` | Set data attributes |
-| `settings` | Update client-side settings |
-| `restripe` | Re-stripe table rows |
-| `add_css` | Add a stylesheet |
-
-### Progressive Enhancement
-
-All AJAX-enhanced forms work without JavaScript via full page reload. When JavaScript is disabled:
-- Checkbox changes submit the form, which rebuilds it server-side with the correct conditional fields shown or hidden
-- "Add another" submits the form and returns the full page with an additional field row
-- The `_triggering_element` hidden field tells the server which element was activated
-
-This is progressive enhancement: the JavaScript layer makes it smoother, but the form is fully functional without it.
-
-### Verify
-
-```bash
-# The AJAX infrastructure is available in the form module
-# Check that form state can be stored
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT COUNT(*) FROM form_state_cache;"
-# 0 or more (stale entries cleaned up by cron after 6 hours)
-```
-
----
-
-## Step 4: Multi-Step Conference Submission
-
-The admin content form is a single-page affair: all fields at once, save, done. For user-facing submissions, a guided multi-step form provides a better experience. This form uses the Form API with PostgreSQL-backed state persistence.
-
-### The Three Steps
-
-| Step | Fields | Purpose |
-|---|---|---|
-| **1. Basics** | Name, website URL, start date, end date, city, country, online toggle, language | Core identification |
-| **2. Details** | CFP URL, CFP deadline, topics (category reference), description (rich text), logo upload, venue photos | Rich content |
-| **3. Review** | Read-only summary of all fields, thumbnails of uploaded files, "Edit" links back to previous steps, Submit button | Confirmation |
-
-### State Persistence
-
-Multi-step form state is stored in the `form_state_cache` table:
-
-```sql
-CREATE TABLE form_state_cache (
-    form_build_id VARCHAR(64) PRIMARY KEY,
-    form_id VARCHAR(128) NOT NULL,
-    state JSONB NOT NULL,
-    created BIGINT NOT NULL,
-    updated BIGINT NOT NULL
-);
-```
-
-Each form instance gets a unique `form_build_id` (a UUID generated when the form first renders). The `FormState` struct tracks:
-
-- `form_id` -- Which form definition this is
-- `form_build_id` -- Unique instance identifier
-- `values` -- Current field values (HashMap)
-- `step` -- Current step number (0-indexed)
-- `extra` -- Additional state (multi-value field counts, file references)
-
-### Step Transitions
-
-When the user clicks "Next":
-1. The form submits the current step's values
-2. `FormService::process()` validates the step's fields
-3. If validation passes, the step counter increments and state is saved
-4. The next step's fields render, populated from saved state
-5. Back navigation decrements the step counter and loads saved values
-
-### File Uploads Across Steps
-
-File uploads in Step 2 create temporary files (`status = 0` in `file_managed`). The form state records the file IDs in `extra`:
-
-```json
-{
-  "step": 2,
-  "extra": {
-    "uploaded_files": ["file-uuid-1", "file-uuid-2"]
-  }
+```javascript
+if (all || allowedTypes.indexOf('heading') >= 0) {
+    if (typeof Header !== 'undefined') {
+        tools.header = {
+            class: Header,
+            config: { levels: [2, 3, 4], defaultLevel: 2 }
+        };
+    }
 }
 ```
 
-On final submit, these files are promoted to permanent (`status = 1`). If the user abandons the form, the cron job cleans up both the expired form state (after 6 hours) and orphaned temp files.
+To add a custom block type to the editor, a plugin would need to:
 
-### Access Control
+1. Register the block type server-side via `BlockTypeRegistry::register()`.
+2. Provide a JavaScript Editor.js tool class (either via CDN or a plugin-specific static asset).
+3. Extend the `buildToolConfig()` function or provide a custom initialization that includes the new tool.
 
-The submission form requires authentication and the `create content` permission:
-- Anonymous users are redirected to `/user/login`
-- Authenticated users without `create content` get a 403
-- Submitted conferences land on the **Incoming** stage, requiring editorial review before publication
-
-### Verify
-
-```bash
-# The form state table exists and supports the multi-step pattern
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "\d form_state_cache"
-# Expect: form_build_id (varchar PK), form_id, state (jsonb), created, updated
-
-# Stale form state cleanup
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT COUNT(*) FROM form_state_cache WHERE updated < EXTRACT(EPOCH FROM NOW())::bigint - 21600;"
-# Any stale entries would be cleaned by cron
-```
-
-<details>
-<summary>Under the Hood: Form State Lifecycle</summary>
-
-The form state lifecycle:
-
-```
-GET /conference/submit
-  → FormService::build() creates form with form_build_id
-  → Step 0 renders with empty values
-  → form_build_id embedded as hidden field
-
-POST /conference/submit (Step 1 → Step 2)
-  → FormService::process() validates Step 1 fields
-  → FormService::save_state() persists to PostgreSQL
-  → Step 1 renders with populated values from state
-
-POST /conference/submit (Step 2 → Step 3)
-  → FormService::load_state() restores Step 1+2 values
-  → Validate Step 2 fields
-  → Step 3 (review) renders all values read-only
-
-POST /conference/submit (Final)
-  → Load complete state, create Item on Incoming stage
-  → Promote temp files to permanent
-  → FormService cleanup removes the state row
-  → Redirect to confirmation page
-```
-
-The 6-hour TTL on form state means users can start a submission, go to lunch, and come back to finish it. But they cannot leave a form open for days -- stale state is cleaned by `FormService::cleanup_expired()`, which runs as a cron task.
-
-</details>
-
----
-
-## Step 5: The `ritrovo_cfp` Plugin
-
-The `ritrovo_cfp` plugin tracks Call for Papers deadlines and provides visual indicators on conference pages. It is the second Ritrovo plugin (after `ritrovo_importer` from Part 2) and demonstrates computed render elements and cross-plugin event triggers.
-
-> The `ritrovo_cfp` plugin lives at `plugins/ritrovo_cfp/`. This step describes its design and the SDK features it uses.
-
-### What It Does
-
-| Tap | Behavior |
-|---|---|
-| `tap_item_view` | Computes "days until CFP closes" and injects a color-coded badge into the render tree |
-| `tap_item_insert` / `tap_item_update` | Validates that `cfp_end_date` is not after `end_date`; queues `cfp_closing_soon` event when a CFP enters the 7-day window |
-
-### The CFP Badge
-
-When a conference has a `field_cfp_end_date` that is in the future, the plugin computes the days remaining and injects a render element:
-
-| Days Remaining | Badge Color | Label |
-|---|---|---|
-| > 14 days | Green | "CFP: 23 days left" |
-| 7–14 days | Yellow | "CFP: 10 days left" |
-| < 7 days | Red | "CFP closing: 3 days!" |
-| Past deadline | No badge | (field not rendered) |
-
-The badge is a `RenderElement` injected via `tap_item_view`. It does not modify the item's stored data -- it is computed on every view. The conference detail template renders it alongside the title:
-
-```html
-{% if cfp_badge is defined %}
-<span class="cfp-badge cfp-badge--{{ cfp_badge.urgency }}">
-    {{ cfp_badge.label }}
-</span>
-{% endif %}
-```
-
-### Date Validation
-
-On `tap_item_insert` and `tap_item_update`, the plugin checks:
-- If `cfp_end_date` exists and `end_date` exists
-- If `cfp_end_date > end_date`, return a validation error ("CFP deadline cannot be after the conference end date")
-
-This prevents data entry errors where the CFP closes after the conference is over.
-
-### Cross-Plugin Event Trigger
-
-When a conference's CFP enters the 7-day window (either on insert or update), the plugin writes an event to the `ritrovo_notifications` queue:
-
-```json
-{
-  "event_type": "cfp_closing_soon",
-  "item_id": "conference-uuid",
-  "metadata": {
-    "conference_name": "RustConf 2026",
-    "cfp_end_date": "2026-04-15",
-    "days_remaining": 6
-  }
-}
-```
-
-This event is consumed by the `ritrovo_notify` plugin in Part 6. The two plugins communicate through a shared queue name -- neither depends on or imports the other.
-
-### Building the Plugin
-
-The `ritrovo_cfp` plugin follows the same WASM build pattern as `ritrovo_importer`:
-
-```bash
-cargo build --target wasm32-wasip1 -p ritrovo_cfp --release
-mkdir -p plugin-dist
-cp target/wasm32-wasip1/release/ritrovo_cfp.wasm plugin-dist/
-```
-
-> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/ritrovo_cfp/target/`.
-
-Install via the CLI:
-
-```bash
-cargo run --release --bin trovato -- plugin install ritrovo_cfp
-```
-
-### SDK Features Used
-
-- `tap_item_view` -- Render element injection (the CFP badge)
-- `tap_item_insert` / `tap_item_update` -- Field validation on save
-- `queue_push()` host function -- Writing events to the notification queue
-- Structured logging via `log_info!()`, `log_warn!()`
-- `item_load()` host function -- Loading the item to read field values
+The current architecture loads tool scripts from CDN in the template. A future plugin asset system would allow plugins to contribute their own scripts.
 
 ### Verify
 
 ```bash
-# After installing the plugin, verify it appears in the plugin list
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_cfp';"
-# Expect: ritrovo_cfp, 1 (enabled)
-
-# Check that a conference with a future CFP date renders the badge
-# (manually set a cfp_end_date on a test conference first)
+# The standard block types are registered
+# (This is a code-level check; verify by creating a conference with blocks)
+curl -s -b /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/api/block-editor/preview \
+  -H "Content-Type: application/json" \
+  -d '{"blocks": [{"type": "unknown_type", "weight": 0, "data": {}}]}' \
+  | jq -r '.html'
+# Expect: empty string (unknown types silently skipped in rendering)
 ```
-
-<details>
-<summary>Under the Hood: Render Element Injection</summary>
-
-When the item view handler runs `tap_item_view`, plugins receive the full render tree as JSON. The `ritrovo_cfp` plugin parses the item's fields, computes the CFP status, and returns a modified render tree with the badge element inserted.
-
-The badge is positioned by weight. The plugin inserts it at weight `-10` (before the title at weight `0`), so it appears at the top of the conference detail page.
-
-The kernel does not validate the content of injected render elements against `SAFE_TAGS` -- that validation happens during the Sanitize phase. Plugin-injected elements go through the same sanitization pipeline as user content.
-
-</details>
 
 ---
 
-## Step 6: The `ritrovo_access` Plugin
+## Step 6: File & Image Uploads
 
-The `ritrovo_access` plugin adds fine-grained access control: stage-based item visibility and field-level rendering control. It demonstrates the `tap_item_access` and `tap_perm` taps.
+Files uploaded through the block editor or the file field widget go through the kernel's file security pipeline. This step covers the upload flow and the security measures that protect it.
 
-> The `ritrovo_access` plugin lives at `plugins/ritrovo_access/`. This step describes its design.
+### Upload Flow
 
-### What It Does
+1. **Receive** -- The file arrives as `multipart/form-data` via `POST /file/upload` (general) or `POST /api/block-editor/upload` (block editor images).
+
+2. **Authenticate** -- Both endpoints require a logged-in user. The block editor endpoint additionally requires the `use block editor` permission.
+
+3. **Validate MIME type** -- The declared Content-Type is checked against `ALLOWED_MIME_TYPES`. The block editor endpoint further restricts to image types only (JPEG, PNG, GIF, WebP).
+
+4. **Validate magic bytes** -- `validate_magic_bytes()` reads the first bytes of the file and compares them against known file format signatures. This catches disguised executables -- an ELF binary renamed to `.jpg` will be rejected even if the Content-Type header claims `image/jpeg`.
+
+5. **Sanitize filename** -- `sanitize_filename()` strips path traversal sequences (`../`), special characters, and ensures the filename is safe for the filesystem. Raw user-supplied filenames are never used in storage paths.
+
+6. **Size check** -- Files exceeding `MAX_FILE_SIZE` are rejected.
+
+7. **Store** -- The file is written to the configured upload directory and a `file_managed` row is created with `status = 0` (temporary). When the parent item is saved, the file is promoted to `status = 1` (permanent).
+
+### File Cleanup
+
+Orphaned temporary files (uploaded but never attached to an item) are cleaned up by a cron task. The task runs periodically and deletes `file_managed` rows with `status = 0` that are older than the configured TTL, along with their physical files.
+
+### Security Summary
+
+| Threat | Mitigation |
+|---|---|
+| Executable upload disguised as image | Magic byte validation (`validate_magic_bytes()`) |
+| Path traversal (`../../etc/passwd`) | Filename sanitization (`sanitize_filename()`) |
+| Oversized uploads (DoS) | `MAX_FILE_SIZE` check |
+| Unauthorized upload | Authentication + permission check |
+| MIME type spoofing | Magic bytes compared against declared MIME |
+
+### Verify
+
+```bash
+# Upload an image via the block editor endpoint (requires auth + block editor permission)
+curl -s -b /tmp/trovato-cookies.txt \
+  -X POST http://localhost:3000/api/block-editor/upload \
+  -F "image=@/path/to/test-image.jpg" \
+  | jq '.success'
+# Expect: 1 (if authenticated with 'use block editor' permission)
+# Expect: 0 or 401 (if not authenticated or missing permission)
+```
+
+---
+
+## Step 7: Form Alter & Validation Plugins
+
+With the block editor in place, the editorial workflow needs access control to enforce who can see and edit content at each stage. The `ritrovo_access` plugin provides this through two taps: `tap_item_access` for stage-based access decisions and `tap_perm` for permission declaration.
+
+### What `ritrovo_access` Does
+
+The plugin source lives at `plugins/ritrovo_access/src/lib.rs`. It implements three taps:
 
 | Tap | Behavior |
 |---|---|
-| `tap_item_access` | Returns Grant/Deny/Neutral based on the user's role and the item's stage |
 | `tap_perm` | Declares seven permissions for the Ritrovo editorial workflow |
-| `tap_item_view` | Strips `editor_notes` from the render tree for non-editor users |
-
-### Stage-Based Access Decisions
-
-The kernel enforces the first layer of stage access: anonymous users are denied on internal stages before any plugin dispatch. The plugin then handles authenticated users by checking their permissions:
-
-| User | Incoming | Curated | Live |
-|---|---|---|---|
-| Anonymous | Deny (kernel) | Deny (kernel) | Neutral (kernel's "access content" check) |
-| Authenticated (no stage perms) | Deny (plugin) | Deny (plugin) | Neutral |
-| Viewer | Grant (has `view incoming conferences`) | Grant (has `view curated conferences`) | Neutral |
-| Editor | Grant (has `view incoming conferences` + `edit conferences`) | Grant (has `view curated conferences` + `edit conferences`) | Neutral |
-| Publisher | Grant (has all viewer/editor perms + `publish conferences`) | Grant | Neutral |
-| Admin | (bypassed -- admin check runs first) | | |
-
-Returning **Neutral** for Live items means the kernel's built-in "access content" permission check handles them. The plugin only needs to handle internal stages where its opinion differs from the default.
-
-### Grant/Deny/Neutral Aggregation
-
-The kernel aggregates access decisions from all plugins:
-
-1. If **any** plugin returns Deny → access denied
-2. If **any** plugin returns Grant (and none Deny) → access granted
-3. If all return Neutral → fall through to role-based permission check
-
-This means a Deny is absolute -- a single plugin can block access regardless of what others say. This is useful for emergency content takedowns or compliance requirements.
+| `tap_item_access` | Returns Grant/Deny/Neutral based on item type, operation, stage, and user permissions |
+| `tap_item_view` | Placeholder for future editor_notes stripping (currently returns empty) |
 
 ### Permission Declaration
 
-The plugin declares permissions via `tap_perm`:
+The plugin declares these permissions via `tap_perm`:
 
 ```
 view incoming conferences
@@ -557,21 +645,32 @@ edit own comments
 edit any comments
 ```
 
-These permissions appear in the admin permissions UI at `/admin/people/permissions` after the plugin is installed. They must then be assigned to the appropriate roles (viewer, editor, publisher) so that stage-based access control works correctly.
+These permissions appear in the admin permissions UI at `/admin/people/permissions` after the plugin is installed.
 
-### Field-Level Access: Stripping editor_notes
+### Stage-Based Access Decisions
 
-The `ritrovo_access` plugin's `tap_item_view` handler checks whether the requesting user has an editor role. If not, it removes the `editor_notes` field from the render tree before it reaches the template.
+The `tap_item_access` handler is operation-aware. For **view** operations on internal stages, it checks stage-specific permissions. For **non-view** operations (edit, delete, update), it requires `edit conferences` regardless of stage:
 
-This is field-level access control through render tree manipulation:
-- The field data is still in the database
-- The field is still loaded by the item service
-- The field is removed from the render tree before template rendering
-- Non-editors never see the field in the HTML output
+| Operation | Stage | Required Permission |
+|---|---|---|
+| View | Incoming | `view incoming conferences` or `edit conferences` |
+| View | Curated | `view curated conferences` or `edit conferences` |
+| View | Live | Neutral (kernel handles) |
+| Edit/Delete/Update | Any | `edit conferences` |
 
-This approach is different from database-level filtering (which would prevent the field from loading at all). Render tree manipulation is appropriate when the field exists for editorial purposes but should not be visible to the public.
+Non-conference items always return Neutral, deferring to the kernel's default access check. The kernel already denies anonymous users on internal stages before dispatching to plugins, so `ritrovo_access` only needs to handle authenticated users.
 
-### Building the Plugin
+### Grant/Deny/Neutral Aggregation
+
+The kernel aggregates access decisions from all plugins:
+
+1. If **any** plugin returns Deny, access is denied.
+2. If **any** plugin returns Grant (and none Deny), access is granted.
+3. If all return Neutral, the kernel falls through to role-based permission check.
+
+A Deny is absolute -- a single plugin can block access regardless of what others say.
+
+### Building and Installing the Plugin
 
 ```bash
 cargo build --target wasm32-wasip1 -p ritrovo_access --release
@@ -580,23 +679,9 @@ cp target/wasm32-wasip1/release/ritrovo_access.wasm plugin-dist/
 cargo run --release --bin trovato -- plugin install ritrovo_access
 ```
 
-> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/ritrovo_access/target/`.
-
-### Verify
-
-```bash
-# Plugin installed and enabled
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_access';"
-# Expect: ritrovo_access, 1
-
-# Anonymous cannot see Incoming items
-# (Move a test item to Incoming stage first, then check)
-```
-
 ### Assigning Plugin Permissions to Roles
 
-After installing `ritrovo_access`, its declared permissions must be assigned to the viewer, editor, and publisher roles so stage-based access control works:
+After installing `ritrovo_access`, assign its permissions to the viewer, editor, and publisher roles:
 
 ```sql
 -- Viewer: can see all editorial stages
@@ -631,6 +716,20 @@ ON CONFLICT (role_id, permission) DO NOTHING;
 
 These match the permission sets documented in the role YAML configs (`docs/tutorial/config/role.*.yml`).
 
+### Verify
+
+```bash
+# Plugin installed and enabled
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT name, status FROM plugin_status WHERE name = 'ritrovo_access';"
+# Expect: ritrovo_access, 1
+
+# Permissions declared
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT name FROM permissions WHERE name LIKE '%conferences%' ORDER BY name;"
+# Expect: edit conferences, publish conferences, view curated conferences, view incoming conferences
+```
+
 <details>
 <summary>Under the Hood: The Layered Access Model</summary>
 
@@ -638,31 +737,31 @@ The complete item access check in `check_access()`:
 
 ```
 1. Admin bypass
-   → User has is_admin? GRANT (skip everything else)
+   -> User has is_admin? GRANT (skip everything else)
 
 2. Stage visibility
-   → Item is on an internal stage (Incoming/Curated)?
-   → User is anonymous? DENY (kernel enforcement, before any plugin dispatch)
-   → Skip the "published view shortcut" for internal stages
+   -> Item is on an internal stage (Incoming/Curated)?
+   -> User is anonymous? DENY (kernel enforcement, before any plugin dispatch)
+   -> Skip the "published view shortcut" for internal stages
 
 3. Published view shortcut (public stages only)
-   → Item is published (status=1) AND on a Public stage?
-   → User has "access content" permission? GRANT
+   -> Item is published (status=1) AND on a Public stage?
+   -> User has "access content" permission? GRANT
 
 4. Plugin hooks (tap_item_access)
-   → Dispatch to all plugins with enriched context:
+   -> Dispatch to all plugins with enriched context:
      user_authenticated, user_permissions, stage_id, stage_machine_name
-   → Aggregate: any Deny wins, then any Grant, else Neutral
-   → ritrovo_access checks stage + user permissions here
+   -> Aggregate: any Deny wins, then any Grant, else Neutral
+   -> ritrovo_access checks stage + user permissions here
 
 5. Role-based fallback
-   → Check five permission patterns:
+   -> Check five permission patterns:
      - "{op} any content"
      - "{op} any {type}"
      - "{op} {type} content"
      - "{op} own content" (author match)
      - "{op} own {type}" (author match)
-   → Any match? GRANT. None? DENY.
+   -> Any match? GRANT. None? DENY.
 ```
 
 The stage visibility check (step 2) ensures anonymous users never see internal-stage content, even without any plugins installed. The published view shortcut (step 3) handles the common case -- authenticated users viewing Live content -- without dispatching to plugins. Plugin hooks only fire when neither shortcut applies.
@@ -671,7 +770,7 @@ The stage visibility check (step 2) ensures anonymous users never see internal-s
 
 ---
 
-## Step 7: User Profile Form
+## Step 8: User Profile Form
 
 Logged-in users can edit their profile at `/user/profile`. This form demonstrates the Form API in a non-content context: editing user data rather than items.
 
@@ -718,24 +817,26 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/user/profile
 By the end of Part 5, you have:
 
 - **Form API pipeline** -- Build > Validate > Submit with plugin extension points (`tap_form_alter`, `tap_form_validate`, `tap_form_submit`).
-- **Rich text editing** with three text formats (`plain_text`, `filtered_html`, `full_html`) and permission-based format access.
-- **AJAX form enhancements** -- conditional fields, multi-value "Add another" buttons, and autocomplete, all with progressive enhancement fallback.
-- **Multi-step conference submission** -- a three-step guided form with PostgreSQL-backed state persistence and file upload tracking.
-- **`ritrovo_cfp` plugin** -- computed CFP deadline badges via `tap_item_view`, date validation via `tap_item_insert`/`tap_item_update`, and cross-plugin event triggers via the queue system.
-- **`ritrovo_access` plugin** -- stage-based Grant/Deny access decisions via `tap_item_access`, permission declaration via `tap_perm`, and field-level visibility via render tree manipulation.
+- **Block-based content editing** with eight standard block types, Editor.js integration, and a hidden-input serialization pattern.
+- **Block rendering pipeline** -- Server-side rendering with ammonia sanitization, syntect syntax highlighting, and embed URL whitelisting.
+- **Text format permissions** -- `plain_text`, `filtered_html`, `full_html` for traditional text fields, with `FilterPipeline::for_format_safe()` as the security boundary.
+- **Block validation** via `BlockTypeRegistry` with JSON Schema definitions and extensibility for custom block types.
+- **Secure file uploads** with magic byte validation, filename sanitization, MIME type checking, and size limits.
+- **`block_editor` plugin** -- Activates the Editor.js widget and gates the upload/preview API routes.
+- **`ritrovo_access` plugin** -- Stage-based Grant/Deny access decisions via `tap_item_access`, permission declaration via `tap_perm`, and operation-aware access control.
 - **User profile editing** with password change and session fixation protection.
 
 You also now understand:
 
-- How the Form API pipeline generates forms from definitions and lets plugins modify them.
+- How block-based editing provides structured, schema-validated content instead of freeform HTML.
+- How `render_blocks()` converts block arrays into semantic HTML with type-specific renderers.
+- How the block editor maps between Trovato's `{type, weight, data}` format and Editor.js's `{id, type, data}` format.
 - How text format permissions control what HTML users can produce, with ammonia sanitization as the security backstop.
-- How AJAX callbacks enable progressive form enhancement while maintaining no-JavaScript fallback.
-- How multi-step forms persist state across HTTP requests via `form_state_cache`.
-- How `tap_item_view` lets plugins inject computed display elements without modifying stored data.
+- How `BlockTypeRegistry` validates blocks and provides extensibility for custom block types.
 - How `tap_item_access` with Grant/Deny/Neutral aggregation enables plugin-driven access decisions.
-- How field-level access works through render tree manipulation rather than database filtering.
+- How file upload security works at the boundary with magic bytes, filename sanitization, and MIME validation.
 
-Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `ritrovo_cfp` (Part 5) tracks deadlines, and `ritrovo_access` (Part 5) enforces visibility. Each extends the kernel through taps and host functions, and none depends on any other.
+Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `block_editor` (Part 5) enables structured editing, and `ritrovo_access` (Part 5) enforces visibility. Each extends the kernel through taps and host functions, and none depends on any other.
 
 ---
 
@@ -743,12 +844,14 @@ Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `ritrovo_
 
 | Feature | Deferred To | Reason |
 |---|---|---|
+| `ritrovo_cfp` plugin (CFP deadline badges) | Part 6 | Depends on community features and cross-plugin events |
 | Comments | Part 6 | Depends on full user and permission system being stable |
 | Subscriptions | Part 6 | Subscribe/unsubscribe to conferences |
 | Notification delivery | Part 6 | `ritrovo_notify` processes events queued by `ritrovo_cfp` |
+| Custom block type tap (`tap_block_types`) | Future | Plugin tap for registering block types at startup |
+| Multi-step conference submission | Future | Guided multi-step form with PostgreSQL-backed state |
 | Internationalization | Part 7 | Separate concern |
 | REST API | Part 7 | API endpoints, authentication, rate limiting |
-| Translation workflow | Part 7 | `ritrovo_translate` plugin |
 | AI-powered form assistance | Future | AI Assist buttons in forms |
 | Batch operations | Part 8 | Bulk publish/import at scale |
 | Avatar upload | Future | User profile image (file field in user context) |
@@ -761,4 +864,4 @@ Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `ritrovo_
 - [Part 6: Community & Plugin Communication](part-06-community.md)
 - [Render Tree & Forms Design](../design/Design-Render-Theme.md)
 - [Plugin SDK Design](../design/Design-Plugin-SDK.md)
-- [Epic 7: Forms & User Input](../ritrovo/epic-07.md)
+- [Epic 24: Block Editor](../ritrovo/epic-24.md)

@@ -1,21 +1,21 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/tabs.html" as tabs %}
 
-{% set has_compound = false %}
-{% set has_file = false %}
+{% block content %}
+{% set_global has_compound = false %}
+{% set_global has_file = false %}
+{% set_global has_blocks = false %}
 {% for field in content_type.fields %}
 {% if field.field_type.Compound %}{% set_global has_compound = true %}{% endif %}
 {% if field.field_type == "File" %}{% set_global has_file = true %}{% endif %}
+{% if field.field_type == "Blocks" %}{% set_global has_blocks = true %}{% endif %}
 {% endfor %}
-
-{% block head %}
-{{ super() }}
 {% if has_compound %}
 <link rel="stylesheet" href="/static/css/compound-field.css">
 {% endif %}
-{% endblock %}
-
-{% block content %}
+{% if has_blocks %}
+<link rel="stylesheet" href="/static/css/block-editor.css">
+{% endif %}
 <div class="admin-header">
     <h2>{% if editing %}Edit {{ content_type.label }}{% else %}Create {{ content_type.label }}{% endif %}</h2>
 </div>
@@ -96,6 +96,10 @@
             <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" placeholder="UUID"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
                    {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Blocks" %}
+            <input type="hidden" id="{{ field.field_name }}" name="{{ field.field_name }}"
+                   value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}[]{% endif %}">
+            <div data-block-editor data-block-editor-input="{{ field.field_name }}"></div>
             {% elif field.field_type.Compound %}
             <div class="compound-field" id="compound-{{ field.field_name }}"
                  data-field="{{ field.field_name }}"
@@ -148,5 +152,16 @@
 {% endif %}
 {% if has_file %}
 <script src="/static/js/file-upload.js"></script>
+{% endif %}
+{% if has_blocks %}
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/editorjs@2.30.7/dist/editorjs.umd.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/header@2.8.8/dist/header.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/list@2.0.2/dist/list.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/quote@2.7.6/dist/quote.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/code@2.9.3/dist/code.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/image@2.10.1/dist/image.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/delimiter@1.4.2/dist/delimiter.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/embed@2.7.6/dist/embed.umd.js"></script>
+<script src="/static/js/block-editor.js"></script>
 {% endif %}
 {% endblock %}

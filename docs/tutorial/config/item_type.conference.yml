@@ -49,7 +49,7 @@ settings:
       field_type: File
       label: Venue Photo
     - field_name: field_description
-      field_type: TextLong
+      field_type: Blocks
       label: Description
     - field_name: field_language
       field_type:

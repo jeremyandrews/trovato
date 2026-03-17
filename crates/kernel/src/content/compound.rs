@@ -291,7 +291,12 @@ pub fn validate_required_fields(
     let mut errors = Vec::new();
 
     for field_def in content_type_fields {
-        if !field_def.required || matches!(&field_def.field_type, FieldType::Compound { .. }) {
+        if !field_def.required
+            || matches!(
+                &field_def.field_type,
+                FieldType::Compound { .. } | FieldType::Blocks
+            )
+        {
             continue;
         }
 
@@ -467,6 +472,104 @@ pub fn process_compound_fields(
             }
             Err(_) => {
                 errors.push(format!("{}: invalid compound field data", field_def.label));
+            }
+        }
+    }
+
+    errors
+}
+
+/// Maximum byte size for a single blocks field JSON payload (512 KB).
+const MAX_BLOCKS_JSON_BYTES: usize = 512 * 1024;
+
+/// Maximum number of blocks allowed in a single blocks field.
+const MAX_BLOCKS_COUNT: usize = 100;
+
+/// Process `FieldType::Blocks` fields from form submission.
+///
+/// Parses JSON strings from hidden inputs into validated block arrays,
+/// sanitizes text content, and replaces the raw string with the parsed
+/// JSON array in `fields_json`.
+///
+/// Returns a list of validation error messages (empty if all valid).
+pub fn process_blocks_fields(
+    fields_json: &mut serde_json::Map<String, serde_json::Value>,
+    content_type_fields: &[FieldDefinition],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let registry = crate::content::BlockTypeRegistry::with_standard_types();
+
+    for field_def in content_type_fields {
+        if !matches!(&field_def.field_type, FieldType::Blocks) {
+            continue;
+        }
+
+        let raw_str = fields_json
+            .get(&field_def.field_name)
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let Some(s) = raw_str else {
+            if field_def.required {
+                errors.push(format!(
+                    "{}: at least one block is required",
+                    field_def.label
+                ));
+            }
+            continue;
+        };
+
+        if s.len() > MAX_BLOCKS_JSON_BYTES {
+            errors.push(format!(
+                "{}: blocks field data exceeds maximum size",
+                field_def.label
+            ));
+            continue;
+        }
+
+        match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(serde_json::Value::Array(blocks)) => {
+                if blocks.len() > MAX_BLOCKS_COUNT {
+                    errors.push(format!(
+                        "{}: too many blocks (maximum {})",
+                        field_def.label, MAX_BLOCKS_COUNT
+                    ));
+                    continue;
+                }
+
+                // Validate each block
+                for (i, block) in blocks.iter().enumerate() {
+                    let block_type = block
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown");
+                    let data = block
+                        .get("data")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Object(Default::default()));
+                    let block_errors = registry.validate_block(block_type, &data);
+                    for err in block_errors {
+                        errors.push(format!("{}: block {}: {}", field_def.label, i + 1, err));
+                    }
+                }
+
+                // Sanitize text content in blocks
+                let mut mutable_blocks = blocks;
+                registry.sanitize_blocks(&mut mutable_blocks);
+
+                fields_json.insert(
+                    field_def.field_name.clone(),
+                    serde_json::Value::Array(mutable_blocks),
+                );
+            }
+            Ok(_) => {
+                errors.push(format!(
+                    "{}: blocks field must be a JSON array",
+                    field_def.label
+                ));
+            }
+            Err(_) => {
+                errors.push(format!("{}: invalid blocks field data", field_def.label));
             }
         }
     }

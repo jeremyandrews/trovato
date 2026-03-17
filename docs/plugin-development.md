@@ -309,15 +309,18 @@ fn tap_item_view(input: ItemViewInput) -> RenderElement {
 ### Item Structure
 
 ```rust
+/// SYNC: field names and types must match `crates/kernel/src/models/item.rs`.
 pub struct Item {
     pub id: Uuid,
+    #[serde(rename = "type")]
     pub item_type: String,
     pub title: String,
+    #[serde(default)]
     pub fields: HashMap<String, Value>,
     pub status: i32,              // 0 = unpublished, 1 = published
     pub author_id: Uuid,
-    pub revision_id: Option<Uuid>,
-    pub stage_id: Option<String>, // None = live
+    pub current_revision_id: Option<Uuid>,
+    pub stage_id: Uuid,           // defaults to live stage UUID
     pub created: i64,             // Unix timestamp
     pub changed: i64,
 }

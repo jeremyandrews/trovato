@@ -245,10 +245,34 @@ async fn view_item(
         super::helpers::apply_translation_overlay(state.items(), &mut item, &active_language).await;
     }
 
+    // Look up content type field definitions for Blocks detection
+    let content_type_fields = state
+        .content_types()
+        .get(&item.item_type)
+        .map(|ct| ct.fields.clone())
+        .unwrap_or_default();
+
     // Render fields through filter pipeline
     let mut children_html = String::new();
     if let Some(fields) = item.fields.as_object() {
         for (name, value) in fields {
+            // Blocks field: flat JSON array of {type, weight, data}
+            let is_blocks_field = content_type_fields.iter().any(|f| {
+                f.field_name == *name
+                    && matches!(f.field_type, trovato_sdk::types::FieldType::Blocks)
+            });
+            if is_blocks_field {
+                if let Some(blocks) = value.as_array() {
+                    let rendered = crate::content::render_blocks(blocks);
+                    children_html.push_str(&format!(
+                        "<div class=\"field field--blocks field-{}\">{}</div>",
+                        html_escape(name),
+                        rendered
+                    ));
+                }
+                continue;
+            }
+
             // Compound field: has "sections" array
             if let Some(sections_raw) = value.get("sections").and_then(|s| s.as_array()) {
                 // Sort sections by weight for correct display order

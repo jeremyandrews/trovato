@@ -344,7 +344,7 @@ Three plugins now form a collaboration chain. This step demonstrates the full ev
 ### The Event Flow
 
 ```
-ritrovo_cfp (Part 5)                    ritrovo_notify (Part 6)
+ritrovo_cfp (Part 6)                    ritrovo_notify (Part 6)
 ┌──────────────────┐                    ┌──────────────────┐
 │ tap_cron         │                    │ tap_queue_worker  │
 │  detects CFP     │── queue_push() ──→ │  reads event      │

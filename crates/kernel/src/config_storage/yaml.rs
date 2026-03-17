@@ -1344,7 +1344,7 @@ parents:
             .unwrap();
         assert!(matches!(
             desc.field_type,
-            trovato_sdk::types::FieldType::TextLong
+            trovato_sdk::types::FieldType::Blocks
         ));
     }
 

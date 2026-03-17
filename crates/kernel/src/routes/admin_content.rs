@@ -243,6 +243,12 @@ async fn add_content_submit(
         &content_type.fields,
     ));
 
+    // Process blocks fields: parse JSON string from hidden input
+    errors.extend(crate::content::compound::process_blocks_fields(
+        &mut fields_json,
+        &content_type.fields,
+    ));
+
     // Validate required non-compound fields
     errors.extend(crate::content::compound::validate_required_fields(
         &fields_json,
@@ -432,6 +438,12 @@ async fn edit_content_submit(
 
     // Process compound fields: parse JSON string from hidden input
     errors.extend(crate::content::compound::process_compound_fields(
+        &mut fields_json,
+        &content_type.fields,
+    ));
+
+    // Process blocks fields: parse JSON string from hidden input
+    errors.extend(crate::content::compound::process_blocks_fields(
         &mut fields_json,
         &content_type.fields,
     ));

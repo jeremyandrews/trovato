@@ -546,7 +546,7 @@ You also now understand:
 - How API authentication via Bearer tokens reuses the same role/permission model as the web UI.
 - How rate limiting protects the API from abuse with per-tier configurable limits.
 
-Five plugins now collaborate across the Ritrovo ecosystem: `ritrovo_importer` (Part 2) feeds data, `ritrovo_cfp` (Part 5) tracks deadlines, `ritrovo_access` (Part 5) controls visibility, `ritrovo_notify` (Part 6) delivers notifications, and `ritrovo_translate` (Part 7) bridges languages. Each is independent, each extends the kernel through taps, and together they deliver a feature set that rivals platforms built by teams of dozens.
+Six plugins now collaborate across the Ritrovo ecosystem: `ritrovo_importer` (Part 2) feeds data, `block_editor` (Part 5) enables structured editing, `ritrovo_access` (Part 5) controls visibility, `ritrovo_cfp` (Part 6) tracks deadlines, `ritrovo_notify` (Part 6) delivers notifications, and `ritrovo_translate` (Part 7) bridges languages. Each is independent, each extends the kernel through taps, and together they deliver a feature set that rivals platforms built by teams of dozens.
 
 ---
 

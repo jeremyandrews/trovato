@@ -11,6 +11,11 @@ use uuid::Uuid;
 use super::stage::LIVE_STAGE_ID;
 
 /// Item record (content record).
+///
+/// SYNC: field names and types must match `crates/plugin-sdk/src/types.rs` Item.
+/// The kernel serializes this struct via `serde_json::to_string()` for tap dispatch.
+/// The SDK deserializes it. Extra kernel-only fields (promote, sticky, language,
+/// item_group_id) are safely ignored by the SDK's serde.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Item {
     /// Unique identifier (UUIDv7).

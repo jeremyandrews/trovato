@@ -169,14 +169,17 @@ let text: Option<String> = item.get_text("field_name");
 let text_value: Option<TextValue> = item.get_text_value("field_name");
 let typed: Option<MyType> = item.get_field("field_name");
 
-// Item properties
-item.id           // Uuid
-item.item_type    // String
-item.title        // String
-item.status       // i32 (0=unpublished, 1=published)
-item.author_id    // Uuid
-item.created      // i64 (unix timestamp)
-item.changed      // i64 (unix timestamp)
+// Item properties (serde: item_type serializes as "type")
+item.id                   // Uuid
+item.item_type            // String — #[serde(rename = "type")]
+item.title                // String
+item.fields               // HashMap<String, Value> — #[serde(default)]
+item.status               // i32 (0=unpublished, 1=published)
+item.author_id            // Uuid
+item.current_revision_id  // Option<Uuid>
+item.stage_id             // Uuid (defaults to live stage)
+item.created              // i64 (unix timestamp)
+item.changed              // i64 (unix timestamp)
 ```
 
 ---

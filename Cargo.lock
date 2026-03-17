@@ -955,6 +955,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block_editor"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "blog"
 version = "1.0.0"
 dependencies = [

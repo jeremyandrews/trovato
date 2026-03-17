@@ -304,8 +304,8 @@ fn test_part01_step02_field_types() {
             "field_city should be Text type"
         );
 
-        // TextLong serializes as "TextLong"
-        assert_eq!(field_map["field_description"], "TextLong");
+        // Blocks serializes as "Blocks" (changed from TextLong for block editor)
+        assert_eq!(field_map["field_description"], "Blocks");
     });
 }
 

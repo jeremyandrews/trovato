@@ -333,6 +333,7 @@ impl ContentTypeRegistry {
                 min_items: None,
                 max_items: None,
             },
+            "blocks" => FieldType::Blocks,
             _ => FieldType::Text { max_length: None },
         };
 

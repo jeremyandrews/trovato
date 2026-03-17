@@ -52,6 +52,10 @@ pub const GATED_ROUTE_PLUGINS: &[GatedPlugin] = &[
         name: "oauth2",
         description: "OAuth2 authorization routes",
     },
+    GatedPlugin {
+        name: "block_editor",
+        description: "Block editor upload and preview API routes",
+    },
 ];
 
 /// A plugin whose kernel routes are runtime-gated.

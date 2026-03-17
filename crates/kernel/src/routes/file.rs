@@ -25,6 +25,11 @@ pub fn router() -> Router<AppState> {
         .route("/file/upload", post(upload_file))
         .route("/file/{id}", get(get_file_info))
         .route("/files/{*path}", get(serve_uploaded_file))
+}
+
+/// Create the block editor API router (gated by `block_editor` plugin).
+pub fn block_editor_router() -> Router<AppState> {
+    Router::new()
         .route("/api/block-editor/upload", post(block_editor_upload))
         .route("/api/block-editor/preview", post(block_editor_preview))
 }

@@ -70,6 +70,7 @@ plugin_gate!(gate_content_locking, "content_locking");
 plugin_gate!(gate_content_translation, "content_translation");
 plugin_gate!(gate_image_styles, "image_styles");
 plugin_gate!(gate_oauth2, "oauth2");
+plugin_gate!(gate_block_editor, "block_editor");
 
 /// Plugin names that are runtime-gated in [`gated_plugin_routes`].
 ///
@@ -82,6 +83,7 @@ pub(crate) const RUNTIME_GATED_NAMES: &[&str] = &[
     "content_translation",
     "image_styles",
     "oauth2",
+    "block_editor",
 ];
 
 /// Build the router fragment for plugin-gated routes.
@@ -134,6 +136,12 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
             oauth::router().route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 gate_oauth2,
+            )),
+        )
+        .merge(
+            file::block_editor_router().route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                gate_block_editor,
             )),
         )
 }

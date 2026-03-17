@@ -1,0 +1,10 @@
+name = "block_editor"
+description = "Enables Editor.js block editing for Blocks fields"
+version = "1.0.0"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+]
+weight = 0

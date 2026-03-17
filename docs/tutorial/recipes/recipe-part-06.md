@@ -1,7 +1,7 @@
 # Recipe: Part 6 — Community & Plugin Communication
 
 > **Synced with:** `docs/tutorial/part-06-community.md`
-> **Sync hash:** 236fb027
+> **Sync hash:** 434ffb9e
 > **Last verified:** 2026-03-15
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -10,7 +10,7 @@
 
 ## Prerequisites
 
-- Parts 1–5 must be completed (forms, text formats, ritrovo_cfp, ritrovo_access plugins).
+- Parts 1–5 must be completed (forms, block editor, ritrovo_access plugins).
 - Check `TOOLS.md` for server start commands, database connection, admin credentials, plugin build commands.
 - Database backup recommended:
 
