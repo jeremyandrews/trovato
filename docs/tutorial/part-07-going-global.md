@@ -197,7 +197,7 @@ The `ritrovo_translate` plugin is the fifth and final Ritrovo plugin. It provide
 | `tap_cron` | Processes translation queue; checks for items flagged as needing translation |
 | `tap_form_alter` | Adds language selector dropdown to conference edit form |
 
-![A conference detail page showing the language indicator badge and language switcher](images/part-07/conference-with-lang.png)
+[<img src="images/part-07/conference-with-lang.png" width="600" alt="A conference detail page showing the language indicator badge and language switcher">](images/part-07/conference-with-lang.png)
 
 ### Translation Status
 
@@ -297,7 +297,7 @@ The existing Gather queries become language-aware:
 - `/it/conferenze` shows the same conferences with Italian titles and descriptions
 - If a translation is missing, the default language (English) content is displayed as fallback
 
-![The Ritrovo front page with internationalization enabled, showing the language switcher and localized content](images/part-07/front-page-global.png)
+[<img src="images/part-07/front-page-global.png" width="600" alt="The Ritrovo front page with internationalization enabled, showing the language switcher and localized content">](images/part-07/front-page-global.png)
 
 ### Verify
 
@@ -395,7 +395,7 @@ Error responses:
 }
 ```
 
-![A JSON API response showing conference data with pagination metadata](images/part-07/api-response.png)
+[<img src="images/part-07/api-response.png" width="600" alt="A JSON API response showing conference data with pagination metadata">](images/part-07/api-response.png)
 
 ### Stage Awareness
 

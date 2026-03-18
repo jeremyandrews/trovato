@@ -401,9 +401,9 @@ The confs.tech JSON schema maps to `conference` item fields as follows:
 
 Newly inserted conferences are created as **published** (`status = 1`) on the live stage, so they appear immediately in the public browse pages without requiring a manual publish step.
 
-![Conferences listing after import showing imported conference cards](images/part-02/conferences-imported.png)
+[<img src="images/part-02/conferences-imported.png" width="600" alt="Conferences listing after import showing imported conference cards">](images/part-02/conferences-imported.png)
 
-![Admin content list showing imported conferences in the management interface](images/part-02/admin-content-list.png)
+[<img src="images/part-02/admin-content-list.png" width="600" alt="Admin content list showing imported conferences in the management interface">](images/part-02/admin-content-list.png)
 
 ### Historical Import: tap_install
 
@@ -672,7 +672,7 @@ The inline rendering approach means the pretty URL stays in the browser address 
 
 > **URL design choice:** `/topics/rust` renders the gather query inline. The raw gather URL (`/gather/ritrovo.by_topic?topic=<uuid>`) is also bookmarkable and works independently of the slug route, but the 301 canonical redirect (see §2.4) sends users back to the pretty URL.
 
-![Topics listing page showing the hierarchical topic category with browsable tags](images/part-02/topics-listing.png)
+[<img src="images/part-02/topics-listing.png" width="600" alt="Topics listing page showing the hierarchical topic category with browsable tags">](images/part-02/topics-listing.png)
 
 ---
 
@@ -781,7 +781,7 @@ Sort:           field_cfp_end_date ASC (nulls last)
 
 The `is_not_null` filter on `field_cfp_url` ensures only conferences with a submission link are shown — no CFP URL means there's nothing to link to.
 
-![Open CFPs listing showing conferences with active calls for papers sorted by deadline](images/part-02/open-cfps.png)
+[<img src="images/part-02/open-cfps.png" width="600" alt="Open CFPs listing showing conferences with active calls for papers sorted by deadline">](images/part-02/open-cfps.png)
 
 #### ritrovo.by_topic
 
@@ -991,10 +991,6 @@ With the category, gather queries, browse routes, and filter widgets in place, R
 - Find open CFPs at `/cfps`
 - Filter by country at `/location/Germany` and by city at `/location/Germany/Berlin`
 
-![Search results page showing conferences matching a search query with relevance ranking](images/part-02/search-results.png)
-
-[<img src="images/2.1-conferences-listing.png" width="600" alt="Figure 2.1: Upcoming Conferences with exposed filter bar">](images/2.1-conferences-listing.png)
-
-[<img src="images/2.2-conferences-filtered.png" width="600" alt="Figure 2.2: Conferences filtered by Security topic, non-online, English language">](images/2.2-conferences-filtered.png)
+[<img src="images/part-02/search-results.png" width="600" alt="Search results page showing conferences matching a search query with relevance ranking">](images/part-02/search-results.png)
 
 The gather engine handles filtering, pagination, widget data loading, and rendering. The query definitions, category, and URL aliases are all managed as configuration — the plugin's only job is discovering category tag UUIDs and importing conference data from the external API.

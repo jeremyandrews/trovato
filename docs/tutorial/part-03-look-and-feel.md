@@ -93,7 +93,7 @@ curl -s http://localhost:3000/item/$ID | grep -o 'class="conf-detail[^"]*"' | he
 
 You should see CSS classes like `conf-detail__header`, `conf-detail__meta`, `conf-detail__desc`.
 
-![Conference detail page with styled header, metadata, description, and external links](images/part-03/conference-detail.png)
+[<img src="images/part-03/conference-detail.png" width="600" alt="Conference detail page with styled header, metadata, description, and external links">](images/part-03/conference-detail.png)
 
 Visit `/cfps` to see the CFP listing:
 
@@ -581,7 +581,7 @@ The front page template at `templates/page--front.html` extends `page.html` and 
 
 The hero uses pure CSS animations (`@keyframes float`) and `backdrop-filter` for depth -- no JavaScript required.
 
-![Front page with animated hero section, stat cards, and technology showcase](images/part-03/front-page.png)
+[<img src="images/part-03/front-page.png" width="600" alt="Front page with animated hero section, stat cards, and technology showcase">](images/part-03/front-page.png)
 
 ### Shared Card Component
 
@@ -644,7 +644,7 @@ Gather route aliases (e.g., `/topics/{slug}`) originally redirected with HTTP 30
 
 The by-topic query also gets its own template (`gather/query--ritrovo.by_topic.html`) that renders conference cards instead of a raw table, matching the visual style of the main conferences listing.
 
-![Topic page for Rust showing filtered conference cards at /topics/rust](images/part-03/topic-rust.png)
+[<img src="images/part-03/topic-rust.png" width="600" alt="Topic page for Rust showing filtered conference cards at /topics/rust">](images/part-03/topic-rust.png)
 
 ### Hiding Duplicate Field Output
 
@@ -689,11 +689,11 @@ curl -s http://localhost:3000/user/login | grep -c 'site-header'
 # > 0
 ```
 
-![Gather queries admin interface showing configured query definitions](images/part-03/gather-queries-admin.png)
+[<img src="images/part-03/gather-queries-admin.png" width="600" alt="Gather queries admin interface showing configured query definitions">](images/part-03/gather-queries-admin.png)
 
-![Search configuration admin showing field weights for conference and speaker types](images/part-03/search-config.png)
+[<img src="images/part-03/search-config.png" width="600" alt="Search configuration admin showing field weights for conference and speaker types">](images/part-03/search-config.png)
 
-![Content types admin showing the conference and speaker type definitions](images/part-03/content-types-admin.png)
+[<img src="images/part-03/content-types-admin.png" width="600" alt="Content types admin showing the conference and speaker type definitions">](images/part-03/content-types-admin.png)
 
 ---
 

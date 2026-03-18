@@ -100,11 +100,9 @@ Open `http://localhost:3000` in your browser. You will be redirected to the web 
 3. **Site Configuration** -- set site name, slogan, and contact email.
 4. **Complete** -- links to the site and admin dashboard.
 
-[<img src="images/1.1-installer-welcome.png" width="400" alt="Figure 1.1: Installer Welcome — requirements check">](images/1.1-installer-welcome.png)
+[<img src="images/part-01/installer-welcome.png" width="600" alt="Installer welcome screen showing PostgreSQL and Redis connection status">](images/part-01/installer-welcome.png)
 
-![Installer welcome screen showing PostgreSQL and Redis connection status](images/part-01/installer-welcome.png)
-
-![Installer admin account creation form with username, email, and password fields](images/part-01/installer-admin.png)
+[<img src="images/part-01/installer-admin.png" width="600" alt="Installer admin account creation form with username, email, and password fields">](images/part-01/installer-admin.png)
 
 ### Verify the Health Check
 
@@ -174,7 +172,7 @@ Add each field below one at a time. For each row, fill in the **Label**, verify 
 
 That is 12 fields. The machine name auto-generates from the label (prefixed with `field_`), but you can edit it before clicking **Add field**. Make sure the machine names match the table above -- they are the keys used in the JSON field storage and by the importer plugin in Part 2.
 
-![Field management screen showing the 12 conference fields with their labels, machine names, and types](images/part-01/field-management.png)
+[<img src="images/part-01/field-management.png" width="600" alt="Field management screen showing the 12 conference fields with their labels, machine names, and types">](images/part-01/field-management.png)
 
 > **Important:** For "Website URL", the auto-generated machine name will be `field_website_url`. Edit it to `field_url` before clicking **Add field** -- the importer plugin in Part 2 expects this shorter name.
 
@@ -279,7 +277,7 @@ This opens the auto-generated form at `/admin/content/add/conference`. Trovato i
 
 The title field at the top uses the custom label "Conference Name" (from `title_label` in the Item Type definition).
 
-![Content creation form for a conference showing date pickers, text inputs, and checkbox fields](images/part-01/content-add-form.png)
+[<img src="images/part-01/content-add-form.png" width="600" alt="Content creation form for a conference showing date pickers, text inputs, and checkbox fields">](images/part-01/content-add-form.png)
 
 ### Conference 1: RustConf 2026
 
@@ -357,7 +355,7 @@ Every item is viewable at `/item/{id}` (where `{id}` is the item's UUID). This i
 
 The default template renders all fields with their labels. In Part 3 we will create a custom `item--conference.html` template with proper layout, but for now the default rendering shows that content creation works end to end.
 
-![Conference detail page showing the default field rendering for a conference item](images/part-01/conference-detail.png)
+[<img src="images/part-01/conference-detail.png" width="600" alt="Conference detail page showing the default field rendering for a conference item">](images/part-01/conference-detail.png)
 
 There is also a JSON API at `/api/item/{id}` for programmatic access:
 
@@ -519,9 +517,7 @@ Visit `http://localhost:3000/conferences` in your browser. You should see three 
 
 Click a title through to confirm the detail page renders correctly before moving on to Step 5.
 
-[<img src="images/1.2-conferences-listing.png" width="600" alt="Figure 1.2: Upcoming Conferences listing at /conferences">](images/1.2-conferences-listing.png)
-
-![Conferences listing page showing three conference cards sorted by start date](images/part-01/conferences-listing.png)
+[<img src="images/part-01/conferences-listing.png" width="600" alt="Conferences listing page showing three conference cards sorted by start date">](images/part-01/conferences-listing.png)
 
 The Gather is also available as JSON via the REST API:
 

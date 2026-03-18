@@ -363,7 +363,7 @@ This means:
 - You can install `ritrovo_notify` without `ritrovo_cfp` -- the notification worker processes whatever events arrive
 - You can replace either plugin with a different implementation that uses the same queue name
 
-![A conference detail page showing the CFP closing soon badge with deadline date](images/part-06/conference-with-cfp.png)
+[<img src="images/part-06/conference-with-cfp.png" width="600" alt="A conference detail page showing the CFP closing soon badge with deadline date">](images/part-06/conference-with-cfp.png)
 
 ### Queue Message Format
 
@@ -423,7 +423,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 # Expect: three rows, all status 1
 ```
 
-![The plugin management admin page showing installed plugins with status and actions](images/part-06/plugins-admin.png)
+[<img src="images/part-06/plugins-admin.png" width="600" alt="The plugin management admin page showing installed plugins with status and actions">](images/part-06/plugins-admin.png)
 
 ---
 
@@ -485,7 +485,7 @@ You also now understand:
 
 The plugin architecture has proven itself. Each plugin is independently deployable, testable, and understandable. The kernel dispatches, the queue connects, and plugins never need to know each other exist.
 
-![The Ritrovo front page with community features including comments, subscriptions, and CFP badges](images/part-06/front-page-community.png)
+[<img src="images/part-06/front-page-community.png" width="600" alt="The Ritrovo front page with community features including comments, subscriptions, and CFP badges">](images/part-06/front-page-community.png)
 
 ---
 

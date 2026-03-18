@@ -80,7 +80,7 @@ curl -s -b /tmp/trovato-register.txt -c /tmp/trovato-register.txt \
 
 Repeat for `publisher_bob` and `viewer_carol`, fetching a fresh CSRF token each time. Note: the registration endpoint has a rate limit of 3 per hour per IP — clear the Redis key `rate:register:unknown` between registrations if needed.
 
-![The user registration form with username, email, and password fields](images/part-04/registration-page.png)
+[<img src="images/part-04/registration-page.png" width="600" alt="The user registration form with username, email, and password fields">](images/part-04/registration-page.png)
 
 Users are created in **inactive** status pending email verification. Since there is no mail server in the tutorial, activate them via SQL:
 
@@ -107,7 +107,7 @@ curl -s -b /tmp/trovato-alice.txt -c /tmp/trovato-alice.txt \
 
 The page template's user menu now shows the username, "My Account", and a "Logout" button (which submits a POST form with CSRF token).
 
-![The Trovato login page with username and password fields](images/part-04/login-page.png)
+[<img src="images/part-04/login-page.png" width="600" alt="The Trovato login page with username and password fields">](images/part-04/login-page.png)
 
 ### User Profile
 
@@ -165,7 +165,7 @@ For the editorial workflow, Ritrovo needs three additional roles:
 
 The role definitions live at `docs/tutorial/config/role.viewer.yml`, `role.editor.yml`, and `role.publisher.yml`. These YAML files document the intended permission sets but cannot be imported via `config import` (the kernel's ConfigStorage does not yet support the `role` entity type). Roles and permissions must be configured through the admin UI at `/admin/people/roles` and `/admin/people/permissions`.
 
-![The roles administration page showing the list of defined roles](images/part-04/roles-admin.png)
+[<img src="images/part-04/roles-admin.png" width="600" alt="The roles administration page showing the list of defined roles">](images/part-04/roles-admin.png)
 
 Note that the `view incoming conferences`, `view curated conferences`, `edit conferences`, and `publish conferences` permissions are declared by the `ritrovo_access` plugin (installed in Part 5). They must be added to role permissions after that plugin is installed. The role YAML files document the final intended state including these permissions.
 
@@ -196,7 +196,7 @@ WHERE u.name = 'viewer_carol' AND r.name = 'viewer';
 
 Permissions in Trovato are strings like `"access content"`, `"edit any content"`, `"use filtered_html"`. Plugins declare permissions via the `tap_perm` tap. The kernel aggregates permissions from all enabled plugins and maps them to roles.
 
-![The permissions matrix showing roles across columns and permissions down rows](images/part-04/permissions-matrix.png)
+[<img src="images/part-04/permissions-matrix.png" width="600" alt="The permissions matrix showing roles across columns and permissions down rows">](images/part-04/permissions-matrix.png)
 
 When the kernel checks whether a user can perform an action:
 
@@ -414,7 +414,7 @@ The revision history page is available at `/item/{id}/revisions` (requires authe
 
 Navigate to any conference and click the **Revisions** link in the admin operations column on the content list page.
 
-![The revision history page showing a table of revisions with timestamps, titles, and revert buttons](images/part-04/revision-history.png)
+[<img src="images/part-04/revision-history.png" width="600" alt="The revision history page showing a table of revisions with timestamps, titles, and revert buttons">](images/part-04/revision-history.png)
 
 ### Revert
 
@@ -473,7 +473,7 @@ The content list supports filtering by:
 
 Filter controls appear above the content table. Selecting a filter and clicking **Filter** reloads the list with the matching items.
 
-![The admin content list with type and status filter controls](images/part-04/admin-content-list.png)
+[<img src="images/part-04/admin-content-list.png" width="600" alt="The admin content list with type and status filter controls">](images/part-04/admin-content-list.png)
 
 ### Content Table
 
