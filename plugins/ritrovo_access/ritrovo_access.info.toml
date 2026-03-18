@@ -1,6 +1,7 @@
 name = "ritrovo_access"
 description = "Editorial workflow access control for conferences"
 version = "1.0.0"
+default_enabled = false
 dependencies = []
 
 [taps]

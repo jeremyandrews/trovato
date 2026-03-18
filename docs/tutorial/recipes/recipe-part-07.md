@@ -1,7 +1,7 @@
 # Recipe: Part 7 — Going Global
 
 > **Synced with:** `docs/tutorial/part-07-going-global.md`
-> **Sync hash:** ae7d4629
+> **Sync hash:** 719fb902
 > **Last verified:** 2026-03-15
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.

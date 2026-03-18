@@ -1,6 +1,7 @@
 name = "ritrovo_translate"
 description = "Language detection and translation workflow for conferences"
 version = "1.0.0"
+default_enabled = false
 dependencies = ["content_translation"]
 
 [taps]

@@ -1,6 +1,7 @@
 name = "ritrovo_notify"
 description = "Subscription and notification system for conferences"
 version = "1.0.0"
+default_enabled = false
 dependencies = []
 
 [taps]

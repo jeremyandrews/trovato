@@ -378,7 +378,7 @@ impl TestApp {
             FieldDefinition::new("field_cfp_url", FieldType::Text { max_length: None })
                 .label("CFP URL"),
             FieldDefinition::new("field_cfp_end_date", FieldType::Date).label("CFP End Date"),
-            FieldDefinition::new("field_description", FieldType::TextLong).label("Description"),
+            FieldDefinition::new("field_description", FieldType::Blocks).label("Description"),
             FieldDefinition::new("field_language", FieldType::Text { max_length: None })
                 .label("Language"),
             FieldDefinition::new("field_source_id", FieldType::Text { max_length: None })

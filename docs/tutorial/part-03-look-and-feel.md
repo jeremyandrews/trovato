@@ -93,6 +93,8 @@ curl -s http://localhost:3000/item/$ID | grep -o 'class="conf-detail[^"]*"' | he
 
 You should see CSS classes like `conf-detail__header`, `conf-detail__meta`, `conf-detail__desc`.
 
+![Conference detail page with styled header, metadata, description, and external links](images/part-03/conference-detail.png)
+
 Visit `/cfps` to see the CFP listing:
 
 ```bash
@@ -579,6 +581,8 @@ The front page template at `templates/page--front.html` extends `page.html` and 
 
 The hero uses pure CSS animations (`@keyframes float`) and `backdrop-filter` for depth -- no JavaScript required.
 
+![Front page with animated hero section, stat cards, and technology showcase](images/part-03/front-page.png)
+
 ### Shared Card Component
 
 Conference listings, CFP listings, topic results, and speaker grids all render as card-based layouts. Without care, the card HTML and CSS would be duplicated across every gather query template.
@@ -640,6 +644,8 @@ Gather route aliases (e.g., `/topics/{slug}`) originally redirected with HTTP 30
 
 The by-topic query also gets its own template (`gather/query--ritrovo.by_topic.html`) that renders conference cards instead of a raw table, matching the visual style of the main conferences listing.
 
+![Topic page for Rust showing filtered conference cards at /topics/rust](images/part-03/topic-rust.png)
+
 ### Hiding Duplicate Field Output
 
 Item templates like `item--conference.html` explicitly render key fields (dates, location, links) in structured layouts. But the template also includes `{{ children | safe }}`, which renders **all** fields through the kernel's generic field renderer. This creates duplicate content -- dates appear in both the structured header and the raw field list.
@@ -682,6 +688,12 @@ curl -s http://localhost:3000/about | grep -c 'page-grid'
 curl -s http://localhost:3000/user/login | grep -c 'site-header'
 # > 0
 ```
+
+![Gather queries admin interface showing configured query definitions](images/part-03/gather-queries-admin.png)
+
+![Search configuration admin showing field weights for conference and speaker types](images/part-03/search-config.png)
+
+![Content types admin showing the conference and speaker type definitions](images/part-03/content-types-admin.png)
 
 ---
 

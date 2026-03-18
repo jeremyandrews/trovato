@@ -1,7 +1,7 @@
 # Recipe: Part 2 — The Ritrovo Importer Plugin
 
 > **Synced with:** `docs/tutorial/part-02-ritrovo-importer.md`
-> **Sync hash:** d36baa27
+> **Sync hash:** 759fb283
 > **Last verified:** 2026-03-07
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.

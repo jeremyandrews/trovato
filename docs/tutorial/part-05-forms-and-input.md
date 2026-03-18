@@ -77,6 +77,8 @@ The current admin content edit form at `/item/{id}/edit` uses the temporary `For
 
 The Form API exists alongside this temporary system. As the Form API matures, content forms will migrate to it, enabling plugin-driven form customization. The conference submission form you will build in Step 4 uses the Form API directly.
 
+![The full content edit form showing all fields including title, dates, location, and description](images/part-05/content-form-full.png)
+
 ### Verify
 
 ```bash
@@ -185,6 +187,8 @@ The conference content type config at `docs/tutorial/config/item_type.conference
       label: Description
 ```
 
+![Field management showing the Blocks field type configured for the description field](images/part-05/fields-with-blocks.png)
+
 ### 2.4: Enabling the `block_editor` Plugin
 
 The block editor's client-side functionality is gated behind the `block_editor` plugin. The kernel provides all the infrastructure (block types, rendering, validation), but the plugin activates the Editor.js widget and its API routes.
@@ -273,6 +277,8 @@ The script maps between Trovato's block format (`{type, weight, data}`) and Edit
 
 If Editor.js fails to load (CDN unavailable, JavaScript disabled), the script falls back to a plain `<textarea>` where the user can edit the JSON directly.
 
+![The block editor interface in the admin content form with paragraph, heading, and image blocks](images/part-05/block-editor-form.png)
+
 ### 2.6: Image Upload via Blocks
 
 The image block tool uses the `/api/block-editor/upload` endpoint. When a user adds an image block and selects a file:
@@ -313,6 +319,8 @@ The preview uses the same `render_blocks()` function as the public item view, so
 ## Step 3: Block Rendering on Display
 
 When a visitor views a conference at `/item/{id}` or its pathauto alias, the item handler detects Blocks fields and renders them with the server-side block renderer.
+
+![The pathauto configuration page showing URL alias patterns for content types](images/part-05/pathauto-config.png)
 
 ### 3.1: The `render_blocks()` Pipeline
 
@@ -588,6 +596,8 @@ Files uploaded through the block editor or the file field widget go through the 
 6. **Size check** -- Files exceeding `MAX_FILE_SIZE` are rejected.
 
 7. **Store** -- The file is written to the configured upload directory and a `file_managed` row is created with `status = 0` (temporary). When the parent item is saved, the file is promoted to `status = 1` (permanent).
+
+![The file management admin page showing uploaded files with metadata](images/part-05/files-admin.png)
 
 ### File Cleanup
 

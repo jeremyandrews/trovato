@@ -1,7 +1,7 @@
 # Recipe: Part 4 — The Editorial Engine
 
 > **Synced with:** `docs/tutorial/part-04-editorial-engine.md`
-> **Sync hash:** acfcc301
+> **Sync hash:** 09335e46
 > **Last verified:** 2026-03-13
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
