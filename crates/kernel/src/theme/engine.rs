@@ -121,6 +121,30 @@ impl ThemeEngine {
             },
         );
 
+        // Filter for displaying FieldType enum variants as human-readable labels.
+        // FieldType serializes as either a string ("Date", "Boolean", "Blocks") or
+        // an object ({"Text": {"max_length": null}}). This filter extracts the
+        // variant name for display in admin templates.
+        // Usage: {{ field.field_type | field_type_label }}
+        tera.register_filter(
+            "field_type_label",
+            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+                if let Some(s) = value.as_str() {
+                    // Simple variant: "Date", "Boolean", "TextLong", "Blocks", etc.
+                    Ok(tera::Value::String(s.to_string()))
+                } else if let Some(obj) = value.as_object() {
+                    // Object variant: {"Text": {...}}, {"Compound": {...}}, etc.
+                    if let Some(key) = obj.keys().next() {
+                        Ok(tera::Value::String(key.clone()))
+                    } else {
+                        Ok(tera::Value::String("Unknown".to_string()))
+                    }
+                } else {
+                    Ok(tera::Value::String("Unknown".to_string()))
+                }
+            },
+        );
+
         // Filter for translating interface strings via LocaleService.
         // Usage: {{ "Subscribe" | trans(lang=active_language) }}
         if let Some(locale_service) = locale {

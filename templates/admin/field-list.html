@@ -33,7 +33,7 @@
             <tr data-field="{{ field.field_name }}">
                 <td>{{ field.label }}</td>
                 <td><code>{{ field.field_name }}</code></td>
-                <td>{{ field.field_type }}</td>
+                <td>{{ field.field_type | field_type_label }}</td>
                 <td>{% if field.required %}Yes{% else %}No{% endif %}</td>
                 <td>
                     <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/edit">Edit</a>
