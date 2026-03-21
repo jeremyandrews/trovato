@@ -25,7 +25,7 @@
 
     {% if item.fields.field_description %}
     <div class="conf-detail__description">
-        {{ item.fields.field_description }}
+        {{ item.fields.field_description | render_blocks | safe }} {# SAFE: render_blocks output is sanitized by ammonia #}
     </div>
     {% endif %}
 

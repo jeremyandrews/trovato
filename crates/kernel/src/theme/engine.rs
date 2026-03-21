@@ -105,6 +105,22 @@ impl ThemeEngine {
             },
         );
 
+        // Filter for rendering Blocks fields (JSON array of Editor.js blocks) to HTML.
+        // Usage: {{ item.fields.field_description | render_blocks | safe }}
+        tera.register_filter(
+            "render_blocks",
+            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+                if let Some(blocks) = value.as_array() {
+                    Ok(tera::Value::String(crate::content::render_blocks(blocks)))
+                } else if let Some(s) = value.as_str() {
+                    // Plain string fallback — return as-is (handles TextLong values)
+                    Ok(tera::Value::String(s.to_string()))
+                } else {
+                    Ok(tera::Value::String(String::new()))
+                }
+            },
+        );
+
         // Filter for translating interface strings via LocaleService.
         // Usage: {{ "Subscribe" | trans(lang=active_language) }}
         if let Some(locale_service) = locale {

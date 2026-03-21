@@ -24,7 +24,7 @@
     </div>
 
     {% if row.fields.field_description %}
-    <p class="card__desc">{{ row.fields.field_description }}</p>
+    <div class="card__desc">{{ row.fields.field_description | render_blocks | safe }}</div> {# SAFE: render_blocks output is sanitized by ammonia #}
     {% endif %}
 
     <div class="card__actions">

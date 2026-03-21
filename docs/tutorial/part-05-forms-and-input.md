@@ -364,6 +364,16 @@ if is_blocks_field {
 
 Unknown block types are silently skipped -- they produce no output. This is intentional: if a plugin registers a custom block type and is later disabled, the blocks remain in storage but do not render until the plugin is re-enabled with a custom renderer.
 
+#### The `render_blocks` Tera Filter
+
+For templates that access Blocks fields directly (such as Gather query templates), the kernel provides a `render_blocks` Tera filter:
+
+```html
+{{ row.fields.field_description | render_blocks | safe }}
+```
+
+The filter accepts either a JSON array of blocks (producing rendered HTML via the same pipeline described above) or a plain string (returned as-is for backward compatibility with TextLong fields). The `| safe` is required because the output is pre-sanitized HTML from ammonia. The conference card template (`templates/gather/includes/conf-card.html`) uses this pattern.
+
 ### 3.2: Syntax Highlighting for Code Blocks
 
 Code blocks with a `language` field get server-side syntax highlighting via the `syntect` crate. The renderer:
