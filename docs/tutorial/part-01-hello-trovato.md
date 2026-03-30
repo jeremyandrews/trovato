@@ -400,7 +400,7 @@ The `created` and `changed` columns store **Unix timestamps** (seconds since epo
 
 ### Stages
 
-Every item has a `stage_id` that defaults to the **live** stage (a deterministic UUID seeded during installation). The live stage is the production-visible stage -- items on it are visible to all visitors. Every item also has a `tenant_id` -- like `stage_id`, it defaults to a built-in value and is invisible for single-site installations. Multi-tenancy becomes relevant when running multiple sites on one Trovato instance.
+Every item has a `stage_id` that defaults to the **live** stage (a deterministic UUID seeded during installation). The live stage is the production-visible stage -- items on it are visible to all visitors.
 
 In Part 4, we will explore how Stages let you prepare content changes on a draft or review stage before promoting them to live. For now, you can ignore stages entirely: every item you create goes directly to the live stage and is immediately visible.
 
