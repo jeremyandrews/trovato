@@ -42,6 +42,8 @@ pub struct GatherService {
     queries: Cache<String, GatherQuery>,
     /// Cache of distinct field values per `"item_type::source_field"`.
     distinct_values_cache: Cache<String, Vec<String>>,
+    /// Maximum per_page for query execution (from `GATHER_MAX_PAGE_SIZE`).
+    max_page_size: u32,
 }
 
 impl GatherService {
@@ -51,6 +53,7 @@ impl GatherService {
         categories: Arc<CategoryService>,
         extensions: Arc<GatherExtensionRegistry>,
         ttl: Duration,
+        max_page_size: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
             pool,
@@ -64,6 +67,7 @@ impl GatherService {
                 .max_capacity(DISTINCT_VALUES_CAPACITY)
                 .time_to_live(DISTINCT_VALUES_TTL)
                 .build(),
+            max_page_size,
         })
     }
 
@@ -568,16 +572,17 @@ impl GatherService {
             anyhow::bail!("Query validation failed: {}", validation_errors.join("; "));
         }
 
-        // Cap items_per_page to MAX_ITEMS_PER_PAGE
-        let resolved_display = if display.items_per_page > MAX_ITEMS_PER_PAGE {
+        // Cap items_per_page to the configured maximum (GATHER_MAX_PAGE_SIZE).
+        let max_page = self.max_page_size;
+        let resolved_display = if display.items_per_page > max_page {
             let requested = display.items_per_page;
             tracing::warn!(
                 requested = requested,
-                capped = MAX_ITEMS_PER_PAGE,
+                capped = max_page,
                 "items_per_page exceeds maximum, capping"
             );
             let mut capped = display.clone();
-            capped.items_per_page = MAX_ITEMS_PER_PAGE;
+            capped.items_per_page = max_page;
             capped
         } else {
             display.clone()
@@ -608,7 +613,7 @@ impl GatherService {
             ..final_definition
         };
 
-        // Build and execute queries
+        // Build and execute queries (per_page already clamped in resolved_display above)
         let per_page = display.items_per_page;
         let builder = GatherQueryBuilder::new_with_stages(builder_def, stage_ids.to_vec())
             .with_extensions(self.extensions.clone())

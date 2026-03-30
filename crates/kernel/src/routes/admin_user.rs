@@ -390,6 +390,22 @@ async fn edit_user_submit(
                 return render_server_error("Failed to update password.");
             }
 
+            // Rotate session if the admin changed their own privileges.
+            // Cross-user session invalidation requires a user→session index
+            // that does not currently exist — tracked as a known limitation.
+            let admin_user_id = current_user.id;
+            if user_id == admin_user_id {
+                if let Err(e) = session.cycle_id().await {
+                    tracing::warn!(error = %e, "failed to rotate session after self-privilege change");
+                }
+            } else {
+                tracing::info!(
+                    target_user = %user_id,
+                    admin = %admin_user_id,
+                    "privilege change for another user — session invalidation deferred (no user→session index)"
+                );
+            }
+
             tracing::info!(user_id = %user_id, "user updated");
             Redirect::to("/admin/people").into_response()
         }

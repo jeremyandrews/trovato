@@ -10,6 +10,7 @@ pub mod language;
 pub mod path_alias;
 pub mod rate_limit;
 pub mod redirect;
+pub mod security_headers;
 
 pub use api_token::authenticate_api_token;
 pub use bearer_auth::authenticate_bearer_token;
@@ -20,3 +21,4 @@ pub use rate_limit::{
     RateLimitConfig, RateLimiter, categorize_path, get_client_id, rate_limit_response,
 };
 pub use redirect::check_redirect;
+pub use security_headers::inject_security_headers;

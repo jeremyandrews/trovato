@@ -468,6 +468,7 @@ impl AppState {
             categories.clone(),
             gather_extensions,
             cache_config.ttl_gather_queries,
+            config.gather_max_page_size,
         );
         gather
             .load_queries()

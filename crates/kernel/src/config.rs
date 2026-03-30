@@ -114,6 +114,13 @@ pub struct Config {
     /// Public site URL for constructing links in emails.
     pub site_url: String,
 
+    /// Maximum allowed `per_page` for Gather queries (default: 100).
+    ///
+    /// Runtime request parameters are clamped to this value. Gather
+    /// definition `items_per_page` is not clamped — only the runtime
+    /// request parameter is.
+    pub gather_max_page_size: u32,
+
     /// Language negotiation methods, in priority order.
     ///
     /// Comma-separated list from `LANGUAGE_NEGOTIATION_METHODS` env var.
@@ -154,7 +161,7 @@ impl Config {
 
         let cors_allowed_origins = env::var("CORS_ALLOWED_ORIGINS")
             .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
-            .unwrap_or_else(|_| vec!["*".to_string()]);
+            .unwrap_or_else(|_| Vec::new());
 
         let cookie_same_site = env::var("COOKIE_SAME_SITE")
             .unwrap_or_else(|_| "strict".to_string())
@@ -188,6 +195,11 @@ impl Config {
 
         let site_url = env::var("SITE_URL").unwrap_or_else(|_| format!("http://localhost:{port}"));
 
+        let gather_max_page_size = env::var("GATHER_MAX_PAGE_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+
         let language_negotiation_methods = env::var("LANGUAGE_NEGOTIATION_METHODS")
             .map(|v| {
                 v.split(',')
@@ -215,6 +227,7 @@ impl Config {
             smtp_encryption,
             smtp_from_email,
             site_url,
+            gather_max_page_size,
             language_negotiation_methods,
         })
     }
