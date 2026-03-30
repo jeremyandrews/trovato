@@ -303,6 +303,29 @@ pub enum AccessResult {
     Neutral,
 }
 
+/// Field-level access control result from `tap_field_access`.
+///
+/// Plugins return this to control per-field visibility. `Deny` wins
+/// across all plugins (same aggregation as `AccessResult` for items).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FieldAccessResult {
+    /// Allow access to this field.
+    Allow,
+    /// Deny access to this field.
+    Deny,
+    /// No opinion — let other plugins decide (default: allow).
+    NoOpinion,
+}
+
+/// Field access operation type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FieldAccessOperation {
+    /// Viewing the field value.
+    View,
+    /// Editing the field value.
+    Edit,
+}
+
 /// Menu route definition returned by `tap_menu`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MenuDefinition {

@@ -49,6 +49,60 @@ impl SiteConfig {
         Ok(())
     }
 
+    /// Get a config value with secret reference resolution.
+    ///
+    /// String values prefixed with `env:` are resolved from environment
+    /// variables at read time. The prefix `literal:` escapes the `env:` prefix
+    /// for values that literally start with `env:`.
+    ///
+    /// Examples:
+    /// - `"env:OPENAI_API_KEY"` → reads `OPENAI_API_KEY` from env
+    /// - `"literal:env:NOT_A_SECRET"` → returns `"env:NOT_A_SECRET"`
+    /// - `"plain value"` → returns `"plain value"` unchanged
+    pub async fn get_resolved(pool: &PgPool, key: &str) -> Result<Option<serde_json::Value>> {
+        let value = Self::get(pool, key).await?;
+        Ok(value.map(Self::resolve_secret_refs))
+    }
+
+    /// Resolve secret references in a JSON value.
+    ///
+    /// Recursively processes strings with `env:` and `literal:` prefixes.
+    /// Non-string values are returned unchanged.
+    fn resolve_secret_refs(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::String(s) => {
+                serde_json::Value::String(Self::resolve_secret_string(&s))
+            }
+            serde_json::Value::Object(map) => {
+                let resolved: serde_json::Map<String, serde_json::Value> = map
+                    .into_iter()
+                    .map(|(k, v)| (k, Self::resolve_secret_refs(v)))
+                    .collect();
+                serde_json::Value::Object(resolved)
+            }
+            serde_json::Value::Array(arr) => {
+                serde_json::Value::Array(arr.into_iter().map(Self::resolve_secret_refs).collect())
+            }
+            other => other,
+        }
+    }
+
+    /// Resolve a single string value's secret reference.
+    fn resolve_secret_string(s: &str) -> String {
+        if let Some(var_name) = s.strip_prefix("env:") {
+            // Read from environment variable
+            std::env::var(var_name).unwrap_or_else(|_| {
+                tracing::warn!(var = var_name, "secret config references missing env var");
+                String::new()
+            })
+        } else if let Some(rest) = s.strip_prefix("literal:") {
+            // Escape mechanism: strip the literal: prefix and return the rest
+            rest.to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
     /// Check if the site is installed.
     pub async fn is_installed(pool: &PgPool) -> Result<bool> {
         let value = Self::get(pool, "installed").await?;
