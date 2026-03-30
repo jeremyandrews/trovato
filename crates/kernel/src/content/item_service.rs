@@ -535,7 +535,7 @@ impl ItemService {
 
     /// Filter a set of field names to only those the user can access.
     ///
-    /// Convenience wrapper around [`check_field_access`] for filtering
+    /// Convenience wrapper around [`Self::check_field_access`] for filtering
     /// fields before rendering or form building.
     pub async fn accessible_fields(
         &self,
