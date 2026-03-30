@@ -5,6 +5,7 @@
 
 mod ai;
 mod cache;
+mod crypto;
 mod db;
 mod http;
 mod item;
@@ -21,6 +22,7 @@ use crate::plugin::PluginState;
 
 pub use ai::register_ai_functions;
 pub use cache::register_cache_functions;
+pub use crypto::register_crypto_functions;
 pub use db::register_db_functions;
 pub use http::register_http_functions;
 pub use item::register_item_functions;
@@ -42,6 +44,7 @@ pub fn register_all(linker: &mut Linker<PluginState>) -> Result<()> {
     register_ai_functions(linker)?;
     register_queue_functions(linker)?;
     register_http_functions(linker)?;
+    register_crypto_functions(linker)?;
     Ok(())
 }
 
