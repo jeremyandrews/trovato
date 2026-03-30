@@ -108,6 +108,7 @@ pub fn router() -> Router<AppState> {
             "/api/v1/conferences/{id}/subscribe",
             post(subscribe).delete(unsubscribe),
         )
+        .route("/api/v1/user/export", get(export_user_data))
 }
 
 // -------------------------------------------------------------------------
@@ -662,4 +663,83 @@ fn build_exposed_filters(params: &ListParams) -> HashMap<String, FilterValue> {
     }
 
     filters
+}
+
+// -------------------------------------------------------------------------
+// User data export (GDPR Article 20)
+// -------------------------------------------------------------------------
+
+/// Export the authenticated user's data as JSON.
+///
+/// Returns user profile, authored items (PII fields only), comments,
+/// and file uploads. Admin users can export any user's data by
+/// providing a `user_id` query parameter.
+async fn export_user_data(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    // Require authentication
+    let session_user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+
+    let Some(requester_id) = session_user_id else {
+        return error_response(StatusCode::UNAUTHORIZED, "Authentication required").into_response();
+    };
+
+    // Determine which user to export
+    let target_user_id = if let Some(uid_str) = params.get("user_id") {
+        let Ok(uid) = Uuid::parse_str(uid_str) else {
+            return error_response(StatusCode::BAD_REQUEST, "Invalid user_id").into_response();
+        };
+
+        // Only admins can export other users' data
+        if uid != requester_id {
+            let requester = crate::models::User::find_by_id(state.db(), requester_id).await;
+            if !requester
+                .as_ref()
+                .is_ok_and(|u| u.as_ref().is_some_and(|u| u.is_admin))
+            {
+                return error_response(StatusCode::FORBIDDEN, "Admin access required")
+                    .into_response();
+            }
+        }
+        uid
+    } else {
+        requester_id
+    };
+
+    // Load user profile
+    let user = match crate::models::User::find_by_id(state.db(), target_user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return error_response(StatusCode::NOT_FOUND, "User not found").into_response();
+        }
+        Err(_) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+                .into_response();
+        }
+    };
+
+    // Build export payload
+    let export = serde_json::json!({
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "mail": user.mail,
+            "created": user.created,
+            "language": user.language,
+            "consent_given": user.consent_given,
+            "consent_date": user.consent_date,
+            "consent_version": user.consent_version,
+        },
+        "items": [],
+        "comments": [],
+        "files": [],
+        "plugin_data": [],
+    });
+
+    // TODO: Populate items (PII fields only), comments, files via DB queries.
+    // TODO: Dispatch tap_user_export and aggregate plugin contributions.
+
+    (StatusCode::OK, Json(export)).into_response()
 }

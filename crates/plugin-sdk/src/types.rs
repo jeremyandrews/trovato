@@ -648,6 +648,22 @@ pub struct AiResponse {
     pub finish_reason: Option<String>,
 }
 
+/// Data contributed by a plugin to a user's GDPR data export.
+///
+/// Plugins implementing `tap_user_export` return this with their
+/// plugin-specific data for the user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserExportData {
+    /// Name of the plugin contributing data.
+    pub plugin_name: String,
+
+    /// Human-readable label for this data category.
+    pub data_type: String,
+
+    /// The actual records (arbitrary JSON objects).
+    pub records: Vec<serde_json::Value>,
+}
+
 /// Context passed to `tap_ai_request` for governance policy decisions.
 ///
 /// Plugins implementing `tap_ai_request` use this to decide whether to
