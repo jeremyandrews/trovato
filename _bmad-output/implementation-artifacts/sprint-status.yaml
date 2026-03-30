@@ -118,3 +118,121 @@ development_status:
   8-3-import-queue-management: ready-for-dev
   8-4-role-based-tile-visibility: ready-for-dev
   epic-8-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
+  # Inclusivity-First Foundation (Epics 40-49)
+  # SOURCE: docs/ritrovo/epic-10-accessibility.md through epic-19-design-sync.md
+  # SCOPE: Kernel infrastructure for accessibility, i18n, security, privacy,
+  #        performance, versioning, multi-tenancy, API/AI, tutorial refresh
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 40 (A): Accessibility Foundation
+  # Dependency: None (lands first — template foundation)
+  epic-40: in-progress
+  40-1-skip-link-and-page-landmarks: ready-for-dev
+  40-2-image-block-alt-text-schema-enforcement: ready-for-dev
+  40-3-form-accessibility-error-association: ready-for-dev
+  40-4-elementbuilder-aria-helpers: ready-for-dev
+  40-5-render-pipeline-semantic-fallback: ready-for-dev
+  40-6-rtl-direction-support: ready-for-dev
+  40-7-admin-ui-keyboard-and-focus-management: ready-for-dev
+  40-8-ajax-live-region-announcements: ready-for-dev
+  40-9-admin-tab-arrow-key-navigation: ready-for-dev
+  epic-40-retrospective: optional
+
+  # Epic 41 (B): i18n Infrastructure
+  # Dependency: Epic 40 (RTL direction, logical CSS)
+  epic-41: in-progress
+  41-1-un-ignore-item-language-in-plugin-sdk: ready-for-dev
+  41-2-locale-aware-date-formatting: ready-for-dev
+  41-3-language-context-propagation-audit: ready-for-dev
+  41-4-language-negotiation-configuration: ready-for-dev
+  41-5-tutorial-part-7-verification: ready-for-dev
+  epic-41-retrospective: optional
+
+  # Epic 42 (C): Security Hardening
+  # Dependency: Epic 40 (form accessibility patterns)
+  epic-42: in-progress
+  42-1-move-inline-js-to-static-file-and-enable-csp: ready-for-dev
+  42-2-security-response-headers: ready-for-dev
+  42-3-cors-configuration-fix: ready-for-dev
+  42-4-field-level-access-control-tap: ready-for-dev
+  42-5-gather-max-page-size: ready-for-dev
+  42-6-session-rotation-on-privilege-escalation: ready-for-dev
+  42-7-crypto-host-functions-for-plugins: ready-for-dev
+  42-8-secret-config-provider-for-sensitive-configuration: ready-for-dev
+  epic-42-retrospective: optional
+
+  # Epic 43 (D): Privacy Infrastructure (GDPR)
+  # Dependency: None (independent)
+  epic-43: in-progress
+  43-1-user-consent-schema: ready-for-dev
+  43-2-personal-data-flag-on-field-definitions: ready-for-dev
+  # 43-3 BLOCKED BY 43-2 (requires personal_data_fields() method)
+  43-3-user-data-export-tap: ready-for-dev
+  43-4-retention-metadata-on-items-and-revisions: ready-for-dev
+  43-5-external-resource-loading-audit: ready-for-dev
+  epic-43-retrospective: optional
+
+  # Epic 44 (E): Performance Verification
+  # Dependency: None (independent)
+  epic-44: in-progress
+  44-1-gather-relationship-depth-limiting: ready-for-dev
+  44-2-query-profiler-middleware: ready-for-dev
+  44-3-static-asset-content-hashing: ready-for-dev
+  44-4-default-lazy-loading-on-images: ready-for-dev
+  44-5-heavy-operation-queue-verification: ready-for-dev
+  epic-44-retrospective: optional
+
+  # Epic 45 (F): Versioning & Audit Completeness
+  # Dependency: None (independent)
+  # Blocks: Epic 47 (ai_generated flag)
+  epic-45: in-progress
+  45-1-auto-generated-change-summary-on-revisions: ready-for-dev
+  45-2-ai-generated-revision-flag: ready-for-dev
+  45-3-revision-immutability-enforcement: ready-for-dev
+  45-4-revision-integrity-verification: ready-for-dev
+  epic-45-retrospective: optional
+
+  # Epic 46 (G): Multi-Tenancy Foundation
+  # Dependency: None (independent, largest epic)
+  epic-46: in-progress
+  46-1-tenant-schema-and-default-tenant: ready-for-dev
+  46-2-user-tenant-junction-and-auth-context: ready-for-dev
+  46-3-tenant-resolution-middleware: ready-for-dev
+  46-4-gather-auto-filter-by-tenant: ready-for-dev
+  46-5-tenant-scoped-configuration: ready-for-dev
+  46-6-tenant-scoped-cache-keys: ready-for-dev
+  46-7-tenant-scoped-file-storage-and-search: ready-for-dev
+  46-8-tutorial-and-documentation-updates-for-multi-tenancy: ready-for-dev
+  46-9-single-tenant-performance-verification: ready-for-dev
+  epic-46-retrospective: optional
+
+  # Epic 47 (H): External Interface Infrastructure (API + AI)
+  # Dependency: Epic 45 (ai_generated flag)
+  epic-47: in-progress
+  47-1-route-metadata-annotations: ready-for-dev
+  47-2-api-versioning-infrastructure: ready-for-dev
+  47-3-verify-gather-as-json-api: ready-for-dev
+  47-4-ai-request-metadata-audit-trail: ready-for-dev
+  47-5-ai-request-interception-tap: ready-for-dev
+  47-6-per-ai-feature-configuration: ready-for-dev
+  epic-47-retrospective: optional
+
+  # Epic 48 (I): Tutorial & Recipe Refresh
+  # Dependency: Epics 40-47 (each ships own updates; this is systemic pass)
+  epic-48: in-progress
+  48-1-inclusivity-first-narrative-integration: ready-for-dev
+  48-2-tutorial-coherence-pass: ready-for-dev
+  48-3-recipe-verification-pass: ready-for-dev
+  48-4-screenshot-refresh: ready-for-dev
+  48-5-sdk-backward-compatibility-verification: ready-for-dev
+  epic-48-retrospective: optional
+
+  # Epic 49 (J): Design Doc Sync
+  # Dependency: Epics 40-48 (terminal epic)
+  epic-49: in-progress
+  49-1-update-phases-with-current-status: ready-for-dev
+  49-2-update-overview-with-inclusivity-first-positioning: ready-for-dev
+  49-3-cross-reference-audit-and-appendix-cleanup: ready-for-dev
+  epic-49-retrospective: optional
