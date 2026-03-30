@@ -721,6 +721,8 @@ fn item_revision_struct() {
         fields: serde_json::json!({"body": {"value": "Content"}}),
         created: 1700000000,
         log: Some("Updated body".to_string()),
+        change_summary: None,
+        ai_generated: None,
     };
 
     assert_eq!(rev.title, "Revision Title");
@@ -738,6 +740,8 @@ fn item_revision_optional_log() {
         fields: serde_json::json!({}),
         created: 0,
         log: None,
+        change_summary: None,
+        ai_generated: None,
     };
 
     assert!(rev.log.is_none());
