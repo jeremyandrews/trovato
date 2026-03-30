@@ -66,6 +66,95 @@ fn not_found() -> Response<Body> {
         .unwrap()
 }
 
+/// Build an asset manifest mapping original paths to content-hashed paths.
+///
+/// Scans the static directory, computes SHA-256 of each file, and creates
+/// a mapping like `css/theme.css` → `css/theme.a1b2c3d4.css`.
+/// The short hash (first 8 hex chars) is inserted before the extension.
+pub fn build_asset_manifest() -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+
+    let static_dir = std::env::var("STATIC_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("./static"));
+
+    let mut manifest = HashMap::new();
+
+    // Walk the static directory
+    let Ok(entries) = std::fs::read_dir(&static_dir) else {
+        return manifest;
+    };
+
+    for entry in entries.flatten() {
+        scan_dir_recursive(&static_dir, &entry.path(), &mut manifest);
+    }
+
+    manifest
+}
+
+fn scan_dir_recursive(
+    base: &std::path::Path,
+    path: &std::path::Path,
+    manifest: &mut std::collections::HashMap<String, String>,
+) {
+    use sha2::{Digest, Sha256};
+
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                scan_dir_recursive(base, &entry.path(), manifest);
+            }
+        }
+        return;
+    }
+
+    let Ok(content) = std::fs::read(path) else {
+        return;
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(&content);
+    let hash = hex::encode(hasher.finalize());
+    let short_hash = &hash[..8];
+
+    // Get relative path from static dir
+    let Ok(relative) = path.strip_prefix(base) else {
+        return;
+    };
+    let relative_str = relative.to_string_lossy().to_string();
+
+    // Build hashed path: "css/theme.css" → "css/theme.a1b2c3d4.css"
+    let hashed = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let stem = relative_str
+            .strip_suffix(&format!(".{ext}"))
+            .unwrap_or(&relative_str);
+        format!("{stem}.{short_hash}.{ext}")
+    } else {
+        format!("{relative_str}.{short_hash}")
+    };
+
+    manifest.insert(relative_str, hashed);
+}
+
+/// Register the `asset_url` Tera function using the manifest.
+///
+/// Usage in templates: `{{ asset_url(path="css/theme.css") }}`
+/// Returns `/static/css/theme.a1b2c3d4.css` if hashed, or `/static/css/theme.css` as fallback.
+pub fn register_asset_url_function(
+    tera: &mut tera::Tera,
+    manifest: std::collections::HashMap<String, String>,
+) {
+    let manifest = std::sync::Arc::new(manifest);
+    tera.register_function(
+        "asset_url",
+        move |args: &std::collections::HashMap<String, tera::Value>| {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let resolved = manifest.get(path).map(|s| s.as_str()).unwrap_or(path);
+            Ok(tera::Value::String(format!("/static/{resolved}")))
+        },
+    );
+}
+
 fn mime_from_path(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("js") => "application/javascript",

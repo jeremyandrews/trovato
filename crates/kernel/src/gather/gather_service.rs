@@ -21,7 +21,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Maximum nesting depth for includes to prevent unbounded recursion.
+/// Maximum nesting depth for Gather relationship includes.
+///
+/// Prevents unbounded JOIN chains from plugins writing deep relationship
+/// traversals. Depth 0 = no relationships, depth 1 = direct, depth 2 = nested,
+/// depth 3 = maximum. Queries exceeding this are truncated silently.
+///
+/// This is the hard limit. Individual queries can specify a lower `max_depth`
+/// in their definition. The `GATHER_MAX_RELATIONSHIP_DEPTH` env var could
+/// override this in the future.
 const MAX_INCLUDE_DEPTH: u8 = 3;
 
 /// Maximum entries in the gather query cache.

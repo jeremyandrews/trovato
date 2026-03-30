@@ -1,0 +1,146 @@
+//! Route metadata for API documentation and versioning.
+//!
+//! Provides structured metadata about kernel routes that plugins can
+//! use to generate OpenAPI specs, API explorers, or client SDKs.
+
+use axum::http::Method;
+use serde::Serialize;
+
+/// Metadata describing an API route.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteMetadata {
+    /// HTTP method.
+    pub method: String,
+
+    /// Route path pattern (e.g., "/api/v1/conferences/{id}").
+    pub path: String,
+
+    /// Short summary of the route's purpose.
+    pub summary: String,
+
+    /// Parameter descriptions.
+    pub parameters: Vec<ParamMeta>,
+
+    /// Description of the response content type.
+    pub response_type: String,
+
+    /// Tags for grouping (e.g., "conferences", "admin").
+    pub tags: Vec<String>,
+
+    /// Whether this route is deprecated.
+    pub deprecated: bool,
+}
+
+/// Metadata about a route parameter.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParamMeta {
+    /// Parameter name.
+    pub name: String,
+
+    /// Where the parameter comes from: "path", "query", "header".
+    pub location: String,
+
+    /// Whether the parameter is required.
+    pub required: bool,
+
+    /// Description of the parameter.
+    pub description: String,
+}
+
+/// Registry of all API route metadata.
+///
+/// Built at startup from kernel route definitions. Plugins can
+/// add their own route metadata via `register_route_metadata` host function.
+#[derive(Debug, Default)]
+pub struct RouteRegistry {
+    routes: Vec<RouteMetadata>,
+}
+
+impl RouteRegistry {
+    /// Create a new empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register kernel API route metadata.
+    pub fn register_kernel_routes(&mut self) {
+        // Register the core API v1 routes
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/conferences".to_string(),
+            summary: "List conferences with filters and pagination".to_string(),
+            parameters: vec![
+                ParamMeta {
+                    name: "page".to_string(),
+                    location: "query".to_string(),
+                    required: false,
+                    description: "Page number (default 1)".to_string(),
+                },
+                ParamMeta {
+                    name: "per_page".to_string(),
+                    location: "query".to_string(),
+                    required: false,
+                    description: "Items per page (default 25)".to_string(),
+                },
+            ],
+            response_type: "application/json".to_string(),
+            tags: vec!["conferences".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/conferences/{id}".to_string(),
+            summary: "Get a single conference by ID".to_string(),
+            parameters: vec![ParamMeta {
+                name: "id".to_string(),
+                location: "path".to_string(),
+                required: true,
+                description: "Conference UUID".to_string(),
+            }],
+            response_type: "application/json".to_string(),
+            tags: vec!["conferences".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/search".to_string(),
+            summary: "Full-text search across content".to_string(),
+            parameters: vec![ParamMeta {
+                name: "q".to_string(),
+                location: "query".to_string(),
+                required: true,
+                description: "Search query string".to_string(),
+            }],
+            response_type: "application/json".to_string(),
+            tags: vec!["search".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/user/export".to_string(),
+            summary: "Export user data (GDPR Article 20)".to_string(),
+            parameters: vec![ParamMeta {
+                name: "user_id".to_string(),
+                location: "query".to_string(),
+                required: false,
+                description: "User UUID (admin only, defaults to self)".to_string(),
+            }],
+            response_type: "application/json".to_string(),
+            tags: vec!["user".to_string()],
+            deprecated: false,
+        });
+    }
+
+    /// Register a plugin-provided route.
+    pub fn register(&mut self, meta: RouteMetadata) {
+        self.routes.push(meta);
+    }
+
+    /// Get all registered routes.
+    pub fn routes(&self) -> &[RouteMetadata] {
+        &self.routes
+    }
+}

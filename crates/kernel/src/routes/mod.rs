@@ -34,6 +34,7 @@ pub mod metrics;
 pub mod oauth;
 pub mod password_reset;
 pub mod plugin_admin;
+pub mod route_metadata;
 pub mod search;
 pub mod static_files;
 pub mod tile_admin;
