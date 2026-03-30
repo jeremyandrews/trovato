@@ -86,6 +86,7 @@ mod tests {
             stage_id: live_stage_id(),
             created: 0,
             changed,
+            language: None,
         }
     }
 
@@ -102,6 +103,7 @@ mod tests {
             stage_id: live_stage_id(),
             created: 0,
             changed: 0,
+            language: None,
         };
         assert!(__inner_tap_item_view(item).is_empty());
     }
@@ -119,6 +121,7 @@ mod tests {
             stage_id: live_stage_id(),
             created: 0,
             changed: 0,
+            language: None,
         };
         assert!(__inner_tap_item_view(item).is_empty());
     }

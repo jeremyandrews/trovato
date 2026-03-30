@@ -99,6 +99,7 @@ mod tests {
             stage_id: live_stage_id(),
             created: 0,
             changed: 0,
+            language: None,
         };
         let result = __inner_tap_item_view(item);
         assert!(result.contains("subscription-toggle"));
@@ -118,6 +119,7 @@ mod tests {
             stage_id: live_stage_id(),
             created: 0,
             changed: 0,
+            language: None,
         };
         assert!(__inner_tap_item_view(item).is_empty());
     }

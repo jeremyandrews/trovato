@@ -648,6 +648,44 @@ pub struct AiResponse {
     pub finish_reason: Option<String>,
 }
 
+/// Context passed to `tap_ai_request` for governance policy decisions.
+///
+/// Plugins implementing `tap_ai_request` use this to decide whether to
+/// allow, modify, or deny an AI request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiRequestContext {
+    /// User who initiated the request.
+    pub user_id: Uuid,
+
+    /// Plugin that called `ai_request()`.
+    pub plugin_name: String,
+
+    /// Type of AI operation (Chat, Embedding, etc.).
+    pub operation_type: AiOperationType,
+
+    /// Item ID if the request is content-related (e.g., field enrichment).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<Uuid>,
+
+    /// Field name if the request is a field rule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_name: Option<String>,
+}
+
+/// Decision from a `tap_ai_request` handler.
+///
+/// Uses deny-wins aggregation: if any plugin returns `Deny`, the request
+/// is blocked regardless of other plugins' decisions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AiRequestDecision {
+    /// Allow the request as-is.
+    Allow,
+    /// Allow the request after modifications made by the tap handler.
+    AllowModified,
+    /// Deny the request with a reason.
+    Deny(String),
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
