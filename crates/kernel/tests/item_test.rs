@@ -77,6 +77,7 @@ fn test_content_type() -> ContentTypeDefinition {
                 required: true,
                 cardinality: 1,
                 settings: serde_json::json!({}),
+                personal_data: false,
             },
             FieldDefinition {
                 field_name: "summary".to_string(),
@@ -87,6 +88,7 @@ fn test_content_type() -> ContentTypeDefinition {
                 required: false,
                 cardinality: 1,
                 settings: serde_json::json!({}),
+                personal_data: false,
             },
             FieldDefinition {
                 field_name: "featured".to_string(),
@@ -95,6 +97,7 @@ fn test_content_type() -> ContentTypeDefinition {
                 required: false,
                 cardinality: 1,
                 settings: serde_json::json!({}),
+                personal_data: false,
             },
         ],
     }
@@ -159,6 +162,7 @@ fn form_builder_edit_form_includes_values() {
         stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
+        retention_days: None,
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -197,6 +201,7 @@ fn item_status_checks() {
         stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
+        retention_days: None,
     };
 
     assert!(item.is_published());
@@ -648,6 +653,7 @@ fn form_builder_edit_form_populates_all_types() {
         stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
+        retention_days: None,
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -687,6 +693,7 @@ fn form_builder_escapes_html_in_values() {
         stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
+        retention_days: None,
     };
 
     let form = builder.build_edit_form(&item, "/item/123/edit");
@@ -757,6 +764,7 @@ fn item_status_unpublished() {
         stage_id: LIVE_STAGE_ID,
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
+        retention_days: None,
     };
 
     assert!(!item.is_published());

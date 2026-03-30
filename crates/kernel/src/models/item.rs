@@ -61,6 +61,10 @@ pub struct Item {
 
     /// Group ID linking copies of the same logical item across stages.
     pub item_group_id: Uuid,
+
+    /// Data retention period in days (NULL = keep indefinitely).
+    #[serde(default)]
+    pub retention_days: Option<i32>,
 }
 
 /// Item revision record.
@@ -136,7 +140,7 @@ impl Item {
     /// Find an item by ID.
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let item = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id FROM item WHERE id = $1"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(pool)
@@ -149,7 +153,7 @@ impl Item {
     /// List items by content type.
     pub async fn list_by_type(pool: &PgPool, item_type: &str) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id FROM item WHERE type = $1 ORDER BY created DESC"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE type = $1 ORDER BY created DESC"
         )
         .bind(item_type)
         .fetch_all(pool)
@@ -162,7 +166,7 @@ impl Item {
     /// List items by author.
     pub async fn list_by_author(pool: &PgPool, author_id: Uuid) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id FROM item WHERE author_id = $1 ORDER BY created DESC"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE author_id = $1 ORDER BY created DESC"
         )
         .bind(author_id)
         .fetch_all(pool)
@@ -175,7 +179,7 @@ impl Item {
     /// List published items (live stage only).
     pub async fn list_published(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id FROM item WHERE status = 1 AND stage_id = $1 ORDER BY sticky DESC, created DESC LIMIT $2 OFFSET $3"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE status = 1 AND stage_id = $1 ORDER BY sticky DESC, created DESC LIMIT $2 OFFSET $3"
         )
         .bind(LIVE_STAGE_ID)
         .bind(limit)
@@ -419,7 +423,7 @@ impl Item {
     /// List all items with pagination.
     pub async fn list_all(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id FROM item ORDER BY changed DESC LIMIT $1 OFFSET $2"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item ORDER BY changed DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -441,7 +445,7 @@ impl Item {
     ) -> Result<Vec<Self>> {
         // Build dynamic query
         let mut query = String::from(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id FROM item WHERE 1=1",
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE 1=1",
         );
         let mut param_idx = 1;
         let mut conditions = Vec::new();
@@ -584,6 +588,7 @@ mod tests {
             stage_id: LIVE_STAGE_ID,
             language: "en".to_string(),
             item_group_id: Uuid::now_v7(),
+            retention_days: None,
         };
 
         assert!(item.is_published());

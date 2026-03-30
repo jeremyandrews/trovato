@@ -345,6 +345,7 @@ impl ContentTypeRegistry {
             required: false,
             cardinality: 1,
             settings: serde_json::Value::Object(serde_json::Map::new()),
+            personal_data: false,
         };
 
         // Add to existing fields

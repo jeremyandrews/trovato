@@ -262,6 +262,10 @@ mod tests {
             timezone: None,
             language: None,
             data: serde_json::Value::Null,
+            consent_given: None,
+            consent_date: None,
+            consent_version: None,
+            data_retention_days: None,
         }
     }
 

@@ -28,6 +28,22 @@ pub struct User {
     pub timezone: Option<String>,
     pub language: Option<String>,
     pub data: serde_json::Value,
+
+    /// Whether the user has given consent (GDPR).
+    #[serde(default)]
+    pub consent_given: Option<bool>,
+
+    /// When consent was recorded.
+    #[serde(default)]
+    pub consent_date: Option<DateTime<Utc>>,
+
+    /// Privacy policy version consented to.
+    #[serde(default)]
+    pub consent_version: Option<String>,
+
+    /// User-requested data retention period in days.
+    #[serde(default)]
+    pub data_retention_days: Option<i32>,
 }
 
 /// Input for creating a new user.

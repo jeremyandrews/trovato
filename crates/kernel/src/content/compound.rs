@@ -613,6 +613,7 @@ mod tests {
             settings: serde_json::json!({
                 "section_types": section_types,
             }),
+            personal_data: false,
         }
     }
 
@@ -913,6 +914,7 @@ mod tests {
             required: true,
             cardinality: 1,
             settings: serde_json::json!({}),
+            personal_data: false,
         }];
         let fields = serde_json::Map::new();
         let errors = validate_required_fields(&fields, &field_defs);
@@ -929,6 +931,7 @@ mod tests {
             required: true,
             cardinality: 1,
             settings: serde_json::json!({}),
+            personal_data: false,
         }];
         let mut fields = serde_json::Map::new();
         fields.insert("summary".to_string(), serde_json::json!("A summary"));
@@ -1051,6 +1054,7 @@ mod tests {
             settings: serde_json::json!({
                 "section_types": [text_schema()],
             }),
+            personal_data: false,
         }];
         let mut fields = serde_json::Map::new();
         fields.insert(
@@ -1079,6 +1083,7 @@ mod tests {
             settings: serde_json::json!({
                 "section_types": [text_schema()],
             }),
+            personal_data: false,
         }
     }
 

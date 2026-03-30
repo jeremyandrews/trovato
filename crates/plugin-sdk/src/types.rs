@@ -225,6 +225,13 @@ pub struct FieldDefinition {
     pub cardinality: i32,
     #[serde(default)]
     pub settings: serde_json::Value,
+
+    /// Whether this field contains personally identifiable information (PII).
+    ///
+    /// When `true`, the field is included in GDPR data exports and flagged
+    /// for deletion/anonymization. Default `false` for backward compatibility.
+    #[serde(default)]
+    pub personal_data: bool,
 }
 
 fn default_cardinality() -> i32 {
@@ -240,6 +247,7 @@ impl FieldDefinition {
             required: false,
             cardinality: 1,
             settings: serde_json::Value::Object(Default::default()),
+            personal_data: false,
         }
     }
 

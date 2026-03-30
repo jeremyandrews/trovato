@@ -436,6 +436,7 @@ mod tests {
                     required: true,
                     cardinality: 1,
                     settings: serde_json::json!({}),
+                    personal_data: false,
                 },
                 FieldDefinition {
                     field_name: "summary".to_string(),
@@ -446,6 +447,7 @@ mod tests {
                     required: false,
                     cardinality: 1,
                     settings: serde_json::json!({}),
+                    personal_data: false,
                 },
             ],
         }
@@ -553,6 +555,7 @@ mod tests {
                         "fields": []
                     }]
                 }),
+                personal_data: false,
             }],
         };
         let builder = FormBuilder::new(ct);
@@ -597,6 +600,7 @@ mod tests {
             stage_id: crate::models::stage::LIVE_STAGE_ID,
             language: "en".to_string(),
             item_group_id: uuid::Uuid::now_v7(),
+            retention_days: None,
         };
         let form = builder.build_edit_form(&item, "/item/123/edit");
         assert!(form.contains(r#"name="log""#));
