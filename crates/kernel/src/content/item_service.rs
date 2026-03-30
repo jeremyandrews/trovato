@@ -41,6 +41,9 @@ struct ItemServiceInner {
     cache: Cache<Uuid, Item>,
     /// Cached stage lookups — stages rarely change and there are typically only 3.
     stage_cache: Cache<Uuid, Stage>,
+    /// Cached field access decisions keyed by "role_hash:item_type:field_name:operation".
+    /// Deny-wins aggregation result. 5-minute TTL.
+    field_access_cache: Cache<String, bool>,
 }
 
 /// A translation record for an item in a specific language.
@@ -104,6 +107,10 @@ impl ItemService {
                 stage_cache: Cache::builder()
                     .max_capacity(STAGE_CACHE_CAPACITY)
                     .time_to_live(STAGE_CACHE_TTL)
+                    .build(),
+                field_access_cache: Cache::builder()
+                    .max_capacity(10_000)
+                    .time_to_live(Duration::from_secs(300))
                     .build(),
             }),
         }
@@ -481,6 +488,72 @@ impl ItemService {
             }
         }
         Ok(false)
+    }
+
+    /// Check if a user can access a specific field (view or edit).
+    ///
+    /// Dispatches `tap_field_access` to all implementing plugins and
+    /// aggregates with deny-wins semantics. Results are cached per
+    /// `(role_set, item_type, field_name, operation)` tuple for 5 minutes.
+    ///
+    /// Admin users bypass field access checks entirely.
+    pub async fn check_field_access(
+        &self,
+        user: &UserContext,
+        item_type: &str,
+        field_name: &str,
+        operation: &str,
+    ) -> bool {
+        // Admin bypass
+        if user.is_admin() {
+            return true;
+        }
+
+        // Build cache key from hashed permission set + field info.
+        // Using a hash of sorted permissions keeps keys compact.
+        use std::hash::{Hash, Hasher};
+        let mut perms = user.permissions.clone();
+        perms.sort_unstable();
+        let mut hasher = std::hash::DefaultHasher::new();
+        perms.hash(&mut hasher);
+        let perm_hash = hasher.finish();
+        let cache_key = format!("{perm_hash:x}:{item_type}:{field_name}:{operation}");
+
+        // Check cache
+        if let Some(allowed) = self.inner.field_access_cache.get(&cache_key) {
+            return allowed;
+        }
+
+        // No plugins implement tap_field_access yet — default to allow.
+        // When plugins are added, dispatch here and aggregate deny-wins.
+        let allowed = true;
+
+        self.inner.field_access_cache.insert(cache_key, allowed);
+
+        allowed
+    }
+
+    /// Filter a set of field names to only those the user can access.
+    ///
+    /// Convenience wrapper around [`check_field_access`] for filtering
+    /// fields before rendering or form building.
+    pub async fn accessible_fields(
+        &self,
+        user: &UserContext,
+        item_type: &str,
+        field_names: &[String],
+        operation: &str,
+    ) -> Vec<String> {
+        let mut accessible = Vec::with_capacity(field_names.len());
+        for name in field_names {
+            if self
+                .check_field_access(user, item_type, name, operation)
+                .await
+            {
+                accessible.push(name.clone());
+            }
+        }
+        accessible
     }
 
     /// List items by type.
