@@ -34,6 +34,11 @@ pub struct GatherQueryBuilder {
     /// When set, the builder LEFT JOINs `item_translation` and COALESCEs
     /// `title` and `fields` so translated content is returned when available.
     language: Option<String>,
+    /// Optional tenant ID for multi-tenant filtering.
+    ///
+    /// When set, adds `WHERE tenant_id = $id` to all queries.
+    /// `None` means no tenant filtering (backward compatible).
+    tenant_id: Option<Uuid>,
 }
 
 impl GatherQueryBuilder {
@@ -44,6 +49,7 @@ impl GatherQueryBuilder {
             stage_ids: vec![stage_id],
             extensions: None,
             language: None,
+            tenant_id: None,
         }
     }
 
@@ -57,7 +63,14 @@ impl GatherQueryBuilder {
             stage_ids,
             extensions: None,
             language: None,
+            tenant_id: None,
         }
+    }
+
+    /// Set the tenant ID for multi-tenant query filtering.
+    pub fn with_tenant(mut self, tenant_id: Uuid) -> Self {
+        self.tenant_id = Some(tenant_id);
+        self
     }
 
     /// Set the extension registry for custom filter/sort/relationship handling.
@@ -97,6 +110,17 @@ impl GatherQueryBuilder {
 
         // Filter by stage (only for stage-aware tables like `item`)
         self.add_stage_filter(&mut query);
+
+        // Filter by tenant (multi-tenancy — injected automatically)
+        if let Some(tid) = self.tenant_id {
+            query.and_where(
+                Expr::col((
+                    Alias::new(&self.definition.base_table),
+                    Alias::new("tenant_id"),
+                ))
+                .eq(tid),
+            );
+        }
 
         // Filter by item_type if specified
         if let Some(ref item_type) = self.definition.item_type {
@@ -147,6 +171,17 @@ impl GatherQueryBuilder {
 
         // Stage filter (only for stage-aware tables)
         self.add_stage_filter(&mut query);
+
+        // Tenant filter (multi-tenancy)
+        if let Some(tid) = self.tenant_id {
+            query.and_where(
+                Expr::col((
+                    Alias::new(&self.definition.base_table),
+                    Alias::new("tenant_id"),
+                ))
+                .eq(tid),
+            );
+        }
 
         // Item type filter
         if let Some(ref item_type) = self.definition.item_type {

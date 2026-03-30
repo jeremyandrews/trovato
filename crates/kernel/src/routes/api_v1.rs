@@ -7,6 +7,7 @@
 
 use axum::{
     Extension, Json, Router,
+    body::Body,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
@@ -109,6 +110,18 @@ pub fn router() -> Router<AppState> {
             post(subscribe).delete(unsubscribe),
         )
         .route("/api/v1/user/export", get(export_user_data))
+        .layer(axum::middleware::from_fn(inject_api_version))
+}
+
+/// Middleware that adds API versioning headers to all responses.
+async fn inject_api_version(
+    request: axum::http::Request<Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert("x-api-version", axum::http::HeaderValue::from_static("1"));
+    response
 }
 
 // -------------------------------------------------------------------------

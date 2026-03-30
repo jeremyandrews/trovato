@@ -28,6 +28,18 @@ Drupal 6's strengths (everything is an item, bolt-on fields via CCK, Gather for 
 - SDK-first plugin design (write the code you want devs to write, then build the host)
 - Structured DB API in WIT prevents SQL injection from plugins
 
+## Inclusivity-First Design Principles
+
+Baked into the kernel from day one — not bolted on after:
+
+- **Accessibility by default** — semantic HTML, skip links, ARIA attributes, required alt text on images, form error association
+- **i18n from day one** — language column on all content, RTL direction support, locale-aware date formatting, configurable language negotiation
+- **Security by design** — Content-Security-Policy headers, field-level access control, crypto host functions for plugins, secret config references
+- **Privacy by default** — consent tracking fields, personal data markers on fields, user data export, no external resource loading
+- **Multi-tenancy as infrastructure** — tenant_id on all content tables, tenant resolution middleware, invisible for single-tenant sites (like the language column)
+- **API-first** — route metadata annotations, API versioning headers, content-negotiated JSON responses
+- **AI as a governed resource** — metadata audit trail, request interception tap, per-feature configuration toggles
+
 ## Architecture
 
 See [[Projects/Trovato/Architecture]] for component breakdown.
