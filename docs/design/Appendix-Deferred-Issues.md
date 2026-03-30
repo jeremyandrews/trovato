@@ -35,7 +35,7 @@ VALUES (
 );
 ```
 
-**Phase:** Deferred (not blocking current gates)
+**Phase:** Resolved — web installer implemented in Phase 1.
 
 ---
 
@@ -45,24 +45,63 @@ VALUES (
 
 **Issue:** The current admin UI only covers content type management (`/admin/structure/types`). Many system endpoints lack UI access.
 
-**Current State (Phase 5):**
-- `/admin` - Dashboard (basic)
-- `/admin/structure/types` - Content type CRUD
-- `/admin/structure/types/{type}/fields` - Field management
+**Current State (Phase 6 — largely resolved):**
+- `/admin` — Dashboard with content, user, and system sections
+- `/admin/structure/types` — Content type CRUD
+- `/admin/structure/types/{type}/fields` — Field management
+- `/admin/people` — User management (list, create, edit)
+- `/admin/structure/categories` — Category/tag management
+- `/admin/content` — Content listing with filters
+- `/admin/structure/gather` — Gather query management
+- `/admin/structure/tiles` — Tile layout management
+- `/admin/config/ai` — AI provider configuration
+- `/admin/plugins` — Plugin enable/disable
+- `/admin/structure/aliases` — URL alias management
+- `/admin/structure/menus` — Menu link management
+- `/admin/reports/ai-usage` — AI usage dashboard
 
-**Missing UI for:**
-- User management (list, create, edit, delete users)
-- Role and permission management
-- Category/tag management
-- Content listing and editing
-- Gather view configuration
-- Stage management
-- System configuration
-- Menu management
+**Still missing:**
+- Role and permission management UI (permissions configured via config import)
+- Stage management UI (stages configured via config import)
+- System configuration UI (site settings via config import or direct SQL)
 
-**Constraint:** UI does not need to be polished, but all system functionality should be accessible through the admin interface. API-only endpoints are acceptable for automation but admins need UI access for manual operations.
+**Phase:** Mostly resolved. Remaining gaps are configuration UIs that use config import.
 
-**Phase:** Deferred (enumerate specific pages when implementing)
+---
+
+## Inclusivity-First Deferred Items
+
+### Cross-User Session Invalidation
+
+**Issue:** When an admin changes another user's role or admin status, that user's active session should be invalidated. Currently only self-session rotation is implemented.
+
+**Requires:** A user→session index in Redis (mapping user IDs to their session keys). The current session store does not maintain this index.
+
+**Phase:** Deferred to when a multi-user admin workflow demands it.
+
+### Full `tap_field_access` Integration
+
+**Issue:** The `tap_field_access` tap type and `FieldAccessResult` SDK type exist, and `check_field_access()` is implemented on `ItemService`, but the dispatch to WASM plugins and full integration into Gather field exclusion, form field removal, and template field hiding is not yet wired.
+
+**Phase:** Deferred until a plugin implements `tap_field_access`.
+
+### Inline CSS Extraction from `base.html`
+
+**Issue:** The CSP policy allows `style-src 'unsafe-inline'` because `base.html` has a large inline `<style>` block. Extracting to a static CSS file would allow removing `'unsafe-inline'` from the CSP.
+
+**Phase:** Deferred as tech debt. Low security risk — inline styles are not an XSS vector.
+
+### Full `tap_ai_request` Dispatch Integration
+
+**Issue:** `AiRequestContext` and `AiRequestDecision` SDK types exist, but the `ai_request()` host function does not yet dispatch `tap_ai_request` before sending to the provider.
+
+**Phase:** Deferred until an AI governance plugin is implemented.
+
+### Per-AI-Feature Configuration
+
+**Issue:** The `ai_features` config section and admin UI for per-operation enable/provider/model settings is planned (Story 47.6) but not yet implemented.
+
+**Phase:** Deferred until multiple AI providers are in active use.
 
 ---
 
