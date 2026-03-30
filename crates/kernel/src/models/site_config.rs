@@ -18,20 +18,52 @@ pub struct SiteConfig {
 }
 
 impl SiteConfig {
-    /// Get a configuration value by key.
+    /// Get a configuration value by key (default tenant).
     pub async fn get(pool: &PgPool, key: &str) -> Result<Option<serde_json::Value>> {
+        Self::get_for_tenant(pool, key, crate::models::tenant::DEFAULT_TENANT_ID).await
+    }
+
+    /// Get a configuration value by key for a specific tenant.
+    ///
+    /// Falls back to the default tenant if the key is not found
+    /// for the requested tenant.
+    pub async fn get_for_tenant(
+        pool: &PgPool,
+        key: &str,
+        tenant_id: uuid::Uuid,
+    ) -> Result<Option<serde_json::Value>> {
+        // Try tenant-specific config first
         let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT value FROM site_config WHERE key = $1",
+            "SELECT value FROM site_config WHERE key = $1 AND tenant_id = $2",
         )
         .bind(key)
+        .bind(tenant_id)
         .fetch_optional(pool)
         .await
         .context("failed to get site config")?;
 
-        Ok(result)
+        if result.is_some() {
+            return Ok(result);
+        }
+
+        // Fall back to default tenant
+        if tenant_id != crate::models::tenant::DEFAULT_TENANT_ID {
+            let fallback = sqlx::query_scalar::<_, serde_json::Value>(
+                "SELECT value FROM site_config WHERE key = $1 AND tenant_id = $2",
+            )
+            .bind(key)
+            .bind(crate::models::tenant::DEFAULT_TENANT_ID)
+            .fetch_optional(pool)
+            .await
+            .context("failed to get default tenant config")?;
+
+            return Ok(fallback);
+        }
+
+        Ok(None)
     }
 
-    /// Set a configuration value.
+    /// Set a configuration value (default tenant).
     pub async fn set(pool: &PgPool, key: &str, value: serde_json::Value) -> Result<()> {
         sqlx::query(
             r#"

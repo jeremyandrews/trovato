@@ -177,6 +177,25 @@ impl CacheLayer {
         }
     }
 
+    /// Generate a tenant-and-stage-scoped cache key.
+    ///
+    /// Default tenant uses the same format as `stage_key` for backward
+    /// compatibility (no tenant prefix). Non-default tenants get
+    /// `t:{tenant_id}:st:{stage_id}:{key}` or `t:{tenant_id}:{key}` for live stage.
+    pub fn tenant_stage_key(
+        key: &str,
+        tenant_id: Option<uuid::Uuid>,
+        stage_id: Option<uuid::Uuid>,
+    ) -> String {
+        let stage_part = Self::stage_key(key, stage_id);
+
+        match tenant_id {
+            None => stage_part,
+            Some(t) if t == crate::models::tenant::DEFAULT_TENANT_ID => stage_part,
+            Some(t) => format!("t:{t}:{stage_part}"),
+        }
+    }
+
     /// Invalidate all cache keys for a stage.
     ///
     /// Used when publishing a stage to live.
