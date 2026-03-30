@@ -108,10 +108,12 @@ fn render_image(data: &Value) -> String {
     let escaped_alt = html_escape(alt);
     let escaped_caption = html_escape(caption);
     if caption.is_empty() {
-        format!("<figure><img src=\"{escaped_url}\" alt=\"{escaped_alt}\"></figure>")
+        format!(
+            "<figure><img src=\"{escaped_url}\" alt=\"{escaped_alt}\" loading=\"lazy\"></figure>"
+        )
     } else {
         format!(
-            "<figure><img src=\"{escaped_url}\" alt=\"{escaped_alt}\">\
+            "<figure><img src=\"{escaped_url}\" alt=\"{escaped_alt}\" loading=\"lazy\">\
              <figcaption>{escaped_caption}</figcaption></figure>"
         )
     }

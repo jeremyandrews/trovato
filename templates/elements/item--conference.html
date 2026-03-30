@@ -19,7 +19,7 @@
 
     {% if item.fields.field_logo %}
     <div class="conf-detail__logo">
-        <img src="/file/{{ item.fields.field_logo }}/download" alt="{{ item.title }} logo">
+        <img src="/file/{{ item.fields.field_logo }}/download" alt="{{ item.title }} logo" loading="lazy">
     </div>
     {% endif %}
 
@@ -31,7 +31,7 @@
 
     {% if item.fields.field_venue_photo %}
     <div class="conf-detail__venue">
-        <img src="/file/{{ item.fields.field_venue_photo }}/download" alt="Venue photo">
+        <img src="/file/{{ item.fields.field_venue_photo }}/download" alt="Venue photo" loading="lazy">
     </div>
     {% endif %}
 

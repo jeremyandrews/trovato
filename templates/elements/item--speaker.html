@@ -8,7 +8,7 @@
 
     {% if item.fields.field_photo %}
     <div class="speaker-detail__photo">
-        <img src="/file/{{ item.fields.field_photo }}/download" alt="{{ item.title }}">
+        <img src="/file/{{ item.fields.field_photo }}/download" alt="{{ item.title }}" loading="lazy">
     </div>
     {% endif %}
 
