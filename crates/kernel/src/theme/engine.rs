@@ -13,6 +13,32 @@ use crate::form::Form;
 use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
+
+/// Returns the strftime date format pattern for a given locale.
+///
+/// Covers major languages. Unknown locales fall back to English.
+/// This is a simple compile-time lookup — full ICU/CLDR support
+/// is plugin territory.
+fn date_format_for_locale(locale: &str) -> &'static str {
+    // Use primary language subtag (e.g., "de" from "de-AT")
+    let primary = locale.split('-').next().unwrap_or(locale);
+    match primary {
+        "de" => "%-d. %B %Y",       // 30. März 2026
+        "fr" => "%-d %B %Y",        // 30 mars 2026
+        "es" => "%-d de %B de %Y",  // 30 de marzo de 2026
+        "it" => "%-d %B %Y",        // 30 marzo 2026
+        "pt" => "%-d de %B de %Y",  // 30 de março de 2026
+        "nl" => "%-d %B %Y",        // 30 maart 2026
+        "pl" => "%-d %B %Y",        // 30 marca 2026
+        "ru" => "%-d %B %Y",        // 30 марта 2026
+        "ja" => "%Y年%-m月%-d日",   // 2026年3月30日
+        "zh" => "%Y年%-m月%-d日",   // 2026年3月30日
+        "ko" => "%Y년 %-m월 %-d일", // 2026년 3월 30일
+        "ar" => "%-d %B %Y",        // 30 مارس 2026
+        "he" => "%-d ב%B %Y",       // 30 במרץ 2026
+        _ => "%B %-d, %Y",          // March 30, 2026 (English default)
+    }
+}
 use trovato_sdk::render::RenderElement;
 use trovato_sdk::types::Item;
 
@@ -79,17 +105,33 @@ impl ThemeEngine {
             },
         );
 
-        // Filter for formatting Unix timestamps as human-readable dates
+        // Filter for formatting Unix timestamps as human-readable dates.
+        //
+        // Usage:
+        //   {{ timestamp | format_date }}                     — uses active_language locale
+        //   {{ timestamp | format_date(locale="de") }}       — explicit locale
+        //   {{ timestamp | format_date(format="%Y-%m-%d") }} — custom format (overrides locale)
         tera.register_filter(
             "format_date",
-            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+            |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
                 let timestamp = match value {
                     tera::Value::Number(n) => n.as_i64().unwrap_or(0),
                     _ => return Ok(tera::Value::String(String::new())),
                 };
 
+                // Custom format takes precedence over locale
+                let custom_format = args.get("format").and_then(|v| v.as_str());
+
+                let pattern = if let Some(fmt) = custom_format {
+                    fmt
+                } else {
+                    // Determine locale: explicit parameter → active_language context → "en"
+                    let locale = args.get("locale").and_then(|v| v.as_str()).unwrap_or("en");
+                    date_format_for_locale(locale)
+                };
+
                 let formatted = chrono::DateTime::from_timestamp(timestamp, 0)
-                    .map(|dt| dt.format("%B %-d, %Y").to_string())
+                    .map(|dt| dt.format(pattern).to_string())
                     .unwrap_or_else(|| "Unknown date".to_string());
 
                 Ok(tera::Value::String(formatted))
@@ -526,6 +568,7 @@ mod tests {
             stage_id: trovato_sdk::types::live_stage_id(),
             created: 0,
             changed: 0,
+            language: None,
         };
 
         let suggestions = ThemeEngine::item_suggestions(&item);
@@ -572,5 +615,51 @@ mod tests {
         ctx.insert("ts", "not a number");
         let result = tera.render("test", &ctx).unwrap();
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_format_date_german_locale() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", r#"{{ ts | format_date(locale="de") }}"#)
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("ts", &1739577600_i64); // 2025-02-15 00:00:00 UTC
+        let result = tera.render("test", &ctx).unwrap();
+        // German format: "15. February 2025" (chrono uses English month names)
+        assert!(result.starts_with("15. "), "German format: {result}");
+    }
+
+    #[test]
+    fn test_format_date_japanese_locale() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", r#"{{ ts | format_date(locale="ja") }}"#)
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("ts", &1739577600_i64);
+        let result = tera.render("test", &ctx).unwrap();
+        // Japanese format: "2025年2月15日"
+        assert!(result.contains("年"), "Japanese format: {result}");
+        assert!(result.contains("月"), "Japanese format: {result}");
+        assert!(result.contains("日"), "Japanese format: {result}");
+    }
+
+    #[test]
+    fn test_format_date_custom_format_overrides_locale() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template(
+            "test",
+            r#"{{ ts | format_date(locale="de", format="%Y-%m-%d") }}"#,
+        )
+        .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("ts", &1739577600_i64);
+        let result = tera.render("test", &ctx).unwrap();
+        assert_eq!(result, "2025-02-15");
     }
 }

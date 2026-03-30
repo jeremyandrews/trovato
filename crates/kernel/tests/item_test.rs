@@ -446,6 +446,7 @@ fn sdk_item_field_access() {
         stage_id: trovato_sdk::types::live_stage_id(),
         created: 0,
         changed: 0,
+        language: None,
     };
 
     // Get text value
@@ -477,6 +478,7 @@ fn sdk_item_set_field() {
         stage_id: trovato_sdk::types::live_stage_id(),
         created: 0,
         changed: 0,
+        language: None,
     };
 
     item.set_field("tags", vec!["rust", "wasm"]);

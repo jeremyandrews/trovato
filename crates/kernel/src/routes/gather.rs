@@ -373,9 +373,13 @@ pub async fn execute_and_render(
     let mut context = tera::Context::new();
     super::helpers::inject_site_context(state, session, &mut context, base_path).await;
 
-    // Override active_language when translation overlay is active
+    // Override active_language and text_direction when translation overlay is active
     if let Some(ref lang) = query_context.language {
         context.insert("active_language", lang);
+        context.insert(
+            "text_direction",
+            crate::middleware::language::text_direction_for_language(lang),
+        );
     }
 
     // Build breadcrumbs: Home > Query Label

@@ -554,6 +554,10 @@ async fn view_item(
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
     context.insert("active_language", &active_language);
+    context.insert(
+        "text_direction",
+        crate::middleware::language::text_direction_for_language(&active_language),
+    );
 
     let item_html = state
         .theme()

@@ -30,7 +30,7 @@ pub fn live_stage_id() -> Uuid {
 ///
 /// SYNC: field names and types must match `crates/kernel/src/models/item.rs`.
 /// The kernel serializes its `Item` via `serde_json::to_string()` and plugins
-/// deserialize into this struct. Extra kernel fields (promote, sticky, language,
+/// deserialize into this struct. Extra kernel fields (promote, sticky,
 /// item_group_id) are ignored by serde. SDK-only helpers are fine as long as
 /// they have `#[serde(default)]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +69,14 @@ pub struct Item {
 
     /// Unix timestamp when last changed.
     pub changed: i64,
+
+    /// Language code (ISO 639-1, e.g., "en", "de", "ar").
+    ///
+    /// `None` for items created before language support or for
+    /// language-neutral content. Plugins can read this to implement
+    /// language-specific behavior.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl Item {
@@ -773,5 +781,48 @@ mod tests {
 
         let asst = AiMessage::assistant("asst");
         assert_eq!(asst.role, "assistant");
+    }
+
+    // ---- Item language field ----
+
+    #[test]
+    fn item_language_round_trip() {
+        // Kernel sends language as a string — SDK receives as Option<String>
+        let kernel_json = r#"{
+            "id": "01234567-89ab-cdef-0123-456789abcdef",
+            "type": "blog",
+            "title": "Test",
+            "fields": {},
+            "status": 1,
+            "author_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "stage_id": "0193a5a0-0000-7000-8000-000000000001",
+            "created": 1700000000,
+            "changed": 1700000000,
+            "language": "de"
+        }"#;
+        let item: Item = serde_json::from_str(kernel_json).unwrap();
+        assert_eq!(item.language, Some("de".to_string()));
+
+        // Round-trip back to JSON includes language
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains(r#""language":"de""#));
+    }
+
+    #[test]
+    fn item_missing_language_defaults_to_none() {
+        // Old kernel data without language field — backward compatible
+        let old_json = r#"{
+            "id": "01234567-89ab-cdef-0123-456789abcdef",
+            "type": "blog",
+            "title": "Old Item",
+            "fields": {},
+            "status": 1,
+            "author_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "stage_id": "0193a5a0-0000-7000-8000-000000000001",
+            "created": 1700000000,
+            "changed": 1700000000
+        }"#;
+        let item: Item = serde_json::from_str(old_json).unwrap();
+        assert_eq!(item.language, None);
     }
 }

@@ -113,6 +113,14 @@ pub struct Config {
 
     /// Public site URL for constructing links in emails.
     pub site_url: String,
+
+    /// Language negotiation methods, in priority order.
+    ///
+    /// Comma-separated list from `LANGUAGE_NEGOTIATION_METHODS` env var.
+    /// Supported methods: `url_prefix`, `accept_header`, `cookie`.
+    /// Default: `url_prefix,accept_header`.
+    /// Single-language sites skip negotiation entirely regardless of this setting.
+    pub language_negotiation_methods: Vec<String>,
 }
 
 impl Config {
@@ -180,6 +188,15 @@ impl Config {
 
         let site_url = env::var("SITE_URL").unwrap_or_else(|_| format!("http://localhost:{port}"));
 
+        let language_negotiation_methods = env::var("LANGUAGE_NEGOTIATION_METHODS")
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|_| vec!["url_prefix".to_string(), "accept_header".to_string()]);
+
         Ok(Self {
             port,
             database_url,
@@ -198,6 +215,7 @@ impl Config {
             smtp_encryption,
             smtp_from_email,
             site_url,
+            language_negotiation_methods,
         })
     }
 }
