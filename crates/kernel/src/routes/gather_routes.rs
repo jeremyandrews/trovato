@@ -159,10 +159,14 @@ async fn handle_gather_route(
         }
     }
 
+    // Content negotiation: check format param before consuming extra_params
+    let wants_json = extra_params.get("format").is_some_and(|f| f == "json");
+
     // Merge extra query params (e.g. page) with resolved params.
     // Resolved params take precedence over extra params.
     let mut all_filters: HashMap<String, String> = extra_params;
     all_filters.extend(resolved_params);
+    all_filters.remove("format"); // Don't pass format to the query engine
 
     // Extract page from query params, clamping to minimum 1.
     let page = all_filters
@@ -189,23 +193,46 @@ async fn handle_gather_route(
         None
     };
 
-    match super::gather::execute_and_render(
-        &state,
-        &session,
-        &config.query_id,
-        params,
-        &base_path,
-        language,
-    )
-    .await
-    {
-        Ok(Html(html)) => Html(html).into_response(),
-        Err((status, Json(err))) => {
-            if status == StatusCode::NOT_FOUND {
-                render_not_found()
-            } else {
-                render_server_error(&err.error)
+    if wants_json {
+        // JSON response: execute query and return structured data
+        match super::gather::execute_query_only(&state, &config.query_id, params, language).await {
+            Ok(result) => Json(serde_json::json!({
+                "items": result.items,
+                "pager": {
+                    "current_page": result.page,
+                    "total_pages": result.total_pages,
+                    "total_items": result.total,
+                    "per_page": result.per_page,
+                },
+                "query": {
+                    "name": config.query_id,
+                },
+            }))
+            .into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, "gather JSON query failed");
+                render_server_error("Query execution failed")
             }
         }
-    }
+    } else {
+        match super::gather::execute_and_render(
+            &state,
+            &session,
+            &config.query_id,
+            params,
+            &base_path,
+            language,
+        )
+        .await
+        {
+            Ok(Html(html)) => Html(html).into_response(),
+            Err((status, Json(err))) => {
+                if status == StatusCode::NOT_FOUND {
+                    render_not_found()
+                } else {
+                    render_server_error(&err.error)
+                }
+            }
+        }
+    } // end else (HTML branch)
 }

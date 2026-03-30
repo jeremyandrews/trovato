@@ -298,6 +298,36 @@ async fn render_query_html(
 /// `base_path` controls the URL used for pager links and form actions.
 /// `language` is an optional language code for translation overlay; when
 /// `None`, queries return the original (default-language) content.
+/// Execute a Gather query and return the structured result without rendering.
+///
+/// Used for JSON API responses (content negotiation).
+pub async fn execute_query_only(
+    state: &AppState,
+    query_id: &str,
+    params: ExecuteParams,
+    language: Option<String>,
+) -> anyhow::Result<crate::gather::GatherResult> {
+    let query_context = QueryContext {
+        current_user_id: None,
+        url_args: params.filters.clone(),
+        language,
+    };
+
+    let exposed_filters = parse_filter_params(&params.filters);
+    let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
+
+    state
+        .gather()
+        .execute(
+            query_id,
+            params.page,
+            exposed_filters,
+            stage_id,
+            &query_context,
+        )
+        .await
+}
+
 pub async fn execute_and_render(
     state: &AppState,
     session: &Session,
