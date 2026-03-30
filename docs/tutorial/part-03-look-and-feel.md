@@ -37,6 +37,8 @@ Tera resolves templates by checking for the most specific file first:
 
 The same pattern applies to Gather queries: `query--{query_id}.html` → `query.html`.
 
+When no template matches at all, the Rust-side render fallback produces semantic HTML: item-type elements render as `<article>`, containers with headings as `<section>`, navigation as `<nav>`. Images get `loading="lazy"` by default to improve page load performance. This means even without custom templates, the output is accessible and performant.
+
 Trovato ships with templates for the conference and speaker types. Let's tour them.
 
 ### The Conference Detail Template
@@ -570,7 +572,9 @@ Trovato's default templates include inline `<style>` blocks for basic styling. T
 - `gather/query--ritrovo.upcoming_conferences.html` -- Conference card styles
 - `elements/comments.html` -- Comment thread styles
 
-The `base.html` template retains its inline `<style>` as a safety net -- if `theme.css` fails to load, the page is still usable. Since `theme.css` loads after the inline block (line 248 of `base.html`), it wins in the CSS cascade.
+The `base.html` template retains its inline `<style>` as a safety net -- if `theme.css` fails to load, the page is still usable. Since `theme.css` loads after the inline block of `base.html`, it wins in the CSS cascade.
+
+> **Accessibility note:** The base template provides several accessibility features by default. A **skip link** (`<a href="#main-content">Skip to main content</a>`) is the first focusable element on every page, letting keyboard users bypass navigation. The `<main>` element has `id="main-content"` as the skip link target. All item content renders inside `<article>` elements. The CSS uses **logical properties** (`margin-inline-start` instead of `margin-left`) so layouts work correctly for right-to-left languages. AJAX operations announce changes via an `aria-live="polite"` region so screen readers stay informed. These are infrastructure defaults -- you don't need to add them to your templates.
 
 ### The Front Page
 

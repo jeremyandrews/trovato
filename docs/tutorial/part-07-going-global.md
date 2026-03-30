@@ -41,6 +41,8 @@ is_default: false
 weight: 1
 ```
 
+While this tutorial uses only LTR languages, Trovato fully supports right-to-left languages like Arabic and Hebrew. Set `direction: rtl` in the YAML, and the kernel automatically sets `dir="rtl"` on the `<html>` element and uses CSS logical properties so layouts mirror correctly.
+
 Import them:
 
 ```bash
@@ -93,6 +95,19 @@ The site header includes a language switcher: "English / Italiano" links. Each l
 <a href="/conferences/rustconf-2026" hreflang="en">English</a>
 <a href="/it/conferenze/rustconf-2026" hreflang="it">Italiano</a>
 ```
+
+### Date Formatting
+
+The `format_date` Tera filter is locale-aware. Without parameters, it uses the active language to pick the right format:
+
+```
+{{ item.created | format_date }}                   {# uses active language #}
+{{ item.created | format_date(locale="de") }}      {# explicit: "30. March 2026" #}
+{{ item.created | format_date(locale="ja") }}      {# explicit: "2026年3月30日" #}
+{{ item.created | format_date(format="%Y-%m-%d") }} {# custom format overrides locale #}
+```
+
+Supported locales include English, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Russian, Japanese, Chinese, Korean, Arabic, and Hebrew.
 
 ### Locale Files
 

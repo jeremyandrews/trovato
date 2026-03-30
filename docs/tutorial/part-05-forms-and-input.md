@@ -21,7 +21,7 @@ When a form renders and processes:
 
 1. **Build** -- The kernel creates a `Form` struct from the form ID, populates it with `FormElement` definitions, generates a CSRF token, and dispatches `tap_form_alter` so plugins can add, remove, or reorder fields.
 
-2. **Validate** -- On submission, the kernel verifies the CSRF token, runs built-in validation (required fields, type checking), and dispatches `tap_form_validate` for plugin validation rules.
+2. **Validate** -- On submission, the kernel verifies the CSRF token, runs built-in validation (required fields, type checking), and dispatches `tap_form_validate` for plugin validation rules. Trovato forms are accessible by default -- when a field fails validation, its error message is programmatically linked via `aria-describedby` so screen readers announce the error when the field is focused. The `aria-invalid="true"` attribute signals which fields need attention.
 
 3. **Submit** -- If validation passes, the kernel dispatches `tap_form_submit` for side effects (e.g., saving data, sending notifications), then returns a success result or redirect.
 
@@ -136,7 +136,7 @@ Trovato ships eight block types, all defined in `crates/kernel/src/content/block
 |---|---|---|
 | `paragraph` | Body text with inline formatting | `text` (string, sanitized HTML) |
 | `heading` | Section heading (h1-h6) | `text` (string), `level` (integer 1-6) |
-| `image` | Image with caption | `file.url` (string), optional `caption`, `alt` |
+| `image` | Image with caption | `file.url` (string), `alt` (required string -- empty for decorative images), optional `caption` |
 | `list` | Ordered or unordered list | `style` ("ordered" or "unordered"), `items` (string array) |
 | `quote` | Blockquote with attribution | `text` (string), optional `caption` |
 | `code` | Code snippet with language | `code` (string), optional `language` |
@@ -167,7 +167,7 @@ Blocks are stored as a flat JSON array in the item's JSONB `fields` column. Each
 [
   {"type": "heading", "weight": 0, "data": {"text": "About This Conference", "level": 2}},
   {"type": "paragraph", "weight": 1, "data": {"text": "RustConf brings together..."}},
-  {"type": "image", "weight": 2, "data": {"file": {"url": "/files/uploads/rustconf-stage.jpg"}, "caption": "Main stage"}},
+  {"type": "image", "weight": 2, "data": {"file": {"url": "/files/uploads/rustconf-stage.jpg"}, "alt": "RustConf main stage with audience", "caption": "Main stage"}},
   {"type": "code", "weight": 3, "data": {"code": "cargo run --release", "language": "bash"}},
   {"type": "delimiter", "weight": 4, "data": {}}
 ]
