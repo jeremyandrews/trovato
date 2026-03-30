@@ -179,6 +179,10 @@ pub async fn inject_site_context(
     context.insert("available_languages", state.known_languages());
     context.insert("default_language", state.default_language());
     context.insert("active_language", state.default_language());
+    context.insert(
+        "text_direction",
+        crate::middleware::language::text_direction_for_language(state.default_language()),
+    );
 
     // Load main navigation menu links from database (not plugin registry)
     let main_menu_links =

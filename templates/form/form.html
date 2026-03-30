@@ -11,7 +11,7 @@
     {% endif %}
 
     {% if errors %}
-    <div class="form__errors">
+    <div class="form__errors" role="alert">
         <ul>
             {% for error in errors %}
             <li>{{ error.message }}</li>
@@ -49,7 +49,7 @@
 
     .form__errors ul {
         margin: 0;
-        padding-left: 1.25rem;
+        padding-inline-start: 1.25rem;
     }
 
     .form-item {
@@ -74,6 +74,12 @@
         margin-top: 0.25rem;
     }
 
+    .form-item__error {
+        font-size: 0.875rem;
+        color: var(--danger);
+        margin-top: 0.25rem;
+    }
+
     .form-text,
     .form-textarea,
     .form-select {
@@ -86,12 +92,13 @@
         transition: border-color 0.15s, box-shadow 0.15s;
     }
 
-    .form-text:focus,
-    .form-textarea:focus,
-    .form-select:focus {
-        outline: none;
+    .form-text:focus-visible,
+    .form-textarea:focus-visible,
+    .form-select:focus-visible {
         border-color: var(--primary);
         box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        outline: 2px solid var(--primary);
+        outline-offset: 1px;
     }
 
     .form-text:disabled,

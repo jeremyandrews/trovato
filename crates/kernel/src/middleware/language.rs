@@ -22,6 +22,40 @@ use crate::state::AppState;
 /// Session key for storing the user's active language override.
 pub const SESSION_ACTIVE_LANGUAGE: &str = "active_language";
 
+/// ISO 639-1 language codes for right-to-left scripts.
+///
+/// Used to set `dir="rtl"` on the `<html>` element for proper text rendering.
+pub const RTL_LANGUAGES: &[&str] = &[
+    "ar",  // Arabic
+    "arc", // Aramaic
+    "ckb", // Central Kurdish (Sorani)
+    "dv",  // Divehi
+    "fa",  // Farsi (Persian)
+    "ha",  // Hausa (Ajami script)
+    "he",  // Hebrew
+    "khw", // Khowar
+    "ks",  // Kashmiri
+    "ku",  // Kurdish
+    "ps",  // Pashto
+    "sd",  // Sindhi
+    "ug",  // Uyghur
+    "ur",  // Urdu
+    "yi",  // Yiddish
+];
+
+/// Returns the text direction for a given language code.
+///
+/// Returns `"rtl"` for right-to-left languages, `"ltr"` for all others.
+pub fn text_direction_for_language(lang: &str) -> &'static str {
+    // Check the primary language subtag (e.g., "ar" from "ar-SA")
+    let primary = lang.split('-').next().unwrap_or(lang);
+    if RTL_LANGUAGES.contains(&primary) {
+        "rtl"
+    } else {
+        "ltr"
+    }
+}
+
 /// The resolved language for the current request.
 ///
 /// Stored in request extensions for per-request access.

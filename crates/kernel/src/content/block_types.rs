@@ -131,7 +131,7 @@ impl BlockTypeRegistry {
                     "caption": { "type": "string" },
                     "alt": { "type": "string" }
                 },
-                "required": ["file"]
+                "required": ["file", "alt"]
             }),
             allowed_formats: vec![],
             plugin: "core".to_string(),
@@ -285,6 +285,12 @@ impl BlockTypeRegistry {
                     None => {
                         errors.push("image: missing required field file.url".to_string());
                     }
+                }
+                // alt field must be present (empty string is valid for decorative images)
+                if data.get("alt").is_none() {
+                    errors.push(
+                        "image: missing required field 'alt' (use empty string for decorative images)".to_string(),
+                    );
                 }
             }
             "code" => {
@@ -538,23 +544,50 @@ mod tests {
     fn image_missing_file_url_returns_error() {
         let registry = BlockTypeRegistry::with_standard_types();
 
-        // Missing file entirely
+        // Missing file entirely (also missing alt — 2 errors)
         let data1 = serde_json::json!({ "caption": "A photo" });
         let errors1 = registry.validate_block("image", &data1);
-        assert_eq!(errors1.len(), 1);
+        assert_eq!(errors1.len(), 2);
         assert!(errors1[0].contains("file.url"));
+        assert!(errors1[1].contains("alt"));
 
-        // File present but url missing
-        let data2 = serde_json::json!({ "file": {} });
+        // File present but url missing (with alt provided — 1 error)
+        let data2 = serde_json::json!({ "file": {}, "alt": "" });
         let errors2 = registry.validate_block("image", &data2);
         assert_eq!(errors2.len(), 1);
         assert!(errors2[0].contains("file.url"));
 
-        // File present but url is empty
-        let data3 = serde_json::json!({ "file": { "url": "" } });
+        // File present but url is empty (with alt provided — 1 error)
+        let data3 = serde_json::json!({ "file": { "url": "" }, "alt": "description" });
         let errors3 = registry.validate_block("image", &data3);
         assert_eq!(errors3.len(), 1);
         assert!(errors3[0].contains("must not be empty"));
+    }
+
+    #[test]
+    fn image_missing_alt_returns_error() {
+        let registry = BlockTypeRegistry::with_standard_types();
+
+        // Valid file but no alt field
+        let data = serde_json::json!({
+            "file": { "url": "https://example.com/photo.jpg" }
+        });
+        let errors = registry.validate_block("image", &data);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("alt"));
+    }
+
+    #[test]
+    fn image_empty_alt_is_valid() {
+        let registry = BlockTypeRegistry::with_standard_types();
+
+        // Empty alt is valid (decorative image per WCAG)
+        let data = serde_json::json!({
+            "file": { "url": "https://example.com/photo.jpg" },
+            "alt": ""
+        });
+        let errors = registry.validate_block("image", &data);
+        assert!(errors.is_empty(), "Empty alt should be valid: {errors:?}");
     }
 
     #[test]
@@ -700,7 +733,8 @@ mod tests {
                 "type": "image",
                 "data": {
                     "file": { "url": "https://example.com/photo.jpg" },
-                    "caption": "Photo"
+                    "caption": "Photo",
+                    "alt": "A test photo"
                 }
             }),
             serde_json::json!({

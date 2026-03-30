@@ -1,17 +1,58 @@
 {#- Admin tab bar macro — renders local task tabs for entity pages. -#}
 
 {#- Horizontal tab bar for entity-level navigation (View/Edit/Revisions).
-    Expects `local_tasks` as a list of {title, path, active} objects. -#}
+    Expects `local_tasks` as a list of {title, path, active} objects.
+
+    Accessibility: uses WAI-ARIA tabs pattern with arrow key navigation.
+    - role="tablist" on the container
+    - role="tab" on each tab link
+    - aria-selected="true" on the active tab
+    - tabindex="0" on active tab, tabindex="-1" on inactive tabs
+    - Left/Right arrow keys move focus between tabs
+    - Home/End keys move to first/last tab -#}
 {% macro tab_bar(local_tasks) %}
 {% if local_tasks and local_tasks | length > 1 %}
 <nav class="admin-tabs" aria-label="Local tasks">
-    <ul class="admin-tabs__list">
+    <ul class="admin-tabs__list" role="tablist">
         {% for tab in local_tasks %}
-        <li class="admin-tabs__item">
-            <a href="{{ tab.path | escape }}"{% if tab.active %} aria-current="page"{% endif %} class="admin-tabs__link{% if tab.active %} admin-tabs__link--active{% endif %}">{{ tab.title | escape }}</a>
+        <li class="admin-tabs__item" role="presentation">
+            <a href="{{ tab.path | escape }}" role="tab" aria-selected="{{ tab.active }}" tabindex="{% if tab.active %}0{% else %}-1{% endif %}"{% if tab.active %} aria-current="page"{% endif %} class="admin-tabs__link{% if tab.active %} admin-tabs__link--active{% endif %}">{{ tab.title | escape }}</a>
         </li>
         {% endfor %}
     </ul>
 </nav>
+<script>
+(function() {
+    var tablists = document.querySelectorAll('[role="tablist"]');
+    tablists.forEach(function(tablist) {
+        var tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+        if (tabs.length < 2) return;
+
+        tablist.addEventListener('keydown', function(e) {
+            var current = document.activeElement;
+            var index = tabs.indexOf(current);
+            if (index === -1) return;
+
+            var newIndex = index;
+            if (e.key === 'ArrowRight') {
+                newIndex = (index + 1) % tabs.length;
+            } else if (e.key === 'ArrowLeft') {
+                newIndex = (index - 1 + tabs.length) % tabs.length;
+            } else if (e.key === 'Home') {
+                newIndex = 0;
+            } else if (e.key === 'End') {
+                newIndex = tabs.length - 1;
+            } else {
+                return;
+            }
+
+            e.preventDefault();
+            tabs[index].setAttribute('tabindex', '-1');
+            tabs[newIndex].setAttribute('tabindex', '0');
+            tabs[newIndex].focus();
+        });
+    });
+})();
+</script>
 {% endif %}
 {% endmacro tab_bar %}

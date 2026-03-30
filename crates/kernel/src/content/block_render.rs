@@ -83,7 +83,14 @@ fn render_heading(data: &Value) -> String {
 }
 
 /// Render an image block with a figure/figcaption wrapper.
-/// Data: `{ "file": { "url": "..." }, "caption": "..." }` or `{ "url": "...", "caption": "..." }`
+///
+/// Data: `{ "file": { "url": "..." }, "alt": "...", "caption": "..." }`
+/// or legacy `{ "url": "...", "caption": "..." }`
+///
+/// The `alt` field is used for the `alt` attribute (required — empty string
+/// is valid for decorative images per WCAG). Falls back to caption, then
+/// empty string for backward compatibility with blocks created before alt
+/// was required.
 fn render_image(data: &Value) -> String {
     let url = data
         .get("file")
@@ -91,13 +98,23 @@ fn render_image(data: &Value) -> String {
         .and_then(|v| v.as_str())
         .or_else(|| data.get("url").and_then(|v| v.as_str()))
         .unwrap_or("");
+    let alt = data
+        .get("alt")
+        .and_then(|v| v.as_str())
+        .or_else(|| data.get("caption").and_then(|v| v.as_str()))
+        .unwrap_or("");
     let caption = data.get("caption").and_then(|v| v.as_str()).unwrap_or("");
     let escaped_url = html_escape(url);
+    let escaped_alt = html_escape(alt);
     let escaped_caption = html_escape(caption);
-    format!(
-        "<figure><img src=\"{escaped_url}\" alt=\"{escaped_caption}\">\
-         <figcaption>{escaped_caption}</figcaption></figure>"
-    )
+    if caption.is_empty() {
+        format!("<figure><img src=\"{escaped_url}\" alt=\"{escaped_alt}\"></figure>")
+    } else {
+        format!(
+            "<figure><img src=\"{escaped_url}\" alt=\"{escaped_alt}\">\
+             <figcaption>{escaped_caption}</figcaption></figure>"
+        )
+    }
 }
 
 /// Render a list block (ordered or unordered).
@@ -347,7 +364,50 @@ mod tests {
     }
 
     #[test]
-    fn render_image_block() {
+    fn render_image_block_with_alt() {
+        let blocks = vec![json!({
+            "type": "image",
+            "data": {
+                "file": { "url": "https://example.com/photo.jpg" },
+                "alt": "Conference venue exterior",
+                "caption": "A nice photo"
+            }
+        })];
+        let html = render_blocks(&blocks);
+        assert!(html.contains("<figure>"));
+        assert!(html.contains("<img src=\"https://example.com/photo.jpg\""));
+        assert!(
+            html.contains("alt=\"Conference venue exterior\""),
+            "alt should use the alt field, not caption: {html}"
+        );
+        assert!(html.contains("<figcaption>A nice photo</figcaption>"));
+        assert!(html.contains("</figure>"));
+    }
+
+    #[test]
+    fn render_image_block_empty_alt_no_caption() {
+        // Decorative image: alt="" and no caption — no figcaption rendered
+        let blocks = vec![json!({
+            "type": "image",
+            "data": {
+                "file": { "url": "https://example.com/decorative.jpg" },
+                "alt": ""
+            }
+        })];
+        let html = render_blocks(&blocks);
+        assert!(
+            html.contains("alt=\"\""),
+            "Decorative image should have empty alt: {html}"
+        );
+        assert!(
+            !html.contains("<figcaption>"),
+            "No figcaption without caption: {html}"
+        );
+    }
+
+    #[test]
+    fn render_image_block_falls_back_to_caption_for_alt() {
+        // Legacy image without explicit alt field — falls back to caption
         let blocks = vec![json!({
             "type": "image",
             "data": {
@@ -356,11 +416,10 @@ mod tests {
             }
         })];
         let html = render_blocks(&blocks);
-        assert!(html.contains("<figure>"));
-        assert!(html.contains("<img src=\"https://example.com/photo.jpg\""));
-        assert!(html.contains("alt=\"A nice photo\""));
-        assert!(html.contains("<figcaption>A nice photo</figcaption>"));
-        assert!(html.contains("</figure>"));
+        assert!(
+            html.contains("alt=\"A nice photo\""),
+            "Should fall back to caption for alt: {html}"
+        );
     }
 
     #[test]
@@ -369,11 +428,13 @@ mod tests {
             "type": "image",
             "data": {
                 "url": "https://example.com/direct.png",
+                "alt": "Direct URL image",
                 "caption": "Direct URL"
             }
         })];
         let html = render_blocks(&blocks);
         assert!(html.contains("src=\"https://example.com/direct.png\""));
+        assert!(html.contains("alt=\"Direct URL image\""));
     }
 
     #[test]

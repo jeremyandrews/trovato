@@ -78,6 +78,62 @@ impl ElementBuilder {
         self
     }
 
+    // -- ARIA accessibility helpers --
+    // Each method maps to an HTML attribute for screen reader and
+    // keyboard accessibility support.
+
+    /// Set `aria-label` — a label string for screen readers.
+    ///
+    /// Use when the element has no visible text label (e.g., icon buttons).
+    pub fn aria_label(self, label: &str) -> Self {
+        self.attr("aria-label", label)
+    }
+
+    /// Set `aria-describedby` — ID of the element that describes this one.
+    ///
+    /// Use to associate error messages or help text with an input.
+    pub fn aria_describedby(self, id: &str) -> Self {
+        self.attr("aria-describedby", id)
+    }
+
+    /// Set `aria-hidden` — hides the element from the accessibility tree.
+    ///
+    /// Use for decorative elements that screen readers should skip.
+    pub fn aria_hidden(self, hidden: bool) -> Self {
+        self.attr("aria-hidden", if hidden { "true" } else { "false" })
+    }
+
+    /// Set `aria-current` — indicates the current item in a set.
+    ///
+    /// Common values: `"page"`, `"step"`, `"true"`.
+    pub fn aria_current(self, value: &str) -> Self {
+        self.attr("aria-current", value)
+    }
+
+    /// Set `aria-live` — defines a live region for dynamic content updates.
+    ///
+    /// Common values: `"polite"` (wait for idle), `"assertive"` (interrupt).
+    pub fn aria_live(self, value: &str) -> Self {
+        self.attr("aria-live", value)
+    }
+
+    /// Set `role` — the WAI-ARIA role of the element.
+    ///
+    /// Common values: `"alert"`, `"navigation"`, `"search"`, `"tablist"`.
+    pub fn role(self, role: &str) -> Self {
+        self.attr("role", role)
+    }
+
+    /// Set `aria-expanded` — whether an expandable element is open.
+    pub fn aria_expanded(self, expanded: bool) -> Self {
+        self.attr("aria-expanded", if expanded { "true" } else { "false" })
+    }
+
+    /// Set `aria-controls` — ID of the element this one controls.
+    pub fn aria_controls(self, id: &str) -> Self {
+        self.attr("aria-controls", id)
+    }
+
     pub fn build(self) -> RenderElement {
         let attributes = if self.classes.is_empty() && self.attrs.is_empty() {
             None

@@ -17,11 +17,16 @@
         {% if element.required %}required{% endif %}
         {% if element.disabled %}disabled{% endif %}
         {% if element.element_type.max_length %}maxlength="{{ element.element_type.max_length }}"{% endif %}
+        {% if field_error %}aria-describedby="error-{{ name }}" aria-invalid="true"{% endif %}
         {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
         {% if element.ajax %}data-ajax-trigger="{{ element.ajax.callback }}" data-ajax-event="{{ element.ajax.event | default(value='change') }}"{% endif %}
     >
 
     {% if element.suffix %}{{ element.suffix | safe }}{% endif %} {# SAFE: kernel FormBuilder-generated HTML — prefix/suffix are kernel-controlled strings #}
+
+    {% if field_error %}
+    <div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>
+    {% endif %}
 
     {% if element.description %}
     <p class="form-item__description">{{ element.description }}</p>

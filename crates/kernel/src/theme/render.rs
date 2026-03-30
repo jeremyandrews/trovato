@@ -133,35 +133,67 @@ impl RenderTreeConsumer {
     }
 
     /// Render an element inline when no template is available.
+    ///
+    /// Uses semantic HTML tags based on element type: `<article>` for
+    /// item-type elements, `<section>` for containers with headings,
+    /// `<nav>` for navigation, `<div>` for generic containers.
     fn render_inline(&self, element: &RenderElement, children: &str) -> Result<String> {
         match element.element_type.as_str() {
             "container" => self.render_container(element, children),
             "markup" => self.render_markup(element),
             _ => {
-                // Unknown type - wrap in a div with escaped element type
+                // Use semantic tag based on element type
+                let tag = Self::semantic_tag_for_type(&element.element_type);
                 let class = self.get_class_string(element);
                 let safe_type = html_escape(&element.element_type);
+                let attrs = self.get_extra_attrs(element);
                 Ok(format!(
-                    "<div class=\"element element--{}{}\">{}</div>",
-                    safe_type,
-                    if class.is_empty() {
+                    "<{tag} class=\"element element--{safe_type}{class_suffix}\"{attrs}>{children}</{tag}>",
+                    class_suffix = if class.is_empty() {
                         String::new()
                     } else {
                         format!(" {class}")
                     },
-                    children
                 ))
             }
         }
     }
 
+    /// Map element type names to semantic HTML tags for the fallback renderer.
+    ///
+    /// Item-type elements use `<article>`, navigation uses `<nav>`,
+    /// and unknown types fall back to `<div>`.
+    fn semantic_tag_for_type(element_type: &str) -> &'static str {
+        if element_type.starts_with("item") {
+            "article"
+        } else if element_type == "navigation" || element_type == "nav" {
+            "nav"
+        } else if element_type == "section" {
+            "section"
+        } else {
+            "div"
+        }
+    }
+
     /// Render a container element.
+    ///
+    /// Uses `<section>` when the container has a heading child,
+    /// `<div>` otherwise.
     fn render_container(&self, element: &RenderElement, children: &str) -> Result<String> {
         let class = self.get_class_string(element);
         let attrs = self.get_extra_attrs(element);
 
+        // Use <section> when the container has heading content
+        let has_heading = element.children.values().any(|child| {
+            child
+                .tag
+                .as_deref()
+                .is_some_and(|t| t.starts_with('h') && t.len() == 2)
+        });
+        let tag = if has_heading { "section" } else { "div" };
+
         Ok(format!(
-            "<div class=\"container{}\"{}>{}</div>",
+            "<{tag} class=\"container{}\"{}>{}</{tag}>",
             if class.is_empty() {
                 String::new()
             } else {

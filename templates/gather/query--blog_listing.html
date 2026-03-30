@@ -10,7 +10,7 @@
     {% else %}
     <div class="blog-listing__items">
         {% for row in rows %}
-        <div class="blog-teaser">
+        <article class="blog-teaser">
             <h2 class="blog-teaser__title">
                 <a href="/item/{{ row.id }}">{{ row.title }}</a>
             </h2>
@@ -28,7 +28,7 @@
                 {% endif %}
             {% endif %}
             <a href="/item/{{ row.id }}" class="blog-teaser__read-more">Read more &rarr;</a>
-        </div>
+        </article>
         {% endfor %}
     </div>
     {% endif %}

@@ -264,11 +264,34 @@ impl ThemeEngine {
 
     /// Render a form to HTML.
     pub fn render_form(&self, form: &Form) -> Result<String> {
+        self.render_form_with_errors(form, &[])
+    }
+
+    /// Render a form to HTML with validation errors.
+    ///
+    /// Field-level errors (those with `field: Some(name)`) are passed to
+    /// individual element templates as `field_error`, enabling `aria-describedby`
+    /// and `aria-invalid` attributes for accessibility.
+    pub fn render_form_with_errors(
+        &self,
+        form: &Form,
+        errors: &[crate::form::ValidationError],
+    ) -> Result<String> {
+        use std::collections::HashMap;
+
         let mut context = tera::Context::new();
         context.insert("form", form);
+        context.insert("errors", errors);
 
-        // Render form elements
-        let elements_html = self.render_form_elements(form, &mut context)?;
+        // Build field→error lookup for per-element error rendering
+        let field_errors: HashMap<&str, &str> = errors
+            .iter()
+            .filter_map(|e| e.field.as_deref().map(|f| (f, e.message.as_str())))
+            .collect();
+
+        // Render form elements with field errors
+        let elements_html =
+            self.render_form_elements_with_errors(form, &field_errors, &mut context)?;
         context.insert("elements", &elements_html);
 
         let template = self
@@ -282,6 +305,17 @@ impl ThemeEngine {
 
     /// Render form elements to HTML.
     fn render_form_elements(&self, form: &Form, context: &mut tera::Context) -> Result<String> {
+        let empty = std::collections::HashMap::new();
+        self.render_form_elements_with_errors(form, &empty, context)
+    }
+
+    /// Render form elements to HTML, passing per-field errors to each element template.
+    fn render_form_elements_with_errors(
+        &self,
+        form: &Form,
+        field_errors: &std::collections::HashMap<&str, &str>,
+        context: &mut tera::Context,
+    ) -> Result<String> {
         use std::fmt::Write;
         let mut html = String::new();
 
@@ -290,7 +324,8 @@ impl ThemeEngine {
         elements.sort_by_key(|(_, el)| el.weight);
 
         for (name, element) in elements {
-            let element_html = self.render_form_element(name, element, context)?;
+            let field_error = field_errors.get(name.as_str()).copied();
+            let element_html = self.render_form_element(name, element, field_error, context)?;
             // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{element_html}").unwrap();
@@ -304,6 +339,7 @@ impl ThemeEngine {
         &self,
         name: &str,
         element: &crate::form::FormElement,
+        field_error: Option<&str>,
         context: &mut tera::Context,
     ) -> Result<String> {
         use crate::form::ElementType;
@@ -329,6 +365,11 @@ impl ThemeEngine {
         el_context.insert("name", name);
         el_context.insert("element", element);
 
+        // Pass per-field error for aria-describedby and aria-invalid
+        if let Some(error_msg) = field_error {
+            el_context.insert("field_error", error_msg);
+        }
+
         // Render children for container types
         if !element.children.is_empty() {
             let children_html = self.render_form_children(element, context)?;
@@ -353,7 +394,8 @@ impl ThemeEngine {
         children.sort_by_key(|(_, el)| el.weight);
 
         for (name, child) in children {
-            let child_html = self.render_form_element(name, child, context)?;
+            // Children don't receive per-field errors (errors are on top-level fields)
+            let child_html = self.render_form_element(name, child, None, context)?;
             // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{child_html}").unwrap();
