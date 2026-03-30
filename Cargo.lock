@@ -6212,6 +6212,7 @@ dependencies = [
  "fred",
  "futures-core",
  "hex",
+ "hmac",
  "hostname",
  "http-body-util",
  "image",
