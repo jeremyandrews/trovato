@@ -13,7 +13,7 @@ Three objectives:
 
 **Gate:** Written recommendation on data access mode (handle vs. serialize vs. hybrid) with benchmark numbers. If handle-based >5x faster, it becomes the default WIT pattern.
 
-**Status:** Not started
+**Status:** Complete (Feb 2026). Hybrid mode chosen — full serialization for most taps, handle-based for hot paths.
 
 ## Phase 1: Skeleton (4 weeks)
 
@@ -21,7 +21,7 @@ Axum server, Postgres connection, Redis sessions, user login/logout, stage track
 
 **Gate:** User can log in and out, session persists across requests.
 
-**Status:** Not started
+**Status:** Complete (Feb 2026). Axum + Tokio server, PostgreSQL + Redis, session management, Argon2id auth.
 
 ## Phase 2: Plugin Kernel + SDK (8 weeks, extended from 6)
 
@@ -32,7 +32,7 @@ SDK-first approach:
 
 **Gate:** Blog plugin registers route, receives request, reads fields via handle-based host functions, returns JSON Render Element. Source code looks clean (no raw pointers or JSON strings).
 
-**Status:** Not started
+**Status:** Complete (Feb 2026). 24 plugins (21 implemented, 3 stubs). WASM loader, tap dispatcher, SDK with proc macros.
 
 ## Phase 3: Content, Fields, & Stages (8 weeks)
 
@@ -40,7 +40,7 @@ Content types, JSONB field storage, item CRUD with taps, stage support, text for
 
 **Gate:** Create content type with 5 fields, CRUD an item, revert revision in different stage.
 
-**Status:** Not started
+**Status:** Complete (Feb-Mar 2026). JSONB items, stages with atomic publish, revisions, search config.
 
 ## Phase 4: Gather Query Engine & Categories (8 weeks)
 
@@ -48,7 +48,7 @@ SeaQuery-based Gather, categories vocabularies/terms/hierarchy, recursive CTEs f
 
 **Gate:** "Recent Articles" Gather query with category filter + pager renders correctly.
 
-**Status:** Not started
+**Status:** Complete (Mar 2026). SeaQuery Gather with extensions, categories with hierarchy, exposed filters.
 
 ## Phase 5: Form API, Theming, & Admin UI (8 weeks)
 
@@ -56,7 +56,7 @@ Declarative form definitions, validation/submission pipeline, tap_form_alter, CS
 
 **Gate:** Admin creates content type via UI, forms support AJAX "Add another item."
 
-**Status:** Not started
+**Status:** Complete (Mar 2026). Form API with AJAX, CSRF, block editor, 93 Tera templates, theme engine.
 
 ## Phase 6: Files, Search, Cron, & Hardening (8 weeks)
 
@@ -64,7 +64,13 @@ File uploads (local/S3), full-text search (tsvector), cron with distributed lock
 
 **Gate:** All subsystems functional under load.
 
-**Status:** Not started
+**Status:** Complete (Mar 2026). File uploads (local + S3), tsvector search, Redis cron locking, queue workers, rate limiting, Prometheus metrics.
+
+## Phase 7: Inclusivity-First Foundation (ongoing)
+
+Accessibility, i18n, security hardening, privacy infrastructure, performance verification, versioning, multi-tenancy, external interface infrastructure. See epics 10-19 in `docs/ritrovo/`.
+
+**Status:** In progress (Mar 2026). Epics 40-47 implemented, 48-49 (tutorial/docs) remaining.
 
 ## Not in Estimate
 
