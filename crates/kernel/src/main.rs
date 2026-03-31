@@ -276,6 +276,9 @@ async fn run_server() -> Result<()> {
         ))
         .layer(session_layer)
         .layer(cors)
+        .layer(axum::middleware::from_fn(
+            crate::middleware::inject_security_headers,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -444,6 +447,13 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
             .allow_origin(tower_http::cors::Any)
             .allow_methods(methods)
             .allow_headers(tower_http::cors::Any)
+    } else if config.cors_allowed_origins.is_empty() {
+        // No CORS origins configured — block cross-origin requests.
+        // Use a restrictive layer that allows nothing from other origins.
+        CorsLayer::new().allow_methods(methods).allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
     } else {
         let origins: Vec<HeaderValue> = config
             .cors_allowed_origins
@@ -457,10 +467,15 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
             })
             .collect();
 
+        // Specific origins: enable credentials with explicit headers
+        // (tower-http disallows credentials + wildcard headers).
         CorsLayer::new()
             .allow_origin(origins)
             .allow_methods(methods)
-            .allow_headers(tower_http::cors::Any)
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+            ])
             .allow_credentials(true)
     }
 }
