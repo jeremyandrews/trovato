@@ -1,0 +1,65 @@
+{% extends "admin/base.html" %}
+
+{% block title %}AI Feature Configuration{% endblock %}
+
+{% block content %}
+<h1>AI Feature Configuration</h1>
+<p>Enable or disable individual AI operation types and configure per-operation provider overrides.</p>
+
+<form method="POST" action="/admin/config/ai/features" class="form">
+    <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Operation</th>
+                <th>Enabled</th>
+                <th>Provider Override</th>
+                <th>Model Override</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Chat</td>
+                <td><input type="checkbox" name="chat_enabled" {% if config.chat.enabled %}checked{% endif %}></td>
+                <td><input type="text" name="chat_provider" value="{{ config.chat.provider }}" placeholder="(global default)" class="form-text"></td>
+                <td><input type="text" name="chat_model" value="{{ config.chat.model }}" placeholder="(provider default)" class="form-text"></td>
+            </tr>
+            <tr>
+                <td>Embedding</td>
+                <td><input type="checkbox" name="embedding_enabled" {% if config.embedding.enabled %}checked{% endif %}></td>
+                <td><input type="text" name="embedding_provider" value="{{ config.embedding.provider }}" placeholder="(global default)" class="form-text"></td>
+                <td><input type="text" name="embedding_model" value="{{ config.embedding.model }}" placeholder="(provider default)" class="form-text"></td>
+            </tr>
+            <tr>
+                <td>Image Generation</td>
+                <td><input type="checkbox" name="image_generation_enabled" {% if config.image_generation.enabled %}checked{% endif %}></td>
+                <td><input type="text" name="image_generation_provider" value="{{ config.image_generation.provider }}" placeholder="(global default)" class="form-text"></td>
+                <td><input type="text" name="image_generation_model" value="{{ config.image_generation.model }}" placeholder="(provider default)" class="form-text"></td>
+            </tr>
+            <tr>
+                <td>Speech to Text</td>
+                <td><input type="checkbox" name="speech_to_text_enabled" {% if config.speech_to_text.enabled %}checked{% endif %}></td>
+                <td><input type="text" name="speech_to_text_provider" value="{{ config.speech_to_text.provider }}" placeholder="(global default)" class="form-text"></td>
+                <td><input type="text" name="speech_to_text_model" value="{{ config.speech_to_text.model }}" placeholder="(provider default)" class="form-text"></td>
+            </tr>
+            <tr>
+                <td>Text to Speech</td>
+                <td><input type="checkbox" name="text_to_speech_enabled" {% if config.text_to_speech.enabled %}checked{% endif %}></td>
+                <td><input type="text" name="text_to_speech_provider" value="{{ config.text_to_speech.provider }}" placeholder="(global default)" class="form-text"></td>
+                <td><input type="text" name="text_to_speech_model" value="{{ config.text_to_speech.model }}" placeholder="(provider default)" class="form-text"></td>
+            </tr>
+            <tr>
+                <td>Moderation</td>
+                <td><input type="checkbox" name="moderation_enabled" {% if config.moderation.enabled %}checked{% endif %}></td>
+                <td><input type="text" name="moderation_provider" value="{{ config.moderation.provider }}" placeholder="(global default)" class="form-text"></td>
+                <td><input type="text" name="moderation_model" value="{{ config.moderation.model }}" placeholder="(provider default)" class="form-text"></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="form-actions">
+        <button type="submit" class="button button--primary">Save Configuration</button>
+    </div>
+</form>
+{% endblock %}

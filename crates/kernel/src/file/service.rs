@@ -121,7 +121,7 @@ impl FileService {
         Self { pool, storage }
     }
 
-    /// Upload a file.
+    /// Upload a file (default tenant — no tenant prefix in URI).
     ///
     /// Validates size and MIME type, stores the file, and creates a database record.
     /// File is created with temporary status until attached to content.
@@ -131,6 +131,24 @@ impl FileService {
         filename: &str,
         mime_type: &str,
         data: &[u8],
+    ) -> Result<UploadResult> {
+        self.upload_for_tenant(owner_id, filename, mime_type, data, None)
+            .await
+    }
+
+    /// Upload a file with optional tenant scoping.
+    ///
+    /// When `tenant_id` is `Some` and not the default tenant, the storage
+    /// URI includes a tenant prefix: `local://{tenant}/{YYYY}/{MM}/{uuid}_{name}`.
+    /// When `None` or `DEFAULT_TENANT_ID`, the URI uses the original format
+    /// without a tenant prefix (backward compatible).
+    pub async fn upload_for_tenant(
+        &self,
+        owner_id: Uuid,
+        filename: &str,
+        mime_type: &str,
+        data: &[u8],
+        tenant_id: Option<Uuid>,
     ) -> Result<UploadResult> {
         // Validate size
         if data.len() > MAX_FILE_SIZE {
@@ -150,16 +168,36 @@ impl FileService {
         // This prevents uploading executables disguised as images, etc.
         validate_magic_bytes(data, mime_type)?;
 
+        // Determine tenant prefix for URI. Default tenant uses no prefix
+        // (backward compatible with existing files).
+        let tenant_prefix = match tenant_id {
+            Some(t) if t != crate::models::tenant::DEFAULT_TENANT_ID => {
+                // Look up tenant machine_name for a human-readable path.
+                // Fall back to UUID if lookup fails (e.g., during initial setup).
+                let machine_name = sqlx::query_scalar::<_, String>(
+                    "SELECT machine_name FROM tenant WHERE id = $1",
+                )
+                .bind(t)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| t.simple().to_string());
+                format!("{machine_name}/")
+            }
+            _ => String::new(),
+        };
+
         // Generate storage URI
+        let now = chrono::Utc::now();
+        let unique_id = Uuid::now_v7().simple().to_string();
+        let safe_name = sanitize_filename(filename);
+
         let uri = match self.storage.scheme() {
             "local" => {
-                // Cast to LocalFileStorage to access generate_uri
-                // For now, generate a simple URI
-                let now = chrono::Utc::now();
-                let unique_id = Uuid::now_v7().simple().to_string();
-                let safe_name = sanitize_filename(filename);
                 format!(
-                    "local://{}/{}/{}_{}",
+                    "local://{}{}/{}/{}_{}",
+                    tenant_prefix,
                     now.format("%Y"),
                     now.format("%m"),
                     &unique_id[..16],
@@ -167,11 +205,9 @@ impl FileService {
                 )
             }
             "s3" => {
-                let now = chrono::Utc::now();
-                let unique_id = Uuid::now_v7().simple().to_string();
-                let safe_name = sanitize_filename(filename);
                 format!(
-                    "s3://{}/{}/{}_{}",
+                    "s3://{}{}/{}/{}_{}",
+                    tenant_prefix,
                     now.format("%Y"),
                     now.format("%m"),
                     &unique_id[..16],

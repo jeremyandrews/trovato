@@ -910,4 +910,137 @@ mod tests {
         let item: Item = serde_json::from_str(old_json).unwrap();
         assert_eq!(item.language, None);
     }
+
+    // ---- SDK Backward Compatibility (Story 48.5) ----
+    //
+    // These tests verify that JSON payloads serialized by an older version
+    // of the SDK (without new fields) can still be deserialized by the
+    // current SDK. This is the contract that lets compiled WASM plugins
+    // continue working without recompilation.
+
+    #[test]
+    fn backward_compat_item_without_new_fields() {
+        // Simulates an old plugin binary that doesn't know about
+        // `language` — the field should default to None.
+        let old_json = r#"{
+            "id": "01234567-89ab-cdef-0123-456789abcdef",
+            "type": "conference",
+            "title": "RustConf",
+            "fields": {"field_city": "Portland"},
+            "status": 1,
+            "author_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "stage_id": "0193a5a0-0000-7000-8000-000000000001",
+            "created": 1700000000,
+            "changed": 1700000000
+        }"#;
+        let item: Item = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            item.language, None,
+            "missing language should default to None"
+        );
+        assert_eq!(item.item_type, "conference");
+        assert_eq!(item.title, "RustConf");
+    }
+
+    #[test]
+    fn backward_compat_item_with_new_fields() {
+        // Simulates the kernel sending an Item with all new fields to a
+        // plugin. The plugin should be able to deserialize it even if
+        // the plugin's struct doesn't have these fields (serde ignores
+        // unknown fields by default).
+        let new_json = r#"{
+            "id": "01234567-89ab-cdef-0123-456789abcdef",
+            "type": "blog",
+            "title": "Test",
+            "fields": {},
+            "status": 1,
+            "author_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "stage_id": "0193a5a0-0000-7000-8000-000000000001",
+            "created": 1700000000,
+            "changed": 1700000000,
+            "language": "de",
+            "unknown_future_field": "should be ignored"
+        }"#;
+        let item: Item = serde_json::from_str(new_json).unwrap();
+        assert_eq!(item.language, Some("de".to_string()));
+        // unknown_future_field is silently ignored — no deny_unknown_fields
+    }
+
+    #[test]
+    fn backward_compat_field_definition_without_personal_data() {
+        // Old FieldDefinition JSON without `personal_data` — defaults to false.
+        let old_json = r#"{
+            "field_name": "body",
+            "field_type": "TextLong",
+            "label": "Body",
+            "required": true,
+            "cardinality": 1,
+            "settings": {}
+        }"#;
+        let def: FieldDefinition = serde_json::from_str(old_json).unwrap();
+        assert!(
+            !def.personal_data,
+            "missing personal_data should default to false"
+        );
+        assert!(def.required);
+    }
+
+    #[test]
+    fn backward_compat_field_definition_with_personal_data() {
+        let new_json = r#"{
+            "field_name": "email",
+            "field_type": "Email",
+            "label": "Email Address",
+            "required": false,
+            "cardinality": 1,
+            "settings": {},
+            "personal_data": true
+        }"#;
+        let def: FieldDefinition = serde_json::from_str(new_json).unwrap();
+        assert!(def.personal_data);
+    }
+
+    #[test]
+    fn no_deny_unknown_fields_on_item() {
+        // Verify Item does not use #[serde(deny_unknown_fields)] which
+        // would break backward compatibility when the kernel adds fields.
+        let json_with_extras = r#"{
+            "id": "01234567-89ab-cdef-0123-456789abcdef",
+            "type": "page",
+            "title": "Test",
+            "fields": {},
+            "status": 1,
+            "author_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "stage_id": "0193a5a0-0000-7000-8000-000000000001",
+            "created": 0,
+            "changed": 0,
+            "completely_new_field_from_future": 42,
+            "another_future_field": {"nested": true}
+        }"#;
+        // This must not panic — unknown fields are silently ignored.
+        let result: Result<Item, _> = serde_json::from_str(json_with_extras);
+        assert!(
+            result.is_ok(),
+            "Item must accept unknown fields: {result:?}"
+        );
+    }
+
+    #[test]
+    fn no_deny_unknown_fields_on_field_definition() {
+        let json_with_extras = r#"{
+            "field_name": "test",
+            "field_type": "TextLong",
+            "label": "Test",
+            "required": false,
+            "cardinality": 1,
+            "settings": {},
+            "future_retention_policy": "archive",
+            "future_ai_enrichment": true
+        }"#;
+        let result: Result<FieldDefinition, _> = serde_json::from_str(json_with_extras);
+        assert!(
+            result.is_ok(),
+            "FieldDefinition must accept unknown fields: {result:?}"
+        );
+    }
 }
