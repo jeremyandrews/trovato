@@ -201,7 +201,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 The `ritrovo_translate` plugin is the fifth and final Ritrovo plugin. It provides a translation workflow: language detection, translation flagging, and an editorial queue for translators.
 
-> **Not yet implemented.** The `ritrovo_translate` plugin source does not exist yet. This step describes its design. When written, it will live at `plugins/ritrovo_translate/`.
+> The `ritrovo_translate` plugin lives at `plugins/ritrovo_translate/src/lib.rs` (238 lines). It implements `tap_item_insert` (language detection heuristic) and `tap_item_view` (language badge and switcher link rendering).
 
 ### What It Does
 

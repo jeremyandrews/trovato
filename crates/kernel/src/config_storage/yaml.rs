@@ -25,7 +25,8 @@ use uuid::Uuid;
 
 use super::{ConfigEntity, ConfigStorage, SearchFieldConfig, entity_types};
 use crate::gather::types::GatherQuery;
-use crate::models::{Category, ItemType, Language, Tag, UrlAlias};
+use crate::models::tile::Tile;
+use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, UrlAlias};
 
 /// Entity type ordering used for both validation and dependency-ordered import.
 ///
@@ -34,13 +35,17 @@ use crate::models::{Category, ItemType, Language, Tag, UrlAlias};
 const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::VARIABLE,
     entity_types::LANGUAGE,
+    entity_types::ROLE,
     entity_types::ITEM_TYPE,
     entity_types::CATEGORY,
     entity_types::TAG,
     entity_types::SEARCH_FIELD_CONFIG,
     entity_types::GATHER_QUERY,
+    entity_types::STAGE,
     entity_types::URL_ALIAS,
     entity_types::ITEM,
+    entity_types::TILE,
+    entity_types::MENU_LINK,
 ];
 
 /// Maximum config file size (10 MB). Files exceeding this are skipped during import
@@ -183,6 +188,10 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
         }
         ConfigEntity::UrlAlias(a) => serde_yml::to_string(a),
         ConfigEntity::Item(i) => serde_yml::to_string(i),
+        ConfigEntity::Role(r) => serde_yml::to_string(r),
+        ConfigEntity::Stage(s) => serde_yml::to_string(s),
+        ConfigEntity::Tile(t) => serde_yml::to_string(t),
+        ConfigEntity::MenuLink(m) => serde_yml::to_string(m),
         // Tags need parent hierarchy — callers must use serialize_tag_entity.
         ConfigEntity::Tag(tag) => {
             warnings.push(format!(
@@ -821,6 +830,22 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity,
                 serde_yml::from_str(content).context("invalid item YAML")?;
             Ok((ConfigEntity::Item(item), Vec::new()))
         }
+        entity_types::ROLE => {
+            let role: Role = serde_yml::from_str(content).context("invalid role YAML")?;
+            Ok((ConfigEntity::Role(role), Vec::new()))
+        }
+        entity_types::STAGE => {
+            let stage: Stage = serde_yml::from_str(content).context("invalid stage YAML")?;
+            Ok((ConfigEntity::Stage(stage), Vec::new()))
+        }
+        entity_types::TILE => {
+            let tile: Tile = serde_yml::from_str(content).context("invalid tile YAML")?;
+            Ok((ConfigEntity::Tile(tile), Vec::new()))
+        }
+        entity_types::MENU_LINK => {
+            let link: MenuLink = serde_yml::from_str(content).context("invalid menu_link YAML")?;
+            Ok((ConfigEntity::MenuLink(link), Vec::new()))
+        }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
     }
 }
@@ -1197,6 +1222,10 @@ mod tests {
             entity_types::GATHER_QUERY,
             entity_types::URL_ALIAS,
             entity_types::ITEM,
+            entity_types::ROLE,
+            entity_types::STAGE,
+            entity_types::TILE,
+            entity_types::MENU_LINK,
         ]
         .into_iter()
         .collect();

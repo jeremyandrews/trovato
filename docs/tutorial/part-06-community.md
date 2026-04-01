@@ -179,7 +179,7 @@ CREATE TABLE user_subscriptions (
 );
 ```
 
-> **Not yet implemented.** This table does not exist yet. A migration will be needed to create it before the subscription feature is available.
+> The `user_subscriptions` table is created by the migration `20260315000001_create_user_subscriptions.sql`. The `Subscription` model in `models/subscription.rs` provides `subscribe()`, `unsubscribe()`, `is_subscribed()`, and `list_subscribers()` operations.
 
 The composite primary key prevents duplicate subscriptions.
 
@@ -222,7 +222,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 The `ritrovo_notify` plugin is the fourth Ritrovo plugin. It implements subscriptions, notification delivery, and digest emails.
 
-> **Not yet implemented.** The `ritrovo_notify` plugin source does not exist yet. This step describes its design and the SDK features it will use. When written, it will live at `plugins/ritrovo_notify/`.
+> The `ritrovo_notify` plugin lives at `plugins/ritrovo_notify/src/lib.rs` (132 lines). It implements `tap_perm`, `tap_menu`, `tap_item_view` (subscribe toggle), and `tap_queue_info` (notification queue declaration).
 
 ### What It Does
 

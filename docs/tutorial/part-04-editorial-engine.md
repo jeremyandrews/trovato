@@ -164,7 +164,7 @@ For the editorial workflow, Ritrovo needs three additional roles:
 | **editor** | Reviews and curates content | Viewer permissions + `create content`, `edit own content`, `edit any content`, `access files`, `use filtered_html`, `edit conferences` |
 | **publisher** | Publishes content to Live | Editor permissions + `delete any content`, `administer files`, `use full_html`, `publish conferences` |
 
-The role definitions live at `docs/tutorial/config/role.viewer.yml`, `role.editor.yml`, and `role.publisher.yml`. These YAML files document the intended permission sets but cannot be imported via `config import` (the kernel's ConfigStorage does not yet support the `role` entity type). Roles and permissions must be configured through the admin UI at `/admin/people/roles` and `/admin/people/permissions`.
+The role definitions live at `docs/tutorial/config/role.viewer.yml`, `role.editor.yml`, and `role.publisher.yml`. These YAML files can be imported via `config import`, or roles can be managed through the admin UI at `/admin/people/roles` and `/admin/people/permissions`.
 
 [<img src="images/part-04/roles-admin.png" width="600" alt="The roles administration page showing the list of defined roles">](images/part-04/roles-admin.png)
 
@@ -347,7 +347,7 @@ To add a "Legal Review" stage between Curated and Live, you would:
 
 No code changes, no plugin rebuild. The new workflow path works as soon as the config is imported and the stage exists in the database.
 
-Note: Stage creation is not yet supported by `config import` — stages must be created via SQL or the admin UI. The workflow variable *is* importable.
+Stages can be imported via `config import` using `stage.{machine_name}.yml` files, or created via the admin UI. The workflow variable is also importable.
 
 ### Verify
 
@@ -585,7 +585,7 @@ Ritrovo is now a full editorial CMS: conferences flow in from the importer, edit
 | REST API authentication (tokens) | Part 5+ | API auth is separate from session auth |
 | Revision diff UI | Part 5+ | Visual diff display is a UI enhancement |
 | Content scheduling | Future | Time-based stage transitions |
-| Config import for roles/stages | Future | ConfigStorage does not yet support these entity types |
+| Config import for roles/stages | Done | ConfigStorage supports role and stage entity types |
 | ritrovo_access WASM plugin | Part 5 | Stage-based access control and field-level visibility |
 
 ---

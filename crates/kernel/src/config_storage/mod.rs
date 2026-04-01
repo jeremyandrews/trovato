@@ -15,6 +15,10 @@
 //! - `variable` - Site configuration variables
 //! - `gather_query` - Gather query definitions (filters, sorts, display)
 //! - `url_alias` - URL path aliases
+//! - `role` - Role definitions
+//! - `stage` - Stage definitions (editorial workflow stages)
+//! - `tile` - Tile definitions (UI region components)
+//! - `menu_link` - Menu link definitions
 //!
 //! # Usage
 //!
@@ -41,7 +45,8 @@ pub use direct::DirectConfigStorage;
 pub use stage_aware::StageAwareConfigStorage;
 
 use crate::gather::types::GatherQuery;
-use crate::models::{Category, ItemType, Language, Tag, UrlAlias};
+use crate::models::tile::Tile;
+use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, UrlAlias};
 
 /// A content item as represented in config YAML for import/export.
 ///
@@ -140,6 +145,22 @@ pub enum ConfigEntity {
     /// Content item (conference, speaker, page, etc.).
     #[serde(rename = "item")]
     Item(ConfigItem),
+
+    /// Role definition.
+    #[serde(rename = "role")]
+    Role(Role),
+
+    /// Stage definition (editorial workflow stage).
+    #[serde(rename = "stage")]
+    Stage(Stage),
+
+    /// Tile definition (UI region component).
+    #[serde(rename = "tile")]
+    Tile(Tile),
+
+    /// Menu link definition.
+    #[serde(rename = "menu_link")]
+    MenuLink(MenuLink),
 }
 
 impl ConfigEntity {
@@ -155,6 +176,10 @@ impl ConfigEntity {
             Self::GatherQuery(..) => "gather_query",
             Self::UrlAlias(_) => "url_alias",
             Self::Item(_) => "item",
+            Self::Role(_) => "role",
+            Self::Stage(_) => "stage",
+            Self::Tile(_) => "tile",
+            Self::MenuLink(_) => "menu_link",
         }
     }
 
@@ -170,6 +195,10 @@ impl ConfigEntity {
             Self::GatherQuery(q) => q.query_id.clone(),
             Self::UrlAlias(a) => a.id.to_string(),
             Self::Item(i) => i.id.to_string(),
+            Self::Role(r) => r.id.to_string(),
+            Self::Stage(s) => s.id.to_string(),
+            Self::Tile(t) => t.id.to_string(),
+            Self::MenuLink(m) => m.id.to_string(),
         }
     }
 
@@ -431,6 +460,18 @@ pub mod entity_types {
 
     /// Content items (conferences, speakers, pages, etc.).
     pub const ITEM: &str = "item";
+
+    /// Role definitions.
+    pub const ROLE: &str = "role";
+
+    /// Stage definitions (editorial workflow stages).
+    pub const STAGE: &str = "stage";
+
+    /// Tile definitions (UI region components).
+    pub const TILE: &str = "tile";
+
+    /// Menu link definitions.
+    pub const MENU_LINK: &str = "menu_link";
 }
 
 /// Helper to parse a tag ID from a string (UUID format).

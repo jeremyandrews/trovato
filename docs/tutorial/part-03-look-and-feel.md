@@ -369,7 +369,7 @@ The YAML config files in `docs/tutorial/config/` document the tile configuration
 | `open_cfps_sidebar` | Sidebar | Open CFPs with deadlines |
 | `footer_info` | Footer | Site branding and info |
 
-> **Note:** Tile and menu link configuration is managed through the admin UI. The YAML files in `docs/tutorial/config/` serve as reference documentation for what to configure. Unlike item types and variables, tiles and menu links are not yet supported by the `config import` command.
+> **Note:** Tile and menu link configuration can be imported via `config import` using `tile.{machine_name}.yml` and `menu_link.{menu}.{title}.yml` files, or managed through the admin UI.
 
 ### Tile Visibility Rules
 
@@ -745,7 +745,7 @@ The site now looks, navigates, and feels like a production application. Part 4 a
 | Comment system | Part 6 | Depends on users + permissions |
 | Internationalization | Part 7 | Separate concern |
 | Image import from confs.tech | Future | Importer doesn't fetch images; manual upload only |
-| Config import for tiles/menus | Future | ConfigStorage does not yet support tile or menu_link entity types |
+| Config import for tiles/menus | Done | ConfigStorage supports tile and menu_link entity types |
 
 ---
 

@@ -816,6 +816,221 @@ impl DirectConfigStorage {
             })
             .collect())
     }
+
+    // ---- Role helpers ----
+
+    async fn load_role(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let uuid = id.parse::<Uuid>().context("invalid role UUID")?;
+        let row = sqlx::query_as::<_, crate::models::Role>(
+            "SELECT id, name, created FROM roles WHERE id = $1",
+        )
+        .bind(uuid)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load role")?;
+        Ok(row.map(ConfigEntity::Role))
+    }
+
+    async fn save_role(&self, role: &crate::models::Role) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO roles (id, name, created) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+        )
+        .bind(role.id)
+        .bind(&role.name)
+        .bind(role.created)
+        .execute(&self.pool)
+        .await
+        .context("failed to save role")?;
+        Ok(())
+    }
+
+    async fn delete_role(&self, id: &str) -> Result<bool> {
+        let uuid = id.parse::<Uuid>().context("invalid role UUID")?;
+        let r = sqlx::query("DELETE FROM roles WHERE id = $1")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await
+            .context("failed to delete role")?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    async fn list_roles(&self, _filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let rows: Vec<crate::models::Role> =
+            sqlx::query_as("SELECT id, name, created FROM roles ORDER BY name")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to list roles")?;
+        Ok(rows.into_iter().map(ConfigEntity::Role).collect())
+    }
+
+    // ---- Stage helpers ----
+
+    async fn load_stage(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let uuid = id.parse::<Uuid>().context("invalid stage UUID")?;
+        let row = crate::models::Stage::find_by_id(&self.pool, uuid).await?;
+        Ok(row.map(ConfigEntity::Stage))
+    }
+
+    async fn save_stage(&self, stage: &crate::models::Stage) -> Result<()> {
+        // Stages are stored across category_tag + stage_config tables.
+        let input = crate::models::CreateStage {
+            label: stage.label.clone(),
+            machine_name: stage.machine_name.clone(),
+            description: stage.description.clone(),
+            visibility: Some(stage.visibility.to_string()),
+            is_default: Some(stage.is_default),
+            weight: Some(stage.weight),
+        };
+        // Try update first, create if not exists
+        if crate::models::Stage::find_by_id(&self.pool, stage.id)
+            .await?
+            .is_some()
+        {
+            sqlx::query(
+                "UPDATE stage_config SET machine_name = $1, visibility = $2, is_default = $3 \
+                 WHERE stage_id = $4",
+            )
+            .bind(&stage.machine_name)
+            .bind(stage.visibility.to_string())
+            .bind(stage.is_default)
+            .bind(stage.id)
+            .execute(&self.pool)
+            .await
+            .context("failed to update stage")?;
+        } else {
+            crate::models::Stage::create(&self.pool, input).await?;
+        }
+        Ok(())
+    }
+
+    async fn delete_stage(&self, id: &str) -> Result<bool> {
+        let uuid = id.parse::<Uuid>().context("invalid stage UUID")?;
+        let r = sqlx::query("DELETE FROM stage_config WHERE stage_id = $1")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await
+            .context("failed to delete stage config")?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    async fn list_stages(&self, _filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let rows = crate::models::Stage::list_all(&self.pool).await?;
+        Ok(rows.into_iter().map(ConfigEntity::Stage).collect())
+    }
+
+    // ---- Tile helpers ----
+
+    async fn load_tile(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let uuid = id.parse::<Uuid>().context("invalid tile UUID")?;
+        let row =
+            sqlx::query_as::<_, crate::models::tile::Tile>("SELECT * FROM tile WHERE id = $1")
+                .bind(uuid)
+                .fetch_optional(&self.pool)
+                .await
+                .context("failed to load tile")?;
+        Ok(row.map(ConfigEntity::Tile))
+    }
+
+    async fn save_tile(&self, tile: &crate::models::tile::Tile) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO tile (id, machine_name, label, region, tile_type, config, visibility, \
+             weight, status, plugin, created, changed) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+             ON CONFLICT (id) DO UPDATE SET \
+             label = EXCLUDED.label, region = EXCLUDED.region, config = EXCLUDED.config, \
+             visibility = EXCLUDED.visibility, weight = EXCLUDED.weight, \
+             status = EXCLUDED.status, changed = EXCLUDED.changed",
+        )
+        .bind(tile.id)
+        .bind(&tile.machine_name)
+        .bind(&tile.label)
+        .bind(&tile.region)
+        .bind(&tile.tile_type)
+        .bind(&tile.config)
+        .bind(&tile.visibility)
+        .bind(tile.weight)
+        .bind(tile.status)
+        .bind(&tile.plugin)
+        .bind(tile.created)
+        .bind(tile.changed)
+        .execute(&self.pool)
+        .await
+        .context("failed to save tile")?;
+        Ok(())
+    }
+
+    async fn delete_tile(&self, id: &str) -> Result<bool> {
+        let uuid = id.parse::<Uuid>().context("invalid tile UUID")?;
+        let r = sqlx::query("DELETE FROM tile WHERE id = $1")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await
+            .context("failed to delete tile")?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    async fn list_tiles(&self, _filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let rows: Vec<crate::models::tile::Tile> =
+            sqlx::query_as("SELECT * FROM tile ORDER BY region, weight")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to list tiles")?;
+        Ok(rows.into_iter().map(ConfigEntity::Tile).collect())
+    }
+
+    // ---- MenuLink helpers ----
+
+    async fn load_menu_link(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let uuid = id.parse::<Uuid>().context("invalid menu_link UUID")?;
+        let row =
+            sqlx::query_as::<_, crate::models::MenuLink>("SELECT * FROM menu_link WHERE id = $1")
+                .bind(uuid)
+                .fetch_optional(&self.pool)
+                .await
+                .context("failed to load menu link")?;
+        Ok(row.map(ConfigEntity::MenuLink))
+    }
+
+    async fn save_menu_link(&self, link: &crate::models::MenuLink) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO menu_link (id, menu_name, path, title, weight, created, changed) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (id) DO UPDATE SET \
+             menu_name = EXCLUDED.menu_name, path = EXCLUDED.path, \
+             title = EXCLUDED.title, weight = EXCLUDED.weight, changed = EXCLUDED.changed",
+        )
+        .bind(link.id)
+        .bind(&link.menu_name)
+        .bind(&link.path)
+        .bind(&link.title)
+        .bind(link.weight)
+        .bind(link.created)
+        .bind(link.changed)
+        .execute(&self.pool)
+        .await
+        .context("failed to save menu link")?;
+        Ok(())
+    }
+
+    async fn delete_menu_link(&self, id: &str) -> Result<bool> {
+        let uuid = id.parse::<Uuid>().context("invalid menu_link UUID")?;
+        let r = sqlx::query("DELETE FROM menu_link WHERE id = $1")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await
+            .context("failed to delete menu link")?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    async fn list_menu_links(&self, _filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let rows: Vec<crate::models::MenuLink> =
+            sqlx::query_as("SELECT * FROM menu_link ORDER BY menu_name, weight")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to list menu links")?;
+        Ok(rows.into_iter().map(ConfigEntity::MenuLink).collect())
+    }
 }
 
 #[async_trait]
@@ -831,6 +1046,10 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::GATHER_QUERY => self.load_gather_query(id).await,
             entity_types::URL_ALIAS => self.load_url_alias(id).await,
             entity_types::ITEM => self.load_item(id).await,
+            entity_types::ROLE => self.load_role(id).await,
+            entity_types::STAGE => self.load_stage(id).await,
+            entity_types::TILE => self.load_tile(id).await,
+            entity_types::MENU_LINK => self.load_menu_link(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -846,6 +1065,10 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::GatherQuery(q) => self.save_gather_query(q).await,
             ConfigEntity::UrlAlias(a) => self.save_url_alias(a).await,
             ConfigEntity::Item(i) => self.save_item(i).await,
+            ConfigEntity::Role(r) => self.save_role(r).await,
+            ConfigEntity::Stage(s) => self.save_stage(s).await,
+            ConfigEntity::Tile(t) => self.save_tile(t).await,
+            ConfigEntity::MenuLink(m) => self.save_menu_link(m).await,
         }
     }
 
@@ -860,6 +1083,10 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::GATHER_QUERY => self.delete_gather_query(id).await,
             entity_types::URL_ALIAS => self.delete_url_alias(id).await,
             entity_types::ITEM => self.delete_item(id).await,
+            entity_types::ROLE => self.delete_role(id).await,
+            entity_types::STAGE => self.delete_stage(id).await,
+            entity_types::TILE => self.delete_tile(id).await,
+            entity_types::MENU_LINK => self.delete_menu_link(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -879,6 +1106,10 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::GATHER_QUERY => self.list_gather_queries(filter).await,
             entity_types::URL_ALIAS => self.list_url_aliases(filter).await,
             entity_types::ITEM => self.list_items(filter).await,
+            entity_types::ROLE => self.list_roles(filter).await,
+            entity_types::STAGE => self.list_stages(filter).await,
+            entity_types::TILE => self.list_tiles(filter).await,
+            entity_types::MENU_LINK => self.list_menu_links(filter).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
