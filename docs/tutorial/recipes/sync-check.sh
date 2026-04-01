@@ -43,6 +43,7 @@ check_sync "Part 4" "$TUTORIAL_DIR/part-04-editorial-engine.md" "$RECIPE_DIR/rec
 check_sync "Part 5" "$TUTORIAL_DIR/part-05-forms-and-input.md" "$RECIPE_DIR/recipe-part-05.md" || exit_code=1
 check_sync "Part 6" "$TUTORIAL_DIR/part-06-community.md" "$RECIPE_DIR/recipe-part-06.md" || exit_code=1
 check_sync "Part 7" "$TUTORIAL_DIR/part-07-going-global.md" "$RECIPE_DIR/recipe-part-07.md" || exit_code=1
+check_sync "Part 8" "$TUTORIAL_DIR/part-08-production-ready.md" "$RECIPE_DIR/recipe-part-08.md" || exit_code=1
 
 if [[ $exit_code -eq 0 ]]; then
     echo ""
