@@ -90,6 +90,7 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_item_insert",
     "tap_item_update",
     "tap_item_delete",
+    "tap_item_presave",
     "tap_item_access",
     "tap_field_access",
     // Categories
@@ -121,6 +122,7 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_user_export",
     // AI governance
     "tap_ai_request",
+    "tap_chat_actions",
     // Security
     "tap_csp_alter",
     // Comments

@@ -3,7 +3,7 @@
 **Tutorial Part:** Supporting (spans Phase 4-5 kernel + Phase 6 plugins)
 **Trovato Phase Dependency:** Phase 4 (Stages, Permissions), Phase 5 (Form API, Theming)
 **BMAD Epic:** 31
-**Status:** Not started
+**Status:** Phase A complete (provider registry, ai_request, token budgets, permissions, chatbot, admin UI, MCP server), trovato_ai plugin created, Phases B-D in progress
 
 ---
 

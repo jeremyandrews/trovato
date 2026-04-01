@@ -1,0 +1,15 @@
+name = "trovato_ai"
+description = "AI content enrichment: field rules, form assist, and content intelligence"
+version = "1.0.0"
+dependencies = []
+default_enabled = false
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_menu",
+    "tap_item_presave",
+    "tap_form_alter",
+    "tap_chat_actions",
+]
+weight = 50

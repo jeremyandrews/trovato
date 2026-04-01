@@ -116,8 +116,47 @@ impl ItemService {
         }
     }
 
-    /// Create a new item with tap_item_insert invocation.
-    pub async fn create(&self, input: CreateItem, user: &UserContext) -> Result<Item> {
+    /// Create a new item with tap_item_presave and tap_item_insert invocations.
+    ///
+    /// The presave tap fires before the item is persisted, allowing plugins
+    /// to modify fields (e.g., AI content enrichment). The insert tap fires
+    /// after persistence for post-save side effects.
+    pub async fn create(&self, mut input: CreateItem, user: &UserContext) -> Result<Item> {
+        // Invoke tap_item_presave — plugins can modify fields before save.
+        // Serialize the input as a JSON object so plugins can read/modify fields.
+        let presave_json = serde_json::json!({
+            "item_type": input.item_type,
+            "title": input.title,
+            "fields": input.fields,
+            "status": input.status,
+        });
+        let presave_input = serde_json::to_string(&presave_json).context("serialize presave")?;
+        let presave_state = RequestState::without_services(user.clone());
+
+        let presave_results = self
+            .inner
+            .dispatcher
+            .dispatch("tap_item_presave", &presave_input, presave_state)
+            .await;
+
+        // Apply presave modifications — if any plugin returned modified fields,
+        // merge them into the input. Last plugin wins for each field.
+        for result in presave_results {
+            if let Ok(modified) = serde_json::from_str::<serde_json::Value>(&result.output)
+                && let Some(fields) = modified.get("fields")
+                && let Some(obj) = fields.as_object()
+            {
+                let input_fields = input
+                    .fields
+                    .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                if let Some(input_obj) = input_fields.as_object_mut() {
+                    for (k, v) in obj {
+                        input_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+
         // Create the item in the database
         let item = Item::create(&self.inner.pool, input).await?;
 

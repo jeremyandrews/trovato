@@ -26,6 +26,7 @@ members = [
     "plugins/content_translation",
     "plugins/config_translation",
     "plugins/trovato_search",
+    "plugins/trovato_ai",
     "plugins/ritrovo_importer",
     "plugins/ritrovo_cfp",
     "plugins/ritrovo_notify",

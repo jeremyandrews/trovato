@@ -6323,6 +6323,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_ai"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_search"
 version = "1.0.0"
 dependencies = [

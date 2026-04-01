@@ -1,0 +1,15 @@
+[package]
+name = "trovato_ai"
+version = "1.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
