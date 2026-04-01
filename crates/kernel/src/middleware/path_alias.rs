@@ -171,7 +171,7 @@ pub async fn path_alias_fallback(
     use crate::routes::auth::SESSION_ACTIVE_STAGE;
     use tower::ServiceExt;
 
-    let raw_path = request.uri().path();
+    let raw_path = request.uri().path().to_string();
 
     // Redirect trailing-slash URLs to their canonical no-slash form so that
     // `/conferences/` resolves the same alias as `/conferences`.  The root `/`
@@ -186,14 +186,33 @@ pub async fn path_alias_fallback(
         return axum::response::Redirect::permanent(&location).into_response();
     }
 
-    let path = raw_path.to_string();
+    // Strip language prefix if present (e.g., /it/conferences → /conferences).
+    // The language middleware sets ResolvedLanguage in extensions but can't
+    // rewrite the URI for route matching in Axum 0.8 (middleware runs after
+    // route matching). The fallback handles this by stripping the prefix
+    // before looking up aliases.
+    let known_languages = state.known_languages();
+    let default_language = state.default_language();
+    let (path, resolved_lang) = strip_language_prefix(&raw_path, known_languages, default_language);
+    let had_lang_prefix = resolved_lang.is_some();
 
-    // Read resolved language from request extensions
-    let language = request
-        .extensions()
-        .get::<ResolvedLanguage>()
-        .map(|l| l.0.clone())
-        .unwrap_or_else(|| state.default_language().to_string());
+    // Read resolved language — prefer what we just stripped, fall back to
+    // what the middleware set, then default.
+    let language = resolved_lang
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<ResolvedLanguage>()
+                .map(|l| l.0.clone())
+        })
+        .unwrap_or_else(|| default_language.to_string());
+
+    // Store the resolved language in extensions so downstream handlers see it.
+    if let Some(ref lang) = Some(language.clone()) {
+        request
+            .extensions_mut()
+            .insert(ResolvedLanguage(lang.clone()));
+    }
 
     // Read active stage from session (default to live)
     let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
@@ -223,8 +242,49 @@ pub async fn path_alias_fallback(
         }
     }
 
-    // No alias found — return 404
+    // No alias found — but if a language prefix was stripped, try forwarding
+    // the stripped path to the inner router (e.g., /it/admin → /admin).
+    if had_lang_prefix
+        && path != raw_path
+        && let Ok(new_uri) = rewrite_uri(request.uri(), &path)
+    {
+        *request.uri_mut() = new_uri;
+        return router
+            .as_ref()
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|err| match err {});
+    }
+
+    // No alias and no language prefix — return 404
     axum::http::StatusCode::NOT_FOUND.into_response()
+}
+
+/// Strip a language prefix from the path if it matches a known non-default language.
+///
+/// Returns `(stripped_path, Some(language_code))` if a prefix was found,
+/// or `(original_path, None)` if no prefix matches.
+fn strip_language_prefix(
+    path: &str,
+    known_languages: &[String],
+    default_language: &str,
+) -> (String, Option<String>) {
+    // Check if the path starts with /{lang}/ or is exactly /{lang}
+    if let Some(trimmed) = path.strip_prefix('/') {
+        let (candidate, rest) = if let Some(pos) = trimmed.find('/') {
+            (&trimmed[..pos], &trimmed[pos..])
+        } else {
+            (trimmed, "/")
+        };
+
+        // Must be a known non-default language
+        if candidate != default_language && known_languages.iter().any(|l| l == candidate) {
+            return (rest.to_string(), Some(candidate.to_string()));
+        }
+    }
+
+    (path.to_string(), None)
 }
 
 #[cfg(test)]

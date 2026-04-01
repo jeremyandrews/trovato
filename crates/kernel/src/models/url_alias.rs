@@ -97,6 +97,11 @@ impl UrlAlias {
     }
 
     /// Find a URL alias by alias path with specific stage and language.
+    /// Find an alias by path, stage, and language.
+    ///
+    /// Tries the requested language first, then falls back to `'en'` if
+    /// no language-specific alias exists. This allows shared aliases
+    /// (e.g., `/conferences`) to resolve for all languages.
     pub async fn find_by_alias_with_context(
         pool: &PgPool,
         alias_path: &str,
@@ -107,7 +112,9 @@ impl UrlAlias {
             r#"
             SELECT id, source, alias, language, stage_id, created
             FROM url_alias
-            WHERE alias = $1 AND stage_id = $2 AND language = $3
+            WHERE alias = $1 AND stage_id = $2 AND language IN ($3, 'en')
+            ORDER BY CASE WHEN language = $3 THEN 0 ELSE 1 END
+            LIMIT 1
             "#,
         )
         .bind(alias_path)
