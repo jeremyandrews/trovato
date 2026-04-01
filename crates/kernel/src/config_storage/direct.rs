@@ -10,7 +10,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{
-    ConfigEntity, ConfigFilter, ConfigStorage, SearchFieldConfig, entity_types, parse_tag_id,
+    ConfigEntity, ConfigFilter, ConfigItem, ConfigStorage, SearchFieldConfig, entity_types,
+    parse_tag_id,
 };
 use crate::gather::types::{GatherQuery, QueryDefinition, QueryDisplay};
 use crate::models::stage::LIVE_STAGE_ID;
@@ -689,6 +690,132 @@ impl DirectConfigStorage {
 
         Ok(entities)
     }
+
+    // ---- Item (content) helpers ----
+
+    /// Load an item by UUID string.
+    async fn load_item(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let uuid = id.parse::<Uuid>().context("invalid item UUID")?;
+
+        let row = sqlx::query_as::<_, crate::models::Item>(
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             FROM item WHERE id = $1",
+        )
+        .bind(uuid)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load item")?;
+
+        Ok(row.map(|r| {
+            ConfigEntity::Item(ConfigItem {
+                id: r.id,
+                item_type: r.item_type,
+                title: r.title,
+                language: r.language,
+                status: r.status,
+                fields: r.fields.clone(),
+                created: r.created,
+                changed: r.changed,
+            })
+        }))
+    }
+
+    /// Save (upsert) an item from config.
+    async fn save_item(&self, item: &ConfigItem) -> Result<()> {
+        let now = if item.created > 0 {
+            item.created
+        } else {
+            chrono::Utc::now().timestamp()
+        };
+        let changed = if item.changed > 0 { item.changed } else { now };
+
+        sqlx::query(
+            r#"
+            INSERT INTO item (id, type, title, author_id, status, fields, created, changed,
+                              promote, sticky, stage_id, language, item_group_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, $9, $10, $11)
+            ON CONFLICT (id) DO UPDATE SET
+                title = EXCLUDED.title,
+                fields = EXCLUDED.fields,
+                status = EXCLUDED.status,
+                language = EXCLUDED.language,
+                changed = EXCLUDED.changed
+            "#,
+        )
+        .bind(item.id)
+        .bind(&item.item_type)
+        .bind(&item.title)
+        .bind(Uuid::nil()) // author_id — anonymous for config-imported items
+        .bind(item.status)
+        .bind(&item.fields)
+        .bind(now)
+        .bind(changed)
+        .bind(crate::models::stage::LIVE_STAGE_ID)
+        .bind(&item.language)
+        .bind(Uuid::now_v7()) // item_group_id
+        .execute(&self.pool)
+        .await
+        .context("failed to save item")?;
+
+        Ok(())
+    }
+
+    /// Delete an item by UUID string.
+    async fn delete_item(&self, id: &str) -> Result<bool> {
+        let uuid = id.parse::<Uuid>().context("invalid item UUID")?;
+        let result = sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await
+            .context("failed to delete item")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// List all items (optionally filtered by type).
+    async fn list_items(&self, filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let item_type_filter = filter
+            .and_then(|f| f.field.as_deref())
+            .filter(|f| *f == "type")
+            .and(filter.and_then(|f| f.value.as_deref()));
+
+        let rows: Vec<crate::models::Item> = if let Some(item_type) = item_type_filter {
+            sqlx::query_as(
+                "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+                 promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+                 FROM item WHERE type = $1 ORDER BY created",
+            )
+            .bind(item_type)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list items")?
+        } else {
+            sqlx::query_as(
+                "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+                 promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+                 FROM item ORDER BY created",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list items")?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                ConfigEntity::Item(ConfigItem {
+                    id: r.id,
+                    item_type: r.item_type,
+                    title: r.title,
+                    language: r.language,
+                    status: r.status,
+                    fields: r.fields.clone(),
+                    created: r.created,
+                    changed: r.changed,
+                })
+            })
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -703,6 +830,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::LANGUAGE => self.load_language(id).await,
             entity_types::GATHER_QUERY => self.load_gather_query(id).await,
             entity_types::URL_ALIAS => self.load_url_alias(id).await,
+            entity_types::ITEM => self.load_item(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -717,6 +845,7 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::Language(l) => self.save_language(l).await,
             ConfigEntity::GatherQuery(q) => self.save_gather_query(q).await,
             ConfigEntity::UrlAlias(a) => self.save_url_alias(a).await,
+            ConfigEntity::Item(i) => self.save_item(i).await,
         }
     }
 
@@ -730,6 +859,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::LANGUAGE => self.delete_language(id).await,
             entity_types::GATHER_QUERY => self.delete_gather_query(id).await,
             entity_types::URL_ALIAS => self.delete_url_alias(id).await,
+            entity_types::ITEM => self.delete_item(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -748,6 +878,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::LANGUAGE => self.list_languages(filter).await,
             entity_types::GATHER_QUERY => self.list_gather_queries(filter).await,
             entity_types::URL_ALIAS => self.list_url_aliases(filter).await,
+            entity_types::ITEM => self.list_items(filter).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }

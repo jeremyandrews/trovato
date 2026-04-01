@@ -43,6 +43,58 @@ pub use stage_aware::StageAwareConfigStorage;
 use crate::gather::types::GatherQuery;
 use crate::models::{Category, ItemType, Language, Tag, UrlAlias};
 
+/// A content item as represented in config YAML for import/export.
+///
+/// Lighter than the full `Item` model — includes only the fields
+/// that a site builder would define in a YAML file. Database-managed
+/// fields (promote, sticky, item_group_id, search_vector) are
+/// populated with defaults on import.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigItem {
+    /// Item UUID. If provided, used as-is; if absent, generated on import.
+    #[serde(default = "generate_uuid")]
+    pub id: Uuid,
+
+    /// Content type machine name (e.g., "conference").
+    #[serde(rename = "type")]
+    pub item_type: String,
+
+    /// Item title.
+    pub title: String,
+
+    /// Language code (default: "en").
+    #[serde(default = "default_language")]
+    pub language: String,
+
+    /// Publication status (0=unpublished, 1=published; default: 1).
+    #[serde(default = "default_status")]
+    pub status: i16,
+
+    /// Dynamic fields as key-value pairs.
+    #[serde(default)]
+    pub fields: serde_json::Value,
+
+    /// Unix timestamp when created (default: current time).
+    #[serde(default)]
+    pub created: i64,
+
+    /// Unix timestamp when changed (default: current time).
+    #[serde(default)]
+    pub changed: i64,
+}
+
+fn generate_uuid() -> Uuid {
+    Uuid::now_v7()
+}
+
+fn default_language() -> String {
+    "en".to_string()
+}
+
+fn default_status() -> i16 {
+    1
+}
+
 /// A configuration entity that can be stored and retrieved.
 ///
 /// This enum covers all config entity types that need stage-aware access.
@@ -84,6 +136,10 @@ pub enum ConfigEntity {
     /// URL alias (path rewriting).
     #[serde(rename = "url_alias")]
     UrlAlias(UrlAlias),
+
+    /// Content item (conference, speaker, page, etc.).
+    #[serde(rename = "item")]
+    Item(ConfigItem),
 }
 
 impl ConfigEntity {
@@ -98,6 +154,7 @@ impl ConfigEntity {
             Self::Language(_) => "language",
             Self::GatherQuery(..) => "gather_query",
             Self::UrlAlias(_) => "url_alias",
+            Self::Item(_) => "item",
         }
     }
 
@@ -112,6 +169,7 @@ impl ConfigEntity {
             Self::Language(l) => l.id.clone(),
             Self::GatherQuery(q) => q.query_id.clone(),
             Self::UrlAlias(a) => a.id.to_string(),
+            Self::Item(i) => i.id.to_string(),
         }
     }
 
@@ -370,6 +428,9 @@ pub mod entity_types {
 
     /// URL alias definitions.
     pub const URL_ALIAS: &str = "url_alias";
+
+    /// Content items (conferences, speakers, pages, etc.).
+    pub const ITEM: &str = "item";
 }
 
 /// Helper to parse a tag ID from a string (UUID format).

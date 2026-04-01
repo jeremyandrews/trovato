@@ -40,6 +40,7 @@ const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::SEARCH_FIELD_CONFIG,
     entity_types::GATHER_QUERY,
     entity_types::URL_ALIAS,
+    entity_types::ITEM,
 ];
 
 /// Maximum config file size (10 MB). Files exceeding this are skipped during import
@@ -181,6 +182,7 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
             serde_yml::to_string(&export)
         }
         ConfigEntity::UrlAlias(a) => serde_yml::to_string(a),
+        ConfigEntity::Item(i) => serde_yml::to_string(i),
         // Tags need parent hierarchy — callers must use serialize_tag_entity.
         ConfigEntity::Tag(tag) => {
             warnings.push(format!(
@@ -814,6 +816,11 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity,
             let alias: UrlAlias = serde_yml::from_str(content).context("invalid url_alias YAML")?;
             Ok((ConfigEntity::UrlAlias(alias), Vec::new()))
         }
+        entity_types::ITEM => {
+            let item: super::ConfigItem =
+                serde_yml::from_str(content).context("invalid item YAML")?;
+            Ok((ConfigEntity::Item(item), Vec::new()))
+        }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
     }
 }
@@ -1189,6 +1196,7 @@ mod tests {
             entity_types::SEARCH_FIELD_CONFIG,
             entity_types::GATHER_QUERY,
             entity_types::URL_ALIAS,
+            entity_types::ITEM,
         ]
         .into_iter()
         .collect();
