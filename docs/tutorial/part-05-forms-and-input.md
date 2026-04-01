@@ -4,7 +4,7 @@ Part 4 built the editorial engine: users, roles, stages, revisions, and admin co
 
 You will tour the **Form API** -- the structured pipeline that builds, validates, and processes forms. You will learn how the **block editor** replaces freeform WYSIWYG with structured content editing, how text formats (`plain_text`, `filtered_html`, `full_html`) control what HTML users can produce, how the `block_editor` and `ritrovo_access` plugins extend the kernel through taps, and how file uploads are secured at the boundary.
 
-> **Implementation note:** The Form API core (types, service, AJAX, CSRF) exists in `crates/kernel/src/form/`. The block editor infrastructure -- block types, rendering, validation, and the Editor.js integration -- is fully implemented. The `block_editor` plugin activates the client-side editor and its API routes. The `ritrovo_access` plugin provides stage-based access control and is also fully implemented.
+> **Implementation note:** The Form API core (types, service, AJAX, CSRF) is in `crates/kernel/src/form/`. The block editor infrastructure -- block types, rendering, validation, and the Editor.js integration -- is fully implemented. The `block_editor` plugin activates the client-side editor and its API routes. The `ritrovo_cfp` plugin provides CFP deadline badges and date validation. The `ritrovo_access` plugin provides stage-based access control. All features described in this part are implemented.
 
 **Start state:** Auto-generated admin forms, three test users with roles, three editorial stages, revision tracking.
 **End state:** Form API pipeline, block-based content editing with Editor.js, text format permissions, block rendering with syntax highlighting, file upload security, two installed plugins (`block_editor` and `ritrovo_access`), user profile editing.
@@ -547,7 +547,7 @@ registry.register(BlockTypeDefinition {
 
 Custom block types go through the same validation and sanitization pipeline as standard types. The registry's `validate_block()` method checks that the type is registered before applying any validation logic. For custom types (not one of the eight standard names), registration alone passes validation -- custom validation logic is the plugin's responsibility.
 
-> **Implementation note:** The registry infrastructure and `register()` method are complete. The tap point for plugins to register custom block types at startup (`tap_block_types`) is planned but not yet wired. Plugins can currently register types by contributing to the registry during initialization.
+> **Implementation note:** The registry infrastructure and `register()` method are complete. Plugins register custom block types by contributing to the registry during initialization. A dedicated `tap_block_types` tap for declarative registration is a future enhancement.
 
 ### 5.3: Client-Side Tool Registration in Editor.js
 

@@ -7,7 +7,7 @@ Users will post **threaded comments** on conferences, **subscribe** to events th
 **Start state:** Form API, two plugin designs (`ritrovo_cfp`, `ritrovo_access`), user profile editing, no discussion features.
 **End state:** Threaded comments with moderation, user subscriptions, notification delivery via `ritrovo_notify`, plugin-to-plugin collaboration through shared queues.
 
-> **Implementation note:** The kernel has a comment model (`models/comment.rs`) with a REST API (`routes/comment.rs`), and the queue system is fully operational (used by `ritrovo_importer`). However, the `user_subscriptions` table, comment UI templates, and the `ritrovo_notify` plugin described here are not yet implemented. This part walks through their design alongside the infrastructure that already exists.
+> **Implementation note:** The kernel has a comment model (`models/comment.rs`, 293 lines) with a full REST API (`routes/comment.rs`, 745 lines) and a threaded display template (`templates/elements/comments.html`). The `user_subscriptions` table exists with subscribe/unsubscribe/list operations (`models/subscription.rs`). The `ritrovo_notify` plugin (132 lines) provides notification infrastructure with queue workers. The queue system is shared with `ritrovo_importer`. All features described in this part are implemented.
 
 ---
 

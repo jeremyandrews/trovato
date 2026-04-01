@@ -7,7 +7,7 @@ Ritrovo goes **bilingual** (English + Italian), gets a **translation workflow** 
 **Start state:** English-only, existing API at `/api/`, four plugin designs (`ritrovo_importer`, `ritrovo_cfp`, `ritrovo_access`, `ritrovo_notify`).
 **End state:** Bilingual site (English + Italian), translation editorial workflow, versioned REST API with authentication and rate limiting, five plugins.
 
-> **Implementation note:** The kernel already has a language model (`models/language.rs`) with BCP 47 validation and a language middleware skeleton (`middleware/language.rs`). API token authentication (`middleware/api_token.rs`) and existing API endpoints at `/api/` are operational. However, content translation storage, the `ritrovo_translate` plugin, Italian seed data, i18n URL routing, and the `/api/v1/` versioned endpoints described here are not yet implemented. This part walks through their design alongside the infrastructure that already exists.
+> **Implementation note:** The kernel has a language model (`models/language.rs`, 424 lines) with BCP 47 validation, a full language middleware (`middleware/language.rs`, 736 lines) with URL prefix and Accept-Language negotiation, and a locale service (`services/locale.rs`) for UI string translation. The `content_translation` plugin provides translation storage, and the `ritrovo_translate` plugin (238 lines) manages translation workflows for conferences. Italian seed data (15 conference translations) is in `docs/tutorial/config/seed-italian/`. The versioned REST API at `/api/v1/` with pagination, filters, and JSON responses is operational. API token authentication and per-endpoint rate limiting are implemented. All features described in this part are implemented.
 
 ---
 
@@ -295,7 +295,7 @@ Import the seed data (the seed directory will be created as part of this tutoria
 cargo run --release --bin trovato -- config import docs/tutorial/config/seed-italian
 ```
 
-> **Not yet created.** The `docs/tutorial/config/seed-italian/` directory and its seed data files do not exist yet. They will be created when this tutorial step is implemented.
+> The `docs/tutorial/config/seed-italian/` directory contains 15 Italian conference translation seed files. These are imported alongside the standard config to populate the Italian version of the site.
 
 ### Translation Status Mix
 

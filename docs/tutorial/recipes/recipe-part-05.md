@@ -1,7 +1,7 @@
 # Recipe: Part 5 — Forms & User Input
 
 > **Synced with:** `docs/tutorial/part-05-forms-and-input.md`
-> **Sync hash:** 1368e81a
+> **Sync hash:** 445ef51c
 > **Last verified:** 2026-03-16 (block editor plugin, ritrovo_access plugin)
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.

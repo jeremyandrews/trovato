@@ -3,7 +3,7 @@
 **Tutorial Part:** 5
 **Trovato Phase Dependency:** Phase 4 (Form API, Multi-Step Forms, AJAX), Phase 5 (Field-Level Access)
 **BMAD Epic:** 36
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 ---
 
@@ -117,7 +117,7 @@ Build the profile editing experience: display name, bio with WYSIWYG, timezone s
 
 ### Story 36.1: Form API Pipeline & Conference Edit Form
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** content editor,
 **I want** a form system that auto-generates content editing forms from Item Type definitions,
@@ -135,7 +135,7 @@ Build the profile editing experience: display name, bio with WYSIWYG, timezone s
 
 ### Story 36.2: WYSIWYG Editor for Rich Text Fields
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** content editor,
 **I want** a WYSIWYG editor for conference descriptions,
@@ -152,7 +152,7 @@ Build the profile editing experience: display name, bio with WYSIWYG, timezone s
 
 ### Story 36.3: AJAX Form Enhancements
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** content editor,
 **I want** conditional fields, multi-value add/remove, and autocomplete in content forms,
@@ -169,7 +169,7 @@ Build the profile editing experience: display name, bio with WYSIWYG, timezone s
 
 ### Story 36.4: Multi-Step Conference Submission Form
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** registered user,
 **I want to** submit a conference through a guided multi-step form,
@@ -189,7 +189,7 @@ Build the profile editing experience: display name, bio with WYSIWYG, timezone s
 
 ### Story 36.5: `ritrovo_cfp` Plugin -- CFP Tracking & Cross-Plugin Events
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** site visitor,
 **I want** visual indicators of CFP deadlines on conference pages,
@@ -207,7 +207,7 @@ Build the profile editing experience: display name, bio with WYSIWYG, timezone s
 
 ### Story 36.6: `ritrovo_access` Plugin -- Field-Level Access & Stage Gating
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** site administrator,
 **I want** fine-grained access control enforced by a plugin,
@@ -225,7 +225,7 @@ Build the profile editing experience: display name, bio with WYSIWYG, timezone s
 
 ### Story 36.7: User Profile Form
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** registered user,
 **I want to** edit my profile information,

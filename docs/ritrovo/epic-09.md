@@ -3,7 +3,7 @@
 **Tutorial Part:** 7
 **Trovato Phase Dependency:** Phase 4 (i18n, REST API), Phase 5 (Translation Workflow)
 **BMAD Epic:** 38
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 ---
 
@@ -115,7 +115,7 @@ Document the API and verify all endpoints work correctly.
 
 ### Story 38.1: Multilingual Content Model
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** site builder,
 **I want** content to support multiple languages via JSONB parallel field sets,
@@ -133,7 +133,7 @@ Document the API and verify all endpoints work correctly.
 
 ### Story 38.2: Language Routing & URL Aliases
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** site visitor,
 **I want** localized URLs and a language switcher,
@@ -152,7 +152,7 @@ Document the API and verify all endpoints work correctly.
 
 ### Story 38.3: `ritrovo_translate` Plugin -- Translation Workflow
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** site translator,
 **I want** a workflow for translating conference content,
@@ -172,7 +172,7 @@ Document the API and verify all endpoints work correctly.
 
 ### Story 38.4: Italian Content Seed Data
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** tutorial reader,
 **I want** pre-seeded bilingual content,
@@ -189,7 +189,7 @@ Document the API and verify all endpoints work correctly.
 
 ### Story 38.5: REST API Endpoints
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As an** API consumer,
 **I want** JSON endpoints for conference data,
@@ -209,7 +209,7 @@ Document the API and verify all endpoints work correctly.
 
 ### Story 38.6: API Authentication & Rate Limiting
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** site administrator,
 **I want** API access controlled by tokens and rate limits,

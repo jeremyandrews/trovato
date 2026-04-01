@@ -3,7 +3,7 @@
 **Tutorial Part:** 6
 **Trovato Phase Dependency:** Phase 4 (Queue API, Comments), Phase 5 (Subscriptions, Notifications)
 **BMAD Epic:** 37
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 ---
 
@@ -91,7 +91,7 @@ Wire comments into the notification system: new comments on subscribed conferenc
 
 ### Story 37.1: Comment Item Type with Threaded Display
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** registered user,
 **I want to** post comments on conferences and reply to other comments,
@@ -111,7 +111,7 @@ Wire comments into the notification system: new comments on subscribed conferenc
 
 ### Story 37.2: Comment Moderation Queue
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** content editor,
 **I want** a moderation queue for recent comments,
@@ -128,7 +128,7 @@ Wire comments into the notification system: new comments on subscribed conferenc
 
 ### Story 37.3: User Subscriptions
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** registered user,
 **I want to** subscribe to conferences I'm interested in,
@@ -146,7 +146,7 @@ Wire comments into the notification system: new comments on subscribed conferenc
 
 ### Story 37.4: `ritrovo_notify` Plugin -- Notifications & Digests
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** subscribed user,
 **I want to** receive notifications when conferences I follow change,
@@ -168,7 +168,7 @@ Wire comments into the notification system: new comments on subscribed conferenc
 
 ### Story 37.5: Plugin-to-Plugin Communication via Shared Queues
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** plugin developer,
 **I want** plugins to communicate through shared queues without direct dependencies,
@@ -186,7 +186,7 @@ Wire comments into the notification system: new comments on subscribed conferenc
 
 ### Story 37.6: Comment Notifications
 
-**Status:** Not started
+**Status:** Complete (all features implemented)
 
 **As a** subscriber,
 **I want to** receive notifications when someone comments on a conference I follow,

@@ -1,7 +1,7 @@
 # Recipe: Part 6 — Community & Plugin Communication
 
 > **Synced with:** `docs/tutorial/part-06-community.md`
-> **Sync hash:** 8cc6332d
+> **Sync hash:** 5d5e1621
 > **Last verified:** 2026-03-15
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.

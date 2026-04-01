@@ -120,6 +120,42 @@ development_status:
   epic-8-retrospective: optional
 
   # ═══════════════════════════════════════════════════════════
+  # Tutorial Parts 5-7 Implementation
+  # SOURCE: docs/ritrovo/epic-07.md through epic-09.md
+  # ═══════════════════════════════════════════════════════════
+
+  # Epic 36 (7): Forms & User Input (Part 5)
+  epic-36: done
+  36-1-form-api-pipeline-and-conference-edit-form: done
+  36-2-wysiwyg-editor-for-rich-text-fields: done
+  36-3-ajax-form-enhancements: done
+  36-4-multi-step-conference-submission-form: done
+  36-5-ritrovo-cfp-plugin: done
+  36-6-ritrovo-access-plugin: done
+  36-7-user-profile-form: done
+  epic-36-retrospective: optional
+
+  # Epic 37 (8): Community & Plugin Communication (Part 6)
+  epic-37: done
+  37-1-comment-item-type-with-threaded-display: done
+  37-2-comment-moderation-queue: done
+  37-3-user-subscriptions: done
+  37-4-ritrovo-notify-plugin: done
+  37-5-plugin-to-plugin-communication-via-shared-queues: done
+  37-6-comment-notifications: done
+  epic-37-retrospective: optional
+
+  # Epic 38 (9): Going Global (Part 7)
+  epic-38: done
+  38-1-multilingual-content-model: done
+  38-2-language-routing-and-url-aliases: done
+  38-3-ritrovo-translate-plugin: done
+  38-4-italian-content-seed-data: done
+  38-5-rest-api-endpoints: done
+  38-6-api-authentication-and-rate-limiting: done
+  epic-38-retrospective: optional
+
+  # ═══════════════════════════════════════════════════════════
   # Inclusivity-First Foundation (Epics 40-49)
   # SOURCE: docs/ritrovo/epic-10-accessibility.md through epic-19-design-sync.md
   # SCOPE: Kernel infrastructure for accessibility, i18n, security, privacy,
