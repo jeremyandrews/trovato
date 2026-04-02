@@ -36,7 +36,7 @@ use crate::plugin::{
 use crate::search::SearchService;
 use crate::services;
 use crate::stage::StageService;
-use crate::tap::{TapDispatcher, TapRegistry};
+use crate::tap::{RequestServices, TapDispatcher, TapRegistry};
 use crate::theme::ThemeEngine;
 
 /// Shared application state.
@@ -85,6 +85,9 @@ struct AppStateInner {
 
     /// Tap dispatcher.
     tap_dispatcher: Arc<TapDispatcher>,
+
+    /// Shared services template for tap dispatch — cloned per invocation.
+    tap_services: RequestServices,
 
     /// Menu registry.
     menu_registry: Arc<MenuRegistry>,
@@ -422,13 +425,6 @@ impl AppState {
             .await
             .context("failed to sync content types")?;
 
-        // Create item service
-        let items = Arc::new(ItemService::new(
-            db.clone(),
-            tap_dispatcher.clone(),
-            cache_config.ttl_items,
-        ));
-
         // Create category service
         let categories = CategoryService::new(db.clone(), cache_config.ttl_categories);
 
@@ -549,6 +545,25 @@ impl AppState {
             search.clone(),
         ));
 
+        // Build shared RequestServices for tap dispatch.
+        // This gives plugins access to DB, cache, AI, and HTTP from host functions.
+        let tap_http = reqwest::Client::new();
+        let tap_services = RequestServices::for_request(
+            db.clone(),
+            Some(cache.clone()),
+            Some(ai_providers.clone()),
+            Some(ai_budgets.clone()),
+            tap_http,
+        );
+
+        // Create item service (needs tap_services for presave/insert/update taps)
+        let items = Arc::new(ItemService::new(
+            db.clone(),
+            tap_dispatcher.clone(),
+            tap_services.clone(),
+            cache_config.ttl_items,
+        ));
+
         // Create file service with local storage
         let file_storage = Arc::new(LocalFileStorage::new(
             &config.uploads_dir,
@@ -575,6 +590,7 @@ impl AppState {
         let users = Arc::new(services::user::UserService::new(
             db.clone(),
             tap_dispatcher.clone(),
+            tap_services.clone(),
             cache_config.ttl_users,
         ));
 
@@ -680,11 +696,13 @@ impl AppState {
             let _ = comments.set(Arc::new(services::comment::CommentService::new(
                 db.clone(),
                 tap_dispatcher.clone(),
+                tap_services.clone(),
             )));
         }
 
         // Wire plugin services into cron
         cron.set_plugin_services(content_lock.clone(), audit.clone());
+        cron.set_email_service(email.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
         cron.set_ai_providers(ai_providers.clone());
         cron.set_ai_budgets(ai_budgets.clone());
@@ -737,6 +755,7 @@ impl AppState {
                 plugin_runtime,
                 tap_registry,
                 tap_dispatcher,
+                tap_services,
                 menu_registry,
                 content_types,
                 items,
@@ -852,6 +871,11 @@ impl AppState {
     /// Get the tap dispatcher.
     pub fn tap_dispatcher(&self) -> &Arc<TapDispatcher> {
         &self.inner.tap_dispatcher
+    }
+
+    /// Shared services template for tap dispatch.
+    pub fn tap_services(&self) -> &RequestServices {
+        &self.inner.tap_services
     }
 
     /// Get the menu registry.
@@ -1064,6 +1088,7 @@ impl AppState {
             .set(Arc::new(services::comment::CommentService::new(
                 self.inner.db.clone(),
                 self.inner.tap_dispatcher.clone(),
+                self.inner.tap_services.clone(),
             )));
     }
 

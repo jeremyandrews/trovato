@@ -126,6 +126,14 @@ impl CronService {
         self.tasks.set_plugin_services(content_lock, audit);
     }
 
+    /// Set the email service for sending queued emails.
+    pub fn set_email_service(
+        &mut self,
+        email: Option<std::sync::Arc<crate::services::email::EmailService>>,
+    ) {
+        self.tasks.set_email_service(email);
+    }
+
     /// Run all cron tasks.
     ///
     /// Acquires a distributed lock before running to ensure only one

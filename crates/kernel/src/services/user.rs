@@ -14,7 +14,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::models::{CreateUser, UpdateUser, User};
-use crate::tap::{RequestState, TapDispatcher, UserContext};
+use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 
 /// Maximum entries in the user cache.
 const MAX_CAPACITY: u64 = 10_000;
@@ -36,16 +36,23 @@ pub struct UserService {
 struct UserServiceInner {
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
+    tap_services: RequestServices,
     cache: Cache<Uuid, User>,
 }
 
 impl UserService {
     /// Create a new user service.
-    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>, ttl: Duration) -> Self {
+    pub fn new(
+        pool: PgPool,
+        dispatcher: Arc<TapDispatcher>,
+        tap_services: RequestServices,
+        ttl: Duration,
+    ) -> Self {
         Self {
             inner: Arc::new(UserServiceInner {
                 pool,
                 dispatcher,
+                tap_services,
                 cache: Cache::builder()
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
@@ -226,7 +233,7 @@ impl UserService {
     /// Dispatch a user tap hook with standard `{ "user_id": "..." }` payload.
     async fn dispatch_tap(&self, tap_name: &str, user_id: Uuid, acting_user: &UserContext) {
         let json = serde_json::json!({ "user_id": user_id.to_string() });
-        let state = RequestState::without_services(acting_user.clone());
+        let state = RequestState::new(acting_user.clone(), self.inner.tap_services.clone());
         let _ = self
             .inner
             .dispatcher

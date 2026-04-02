@@ -89,7 +89,7 @@ impl ContentTypeRegistry {
             match serde_json::from_str::<Vec<ContentTypeDefinition>>(&result.output) {
                 Ok(definitions) => {
                     for def in definitions {
-                        if let Err(e) = self.register_type(&def).await {
+                        if let Err(e) = self.register_type(&def, &result.plugin_name).await {
                             warn!(
                                 plugin = %result.plugin_name,
                                 type_name = %def.machine_name,
@@ -129,8 +129,8 @@ impl ContentTypeRegistry {
         Ok(())
     }
 
-    /// Register a content type definition.
-    async fn register_type(&self, def: &ContentTypeDefinition) -> Result<()> {
+    /// Register a content type definition from a plugin.
+    async fn register_type(&self, def: &ContentTypeDefinition, plugin_name: &str) -> Result<()> {
         // Upsert to database
         let input = CreateItemType {
             type_name: def.machine_name.clone(),
@@ -138,7 +138,7 @@ impl ContentTypeRegistry {
             description: Some(def.description.clone()),
             has_title: Some(true),
             title_label: resolve_title_label(def.title_label.as_deref(), None),
-            plugin: "plugin".to_string(), // TODO: Get actual plugin name
+            plugin: plugin_name.to_string(),
             settings: Some(serde_json::to_value(&def.fields).context("serialize fields")?),
         };
 

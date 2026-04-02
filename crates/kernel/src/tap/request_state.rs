@@ -9,6 +9,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::cache::CacheLayer;
 use crate::lockout::LockoutService;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::ai_token_budget::AiTokenBudgetService;
@@ -63,10 +64,13 @@ impl Default for UserContext {
 /// Services available to plugins during tap execution.
 ///
 /// Services are shared via Arc for efficient cloning into each Store.
+/// All fields are `Clone`-cheap (PgPool wraps Arc, CacheLayer wraps Arc, etc.).
 #[derive(Clone)]
 pub struct RequestServices {
     /// Database connection pool.
     pub db: PgPool,
+    /// Two-tier cache (Moka L1 + Redis L2). None in test/background contexts.
+    pub cache: Option<CacheLayer>,
     /// Lockout service for rate limiting (None in background/cron contexts).
     pub lockout: Option<Arc<LockoutService>>,
     /// AI provider service for making AI requests from plugins.
@@ -78,7 +82,27 @@ pub struct RequestServices {
 }
 
 impl RequestServices {
-    /// Create services for background tasks (cron, batch) — no lockout needed.
+    /// Create services for tap dispatch from request-handling contexts.
+    ///
+    /// Includes the cache layer for plugin cache host functions.
+    pub fn for_request(
+        db: PgPool,
+        cache: Option<CacheLayer>,
+        ai_providers: Option<Arc<AiProviderService>>,
+        ai_budgets: Option<Arc<AiTokenBudgetService>>,
+        http: reqwest::Client,
+    ) -> Self {
+        Self {
+            db,
+            cache,
+            lockout: None,
+            ai_providers,
+            ai_budgets,
+            http,
+        }
+    }
+
+    /// Create services for background tasks (cron, batch) — no lockout or cache.
     pub fn for_background(
         db: PgPool,
         ai_providers: Option<Arc<AiProviderService>>,
@@ -87,6 +111,7 @@ impl RequestServices {
     ) -> Self {
         Self {
             db,
+            cache: None,
             lockout: None,
             ai_providers,
             ai_budgets,
@@ -99,6 +124,7 @@ impl std::fmt::Debug for RequestServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RequestServices")
             .field("db", &"PgPool")
+            .field("cache", &self.cache.as_ref().map(|_| "CacheLayer"))
             .field("lockout", &self.lockout.as_ref().map(|_| "LockoutService"))
             .field(
                 "ai_providers",

@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
 use crate::models::{CreateItem, Item, ItemRevision, UpdateItem};
-use crate::tap::{RequestState, TapDispatcher, UserContext};
+use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 use trovato_sdk::types::AccessResult;
 
 /// Maximum entries in the item cache.
@@ -38,6 +38,8 @@ pub struct ItemService {
 struct ItemServiceInner {
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
+    /// Services template for tap dispatch — cloned per invocation.
+    tap_services: RequestServices,
     cache: Cache<Uuid, Item>,
     /// Cached stage lookups — stages rarely change and there are typically only 3.
     stage_cache: Cache<Uuid, Stage>,
@@ -95,11 +97,17 @@ pub struct ItemAccessInput {
 
 impl ItemService {
     /// Create a new item service.
-    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>, ttl: Duration) -> Self {
+    pub fn new(
+        pool: PgPool,
+        dispatcher: Arc<TapDispatcher>,
+        tap_services: RequestServices,
+        ttl: Duration,
+    ) -> Self {
         Self {
             inner: Arc::new(ItemServiceInner {
                 pool,
                 dispatcher,
+                tap_services,
                 cache: Cache::builder()
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
@@ -114,6 +122,11 @@ impl ItemService {
                     .build(),
             }),
         }
+    }
+
+    /// Build a `RequestState` for tap dispatch with the user context and services.
+    fn tap_state(&self, user: &UserContext) -> RequestState {
+        RequestState::new(user.clone(), self.inner.tap_services.clone())
     }
 
     /// Create a new item with tap_item_presave and tap_item_insert invocations.
@@ -131,7 +144,7 @@ impl ItemService {
             "status": input.status,
         });
         let presave_input = serde_json::to_string(&presave_json).context("serialize presave")?;
-        let presave_state = RequestState::without_services(user.clone());
+        let presave_state = self.tap_state(user);
 
         let presave_results = self
             .inner
@@ -162,7 +175,7 @@ impl ItemService {
 
         // Invoke tap_item_insert for post-insert taps
         let item_json = serde_json::to_string(&item).context("serialize item")?;
-        let state = RequestState::without_services(user.clone());
+        let state = self.tap_state(user);
 
         let _results = self
             .inner
@@ -278,7 +291,7 @@ impl ItemService {
 
         // Invoke tap_item_view for rendering transformations
         let item_json = serde_json::to_string(&item).context("serialize item")?;
-        let state = RequestState::without_services(user.clone());
+        let state = self.tap_state(user);
 
         let results = self
             .inner
@@ -317,7 +330,7 @@ impl ItemService {
             "status": input.status.unwrap_or(existing.status),
         });
         let presave_input = serde_json::to_string(&presave_json).context("serialize presave")?;
-        let presave_state = RequestState::without_services(user.clone());
+        let presave_state = self.tap_state(user);
 
         let presave_results = self
             .inner
@@ -346,7 +359,7 @@ impl ItemService {
         if let Some(ref i) = item {
             // Invoke tap_item_update
             let item_json = serde_json::to_string(i).context("serialize item")?;
-            let state = RequestState::without_services(user.clone());
+            let state = self.tap_state(user);
 
             let _results = self
                 .inner
@@ -379,7 +392,7 @@ impl ItemService {
 
         // Invoke tap_item_delete (can abort deletion)
         let item_json = serde_json::to_string(&item).context("serialize item")?;
-        let state = RequestState::without_services(user.clone());
+        let state = self.tap_state(user);
 
         let _results = self
             .inner
@@ -500,7 +513,7 @@ impl ItemService {
         };
 
         let input_json = serde_json::to_string(&input).context("serialize access input")?;
-        let state = RequestState::without_services(user.clone());
+        let state = self.tap_state(user);
 
         // Invoke tap_item_access
         let results = self
@@ -688,7 +701,7 @@ impl ItemService {
 
         // Invoke tap_item_update for the revert
         let item_json = serde_json::to_string(&updated).context("serialize item")?;
-        let state = RequestState::without_services(user.clone());
+        let state = self.tap_state(user);
 
         let _ = self
             .inner

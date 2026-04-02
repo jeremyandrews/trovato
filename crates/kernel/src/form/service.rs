@@ -329,15 +329,82 @@ impl FormService {
             })
     }
 
-    /// Validate form values.
+    /// Validate form values against content type field definitions.
+    ///
+    /// Checks required fields and basic type constraints (email format).
+    /// Returns an empty vec for non-item forms or unknown item types.
     async fn validate_form(
         &self,
-        _form_id: &str,
-        _values: &HashMap<String, Value>,
+        form_id: &str,
+        values: &HashMap<String, Value>,
         _state: &RequestState,
     ) -> Result<Vec<ValidationError>> {
-        // TODO: Load form definition and validate required fields
-        Ok(Vec::new())
+        let mut errors = Vec::new();
+
+        // Extract content type from form_id pattern "item_add_{type}" or "item_edit_{type}"
+        let type_name = form_id
+            .strip_prefix("item_add_")
+            .or_else(|| form_id.strip_prefix("item_edit_"));
+
+        let Some(type_name) = type_name else {
+            return Ok(errors);
+        };
+
+        // Load content type definition
+        let Some(db_type) = crate::models::ItemType::find_by_type(&self.pool, type_name).await?
+        else {
+            return Ok(errors);
+        };
+
+        // Parse field definitions from settings
+        let fields: Vec<trovato_sdk::types::FieldDefinition> = db_type
+            .settings
+            .get("fields")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        for field in &fields {
+            if field.required {
+                let is_empty = match values.get(&field.field_name) {
+                    None | Some(Value::Null) => true,
+                    Some(Value::String(s)) => s.trim().is_empty(),
+                    Some(Value::Object(m)) => {
+                        // Handle {"value": ""} pattern from compound fields
+                        m.get("value")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| s.trim().is_empty())
+                            || m.is_empty()
+                    }
+                    _ => false,
+                };
+                if is_empty {
+                    errors.push(ValidationError::field(
+                        &field.field_name,
+                        format!("{} is required.", field.label),
+                    ));
+                }
+            }
+
+            // Type-specific validation for non-empty values
+            if let Some(value) = values.get(&field.field_name) {
+                let text = value
+                    .as_str()
+                    .or_else(|| value.get("value").and_then(|v| v.as_str()));
+
+                if let Some(text) = text
+                    && !text.is_empty()
+                    && matches!(field.field_type, trovato_sdk::types::FieldType::Email)
+                    && !text.contains('@')
+                {
+                    errors.push(ValidationError::field(
+                        &field.field_name,
+                        format!("{} must be a valid email address.", field.label),
+                    ));
+                }
+            }
+        }
+
+        Ok(errors)
     }
 
     /// Save form state for AJAX/multi-step forms.

@@ -20,6 +20,7 @@ pub struct CronTasks {
     files: Option<Arc<FileService>>,
     content_lock: Option<Arc<services::content_lock::ContentLockService>>,
     audit: Option<Arc<services::audit::AuditService>>,
+    email: Option<Arc<services::email::EmailService>>,
 }
 
 impl CronTasks {
@@ -31,6 +32,7 @@ impl CronTasks {
             files: None,
             content_lock: None,
             audit: None,
+            email: None,
         }
     }
 
@@ -46,6 +48,7 @@ impl CronTasks {
             files: Some(files),
             content_lock: None,
             audit: None,
+            email: None,
         }
     }
 
@@ -57,6 +60,11 @@ impl CronTasks {
     ) {
         self.content_lock = content_lock;
         self.audit = audit;
+    }
+
+    /// Set the email service for sending queued emails.
+    pub fn set_email_service(&mut self, email: Option<Arc<services::email::EmailService>>) {
+        self.email = email;
     }
 
     /// Cleanup temporary files older than 6 hours.
@@ -217,13 +225,33 @@ impl CronTasks {
     }
 
     /// Process a single email queue item.
+    ///
+    /// Expects JSON with `to`, `subject`, and `body` fields.
+    /// Drops the email with a debug log if no email service is configured.
     async fn process_email_item(&self, item: &str) -> Result<()> {
-        // Parse email item JSON
-        let _email: serde_json::Value =
+        let email_data: serde_json::Value =
             serde_json::from_str(item).context("failed to parse email item")?;
 
-        // TODO: Implement actual email sending (Phase 6B or later)
-        debug!("would send email: {}", item);
+        let to = email_data
+            .get("to")
+            .and_then(|v| v.as_str())
+            .context("email item missing 'to' field")?;
+        let subject = email_data
+            .get("subject")
+            .and_then(|v| v.as_str())
+            .context("email item missing 'subject' field")?;
+        let body = email_data
+            .get("body")
+            .and_then(|v| v.as_str())
+            .context("email item missing 'body' field")?;
+
+        let Some(ref email_service) = self.email else {
+            debug!(to = %to, subject = %subject, "email service not configured, dropping queued email");
+            return Ok(());
+        };
+
+        email_service.send(to, subject, body).await?;
+        info!(to = %to, subject = %subject, "sent queued email");
         Ok(())
     }
 

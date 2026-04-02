@@ -733,6 +733,86 @@ async fn export_user_data(
         }
     };
 
+    // Collect user-authored items with only personal_data fields
+    let items = match crate::models::Item::list_by_author(state.db(), target_user_id).await {
+        Ok(items) => {
+            let mut filtered = Vec::new();
+            for item in items {
+                // Load content type to filter personal_data fields
+                let personal_fields = get_personal_fields(state.db(), &item.item_type).await;
+                let mut item_data = serde_json::json!({
+                    "id": item.id,
+                    "type": item.item_type,
+                    "title": item.title,
+                    "created": item.created,
+                    "changed": item.changed,
+                });
+                if !personal_fields.is_empty() {
+                    let mut pii_fields = serde_json::Map::new();
+                    if let Some(obj) = item.fields.as_object() {
+                        for name in &personal_fields {
+                            if let Some(val) = obj.get(name) {
+                                pii_fields.insert(name.clone(), val.clone());
+                            }
+                        }
+                    }
+                    item_data["personal_fields"] = serde_json::Value::Object(pii_fields);
+                }
+                filtered.push(item_data);
+            }
+            serde_json::Value::Array(filtered)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load user items for export");
+            serde_json::json!([])
+        }
+    };
+
+    // Collect user-authored comments
+    let comments = match sqlx::query_as::<_, crate::models::Comment>(
+        "SELECT * FROM comment WHERE author_id = $1 ORDER BY created DESC",
+    )
+    .bind(target_user_id)
+    .fetch_all(state.db())
+    .await
+    {
+        Ok(rows) => serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load user comments for export");
+            serde_json::json!([])
+        }
+    };
+
+    // Collect user-uploaded files (filename, size, type — no content)
+    let files: serde_json::Value = match sqlx::query(
+        "SELECT id, filename, filemime, filesize, created FROM file_managed WHERE owner_id = $1 ORDER BY created DESC",
+    )
+    .bind(target_user_id)
+    .fetch_all(state.db())
+    .await
+    {
+        Ok(rows) => {
+            let entries: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    use sqlx::Row;
+                    serde_json::json!({
+                        "id": r.get::<Uuid, _>("id"),
+                        "filename": r.get::<String, _>("filename"),
+                        "filemime": r.get::<String, _>("filemime"),
+                        "filesize": r.get::<i64, _>("filesize"),
+                        "created": r.get::<i64, _>("created"),
+                    })
+                })
+                .collect();
+            serde_json::Value::Array(entries)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load user files for export");
+            serde_json::json!([])
+        }
+    };
+
     // Build export payload
     let export = serde_json::json!({
         "user": {
@@ -745,14 +825,31 @@ async fn export_user_data(
             "consent_date": user.consent_date,
             "consent_version": user.consent_version,
         },
-        "items": [],
-        "comments": [],
-        "files": [],
-        "plugin_data": [],
+        "items": items,
+        "comments": comments,
+        "files": files,
     });
 
-    // TODO: Populate items (PII fields only), comments, files via DB queries.
-    // TODO: Dispatch tap_user_export and aggregate plugin contributions.
-
     (StatusCode::OK, Json(export)).into_response()
+}
+
+/// Get field names marked `personal_data: true` for a content type.
+///
+/// Returns an empty vec if the type is not found or has no PII fields.
+async fn get_personal_fields(pool: &sqlx::PgPool, item_type: &str) -> Vec<String> {
+    let Ok(Some(db_type)) = crate::models::ItemType::find_by_type(pool, item_type).await else {
+        return Vec::new();
+    };
+
+    let fields: Vec<trovato_sdk::types::FieldDefinition> = db_type
+        .settings
+        .get("fields")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    fields
+        .into_iter()
+        .filter(|f| f.personal_data)
+        .map(|f| f.field_name)
+        .collect()
 }

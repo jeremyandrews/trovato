@@ -11,7 +11,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::models::{Comment, CreateComment, UpdateComment};
-use crate::tap::{RequestState, TapDispatcher, UserContext};
+use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 use trovato_sdk::types::AccessResult;
 
 /// Service for comment CRUD operations with tap integration.
@@ -26,14 +26,28 @@ pub struct CommentService {
 struct CommentServiceInner {
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
+    tap_services: RequestServices,
 }
 
 impl CommentService {
     /// Create a new comment service.
-    pub fn new(pool: PgPool, dispatcher: Arc<TapDispatcher>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        dispatcher: Arc<TapDispatcher>,
+        tap_services: RequestServices,
+    ) -> Self {
         Self {
-            inner: Arc::new(CommentServiceInner { pool, dispatcher }),
+            inner: Arc::new(CommentServiceInner {
+                pool,
+                dispatcher,
+                tap_services,
+            }),
         }
+    }
+
+    /// Build a `RequestState` for tap dispatch with the user context and services.
+    fn tap_state(&self, user: &UserContext) -> RequestState {
+        RequestState::new(user.clone(), self.inner.tap_services.clone())
     }
 
     /// Load a comment by ID.
@@ -46,7 +60,7 @@ impl CommentService {
         let comment = Comment::create(&self.inner.pool, input).await?;
 
         let json = serde_json::to_string(&comment).context("serialize comment")?;
-        let state = RequestState::without_services(user.clone());
+        let state = self.tap_state(user);
         let _ = self
             .inner
             .dispatcher
@@ -68,7 +82,7 @@ impl CommentService {
 
         if let Some(ref c) = comment {
             let json = serde_json::to_string(c).context("serialize comment")?;
-            let state = RequestState::without_services(user.clone());
+            let state = self.tap_state(user);
             let _ = self
                 .inner
                 .dispatcher
@@ -86,7 +100,7 @@ impl CommentService {
         // Load to dispatch tap before deletion
         if let Some(comment) = self.load(id).await? {
             let json = serde_json::to_string(&comment).context("serialize comment")?;
-            let state = RequestState::without_services(user.clone());
+            let state = self.tap_state(user);
             let _ = self
                 .inner
                 .dispatcher
@@ -153,7 +167,7 @@ impl CommentService {
         });
 
         let input_json = input.to_string();
-        let state = RequestState::without_services(user.clone());
+        let state = self.tap_state(user);
 
         let results = self
             .inner
