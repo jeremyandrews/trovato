@@ -3,7 +3,7 @@
 **Tutorial Part:** Supporting (spans Phase 4-5 kernel + Phase 6 plugins)
 **Trovato Phase Dependency:** Phase 4 (Stages, Permissions), Phase 5 (Form API, Theming)
 **BMAD Epic:** 31
-**Status:** Phase A complete (provider registry, ai_request, token budgets, permissions, chatbot, admin UI, MCP server), trovato_ai plugin created, Phases B-D in progress
+**Status:** Phases A-D complete. Phase A: provider registry, ai_request, token budgets, permissions, chatbot, admin UI. Phase B: field rules runtime (tap_item_presave), form AI assist buttons (tap_form_alter + /api/v1/ai/assist + client-side JS), VectorStore trait + pgvector. Phase C: SSE streaming chat + RAG. Phase D: MCP server with content CRUD, search, Gather, categories.
 
 ---
 

@@ -192,6 +192,13 @@ pub enum FilterOperator {
     /// PostgreSQL full-text search using tsvector/tsquery.
     #[serde(rename = "full_text_search")]
     FullTextSearch,
+    /// Semantic similarity search via vector embeddings (pgvector).
+    ///
+    /// The filter value is a text query that gets embedded by the AI
+    /// provider, then compared against stored item embeddings using
+    /// cosine distance. Requires pgvector extension.
+    #[serde(rename = "semantic_similarity")]
+    SemanticSimilarity,
     /// Custom filter provided by a plugin extension.
     #[serde(rename = "custom")]
     Custom(String),

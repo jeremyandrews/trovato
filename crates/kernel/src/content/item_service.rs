@@ -296,7 +296,7 @@ impl ItemService {
     pub async fn update(
         &self,
         id: Uuid,
-        input: UpdateItem,
+        mut input: UpdateItem,
         user: &UserContext,
     ) -> Result<Option<Item>> {
         // Load existing item
@@ -307,6 +307,37 @@ impl ItemService {
         // Check access
         if !self.check_access(&existing, "edit", user).await? {
             anyhow::bail!("access denied");
+        }
+
+        // Invoke tap_item_presave — plugins can modify fields before save.
+        let presave_json = serde_json::json!({
+            "item_type": existing.item_type,
+            "title": input.title.as_deref().unwrap_or(&existing.title),
+            "fields": input.fields.as_ref().unwrap_or(&existing.fields),
+            "status": input.status.unwrap_or(existing.status),
+        });
+        let presave_input = serde_json::to_string(&presave_json).context("serialize presave")?;
+        let presave_state = RequestState::without_services(user.clone());
+
+        let presave_results = self
+            .inner
+            .dispatcher
+            .dispatch("tap_item_presave", &presave_input, presave_state)
+            .await;
+
+        // Apply presave modifications — merge plugin-returned fields into input.
+        for result in presave_results {
+            if let Ok(modified) = serde_json::from_str::<serde_json::Value>(&result.output)
+                && let Some(fields) = modified.get("fields")
+                && let Some(obj) = fields.as_object()
+            {
+                let input_fields = input.fields.get_or_insert_with(|| existing.fields.clone());
+                if let Some(input_obj) = input_fields.as_object_mut() {
+                    for (k, v) in obj {
+                        input_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
         }
 
         // Update the item

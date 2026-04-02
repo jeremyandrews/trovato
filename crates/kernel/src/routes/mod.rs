@@ -12,6 +12,7 @@ pub mod admin_pathauto;
 pub mod admin_taxonomy;
 pub mod admin_translation;
 pub mod admin_user;
+pub mod api_ai_assist;
 pub mod api_chat;
 pub mod api_token;
 pub mod api_v1;

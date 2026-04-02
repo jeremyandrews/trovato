@@ -20,3 +20,4 @@ pub mod redirect;
 pub mod role;
 pub mod tile;
 pub mod user;
+pub mod vector_store;

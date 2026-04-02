@@ -73,6 +73,33 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/user-api")]
+unsafe extern "C" {
+    #[link_name = "current-user-id"]
+    fn __current_user_id(out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "current-user-has-permission"]
+    fn __current_user_has_permission(perm_ptr: i32, perm_len: i32) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/variables")]
+unsafe extern "C" {
+    #[link_name = "get"]
+    fn __variables_get(
+        name_ptr: i32,
+        name_len: i32,
+        default_ptr: i32,
+        default_len: i32,
+        out_ptr: i32,
+        out_max_len: i32,
+    ) -> i32;
+
+    #[link_name = "set"]
+    fn __variables_set(name_ptr: i32, name_len: i32, value_ptr: i32, value_len: i32) -> i32;
+}
+
 // --------------------------------------------------------------------------
 // Ergonomic wrappers
 // --------------------------------------------------------------------------
@@ -206,6 +233,108 @@ pub fn queue_push(_queue_name: &str, _payload: &serde_json::Value) -> Result<(),
     Ok(())
 }
 
+/// Get the current user's ID as a string.
+///
+/// Returns an empty string if no user is authenticated or the host
+/// function fails.
+#[cfg(target_arch = "wasm32")]
+pub fn current_user_id() -> String {
+    let mut buf = vec![0u8; 256];
+    let result = unsafe { __current_user_id(buf.as_mut_ptr() as i32, buf.len() as i32) };
+    if result <= 0 {
+        return String::new();
+    }
+    buf.truncate(result as usize);
+    String::from_utf8(buf).unwrap_or_default()
+}
+
+/// Get the current user's ID (stub for native testing, returns empty).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn current_user_id() -> String {
+    String::new()
+}
+
+/// Check if the current user has a specific permission.
+///
+/// Returns `true` if the user has the permission, `false` otherwise
+/// (including on host function failure).
+#[cfg(target_arch = "wasm32")]
+pub fn current_user_has_permission(permission: &str) -> bool {
+    let result = unsafe {
+        __current_user_has_permission(permission.as_ptr() as i32, permission.len() as i32)
+    };
+    result == 1
+}
+
+/// Check permission (stub for native testing, always returns true).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn current_user_has_permission(_permission: &str) -> bool {
+    true
+}
+
+/// Get a site variable by name, with a default fallback.
+///
+/// Variables are persistent key-value configuration stored in the
+/// database. Returns the default value if the variable is not set.
+///
+/// # Errors
+///
+/// Returns a negative error code on host function failure.
+#[cfg(target_arch = "wasm32")]
+pub fn variables_get(name: &str, default: &str) -> Result<String, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __variables_get(
+            name.as_ptr() as i32,
+            name.len() as i32,
+            default.as_ptr() as i32,
+            default.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        Err(result)
+    } else {
+        let len = result as usize;
+        if len >= MAX_OUTPUT_BUFFER {
+            return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
+        }
+        buf.truncate(len);
+        String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)
+    }
+}
+
+/// Get a site variable (stub for native testing, returns default).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn variables_get(_name: &str, default: &str) -> Result<String, i32> {
+    Ok(default.to_string())
+}
+
+/// Set a site variable.
+///
+/// # Errors
+///
+/// Returns a negative error code on failure, 0 on success.
+#[cfg(target_arch = "wasm32")]
+pub fn variables_set(name: &str, value: &str) -> Result<(), i32> {
+    let result = unsafe {
+        __variables_set(
+            name.as_ptr() as i32,
+            name.len() as i32,
+            value.as_ptr() as i32,
+            value.len() as i32,
+        )
+    };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Set a site variable (stub for native testing, always succeeds).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn variables_set(_name: &str, _value: &str) -> Result<(), i32> {
+    Ok(())
+}
+
 /// Log a message through the kernel's tracing system.
 ///
 /// Valid levels: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"`.
@@ -336,6 +465,27 @@ mod tests {
         let params = vec![serde_json::json!(42), serde_json::json!("hello")];
         let result = execute_raw("UPDATE foo SET bar = $1 WHERE name = $2", &params);
         assert_eq!(result.unwrap(), 0);
+    }
+
+    #[test]
+    fn current_user_id_stub_returns_empty() {
+        assert!(current_user_id().is_empty());
+    }
+
+    #[test]
+    fn current_user_has_permission_stub_returns_true() {
+        assert!(current_user_has_permission("use ai"));
+    }
+
+    #[test]
+    fn variables_get_stub_returns_default() {
+        let result = variables_get("some.key", "fallback").unwrap();
+        assert_eq!(result, "fallback");
+    }
+
+    #[test]
+    fn variables_set_stub_succeeds() {
+        assert!(variables_set("some.key", "value").is_ok());
     }
 
     #[test]

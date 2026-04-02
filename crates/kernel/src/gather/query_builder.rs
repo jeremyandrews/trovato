@@ -489,6 +489,16 @@ impl GatherQueryBuilder {
                 let uuid = filter.value.as_uuid()?;
                 self.build_category_filter(&filter.field, vec![uuid], true)
             }
+            FilterOperator::SemanticSimilarity => {
+                // Semantic similarity requires pgvector. At query-build time
+                // we cannot run an async embedding request, so this operator
+                // is handled at the GatherService level. If it reaches here,
+                // the vector store is not available — return no-match.
+                tracing::warn!(
+                    "SemanticSimilarity filter reached query builder; pgvector may not be available"
+                );
+                Some(Expr::cust("FALSE"))
+            }
             FilterOperator::Custom(name) => {
                 if let Some(ref extensions) = self.extensions
                     && let Some((handler, config)) = extensions.get_filter(name)
