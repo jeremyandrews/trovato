@@ -27,6 +27,22 @@ services:
       timeout: 5s
       retries: 5
 
+  trovato:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://trovato:trovato@postgres:5432/trovato
+      REDIS_URL: redis://redis:6379
+      DATABASE_MAX_CONNECTIONS: "10"
+      RUST_LOG: info,tower_http=debug,sqlx=warn
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:

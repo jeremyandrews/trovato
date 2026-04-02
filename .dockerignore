@@ -1,0 +1,10 @@
+target/
+.git/
+.github/
+.env
+*.md
+!README.md
+!INSTALL.md
+docs/
+_bmad-output/
+.pre-commit-config.yaml
