@@ -217,6 +217,7 @@ mod tests {
         assert!(html.contains("tile--chat"));
         assert!(html.contains("chat-widget"));
         assert!(html.contains("chat-messages"));
-        assert!(html.contains("/api/v1/chat"));
+        // JS is now in static/js/chat-widget.js, loaded via script src
+        assert!(html.contains("chat-widget.js"));
     }
 }
