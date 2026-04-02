@@ -616,9 +616,9 @@ fn form_builder_renders_all_field_types() {
     assert!(form.contains(r#"name="contact""#));
     assert!(form.contains(r#"type="email""#));
 
-    // RecordReference -> UUID input with help
+    // RecordReference -> autocomplete widget with hidden UUID field
     assert!(form.contains(r#"name="related""#));
-    assert!(form.contains("UUID"));
+    assert!(form.contains("record-ref-autocomplete"));
 
     // File
     assert!(form.contains(r#"name="attachment""#));
