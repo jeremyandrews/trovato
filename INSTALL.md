@@ -2,6 +2,18 @@
 
 This guide walks through a fresh installation of Trovato CMS from source.
 
+## Docker Alternative
+
+If you don't have Rust installed, you can use Docker for the full development environment:
+
+```bash
+docker compose --profile dev up -d
+docker compose exec dev bash
+# Full Rust toolchain available inside the container
+```
+
+See [Docker Development Guide](docs/docker-development.md) for details.
+
 ## Prerequisites
 
 - **Rust** (stable toolchain, 2024 edition): install via [rustup](https://rustup.rs/)

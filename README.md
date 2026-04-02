@@ -162,6 +162,18 @@ cp .env.example .env
 cargo run --release
 ```
 
+### Without Rust Installed
+
+Use the dev container for a full development environment without installing Rust:
+
+```bash
+docker compose --profile dev up -d
+docker compose exec dev bash
+# Inside the container: cargo build, cargo test, cargo run all work
+```
+
+See [Docker Development Guide](docs/docker-development.md) for full details including VS Code Dev Containers integration.
+
 ### Manual Setup
 
 ```bash
@@ -281,6 +293,7 @@ trovato/
 
 | Document | Description |
 |----------|-------------|
+| [Docker Development Guide](docs/docker-development.md) | Development with Docker (no Rust required) |
 | [Plugin Development Guide](docs/plugin-development.md) | Complete guide for plugin authors |
 | [Plugin Quick Reference](docs/plugin-quick-reference.md) | Condensed API reference |
 | [API Reference](docs/api-reference.md) | HTTP API endpoints |
