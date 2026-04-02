@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** All 7 parts
 **Trovato Phase Dependency:** All epics A–H landed
 **BMAD Epic:** 48
-**Status:** Not started
+**Status:** Partially complete. All 8 tutorial parts exist with recipes and screenshots. Inclusivity-First narrative integrated into Parts 1 and 8. Sync-check script maintained. Pending: full narrative pass incorporating all Epics A-H feature changes, screenshot refresh for any UI changes from beta prep.
 **Estimated Effort:** 2–3 weeks
 **Dependencies:** Epics A–H (each ships its own tutorial updates; this epic covers net-new content and systemic issues)
 **Blocks:** Epic J (19)

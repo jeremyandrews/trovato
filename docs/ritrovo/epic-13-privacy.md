@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** 6 (community — user registration), 4 (editorial — revisions)
 **Trovato Phase Dependency:** Phase 1 (User Auth) — already complete
 **BMAD Epic:** 43
-**Status:** Not started
+**Status:** ~85% complete. Implemented: personal_data bool on FieldDefinition (SDK), user consent fields migration (consent_given, consent_date, consent_version), retention_days on items, /api/v1/user/export endpoint (filters to PII fields, queries items/comments/files), tap_user_export hook registered. Remaining: plugin-side tap_user_export implementations, export format documentation.
 **Estimated Effort:** 2–3 weeks
 **Dependencies:** None (independent of A–C)
 **Blocks:** None

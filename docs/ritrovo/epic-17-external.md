@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** None directly (infrastructure for API consumers and AI plugins)
 **Trovato Phase Dependency:** Phase 6 (API, AI Core) — already complete
 **BMAD Epic:** 47
-**Status:** Not started
+**Status:** ~70% complete. Implemented: versioned API router (/api/v1/), inject_api_version middleware (X-API-Version: 1 header), paginated ListEnvelope response format, RouteMetadata/RouteRegistry for kernel route annotations, /api/v1/ai/assist endpoint, Gather-as-JSON via format=json. Remaining: OpenAPI spec generation, client SDK generation, plugin route metadata integration.
 **Estimated Effort:** 3–4 weeks
 **Dependencies:** Epic F (15) — needs `ai_generated` flag on `item_revision`
 **Blocks:** None

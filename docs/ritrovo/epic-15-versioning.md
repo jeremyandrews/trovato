@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** 4 (editorial engine — revisions)
 **Trovato Phase Dependency:** Phase 3 (Content Model, Revisions) — already complete
 **BMAD Epic:** 45
-**Status:** Not started
+**Status:** ~95% complete. Implemented: change_summary JSONB column on item_revision, ai_generated boolean flag, revision immutability trigger (prevents UPDATE, only INSERT/DELETE CASCADE allowed). Remaining: UI for viewing change_summary diffs.
 **Estimated Effort:** 2–3 weeks
 **Dependencies:** None (independent)
 **Blocks:** Epic H (17) — `ai_generated` flag needed for AI audit trail

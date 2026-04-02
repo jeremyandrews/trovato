@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** None directly (infrastructure changes are invisible to tutorial narrative)
 **Trovato Phase Dependency:** Phase 6 (Rate Limiting, Hardening) — already complete
 **BMAD Epic:** 42
-**Status:** Not started
+**Status:** ~95% complete. Implemented: security_headers.rs middleware (CSP, X-Frame-Options: DENY, X-Content-Type-Options: nosniff, Referrer-Policy, Permissions-Policy, HSTS on HTTPS), crypto host functions (SHA-256, HMAC-SHA256, secure random bytes, constant-time comparison). Remaining: CSP report collection endpoint, formal CORS configuration UI.
 **Estimated Effort:** 3–4 weeks
 **Dependencies:** Epic A (10) — form accessibility patterns inform field_access story
 **Blocks:** None

@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** All (tenant context visible even in single-tenant mode, like stage_id)
 **Trovato Phase Dependency:** Phase 3 (Content Model) — already complete
 **BMAD Epic:** 46
-**Status:** Not started
+**Status:** Complete. Implemented: tenant table with DEFAULT_TENANT_ID, Tenant/TenantContext models, tenant resolution middleware (default/header/subdomain-ready), tenant_id column + FK + indexes on all content tables (item, item_revision, category, category_tag, file_managed, site_config, url_alias, menu_link, tile, comment), user_tenant junction table with all users seeded to default tenant. Zero-overhead single-tenant default.
 **Estimated Effort:** 5–7 weeks (largest epic — most invasive schema and service changes)
 **Dependencies:** None (independent, but should be aware of D's retention_days and F's revision columns to coordinate migrations)
 **Blocks:** None

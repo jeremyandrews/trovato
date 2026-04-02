@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** 7 (going global), 3 (templates/render)
 **Trovato Phase Dependency:** Phase 5 (Theming) — already complete
 **BMAD Epic:** 41
-**Status:** Not started
+**Status:** ~90% complete. Implemented: full language negotiation middleware (URL prefix, Accept-Language, session, default), RTL_LANGUAGES constant (15 codes), text_direction_for_language(), locale-aware format_date filter (14 locale patterns), lang/dir attributes in base.html, hreflang links. Remaining: CLDR/ICU integration (plugin territory), translation memory.
 **Estimated Effort:** 2–3 weeks
 **Dependencies:** Epic A (10) — RTL `dir` attribute and logical CSS properties established there
 **Blocks:** None

@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** 3 (templates/render), 5 (forms/input), 1 (base install), 6 (community)
 **Trovato Phase Dependency:** Phase 5 (Form API, Theming) — already complete
 **BMAD Epic:** 40
-**Status:** Not started
+**Status:** ~80% complete. Implemented: skip link + main landmark in base.html, focus-visible CSS, visually-hidden class, aria-live="polite" div, 8 ARIA helpers on ElementBuilder (SDK), form elements with aria-describedby/aria-invalid, RTL dir attribute. Remaining: comprehensive landmark roles in all templates, aria-live region content population.
 **Estimated Effort:** 3–4 weeks
 **Dependencies:** None (this epic lands first)
 **Blocks:** Epic B (i18n), Epic C (Security — form accessibility patterns)

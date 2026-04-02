@@ -3,7 +3,7 @@
 **Tutorial Parts Affected:** None directly (performance infrastructure is invisible to tutorial narrative)
 **Trovato Phase Dependency:** Phase 6 (Caching, Search, Hardening) — already complete
 **BMAD Epic:** 44
-**Status:** Not started
+**Status:** Not started. Gather max_page_size is configurable. Image blocks emit loading="lazy". Two-tier Moka+Redis cache in place. No formal benchmark suite or profiler integration yet.
 **Estimated Effort:** 2–3 weeks
 **Dependencies:** None (independent)
 **Blocks:** None
