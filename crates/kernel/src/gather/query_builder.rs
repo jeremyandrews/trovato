@@ -9,7 +9,7 @@
 use super::extension::{FilterContext, GatherExtensionRegistry};
 use super::handlers::is_safe_identifier;
 use super::types::{
-    FilterOperator, FilterValue, JoinType, QueryDefinition, QueryFilter, SortDirection,
+    FilterOperator, FilterValue, JoinType, NullsOrder, QueryDefinition, QueryFilter, SortDirection,
 };
 use sea_query::{
     Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order, PostgresQueryBuilder, Query,
@@ -724,13 +724,28 @@ impl GatherQueryBuilder {
                 SortDirection::Desc => Order::Desc,
             };
 
+            let null_order = sort.nulls.as_ref().map(|n| match n {
+                NullsOrder::First => sea_query::NullOrdering::First,
+                NullsOrder::Last => sea_query::NullOrdering::Last,
+            });
+
             if sort.field.starts_with("fields.") {
                 let jsonb_path = &sort.field[7..];
                 let expr = self.jsonb_extract_expr(&self.definition.base_table, jsonb_path);
-                // Note: NULLS FIRST/LAST not yet supported via SeaQuery API for expressions
-                // TODO: Add support when SeaQuery adds this feature
-                let _nulls = &sort.nulls;
-                query.order_by_expr(expr, order);
+                if let Some(nulls) = null_order {
+                    query.order_by_expr_with_nulls(expr, order, nulls);
+                } else {
+                    query.order_by_expr(expr, order);
+                }
+            } else if let Some(nulls) = null_order {
+                query.order_by_with_nulls(
+                    (
+                        Alias::new(&self.definition.base_table),
+                        Alias::new(&sort.field),
+                    ),
+                    order,
+                    nulls,
+                );
             } else {
                 query.order_by(
                     (
