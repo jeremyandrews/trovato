@@ -98,17 +98,55 @@ Trovato.ajax = {
         }
     },
 
-    // Serialize form to JSON object
+    // Serialize form to JSON object.
+    // Handles both flat keys ("title") and array notation ("tags[0]", "field[1][value]").
     serializeForm: function(form) {
         var values = {};
         var formData = new FormData(form);
         formData.forEach(function(value, key) {
-            // Handle array notation (e.g., "field[0]")
-            if (key.indexOf('[') !== -1) {
-                // Skip array values for now, handle them separately
+            if (key.indexOf('[') === -1) {
+                // Simple key — flat assignment
+                values[key] = value;
                 return;
             }
-            values[key] = value;
+
+            // Array/nested notation: split "field[0][value]" into ["field", "0", "value"]
+            var base = key.substring(0, key.indexOf('['));
+            var segments = [];
+            var rest = key.substring(key.indexOf('['));
+            var match;
+            var re = /\[([^\]]*)\]/g;
+            while ((match = re.exec(rest)) !== null) {
+                segments.push(match[1]);
+            }
+
+            // Build the nested structure
+            var target = values;
+            if (!(base in target)) {
+                // First segment determines array vs object
+                target[base] = (/^\d+$/.test(segments[0])) ? [] : {};
+            }
+            target = target[base];
+
+            for (var i = 0; i < segments.length - 1; i++) {
+                var seg = segments[i];
+                var nextSeg = segments[i + 1];
+                if (!(seg in target) && !Array.isArray(target[seg])) {
+                    target[seg] = (/^\d+$/.test(nextSeg)) ? [] : {};
+                }
+                target = target[seg];
+            }
+
+            var lastSeg = segments[segments.length - 1];
+            if (lastSeg === '') {
+                // "field[]" push notation
+                if (!Array.isArray(values[base])) {
+                    values[base] = [];
+                }
+                values[base].push(value);
+            } else {
+                target[lastSeg] = value;
+            }
         });
         return values;
     },
@@ -170,9 +208,37 @@ document.addEventListener('click', function(e) {
     Trovato.ajax.submit(form, triggerName);
 });
 
-// Placeholder for field delta updates
+// Update multi-value field metadata after add/remove operations.
+// Called via invoke_callback from the kernel's AJAX response.
+// Args: { field: "field_name", count: N }
 Trovato.updateFieldDelta = function(args) {
-    console.log('Field delta updated:', args);
+    if (!args || !args.field) return;
+
+    // Update the hidden count input if it exists
+    var countInput = document.querySelector(
+        'input[name="' + args.field + '_count"]'
+    );
+    if (countInput) {
+        countInput.value = args.count;
+    }
+
+    // Update data-count attribute on the wrapper
+    var wrapper = document.getElementById(args.field + '-wrapper');
+    if (wrapper) {
+        wrapper.setAttribute('data-count', args.count);
+    }
+
+    // Toggle "Add another" button visibility (hide if at max)
+    var maxItems = wrapper && wrapper.getAttribute('data-max-items');
+    if (maxItems) {
+        var addBtn = wrapper.parentElement.querySelector(
+            '[data-ajax-trigger="add_' + args.field + '"]'
+        );
+        if (addBtn) {
+            addBtn.style.display =
+                args.count >= parseInt(maxItems, 10) ? 'none' : '';
+        }
+    }
 };
 
 // Reset the add field form after successful submission
