@@ -140,6 +140,7 @@
 //! - `-100` ([`ERR_SDK_SERIALIZE`]): JSON serialization failed before calling host
 //! - `-101` ([`ERR_SDK_UTF8`]): UTF-8 decoding of host response buffer failed
 //! - `-102` ([`ERR_SDK_DESERIALIZE`]): Host response JSON deserialization failed
+//! - `-103` ([`ERR_SDK_OUTPUT_BUFFER_EXCEEDED`]): Result exceeded 256KB buffer (truncation prevented)
 
 /// Memory export not found — the WASM module does not export `"memory"`.
 pub const ERR_MEMORY_MISSING: i32 = -1;
@@ -230,3 +231,10 @@ pub const ERR_SDK_UTF8: i32 = -101;
 
 /// Failed to deserialize the host response JSON into the expected Rust type.
 pub const ERR_SDK_DESERIALIZE: i32 = -102;
+
+/// Result exceeded the maximum output buffer size (256KB).
+///
+/// The host function wrote data up to the buffer limit but the full result
+/// was larger. The returned data would be truncated and invalid.
+/// Plugins should reduce their result set (add LIMIT) or paginate.
+pub const ERR_SDK_OUTPUT_BUFFER_EXCEEDED: i32 = -103;

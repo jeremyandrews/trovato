@@ -3,7 +3,12 @@
 //! These functions are only usable when compiled for `wasm32` targets.
 //! On native targets, stub implementations are provided for testing.
 
-/// Maximum output buffer size for query results (256KB).
+/// Maximum output buffer size for host function results (256KB).
+///
+/// If a host function fills the entire buffer, the SDK returns
+/// [`crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED`] rather than
+/// silently returning truncated data. Plugins should reduce result set
+/// size (add SQL LIMIT) or paginate.
 #[cfg(target_arch = "wasm32")]
 const MAX_OUTPUT_BUFFER: usize = 256 * 1024;
 
@@ -123,7 +128,11 @@ pub fn query_raw(sql: &str, params: &[serde_json::Value]) -> Result<String, i32>
     if result < 0 {
         Err(result)
     } else {
-        buf.truncate(result as usize);
+        let len = result as usize;
+        if len >= MAX_OUTPUT_BUFFER {
+            return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
+        }
+        buf.truncate(len);
         String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)
     }
 }
@@ -156,7 +165,11 @@ pub fn http_request(
     if result < 0 {
         Err(result)
     } else {
-        buf.truncate(result as usize);
+        let len = result as usize;
+        if len >= MAX_OUTPUT_BUFFER {
+            return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
+        }
+        buf.truncate(len);
         let json = String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)?;
         serde_json::from_str(&json).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
     }
@@ -242,7 +255,11 @@ pub fn ai_request(request: &crate::types::AiRequest) -> Result<crate::types::AiR
     if result < 0 {
         Err(result)
     } else {
-        buf.truncate(result as usize);
+        let len = result as usize;
+        if len >= MAX_OUTPUT_BUFFER {
+            return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
+        }
+        buf.truncate(len);
         let json = String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)?;
         serde_json::from_str(&json).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
     }
