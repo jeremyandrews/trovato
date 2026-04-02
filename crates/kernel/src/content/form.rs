@@ -306,19 +306,33 @@ impl FormBuilder {
                 )
             }
 
-            FieldType::RecordReference(_target_type) => {
-                // For now, just a text input for UUID
-                // TODO: Implement autocomplete/select when query API is ready
+            FieldType::RecordReference(target_type) => {
                 let val = value
                     .and_then(|v| v.get("target_id"))
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
+                // Display title for the current value (looked up later by JS)
+                let display = value
+                    .and_then(|v| v.get("title"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let escaped_type = crate::routes::helpers::html_escape(target_type);
+                let escaped_val = crate::routes::helpers::html_escape(val);
+                let escaped_display = crate::routes::helpers::html_escape(display);
                 format!(
                     r#"
-                    <div class="form-group">
+                    <div class="form-group record-reference-field">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="text" id="{field_name}" name="{field_name}" value="{val}" {required} class="form-control" placeholder="UUID">
-                        <div class="form-help">Enter the UUID of the referenced item.</div>
+                        <input type="hidden" id="{field_name}" name="{field_name}" value="{escaped_val}">
+                        <input type="text" id="{field_name}_autocomplete"
+                               class="form-control record-ref-autocomplete"
+                               data-target-type="{escaped_type}"
+                               data-hidden-field="{field_name}"
+                               value="{escaped_display}"
+                               placeholder="Search {escaped_type}..."
+                               autocomplete="off"
+                               {required}>
+                        <div class="record-ref-results" id="{field_name}_results"></div>
                     </div>
                     "#
                 )

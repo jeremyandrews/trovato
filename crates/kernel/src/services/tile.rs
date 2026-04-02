@@ -129,126 +129,26 @@ fn render_tile_html(tile: &Tile) -> String {
     html
 }
 
-/// Render the chat widget HTML with inline JavaScript.
+/// Render the chat widget HTML.
 ///
-/// The widget uses `fetch()` + `ReadableStream` (not `EventSource`) because
-/// the chat endpoint is POST. CSRF token is read from the page's `<meta>`
-/// tag or a hidden form input. The chat API requires authentication, so
-/// the CSRF meta tag is always available (injected by `inject_site_context`
-/// for authenticated users).
-///
-/// TODO: Move inline JS to a static file to enable strict Content-Security-Policy.
+/// Emits a `<div>` with data attributes and a `<script src>` for the
+/// external chat-widget.js file. No inline JS — compatible with strict
+/// Content-Security-Policy.
 fn render_chat_widget(html: &mut String, machine_name: &str) {
-    // machine_name is validated at creation (admin tile form) to match
-    // [a-z][a-z0-9_]*. Re-validate here since html_escape() is not sufficient
-    // for JavaScript string contexts (it doesn't escape \ or ').
     if !crate::routes::helpers::is_valid_machine_name(machine_name) {
         html.push_str("<p>Invalid chat widget configuration</p>");
         return;
     }
-    // With validated machine_name (ASCII alphanumeric + underscore only),
-    // it is safe to interpolate into both HTML attributes and JS strings.
     let escaped = html_escape(machine_name);
     html.push_str(&format!(
-        r#"<div class="chat-widget" id="chat-widget-{escaped}">
+        r#"<div class="chat-widget" id="chat-widget-{escaped}" data-machine-name="{escaped}">
   <div class="chat-messages" id="chat-messages-{escaped}"></div>
   <form class="chat-input" id="chat-form-{escaped}">
     <input type="text" id="chat-input-{escaped}" placeholder="Ask a question..." autocomplete="off" maxlength="4096">
     <button type="submit">Send</button>
   </form>
 </div>
-<script>
-(function() {{
-  var wid = '{escaped}';
-  var form = document.getElementById('chat-form-' + wid);
-  var input = document.getElementById('chat-input-' + wid);
-  var messages = document.getElementById('chat-messages-' + wid);
-  var csrfToken = '';
-  var csrfMeta = document.querySelector('meta[name="csrf-token"]');
-  if (csrfMeta) csrfToken = csrfMeta.content;
-  if (!csrfToken) {{ var csrfInput = document.querySelector('input[name="_token"]'); if (csrfInput) csrfToken = csrfInput.value; }}
-
-  if (!csrfToken) {{
-    var notice = document.createElement('p');
-    notice.className = 'chat-login-notice';
-    notice.textContent = 'Please log in to use the chat.';
-    form.style.display = 'none';
-    messages.parentNode.insertBefore(notice, messages);
-    return;
-  }}
-
-  function appendMsg(role, text) {{
-    var div = document.createElement('div');
-    div.className = 'chat-message chat-message--' + role;
-    div.textContent = text;
-    messages.appendChild(div);
-    messages.scrollTop = messages.scrollHeight;
-    return div;
-  }}
-
-  form.addEventListener('submit', async function(e) {{
-    e.preventDefault();
-    var text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-    appendMsg('user', text);
-
-    var assistantDiv = appendMsg('assistant', '');
-    var assistantText = '';
-
-    try {{
-      var response = await fetch('/api/v1/chat', {{
-        method: 'POST',
-        headers: {{
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': csrfToken
-        }},
-        body: JSON.stringify({{ message: text }})
-      }});
-
-      if (!response.ok) {{
-        var err = await response.json().catch(function() {{ return {{error: 'Request failed'}}; }});
-        assistantDiv.textContent = 'Error: ' + (err.error || 'Unknown error');
-        assistantDiv.classList.add('chat-message--error');
-        return;
-      }}
-
-      var reader = response.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-
-      while (true) {{
-        var result = await reader.read();
-        if (result.done) break;
-        buffer += decoder.decode(result.value, {{ stream: true }});
-        var lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (var i = 0; i < lines.length; i++) {{
-          var line = lines[i].trim();
-          if (line.startsWith('data: ')) {{
-            try {{
-              var data = JSON.parse(line.substring(6));
-              if (data.type === 'token') {{
-                assistantText += data.text;
-                assistantDiv.textContent = assistantText;
-                messages.scrollTop = messages.scrollHeight;
-              }} else if (data.type === 'done') {{
-                // History is saved server-side during streaming.
-              }} else if (data.type === 'error') {{
-                assistantDiv.textContent = 'Error: ' + data.message;
-                assistantDiv.classList.add('chat-message--error');
-              }}
-            }} catch (parseErr) {{}}
-          }}
-        }}
-      }}
-    }} catch (fetchErr) {{
-      assistantDiv.textContent = 'Connection error. Please try again.';
-      assistantDiv.classList.add('chat-message--error');
-    }}
-  }});
-}})();
-</script>"#
+<script src="/static/js/chat-widget.js"></script>"#
     ));
 }
 

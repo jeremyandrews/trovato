@@ -110,6 +110,7 @@ pub fn router() -> Router<AppState> {
             post(subscribe).delete(unsubscribe),
         )
         .route("/api/v1/user/export", get(export_user_data))
+        .route("/api/v1/items/autocomplete", get(autocomplete_items))
         .layer(axum::middleware::from_fn(inject_api_version))
 }
 
@@ -831,6 +832,61 @@ async fn export_user_data(
     });
 
     (StatusCode::OK, Json(export)).into_response()
+}
+
+/// Get field names marked `personal_data: true` for a content type.
+///
+/// Returns an empty vec if the type is not found or has no PII fields.
+/// Autocomplete endpoint for RecordReference fields.
+///
+/// `GET /api/v1/items/autocomplete?type=conference&q=rust&limit=10`
+///
+/// Returns `[{"id": "uuid", "title": "..."}]` for items matching the query.
+async fn autocomplete_items(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let item_type = params.get("type").map(String::as_str).unwrap_or("");
+    let query = params.get("q").map(String::as_str).unwrap_or("");
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(10)
+        .min(50);
+
+    if item_type.is_empty() || query.is_empty() {
+        return Json(serde_json::json!([])).into_response();
+    }
+
+    // Search by title using ILIKE for case-insensitive prefix matching
+    let pattern = format!("{}%", query.replace('%', "\\%").replace('_', "\\_"));
+
+    match sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, title FROM item WHERE type = $1 AND title ILIKE $2 AND status = 1 ORDER BY title LIMIT $3",
+    )
+    .bind(item_type)
+    .bind(&pattern)
+    .bind(limit)
+    .fetch_all(state.db())
+    .await
+    {
+        Ok(rows) => {
+            let results: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|(id, title)| {
+                    serde_json::json!({
+                        "id": id,
+                        "title": title
+                    })
+                })
+                .collect();
+            Json(serde_json::Value::Array(results)).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "autocomplete query failed");
+            Json(serde_json::json!([])).into_response()
+        }
+    }
 }
 
 /// Get field names marked `personal_data: true` for a content type.
