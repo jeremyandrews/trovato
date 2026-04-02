@@ -5,6 +5,8 @@ target/
 *.md
 !README.md
 !INSTALL.md
-docs/
 _bmad-output/
 .pre-commit-config.yaml
+backups/
+uploads/
+node_modules/

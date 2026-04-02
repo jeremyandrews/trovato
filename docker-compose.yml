@@ -27,7 +27,9 @@ services:
       timeout: 5s
       retries: 5
 
+  # Trovato runtime — only starts with: docker compose --profile full up
   trovato:
+    profiles: ["full"]
     build: .
     ports:
       - "3000:3000"
@@ -43,6 +45,37 @@ services:
       redis:
         condition: service_healthy
 
+  # Trovato dev container — only starts with: docker compose --profile dev up
+  # Provides full Rust toolchain for development without native Rust install.
+  # Source code is mounted from host; edits are instant, builds use cached volumes.
+  dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - .:/workspace:cached
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-dir:/workspace/target
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://trovato:trovato@postgres:5432/trovato
+      REDIS_URL: redis://redis:6379
+      RUST_LOG: info,tower_http=debug,sqlx=warn
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+
 volumes:
   postgres_data:
   redis_data:
+  cargo-registry:
+  cargo-git:
+  target-dir:
