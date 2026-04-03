@@ -8,7 +8,7 @@ Trovato supports three Docker workflows depending on your needs.
 |---|---|---|
 | Develop Trovato natively | `docker compose up -d` | Yes |
 | Develop without installing Rust | `docker compose --profile dev up -d` | No |
-| Run a pre-built Trovato | `docker compose --profile full up --build` | No |
+| Run a pre-built Trovato | `docker compose --profile full up -d` | No |
 
 ---
 
@@ -118,13 +118,31 @@ redis-cli -u $REDIS_URL ping
 For evaluators who just want to see Trovato running without building anything.
 
 ```bash
-# Build and start everything (first time takes ~15 minutes for Rust compilation)
-docker compose --profile full up --build
+# Pull the nightly image and start everything (fast — no compilation)
+docker compose --profile full up -d
 
 # Visit http://localhost:3000/install
 ```
 
-This builds the production Dockerfile (multi-stage: compile kernel + WASM plugins, then copy into slim runtime image). The first build is slow because it compiles the entire Rust project inside Docker. Subsequent builds use Docker layer caching.
+This pulls the `ghcr.io/jeremyandrews/trovato:nightly` image, which is built automatically from `main` on every push. The image includes the compiled kernel, all WASM plugins, templates, and static assets.
+
+To build locally instead of pulling the nightly:
+
+```bash
+# Build from source (first time takes ~15 minutes for Rust compilation)
+docker compose --profile full up --build -d
+```
+
+### Nightly vs Release Images
+
+| Tag | When Built | Use For |
+|---|---|---|
+| `nightly` | Every push to `main` | Preview latest features, testing |
+| `nightly-abc1234` | Every push to `main` | Pin to a specific commit |
+| `1.0.0`, `1.0`, `1` | On version tags | Production deployments |
+| `latest` | On version tags | Production (latest stable) |
+
+All images are published to `ghcr.io/jeremyandrews/trovato`.
 
 ---
 

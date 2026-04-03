@@ -162,7 +162,15 @@ cp .env.example .env
 cargo run --release
 ```
 
-### Without Rust Installed
+### Try It Without Building (Nightly Image)
+
+```bash
+docker compose --profile full up -d
+# Pulls ghcr.io/jeremyandrews/trovato:nightly — no Rust needed
+# Visit http://localhost:3000/install
+```
+
+### Without Rust Installed (Development)
 
 Use the dev container for a full development environment without installing Rust:
 
@@ -172,7 +180,7 @@ docker compose exec dev bash
 # Inside the container: cargo build, cargo test, cargo run all work
 ```
 
-See [Docker Development Guide](docs/docker-development.md) for full details including VS Code Dev Containers integration.
+See [Docker Development Guide](docs/docker-development.md) for full details including VS Code Dev Containers integration and nightly image tags.
 
 ### Manual Setup
 

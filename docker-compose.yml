@@ -28,8 +28,10 @@ services:
       retries: 5
 
   # Trovato runtime — only starts with: docker compose --profile full up
+  # Pulls the nightly image by default; use --build for local compilation.
   trovato:
     profiles: ["full"]
+    image: ghcr.io/jeremyandrews/trovato:nightly
     build: .
     ports:
       - "3000:3000"
