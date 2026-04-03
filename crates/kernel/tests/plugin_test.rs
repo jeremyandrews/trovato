@@ -83,8 +83,8 @@ async fn load_plugins_from_directory() {
 
     // Blog plugin should be loaded
     assert!(
-        runtime.get_plugin("blog").is_some(),
-        "Blog plugin not loaded. Available: {:?}",
+        runtime.get_plugin("trovato_blog").is_some(),
+        "trovato_blog plugin not loaded. Available: {:?}",
         runtime.plugins().keys().collect::<Vec<_>>()
     );
 }
@@ -101,7 +101,7 @@ fn load_single_plugin() {
         .parent()
         .unwrap()
         .join("plugins")
-        .join("blog");
+        .join("trovato_blog");
 
     let result = runtime.load_plugin(&plugin_dir);
     assert!(
@@ -110,8 +110,10 @@ fn load_single_plugin() {
         result.err()
     );
 
-    let plugin = runtime.get_plugin("blog").expect("Plugin not found");
-    assert_eq!(plugin.info.name, "blog");
+    let plugin = runtime
+        .get_plugin("trovato_blog")
+        .expect("Plugin not found");
+    assert_eq!(plugin.info.name, "trovato_blog");
     assert_eq!(plugin.info.version, "1.0.0");
     assert!(
         plugin
@@ -244,14 +246,16 @@ fn plugin_metadata_correct() {
         .parent()
         .unwrap()
         .join("plugins")
-        .join("blog");
+        .join("trovato_blog");
 
     runtime.load_plugin(&plugin_dir).expect("Failed to load");
 
-    let plugin = runtime.get_plugin("blog").expect("Plugin not found");
+    let plugin = runtime
+        .get_plugin("trovato_blog")
+        .expect("Plugin not found");
 
     // Check metadata
-    assert_eq!(plugin.info.name, "blog");
+    assert_eq!(plugin.info.name, "trovato_blog");
     assert_eq!(
         plugin.info.description,
         "Provides a blog content type with tags"
@@ -315,7 +319,7 @@ fn tap_registry_indexes_taps() {
         .parent()
         .unwrap()
         .join("plugins")
-        .join("blog");
+        .join("trovato_blog");
 
     runtime
         .load_plugin(&plugin_dir)
@@ -344,7 +348,7 @@ fn tap_registry_handlers_in_weight_order() {
         .parent()
         .unwrap()
         .join("plugins")
-        .join("blog");
+        .join("trovato_blog");
 
     runtime
         .load_plugin(&plugin_dir)
@@ -354,7 +358,7 @@ fn tap_registry_handlers_in_weight_order() {
 
     let handlers = registry.get_handlers("tap_item_view");
     assert_eq!(handlers.len(), 1);
-    assert_eq!(handlers[0].plugin.info.name, "blog");
+    assert_eq!(handlers[0].plugin.info.name, "trovato_blog");
     assert_eq!(handlers[0].weight, 0);
 }
 
@@ -506,7 +510,8 @@ fn menu_registry_path_matching() {
         {"path": "/blog/:slug", "title": "Post"}
     ]"#;
 
-    let registry = MenuRegistry::from_tap_results(vec![("blog".to_string(), json.to_string())]);
+    let registry =
+        MenuRegistry::from_tap_results(vec![("trovato_blog".to_string(), json.to_string())]);
 
     // Exact match
     let result = registry.match_path("/blog");
