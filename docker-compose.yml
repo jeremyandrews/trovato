@@ -29,12 +29,13 @@ services:
 
   # Trovato runtime — only starts with: docker compose --profile full up
   # Pulls the nightly image by default; use --build for local compilation.
+  # Mapped to port 3001 so it doesn't conflict with native dev server on 3000.
   trovato:
     profiles: ["full"]
     image: ghcr.io/jeremyandrews/trovato:nightly
     build: .
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       DATABASE_URL: postgres://trovato:trovato@postgres:5432/trovato
       REDIS_URL: redis://redis:6379
