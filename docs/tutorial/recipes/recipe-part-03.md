@@ -1,7 +1,7 @@
 # Recipe: Part 3 — Look & Feel
 
 > **Synced with:** `docs/tutorial/part-03-look-and-feel.md`
-> **Sync hash:** 9c455712
+> **Sync hash:** f23c62cf
 > **Last verified:** 2026-03-13
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -200,7 +200,7 @@ curl -s http://localhost:3000/api/content-types | jq '.[] | select(. == "speaker
 
 ### 3.3 Create Speakers
 
-`[CLI]` Create a batch of speakers via SQL for a populated speakers page. First, get the admin user ID and some conference UUIDs:
+`[CLI]` Create a batch of speakers via SQL for a populated speakers page. (You can also create speakers one at a time in the web UI at `/admin/content/add/speaker` — the Conferences field has an autocomplete widget that searches by title.) For bulk creation, get the admin user ID and some conference UUIDs:
 
 ```bash
 AUTHOR=$($(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato \

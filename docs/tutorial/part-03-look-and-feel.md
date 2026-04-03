@@ -248,12 +248,9 @@ When the speaker detail page renders, the kernel resolves these UUIDs into actua
 
 ### Creating Speakers
 
-Navigate to `/admin/content/add/speaker` and create a few speakers. For the **Conferences** field, enter the UUID of an existing conference. You can find conference UUIDs via:
+Navigate to `/admin/content/add/speaker` and create a few speakers. The **Conferences** field uses an autocomplete widget — start typing a conference name and select from the dropdown results. Under the hood, the autocomplete queries `GET /api/v1/items/autocomplete?type=conference&q=...` and stores the selected item's UUID in a hidden field.
 
-```bash
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT id, title FROM item WHERE type = 'conference' ORDER BY title LIMIT 10;"
-```
+> **Tip:** You can link multiple conferences by adding values to the multi-value field. Each autocomplete selection stores the conference UUID for that slot.
 
 ### Pathauto for Speakers
 

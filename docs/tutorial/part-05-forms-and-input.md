@@ -860,6 +860,37 @@ Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `block_ed
 
 ---
 
+## AI Assist Buttons
+
+When the `trovato_ai` plugin is enabled, content editing forms gain **AI Assist** buttons next to text fields (textfield and textarea elements). These buttons appear for users with the `use ai chat` permission.
+
+### How It Works
+
+The `trovato_ai` plugin uses `tap_form_alter` to inject an "AI Assist" button as a suffix on each text field. When clicked, the button opens a popover with five operations:
+
+| Operation | What It Does |
+|---|---|
+| **Rewrite** | Improve clarity and flow while preserving meaning |
+| **Expand** | Add more detail and supporting information |
+| **Shorten** | Reduce to roughly half the length, keeping key points |
+| **Translate** | Translate to a selected language (10 languages available) |
+| **Adjust Tone** | Rewrite in a different tone (formal, casual, technical, etc.) |
+
+Each operation sends the field content to `POST /api/v1/ai/assist`, which calls the configured AI provider. The result appears as a preview — the user can **Accept** (replace the field value) or **Reject** (dismiss with no change).
+
+### Requirements
+
+- The `trovato_ai` plugin must be enabled
+- An AI provider must be configured at `/admin/config/ai`
+- The user needs `use ai` and `use ai chat` permissions
+- The buttons only appear on item editing forms (form IDs starting with `item_`)
+
+### Field Rules
+
+Beyond inline assist, the `trovato_ai` plugin also supports **field rules** — automatic content enrichment that runs on save. Field rules are configured in site config under `trovato_ai.field_rules` and fire via `tap_item_presave`. For example, a rule can auto-generate a summary field whenever the description field changes.
+
+---
+
 ## What's Deferred
 
 | Feature | Deferred To | Reason |
@@ -872,7 +903,7 @@ Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `block_ed
 | Multi-step conference submission | Future | Guided multi-step form with PostgreSQL-backed state |
 | Internationalization | Part 7 | Separate concern |
 | REST API | Part 7 | API endpoints, authentication, rate limiting |
-| AI-powered form assistance | Future | AI Assist buttons in forms |
+| AI-powered form assistance | Done | AI Assist buttons on text fields (see below) |
 | Batch operations | Part 8 | Bulk publish/import at scale |
 | Avatar upload | Future | User profile image (file field in user context) |
 

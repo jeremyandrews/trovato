@@ -213,19 +213,17 @@ cargo test --test plugin_test load_single_plugin
 
 ---
 
-## Known Limitations
+## Known Limitations (Resolved)
 
 ### Host Functions
-Host functions are implemented with stub behavior for:
-- `item.rs` - Returns stub data, not connected to database
-- `db.rs` - Returns empty results
-- `cache.rs` - No-op (no cache backend)
-- `variables.rs` - Returns defaults, not persisted
-
-These will be connected to real services in Phase 3.
+All host functions are now fully implemented with async database access:
+- `item.rs` — Full CRUD via `Item` model (find_by_id, create, update, delete, list_filtered)
+- `db.rs` — Real SQL execution with parameterized queries and DDL guards
+- `cache.rs` — Two-tier Moka L1 + Redis L2 via CacheLayer, plugin-namespaced keys
+- `variables.rs` — Persistent storage via site_config table, plugin-namespaced keys
 
 ### Async Support
-The tap dispatcher uses `call_async` but host functions use `func_wrap` (synchronous). Full async host functions (`func_wrap_async`) will be needed when connecting to database.
+All host functions now use `func_wrap_async` with proper async database access via `RequestServices`.
 
 ### Error Recovery
 Plugin panics are caught but WASM instance may be corrupted. Current behavior logs and continues to next plugin. Consider instance recycling for production.
