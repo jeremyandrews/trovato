@@ -149,7 +149,7 @@
 <div class="admin-layout">
     <aside class="admin-sidebar">
         <h1><a href="/admin">Trovato Admin</a></h1>
-        <nav>
+        <nav aria-label="Admin navigation">
             <ul class="admin-nav">
                 <li><a href="/admin" {% if path == "/admin" %}class="active"{% endif %}>Dashboard</a></li>
 
@@ -185,7 +185,7 @@
         {% if messages %}
         <div class="messages">
             {% for message in messages %}
-            <div class="message message--{{ message.type | default(value='info') }}">
+            <div class="message message--{{ message.type | default(value='info') }}" role="status">
                 {{ message.text }}
             </div>
             {% endfor %}

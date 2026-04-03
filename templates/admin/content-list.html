@@ -9,7 +9,7 @@
 {% if flash %}
 <div class="messages">
     {# SAFE: flash message is constructed server-side with html_escape on user-supplied values #}
-    <div class="message message--status">{{ flash | safe }}</div>
+    <div class="message message--status" role="status">{{ flash | safe }}</div>
 </div>
 {% endif %}
 

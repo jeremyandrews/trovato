@@ -241,6 +241,25 @@ Trovato.updateFieldDelta = function(args) {
     }
 };
 
+// Announce flash/status messages to screen readers on page load.
+// Messages rendered server-side (non-AJAX) need explicit announcement
+// since they aren't created via AJAX commands.
+(function announceFlashMessages() {
+    var messages = document.querySelectorAll('.message, .messages .status, [role="alert"]');
+    if (messages.length === 0) return;
+    // Small delay so the live region is registered by assistive tech first
+    setTimeout(function() {
+        var texts = [];
+        messages.forEach(function(msg) {
+            var text = msg.textContent.trim();
+            if (text) texts.push(text);
+        });
+        if (texts.length > 0) {
+            Trovato.announce(texts.join('. '));
+        }
+    }, 100);
+})();
+
 // Reset the add field form after successful submission
 Trovato.resetAddFieldForm = function() {
     var form = document.getElementById('add-field-form');

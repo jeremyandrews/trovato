@@ -11,11 +11,11 @@
         </div>
 
         {% if success %}
-        <div class="message message--success">{{ success | escape }}</div>
+        <div class="message message--success" role="status">{{ success | escape }}</div>
         {% endif %}
 
         {% if error %}
-        <div class="message message--error">{{ error | escape }}</div>
+        <div class="message message--error" role="status">{{ error | escape }}</div>
         {% endif %}
 
         <form method="post" action="/user/login" class="login-form">

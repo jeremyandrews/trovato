@@ -310,7 +310,7 @@
             {% if messages %}
             <div class="messages">
                 {% for message in messages %}
-                <div class="message message--{{ message.type | default(value='info') }}">
+                <div class="message message--{{ message.type | default(value='info') }}" role="status">
                     {{ message.text }}
                 </div>
                 {% endfor %}
