@@ -4241,7 +4241,8 @@ fn e2e_toggle_gated_plugin_affects_routes() {
             .expect("CSRF token");
 
         // Disable categories via the admin UI toggle
-        let form_body = format!("_token={csrf_token}&plugin_name=trovato_categories&action=disable");
+        let form_body =
+            format!("_token={csrf_token}&plugin_name=trovato_categories&action=disable");
         let response = app
             .request_with_cookies(
                 Request::post("/admin/plugins/toggle")
