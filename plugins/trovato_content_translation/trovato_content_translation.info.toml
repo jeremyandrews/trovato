@@ -1,7 +1,7 @@
 name = "trovato_content_translation"
 description = "Field-level content translation with language overlay"
 version = "1.0.0"
-dependencies = ["locale"]
+dependencies = ["trovato_locale"]
 
 [taps]
 implements = [
