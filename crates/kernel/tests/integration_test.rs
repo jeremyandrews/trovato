@@ -4134,7 +4134,7 @@ fn e2e_admin_plugin_toggle() {
             .expect("CSRF token");
 
         // Disable the redirects plugin (safe to toggle — it has no gated routes)
-        let form_body = format!("_token={csrf_token}&plugin_name=redirects&action=disable");
+        let form_body = format!("_token={csrf_token}&plugin_name=trovato_redirects&action=disable");
 
         let response = app
             .request_with_cookies(
@@ -4182,7 +4182,7 @@ fn e2e_admin_plugin_toggle() {
             .and_then(|s| s.split('"').next())
             .expect("CSRF token for re-enable");
 
-        let form_body = format!("_token={csrf_token}&plugin_name=redirects&action=enable");
+        let form_body = format!("_token={csrf_token}&plugin_name=trovato_redirects&action=enable");
 
         let response = app
             .request_with_cookies(
@@ -4241,7 +4241,7 @@ fn e2e_toggle_gated_plugin_affects_routes() {
             .expect("CSRF token");
 
         // Disable categories via the admin UI toggle
-        let form_body = format!("_token={csrf_token}&plugin_name=categories&action=disable");
+        let form_body = format!("_token={csrf_token}&plugin_name=trovato_categories&action=disable");
         let response = app
             .request_with_cookies(
                 Request::post("/admin/plugins/toggle")
@@ -4277,7 +4277,7 @@ fn e2e_toggle_gated_plugin_affects_routes() {
             .and_then(|s| s.split('"').next())
             .expect("CSRF token for re-enable");
 
-        let form_body = format!("_token={csrf_token}&plugin_name=categories&action=enable");
+        let form_body = format!("_token={csrf_token}&plugin_name=trovato_categories&action=enable");
         let response = app
             .request_with_cookies(
                 Request::post("/admin/plugins/toggle")
