@@ -289,15 +289,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "audit_log"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -955,24 +946,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block_editor"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "blog"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "bstr"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1107,15 +1080,6 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "winx",
-]
-
-[[package]]
-name = "categories_plugin"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
 ]
 
 [[package]]
@@ -1268,15 +1232,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "comments_plugin"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "compression-codecs"
 version = "0.4.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1303,37 +1258,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "config_translation"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
-
-[[package]]
-name = "content_locking"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "content_translation"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
 
 [[package]]
 name = "cookie"
@@ -3013,15 +2941,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image_styles"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "imgref"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3331,15 +3250,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
-name = "locale"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3455,15 +3365,6 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest",
-]
-
-[[package]]
-name = "media"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
 ]
 
 [[package]]
@@ -3709,15 +3610,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
-]
-
-[[package]]
-name = "oauth2_provider"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
 ]
 
 [[package]]
@@ -4421,15 +4313,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "redirects"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "redis"
 version = "0.27.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4918,15 +4801,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "scheduled_publishing"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
 ]
 
 [[package]]
@@ -6332,7 +6206,142 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_audit_log"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_block_editor"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_blog"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_categories"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_comments"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_config_translation"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_content_locking"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_content_translation"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_image_styles"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_locale"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_media"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_oauth2"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_redirects"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_scheduled_publishing"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_search"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_webhooks"
 version = "1.0.0"
 dependencies = [
  "serde",
@@ -7022,15 +7031,6 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
-]
-
-[[package]]
-name = "webhooks"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
 ]
 
 [[package]]

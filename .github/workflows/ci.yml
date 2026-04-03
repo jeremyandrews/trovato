@@ -79,9 +79,9 @@ jobs:
 
       - name: Build WASM plugins
         run: |
-          cargo build -p blog -p trovato_search --target wasm32-wasip1 --release
-          mkdir -p plugins/blog plugins/trovato_search
-          cp target/wasm32-wasip1/release/blog.wasm plugins/blog/
+          cargo build -p trovato_blog -p trovato_search --target wasm32-wasip1 --release
+          mkdir -p plugins/trovato_blog plugins/trovato_search
+          cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
 
       - name: Run tests
@@ -136,9 +136,9 @@ jobs:
 
       - name: Build WASM plugins
         run: |
-          cargo build -p blog -p trovato_search --target wasm32-wasip1 --release
-          mkdir -p plugins/blog plugins/trovato_search
-          cp target/wasm32-wasip1/release/blog.wasm plugins/blog/
+          cargo build -p trovato_blog -p trovato_search --target wasm32-wasip1 --release
+          mkdir -p plugins/trovato_blog plugins/trovato_search
+          cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
 
       - name: Generate coverage report
@@ -176,7 +176,7 @@ jobs:
         run: cargo build -p trovato-kernel --release
 
       - name: Build plugins
-        run: cargo build -p blog -p trovato_search --target wasm32-wasip1 --release
+        run: cargo build -p trovato_blog -p trovato_search --target wasm32-wasip1 --release
 
   doc:
     name: Doc Check

@@ -117,20 +117,20 @@ cargo run --release -- plugin enable some_plugin
 
 | Plugin | Description |
 |--------|-------------|
-| `blog` | Blog content type with tags |
-| `categories` | Hierarchical taxonomy with tags |
-| `comments` | Threaded comments on content |
-| `media` | Media library and file management |
-| `redirects` | URL redirect management |
-| `audit_log` | Administrative audit trail |
-| `scheduled_publishing` | Publish/unpublish content on a schedule |
-| `content_locking` | Pessimistic content editing locks |
-| `webhooks` | Outgoing webhook notifications |
-| `image_styles` | Server-side image derivative generation |
-| `oauth2` | OAuth2 authorization server (requires `JWT_SECRET`) |
-| `locale` | Interface translation |
-| `content_translation` | Translatable content fields |
-| `config_translation` | Translatable configuration |
+| `trovato_blog` | Blog content type with tags |
+| `trovato_categories` | Hierarchical taxonomy with tags |
+| `trovato_comments` | Threaded comments on content |
+| `trovato_media` | Media library and file management |
+| `trovato_redirects` | URL redirect management |
+| `trovato_audit_log` | Administrative audit trail |
+| `trovato_scheduled_publishing` | Publish/unpublish content on a schedule |
+| `trovato_content_locking` | Pessimistic content editing locks |
+| `trovato_webhooks` | Outgoing webhook notifications |
+| `trovato_image_styles` | Server-side image derivative generation |
+| `trovato_oauth2` | OAuth2 authorization server (requires `JWT_SECRET`) |
+| `trovato_locale` | Interface translation |
+| `trovato_content_translation` | Translatable content fields |
+| `trovato_config_translation` | Translatable configuration |
 
 ### Specialized Plugins (separate install)
 
@@ -224,8 +224,8 @@ its `{name}.info.toml`. Verify the WASM file exists and is named
 correctly:
 
 ```bash
-ls plugins/blog/blog.wasm          # should exist
-ls plugins/blog/blog.info.toml     # should exist
+ls plugins/trovato_blog/blog.wasm          # should exist
+ls plugins/trovato_blog/blog.info.toml     # should exist
 ```
 
 **OAuth2 not working:**

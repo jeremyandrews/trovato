@@ -14,7 +14,7 @@
 
 *Internationalization is like plumbing: invisible when done right, catastrophic when missing. You don't notice it until someone needs Arabic, or Japanese dates, or a URL that starts with `/fr/`. This epic makes the plumbing solid.*
 
-Trovato already has substantial i18n infrastructure. The `language` table exists with a foreign key from `item.language`. The `LocaleService` handles contextual translations via PO import with a `trans` Tera filter. Language negotiation middleware is 703 lines of serious work: `UrlPrefixNegotiator` and `AcceptLanguageNegotiator` with a resolution chain and URI rewriting. `base.html` sets `<html lang="{{ active_language | default(value='en') }}">`. The `content_translation` and `config_translation` plugins exist and work.
+Trovato already has substantial i18n infrastructure. The `language` table exists with a foreign key from `item.language`. The `LocaleService` handles contextual translations via PO import with a `trans` Tera filter. Language negotiation middleware is 703 lines of serious work: `UrlPrefixNegotiator` and `AcceptLanguageNegotiator` with a resolution chain and URI rewriting. `base.html` sets `<html lang="{{ active_language | default(value='en') }}">`. The `trovato_content_translation` and `trovato_config_translation` plugins exist and work.
 
 What's incomplete is the connective tissue between these pieces:
 
@@ -28,7 +28,7 @@ What's incomplete is the connective tissue between these pieces:
 
 **Before this epic:** Language exists in the schema but is invisible to plugins. Dates are always English. Language negotiation works for pages but may have gaps elsewhere.
 
-**After this epic:** Plugins can read `Item.language`. Dates format per locale. Language negotiation covers all entry points. RTL direction propagates consistently. The i18n infrastructure is complete enough that the `locale`, `content_translation`, and `config_translation` plugins have a solid kernel to build on.
+**After this epic:** Plugins can read `Item.language`. Dates format per locale. Language negotiation covers all entry points. RTL direction propagates consistently. The i18n infrastructure is complete enough that the `trovato_locale`, `trovato_content_translation`, and `trovato_config_translation` plugins have a solid kernel to build on.
 
 ---
 
@@ -77,12 +77,12 @@ All changes are kernel infrastructure. The actual translation UI, PO management,
 
 **Acceptance criteria:**
 
-- [ ] `format_date` Tera filter accepts an optional `locale` parameter: `{{ date | format_date(locale="de") }}`
-- [ ] When `locale` is omitted, defaults to `active_language` from template context (not hardcoded "en")
+- [ ] `format_date` Tera filter accepts an optional `trovato_locale` parameter: `{{ date | format_date(locale="de") }}`
+- [ ] When `trovato_locale` is omitted, defaults to `active_language` from template context (not hardcoded "en")
 - [ ] Supports at least: en, de, fr, es, ja, zh, ar, he, pt, it, nl, ko, ru, pl (covering major languages)
 - [ ] Date format patterns per locale stored in a compile-time lookup (not a runtime config table — these are stable conventions)
 - [ ] `format_date` also accepts an optional `format` parameter for custom patterns: `{{ date | format_date(format="%Y-%m-%d") }}`
-- [ ] When both `locale` and `format` are provided, `format` takes precedence (explicit format overrides locale default)
+- [ ] When both `trovato_locale` and `format` are provided, `format` takes precedence (explicit format overrides locale default)
 - [ ] Existing tutorial code using `format_date` without parameters continues to work (defaults to active language)
 - [ ] At least 3 locale formats tested (en, de, ja)
 
@@ -151,7 +151,7 @@ All changes are kernel infrastructure. The actual translation UI, PO management,
 **Acceptance criteria:**
 
 - [ ] Part 7 tutorial verified against actual kernel behavior: every code example runs, every screenshot matches current UI
-- [ ] Tutorial notes where the `locale` plugin is a stub (permissions + menu only, no translation UI) — sets expectations correctly
+- [ ] Tutorial notes where the `trovato_locale` plugin is a stub (permissions + menu only, no translation UI) — sets expectations correctly
 - [ ] Tutorial demonstrates `format_date` with locale parameter (new capability from Story 41.2)
 - [ ] Tutorial demonstrates `Item.language` visibility to plugins (new capability from Story 41.1)
 - [ ] Recipe `recipe-part-07.md` updated to match any tutorial changes

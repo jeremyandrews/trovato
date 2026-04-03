@@ -495,7 +495,7 @@ impl AppState {
         );
 
         // Initialize locale service (before theme engine so trans filter is available)
-        let locale = if enabled_set.contains("locale") {
+        let locale = if enabled_set.contains("trovato_locale") {
             let locale_service = services::locale::LocaleService::new(db.clone());
             if let Err(e) = locale_service.load_language(&default_language).await {
                 tracing::warn!(error = %e, "failed to pre-load locale translations");
@@ -636,13 +636,13 @@ impl AppState {
         });
 
         // Initialize optional services based on enabled plugins
-        let audit = if enabled_set.contains("audit_log") {
+        let audit = if enabled_set.contains("trovato_audit_log") {
             Some(Arc::new(services::audit::AuditService::new(db.clone())))
         } else {
             None
         };
 
-        let content_lock = if enabled_set.contains("content_locking") {
+        let content_lock = if enabled_set.contains("trovato_content_locking") {
             Some(Arc::new(services::content_lock::ContentLockService::new(
                 db.clone(),
             )))
@@ -650,7 +650,7 @@ impl AppState {
             None
         };
 
-        let image_styles = if enabled_set.contains("image_styles") {
+        let image_styles = if enabled_set.contains("trovato_image_styles") {
             Some(Arc::new(services::image_style::ImageStyleService::new(
                 db.clone(),
                 std::path::Path::new(&config.uploads_dir),
@@ -659,7 +659,7 @@ impl AppState {
             None
         };
 
-        let oauth = if enabled_set.contains("oauth2") {
+        let oauth = if enabled_set.contains("trovato_oauth2") {
             match std::env::var("JWT_SECRET") {
                 Ok(secret) if secret.len() >= 32 => {
                     // Warn about low-entropy secrets
@@ -692,7 +692,7 @@ impl AppState {
         };
 
         let comments = OnceLock::new();
-        if enabled_set.contains("comments") {
+        if enabled_set.contains("trovato_comments") {
             let _ = comments.set(Arc::new(services::comment::CommentService::new(
                 db.clone(),
                 tap_dispatcher.clone(),
@@ -785,7 +785,7 @@ impl AppState {
                 image_styles,
                 oauth,
                 locale,
-                redirect_cache: if enabled_set.contains("redirects") {
+                redirect_cache: if enabled_set.contains("trovato_redirects") {
                     Some(Arc::new(services::redirect::RedirectCache::new()))
                 } else {
                     None
@@ -835,7 +835,7 @@ impl AppState {
         if enabled {
             set.insert(plugin.to_string());
             // Late-init plugin services that weren't created at startup.
-            if plugin == "comments" {
+            if plugin == "trovato_comments" {
                 self.init_comments_service();
             }
         } else {
@@ -1065,7 +1065,7 @@ impl AppState {
     ///
     /// # Panics
     ///
-    /// Callers behind the `plugin_gate!(gate_comments, "comments")` guard can
+    /// Callers behind the `plugin_gate!(gate_comments, "trovato_comments")` guard can
     /// safely unwrap because the gate ensures the plugin is enabled and the
     /// service is initialized.
     #[allow(clippy::expect_used)] // Callers are behind plugin_gate! — see doc above.
@@ -1078,7 +1078,7 @@ impl AppState {
 
     /// Late-initialize the comments service.
     ///
-    /// Called by `set_plugin_enabled("comments", true)` when the service was
+    /// Called by `set_plugin_enabled("trovato_comments", true)` when the service was
     /// not created at `AppState` construction time (e.g. in tests where
     /// plugins are enabled after startup).  No-op if already initialized.
     pub fn init_comments_service(&self) {

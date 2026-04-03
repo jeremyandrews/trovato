@@ -123,7 +123,7 @@ Both backends enforce the same security rules:
 
 ### Image Styles
 
-The `image_styles` plugin provides on-the-fly image processing:
+The `trovato_image_styles` plugin provides on-the-fly image processing:
 
 ```
 /files/styles/thumbnail/2026/03/a1b2c3d4_photo.jpg

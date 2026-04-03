@@ -1,7 +1,7 @@
 # Recipe: Part 8 — Production Ready
 
 > **Synced with:** `docs/tutorial/part-08-production-ready.md`
-> **Sync hash:** 694d1ee9
+> **Sync hash:** 2cf52388
 > **Last verified:** 2026-04-01
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.

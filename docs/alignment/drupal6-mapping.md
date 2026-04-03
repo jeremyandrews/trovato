@@ -427,7 +427,7 @@ Systematic mapping of Drupal 6 + CCK + Views subsystems to their Trovato equival
 | Comment subscriptions/notifications | Not implemented | Missing |
 
 **Key files:**
-- `plugins/comments/` -- Comments WASM plugin (permissions, menu)
+- `plugins/trovato_comments/` -- Comments WASM plugin (permissions, menu)
 - `crates/kernel/src/models/comment.rs` -- Comment model with `parent_id`, `depth`, recursive CTE for threaded listing
 - `crates/kernel/src/routes/comment.rs` -- comment CRUD routes
 

@@ -2,12 +2,12 @@
 
 Part 4 built the editorial engine: users, roles, stages, revisions, and admin content management. But content creation still relies on auto-generated admin forms and the importer plugin. Part 5 opens the front door to user input.
 
-You will tour the **Form API** -- the structured pipeline that builds, validates, and processes forms. You will learn how the **block editor** replaces freeform WYSIWYG with structured content editing, how text formats (`plain_text`, `filtered_html`, `full_html`) control what HTML users can produce, how the `block_editor` and `ritrovo_access` plugins extend the kernel through taps, and how file uploads are secured at the boundary.
+You will tour the **Form API** -- the structured pipeline that builds, validates, and processes forms. You will learn how the **block editor** replaces freeform WYSIWYG with structured content editing, how text formats (`plain_text`, `filtered_html`, `full_html`) control what HTML users can produce, how the `trovato_block_editor` and `ritrovo_access` plugins extend the kernel through taps, and how file uploads are secured at the boundary.
 
-> **Implementation note:** The Form API core (types, service, AJAX, CSRF) is in `crates/kernel/src/form/`. The block editor infrastructure -- block types, rendering, validation, and the Editor.js integration -- is fully implemented. The `block_editor` plugin activates the client-side editor and its API routes. The `ritrovo_cfp` plugin provides CFP deadline badges and date validation. The `ritrovo_access` plugin provides stage-based access control. All features described in this part are implemented.
+> **Implementation note:** The Form API core (types, service, AJAX, CSRF) is in `crates/kernel/src/form/`. The block editor infrastructure -- block types, rendering, validation, and the Editor.js integration -- is fully implemented. The `trovato_block_editor` plugin activates the client-side editor and its API routes. The `ritrovo_cfp` plugin provides CFP deadline badges and date validation. The `ritrovo_access` plugin provides stage-based access control. All features described in this part are implemented.
 
 **Start state:** Auto-generated admin forms, three test users with roles, three editorial stages, revision tracking.
-**End state:** Form API pipeline, block-based content editing with Editor.js, text format permissions, block rendering with syntax highlighting, file upload security, two installed plugins (`block_editor` and `ritrovo_access`), user profile editing.
+**End state:** Form API pipeline, block-based content editing with Editor.js, text format permissions, block rendering with syntax highlighting, file upload security, two installed plugins (`trovato_block_editor` and `ritrovo_access`), user profile editing.
 
 ---
 
@@ -189,9 +189,9 @@ The conference content type config at `docs/tutorial/config/item_type.conference
 
 [<img src="images/part-05/fields-with-blocks.png" width="600" alt="Field management showing the Blocks field type configured for the description field">](images/part-05/fields-with-blocks.png)
 
-### 2.4: Enabling the `block_editor` Plugin
+### 2.4: Enabling the `trovato_block_editor` Plugin
 
-The block editor's client-side functionality is gated behind the `block_editor` plugin. The kernel provides all the infrastructure (block types, rendering, validation), but the plugin activates the Editor.js widget and its API routes.
+The block editor's client-side functionality is gated behind the `trovato_block_editor` plugin. The kernel provides all the infrastructure (block types, rendering, validation), but the plugin activates the Editor.js widget and its API routes.
 
 The plugin source is minimal -- it lives at `plugins/block_editor/src/lib.rs` and declares a single permission:
 
@@ -842,7 +842,7 @@ By the end of Part 5, you have:
 - **Text format permissions** -- `plain_text`, `filtered_html`, `full_html` for traditional text fields, with `FilterPipeline::for_format_safe()` as the security boundary.
 - **Block validation** via `BlockTypeRegistry` with JSON Schema definitions and extensibility for custom block types.
 - **Secure file uploads** with magic byte validation, filename sanitization, MIME type checking, and size limits.
-- **`block_editor` plugin** -- Activates the Editor.js widget and gates the upload/preview API routes.
+- **`trovato_block_editor` plugin** -- Activates the Editor.js widget and gates the upload/preview API routes.
 - **`ritrovo_access` plugin** -- Stage-based Grant/Deny access decisions via `tap_item_access`, permission declaration via `tap_perm`, and operation-aware access control.
 - **User profile editing** with password change and session fixation protection.
 
@@ -856,7 +856,7 @@ You also now understand:
 - How `tap_item_access` with Grant/Deny/Neutral aggregation enables plugin-driven access decisions.
 - How file upload security works at the boundary with magic bytes, filename sanitization, and MIME validation.
 
-Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `block_editor` (Part 5) enables structured editing, and `ritrovo_access` (Part 5) enforces visibility. Each extends the kernel through taps and host functions, and none depends on any other.
+Three plugins now collaborate: `ritrovo_importer` (Part 2) feeds data, `trovato_block_editor` (Part 5) enables structured editing, and `ritrovo_access` (Part 5) enforces visibility. Each extends the kernel through taps and host functions, and none depends on any other.
 
 ---
 

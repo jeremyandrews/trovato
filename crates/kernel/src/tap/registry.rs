@@ -119,12 +119,14 @@ mod tests {
     #[test]
     fn registry_indexes_plugin_taps() {
         let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
-        let blog_dir = test_plugins_dir().join("blog");
-        runtime.load_plugin(&blog_dir).expect("failed to load blog");
+        let blog_dir = test_plugins_dir().join("trovato_blog");
+        runtime
+            .load_plugin(&blog_dir)
+            .expect("failed to load trovato_blog");
 
         let registry = TapRegistry::from_plugins(&runtime);
 
-        // Blog plugin declares these taps
+        // trovato_blog plugin declares these taps
         assert!(registry.has_tap("tap_item_info"));
         assert!(registry.has_tap("tap_item_view"));
         assert!(registry.has_tap("tap_item_access"));
@@ -137,7 +139,7 @@ mod tests {
         // Handler should reference the blog plugin
         let handlers = registry.get_handlers("tap_item_view");
         assert_eq!(handlers.len(), 1);
-        assert_eq!(handlers[0].plugin.info.name, "blog");
+        assert_eq!(handlers[0].plugin.info.name, "trovato_blog");
         assert_eq!(handlers[0].weight, 0);
     }
 
@@ -154,8 +156,10 @@ mod tests {
     #[test]
     fn registry_lists_tap_names() {
         let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
-        let blog_dir = test_plugins_dir().join("blog");
-        runtime.load_plugin(&blog_dir).expect("failed to load blog");
+        let blog_dir = test_plugins_dir().join("trovato_blog");
+        runtime
+            .load_plugin(&blog_dir)
+            .expect("failed to load trovato_blog");
 
         let registry = TapRegistry::from_plugins(&runtime);
         let names: Vec<_> = registry.tap_names().collect();

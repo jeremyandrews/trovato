@@ -394,13 +394,13 @@ fn gather_query_creation() {
             items_per_page: 10,
             ..Default::default()
         },
-        plugin: "blog".to_string(),
+        plugin: "trovato_blog".to_string(),
         created: 1000,
         changed: 1000,
     };
 
     assert_eq!(gq.query_id, "recent_articles");
-    assert_eq!(gq.plugin, "blog");
+    assert_eq!(gq.plugin, "trovato_blog");
     assert_eq!(gq.definition.item_type, Some("blog".to_string()));
 }
 
@@ -538,7 +538,7 @@ fn gate_test_recent_articles_query_definition() {
             canonical_url: None,
             routes: Vec::new(),
         },
-        plugin: "blog".to_string(),
+        plugin: "trovato_blog".to_string(),
         created: chrono::Utc::now().timestamp(),
         changed: chrono::Utc::now().timestamp(),
     };

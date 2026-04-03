@@ -102,7 +102,7 @@ crates/plugin-sdk-macros/
   src/
     lib.rs              # #[plugin_tap], #[plugin_tap_result]
 
-plugins/blog/
+plugins/trovato_blog/
   src/lib.rs            # tap_item_info, tap_perm, tap_menu, tap_item_access
   blog.info.toml        # Plugin manifest
   blog.wasm             # Compiled WASM (227KB)
@@ -242,7 +242,7 @@ Plugin panics are caught but WASM instance may be corrupted. Current behavior lo
 ## Appendix: Blog Plugin Exports
 
 ```bash
-$ wasm-tools print plugins/blog/blog.wasm | grep "export"
+$ wasm-tools print plugins/trovato_blog/blog.wasm | grep "export"
   (export "memory" (memory 0))
   (export "tap_item_info" (func $tap_item_info))
   (export "tap_perm" (func $tap_perm))

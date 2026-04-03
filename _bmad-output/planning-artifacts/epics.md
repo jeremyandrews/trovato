@@ -4583,7 +4583,7 @@ So that I can audit who did what and when.
 
 **Acceptance Criteria:**
 
-1. `audit_log` table:
+1. `trovato_audit_log` table:
    ```sql
    CREATE TABLE audit_log (
        id UUID PRIMARY KEY,
@@ -4797,7 +4797,7 @@ So that the admin interface and public-facing config are localized.
 
 **Acceptance Criteria:**
 
-1. `config_translation` table:
+1. `trovato_config_translation` table:
    ```sql
    CREATE TABLE config_translation (
        entity_type VARCHAR(64) NOT NULL,

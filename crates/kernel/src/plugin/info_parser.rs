@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn parse_valid_info() {
         let toml = r#"
-name = "blog"
+name = "trovato_blog"
 description = "Provides a blog content type"
 version = "1.0.0"
 dependencies = ["item", "categories"]
@@ -236,7 +236,7 @@ weight = 0
 "#;
 
         let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
-        assert_eq!(info.name, "blog");
+        assert_eq!(info.name, "trovato_blog");
         assert_eq!(info.version, "1.0.0");
         assert_eq!(info.dependencies, vec!["item", "categories"]);
         assert_eq!(info.taps.implements.len(), 4);
@@ -309,7 +309,7 @@ version = "1.0.0"
 
 [migrations]
 files = ["migrations/001_create_devices.sql", "migrations/002_create_events.sql"]
-depends_on = ["blog"]
+depends_on = ["trovato_blog"]
 "#;
 
         let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
@@ -318,7 +318,7 @@ depends_on = ["blog"]
             info.migrations.files[0],
             "migrations/001_create_devices.sql"
         );
-        assert_eq!(info.migrations.depends_on, vec!["blog"]);
+        assert_eq!(info.migrations.depends_on, vec!["trovato_blog"]);
     }
 
     #[test]
@@ -398,7 +398,7 @@ default_enabled = false
     #[test]
     fn default_enabled_is_true_when_omitted() {
         let toml = r#"
-name = "blog"
+name = "trovato_blog"
 description = "Blog plugin"
 version = "1.0.0"
 "#;

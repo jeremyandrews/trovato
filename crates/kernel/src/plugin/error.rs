@@ -168,16 +168,21 @@ mod tests {
 
     #[test]
     fn error_messages_are_actionable() {
-        let err = PluginError::missing_wasm("blog", "/plugins/blog/blog.wasm");
+        let err =
+            PluginError::missing_wasm("trovato_blog", "/plugins/trovato_blog/trovato_blog.wasm");
         let msg = err.to_string();
-        assert!(msg.contains("blog"));
+        assert!(msg.contains("trovato_blog"));
         assert!(msg.contains("cargo build"));
         assert!(msg.contains("wasm32-wasip1"));
     }
 
     #[test]
     fn unknown_tap_lists_valid_options() {
-        let err = PluginError::unknown_tap("blog", "tap_invalid", &["tap_item_info", "tap_menu"]);
+        let err = PluginError::unknown_tap(
+            "trovato_blog",
+            "tap_invalid",
+            &["tap_item_info", "tap_menu"],
+        );
         let msg = err.to_string();
         assert!(msg.contains("tap_item_info"));
         assert!(msg.contains("tap_menu"));
@@ -185,7 +190,7 @@ mod tests {
 
     #[test]
     fn missing_export_shows_export_name() {
-        let err = PluginError::missing_export("blog", "tap_item_view");
+        let err = PluginError::missing_export("trovato_blog", "tap_item_view");
         let msg = err.to_string();
         assert!(msg.contains("tap-item-view")); // WASM export name
     }

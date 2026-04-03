@@ -65,7 +65,7 @@ Every item is infrastructure. The *management* of tenants (admin UI for creating
 - [ ] Migration creates `tenant` table: `id` (UUID, PK), `name` (VARCHAR(255), NOT NULL), `machine_name` (VARCHAR(128), UNIQUE, NOT NULL), `status` (BOOLEAN, DEFAULT TRUE), `created` (BIGINT), `data` (JSONB, DEFAULT '{}')
 - [ ] `DEFAULT_TENANT_ID` constant UUID defined in kernel (deterministic UUID, like `LIVE_STAGE_ID`)
 - [ ] Migration seeds default tenant row with `DEFAULT_TENANT_ID`, name "Default", machine_name "default"
-- [ ] Migration adds `tenant_id` (UUID, NOT NULL, DEFAULT DEFAULT_TENANT_ID, FK to tenant.id) with index to: `item`, `item_revision`, `categories`, `category_tag`, `file_managed`, `site_config`, `url_alias`, `stage`, `menu_link`, `tile`, `comments`
+- [ ] Migration adds `tenant_id` (UUID, NOT NULL, DEFAULT DEFAULT_TENANT_ID, FK to tenant.id) with index to: `item`, `item_revision`, `trovato_categories`, `category_tag`, `file_managed`, `site_config`, `url_alias`, `stage`, `menu_link`, `tile`, `trovato_comments`
 - [ ] Existing rows backfilled with `DEFAULT_TENANT_ID`
 - [ ] `DEFAULT_TENANT_ID` exported as constant in kernel config (like `LIVE_STAGE_ID`)
 - [ ] `Tenant` model struct in kernel

@@ -2,7 +2,7 @@
 
 ## Content Type Field Configuration
 
-To use the block editor on a content type field, set the widget to `block_editor` in your content type definition:
+To use the block editor on a content type field, set the widget to `trovato_block_editor` in your content type definition:
 
 ```yaml
 fields:
@@ -25,7 +25,7 @@ An empty `allowed_block_types` list permits all registered block types.
 
 ## Editor.js Assets
 
-The block editor requires Editor.js and its tool plugins. These are loaded automatically when a field uses `widget: "block_editor"`. The JavaScript is in `static/js/block-editor.js`.
+The block editor requires Editor.js and its tool plugins. These are loaded automatically when a field uses `widget: "trovato_block_editor"`. The JavaScript is in `static/js/block-editor.js`.
 
 If Editor.js is not available (e.g., no network for CDN, or vendor files missing), the widget falls back to a raw JSON textarea editor.
 

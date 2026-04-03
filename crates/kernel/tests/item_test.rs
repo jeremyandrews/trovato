@@ -257,7 +257,7 @@ fn create_item_type_input() {
         description: Some("A blog article".to_string()),
         has_title: Some(true),
         title_label: Some("Title".to_string()),
-        plugin: "blog".to_string(),
+        plugin: "trovato_blog".to_string(),
         settings: Some(serde_json::json!({"fields": []})),
     };
 
@@ -784,7 +784,7 @@ fn item_type_struct() {
         description: Some("A blog article".to_string()),
         has_title: true,
         title_label: Some("Title".to_string()),
-        plugin: "blog".to_string(),
+        plugin: "trovato_blog".to_string(),
         settings: serde_json::json!({"fields": []}),
     };
 

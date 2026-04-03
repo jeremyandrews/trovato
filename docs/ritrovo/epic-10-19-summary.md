@@ -35,8 +35,8 @@ Epic G (Multi-Tenancy) is the critical path — it's the longest individual epic
 | F (15) | `add_revision_ai_generated` | `item_revision` | ADD ai_generated BOOLEAN; CREATE immutability trigger |
 | G (16) | `create_tenant_table` | `tenant` | CREATE TABLE; seed DEFAULT_TENANT_ID |
 | G (16) | `add_tenant_id_to_items` | `item`, `item_revision` | ADD tenant_id UUID NOT NULL DEFAULT |
-| G (16) | `add_tenant_id_to_categories` | `categories`, `category_tag` | ADD tenant_id UUID NOT NULL DEFAULT |
-| G (16) | `add_tenant_id_to_supporting` | `file_managed`, `site_config`, `url_alias`, `stage`, `menu_link`, `tile`, `comments` | ADD tenant_id UUID NOT NULL DEFAULT |
+| G (16) | `add_tenant_id_to_categories` | `trovato_categories`, `category_tag` | ADD tenant_id UUID NOT NULL DEFAULT |
+| G (16) | `add_tenant_id_to_supporting` | `file_managed`, `site_config`, `url_alias`, `stage`, `menu_link`, `tile`, `trovato_comments` | ADD tenant_id UUID NOT NULL DEFAULT |
 | G (16) | `create_user_tenant` | `user_tenant` | CREATE TABLE; seed existing users |
 | H (17) | `extend_ai_usage_log` | `ai_usage_log` | ADD latency_ms, plugin_name, finish_reason, status, deny_reason |
 

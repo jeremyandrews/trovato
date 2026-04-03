@@ -67,26 +67,26 @@ macro_rules! plugin_gate {
     };
 }
 
-plugin_gate!(gate_categories, "categories");
-plugin_gate!(gate_comments, "comments");
-plugin_gate!(gate_content_locking, "content_locking");
-plugin_gate!(gate_content_translation, "content_translation");
-plugin_gate!(gate_image_styles, "image_styles");
-plugin_gate!(gate_oauth2, "oauth2");
-plugin_gate!(gate_block_editor, "block_editor");
+plugin_gate!(gate_categories, "trovato_categories");
+plugin_gate!(gate_comments, "trovato_comments");
+plugin_gate!(gate_content_locking, "trovato_content_locking");
+plugin_gate!(gate_content_translation, "trovato_content_translation");
+plugin_gate!(gate_image_styles, "trovato_image_styles");
+plugin_gate!(gate_oauth2, "trovato_oauth2");
+plugin_gate!(gate_block_editor, "trovato_block_editor");
 
 /// Plugin names that are runtime-gated in [`gated_plugin_routes`].
 ///
 /// Must be kept in sync with [`crate::plugin::gate::GATED_ROUTE_PLUGINS`].
 /// A unit test in `plugin::gate` enforces this invariant.
 pub(crate) const RUNTIME_GATED_NAMES: &[&str] = &[
-    "categories",
-    "comments",
-    "content_locking",
-    "content_translation",
-    "image_styles",
-    "oauth2",
-    "block_editor",
+    "trovato_categories",
+    "trovato_comments",
+    "trovato_content_locking",
+    "trovato_content_translation",
+    "trovato_image_styles",
+    "trovato_oauth2",
+    "trovato_block_editor",
 ];
 
 /// Build the router fragment for plugin-gated routes.

@@ -29,31 +29,31 @@ pub fn should_auto_enable(
 /// single source of truth for route registration.
 pub const GATED_ROUTE_PLUGINS: &[GatedPlugin] = &[
     GatedPlugin {
-        name: "categories",
+        name: "trovato_categories",
         description: "Category and tag admin UI + API routes",
     },
     GatedPlugin {
-        name: "comments",
+        name: "trovato_comments",
         description: "Comment moderation admin UI + API routes",
     },
     GatedPlugin {
-        name: "content_locking",
+        name: "trovato_content_locking",
         description: "Content lock API routes",
     },
     GatedPlugin {
-        name: "content_translation",
+        name: "trovato_content_translation",
         description: "Content translation admin UI routes",
     },
     GatedPlugin {
-        name: "image_styles",
+        name: "trovato_image_styles",
         description: "Image style derivative routes",
     },
     GatedPlugin {
-        name: "oauth2",
+        name: "trovato_oauth2",
         description: "OAuth2 authorization routes",
     },
     GatedPlugin {
-        name: "block_editor",
+        name: "trovato_block_editor",
         description: "Block editor upload and preview API routes",
     },
 ];
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn auto_enable_default_true_not_disabled() {
         let disabled: Vec<String> = Vec::new();
-        assert!(should_auto_enable(true, &disabled, "blog"));
+        assert!(should_auto_enable(true, &disabled, "trovato_blog"));
     }
 
     #[test]
@@ -92,8 +92,8 @@ mod tests {
 
     #[test]
     fn auto_enable_default_true_but_disabled() {
-        let disabled: Vec<String> = vec!["blog".into(), "media".into()];
-        assert!(!should_auto_enable(true, &disabled, "blog"));
+        let disabled: Vec<String> = vec!["trovato_blog".into(), "trovato_media".into()];
+        assert!(!should_auto_enable(true, &disabled, "trovato_blog"));
     }
 
     #[test]
@@ -104,8 +104,8 @@ mod tests {
 
     #[test]
     fn auto_enable_disabled_set_does_not_affect_other_plugins() {
-        let disabled: Vec<String> = vec!["blog".into()];
-        assert!(should_auto_enable(true, &disabled, "categories"));
+        let disabled: Vec<String> = vec!["trovato_blog".into()];
+        assert!(should_auto_enable(true, &disabled, "trovato_categories"));
     }
 
     #[test]

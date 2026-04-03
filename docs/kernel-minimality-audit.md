@@ -151,7 +151,7 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 ### 2a. Redirect Service — partial extraction, remainder stays in kernel
 
-**Current state:** `services/redirect.rs` + `middleware/redirect.rs` + `RedirectCache` in AppState (conditional). The `redirects` plugin provides permissions and menu definitions. The middleware and cache are now conditional on plugin enablement. Dead code (`create_redirect_for_alias_change`) removed.
+**Current state:** `services/redirect.rs` + `middleware/redirect.rs` + `RedirectCache` in AppState (conditional). The `trovato_redirects` plugin provides permissions and menu definitions. The middleware and cache are now conditional on plugin enablement. Dead code (`create_redirect_for_alias_change`) removed.
 
 **Completed:**
 - ✅ `RedirectCache` is `Option<Arc<>>` in AppState, instantiated only when `is_plugin_enabled("redirects")`
@@ -167,7 +167,7 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 ### 2b. Image Style Service — keep in kernel (gated)
 
-**Current state:** `services/image_style.rs` + `routes/image_style.rs`. Routes are already gated behind `gate_image_styles`. The `image_styles` plugin only provides permissions and menus. `ImageStyleService` is `Option<Arc<>>` in AppState, instantiated only when the plugin is enabled.
+**Current state:** `services/image_style.rs` + `routes/image_style.rs`. Routes are already gated behind `gate_image_styles`. The `trovato_image_styles` plugin only provides permissions and menus. `ImageStyleService` is `Option<Arc<>>` in AppState, instantiated only when the plugin is enabled.
 
 **Previously classified as "Extract"** with blocker "File path host function." However, unlike the previous extractions (webhook, translation, scheduled publishing) — which were all dead code with zero kernel callers — the image style service has an **active HTTP route** at `GET /files/styles/{style_name}/{*path}` that serves image derivatives on demand.
 
@@ -178,12 +178,12 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 **Already properly gated:**
 - `ImageStyleService` is `Option<Arc<>>` in `AppStateInner`
-- Route is behind `plugin_gate!("image_styles")` middleware
+- Route is behind `plugin_gate!("trovato_image_styles")` middleware
 - Listed in `GATED_ROUTE_PLUGINS` in `plugin/gate.rs`
 
 **Verdict:** Current state is the final state. This matches the redirect service conclusion (Section 2a) — hot-path kernel functionality that can't move to WASM. Service stays in kernel, gated behind plugin enablement.
 
-### 2c. Scheduled Publishing Service → `scheduled_publishing` plugin — ✅ EXTRACTED
+### 2c. Scheduled Publishing Service → `trovato_scheduled_publishing` plugin — ✅ EXTRACTED
 
 **Previous state:** `services/scheduled_publishing.rs` + hardcoded cron task. The service used `field_publish_on`/`field_unpublish_on` JSONB fields on items.
 
@@ -193,13 +193,13 @@ These subsystems implement feature logic that lives in the kernel but could be e
 - ✅ Plugin implements `tap_cron` using `host::execute_raw()` for publish/unpublish SQL
 - ✅ Plugin `.info.toml` updated to declare `tap_cron` in implements list
 - ✅ `set_plugin_services()` signature simplified (no longer takes scheduled_publishing arg)
-- ✅ `AppStateInner` no longer carries `scheduled_publishing` field or accessor
+- ✅ `AppStateInner` no longer carries `trovato_scheduled_publishing` field or accessor
 
 **Pattern established:** This is the reference extraction for moving kernel cron tasks to plugin `tap_cron` handlers via DB host functions.
 
-### 2d. Translation Service → `content_translation` plugin — ✅ EXTRACTED
+### 2d. Translation Service → `trovato_content_translation` plugin — ✅ EXTRACTED
 
-**Previous state:** `services/translation.rs` + `services/po_parser.rs` + `services/translated_config.rs`. The `content_translation` plugin only provided permissions and menus.
+**Previous state:** `services/translation.rs` + `services/po_parser.rs` + `services/translated_config.rs`. The `trovato_content_translation` plugin only provided permissions and menus.
 
 **Extraction completed:**
 - ✅ Kernel-side `TranslationService` deleted (`services/translation.rs`)
@@ -208,9 +208,9 @@ These subsystems implement feature logic that lives in the kernel but could be e
 - ✅ `AppStateInner` no longer carries `translation` field or accessor
 - ✅ No kernel routes, middleware, or cron tasks referenced these services (zero callers)
 
-**Note:** The `content_translation` plugin already owns the `item_translation` table migration. Translation CRUD operations will be implemented in the plugin when admin routes are built via `tap_route` or host DB functions — that's a separate future task.
+**Note:** The `trovato_content_translation` plugin already owns the `item_translation` table migration. Translation CRUD operations will be implemented in the plugin when admin routes are built via `tap_route` or host DB functions — that's a separate future task.
 
-### 2e. Webhook Service → `webhooks` plugin — ✅ EXTRACTED
+### 2e. Webhook Service → `trovato_webhooks` plugin — ✅ EXTRACTED
 
 **Previous state:** `services/webhook.rs` + hardcoded cron task for delivery processing. The service provided webhook CRUD, HMAC-signed delivery, SSRF prevention, exponential-backoff retry, and AES-256-GCM secret encryption.
 
@@ -218,11 +218,11 @@ These subsystems implement feature logic that lives in the kernel but could be e
 - ✅ Kernel-side `WebhookService` deleted (`services/webhook.rs`)
 - ✅ Hardcoded cron task removed from `CronTasks` and `CronService::run()`
 - ✅ `set_plugin_services()` signature simplified (no longer takes webhooks arg)
-- ✅ `AppStateInner` no longer carries `webhooks` field, instantiation block, or accessor
+- ✅ `AppStateInner` no longer carries `trovato_webhooks` field, instantiation block, or accessor
 - ✅ HKDF key derivation block and `# Panics` doc removed from `AppState::new()`
 - ✅ Zero callers existed in kernel — `state.webhooks()` was never called, `dispatch()` was never invoked, delivery queue was always empty
 
-**Note:** The `webhooks` plugin already owns the `webhook` and `webhook_delivery` table migrations. When webhook functionality is needed, the plugin will implement it via `tap_item_*` hooks (to queue events) and `tap_cron` (to process deliveries).
+**Note:** The `trovato_webhooks` plugin already owns the `webhook` and `webhook_delivery` table migrations. When webhook functionality is needed, the plugin will implement it via `tap_item_*` hooks (to queue events) and `tap_cron` (to process deliveries).
 
 ### 2f. Email Service — keep in kernel
 
@@ -269,7 +269,7 @@ These subsystems implement feature logic that lives in the kernel but could be e
 1. **Keep CategoryService in kernel** — Categories are a fundamental content classification system. The hierarchical query capability is infrastructure. The category CRUD routes can be gated (they already are), but the service stays.
 2. **Extract with trait abstraction** — Define a `CategoryProvider` trait in the kernel, implement it in the categories plugin via host functions. GatherService depends on the trait, not the concrete service.
 
-**Recommendation:** Option 1 — CategoryService is infrastructure. The `categories` plugin provides UI/permissions; the kernel provides the query and storage layer. This matches the existing pattern where the plugin declares permissions and the kernel implements the service.
+**Recommendation:** Option 1 — CategoryService is infrastructure. The `trovato_categories` plugin provides UI/permissions; the kernel provides the query and storage layer. This matches the existing pattern where the plugin declares permissions and the kernel implements the service.
 
 ### 3b. Activate `tap_cron` Dispatch — ✅ COMPLETED
 
@@ -296,7 +296,7 @@ These subsystems implement feature logic that lives in the kernel but could be e
 
 ### 3d. File Path Host Function — no longer needed
 
-Previously planned for `image_styles` plugin extraction. Since image style service is now classified as **Keep (gated)** (Section 2b), this host function has no remaining use case. If a future plugin needs file path resolution, this can be revisited.
+Previously planned for `trovato_image_styles` plugin extraction. Since image style service is now classified as **Keep (gated)** (Section 2b), this host function has no remaining use case. If a future plugin needs file path resolution, this can be revisited.
 
 ### 3e. Email Abstraction — no longer needed
 

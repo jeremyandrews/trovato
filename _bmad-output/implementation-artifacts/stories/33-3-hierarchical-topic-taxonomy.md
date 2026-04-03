@@ -185,7 +185,7 @@ Individual aliases per term is the simpler approach and consistent with how the 
 - Story 33.1 complete
 - Story 33.2 substantially complete (field_topics wired into queue worker)
 - Category system (Epic 6 / `category` table, `category_tag_hierarchy`) must be functional
-- `categories` plugin must be enabled or kernel must provide category term CRUD
+- `trovato_categories` plugin must be enabled or kernel must provide category term CRUD
 
 ### References
 

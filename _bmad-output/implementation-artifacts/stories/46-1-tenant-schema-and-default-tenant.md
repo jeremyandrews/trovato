@@ -13,7 +13,7 @@ so that the database schema supports tenant isolation from day one.
 1. Migration creates `tenant` table with columns: `id` (UUID PK), `name` (VARCHAR(255) NOT NULL), `machine_name` (VARCHAR(128) UNIQUE NOT NULL), `status` (BOOLEAN DEFAULT TRUE), `created` (BIGINT), `data` (JSONB DEFAULT '{}')
 2. A `DEFAULT_TENANT_ID` constant UUID is defined in `crates/kernel/src/config.rs`
 3. Migration seeds the default tenant row using `DEFAULT_TENANT_ID`
-4. Migration adds `tenant_id` (UUID NOT NULL DEFAULT DEFAULT_TENANT_ID, FK to tenant.id, indexed) to: `item`, `item_revision`, `categories`, `category_tag`, `file_managed`, `site_config`, `url_alias`, `stage`, `menu_link`, `tile`, `comments`
+4. Migration adds `tenant_id` (UUID NOT NULL DEFAULT DEFAULT_TENANT_ID, FK to tenant.id, indexed) to: `item`, `item_revision`, `trovato_categories`, `category_tag`, `file_managed`, `site_config`, `url_alias`, `stage`, `menu_link`, `tile`, `trovato_comments`
 5. Existing rows in all affected tables are backfilled with `DEFAULT_TENANT_ID`
 6. A `Tenant` model struct is defined in `crates/kernel/src/models/tenant.rs` with CRUD methods
 7. At least 2 integration tests: one verifying tenant CRUD, one verifying that existing content queries still work with the default tenant

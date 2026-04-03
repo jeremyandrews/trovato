@@ -1949,7 +1949,7 @@ fn e2e_admin_list_categories() {
     run_test(async {
         let _lock = PLUGIN_STATE_LOCK.read().await;
         let app = shared_app().await;
-        app.ensure_plugin_enabled("categories").await;
+        app.ensure_plugin_enabled("trovato_categories").await;
 
         let cookies = app
             .create_and_login_admin("admin_cat_1", "password123", "cat1@test.com")
@@ -1987,7 +1987,7 @@ fn e2e_admin_create_category() {
     run_test(async {
         let _lock = PLUGIN_STATE_LOCK.read().await;
         let app = shared_app().await;
-        app.ensure_plugin_enabled("categories").await;
+        app.ensure_plugin_enabled("trovato_categories").await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let cat_id = format!("cat_{}", &unique_id[..16]);
@@ -2059,7 +2059,7 @@ fn e2e_admin_delete_category() {
     run_test(async {
         let _lock = PLUGIN_STATE_LOCK.read().await;
         let app = shared_app().await;
-        app.ensure_plugin_enabled("categories").await;
+        app.ensure_plugin_enabled("trovato_categories").await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let cat_id = format!("delcat_{}", &unique_id[..16]);
@@ -2114,7 +2114,7 @@ fn e2e_admin_list_tags() {
     run_test(async {
         let _lock = PLUGIN_STATE_LOCK.read().await;
         let app = shared_app().await;
-        app.ensure_plugin_enabled("categories").await;
+        app.ensure_plugin_enabled("trovato_categories").await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let cat_id = format!("tagcat_{}", &unique_id[..16]);
@@ -2164,7 +2164,7 @@ fn e2e_admin_create_tag() {
     run_test(async {
         let _lock = PLUGIN_STATE_LOCK.read().await;
         let app = shared_app().await;
-        app.ensure_plugin_enabled("categories").await;
+        app.ensure_plugin_enabled("trovato_categories").await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let cat_id = format!("newtagcat_{}", &unique_id[..16]);
@@ -2244,7 +2244,7 @@ fn e2e_admin_delete_tag() {
     run_test(async {
         let _lock = PLUGIN_STATE_LOCK.read().await;
         let app = shared_app().await;
-        app.ensure_plugin_enabled("categories").await;
+        app.ensure_plugin_enabled("trovato_categories").await;
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let cat_id = format!("deltagcat_{}", &unique_id[..16]);
@@ -3326,7 +3326,7 @@ fn e2e_api_list_comments_for_nonexistent_item() {
 fn e2e_api_create_comment_requires_auth() {
     run_test(async {
         let app = shared_app().await;
-        app.ensure_plugin_enabled("comments").await;
+        app.ensure_plugin_enabled("trovato_comments").await;
 
         let fake_id = uuid::Uuid::now_v7();
         let response = app
@@ -3351,7 +3351,7 @@ fn e2e_api_create_comment_requires_auth() {
 fn e2e_api_comment_crud() {
     run_test(async {
         let app = shared_app().await;
-        app.ensure_plugin_enabled("comments").await;
+        app.ensure_plugin_enabled("trovato_comments").await;
 
         // Create a user and login
         let cookies = app
@@ -3582,7 +3582,7 @@ fn e2e_api_comment_crud() {
 fn e2e_api_comment_validation() {
     run_test(async {
         let app = shared_app().await;
-        app.ensure_plugin_enabled("comments").await;
+        app.ensure_plugin_enabled("trovato_comments").await;
 
         let cookies = app
             .create_and_login_user("comment_val_user", "password123", "commentval@test.com")
@@ -3703,7 +3703,7 @@ fn e2e_api_comment_validation() {
 fn e2e_admin_list_comments() {
     run_test(async {
         let app = shared_app().await;
-        app.ensure_plugin_enabled("comments").await;
+        app.ensure_plugin_enabled("trovato_comments").await;
 
         let cookies = app
             .create_and_login_admin("comment_admin", "password123", "commentadmin@test.com")
@@ -3728,7 +3728,7 @@ fn e2e_admin_list_comments() {
 fn e2e_admin_comment_moderation() {
     run_test(async {
         let app = shared_app().await;
-        app.ensure_plugin_enabled("comments").await;
+        app.ensure_plugin_enabled("trovato_comments").await;
 
         let cookies = app
             .create_and_login_admin("comment_mod", "password123", "commentmod@test.com")
@@ -4096,7 +4096,10 @@ fn e2e_admin_plugin_list_shows_plugins() {
 
         let body = response_text(response).await;
         assert!(body.contains("Plugins"), "Page should have Plugins heading");
-        assert!(body.contains("blog"), "Should list the blog plugin");
+        assert!(
+            body.contains("trovato_blog"),
+            "Should list the trovato_blog plugin"
+        );
     });
 }
 
@@ -4106,7 +4109,7 @@ fn e2e_admin_plugin_toggle() {
         let _lock = PLUGIN_STATE_LOCK.write().await;
         let app = shared_app().await;
         // Ensure the redirects plugin is installed so the toggle form appears
-        app.ensure_plugin_enabled("redirects").await;
+        app.ensure_plugin_enabled("trovato_redirects").await;
 
         let cookies = app
             .create_and_login_admin("plugin_admin_2", "password123", "plugadmin2@test.com")
@@ -4207,7 +4210,7 @@ fn e2e_toggle_gated_plugin_affects_routes() {
         let _lock = PLUGIN_STATE_LOCK.write().await;
         let app = shared_app().await;
         // Ensure categories is installed in DB and enabled in-memory
-        app.ensure_plugin_enabled("categories").await;
+        app.ensure_plugin_enabled("trovato_categories").await;
 
         let cookies = app
             .create_and_login_admin("gate_toggle_admin", "password123", "gatetoggle@test.com")
@@ -4307,7 +4310,7 @@ fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
         let app = shared_app().await;
 
         // Ensure the categories plugin is enabled in memory for this test.
-        app.state.set_plugin_enabled("categories", true);
+        app.state.set_plugin_enabled("trovato_categories", true);
 
         // With the plugin enabled, the gated API route should NOT be 404.
         let response = app
@@ -4320,7 +4323,7 @@ fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
         );
 
         // Disable the plugin at runtime (in-memory only — no DB write needed).
-        app.state.set_plugin_enabled("categories", false);
+        app.state.set_plugin_enabled("trovato_categories", false);
 
         // The same route should now return 404 from the gate middleware.
         let response = app
@@ -4333,7 +4336,7 @@ fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
         );
 
         // Re-enable and confirm the route is reachable again.
-        app.state.set_plugin_enabled("categories", true);
+        app.state.set_plugin_enabled("trovato_categories", true);
 
         let response = app
             .request(Request::get("/api/categories").body(Body::empty()).unwrap())

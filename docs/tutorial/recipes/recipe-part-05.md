@@ -1,7 +1,7 @@
 # Recipe: Part 5 — Forms & User Input
 
 > **Synced with:** `docs/tutorial/part-05-forms-and-input.md`
-> **Sync hash:** 7dff63ce
+> **Sync hash:** 12bc6732
 > **Last verified:** 2026-04-02 (added AI Assist buttons section, updated deferred table)
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.

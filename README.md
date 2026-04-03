@@ -109,8 +109,8 @@ Trovato ships with 17 plugins compiled to WebAssembly:
 ### Content Type Plugins
 | Plugin | Content Types | Description |
 |--------|--------------|-------------|
-| `blog` | blog | Blog posts with body and tags |
-| `media` | media | File upload wrapper with alt text, caption, credit |
+| `trovato_blog` | blog | Blog posts with body and tags |
+| `trovato_media` | media | File upload wrapper with alt text, caption, credit |
 | `argus` | 7 types | News intelligence: articles, stories, topics, feeds, entities, reactions, discussions |
 | `netgrasp` | 6 types | Network monitoring: devices, persons, events, presence tracking |
 | `goose` | 5 types | Load testing data: test runs, scenarios, endpoint results, sites, comparisons |
@@ -118,22 +118,22 @@ Trovato ships with 17 plugins compiled to WebAssembly:
 ### Feature Plugins
 | Plugin | Description |
 |--------|-------------|
-| `categories` | Category vocabulary and term management with DAG hierarchy |
-| `comments` | Threaded comment system with moderation and approval workflows |
-| `audit_log` | Audit trail for content, auth, and permission changes |
-| `content_locking` | Pessimistic locking to prevent concurrent editing |
-| `scheduled_publishing` | Schedule items for future publish and unpublish |
-| `webhooks` | Event-driven webhook dispatch with HMAC signatures and retry |
-| `image_styles` | On-demand image derivatives with configurable effect chains |
-| `oauth2` | OAuth2 authorization server with JWT, PKCE, and token rotation |
-| `redirects` | URL redirect management with automatic alias-change tracking |
+| `trovato_categories` | Category vocabulary and term management with DAG hierarchy |
+| `trovato_comments` | Threaded comment system with moderation and approval workflows |
+| `trovato_audit_log` | Audit trail for content, auth, and permission changes |
+| `trovato_content_locking` | Pessimistic locking to prevent concurrent editing |
+| `trovato_scheduled_publishing` | Schedule items for future publish and unpublish |
+| `trovato_webhooks` | Event-driven webhook dispatch with HMAC signatures and retry |
+| `trovato_image_styles` | On-demand image derivatives with configurable effect chains |
+| `trovato_oauth2` | OAuth2 authorization server with JWT, PKCE, and token rotation |
+| `trovato_redirects` | URL redirect management with automatic alias-change tracking |
 
 ### Internationalization Plugins
 | Plugin | Description |
 |--------|-------------|
-| `locale` | Interface string translation with .po file import |
-| `content_translation` | Field-level content translation with language overlay |
-| `config_translation` | Configuration entity translation for active language |
+| `trovato_locale` | Interface string translation with .po file import |
+| `trovato_content_translation` | Field-level content translation with language overlay |
+| `trovato_config_translation` | Configuration entity translation for active language |
 
 ## Quick Start
 
@@ -215,7 +215,7 @@ rustup target add wasm32-wasip1
 cargo build -p blog --target wasm32-wasip1 --release
 
 # Copy to plugin directory
-cp target/wasm32-wasip1/release/blog.wasm plugins/blog/
+cp target/wasm32-wasip1/release/blog.wasm plugins/trovato_blog/
 ```
 
 See the [Plugin Development Guide](docs/plugin-development.md) for complete documentation.

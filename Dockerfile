@@ -18,14 +18,17 @@ COPY . .
 RUN cargo build --release --bin trovato
 
 RUN cargo build --target wasm32-wasip1 --release \
-    -p blog -p trovato_search -p categories -p comments \
-    -p block_editor -p ritrovo_importer -p ritrovo_cfp \
-    -p ritrovo_access -p ritrovo_notify -p ritrovo_translate \
-    -p audit_log -p content_locking -p image_styles \
-    -p locale -p media -p oauth2 -p redirects \
-    -p scheduled_publishing -p webhooks \
-    -p content_translation -p config_translation \
-    -p trovato_ai
+    -p trovato_blog -p trovato_media -p trovato_redirects \
+    -p trovato_audit_log -p trovato_scheduled_publishing \
+    -p trovato_content_locking -p trovato_webhooks \
+    -p trovato_image_styles -p trovato_oauth2 \
+    -p trovato_categories -p trovato_comments \
+    -p trovato_locale -p trovato_content_translation \
+    -p trovato_config_translation -p trovato_block_editor \
+    -p trovato_search -p trovato_ai \
+    -p ritrovo_importer -p ritrovo_cfp -p ritrovo_access \
+    -p ritrovo_notify -p ritrovo_translate \
+    -p argus -p netgrasp -p goose
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
@@ -38,7 +41,8 @@ WORKDIR /app
 
 COPY --from=builder /usr/src/trovato/target/release/trovato .
 
-# Assemble plugin directories: WASM binary + metadata + migrations
+# Assemble plugin directories: WASM binary + metadata + migrations.
+# Directory names match crate names (trovato_ prefix convention).
 COPY --from=builder /usr/src/trovato/target/wasm32-wasip1/release/*.wasm /tmp/wasm/
 COPY --from=builder /usr/src/trovato/plugins/ /tmp/plugin-src/
 RUN for wasm in /tmp/wasm/*.wasm; do \

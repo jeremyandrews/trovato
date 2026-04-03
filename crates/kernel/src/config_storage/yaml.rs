@@ -1031,7 +1031,7 @@ mod tests {
             description: Some("A blog article".to_string()),
             has_title: true,
             title_label: Some("Title".to_string()),
-            plugin: "blog".to_string(),
+            plugin: "trovato_blog".to_string(),
             settings: serde_json::json!({"fields": []}),
         };
 
@@ -1257,7 +1257,7 @@ label: Blog Post
 description: A blog article
 has_title: true
 title_label: Title
-plugin: blog
+plugin: trovato_blog
 settings: {}
 "#;
         let (entity, tag_parents) = deserialize_entity("item_type", yaml).unwrap();
@@ -1396,7 +1396,7 @@ parents:
             description: None,
             has_title: true,
             title_label: None,
-            plugin: "blog".to_string(),
+            plugin: "trovato_blog".to_string(),
             settings: serde_json::json!({}),
         });
 
@@ -1458,7 +1458,7 @@ parents:
         let dir = TestDir::new("roundtrip");
 
         // Write config files
-        let item_type_yaml = "type: blog\nlabel: Blog\ndescription: null\nhas_title: true\ntitle_label: null\nplugin: blog\nsettings: {}\n";
+        let item_type_yaml = "type: blog\nlabel: Blog\ndescription: null\nhas_title: true\ntitle_label: null\nplugin: trovato_blog\nsettings: {}\n";
         let variable_yaml = "key: site_name\nvalue: My Site\n";
         let category_yaml =
             "id: topics\nlabel: Topics\ndescription: null\nhierarchy: 0\nweight: 0\n";
@@ -1623,7 +1623,7 @@ parents:
         let dir = TestDir::new("dedup");
 
         // Two files with different names but same content ID
-        let yaml = "type: blog\nlabel: Blog\ndescription: null\nhas_title: true\ntitle_label: null\nplugin: blog\nsettings: {}\n";
+        let yaml = "type: blog\nlabel: Blog\ndescription: null\nhas_title: true\ntitle_label: null\nplugin: trovato_blog\nsettings: {}\n";
         tokio::fs::write(dir.join("item_type.blog.yml"), yaml)
             .await
             .unwrap();

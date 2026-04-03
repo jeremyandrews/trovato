@@ -174,7 +174,7 @@ mod tests {
             description: Some("A blog article".to_string()),
             has_title: Some(true),
             title_label: Some("Title".to_string()),
-            plugin: "blog".to_string(),
+            plugin: "trovato_blog".to_string(),
             settings: Some(serde_json::json!({"fields": []})),
         };
 

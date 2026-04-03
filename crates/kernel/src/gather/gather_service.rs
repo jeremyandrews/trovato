@@ -1532,7 +1532,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-            plugin: "blog".to_string(),
+            plugin: "trovato_blog".to_string(),
             created: 1000,
             changed: 1000,
         };

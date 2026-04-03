@@ -10,7 +10,7 @@ so that I can compose structured content with paragraphs, headings, images, list
 
 ## Acceptance Criteria
 
-1. `block_editor` plugin provides the `"use block editor"` permission and gates editor routes
+1. `trovato_block_editor` plugin provides the `"use block editor"` permission and gates editor routes
 2. `BlockTypeRegistry` registers 8 standard block types: paragraph, heading, image, list, quote, code, delimiter, embed
 3. Each block type has a JSON Schema definition and allowed text formats
 4. `render_blocks()` converts Editor.js JSON arrays into semantic HTML

@@ -7,7 +7,7 @@ Ritrovo goes **bilingual** (English + Italian), gets a **translation workflow** 
 **Start state:** English-only, existing API at `/api/`, four plugin designs (`ritrovo_importer`, `ritrovo_cfp`, `ritrovo_access`, `ritrovo_notify`).
 **End state:** Bilingual site (English + Italian), translation editorial workflow, versioned REST API with authentication and rate limiting, five plugins.
 
-> **Implementation note:** The kernel has a language model (`models/language.rs`, 424 lines) with BCP 47 validation, a full language middleware (`middleware/language.rs`, 736 lines) with URL prefix and Accept-Language negotiation, and a locale service (`services/locale.rs`) for UI string translation. The `content_translation` plugin provides translation storage, and the `ritrovo_translate` plugin (238 lines) manages translation workflows for conferences. Italian seed data (15 conference translations) is in `docs/tutorial/config/seed-italian/`. The versioned REST API at `/api/v1/` with pagination, filters, and JSON responses is operational. API token authentication and per-endpoint rate limiting are implemented. All features described in this part are implemented.
+> **Implementation note:** The kernel has a language model (`models/language.rs`, 424 lines) with BCP 47 validation, a full language middleware (`middleware/language.rs`, 736 lines) with URL prefix and Accept-Language negotiation, and a locale service (`services/locale.rs`) for UI string translation. The `trovato_content_translation` plugin provides translation storage, and the `ritrovo_translate` plugin (238 lines) manages translation workflows for conferences. Italian seed data (15 conference translations) is in `docs/tutorial/config/seed-italian/`. The versioned REST API at `/api/v1/` with pagination, filters, and JSON responses is operational. API token authentication and per-endpoint rate limiting are implemented. All features described in this part are implemented.
 
 ---
 
@@ -567,7 +567,7 @@ You also now understand:
 - How API authentication via Bearer tokens reuses the same role/permission model as the web UI.
 - How rate limiting protects the API from abuse with per-tier configurable limits.
 
-Six plugins now collaborate across the Ritrovo ecosystem: `ritrovo_importer` (Part 2) feeds data, `block_editor` (Part 5) enables structured editing, `ritrovo_access` (Part 5) controls visibility, `ritrovo_cfp` (Part 6) tracks deadlines, `ritrovo_notify` (Part 6) delivers notifications, and `ritrovo_translate` (Part 7) bridges languages. Each is independent, each extends the kernel through taps, and together they deliver a feature set that rivals platforms built by teams of dozens.
+Six plugins now collaborate across the Ritrovo ecosystem: `ritrovo_importer` (Part 2) feeds data, `trovato_block_editor` (Part 5) enables structured editing, `ritrovo_access` (Part 5) controls visibility, `ritrovo_cfp` (Part 6) tracks deadlines, `ritrovo_notify` (Part 6) delivers notifications, and `ritrovo_translate` (Part 7) bridges languages. Each is independent, each extends the kernel through taps, and together they deliver a feature set that rivals platforms built by teams of dozens.
 
 ---
 

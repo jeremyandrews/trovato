@@ -124,7 +124,7 @@ Follow standard Rust conventions:
 - Types: `PascalCase` (`ItemService`, `CategoryTree`)
 - Functions/methods: `snake_case` (`render_error`, `require_admin`)
 - Constants: `SCREAMING_SNAKE_CASE` (`SESSION_USER_ID`, `MAX_UPLOAD_SIZE`)
-- Machine names (stored in DB): lowercase with underscores (`blog`, `audit_log`)
+- Machine names (stored in DB): lowercase with underscores (`trovato_blog`, `trovato_audit_log`)
 - URL paths: lowercase with hyphens (`/admin/content/items`, `/admin/structure/categories`)
 
 ---
