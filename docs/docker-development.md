@@ -121,7 +121,7 @@ For evaluators who just want to see Trovato running without building anything.
 # Pull the nightly image and start everything (fast — no compilation)
 docker compose --profile full up -d
 
-# Visit http://localhost:3000/install
+# Visit http://localhost:3001/install
 ```
 
 This pulls the `ghcr.io/jeremyandrews/trovato:nightly` image, which is built automatically from `main` on every push. The image includes the compiled kernel, all WASM plugins, templates, and static assets.

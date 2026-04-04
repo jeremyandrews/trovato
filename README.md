@@ -167,7 +167,7 @@ cargo run --release
 ```bash
 docker compose --profile full up -d
 # Pulls ghcr.io/jeremyandrews/trovato:nightly — no Rust needed
-# Visit http://localhost:3000/install
+# Visit http://localhost:3001/install
 ```
 
 ### Without Rust Installed (Development)
