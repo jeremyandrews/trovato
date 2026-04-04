@@ -14,29 +14,207 @@ use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
 
-/// Returns the strftime date format pattern for a given locale.
+/// CLDR-based localized month names for supported locales.
 ///
-/// Covers major languages. Unknown locales fall back to English.
-/// This is a simple compile-time lookup — full ICU/CLDR support
-/// is plugin territory.
-fn date_format_for_locale(locale: &str) -> &'static str {
-    // Use primary language subtag (e.g., "de" from "de-AT")
+/// Covers 14 languages with genitive forms where applicable (e.g.,
+/// Polish uses genitive case for month names in dates: "marca" not "marzec").
+/// Unknown locales fall back to English.
+fn localized_month_name(month: u32, locale: &str) -> &'static str {
     let primary = locale.split('-').next().unwrap_or(locale);
+    let idx = month.saturating_sub(1).min(11) as usize;
+    static EN: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    static DE: [&str; 12] = [
+        "Januar",
+        "Februar",
+        "März",
+        "April",
+        "Mai",
+        "Juni",
+        "Juli",
+        "August",
+        "September",
+        "Oktober",
+        "November",
+        "Dezember",
+    ];
+    static FR: [&str; 12] = [
+        "janvier",
+        "février",
+        "mars",
+        "avril",
+        "mai",
+        "juin",
+        "juillet",
+        "août",
+        "septembre",
+        "octobre",
+        "novembre",
+        "décembre",
+    ];
+    static ES: [&str; 12] = [
+        "enero",
+        "febrero",
+        "marzo",
+        "abril",
+        "mayo",
+        "junio",
+        "julio",
+        "agosto",
+        "septiembre",
+        "octubre",
+        "noviembre",
+        "diciembre",
+    ];
+    static IT: [&str; 12] = [
+        "gennaio",
+        "febbraio",
+        "marzo",
+        "aprile",
+        "maggio",
+        "giugno",
+        "luglio",
+        "agosto",
+        "settembre",
+        "ottobre",
+        "novembre",
+        "dicembre",
+    ];
+    static PT: [&str; 12] = [
+        "janeiro",
+        "fevereiro",
+        "março",
+        "abril",
+        "maio",
+        "junho",
+        "julho",
+        "agosto",
+        "setembro",
+        "outubro",
+        "novembro",
+        "dezembro",
+    ];
+    static NL: [&str; 12] = [
+        "januari",
+        "februari",
+        "maart",
+        "april",
+        "mei",
+        "juni",
+        "juli",
+        "augustus",
+        "september",
+        "oktober",
+        "november",
+        "december",
+    ];
+    static PL: [&str; 12] = [
+        "stycznia",
+        "lutego",
+        "marca",
+        "kwietnia",
+        "maja",
+        "czerwca",
+        "lipca",
+        "sierpnia",
+        "września",
+        "października",
+        "listopada",
+        "grudnia",
+    ];
+    static RU: [&str; 12] = [
+        "января",
+        "февраля",
+        "марта",
+        "апреля",
+        "мая",
+        "июня",
+        "июля",
+        "августа",
+        "сентября",
+        "октября",
+        "ноября",
+        "декабря",
+    ];
+    static AR: [&str; 12] = [
+        "يناير",
+        "فبراير",
+        "مارس",
+        "أبريل",
+        "مايو",
+        "يونيو",
+        "يوليو",
+        "أغسطس",
+        "سبتمبر",
+        "أكتوبر",
+        "نوفمبر",
+        "ديسمبر",
+    ];
+    static HE: [&str; 12] = [
+        "ינואר",
+        "פברואר",
+        "מרץ",
+        "אפריל",
+        "מאי",
+        "יוני",
+        "יולי",
+        "אוגוסט",
+        "ספטמבר",
+        "אוקטובר",
+        "נובמבר",
+        "דצמבר",
+    ];
     match primary {
-        "de" => "%-d. %B %Y",       // 30. März 2026
-        "fr" => "%-d %B %Y",        // 30 mars 2026
-        "es" => "%-d de %B de %Y",  // 30 de marzo de 2026
-        "it" => "%-d %B %Y",        // 30 marzo 2026
-        "pt" => "%-d de %B de %Y",  // 30 de março de 2026
-        "nl" => "%-d %B %Y",        // 30 maart 2026
-        "pl" => "%-d %B %Y",        // 30 marca 2026
-        "ru" => "%-d %B %Y",        // 30 марта 2026
-        "ja" => "%Y年%-m月%-d日",   // 2026年3月30日
-        "zh" => "%Y年%-m月%-d日",   // 2026年3月30日
-        "ko" => "%Y년 %-m월 %-d일", // 2026년 3월 30일
-        "ar" => "%-d %B %Y",        // 30 مارس 2026
-        "he" => "%-d ב%B %Y",       // 30 במרץ 2026
-        _ => "%B %-d, %Y",          // March 30, 2026 (English default)
+        "de" => DE[idx],
+        "fr" => FR[idx],
+        "es" => ES[idx],
+        "it" => IT[idx],
+        "pt" => PT[idx],
+        "nl" => NL[idx],
+        "pl" => PL[idx],
+        "ru" => RU[idx],
+        "ar" => AR[idx],
+        "he" => HE[idx],
+        _ => EN[idx],
+    }
+}
+
+/// Format a date using CLDR locale conventions with correct month names.
+///
+/// Produces locale-appropriate date strings with localized month names,
+/// correct day/month ordering, and locale-specific formatting:
+/// - English: "March 30, 2026"
+/// - German:  "30. März 2026"
+/// - Japanese: "2026年3月30日"
+/// - Arabic:  "30 مارس 2026"
+fn format_date_localized(dt: &chrono::DateTime<chrono::Utc>, locale: &str) -> String {
+    let primary = locale.split('-').next().unwrap_or(locale);
+    let day = dt.format("%-d").to_string();
+    let month_num = dt.format("%-m").to_string();
+    let year = dt.format("%Y").to_string();
+    let month_name = localized_month_name(dt.format("%m").to_string().parse().unwrap_or(1), locale);
+
+    match primary {
+        "de" => format!("{day}. {month_name} {year}"),
+        "fr" | "it" | "nl" | "pl" | "ru" => format!("{day} {month_name} {year}"),
+        "es" | "pt" => format!("{day} de {month_name} de {year}"),
+        "ja" | "zh" => format!("{year}年{month_num}月{day}日"),
+        "ko" => format!("{year}년 {month_num}월 {day}일"),
+        "ar" => format!("{day} {month_name} {year}"),
+        "he" => format!("{day} ב{month_name} {year}"),
+        _ => format!("{month_name} {day}, {year}"),
     }
 }
 use trovato_sdk::render::RenderElement;
@@ -122,17 +300,18 @@ impl ThemeEngine {
                 // Custom format takes precedence over locale
                 let custom_format = args.get("format").and_then(|v| v.as_str());
 
-                let pattern = if let Some(fmt) = custom_format {
-                    fmt
+                let formatted = if let Some(fmt) = custom_format {
+                    // Custom strftime format — bypasses locale (user's explicit choice)
+                    chrono::DateTime::from_timestamp(timestamp, 0)
+                        .map(|dt| dt.format(fmt).to_string())
+                        .unwrap_or_else(|| "Unknown date".to_string())
                 } else {
-                    // Determine locale: explicit parameter → active_language context → "en"
+                    // CLDR-localized formatting with correct month names
                     let locale = args.get("locale").and_then(|v| v.as_str()).unwrap_or("en");
-                    date_format_for_locale(locale)
+                    chrono::DateTime::from_timestamp(timestamp, 0)
+                        .map(|dt| format_date_localized(&dt, locale))
+                        .unwrap_or_else(|| "Unknown date".to_string())
                 };
-
-                let formatted = chrono::DateTime::from_timestamp(timestamp, 0)
-                    .map(|dt| dt.format(pattern).to_string())
-                    .unwrap_or_else(|| "Unknown date".to_string());
 
                 Ok(tera::Value::String(formatted))
             },
@@ -627,8 +806,8 @@ mod tests {
         let mut ctx = tera::Context::new();
         ctx.insert("ts", &1739577600_i64); // 2025-02-15 00:00:00 UTC
         let result = tera.render("test", &ctx).unwrap();
-        // German format: "15. February 2025" (chrono uses English month names)
-        assert!(result.starts_with("15. "), "German format: {result}");
+        // German CLDR format with localized month name
+        assert_eq!(result, "15. Februar 2025", "German format: {result}");
     }
 
     #[test]
@@ -641,10 +820,24 @@ mod tests {
         let mut ctx = tera::Context::new();
         ctx.insert("ts", &1739577600_i64);
         let result = tera.render("test", &ctx).unwrap();
-        // Japanese format: "2025年2月15日"
-        assert!(result.contains("年"), "Japanese format: {result}");
-        assert!(result.contains("月"), "Japanese format: {result}");
-        assert!(result.contains("日"), "Japanese format: {result}");
+        // Japanese CLDR format
+        assert_eq!(result, "2025年2月15日", "Japanese format: {result}");
+    }
+
+    #[test]
+    fn test_format_date_localized_month_names() {
+        // Verify all locales produce correct month names (not English)
+        let ts = 1711756800_i64; // 2024-03-30 00:00:00 UTC
+        let dt = chrono::DateTime::from_timestamp(ts, 0).unwrap();
+
+        assert_eq!(format_date_localized(&dt, "de"), "30. März 2024");
+        assert_eq!(format_date_localized(&dt, "fr"), "30 mars 2024");
+        assert_eq!(format_date_localized(&dt, "es"), "30 de marzo de 2024");
+        assert_eq!(format_date_localized(&dt, "it"), "30 marzo 2024");
+        assert_eq!(format_date_localized(&dt, "ja"), "2024年3月30日");
+        assert_eq!(format_date_localized(&dt, "ko"), "2024년 3월 30일");
+        assert_eq!(format_date_localized(&dt, "pl"), "30 marca 2024");
+        assert_eq!(format_date_localized(&dt, "en"), "March 30, 2024");
     }
 
     #[test]
