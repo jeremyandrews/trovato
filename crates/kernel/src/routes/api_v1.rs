@@ -111,6 +111,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/v1/user/export", get(export_user_data))
         .route("/api/v1/items/autocomplete", get(autocomplete_items))
+        .route("/api/openapi.json", get(openapi_spec))
         .layer(axum::middleware::from_fn(inject_api_version))
 }
 
@@ -126,6 +127,13 @@ async fn inject_api_version(
 }
 
 // -------------------------------------------------------------------------
+/// Serve the OpenAPI 3.0 specification.
+async fn openapi_spec() -> impl IntoResponse {
+    let mut registry = crate::routes::route_metadata::RouteRegistry::new();
+    registry.register_kernel_routes();
+    Json(registry.to_openapi_json())
+}
+
 // Helper functions
 // -------------------------------------------------------------------------
 

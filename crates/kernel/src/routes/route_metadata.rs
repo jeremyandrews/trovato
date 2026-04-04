@@ -132,6 +132,99 @@ impl RouteRegistry {
             tags: vec!["user".to_string()],
             deprecated: false,
         });
+
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/topics".to_string(),
+            summary: "List topic categories".to_string(),
+            parameters: vec![],
+            response_type: "application/json".to_string(),
+            tags: vec!["topics".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/speakers".to_string(),
+            summary: "List speakers with pagination".to_string(),
+            parameters: vec![
+                ParamMeta {
+                    name: "page".to_string(),
+                    location: "query".to_string(),
+                    required: false,
+                    description: "Page number (default 1)".to_string(),
+                },
+                ParamMeta {
+                    name: "per_page".to_string(),
+                    location: "query".to_string(),
+                    required: false,
+                    description: "Items per page (default 25)".to_string(),
+                },
+            ],
+            response_type: "application/json".to_string(),
+            tags: vec!["speakers".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/items/autocomplete".to_string(),
+            summary: "Search items by type and title for autocomplete".to_string(),
+            parameters: vec![
+                ParamMeta {
+                    name: "type".to_string(),
+                    location: "query".to_string(),
+                    required: true,
+                    description: "Content type machine name".to_string(),
+                },
+                ParamMeta {
+                    name: "q".to_string(),
+                    location: "query".to_string(),
+                    required: true,
+                    description: "Title prefix search query".to_string(),
+                },
+                ParamMeta {
+                    name: "limit".to_string(),
+                    location: "query".to_string(),
+                    required: false,
+                    description: "Max results (default 10, max 50)".to_string(),
+                },
+            ],
+            response_type: "application/json".to_string(),
+            tags: vec!["content".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::POST.to_string(),
+            path: "/api/v1/ai/assist".to_string(),
+            summary: "AI text transformation (rewrite, expand, shorten, translate, tone)"
+                .to_string(),
+            parameters: vec![],
+            response_type: "application/json".to_string(),
+            tags: vec!["ai".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::POST.to_string(),
+            path: "/api/v1/chat".to_string(),
+            summary: "AI chatbot with SSE streaming response".to_string(),
+            parameters: vec![],
+            response_type: "text/event-stream".to_string(),
+            tags: vec!["ai".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/health".to_string(),
+            summary: "Health check endpoint".to_string(),
+            parameters: vec![],
+            response_type: "application/json".to_string(),
+            tags: vec!["infrastructure".to_string()],
+            deprecated: false,
+        });
     }
 
     /// Register a plugin-provided route.
@@ -142,5 +235,79 @@ impl RouteRegistry {
     /// Get all registered routes.
     pub fn routes(&self) -> &[RouteMetadata] {
         &self.routes
+    }
+
+    /// Generate an OpenAPI 3.0 spec from registered routes.
+    pub fn to_openapi_json(&self) -> serde_json::Value {
+        let mut paths = serde_json::Map::new();
+
+        for route in &self.routes {
+            let method = route.method.to_lowercase();
+
+            // Build parameters array
+            let params: Vec<serde_json::Value> = route
+                .parameters
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "name": p.name,
+                        "in": p.location,
+                        "required": p.required,
+                        "description": p.description,
+                        "schema": { "type": "string" }
+                    })
+                })
+                .collect();
+
+            let response_type = &route.response_type;
+            let mut operation = serde_json::json!({
+                "summary": route.summary.clone(),
+                "tags": route.tags.clone(),
+                "responses": {
+                    "200": {
+                        "description": "Successful response",
+                        "content": {
+                            response_type: {
+                                "schema": { "type": "object" }
+                            }
+                        }
+                    }
+                }
+            });
+
+            if !params.is_empty() {
+                operation["parameters"] = serde_json::Value::Array(params);
+            }
+
+            if route.deprecated {
+                operation["deprecated"] = serde_json::Value::Bool(true);
+            }
+
+            // Convert {id} to OpenAPI {id} format (already correct)
+            let path_entry = paths
+                .entry(route.path.clone())
+                .or_insert_with(|| serde_json::json!({}));
+            path_entry[method] = operation;
+        }
+
+        serde_json::json!({
+            "openapi": "3.0.3",
+            "info": {
+                "title": "Trovato API",
+                "description": "REST API for the Trovato content management system",
+                "version": "1.0.0",
+                "license": {
+                    "name": "GPL-2.0-or-later",
+                    "url": "https://www.gnu.org/licenses/gpl-2.0.html"
+                }
+            },
+            "servers": [
+                {
+                    "url": "/",
+                    "description": "Current server"
+                }
+            ],
+            "paths": paths
+        })
     }
 }
