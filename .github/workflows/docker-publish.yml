@@ -9,6 +9,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Base version — bump minor for new feature cycles
+  BASE_VERSION: "0.2"
 
 jobs:
   build-and-push:
@@ -21,6 +23,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for tag listing
+
+      - name: Compute version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # Release tag: use the tag as-is
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            # Nightly: auto-increment patch from latest tag
+            LATEST=$(git tag -l "v${BASE_VERSION}.*" --sort=-v:refname | head -1)
+            if [ -z "$LATEST" ]; then
+              NEXT="${BASE_VERSION}.0"
+            else
+              PATCH=$(echo "$LATEST" | sed "s/v${BASE_VERSION}\.\([0-9]*\).*/\1/")
+              NEXT="${BASE_VERSION}.$((PATCH + 1))"
+            fi
+            echo "version=${NEXT}" >> $GITHUB_OUTPUT
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
+          echo "Computed version: $(cat $GITHUB_OUTPUT | grep version)"
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -35,17 +60,18 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Pushes to main: "nightly" + short SHA for pinning
+            # Always tag with computed version
+            type=raw,value=${{ steps.version.outputs.version }}
+            # Pushes to main: also tag as "nightly" + short SHA
             type=raw,value=nightly,enable={{is_default_branch}}
             type=sha,prefix=nightly-,enable={{is_default_branch}}
-            # Version tags: semver (v1.0.0 -> 1.0.0, 1.0, 1, latest)
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # Release tags: semver aliases + latest
+            type=semver,pattern={{version}},enable=${{ steps.version.outputs.is_release }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.version.outputs.is_release }}
+            type=raw,value=latest,enable=${{ steps.version.outputs.is_release }}
 
-      - name: Set up QEMU (for multi-platform builds)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Set up QEMU (for multi-platform release builds)
+        if: steps.version.outputs.is_release == 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -57,7 +83,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          platforms: ${{ steps.version.outputs.is_release == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
