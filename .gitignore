@@ -31,6 +31,9 @@ _bmad/
 .env.local
 .env.*.local
 
+# Docker compose override (may contain API keys or local config)
+docker-compose.override.yml
+
 # Docker volumes (local dev data)
 docker-data/
 
