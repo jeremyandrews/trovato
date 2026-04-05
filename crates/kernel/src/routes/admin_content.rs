@@ -200,6 +200,7 @@ async fn add_content_form(
     context.insert("content_type", &content_type);
     context.insert("values", &serde_json::json!({}));
     context.insert("path", &format!("/admin/content/add/{type_name}"));
+    context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
 
     render_admin_template(&state, "admin/content-form.html", context).await
 }
@@ -275,6 +276,7 @@ async fn add_content_submit(
             }),
         );
         context.insert("path", &format!("/admin/content/add/{type_name}"));
+        context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
 
         return render_admin_template(&state, "admin/content-form.html", context).await;
     }
@@ -396,6 +398,7 @@ async fn edit_content_form(
             ],
         ),
     );
+    context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
 
     render_admin_template(&state, "admin/content-form.html", context).await
 }
@@ -491,6 +494,7 @@ async fn edit_content_submit(
                 ],
             ),
         );
+        context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
 
         return render_admin_template(&state, "admin/content-form.html", context).await;
     }

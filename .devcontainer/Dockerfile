@@ -20,6 +20,13 @@ RUN rustup component add clippy rustfmt \
 # Install cargo tools used in CI and development
 RUN cargo install cargo-audit --locked 2>/dev/null || true
 
+# Install Pagefind CLI for search index generation
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then PF_ARCH="x86_64"; else PF_ARCH="aarch64"; fi && \
+    curl -sL "https://github.com/CloudCannon/pagefind/releases/download/v1.3.0/pagefind-v1.3.0-${PF_ARCH}-unknown-linux-musl.tar.gz" \
+    | tar xz -C /usr/local/bin pagefind && \
+    chmod +x /usr/local/bin/pagefind
+
 # Install Playwright for screenshot capture (used by tutorial verification)
 RUN npm install -g playwright 2>/dev/null || true
 
