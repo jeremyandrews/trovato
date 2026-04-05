@@ -3,6 +3,8 @@
 //! Uses PostgreSQL tsvector columns with GIN indexes for efficient
 //! full-text search across content items.
 
+pub mod prompts;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;

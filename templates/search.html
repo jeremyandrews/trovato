@@ -6,13 +6,18 @@
 <div class="search-page">
     <h1>Search</h1>
 
+    {# Scolta search container — scolta.js takes over this element when JS is available #}
+    <div id="scolta-search"></div>
+
+    {# Server-side fallback — shown when JS is disabled or Pagefind unavailable #}
+    <noscript>
     <form action="/search" method="get" class="search-form">
-        <input type="search" name="q" value="{{ query }}" placeholder="Search..." class="search-input">
+        <input type="search" name="q" value="{{ query }}" placeholder="Search..." class="search-input" aria-label="Search">
         <button type="submit" class="search-button">Search</button>
     </form>
 
     {% if query %}
-        <p class="search-summary">Found {{ total }} result{% if total != 1 %}s{% endif %} for "{{ query }}"</p>
+        <p class="search-summary" aria-live="polite">Found {{ total }} result{% if total != 1 %}s{% endif %} for "{{ query }}"</p>
 
         {% if results | length > 0 %}
             <div class="search-results">
@@ -21,14 +26,15 @@
                     <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
                     <div class="result-meta">{{ result.type }}</div>
                     {% if result.snippet %}
-                        <div class="result-snippet">{{ result.snippet | safe }}</div> {# SAFE: kernel search service generates snippets with <mark> tags from indexed text #}
+                        {# SAFE: kernel search service generates snippets with <mark> tags from indexed text #}
+                        <div class="result-snippet">{{ result.snippet | safe }}</div>
                     {% endif %}
                 </article>
                 {% endfor %}
             </div>
 
             {% if total_pages > 1 %}
-            <nav class="search-pagination">
+            <nav class="search-pagination" aria-label="Search results pagination">
                 {% if has_prev %}
                     <a href="/search?q={{ query | urlencode }}&page={{ prev_page }}">&laquo; Previous</a>
                 {% endif %}
@@ -44,5 +50,90 @@
             <p class="no-results">No results found. Try a different search term.</p>
         {% endif %}
     {% endif %}
+    </noscript>
+
+    {# Also show server-side results for the initial page load (before JS takes over) #}
+    <div id="search-fallback" class="search-fallback">
+        <form action="/search" method="get" class="search-form">
+            <input type="search" name="q" value="{{ query }}" placeholder="Search..." class="search-input" aria-label="Search">
+            <button type="submit" class="search-button">Search</button>
+        </form>
+
+        {% if query %}
+            <p class="search-summary" aria-live="polite">Found {{ total }} result{% if total != 1 %}s{% endif %} for "{{ query }}"</p>
+
+            {% if results | length > 0 %}
+                <div class="search-results">
+                    {% for result in results %}
+                    <article class="search-result">
+                        <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
+                        <div class="result-meta">{{ result.type }}</div>
+                        {% if result.snippet %}
+                            {# SAFE: kernel search service generates snippets with <mark> tags from indexed text #}
+                            <div class="result-snippet">{{ result.snippet | safe }}</div>
+                        {% endif %}
+                    </article>
+                    {% endfor %}
+                </div>
+
+                {% if total_pages > 1 %}
+                <nav class="search-pagination" aria-label="Search results pagination">
+                    {% if has_prev %}
+                        <a href="/search?q={{ query | urlencode }}&page={{ prev_page }}">&laquo; Previous</a>
+                    {% endif %}
+                    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+                    {% if has_next %}
+                        <a href="/search?q={{ query | urlencode }}&page={{ next_page }}">Next &raquo;</a>
+                    {% endif %}
+                </nav>
+                {% endif %}
+            {% else %}
+                <p class="no-results">No results found. Try a different search term.</p>
+            {% endif %}
+        {% endif %}
+    </div>
 </div>
+
+<link rel="stylesheet" href="/static/css/scolta.css">
+
+{# Scolta configuration — injected from site config #}
+<script>
+window.scolta = {
+    container: '#scolta-search',
+    pagefindPath: '/pagefind/pagefind.js',
+    siteName: '{{ site_name | default(value="Trovato") }}',
+    endpoints: {
+        expand: '/api/v1/search/expand',
+        summarize: '/api/v1/search/summarize',
+        followup: '/api/v1/search/followup'
+    },
+    scoring: {
+        RECENCY_BOOST_MAX: 0.5,
+        RECENCY_HALF_LIFE_DAYS: 365,
+        RECENCY_PENALTY_AFTER_DAYS: 1825,
+        RECENCY_MAX_PENALTY: 0.3,
+        TITLE_MATCH_BOOST: 1.0,
+        TITLE_ALL_TERMS_MULTIPLIER: 1.5,
+        CONTENT_MATCH_BOOST: 0.4,
+        EXCERPT_LENGTH: 300,
+        RESULTS_PER_PAGE: 10,
+        MAX_PAGEFIND_RESULTS: 50,
+        AI_EXPAND_QUERY: false,
+        AI_SUMMARIZE: false,
+        AI_MAX_FOLLOWUPS: 0
+    },
+    disclaimer: ''
+};
+</script>
+<script src="/static/js/scolta.js"></script>
+<script>
+// Hide the server-side fallback when scolta.js initializes
+document.addEventListener('DOMContentLoaded', function() {
+    var fallback = document.getElementById('search-fallback');
+    if (fallback && typeof Scolta !== 'undefined') {
+        fallback.style.display = 'none';
+        Scolta.init('#scolta-search');
+    }
+});
+</script>
 {% endblock %}
