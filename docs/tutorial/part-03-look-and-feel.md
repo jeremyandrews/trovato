@@ -534,6 +534,29 @@ This gives you sub-millisecond search across thousands of items.
 
 </details>
 
+### Client-Side Search with Pagefind
+
+The tsvector search above runs on the server. Trovato also supports **Pagefind** for instant client-side search — results appear as you type, with no server round-trip.
+
+**How it works:**
+
+1. A cron task (via the `trovato_search` plugin) detects content changes and rebuilds the Pagefind index at `static/pagefind/`
+2. The search page loads `scolta.js`, which initializes Pagefind and provides client-side scoring
+3. Scoring includes recency decay, title/content match boost, content type filters, and deduplication
+4. If Pagefind isn't available (first install, index not yet built), the page falls back to tsvector server-side search
+
+**Trigger an index rebuild:**
+
+Pagefind indexes are built during cron runs. Trigger one manually:
+
+```bash
+curl -s -X POST http://localhost:3000/cron/default-cron-key | jq '.status'
+```
+
+After the index builds, visit `/search` — you'll see the Scolta search UI with instant client-side results.
+
+> **Note:** Scolta also supports AI-powered search features (query expansion, streaming summaries, follow-up conversation) when the `trovato_ai` plugin is enabled. These are covered in the AI tutorial section (Epic 3: AI as a Building Block).
+
 ---
 
 ## Step 6: Theme & Visual Design

@@ -1,7 +1,7 @@
 # Recipe: Part 3 — Look & Feel
 
 > **Synced with:** `docs/tutorial/part-03-look-and-feel.md`
-> **Sync hash:** f23c62cf
+> **Sync hash:** 76d7fd73
 > **Last verified:** 2026-03-13
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
