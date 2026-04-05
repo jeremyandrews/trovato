@@ -3,7 +3,7 @@
 **Tutorial Part:** Supporting (spans Phase 4-5 kernel + Phase 6 plugins)
 **Trovato Phase Dependency:** Phase 4 (Stages, Permissions), Phase 5 (Form API, Theming)
 **BMAD Epic:** 31
-**Status:** Phases A-D complete. Phase A: provider registry, ai_request, token budgets, permissions, chatbot, admin UI. Phase B: field rules runtime (tap_item_presave), form AI assist buttons (tap_form_alter + /api/v1/ai/assist + client-side JS), VectorStore trait + pgvector. Phase C: SSE streaming chat + RAG. Phase D: MCP server with content CRUD, search, Gather, categories.
+**Status:** Complete. All stories implemented. Phase A: provider registry, ai_request host function, token budgets, permissions. Phase B: field rules (tap_item_presave), form AI assist (tap_form_alter + /api/v1/ai/assist + JS popover), VectorStore trait + pgvector. Phase C: SSE streaming chatbot + RAG, Scolta AI search (expand/summarize/followup endpoints + scolta.js client). Phase D: MCP server. Scolta provides AI-powered search without requiring a vector database — Pagefind handles client-side indexing, AI handles query expansion and summarization.
 
 ---
 
@@ -108,7 +108,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.1: AI Provider Registry & Secure Key Store
 
-**Status:** Not started
+**Status:** Complete. `AiProviderConfig` struct, `AiOperationType` enum (6 types), provider config in site_config, API keys via env vars (never in DB/WASM), admin UI at /admin/config/ai with CRUD + connection test. Implemented in `services/ai_provider.rs` (848 lines) and `routes/admin_ai_provider.rs`.
 
 **As a** site administrator,
 **I want to** configure AI providers with securely stored API keys,
@@ -128,7 +128,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.2: `ai_request()` Host Function
 
-**Status:** Not started
+**Status:** Complete. `ai_request()` host function in `host/ai.rs` (959 lines). OpenAI-compatible + Anthropic protocols. Per-provider rate limiting. SDK types in `types.rs`: `AiRequest`, `AiResponse`, `AiMessage`, `AiOperationType`, `AiRequestOptions`. SDK binding in `host.rs`.
 
 **As a** plugin developer,
 **I want to** call a single host function to make AI requests,
@@ -150,7 +150,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.3: Token Budget Tracking
 
-**Status:** Not started
+**Status:** Complete. Token usage tracked per request in `ai_usage_log` table. Per-user/per-role budgets with daily period. Budget enforcement in ai_request. Admin UI at /admin/config/ai/budgets. Implemented in `services/ai_token_budget.rs` (722 lines).
 
 **As a** site administrator,
 **I want to** set token usage limits per role and provider,
@@ -170,7 +170,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.4: AI Permissions
 
-**Status:** Not started
+**Status:** Complete. Six permissions via `tap_perm` in trovato_ai: `use ai`, `use ai chat`, `use ai embeddings`, `use ai image generation`, `configure ai`, `view ai usage`. Permission checks in ai_request host function and all AI endpoints.
 
 **As a** site administrator,
 **I want** granular permissions for AI features,
@@ -188,7 +188,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.5: Content Enrichment Field Rules
 
-**Status:** Not started
+**Status:** Complete. `tap_item_presave` in trovato_ai reads field rules from site_config, filters by item_type, builds prompts with `{field_name}` substitution, calls ai_request(), applies results (fill_if_empty, always_update). Presave dispatch added to both create and update paths in ItemService.
 
 **As a** content editor,
 **I want** AI to automatically enrich content when I save,
@@ -209,7 +209,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.6: Form AI Assist Buttons
 
-**Status:** Not started
+**Status:** Complete. `tap_form_alter` in trovato_ai injects AI Assist buttons on textfield/textarea elements. `POST /api/v1/ai/assist` endpoint handles 5 operations (rewrite, expand, shorten, translate, tone). Client-side JS popover with accept/reject. CSS styling. OpenAI + Anthropic provider support.
 
 **As a** content editor,
 **I want** AI assistance buttons in content forms,
@@ -230,7 +230,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.7: Chatbot Tile with SSE Streaming
 
-**Status:** Not started
+**Status:** Complete. Chat Tile renders via `render_chat_widget()` with external JS (`static/js/chat-widget.js`). `POST /api/v1/chat` endpoint with SSE streaming. RAG context from SearchService. Session-scoped conversation history via Redis. Admin-configurable system prompt, rate limits, token params. Implemented in `services/ai_chat.rs` (1,115 lines) and `routes/api_chat.rs`.
 
 **As a** site visitor,
 **I want** to ask questions about site content in a chat interface,
@@ -252,7 +252,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.8: Chatbot Actions (Tool Calling)
 
-**Status:** Not started
+**Status:** Partial. `tap_chat_actions` returns 3 hardcoded conference-specific actions (search_conferences, get_conference_details, list_upcoming_cfps). Runtime dispatch of actions not yet implemented — actions are declared to the LLM but execution is scaffold only.
 
 **As a** site visitor,
 **I want** the chatbot to perform actions like searching content or navigating the site,
@@ -271,7 +271,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.9: AI Admin UI & Usage Dashboard
 
-**Status:** Not started
+**Status:** Complete. Admin section at /admin/config/ai with Providers tab (CRUD, connection test, protocol selection), Chat Settings tab (system prompt, RAG config, rate limits), Budgets tab (per-user token usage, historical reports), Features tab (per-operation enable/disable with provider/model override).
 
 **As a** site administrator,
 **I want** a unified admin interface for all AI configuration,
@@ -289,7 +289,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.10: MCP Server Plugin
 
-**Status:** Not started
+**Status:** Complete. `trovato_mcp` binary crate with rmcp integration. Tools: list_items, get_item, create_item, update_item, delete_item, search, list_content_types, list_categories, list_tags, run_gather. Resources: trovato://content-types, trovato://site-config, trovato://recent-items, trovato://content-type/{name}. API token auth with session revalidation. Permission enforcement via UserContext.
 
 **As a** developer using external AI tools,
 **I want** to connect them to my Trovato site via MCP,
@@ -308,7 +308,7 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ### Story 31.11: VectorStore Trait & pgvector Implementation
 
-**Status:** Not started
+**Status:** Complete. `VectorStore` trait with `store_embedding`, `similarity_search`, `delete_embeddings`, `mark_stale`, `is_available`. `PgVectorStore` implementation with cosine distance. Migration for `item_embeddings` table with graceful degradation (pgvector extension check on startup). `SemanticSimilarity` gather filter operator. **Note:** Most sites should use Scolta's Pagefind + AI approach instead — it provides excellent search without requiring pgvector or any vector database. VectorStore is for advanced use cases that need embedding-based similarity.
 
 **As a** site that needs semantic search beyond keyword expansion,
 **I want** embedding storage with a pluggable backend,
@@ -329,6 +329,44 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ---
 
+## Scolta: AI-Powered Search (No Vector Database Required)
+
+Trovato integrates **Scolta**, a cross-platform AI search system that works with Pagefind for instant client-side results and AI for semantic understanding. The key design principle: **no Elasticsearch, no Solr, no vector database required for the default path.** This makes AI search accessible to any site, not just those with heavyweight infrastructure.
+
+### How Scolta Works
+
+1. **Pagefind** builds a static search index from published content (via cron). Results are instant — no server round-trip.
+2. **scolta.js** runs client-side scoring: recency decay, title/content match boost, content type filters, deduplication.
+3. **AI query expansion** (`POST /api/v1/search/expand`): The user searches "performance issues" → AI suggests "site speed optimization", "slow loading", "response time" → Pagefind re-searches with expanded terms → results merged and re-ranked.
+4. **AI summary** (`POST /api/v1/search/summarize`): Top excerpts sent to AI → streaming markdown summary appears above results, citing sources with links.
+5. **Follow-up conversation** (`POST /api/v1/search/followup`): Users can ask follow-up questions about search results in a conversational interface.
+
+### Scolta vs VectorStore
+
+| | Scolta (Pagefind + AI) | VectorStore (pgvector) |
+|---|---|---|
+| **Infrastructure** | None beyond Trovato itself | Requires pgvector PostgreSQL extension |
+| **Index updates** | Automatic via cron | Requires embedding generation per item |
+| **AI dependency** | Optional (search works without AI) | Required for embedding generation |
+| **Cost** | AI calls only on search (not on content save) | AI calls on every content save + search |
+| **Best for** | Most sites | Sites needing pure semantic similarity |
+
+**Recommendation:** Start with Scolta. It provides excellent search for the vast majority of sites. Only add VectorStore if you have a specific need for embedding-based similarity that Pagefind + AI expansion can't address.
+
+### Implementation
+
+| Component | File | Lines |
+|---|---|---|
+| scolta.js (client-side) | `static/js/scolta.js` | 1,158 |
+| scolta.css (styling) | `static/css/scolta.css` | 388 |
+| Search template | `templates/search.html` | Pagefind + scolta config |
+| Prompt templates | `search/prompts.rs` | expand, summarize, follow_up |
+| API endpoints | `routes/api_search.rs` | expand, summarize, followup |
+| Pagefind index builder | `cron/pagefind.rs` | 324 |
+| Change detection | `plugins/trovato_search/` | tap_cron |
+
+---
+
 ## Payoff
 
 AI as infrastructure, not afterthought. The reader understands:
@@ -339,9 +377,10 @@ AI as infrastructure, not afterthought. The reader understands:
 - How the Stage system ensures AI never publishes directly -- humans review AI work
 - How token budgets and rate limits make AI costs predictable
 - How the chatbot provides conversational access to site content with RAG
+- How Scolta provides AI-powered search without any vector database -- Pagefind + AI expansion is enough for most sites
 - How MCP connects Trovato to the broader AI tool ecosystem
 
-One plugin replaces twelve Drupal modules. The tap system replaces ECA (Event-Condition-Action) workflows. Gather replaces a parallel search pipeline. And security is architectural, not bolted on.
+One plugin replaces twelve Drupal modules. The tap system replaces ECA (Event-Condition-Action) workflows. Scolta replaces Elasticsearch/Solr. And security is architectural, not bolted on.
 
 ---
 
