@@ -104,6 +104,87 @@ Connect Claude Desktop to the Ritrovo MCP server. Ask Claude to "find upcoming R
 
 ---
 
+## Hands-On Walkthrough
+
+This walkthrough shows AI features working against a real Trovato instance with an Anthropic API key.
+
+### 1. Enable the AI Plugin
+
+```bash
+# Enable trovato_ai (disabled by default)
+docker compose --profile full exec trovato ./trovato plugin enable trovato_ai
+docker compose --profile full restart trovato
+```
+
+### 2. Configure an AI Provider
+
+Set your API key as an environment variable (never stored in code):
+
+```bash
+# Add to docker-compose.override.yml (gitignored):
+# services:
+#   trovato:
+#     environment:
+#       ANTHROPIC_API_KEY: sk-ant-...
+```
+
+Then configure the provider via the admin UI at `/admin/system/ai-providers`:
+
+[<img src="../tutorial/images/part-ai/ai-config-providers.png" width="600" alt="AI Providers admin showing Anthropic configured with masked API key and Chat as the default operation">](../tutorial/images/part-ai/ai-config-providers.png)
+
+The provider configuration stores the **environment variable name** (`ANTHROPIC_API_KEY`), not the key itself. The kernel resolves the key from the environment at runtime. Keys never enter the database and never cross the WASM boundary to plugins.
+
+### 3. Token Budgets & Usage
+
+Monitor AI usage and set per-role token budgets at `/admin/system/ai-budgets`:
+
+[<img src="../tutorial/images/part-ai/ai-budgets.png" width="600" alt="AI Token Budgets dashboard showing usage by provider, top users, and per-role budget configuration">](../tutorial/images/part-ai/ai-budgets.png)
+
+### 4. Chat Configuration
+
+Configure the chatbot system prompt, RAG settings, and rate limits at `/admin/system/ai-chat`:
+
+[<img src="../tutorial/images/part-ai/ai-chat-settings.png" width="600" alt="AI Chat Configuration showing system prompt editor, RAG toggle, model settings, and rate limiting">](../tutorial/images/part-ai/ai-chat-settings.png)
+
+### 5. AI Assist on Content Forms
+
+When `trovato_ai` is enabled, text fields in content forms gain AI Assist buttons. Click "AI Assist" to rewrite, expand, shorten, translate, or adjust tone — all powered by your configured provider.
+
+The AI Assist endpoint (`POST /api/v1/ai/assist`) accepts text and an operation, calls the AI provider, and returns the transformed text. The user can preview the result and accept or reject it.
+
+### 6. Scolta AI Search
+
+Search at `/search` uses Pagefind for instant client-side results. When AI is enabled, three additional features activate:
+
+- **Query expansion**: "performance issues" also finds "site speed optimization"
+- **AI summary**: A streaming answer appears above results, citing sources
+- **Follow-up conversation**: Ask follow-up questions about search results
+
+[<img src="../tutorial/images/part-ai/search-scolta.png" width="600" alt="Search results page showing tsvector results for 'rust' with conference matches highlighted">](../tutorial/images/part-ai/search-scolta.png)
+
+> **Note:** The screenshot shows the tsvector server-side fallback. When Pagefind is installed and the index has been built (via cron), scolta.js provides instant client-side search with scoring and AI features.
+
+### 7. Test AI Directly
+
+Verify AI is working with a curl command:
+
+```bash
+# Get a CSRF token
+CSRF=$(curl -s -b cookies.txt http://localhost:3001/admin \
+  | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
+
+# Test AI assist
+curl -s -b cookies.txt \
+  -X POST http://localhost:3001/api/v1/ai/assist \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -d '{"text": "Trovato is a CMS built in Rust.", "operation": "expand"}'
+```
+
+Expected response: AI-expanded text with more detail about Trovato's Rust foundation.
+
+---
+
 ## BMAD Stories
 
 ### Story 31.1: AI Provider Registry & Secure Key Store
