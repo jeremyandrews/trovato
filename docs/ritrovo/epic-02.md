@@ -3,7 +3,7 @@
 **Tutorial Part:** Supporting (spans Part 2 search + AI Integration)
 **Trovato Phase Dependency:** Phase 3 (Search infrastructure), Phase 6 (AI Core for Stages 2-4)
 **BMAD Epic:** 30
-**Status:** Story 30.1 done (PostgreSQL tsvector index pipeline with configurable field weights and GIN indexes). VectorStore trait and PgVectorStore implementation added (Story 31.11). SemanticSimilarity gather operator registered. Remaining: query expansion via AI, faceted search, search analytics dashboard.
+**Status:** ~80% complete. Scolta search integration: Pagefind client-side index + scolta.js scoring (recency decay, title/content match, deduplication, content type filters). AI endpoints: /api/v1/search/expand (query expansion), /api/v1/search/summarize (SSE streaming summary), /api/v1/search/followup (conversation). Prompt templates ported from scolta-core. VectorStore trait + PgVectorStore. tsvector server-side fallback. Remaining: search analytics dashboard, faceted search UI polish.
 
 ---
 

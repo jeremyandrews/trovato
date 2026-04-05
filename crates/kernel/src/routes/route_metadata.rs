@@ -217,6 +217,36 @@ impl RouteRegistry {
         });
 
         self.routes.push(RouteMetadata {
+            method: Method::POST.to_string(),
+            path: "/api/v1/search/expand".to_string(),
+            summary: "AI query expansion — returns alternative search terms".to_string(),
+            parameters: vec![],
+            response_type: "application/json".to_string(),
+            tags: vec!["search".to_string(), "ai".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::POST.to_string(),
+            path: "/api/v1/search/summarize".to_string(),
+            summary: "AI summary of search results (SSE stream)".to_string(),
+            parameters: vec![],
+            response_type: "text/event-stream".to_string(),
+            tags: vec!["search".to_string(), "ai".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
+            method: Method::POST.to_string(),
+            path: "/api/v1/search/followup".to_string(),
+            summary: "Follow-up conversation about search results (SSE stream)".to_string(),
+            parameters: vec![],
+            response_type: "text/event-stream".to_string(),
+            tags: vec!["search".to_string(), "ai".to_string()],
+            deprecated: false,
+        });
+
+        self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
             path: "/health".to_string(),
             summary: "Health check endpoint".to_string(),

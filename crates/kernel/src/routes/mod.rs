@@ -14,6 +14,7 @@ pub mod admin_translation;
 pub mod admin_user;
 pub mod api_ai_assist;
 pub mod api_chat;
+pub mod api_search;
 pub mod api_token;
 pub mod api_v1;
 pub mod auth;

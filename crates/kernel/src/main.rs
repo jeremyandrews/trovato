@@ -222,6 +222,7 @@ async fn run_server() -> Result<()> {
         .merge(routes::api_token::router())
         .merge(routes::api_ai_assist::router())
         .merge(routes::api_chat::router())
+        .merge(routes::api_search::router())
         .merge(routes::api_v1::router())
         .merge(routes::tile_admin::router())
         .merge(routes::static_files::router())
