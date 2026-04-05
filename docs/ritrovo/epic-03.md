@@ -162,7 +162,7 @@ Search at `/search` uses Pagefind for instant client-side results. When AI is en
 
 [<img src="../tutorial/images/part-ai/search-scolta.png" width="600" alt="Search results page showing tsvector results for 'rust' with conference matches highlighted">](../tutorial/images/part-ai/search-scolta.png)
 
-> **Note:** The screenshot shows the tsvector server-side fallback. When Pagefind is installed and the index has been built (via cron), scolta.js provides instant client-side search with scoring and AI features.
+> **Note:** This screenshot shows tsvector server-side results. After a cron run builds the Pagefind index, scolta.js provides instant client-side search with scoring and AI features. The Docker image includes pagefind CLI for index generation.
 
 ### 7. Test AI Directly
 
