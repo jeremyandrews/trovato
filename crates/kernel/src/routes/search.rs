@@ -178,7 +178,7 @@ async fn search_html(
     match state.theme().tera().render("search.html", &context) {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
-            tracing::error!(error = %e, "failed to render search template");
+            tracing::error!(error = ?e, "failed to render search template");
             // Fallback to simple HTML (snippets already sanitized)
             let html = render_fallback_search(&query, &sanitized_results, total, page, total_pages);
             Html(html).into_response()
