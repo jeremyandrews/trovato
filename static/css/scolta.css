@@ -18,7 +18,7 @@
   --scolta-text-muted: #666;
   --scolta-text-light: #888;
   --scolta-border: #ddd;
-  --scolta-highlight: #fff3cd;
+  --scolta-highlight: #fde68a;
   --scolta-summary-bg-start: #f0f7ff;
   --scolta-summary-bg-mid: #e8f4fe;
   --scolta-summary-border: #c4d9f2;
@@ -171,10 +171,11 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.scolta-result-excerpt mark {
+.scolta-result-excerpt mark,
+.scolta-result-title mark {
   background: var(--scolta-highlight);
   color: inherit;
-  padding: 0 1px;
+  padding: 1px 2px;
   border-radius: 2px;
 }
 .scolta-load-more {
