@@ -21,12 +21,18 @@ static PERMISSIONS: HeaderValue =
 static HSTS: HeaderValue = HeaderValue::from_static("max-age=31536000; includeSubDomains");
 
 /// The default CSP policy (no report-uri variant).
+/// The default CSP policy.
+///
+/// `script-src` includes `'unsafe-inline'` because several pages inject
+/// configuration via inline `<script>` blocks (Scolta search config,
+/// Editor.js initialization, Trovato AJAX init). A future improvement
+/// would use nonce-based CSP to avoid unsafe-inline.
 static DEFAULT_CSP: HeaderValue = HeaderValue::from_static(
     "default-src 'self'; \
-     script-src 'self'; \
-     style-src 'self' 'unsafe-inline'; \
+     script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; \
+     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
      img-src 'self' data:; \
-     font-src 'self'; \
+     font-src 'self' https://fonts.gstatic.com; \
      connect-src 'self'; \
      frame-ancestors 'none'",
 );

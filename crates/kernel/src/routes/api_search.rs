@@ -10,16 +10,15 @@
 use std::convert::Infallible;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use tower_sessions::Session;
 
 use crate::models::SiteConfig;
-use crate::routes::helpers::{JsonError, require_csrf_header};
+use crate::routes::helpers::JsonError;
 use crate::search::prompts;
 use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
 use crate::state::AppState;
@@ -49,18 +48,32 @@ struct ExpandResponse {
 }
 
 /// Request for AI summary.
+///
+/// Accepts `excerpts` (structured) or `context` (plain text from scolta.js).
 #[derive(Debug, Deserialize)]
 struct SummarizeRequest {
     query: String,
+    #[serde(default)]
     excerpts: Vec<Excerpt>,
+    /// Plain text context from scolta.js (alternative to excerpts).
+    #[serde(default)]
+    context: Option<String>,
 }
 
 /// Request for follow-up conversation.
+///
+/// scolta.js sends `{ messages: [...] }` with conversation history.
 #[derive(Debug, Deserialize)]
 struct FollowupRequest {
-    query: String,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
     history: Vec<Message>,
+    #[serde(default)]
     excerpts: Vec<Excerpt>,
+    /// Conversation messages from scolta.js (alternative to query+history).
+    #[serde(default)]
+    messages: Vec<Message>,
 }
 
 /// A search result excerpt for AI context.
@@ -83,16 +96,10 @@ struct Message {
 // ============================================================================
 
 /// Expand a search query into alternative terms via AI.
-async fn expand_query(
-    State(state): State<AppState>,
-    session: Session,
-    headers: HeaderMap,
-    Json(body): Json<ExpandRequest>,
-) -> Response {
-    if let Err((status, json)) = require_csrf_header(&session, &headers).await {
-        return (status, json).into_response();
-    }
-
+///
+/// No CSRF required — this is a read-only search enhancement, not a
+/// state-changing operation. scolta.js calls this from the client.
+async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequest>) -> Response {
     if body.query.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -182,46 +189,23 @@ async fn expand_query(
 }
 
 /// Summarize search results via AI with SSE streaming.
-async fn summarize(
-    State(state): State<AppState>,
-    session: Session,
-    headers: HeaderMap,
-    Json(body): Json<SummarizeRequest>,
-) -> Response {
-    if let Err((status, json)) = require_csrf_header(&session, &headers).await {
-        return (status, json).into_response();
-    }
-
-    if body.query.trim().is_empty() || body.excerpts.is_empty() {
+///
+/// No CSRF required — read-only search enhancement.
+async fn summarize(State(state): State<AppState>, Json(body): Json<SummarizeRequest>) -> Response {
+    // Accept either structured excerpts or plain text context from scolta.js
+    let context_text = if let Some(ref ctx) = body.context {
+        ctx.clone()
+    } else if !body.excerpts.is_empty() {
+        build_excerpt_context(&body.excerpts)
+    } else {
         return (
             StatusCode::BAD_REQUEST,
             Json(JsonError {
-                error: "Query and excerpts required".to_string(),
+                error: "Query and excerpts/context required".to_string(),
             }),
         )
             .into_response();
-    }
-
-    // Build context from excerpts
-    let context = build_excerpt_context(&body.excerpts);
-    let user_prompt = format!(
-        "Search query: {}\n\nSearch result excerpts:\n{}",
-        body.query, context
-    );
-
-    stream_ai_response(&state, prompts::SUMMARIZE, &user_prompt).await
-}
-
-/// Handle follow-up conversation via AI with SSE streaming.
-async fn followup(
-    State(state): State<AppState>,
-    session: Session,
-    headers: HeaderMap,
-    Json(body): Json<FollowupRequest>,
-) -> Response {
-    if let Err((status, json)) = require_csrf_header(&session, &headers).await {
-        return (status, json).into_response();
-    }
+    };
 
     if body.query.trim().is_empty() {
         return (
@@ -233,21 +217,49 @@ async fn followup(
             .into_response();
     }
 
-    // Build the conversation context
-    let mut user_prompt = String::new();
-    for msg in &body.history {
-        user_prompt.push_str(&format!("{}: {}\n\n", msg.role, msg.content));
-    }
-    user_prompt.push_str(&format!("User: {}\n", body.query));
+    let user_prompt = format!(
+        "Search query: {}\n\nSearch result excerpts:\n{}",
+        body.query, context_text
+    );
 
-    if !body.excerpts.is_empty() {
-        let context = build_excerpt_context(&body.excerpts);
-        user_prompt.push_str(&format!(
-            "\nAdditional search results for this follow-up:\n{context}",
-        ));
-    }
+    json_ai_response(&state, prompts::SUMMARIZE, &user_prompt).await
+}
 
-    stream_ai_response(&state, prompts::FOLLOW_UP, &user_prompt).await
+/// Handle follow-up conversation via AI with SSE streaming.
+///
+/// No CSRF required — read-only search enhancement.
+async fn followup(State(state): State<AppState>, Json(body): Json<FollowupRequest>) -> Response {
+    // Build conversation context from either messages (scolta.js) or query+history
+    let user_prompt = if !body.messages.is_empty() {
+        body.messages
+            .iter()
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    } else if let Some(ref query) = body.query {
+        let mut prompt = String::new();
+        for msg in &body.history {
+            prompt.push_str(&format!("{}: {}\n\n", msg.role, msg.content));
+        }
+        prompt.push_str(&format!("User: {query}\n"));
+        if !body.excerpts.is_empty() {
+            let context = build_excerpt_context(&body.excerpts);
+            prompt.push_str(&format!(
+                "\nAdditional search results for this follow-up:\n{context}",
+            ));
+        }
+        prompt
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(JsonError {
+                error: "Query or messages required".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    json_ai_response_with_key(&state, prompts::FOLLOW_UP, &user_prompt, "response").await
 }
 
 // ============================================================================
@@ -264,7 +276,78 @@ fn build_excerpt_context(excerpts: &[Excerpt]) -> String {
         .join("\n")
 }
 
-/// Stream an AI response as SSE events.
+/// Return an AI response as JSON with `{ summary: "..." }`.
+async fn json_ai_response(state: &AppState, prompt_template: &str, user_prompt: &str) -> Response {
+    json_ai_response_with_key(state, prompt_template, user_prompt, "summary").await
+}
+
+/// Return an AI response as JSON with a custom key.
+async fn json_ai_response_with_key(
+    state: &AppState,
+    prompt_template: &str,
+    user_prompt: &str,
+    key: &str,
+) -> Response {
+    let ai_providers = state.ai_providers();
+    let Ok(Some(resolved)) = ai_providers
+        .resolve_provider(AiOperationType::Chat, None)
+        .await
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(JsonError {
+                error: "AI provider not configured".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let site_name = SiteConfig::site_name(state.db())
+        .await
+        .unwrap_or_else(|_| "Trovato".to_string());
+    let site_slogan = SiteConfig::site_slogan(state.db())
+        .await
+        .unwrap_or_default();
+    let system_prompt = prompts::resolve(prompt_template, &site_name, &site_slogan);
+
+    let (url, request_body, auth_headers) =
+        build_chat_request(&resolved, &system_prompt, user_prompt);
+
+    let response = match ai_providers
+        .http()
+        .post(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .header("content-type", "application/json")
+        .body(request_body)
+        .headers_from_vec(&auth_headers)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(JsonError {
+                    error: "AI request failed".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let response_text = response.text().await.unwrap_or_default();
+    let (content, _tokens) = match resolved.config.protocol {
+        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
+        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
+    };
+
+    let mut result = serde_json::Map::new();
+    result.insert(key.to_string(), serde_json::Value::String(content));
+    Json(serde_json::Value::Object(result)).into_response()
+}
+
+/// Stream an AI response as SSE events (kept for future use).
+#[allow(dead_code)]
 async fn stream_ai_response(
     state: &AppState,
     prompt_template: &str,
