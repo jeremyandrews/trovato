@@ -1005,11 +1005,17 @@
     }
 
     if (bestPos === -1) {
-      // No search term in excerpt or content — this is likely a
-      // false positive from Pagefind fuzzy matching or metadata.
-      // Show the default excerpt but dimmed.
-      var fallback = truncateExcerpt(raw, maxLen);
-      return fallback ? '<span class="scolta-weak-match">' + fallback + '</span>' : '';
+      // No highlight term in excerpt or content. Check if the TITLE
+      // contains a term — if so, show the excerpt as context.
+      var titleClean = (data.meta?.title || "").toLowerCase();
+      for (var k = 0; k < allHighlightTerms.length; k++) {
+        if (titleClean.indexOf(allHighlightTerms[k].toLowerCase()) !== -1) {
+          return truncateExcerpt(raw, maxLen);
+        }
+      }
+      // No match in title, excerpt, or content — this is a false
+      // positive. Return null so the renderer can skip it.
+      return null;
     }
 
     // Extract a window around the match
@@ -1063,6 +1069,7 @@
       const site = data.meta?.site || "";
       const date = data.meta?.date || "";
       const excerpt = bestExcerpt(data, CONFIG.EXCERPT_LENGTH);
+      if (excerpt === null) continue; // Skip false-positive results
       const highlighted = highlightTerms(excerpt);
 
       const safeTitle = escapeHtml(stripHtml(title));

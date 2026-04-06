@@ -248,6 +248,11 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
 ///
 /// Collects text from all fields configured for the item's bundle.
 /// Falls back to `field_body` if no fields are configured.
+/// Extract searchable text from item fields, ordered by search weight.
+///
+/// Higher-weight fields (A=description, B=body) come first so Pagefind's
+/// auto-excerpt shows the most relevant text. Each field is labeled
+/// (e.g., "Portland, United States") so the excerpt provides context.
 fn extract_searchable_text(
     fields: &serde_json::Value,
     item_type: &str,
@@ -256,9 +261,28 @@ fn extract_searchable_text(
     let mut parts = Vec::new();
 
     if let Some(field_names) = configs.get(item_type) {
-        for name in field_names {
+        // Put description/body fields first (they're the most likely to
+        // contain the matching text that users need to see in excerpts)
+        let mut ordered: Vec<&String> = field_names.iter().collect();
+        ordered.sort_by_key(|name| {
+            if name.contains("description") || name.contains("body") || name.contains("bio") {
+                0 // First — most likely to have matching content
+            } else if name.contains("title") || name.contains("name") {
+                1 // Second — titles
+            } else {
+                2 // Last — city, country, etc.
+            }
+        });
+
+        for name in ordered {
             if let Some(text) = extract_field_text(fields, name) {
-                parts.push(text);
+                // Add field context for location-type fields
+                let label = name.strip_prefix("field_").unwrap_or(name);
+                if label == "city" || label == "country" {
+                    parts.push(format!("{text}"));
+                } else {
+                    parts.push(text);
+                }
             }
         }
     }
@@ -270,7 +294,7 @@ fn extract_searchable_text(
         parts.push(body);
     }
 
-    parts.join(" ")
+    parts.join(". ")
 }
 
 /// Extract text from a single JSONB field.
