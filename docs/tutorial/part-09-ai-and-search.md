@@ -192,7 +192,7 @@ curl -s -X POST http://localhost:3000/cron/default-cron-key | jq '.status'
 
 Visit `/search` to see the Scolta search UI:
 
-[<img src="images/part-ai/search-scolta.png" width="600" alt="Search results page with Ritrovo branding showing conference results for 'rust'">](images/part-ai/search-scolta.png)
+[<img src="images/part-ai/search-scolta.png" width="600" alt="Scolta search showing AI-expanded terms (Rust programming, Rust language, systems programming, Mozilla Rust), an AI Overview summary citing RustConf and EuroRust, and results with yellow-highlighted matching terms">](images/part-ai/search-scolta.png)
 
 ### Why No Vector Database?
 
@@ -240,10 +240,10 @@ This part added intelligence to your conference site:
 - **AI provider configuration** with secure key management (keys never in database or WASM)
 - **AI Assist buttons** on content editing forms for inline text operations
 - **Field rules** for automatic content enrichment on save
-- **Token budgets** for cost control with per-role limits
-- **Chatbot** with streaming responses and RAG context from search
-- **Scolta search** — AI-powered search without a vector database
-- **MCP server** connecting external AI tools to your content
+- **Token budgets** for cost control with per-role limits — monitor usage and set per-role maximums at `/admin/system/ai-budgets`
+- **Chatbot** with streaming responses and RAG context from search — configured at `/admin/system/ai-chat`, accessible via `POST /api/v1/chat` SSE endpoint, rendered as a Tile placeable in any Slot
+- **Scolta search** — AI-powered search without a vector database, with query expansion, AI summaries, and highlighted matching terms
+- **MCP server** connecting external AI tools to your content — run `trovato-mcp` with an API token to expose content CRUD, search, and Gather to Claude Desktop, Cursor, or VS Code
 
 The AI infrastructure is one `ai_request()` host function that any plugin can call. One plugin (`trovato_ai`) replaces what would be a dozen separate modules in other CMS platforms.
 
