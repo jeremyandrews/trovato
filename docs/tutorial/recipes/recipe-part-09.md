@@ -1,7 +1,7 @@
 # Recipe: Part 9 — AI & Intelligent Search
 
 > **Synced with:** `docs/tutorial/part-09-ai-and-search.md`
-> **Sync hash:** 312c1824
+> **Sync hash:** 0d64b00f
 > **Last verified:** 2026-04-05 (AI provider, AI Assist, Scolta search, Pagefind index)
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.

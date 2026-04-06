@@ -138,7 +138,9 @@ Settings include:
 - **Conversation** — How many turns of history to retain
 - **Rate limiting** — Requests per hour per user
 
-The chatbot is accessible at `POST /api/v1/chat` and renders as a Tile that can be placed in any Slot.
+The chatbot is accessible at `POST /api/v1/chat` and renders as a Tile that can be placed in any Slot. Here it is in the sidebar of the conferences page, answering a question about Rust conferences:
+
+[<img src="images/part-ai/chatbot-conversation.png" width="600" alt="Conferences page with AI chatbot in the sidebar showing a conversation about Rust conferences in 2026">](images/part-ai/chatbot-conversation.png)
 
 ---
 
