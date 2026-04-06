@@ -969,6 +969,66 @@
     return (lastSpace > maxLen * 0.8 ? truncated.substring(0, lastSpace) : truncated) + "\u2026";
   }
 
+  /**
+   * Find the best excerpt to display for a result.
+   *
+   * If the default excerpt contains a search/highlight term, use it.
+   * Otherwise, scan the full content for a passage that contains a
+   * matching term and extract a window around it. This ensures expanded-
+   * term matches show WHY the result matched, not just the city name.
+   */
+  function bestExcerpt(data, maxLen) {
+    var raw = data.excerpt || "";
+    var clean = escapeHtml(stripHtml(raw)).toLowerCase();
+
+    // Check if the default excerpt already contains a highlight term
+    for (var i = 0; i < allHighlightTerms.length; i++) {
+      if (clean.indexOf(allHighlightTerms[i].toLowerCase()) !== -1) {
+        return truncateExcerpt(raw, maxLen);
+      }
+    }
+
+    // Default excerpt has no matching terms — try full content
+    var content = data.content || "";
+    if (!content) return truncateExcerpt(raw, maxLen);
+
+    var contentClean = stripHtml(content).toLowerCase();
+    var bestPos = -1;
+    var bestTerm = "";
+
+    for (var j = 0; j < allHighlightTerms.length; j++) {
+      var pos = contentClean.indexOf(allHighlightTerms[j].toLowerCase());
+      if (pos !== -1 && (bestPos === -1 || pos < bestPos)) {
+        bestPos = pos;
+        bestTerm = allHighlightTerms[j];
+      }
+    }
+
+    if (bestPos === -1) {
+      // No search term in excerpt or content — this is likely a
+      // false positive from Pagefind fuzzy matching or metadata.
+      // Show the default excerpt but dimmed.
+      var fallback = truncateExcerpt(raw, maxLen);
+      return fallback ? '<span class="scolta-weak-match">' + fallback + '</span>' : '';
+    }
+
+    // Extract a window around the match
+    var contentPlain = stripHtml(content);
+    var windowStart = Math.max(0, bestPos - 60);
+    var windowEnd = Math.min(contentPlain.length, bestPos + maxLen - 60);
+
+    // Align to word boundaries
+    if (windowStart > 0) {
+      var nextSpace = contentPlain.indexOf(" ", windowStart);
+      if (nextSpace !== -1 && nextSpace < bestPos) windowStart = nextSpace + 1;
+    }
+    var lastSpace = contentPlain.lastIndexOf(" ", windowEnd);
+    if (lastSpace > bestPos) windowEnd = lastSpace;
+
+    var snippet = contentPlain.substring(windowStart, windowEnd);
+    return (windowStart > 0 ? "\u2026" : "") + escapeHtml(snippet) + (windowEnd < contentPlain.length ? "\u2026" : "");
+  }
+
   function renderResults(isExpanded) {
     isExpanded = isExpanded || false;
     const CONFIG = getConfig();
@@ -1002,7 +1062,7 @@
       const url = data.meta?.url || "#";
       const site = data.meta?.site || "";
       const date = data.meta?.date || "";
-      const excerpt = truncateExcerpt(data.excerpt || "", CONFIG.EXCERPT_LENGTH);
+      const excerpt = bestExcerpt(data, CONFIG.EXCERPT_LENGTH);
       const highlighted = highlightTerms(excerpt);
 
       const safeTitle = escapeHtml(stripHtml(title));

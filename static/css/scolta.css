@@ -171,6 +171,10 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.scolta-weak-match {
+  color: #999;
+  font-style: italic;
+}
 .scolta-result-excerpt mark,
 .scolta-result-title mark {
   background: var(--scolta-highlight);
