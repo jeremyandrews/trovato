@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::models::SiteConfig;
+use crate::models::item::Item;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::search::SearchService;
 use crate::services::ai_provider::{
@@ -292,21 +293,44 @@ impl ChatService {
             return String::new();
         }
 
+        // Load actual items to include full field data in context.
+        let ids: Vec<Uuid> = filtered.iter().map(|r| r.id).collect();
+        let items = match load_items_by_ids(&self.db, &ids).await {
+            Ok(items) => items,
+            Err(e) => {
+                warn!(error = %e, "failed to load items for RAG context, using snippets only");
+                Vec::new()
+            }
+        };
+
+        // Build a lookup from id → Item for fast access.
+        let item_map: std::collections::HashMap<Uuid, &Item> =
+            items.iter().map(|item| (item.id, item)).collect();
+
         let mut context = String::from("Relevant site content:\n\n");
         for (i, r) in filtered.iter().enumerate() {
             use std::fmt::Write;
-            // Titles are user-controlled content — truncate to limit prompt injection surface.
             let title = truncate_str(&r.title, 200);
             // Infallible: writing to String
-            writeln!(context, "{}. {} (/item/{})", i + 1, title, r.id).unwrap_or_default();
-            if let Some(ref snippet) = r.snippet {
-                // Strip HTML tags from snippet for clean AI context.
+            writeln!(context, "{}. {} (type: {})", i + 1, title, r.item_type).unwrap_or_default();
+
+            // Include item field data if available.
+            if let Some(item) = item_map.get(&r.id) {
+                let fields_text = format_item_fields(&item.fields);
+                if !fields_text.is_empty() {
+                    // Truncate total field text to limit prompt size.
+                    let trimmed = truncate_str(&fields_text, 1000);
+                    // Infallible: writing to String
+                    writeln!(context, "{trimmed}").unwrap_or_default();
+                }
+            } else if let Some(ref snippet) = r.snippet {
+                // Fall back to search snippet if item load failed.
                 let clean = strip_html_tags(snippet);
-                // Truncate snippets to limit prompt size and injection surface.
                 let trimmed = truncate_str(&clean, 500);
                 // Infallible: writing to String
-                write!(context, "   {trimmed}\n\n").unwrap_or_default();
+                writeln!(context, "   {trimmed}").unwrap_or_default();
             }
+            context.push('\n');
         }
         context
     }
@@ -858,6 +882,85 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
     &s[..end]
 }
 
+/// Load items by a list of IDs in a single query.
+async fn load_items_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Item>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let items = sqlx::query_as::<_, Item>(
+        "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+         promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+         FROM item WHERE id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .context("failed to load items for RAG context")?;
+
+    Ok(items)
+}
+
+/// Format an item's JSONB fields as human-readable text for AI context.
+///
+/// Extracts field values, strips HTML, and formats as labeled lines.
+/// Field names are converted from `field_date_start` to `Date Start`.
+fn format_item_fields(fields: &serde_json::Value) -> String {
+    let Some(obj) = fields.as_object() else {
+        return String::new();
+    };
+
+    let mut lines = Vec::new();
+    for (key, value) in obj {
+        // Extract text from either {value: "..."} or plain string.
+        let text = value
+            .get("value")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.as_str());
+
+        let text = match text {
+            Some(t) if !t.is_empty() => t,
+            _ => continue,
+        };
+
+        // Convert field_name to human-readable label.
+        let label = field_key_to_label(key);
+
+        // Strip HTML from field values (body fields may contain markup).
+        let clean = strip_html_tags(text);
+        let clean = clean.trim();
+        if clean.is_empty() {
+            continue;
+        }
+
+        // Truncate individual field values.
+        let trimmed = truncate_str(clean, 300);
+        lines.push(format!("   {label}: {trimmed}"));
+    }
+
+    lines.join("\n")
+}
+
+/// Convert a field machine name to a human-readable label.
+///
+/// `field_date_start` → `Date Start`, `field_body` → `Body`.
+fn field_key_to_label(key: &str) -> String {
+    let stripped = key.strip_prefix("field_").unwrap_or(key);
+    stripped
+        .split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => {
+                    let upper: String = c.to_uppercase().collect();
+                    format!("{upper}{}", chars.as_str())
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1111,5 +1214,54 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn field_key_to_label_strips_prefix() {
+        assert_eq!(field_key_to_label("field_date_start"), "Date Start");
+        assert_eq!(field_key_to_label("field_body"), "Body");
+        assert_eq!(field_key_to_label("field_city"), "City");
+        assert_eq!(field_key_to_label("title"), "Title");
+    }
+
+    #[test]
+    fn format_item_fields_extracts_values() {
+        let fields = serde_json::json!({
+            "field_city": {"value": "Portland"},
+            "field_country": {"value": "U.S.A."},
+            "field_date_start": {"value": "2026-05-01"},
+            "field_date_end": {"value": "2026-05-03"},
+            "field_description": {"value": "A conference about Rust programming."},
+            "field_url": {"value": "https://example.com"},
+            "field_empty": {"value": ""},
+            "field_body": {"value": "<p>Hello <strong>world</strong></p>"}
+        });
+        let result = format_item_fields(&fields);
+        assert!(result.contains("City: Portland"));
+        assert!(result.contains("Country: U.S.A."));
+        assert!(result.contains("Date Start: 2026-05-01"));
+        assert!(result.contains("Description: A conference about Rust programming."));
+        assert!(result.contains("Url: https://example.com"));
+        // HTML should be stripped from body
+        assert!(result.contains("Body: Hello world"));
+        // Empty fields should be excluded
+        assert!(!result.contains("Empty"));
+    }
+
+    #[test]
+    fn format_item_fields_plain_string_format() {
+        let fields = serde_json::json!({
+            "field_city": "Portland",
+            "field_country": "U.S.A."
+        });
+        let result = format_item_fields(&fields);
+        assert!(result.contains("City: Portland"));
+        assert!(result.contains("Country: U.S.A."));
+    }
+
+    #[test]
+    fn format_item_fields_null_value() {
+        let fields = serde_json::Value::Null;
+        assert_eq!(format_item_fields(&fields), "");
     }
 }

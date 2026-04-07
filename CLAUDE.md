@@ -157,6 +157,18 @@ The tutorial in `docs/tutorial/` has companion agent recipes in `docs/tutorial/r
 
 ## Before Committing Checklist
 
-1. `cargo fmt --all`
+Run the local pre-commit check script to mirror CI:
+
+```bash
+./scripts/pre-commit-check.sh          # fmt + clippy + unit tests
+./scripts/pre-commit-check.sh --quick  # fmt + clippy only (faster)
+```
+
+Or manually:
+
+1. `cargo fmt --all -- --check`
 2. `cargo clippy --all-targets -- -D warnings`
-3. `cargo test --all`
+3. `cargo test --all --lib` (unit tests — no DB/Redis needed)
+
+Integration tests (`cargo test --all`) require Postgres + Redis and run in CI.
+The `--lib` flag runs only unit tests, which is what you want locally.
