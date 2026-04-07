@@ -279,7 +279,7 @@ fn extract_searchable_text(
                 // Add field context for location-type fields
                 let label = name.strip_prefix("field_").unwrap_or(name);
                 if label == "city" || label == "country" {
-                    parts.push(format!("{text}"));
+                    parts.push(text.to_string());
                 } else {
                     parts.push(text);
                 }

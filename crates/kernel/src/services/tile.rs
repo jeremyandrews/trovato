@@ -148,6 +148,7 @@ fn render_chat_widget(html: &mut String, machine_name: &str) {
     <button type="submit">Send</button>
   </form>
 </div>
+<link rel="stylesheet" href="/static/css/chat-widget.css">
 <script src="/static/js/chat-widget.js"></script>"#
     ));
 }
