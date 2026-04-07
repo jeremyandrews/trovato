@@ -36,10 +36,28 @@
       return;
     }
 
+    function formatChat(text) {
+      // Basic markdown: **bold**, numbered lists, line breaks
+      var safe = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      safe = safe.replace(/\n(\d+)\.\s/g, '<br>$1. ');
+      safe = safe.replace(/\n- /g, '<br>&bull; ');
+      safe = safe.replace(/\n\n/g, '<br><br>');
+      safe = safe.replace(/\n/g, '<br>');
+      return safe;
+    }
+
     function appendMsg(role, text) {
       var div = document.createElement('div');
       div.className = 'chat-message chat-message--' + role;
-      div.textContent = text;
+      if (role === 'assistant') {
+        div.innerHTML = formatChat(text);
+      } else {
+        div.textContent = text;
+      }
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
       return div;
@@ -91,7 +109,7 @@
                 var data = JSON.parse(line.substring(6));
                 if (data.type === 'token') {
                   assistantText += data.text;
-                  assistantDiv.textContent = assistantText;
+                  assistantDiv.innerHTML = formatChat(assistantText);
                   messages.scrollTop = messages.scrollHeight;
                 } else if (data.type === 'error') {
                   assistantDiv.textContent = 'Error: ' + data.message;
