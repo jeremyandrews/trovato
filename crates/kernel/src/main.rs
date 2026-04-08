@@ -181,6 +181,29 @@ async fn run_server() -> Result<()> {
 
     info!("Database and Redis connections established");
 
+    // Spawn background task to monitor database pool utilization
+    {
+        let db = state.db().clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let size = db.size();
+                let idle = db.num_idle() as u32;
+                let active = size.saturating_sub(idle);
+                let pct = if size > 0 { (active * 100) / size } else { 0 };
+                if pct >= 80 {
+                    warn!(
+                        active = active,
+                        total = size,
+                        pct = pct,
+                        "Database pool utilization at {pct}% ({active}/{size} connections active)"
+                    );
+                }
+            }
+        });
+    }
+
     // Create session layer
     let same_site = match config.cookie_same_site.as_str() {
         "lax" => SameSite::Lax,
@@ -292,7 +315,10 @@ async fn run_server() -> Result<()> {
             crate::middleware::inject_security_headers,
         ))
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Keep a reference to the DB pool for graceful shutdown cleanup.
+    let db_pool = state.db().clone();
 
     // Start the server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -302,14 +328,66 @@ async fn run_server() -> Result<()> {
 
     info!(%addr, "Server listening");
 
+    let shutdown_timeout = std::env::var("SHUTDOWN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30);
+
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .context("server error")?;
 
+    // Server has stopped accepting new connections. Drain in-flight requests.
+    info!("Draining in-flight requests...");
+
+    // Give in-flight requests time to complete, then close the pool.
+    let drain_result =
+        tokio::time::timeout(std::time::Duration::from_secs(shutdown_timeout), async {
+            db_pool.close().await;
+        })
+        .await;
+
+    if drain_result.is_err() {
+        warn!(
+            timeout_secs = shutdown_timeout,
+            "Shutdown timeout reached, forcing exit"
+        );
+    }
+
+    info!("Shutdown complete");
     Ok(())
+}
+
+/// Wait for a shutdown signal (SIGINT or SIGTERM).
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = ctrl_c => info!("Received SIGINT, starting graceful shutdown"),
+                    _ = sigterm.recv() => info!("Received SIGTERM, starting graceful shutdown"),
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to install SIGTERM handler, using SIGINT only");
+                ctrl_c.await.ok();
+                info!("Received SIGINT, starting graceful shutdown");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+        info!("Received SIGINT, starting graceful shutdown");
+    }
 }
 
 /// Run a plugin CLI command with a minimal context (pool only).

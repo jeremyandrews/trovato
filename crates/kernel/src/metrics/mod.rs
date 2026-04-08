@@ -49,6 +49,18 @@ pub struct Metrics {
     /// Active HTTP connections gauge.
     pub active_connections: Gauge,
 
+    /// Current database connection pool size.
+    pub db_pool_size: Gauge,
+
+    /// Idle database connections.
+    pub db_pool_idle: Gauge,
+
+    /// Active database connections.
+    pub db_pool_active: Gauge,
+
+    /// Maximum database connection pool size.
+    pub db_pool_max: Gauge,
+
     /// File uploads counter.
     pub file_uploads: Counter,
 
@@ -113,6 +125,34 @@ impl Metrics {
             active_connections.clone(),
         );
 
+        let db_pool_size = Gauge::default();
+        registry.register(
+            "trovato_db_pool_size",
+            "Current database connection pool size",
+            db_pool_size.clone(),
+        );
+
+        let db_pool_idle = Gauge::default();
+        registry.register(
+            "trovato_db_pool_idle",
+            "Idle database connections",
+            db_pool_idle.clone(),
+        );
+
+        let db_pool_active = Gauge::default();
+        registry.register(
+            "trovato_db_pool_active",
+            "Active database connections",
+            db_pool_active.clone(),
+        );
+
+        let db_pool_max = Gauge::default();
+        registry.register(
+            "trovato_db_pool_max",
+            "Maximum database connection pool size",
+            db_pool_max.clone(),
+        );
+
         let file_uploads = Counter::default();
         registry.register(
             "file_uploads_total",
@@ -143,6 +183,10 @@ impl Metrics {
             cache_hits,
             cache_misses,
             active_connections,
+            db_pool_size,
+            db_pool_idle,
+            db_pool_active,
+            db_pool_max,
             file_uploads,
             file_upload_bytes,
             rate_limit_rejections,

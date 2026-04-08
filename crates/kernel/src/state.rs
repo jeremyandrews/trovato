@@ -51,6 +51,9 @@ struct AppStateInner {
     /// PostgreSQL connection pool.
     db: PgPool,
 
+    /// Maximum database connections configured for the pool.
+    db_pool_max_connections: u32,
+
     /// Path to plugins directory on disk.
     plugins_dir: PathBuf,
 
@@ -745,6 +748,7 @@ impl AppState {
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 db,
+                db_pool_max_connections: config.database_max_connections,
                 plugins_dir: config.plugins_dir.clone(),
                 enabled_plugins: parking_lot::RwLock::new(enabled_set.clone()),
                 redis,
@@ -809,6 +813,11 @@ impl AppState {
     /// Get the database pool.
     pub fn db(&self) -> &PgPool {
         &self.inner.db
+    }
+
+    /// Get the configured maximum database pool connections.
+    pub fn db_pool_max_connections(&self) -> u32 {
+        self.inner.db_pool_max_connections
     }
 
     /// Get the plugins directory path.
@@ -1108,4 +1117,99 @@ impl AppState {
             .await
             .is_ok()
     }
+
+    /// Build a structured health report for load balancers and monitoring.
+    pub async fn health_report(&self) -> HealthReport {
+        let (pg_ok, redis_ok) = tokio::join!(self.postgres_healthy(), self.redis_healthy());
+
+        let db = if pg_ok {
+            let size = self.inner.db.size();
+            let idle = self.inner.db.num_idle() as u32;
+            let active = size.saturating_sub(idle);
+            let max = self.inner.db_pool_max_connections;
+            let pct = if max > 0 { (active * 100) / max } else { 0 };
+            if pct >= 80 {
+                ServiceHealth::Degraded(format!(
+                    "pool utilization at {pct}% ({active}/{max} connections active)"
+                ))
+            } else {
+                ServiceHealth::Healthy
+            }
+        } else {
+            ServiceHealth::Unavailable("PostgreSQL is not responding".to_string())
+        };
+
+        let redis = if redis_ok {
+            ServiceHealth::Healthy
+        } else {
+            ServiceHealth::Unavailable("Redis is not responding".to_string())
+        };
+
+        let plugin_count = self.inner.plugin_runtime.plugin_count();
+        let plugins = if plugin_count > 0 {
+            ServiceHealth::Healthy
+        } else {
+            ServiceHealth::Degraded("no plugins loaded".to_string())
+        };
+
+        let optional = vec![
+            ("email".to_string(), opt_health(&self.inner.email)),
+            ("audit".to_string(), opt_health(&self.inner.audit)),
+            (
+                "content_lock".to_string(),
+                opt_health(&self.inner.content_lock),
+            ),
+            (
+                "image_styles".to_string(),
+                opt_health(&self.inner.image_styles),
+            ),
+            ("oauth".to_string(), opt_health(&self.inner.oauth)),
+            ("locale".to_string(), opt_health(&self.inner.locale)),
+            (
+                "redirects".to_string(),
+                opt_health(&self.inner.redirect_cache),
+            ),
+        ];
+
+        HealthReport {
+            db,
+            redis,
+            plugins,
+            optional,
+        }
+    }
+}
+
+/// Map an optional service to health status.
+fn opt_health<T>(svc: &Option<Arc<T>>) -> ServiceHealth {
+    if svc.is_some() {
+        ServiceHealth::Healthy
+    } else {
+        ServiceHealth::Unavailable("not configured".to_string())
+    }
+}
+
+/// Structured health report for monitoring.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HealthReport {
+    /// Database connectivity and pool health.
+    pub db: ServiceHealth,
+    /// Redis connectivity.
+    pub redis: ServiceHealth,
+    /// Plugin system health.
+    pub plugins: ServiceHealth,
+    /// Optional service statuses.
+    pub optional: Vec<(String, ServiceHealth)>,
+}
+
+/// Health status for a single service.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", content = "detail")]
+pub enum ServiceHealth {
+    /// Service is fully operational.
+    Healthy,
+    /// Service is working but with warnings.
+    Degraded(String),
+    /// Service is not available.
+    Unavailable(String),
 }

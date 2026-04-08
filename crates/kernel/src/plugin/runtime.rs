@@ -63,6 +63,15 @@ pub struct CompiledPlugin {
     pub module: Module,
 }
 
+/// A plugin that failed to load.
+#[derive(Debug, Clone)]
+pub struct PluginLoadError {
+    /// Plugin directory or name.
+    pub plugin: String,
+    /// Error description.
+    pub error: String,
+}
+
 /// Plugin runtime managing the WASM engine and compiled plugins.
 pub struct PluginRuntime {
     /// Wasmtime engine with pooling allocator.
@@ -71,6 +80,8 @@ pub struct PluginRuntime {
     linker: Linker<PluginState>,
     /// Compiled plugins indexed by name.
     plugins: HashMap<String, Arc<CompiledPlugin>>,
+    /// Plugins that failed to load (for admin UI visibility).
+    load_errors: Vec<PluginLoadError>,
 }
 
 impl PluginRuntime {
@@ -97,6 +108,7 @@ impl PluginRuntime {
             engine,
             linker,
             plugins: HashMap::new(),
+            load_errors: Vec::new(),
         })
     }
 
@@ -225,6 +237,11 @@ impl PluginRuntime {
         self.plugins.len()
     }
 
+    /// Get the list of plugins that failed to load.
+    pub fn load_errors(&self) -> &[PluginLoadError] {
+        &self.load_errors
+    }
+
     /// Discover plugins on disk without compiling WASM.
     ///
     /// Parses each plugin's `info.toml` and returns a map of plugin name to
@@ -329,18 +346,13 @@ impl PluginRuntime {
 
         entries.sort_by_key(|e| e.file_name());
 
+        // Phase 1: Determine which plugin directories to load (skip disabled).
+        let mut dirs_to_load = Vec::new();
         for entry in entries {
             let plugin_dir = entry.path();
-
-            // Peek at the dir name to see if we should bother loading
             let dir_name = entry.file_name().to_str().unwrap_or_default().to_string();
 
-            // We need to parse info.toml to get the real name, but we can
-            // skip compilation for dirs that don't match any enabled name.
-            // First, try a cheap check.
             if !enabled.contains(&dir_name) {
-                // The dir name might not match the plugin name in info.toml,
-                // so we still need to check. Parse info.toml cheaply.
                 let info_files: Vec<_> = match std::fs::read_dir(&plugin_dir) {
                     Ok(entries) => entries
                         .filter_map(|e| e.ok())
@@ -368,21 +380,110 @@ impl PluginRuntime {
                 }
             }
 
-            match self.load_plugin(&plugin_dir) {
-                Ok(()) => {}
+            dirs_to_load.push(plugin_dir);
+        }
+
+        // Phase 2: Compile WASM modules concurrently using blocking tasks.
+        // Module::new() is CPU-bound so we use spawn_blocking for each plugin.
+        let engine = self.engine.clone();
+        let mut compile_handles = Vec::new();
+
+        for plugin_dir in dirs_to_load {
+            let engine = engine.clone();
+            let dir = plugin_dir.clone();
+            let handle =
+                tokio::task::spawn_blocking(move || compile_plugin_from_dir(&engine, &dir));
+            compile_handles.push((plugin_dir, handle));
+        }
+
+        // Phase 3: Collect results, store successes and errors.
+        for (plugin_dir, handle) in compile_handles {
+            match handle.await {
+                Ok(Ok((name, compiled))) => {
+                    self.plugins.insert(name, compiled);
+                }
+                Ok(Err(e)) => {
+                    let dir_str = plugin_dir.display().to_string();
+                    warn!(plugin_dir = %dir_str, error = %e, "failed to load plugin, skipping");
+                    self.load_errors.push(PluginLoadError {
+                        plugin: dir_str,
+                        error: format!("{e:#}"),
+                    });
+                }
                 Err(e) => {
-                    warn!(
-                        plugin_dir = %plugin_dir.display(),
-                        error = %e,
-                        "failed to load plugin, skipping"
-                    );
+                    let dir_str = plugin_dir.display().to_string();
+                    warn!(plugin_dir = %dir_str, error = %e, "plugin compilation task panicked");
+                    self.load_errors.push(PluginLoadError {
+                        plugin: dir_str,
+                        error: format!("compilation task panicked: {e}"),
+                    });
                 }
             }
         }
 
-        info!(count = self.plugins.len(), "loaded enabled plugins");
+        info!(
+            loaded = self.plugins.len(),
+            failed = self.load_errors.len(),
+            "loaded enabled plugins"
+        );
         Ok(())
     }
+}
+
+/// Compile a single plugin from its directory (runs on a blocking thread).
+///
+/// Reads the `.info.toml` and `.wasm` files, compiles the module, and
+/// returns the plugin name and compiled module.
+fn compile_plugin_from_dir(
+    engine: &Engine,
+    plugin_dir: &Path,
+) -> Result<(String, Arc<CompiledPlugin>)> {
+    // Find the .info.toml file
+    let info_files: Vec<_> = std::fs::read_dir(plugin_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().extension().is_some_and(|ext| ext == "toml")
+                && e.path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(".info.toml"))
+        })
+        .collect();
+
+    let info_path = match info_files.len() {
+        0 => anyhow::bail!("no .info.toml file found in {}", plugin_dir.display()),
+        1 => info_files[0].path(),
+        _ => anyhow::bail!(
+            "multiple .info.toml files found in {}",
+            plugin_dir.display()
+        ),
+    };
+
+    let info = PluginInfo::parse(&info_path)?;
+    let plugin_name = info.name.clone();
+
+    let wasm_path = plugin_dir.join(format!("{plugin_name}.wasm"));
+    if !wasm_path.exists() {
+        anyhow::bail!(
+            "plugin '{}' WASM file not found at {}",
+            plugin_name,
+            wasm_path.display()
+        );
+    }
+
+    let wasm_bytes = std::fs::read(&wasm_path)
+        .with_context(|| format!("failed to read WASM file: {}", wasm_path.display()))?;
+
+    let module = Module::new(engine, &wasm_bytes)
+        .with_context(|| format!("failed to compile WASM module for plugin '{plugin_name}'"))?;
+
+    debug!(
+        plugin = %plugin_name,
+        taps = ?info.taps.implements,
+        "compiled plugin"
+    );
+
+    Ok((plugin_name, Arc::new(CompiledPlugin { info, module })))
 }
 
 /// Creates a Wasmtime Engine configured with pooling allocator.

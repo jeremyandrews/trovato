@@ -17,6 +17,18 @@ pub fn router() -> Router<AppState> {
 ///
 /// Returns metrics in Prometheus text exposition format.
 async fn metrics(State(state): State<AppState>) -> Response {
+    // Update database pool gauges before encoding
+    let pool = state.db();
+    let pool_size = pool.size();
+    let pool_idle = pool.num_idle() as u32;
+    let pool_active = pool_size.saturating_sub(pool_idle);
+    let m = state.metrics();
+    m.db_pool_size.set(i64::from(pool_size));
+    m.db_pool_idle.set(i64::from(pool_idle));
+    m.db_pool_active.set(i64::from(pool_active));
+    m.db_pool_max
+        .set(i64::from(state.db_pool_max_connections()));
+
     let output = state.metrics().encode();
 
     (

@@ -21,7 +21,7 @@ pub mod status;
 pub use dependency::{check_dependencies, resolve_load_order};
 pub use error::PluginError;
 pub use info_parser::{KNOWN_TAPS, MigrationConfig, PluginInfo, TapConfig, TapOptions};
-pub use runtime::{CompiledPlugin, PluginConfig, PluginRuntime, PluginState};
+pub use runtime::{CompiledPlugin, PluginConfig, PluginLoadError, PluginRuntime, PluginState};
 
 /// Current kernel plugin API version.
 ///
