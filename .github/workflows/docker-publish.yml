@@ -34,13 +34,18 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
             echo "is_release=true" >> $GITHUB_OUTPUT
           else
-            # Nightly: auto-increment patch from latest tag
+            # Nightly: base patch on latest release tag + commit count since tag.
+            # This ensures each push to main gets a unique, incrementing version.
             LATEST=$(git tag -l "v${BASE_VERSION}.*" --sort=-v:refname | head -1)
             if [ -z "$LATEST" ]; then
-              NEXT="${BASE_VERSION}.0"
+              # No tag yet — use commit count from root
+              COUNT=$(git rev-list --count HEAD)
+              NEXT="${BASE_VERSION}.${COUNT}"
             else
               PATCH=$(echo "$LATEST" | sed "s/v${BASE_VERSION}\.\([0-9]*\).*/\1/")
-              NEXT="${BASE_VERSION}.$((PATCH + 1))"
+              # Count commits since the tag to get a unique incrementing number
+              COMMITS_SINCE=$(git rev-list --count "${LATEST}..HEAD")
+              NEXT="${BASE_VERSION}.$((PATCH + COMMITS_SINCE))"
             fi
             echo "version=${NEXT}" >> $GITHUB_OUTPUT
             echo "is_release=false" >> $GITHUB_OUTPUT
