@@ -29,6 +29,15 @@ async fn metrics(State(state): State<AppState>) -> Response {
     m.db_pool_max
         .set(i64::from(state.db_pool_max_connections()));
 
+    // Update circuit breaker state gauges (0=closed, 1=open, 2=half_open)
+    m.ai_circuit_breaker_state.set(breaker_state_value(
+        state.ai_providers().circuit_breaker().state_name(),
+    ));
+    if let Some(email) = state.email() {
+        m.email_circuit_breaker_state
+            .set(breaker_state_value(email.circuit_breaker().state_name()));
+    }
+
     let output = state.metrics().encode();
 
     (
@@ -37,6 +46,16 @@ async fn metrics(State(state): State<AppState>) -> Response {
         output,
     )
         .into_response()
+}
+
+/// Map circuit breaker state name to numeric gauge value.
+fn breaker_state_value(state_name: &str) -> i64 {
+    match state_name {
+        "closed" => 0,
+        "open" => 1,
+        "half_open" => 2,
+        _ => -1,
+    }
 }
 
 #[cfg(test)]

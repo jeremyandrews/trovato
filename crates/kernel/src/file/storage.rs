@@ -164,6 +164,8 @@ pub struct S3FileStorage {
     prefix: Option<String>,
     /// Base URL for public access (e.g., CloudFront distribution).
     base_url: String,
+    /// Circuit breaker for S3 operations.
+    circuit_breaker: crate::circuit_breaker::CircuitBreaker,
 }
 
 #[cfg(feature = "s3")]
@@ -184,6 +186,14 @@ impl S3FileStorage {
             bucket: bucket.into(),
             prefix,
             base_url: base_url.into(),
+            circuit_breaker: crate::circuit_breaker::CircuitBreaker::new(
+                "s3_storage",
+                crate::circuit_breaker::BreakerConfig {
+                    failure_threshold: 3,
+                    recovery_timeout: std::time::Duration::from_secs(30),
+                    failure_window: std::time::Duration::from_secs(60),
+                },
+            ),
         })
     }
 
@@ -205,7 +215,20 @@ impl S3FileStorage {
             bucket: bucket.into(),
             prefix,
             base_url: base_url.into(),
+            circuit_breaker: crate::circuit_breaker::CircuitBreaker::new(
+                "s3_storage",
+                crate::circuit_breaker::BreakerConfig {
+                    failure_threshold: 3,
+                    recovery_timeout: std::time::Duration::from_secs(30),
+                    failure_window: std::time::Duration::from_secs(60),
+                },
+            ),
         })
+    }
+
+    /// Get the circuit breaker for monitoring.
+    pub fn circuit_breaker(&self) -> &crate::circuit_breaker::CircuitBreaker {
+        &self.circuit_breaker
     }
 
     /// Parse an s3:// URI to get the S3 key.
@@ -243,15 +266,22 @@ impl S3FileStorage {
 impl FileStorage for S3FileStorage {
     async fn write(&self, uri: &str, data: &[u8]) -> Result<()> {
         let key = self.parse_uri(uri)?;
+        let data_vec = data.to_vec();
 
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .body(aws_sdk_s3::primitives::ByteStream::from(data.to_vec()))
-            .send()
+        self.circuit_breaker
+            .call(|| async {
+                self.client
+                    .put_object()
+                    .bucket(&self.bucket)
+                    .key(&key)
+                    .body(aws_sdk_s3::primitives::ByteStream::from(data_vec.clone()))
+                    .send()
+                    .await
+                    .context("failed to upload to S3")?;
+                Ok(())
+            })
             .await
-            .context("failed to upload to S3")?;
+            .map_err(|e| e.into_anyhow("S3"))?;
 
         debug!(uri = %uri, key = %key, size = data.len(), "file written to S3");
         Ok(())
@@ -260,22 +290,27 @@ impl FileStorage for S3FileStorage {
     async fn read(&self, uri: &str) -> Result<Vec<u8>> {
         let key = self.parse_uri(uri)?;
 
-        let response = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-            .context("failed to get object from S3")?;
+        let data = self
+            .circuit_breaker
+            .call(|| async {
+                let response = self
+                    .client
+                    .get_object()
+                    .bucket(&self.bucket)
+                    .key(&key)
+                    .send()
+                    .await
+                    .context("failed to get object from S3")?;
 
-        let data = response
-            .body
-            .collect()
+                response
+                    .body
+                    .collect()
+                    .await
+                    .context("failed to read S3 response body")
+                    .map(|b| b.into_bytes().to_vec())
+            })
             .await
-            .context("failed to read S3 response body")?
-            .into_bytes()
-            .to_vec();
+            .map_err(|e| e.into_anyhow("S3"))?;
 
         debug!(uri = %uri, size = data.len(), "file read from S3");
         Ok(data)
@@ -284,13 +319,19 @@ impl FileStorage for S3FileStorage {
     async fn delete(&self, uri: &str) -> Result<()> {
         let key = self.parse_uri(uri)?;
 
-        self.client
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
+        self.circuit_breaker
+            .call(|| async {
+                self.client
+                    .delete_object()
+                    .bucket(&self.bucket)
+                    .key(&key)
+                    .send()
+                    .await
+                    .context("failed to delete from S3")?;
+                Ok(())
+            })
             .await
-            .context("failed to delete from S3")?;
+            .map_err(|e| e.into_anyhow("S3"))?;
 
         debug!(uri = %uri, "file deleted from S3");
         Ok(())
@@ -299,25 +340,29 @@ impl FileStorage for S3FileStorage {
     async fn exists(&self, uri: &str) -> Result<bool> {
         let key = self.parse_uri(uri)?;
 
-        match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(err) => {
-                // Check if it's a "not found" error
-                if let Some(service_err) = err.as_service_error() {
-                    if service_err.is_not_found() {
-                        return Ok(false);
+        self.circuit_breaker
+            .call(|| async {
+                match self
+                    .client
+                    .head_object()
+                    .bucket(&self.bucket)
+                    .key(&key)
+                    .send()
+                    .await
+                {
+                    Ok(_) => Ok(true),
+                    Err(err) => {
+                        if let Some(service_err) = err.as_service_error() {
+                            if service_err.is_not_found() {
+                                return Ok(false);
+                            }
+                        }
+                        Err(err).context("failed to check S3 object existence")
                     }
                 }
-                Err(err).context("failed to check S3 object existence")
-            }
-        }
+            })
+            .await
+            .map_err(|e| e.into_anyhow("S3"))
     }
 
     fn public_url(&self, uri: &str) -> String {

@@ -293,6 +293,8 @@ pub struct AiProviderService {
     /// Serializes read-modify-write operations on `site_config` rows to
     /// prevent lost updates from concurrent admin requests.
     write_lock: Mutex<()>,
+    /// Circuit breaker for outbound AI provider requests.
+    circuit_breaker: crate::circuit_breaker::CircuitBreaker,
 }
 
 impl AiProviderService {
@@ -306,7 +308,20 @@ impl AiProviderService {
             db,
             http,
             write_lock: Mutex::new(()),
+            circuit_breaker: crate::circuit_breaker::CircuitBreaker::new(
+                "ai_provider",
+                crate::circuit_breaker::BreakerConfig {
+                    failure_threshold: 3,
+                    recovery_timeout: std::time::Duration::from_secs(60),
+                    failure_window: std::time::Duration::from_secs(120),
+                },
+            ),
         }
+    }
+
+    /// Get the circuit breaker for monitoring.
+    pub fn circuit_breaker(&self) -> &crate::circuit_breaker::CircuitBreaker {
+        &self.circuit_breaker
     }
 
     /// Get the shared HTTP client for making outbound requests.
@@ -534,15 +549,32 @@ impl AiProviderService {
         let api_key = Self::resolve_api_key(config);
         let start = Instant::now();
 
-        let result = match config.protocol {
-            ProviderProtocol::OpenAiCompatible => {
-                self.test_openai_compatible(&config.base_url, api_key.as_deref())
-                    .await
+        // Wrap the provider call with a circuit breaker to prevent cascading
+        // failures when an AI provider is down.
+        let base_url = config.base_url.clone();
+        let protocol = config.protocol;
+        let result = self
+            .circuit_breaker
+            .call(|| async {
+                match protocol {
+                    ProviderProtocol::OpenAiCompatible => {
+                        self.test_openai_compatible(&base_url, api_key.as_deref())
+                            .await
+                    }
+                    ProviderProtocol::Anthropic => {
+                        self.test_anthropic(&base_url, api_key.as_deref()).await
+                    }
+                }
+            })
+            .await;
+
+        // Flatten CircuitBreakerError into the same Result shape.
+        let result = match result {
+            Ok(msg) => Ok(msg),
+            Err(crate::circuit_breaker::CircuitBreakerError::Open) => {
+                Err(anyhow::anyhow!("AI provider circuit breaker is open"))
             }
-            ProviderProtocol::Anthropic => {
-                self.test_anthropic(&config.base_url, api_key.as_deref())
-                    .await
-            }
+            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => Err(e),
         };
 
         let latency_ms = start.elapsed().as_millis() as u64;

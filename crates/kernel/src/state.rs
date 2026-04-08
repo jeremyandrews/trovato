@@ -1171,11 +1171,34 @@ impl AppState {
             ),
         ];
 
+        // Collect circuit breaker states from services that have them.
+        let mut circuit_breakers = vec![(
+            "ai_provider".to_string(),
+            CircuitBreakerHealth {
+                state: self
+                    .inner
+                    .ai_providers
+                    .circuit_breaker()
+                    .state_name()
+                    .to_string(),
+            },
+        )];
+
+        if let Some(ref email) = self.inner.email {
+            circuit_breakers.push((
+                "email_smtp".to_string(),
+                CircuitBreakerHealth {
+                    state: email.circuit_breaker().state_name().to_string(),
+                },
+            ));
+        }
+
         HealthReport {
             db,
             redis,
             plugins,
             optional,
+            circuit_breakers,
         }
     }
 }
@@ -1200,6 +1223,15 @@ pub struct HealthReport {
     pub plugins: ServiceHealth,
     /// Optional service statuses.
     pub optional: Vec<(String, ServiceHealth)>,
+    /// Circuit breaker states for external services.
+    pub circuit_breakers: Vec<(String, CircuitBreakerHealth)>,
+}
+
+/// Circuit breaker health status.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CircuitBreakerHealth {
+    /// Current state: "closed", "open", or "half_open".
+    pub state: String,
 }
 
 /// Health status for a single service.

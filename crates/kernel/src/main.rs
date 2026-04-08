@@ -9,6 +9,7 @@
 
 mod batch;
 mod cache;
+mod circuit_breaker;
 mod config;
 mod config_storage;
 mod content;
@@ -181,24 +182,35 @@ async fn run_server() -> Result<()> {
 
     info!("Database and Redis connections established");
 
+    // Create a cancellation token for coordinated shutdown of background tasks.
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+
     // Spawn background task to monitor database pool utilization
     {
         let db = state.db().clone();
+        let token = shutdown_token.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
-                interval.tick().await;
-                let size = db.size();
-                let idle = db.num_idle() as u32;
-                let active = size.saturating_sub(idle);
-                let pct = if size > 0 { (active * 100) / size } else { 0 };
-                if pct >= 80 {
-                    warn!(
-                        active = active,
-                        total = size,
-                        pct = pct,
-                        "Database pool utilization at {pct}% ({active}/{size} connections active)"
-                    );
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let size = db.size();
+                        let idle = db.num_idle() as u32;
+                        let active = size.saturating_sub(idle);
+                        let pct = if size > 0 { (active * 100) / size } else { 0 };
+                        if pct >= 80 {
+                            warn!(
+                                active = active,
+                                total = size,
+                                pct = pct,
+                                "Database pool utilization at {pct}% ({active}/{size} connections active)"
+                            );
+                        }
+                    }
+                    _ = token.cancelled() => {
+                        info!("DB pool monitor shutting down");
+                        break;
+                    }
                 }
             }
         });
@@ -341,13 +353,20 @@ async fn run_server() -> Result<()> {
     .await
     .context("server error")?;
 
-    // Server has stopped accepting new connections. Drain in-flight requests.
-    info!("Draining in-flight requests...");
+    // Server has stopped accepting new connections.
+    // Signal all background tasks to stop.
+    info!("Signaling background tasks to shut down...");
+    shutdown_token.cancel();
 
-    // Give in-flight requests time to complete, then close the pool.
+    // Give background tasks a moment to finish their current iteration.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Close external connections with a timeout.
+    info!("Closing external connections...");
     let drain_result =
         tokio::time::timeout(std::time::Duration::from_secs(shutdown_timeout), async {
             db_pool.close().await;
+            info!("Database pool closed");
         })
         .await;
 

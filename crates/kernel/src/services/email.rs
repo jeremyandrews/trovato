@@ -10,6 +10,7 @@ pub struct EmailService {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     from_email: String,
     site_url: String,
+    circuit_breaker: crate::circuit_breaker::CircuitBreaker,
 }
 
 impl EmailService {
@@ -50,12 +51,21 @@ impl EmailService {
             transport,
             from_email,
             site_url,
+            circuit_breaker: crate::circuit_breaker::CircuitBreaker::new(
+                "email_smtp",
+                crate::circuit_breaker::BreakerConfig::default(),
+            ),
         })
     }
 
     /// Get the site URL used for email links.
     pub fn site_url(&self) -> &str {
         &self.site_url
+    }
+
+    /// Get the circuit breaker for monitoring.
+    pub fn circuit_breaker(&self) -> &crate::circuit_breaker::CircuitBreaker {
+        &self.circuit_breaker
     }
 
     /// Send a plain-text email.
@@ -72,12 +82,16 @@ impl EmailService {
             .body(body.to_string())
             .context("failed to build email message")?;
 
-        self.transport
-            .send(email)
+        self.circuit_breaker
+            .call(|| async {
+                self.transport
+                    .send(email)
+                    .await
+                    .context("failed to send email")?;
+                Ok::<(), anyhow::Error>(())
+            })
             .await
-            .context("failed to send email")?;
-
-        Ok(())
+            .map_err(|e| e.into_anyhow("Email"))
     }
 
     /// Send an email verification link for new account registration.

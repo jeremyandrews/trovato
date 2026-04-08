@@ -63,6 +63,7 @@ ammonia = { workspace = true }
 syntect = { workspace = true }
 parking_lot = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 async-stream = { workspace = true }
 futures-core = { workspace = true }
 lettre = { workspace = true }

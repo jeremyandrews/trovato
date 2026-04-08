@@ -69,6 +69,12 @@ pub struct Metrics {
 
     /// Rate limit rejections counter.
     pub rate_limit_rejections: Counter,
+
+    /// AI provider circuit breaker state (0=closed, 1=open, 2=half_open).
+    pub ai_circuit_breaker_state: Gauge,
+
+    /// Email SMTP circuit breaker state (0=closed, 1=open, 2=half_open).
+    pub email_circuit_breaker_state: Gauge,
 }
 
 impl Metrics {
@@ -174,6 +180,20 @@ impl Metrics {
             rate_limit_rejections.clone(),
         );
 
+        let ai_circuit_breaker_state = Gauge::default();
+        registry.register(
+            "trovato_circuit_breaker_ai",
+            "AI provider circuit breaker state (0=closed, 1=open, 2=half_open)",
+            ai_circuit_breaker_state.clone(),
+        );
+
+        let email_circuit_breaker_state = Gauge::default();
+        registry.register(
+            "trovato_circuit_breaker_email",
+            "Email SMTP circuit breaker state (0=closed, 1=open, 2=half_open)",
+            email_circuit_breaker_state.clone(),
+        );
+
         Self {
             registry,
             http_requests,
@@ -190,6 +210,8 @@ impl Metrics {
             file_uploads,
             file_upload_bytes,
             rate_limit_rejections,
+            ai_circuit_breaker_state,
+            email_circuit_breaker_state,
         }
     }
 

@@ -50,6 +50,19 @@ impl<E: std::fmt::Display> std::fmt::Display for CircuitBreakerError<E> {
 
 impl<E: std::fmt::Display + std::fmt::Debug> std::error::Error for CircuitBreakerError<E> {}
 
+impl<E: Into<anyhow::Error>> CircuitBreakerError<E> {
+    /// Convert into an `anyhow::Error` with a descriptive message when the
+    /// circuit is open, or unwrap the inner service error otherwise.
+    pub fn into_anyhow(self, service_name: &str) -> anyhow::Error {
+        match self {
+            Self::Open => anyhow::anyhow!(
+                "{service_name} circuit breaker is open — service unavailable after repeated failures"
+            ),
+            Self::ServiceError(e) => e.into(),
+        }
+    }
+}
+
 /// Circuit breaker state.
 #[derive(Debug)]
 enum BreakerState {
