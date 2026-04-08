@@ -83,7 +83,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # Nightly: amd64 only (fast, ~12 minutes)
-      # Release tags: amd64 + arm64 (slower but complete)
+      # Release tags: amd64 + arm64 via QEMU (~90 minutes for cross-compiled arm64)
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -94,4 +94,4 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-        timeout-minutes: 60
+        timeout-minutes: ${{ steps.version.outputs.is_release == 'true' && 150 || 60 }}
