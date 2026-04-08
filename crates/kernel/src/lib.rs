@@ -14,6 +14,7 @@ pub mod config_storage;
 pub mod content;
 pub mod cron;
 pub mod db;
+pub mod error;
 pub mod file;
 pub mod form;
 pub mod gather;
