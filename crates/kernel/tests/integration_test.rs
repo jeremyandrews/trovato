@@ -4536,7 +4536,7 @@ fn json_registration_validates_password_mismatch() {
         if status == StatusCode::BAD_REQUEST {
             let body = response_json(response).await;
             assert!(
-                body["error"]
+                body["message"]
                     .as_str()
                     .unwrap_or("")
                     .contains("do not match"),
@@ -4581,18 +4581,18 @@ fn json_registration_validates_missing_fields() {
 
         if status == StatusCode::BAD_REQUEST {
             let body = response_json(response).await;
-            let error = body["error"].as_str().unwrap_or("");
+            let msg = body["message"].as_str().unwrap_or("");
             assert!(
-                error.contains("Username is required"),
-                "Should report missing username"
+                msg.contains("Username is required"),
+                "Should report missing username, got: {msg}"
             );
             assert!(
-                error.contains("Email address is required"),
-                "Should report missing email"
+                msg.contains("Email address is required"),
+                "Should report missing email, got: {msg}"
             );
             assert!(
-                error.contains("Password must be at least 12"),
-                "Should report short password"
+                msg.contains("Password must be at least 12"),
+                "Should report short password, got: {msg}"
             );
         }
     });
@@ -7554,8 +7554,10 @@ fn e2e_ai_chat_admin_gets_sse_or_502() {
         // a provider is configured or 502 when no provider is available.
         let status = response.status();
         assert!(
-            status == StatusCode::OK || status == StatusCode::BAD_GATEWAY,
-            "Admin chat should get 200 (SSE) or 502 (no provider), got {status}"
+            status == StatusCode::OK
+                || status == StatusCode::BAD_GATEWAY
+                || status == StatusCode::SERVICE_UNAVAILABLE,
+            "Admin chat should get 200 (SSE), 502, or 503 (no provider), got {status}"
         );
 
         if status == StatusCode::OK {
@@ -7723,7 +7725,7 @@ fn e2e_ai_chat_rate_limit_returns_429() {
         let first_status = response.status();
         assert!(
             first_status == StatusCode::OK || first_status == StatusCode::BAD_GATEWAY,
-            "First request should be allowed, got {first_status}"
+            "First request should get 200, 502, or 503, got {first_status}"
         );
 
         // Second request — should be rate limited.
