@@ -22,3 +22,12 @@ pub use dependency::{check_dependencies, resolve_load_order};
 pub use error::PluginError;
 pub use info_parser::{KNOWN_TAPS, MigrationConfig, PluginInfo, TapConfig, TapOptions};
 pub use runtime::{CompiledPlugin, PluginConfig, PluginRuntime, PluginState};
+
+/// Current kernel plugin API version.
+///
+/// Plugins declare an `api_version` in their `.info.toml`. At enable time,
+/// the kernel enforces: plugin MAJOR == kernel MAJOR, plugin MINOR <= kernel MINOR.
+///
+/// Increment MINOR when new host functions or taps are added (backward-compatible).
+/// Increment MAJOR when host functions are removed or signatures change (breaking).
+pub const KERNEL_API_VERSION: (u32, u32) = (0, 2);

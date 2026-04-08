@@ -2,13 +2,17 @@
 //!
 //! Uses a sliding window counter pattern with Redis INCR + EXPIRE.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use tracing::{debug, warn};
+
+use crate::state::AppState;
 
 /// Rate limit configuration for different endpoint categories.
 #[derive(Debug, Clone)]
@@ -211,6 +215,64 @@ pub fn rate_limit_response(retry_after: u64) -> Response {
         .into_response()
 }
 
+/// Rate limiting middleware layer.
+///
+/// Extracts the client identifier and request category, then checks the
+/// rate limiter. Returns 429 Too Many Requests when the limit is exceeded.
+pub async fn check_rate_limit(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let category = categorize_path(request.uri().path(), request.method().as_str());
+    let client_id = get_client_id(Some(addr), request.headers());
+
+    match state.rate_limiter().check(category, &client_id).await {
+        Ok(()) => next.run(request).await,
+        Err(retry_after) => rate_limit_response(retry_after),
+    }
+}
+
+/// Per-user rate limiting middleware layer (runs after authentication).
+///
+/// Adds a second rate limit check keyed on the authenticated user's ID.
+/// This prevents a single user from exceeding limits by distributing
+/// requests across multiple IPs. Only fires for authenticated requests.
+pub async fn check_authenticated_rate_limit(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    // Extract user ID from session (set by bearer/API token auth layers).
+    let session = request
+        .extensions()
+        .get::<tower_sessions::Session>()
+        .cloned();
+
+    let user_id = if let Some(ref session) = session {
+        session
+            .get::<uuid::Uuid>(crate::routes::auth::SESSION_USER_ID)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
+    // Only apply per-user limits to authenticated requests.
+    if let Some(uid) = user_id {
+        let category = categorize_path(request.uri().path(), request.method().as_str());
+        let user_key = format!("user:{uid}");
+
+        if let Err(retry_after) = state.rate_limiter().check(category, &user_key).await {
+            return rate_limit_response(retry_after);
+        }
+    }
+
+    next.run(request).await
+}
+
 impl std::fmt::Debug for RateLimiter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RateLimiter")
@@ -243,5 +305,20 @@ mod tests {
         let config = RateLimitConfig::default();
         assert_eq!(config.login.0, 5);
         assert_eq!(config.api.0, 100);
+    }
+
+    #[test]
+    fn rate_limit_response_has_retry_after() {
+        let response = rate_limit_response(60);
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "60"
+        );
     }
 }

@@ -342,6 +342,9 @@ pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -
         .get(name)
         .with_context(|| format!("plugin '{}' not found in {}", name, plugins_dir.display()))?;
 
+    // Check API version compatibility before any filesystem or DB changes.
+    info.check_api_compatibility()?;
+
     let already_installed = status::is_installed(pool, name).await?;
 
     // Check dependencies before touching the filesystem — bail here so the
@@ -478,9 +481,15 @@ pub async fn cmd_plugin_migrate(
 /// CLI commands run in a separate process without access to the server's
 /// in-memory `AppState`. Changes take effect on the next server restart.
 /// For immediate effect, use the admin UI (`/admin/plugins`) instead.
-pub async fn cmd_plugin_enable(pool: &PgPool, name: &str) -> Result<()> {
+pub async fn cmd_plugin_enable(pool: &PgPool, plugins_dir: &Path, name: &str) -> Result<()> {
     if !status::is_installed(pool, name).await? {
         bail!("plugin '{name}' is not installed. Run `trovato plugin install {name}` first.");
+    }
+
+    // Check API version compatibility before enabling.
+    let discovered = PluginRuntime::discover_plugins(plugins_dir);
+    if let Some((info, _dir)) = discovered.get(name) {
+        info.check_api_compatibility()?;
     }
 
     let updated = status::set_status(pool, name, status::STATUS_ENABLED).await?;

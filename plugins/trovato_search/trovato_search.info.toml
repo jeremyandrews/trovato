@@ -1,6 +1,7 @@
 name = "trovato_search"
 description = "Client-side search powered by Pagefind"
 version = "1.0.0"
+api_version = "0.2"
 default_enabled = false
 dependencies = []
 

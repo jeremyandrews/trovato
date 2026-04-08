@@ -503,4 +503,35 @@ mod tests {
         let exactly_max = "a".repeat(MAX_SCOPE_LENGTH);
         assert!(validate_scope(&exactly_max));
     }
+
+    #[test]
+    fn scope_rejects_control_characters() {
+        assert!(!validate_scope("read\x00write"));
+        assert!(!validate_scope("read\nwrite"));
+        assert!(!validate_scope("read\twrite"));
+    }
+
+    #[test]
+    fn scope_allows_rfc_printable_ascii() {
+        // All printable ASCII except " and \ should be valid
+        assert!(validate_scope("read+write"));
+        assert!(validate_scope("scope:admin"));
+        assert!(validate_scope("a-b_c.d"));
+    }
+
+    #[test]
+    fn token_response_headers_include_no_store() {
+        let headers = token_response_headers();
+        assert_eq!(headers[0].1, "no-store");
+        assert_eq!(headers[1].1, "no-cache");
+    }
+
+    #[test]
+    fn max_scope_length_bounded() {
+        // Ensure the scope limit is reasonable (prevent memory abuse)
+        let at_limit = "a".repeat(MAX_SCOPE_LENGTH);
+        assert!(validate_scope(&at_limit));
+        let over_limit = "a".repeat(MAX_SCOPE_LENGTH + 1);
+        assert!(!validate_scope(&over_limit));
+    }
 }

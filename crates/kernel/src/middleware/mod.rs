@@ -21,7 +21,8 @@ pub use language::negotiate_language;
 pub use path_alias::{path_alias_fallback, resolve_path_alias};
 pub use query_profiler::track_request_timing;
 pub use rate_limit::{
-    RateLimitConfig, RateLimiter, categorize_path, get_client_id, rate_limit_response,
+    RateLimitConfig, RateLimiter, categorize_path, check_authenticated_rate_limit,
+    check_rate_limit, get_client_id, rate_limit_response,
 };
 pub use redirect::check_redirect;
 pub use security_headers::inject_security_headers;

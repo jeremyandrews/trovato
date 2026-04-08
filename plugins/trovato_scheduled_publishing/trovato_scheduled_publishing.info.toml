@@ -1,6 +1,7 @@
 name = "trovato_scheduled_publishing"
 description = "Schedule items for future publish and unpublish"
 version = "1.0.0"
+api_version = "0.2"
 dependencies = []
 
 [taps]

@@ -1,6 +1,7 @@
 name = "trovato_ai"
 description = "AI content enrichment: field rules, form assist, and content intelligence"
 version = "1.0.0"
+api_version = "0.2"
 dependencies = []
 default_enabled = false
 

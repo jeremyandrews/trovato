@@ -1,6 +1,7 @@
 name = "trovato_comments"
 description = "Threaded comment system with moderation"
 version = "1.0.0"
+api_version = "0.2"
 dependencies = []
 
 [taps]

@@ -144,6 +144,7 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} plugin"),
             version: "1.0.0".to_string(),
+            api_version: "0.2".to_string(),
             default_enabled: true,
             dependencies: deps.into_iter().map(String::from).collect(),
             taps: TapConfig::default(),

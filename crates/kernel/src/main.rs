@@ -255,7 +255,9 @@ async fn run_server() -> Result<()> {
             }
         })
         // Middleware layers (last added = first executed in request flow):
-        // TraceLayer → session → CORS → bearer_auth → api_token → install_check → negotiate_language → redirect → routes
+        // TraceLayer → security_headers → CORS → session → rate_limit(per-IP) →
+        // bearer_auth → api_token → rate_limit(per-user) → install_check →
+        // negotiate_language → redirect → routes
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::check_redirect,
@@ -270,11 +272,19 @@ async fn run_server() -> Result<()> {
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            crate::middleware::check_authenticated_rate_limit,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             crate::middleware::authenticate_api_token,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::authenticate_bearer_token,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::check_rate_limit,
         ))
         .layer(session_layer)
         .layer(cors)
@@ -292,7 +302,12 @@ async fn run_server() -> Result<()> {
 
     info!(%addr, "Server listening");
 
-    axum::serve(listener, app).await.context("server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("server error")?;
 
     Ok(())
 }
@@ -328,7 +343,7 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
             plugin::cli::cmd_plugin_migrate(&pool, &config.plugins_dir, name.as_deref()).await?;
         }
         PluginAction::Enable { name } => {
-            plugin::cli::cmd_plugin_enable(&pool, &name).await?;
+            plugin::cli::cmd_plugin_enable(&pool, &config.plugins_dir, &name).await?;
         }
         PluginAction::Disable { name } => {
             plugin::cli::cmd_plugin_disable(&pool, &name).await?;

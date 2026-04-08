@@ -1,6 +1,7 @@
 name = "trovato_oauth2"
 description = "OAuth2 authorization server with JWT tokens"
 version = "1.0.0"
+api_version = "0.2"
 dependencies = []
 
 [taps]

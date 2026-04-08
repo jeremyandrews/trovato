@@ -1,6 +1,7 @@
 name = "ritrovo_cfp"
 description = "CFP deadline badge and validation for conferences"
 version = "1.0.0"
+api_version = "0.2"
 default_enabled = false
 dependencies = []
 

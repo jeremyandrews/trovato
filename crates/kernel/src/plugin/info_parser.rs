@@ -23,6 +23,10 @@ pub struct PluginInfo {
     /// Semantic version (e.g., "1.0.0").
     pub version: String,
 
+    /// Plugin API version compatibility target (e.g., "0.2").
+    #[serde(default = "default_api_version")]
+    pub api_version: String,
+
     /// Whether this plugin should be auto-enabled on first install.
     #[serde(default = "default_true")]
     pub default_enabled: bool,
@@ -138,6 +142,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_api_version() -> String {
+    "0.2".to_string()
+}
+
 impl PluginInfo {
     /// Parse a plugin info file from the given path.
     pub fn parse(path: &Path) -> Result<Self> {
@@ -169,6 +177,17 @@ impl PluginInfo {
                 "plugin '{}' at {} has empty 'version' field",
                 self.name,
                 path.display()
+            );
+        }
+
+        // Validate api_version format (MAJOR.MINOR, both numeric)
+        let api_parts: Vec<&str> = self.api_version.split('.').collect();
+        if api_parts.len() != 2 || api_parts.iter().any(|p| p.parse::<u32>().is_err()) {
+            anyhow::bail!(
+                "plugin '{}' at {} has invalid 'api_version' field '{}' (expected MAJOR.MINOR, e.g., '0.2')",
+                self.name,
+                path.display(),
+                self.api_version
             );
         }
 
@@ -210,6 +229,60 @@ impl PluginInfo {
                     file
                 );
             }
+        }
+
+        Ok(())
+    }
+
+    /// Check if this plugin's declared API version is compatible with the kernel.
+    ///
+    /// Rule: plugin MAJOR == kernel MAJOR AND plugin MINOR <= kernel MINOR.
+    /// A plugin built for API 0.1 works on kernel API 0.2.
+    /// A plugin built for API 0.3 does NOT work on kernel API 0.2.
+    pub fn check_api_compatibility(&self) -> Result<()> {
+        use super::KERNEL_API_VERSION;
+
+        let parts: Vec<u32> = self
+            .api_version
+            .split('.')
+            .filter_map(|p| p.parse().ok())
+            .collect();
+
+        if parts.len() != 2 {
+            anyhow::bail!(
+                "plugin '{}' has invalid api_version '{}'",
+                self.name,
+                self.api_version
+            );
+        }
+
+        let (plugin_major, plugin_minor) = (parts[0], parts[1]);
+        let (kernel_major, kernel_minor) = KERNEL_API_VERSION;
+
+        if plugin_major != kernel_major {
+            anyhow::bail!(
+                "plugin '{}' requires API {}.{} but kernel provides API {}.{}. \
+                 Major version mismatch — plugin is incompatible with this kernel.",
+                self.name,
+                plugin_major,
+                plugin_minor,
+                kernel_major,
+                kernel_minor
+            );
+        }
+
+        if plugin_minor > kernel_minor {
+            anyhow::bail!(
+                "plugin '{}' requires API {}.{} but kernel provides API {}.{}. \
+                 Plugin requires a newer kernel (API {}.{}+).",
+                self.name,
+                plugin_major,
+                plugin_minor,
+                kernel_major,
+                kernel_minor,
+                plugin_major,
+                plugin_minor
+            );
         }
 
         Ok(())
@@ -405,5 +478,99 @@ version = "1.0.0"
 
         let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
         assert!(info.default_enabled);
+    }
+
+    #[test]
+    fn default_api_version_is_0_2() {
+        let toml = r#"
+name = "test_plugin"
+description = "test"
+version = "1.0.0"
+"#;
+        let info: PluginInfo = toml::from_str(toml).unwrap();
+        assert_eq!(info.api_version, "0.2");
+    }
+
+    #[test]
+    fn explicit_api_version_parses() {
+        let toml = r#"
+name = "test_plugin"
+description = "test"
+version = "1.0.0"
+api_version = "1.0"
+"#;
+        let info: PluginInfo = toml::from_str(toml).unwrap();
+        assert_eq!(info.api_version, "1.0");
+    }
+
+    #[test]
+    fn invalid_api_version_rejected() {
+        let toml = r#"
+name = "test_plugin"
+description = "test"
+version = "1.0.0"
+api_version = "abc"
+"#;
+        let info: PluginInfo = toml::from_str(toml).unwrap();
+        let result = info.validate(std::path::Path::new("/test"));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid 'api_version'")
+        );
+    }
+
+    #[test]
+    fn three_part_api_version_rejected() {
+        let toml = r#"
+name = "test_plugin"
+description = "test"
+version = "1.0.0"
+api_version = "1.2.3"
+"#;
+        let info: PluginInfo = toml::from_str(toml).unwrap();
+        let result = info.validate(std::path::Path::new("/test"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn api_compat_same_version_ok() {
+        let info = make_info("0.2");
+        assert!(info.check_api_compatibility().is_ok());
+    }
+
+    #[test]
+    fn api_compat_older_minor_ok() {
+        let info = make_info("0.1");
+        assert!(info.check_api_compatibility().is_ok());
+    }
+
+    #[test]
+    fn api_compat_newer_minor_rejected() {
+        let info = make_info("0.3");
+        let err = info.check_api_compatibility().unwrap_err();
+        assert!(err.to_string().contains("requires a newer kernel"));
+    }
+
+    #[test]
+    fn api_compat_major_mismatch_rejected() {
+        let info = make_info("1.0");
+        let err = info.check_api_compatibility().unwrap_err();
+        assert!(err.to_string().contains("Major version mismatch"));
+    }
+
+    fn make_info(api_version: &str) -> PluginInfo {
+        PluginInfo {
+            name: "test_plugin".to_string(),
+            description: "test".to_string(),
+            version: "1.0.0".to_string(),
+            api_version: api_version.to_string(),
+            default_enabled: true,
+            dependencies: vec![],
+            taps: super::TapConfig::default(),
+            migrations: super::MigrationConfig::default(),
+        }
     }
 }

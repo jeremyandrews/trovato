@@ -1,6 +1,7 @@
 name = "trovato_blog"
 description = "Provides a blog content type with tags"
 version = "1.0.0"
+api_version = "0.2"
 dependencies = []
 
 [taps]

@@ -1,6 +1,7 @@
 name = "argus"
 description = "News intelligence: articles, stories, topics, feeds, entities, reactions, discussions"
 version = "1.0.0"
+api_version = "0.2"
 default_enabled = false
 dependencies = []
 

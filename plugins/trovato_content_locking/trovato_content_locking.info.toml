@@ -1,6 +1,7 @@
 name = "trovato_content_locking"
 description = "Pessimistic content locking to prevent concurrent editing"
 version = "1.0.0"
+api_version = "0.2"
 dependencies = []
 
 [taps]

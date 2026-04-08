@@ -762,6 +762,90 @@ mod tests {
     }
 
     #[test]
+    fn expired_token_rejected() {
+        let secret = b"test-secret-key-at-least-32-bytes-long!!";
+        let encoding_key = EncodingKey::from_secret(secret);
+        let decoding_key = DecodingKey::from_secret(secret);
+
+        let now = chrono::Utc::now().timestamp();
+        let claims = TokenClaims {
+            iss: ISSUER.to_string(),
+            sub: Uuid::nil().to_string(),
+            aud: "test".to_string(),
+            iat: now - 7200,
+            exp: now - 3600, // Expired 1 hour ago
+            jti: Uuid::now_v7().to_string(),
+            client_id: "test".to_string(),
+            scope: "read".to_string(),
+            token_type: "access".to_string(),
+        };
+
+        let token =
+            jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &encoding_key).unwrap();
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&[ISSUER]);
+        validation.validate_aud = false;
+
+        let result = jsonwebtoken::decode::<TokenClaims>(&token, &decoding_key, &validation);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn wrong_secret_rejected() {
+        let secret1 = b"first-secret-key-at-least-32-bytes-long!";
+        let secret2 = b"second-secret-key-at-least-32-bytes-lon";
+        let encoding_key = EncodingKey::from_secret(secret1);
+        let decoding_key = DecodingKey::from_secret(secret2);
+
+        let now = chrono::Utc::now().timestamp();
+        let claims = TokenClaims {
+            iss: ISSUER.to_string(),
+            sub: Uuid::nil().to_string(),
+            aud: "test".to_string(),
+            iat: now,
+            exp: now + 3600,
+            jti: Uuid::now_v7().to_string(),
+            client_id: "test".to_string(),
+            scope: "read".to_string(),
+            token_type: "access".to_string(),
+        };
+
+        let token =
+            jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &encoding_key).unwrap();
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&[ISSUER]);
+        validation.validate_aud = false;
+
+        let result = jsonwebtoken::decode::<TokenClaims>(&token, &decoding_key, &validation);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn redirect_uri_deserialization() {
+        let client = OAuthClient {
+            id: Uuid::nil(),
+            client_id: "test".to_string(),
+            client_secret_hash: "".to_string(),
+            name: "Test".to_string(),
+            redirect_uris: serde_json::json!([
+                "https://example.com/callback",
+                "https://other.com/auth"
+            ]),
+            grant_types: serde_json::json!(["authorization_code"]),
+            scopes: serde_json::json!([]),
+            created: 0,
+        };
+
+        // Redirect URIs are stored as JSON array, checked inline in route handlers
+        let uris: Vec<String> = serde_json::from_value(client.redirect_uris).unwrap();
+        assert_eq!(uris.len(), 2);
+        assert!(uris.contains(&"https://example.com/callback".to_string()));
+        assert!(!uris.contains(&"https://evil.com/callback".to_string()));
+    }
+
+    #[test]
     fn client_confidential_check() {
         let public = OAuthClient {
             id: Uuid::nil(),
