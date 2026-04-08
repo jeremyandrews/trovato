@@ -39,7 +39,7 @@ run_check() {
 
 # --- Always run: format + clippy (matches CI: Format + Clippy jobs) ---
 run_check "Format check" cargo fmt --all -- --check
-run_check "Clippy" cargo clippy --all-targets -- -D warnings
+run_check "Clippy" cargo clippy --all-features --all-targets -- -D warnings
 
 if [[ "$MODE" == "quick" ]]; then
     if [[ "$FAILED" -eq 0 ]]; then

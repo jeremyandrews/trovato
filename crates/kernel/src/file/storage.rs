@@ -178,6 +178,7 @@ impl S3FileStorage {
         prefix: Option<String>,
         base_url: impl Into<String>,
     ) -> Result<Self> {
+        #[allow(deprecated)] // TODO: migrate to aws_config::load_defaults when updating SDK
         let config = aws_config::load_from_env().await;
         let client = aws_sdk_s3::Client::new(&config);
 
@@ -204,6 +205,7 @@ impl S3FileStorage {
         prefix: Option<String>,
         base_url: impl Into<String>,
     ) -> Result<Self> {
+        #[allow(deprecated)] // TODO: migrate to aws_config::defaults when updating SDK
         let config = aws_config::from_env()
             .endpoint_url(endpoint_url)
             .load()
@@ -278,7 +280,7 @@ impl FileStorage for S3FileStorage {
                     .send()
                     .await
                     .context("failed to upload to S3")?;
-                Ok(())
+                Ok::<(), anyhow::Error>(())
             })
             .await
             .map_err(|e| e.into_anyhow("S3"))?;
@@ -328,7 +330,7 @@ impl FileStorage for S3FileStorage {
                     .send()
                     .await
                     .context("failed to delete from S3")?;
-                Ok(())
+                Ok::<(), anyhow::Error>(())
             })
             .await
             .map_err(|e| e.into_anyhow("S3"))?;
@@ -352,10 +354,8 @@ impl FileStorage for S3FileStorage {
                 {
                     Ok(_) => Ok(true),
                     Err(err) => {
-                        if let Some(service_err) = err.as_service_error() {
-                            if service_err.is_not_found() {
-                                return Ok(false);
-                            }
+                        if err.as_service_error().is_some_and(|e| e.is_not_found()) {
+                            return Ok(false);
                         }
                         Err(err).context("failed to check S3 object existence")
                     }
