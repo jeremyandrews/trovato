@@ -13,37 +13,30 @@ env:
   BASE_VERSION: "0.2"
 
 jobs:
-  build-and-push:
-    name: Build & Push Docker Image
+  # Compute version once, share across jobs
+  version:
+    name: Compute Version
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_release: ${{ steps.version.outputs.is_release }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Need full history for tag listing
-
+          fetch-depth: 0
       - name: Compute version
         id: version
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            # Release tag: use the tag as-is
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
             echo "is_release=true" >> $GITHUB_OUTPUT
           else
-            # Nightly: base patch on latest release tag + commit count since tag.
-            # This ensures each push to main gets a unique, incrementing version.
             LATEST=$(git tag -l "v${BASE_VERSION}.*" --sort=-v:refname | head -1)
             if [ -z "$LATEST" ]; then
-              # No tag yet — use commit count from root
               COUNT=$(git rev-list --count HEAD)
               NEXT="${BASE_VERSION}.${COUNT}"
             else
               PATCH=$(echo "$LATEST" | sed "s/v${BASE_VERSION}\.\([0-9]*\).*/\1/")
-              # Count commits since the tag to get a unique incrementing number
               COMMITS_SINCE=$(git rev-list --count "${LATEST}..HEAD")
               NEXT="${BASE_VERSION}.$((PATCH + COMMITS_SINCE))"
             fi
@@ -52,6 +45,93 @@ jobs:
           fi
           echo "Computed version: $(cat $GITHUB_OUTPUT | grep version)"
 
+  # Build per-platform images and push by digest
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          # arm64 only for release tags — too slow for nightlies
+          - platform: linux/arm64
+            runner: ubuntu-latest
+            release_only: true
+    steps:
+      - name: Skip arm64 on nightly
+        if: matrix.release_only && needs.version.outputs.is_release != 'true'
+        run: echo "Skipping arm64 for nightly build" && exit 0
+        id: skip_check
+
+      - uses: actions/checkout@v4
+        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
+
+      - name: Set up QEMU
+        if: "matrix.platform == 'linux/arm64' && !(matrix.release_only && needs.version.outputs.is_release != 'true')"
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ matrix.platform }},mode=max
+        timeout-minutes: ${{ matrix.platform == 'linux/arm64' && 240 || 60 }}
+
+      - name: Export digest
+        if: steps.build.outcome == 'success'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Merge platform images into a single multi-arch manifest
+  merge:
+    name: Create Manifest
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
@@ -59,39 +139,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Always tag with computed version
-            type=raw,value=${{ steps.version.outputs.version }}
-            # Pushes to main: also tag as "nightly" + short SHA
+            type=raw,value=${{ needs.version.outputs.version }}
             type=raw,value=nightly,enable={{is_default_branch}}
             type=sha,prefix=nightly-,enable={{is_default_branch}}
-            # Release tags: semver aliases + latest
-            type=semver,pattern={{version}},enable=${{ steps.version.outputs.is_release }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.version.outputs.is_release }}
-            type=raw,value=latest,enable=${{ steps.version.outputs.is_release }}
+            type=semver,pattern={{version}},enable=${{ needs.version.outputs.is_release }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.version.outputs.is_release }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.is_release }}
 
-      - name: Set up QEMU (for multi-platform release builds)
-        if: steps.version.outputs.is_release == 'true'
-        uses: docker/setup-qemu-action@v3
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Nightly: amd64 only (fast, ~12 minutes)
-      # Release tags: amd64 + arm64 via QEMU (~90 minutes for cross-compiled arm64)
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ steps.version.outputs.is_release == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-        timeout-minutes: ${{ steps.version.outputs.is_release == 'true' && 150 || 60 }}
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}
