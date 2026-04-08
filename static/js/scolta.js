@@ -377,6 +377,11 @@
     return text.replace(/<[^>]*>/g, "");
   }
 
+  // Convert machine_name type to display label: "conference" → "Conference"
+  function formatTypeName(t) {
+    return t.replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
   // Build LLM context string from an array of scored results.
   // Top 2 results get full page content for depth; remaining get excerpts.
   function buildLLMContext(results) {
@@ -1065,9 +1070,13 @@
     for (let i = displayedCount; i < showing; i++) {
       const { data } = filtered[i];
       const title = data.meta?.title || "Untitled";
-      const url = data.meta?.url || "#";
+      const url = data.meta?.url || data.url || "#";
       const site = data.meta?.site || "";
       const date = data.meta?.date || "";
+      const itemType = data.meta?.type || "";
+      const location = data.meta?.location || "";
+      const eventDates = data.meta?.event_dates || "";
+      const description = data.meta?.description || "";
       const excerpt = bestExcerpt(data, CONFIG.EXCERPT_LENGTH);
       if (excerpt === null) continue; // Skip false-positive results
       const highlighted = highlightTerms(excerpt);
@@ -1075,15 +1084,37 @@
       const safeTitle = escapeHtml(stripHtml(title));
       const displayTitle = safeTitle.length > 90 ? safeTitle.substring(0, 87) + "\u2026" : safeTitle;
 
+      // Build metadata chips (type badge, location, dates)
+      let metaHtml = "";
+      if (itemType) {
+        metaHtml += `<span class="scolta-type-badge">${escapeHtml(formatTypeName(itemType))}</span>`;
+      } else if (site) {
+        metaHtml += `<span class="scolta-site-badge">${escapeHtml(site)}</span>`;
+      }
+      if (location) {
+        metaHtml += `<span class="scolta-result-location">${escapeHtml(location)}</span>`;
+      }
+      if (eventDates) {
+        metaHtml += `<span class="scolta-result-event-dates">${escapeHtml(eventDates)}</span>`;
+      } else if (date) {
+        metaHtml += `<span class="scolta-result-date">${escapeHtml(date)}</span>`;
+      }
+
+      // Show description if available, otherwise fall back to search excerpt
+      let bodyHtml = "";
+      if (description) {
+        bodyHtml += `<div class="scolta-result-description">${highlightTerms(escapeHtml(description))}</div>`;
+      }
+      if (highlighted && highlighted !== escapeHtml(description)) {
+        bodyHtml += `<div class="scolta-result-excerpt">${highlighted}</div>`;
+      }
+
       html += `<div class="scolta-result-card">
-        <a class="scolta-result-title" href="${url}" target="_blank" rel="noopener"
+        <a class="scolta-result-title" href="${url}"
            title="${safeTitle.replace(/"/g, '&quot;')}">${highlightTerms(displayTitle)}</a>
-        <div class="scolta-result-meta">
-          ${site ? `<span class="scolta-site-badge">${escapeHtml(site)}</span>` : ""}
-          ${date ? `<span class="scolta-result-date">${escapeHtml(date)}</span>` : ""}
-        </div>
-        <a class="scolta-result-url" href="${url}" target="_blank" rel="noopener">${escapeHtml(url)}</a>
-        <div class="scolta-result-excerpt">${highlighted}</div>
+        <div class="scolta-result-meta">${metaHtml}</div>
+        ${bodyHtml}
+        <a class="scolta-result-url" href="${url}">${escapeHtml(url)}</a>
       </div>`;
     }
 
@@ -1207,6 +1238,23 @@
 
     // Init Pagefind.
     initPagefind();
+
+    // Auto-search from URL ?q= parameter.
+    var params = new URLSearchParams(window.location.search);
+    var urlQuery = params.get("q");
+    if (urlQuery) {
+      els.queryInput.value = urlQuery;
+      els.searchClear.style.display = "block";
+      // Wait for Pagefind to be ready before searching.
+      var autoSearchInterval = setInterval(function () {
+        if (pagefind) {
+          clearInterval(autoSearchInterval);
+          doSearch();
+        }
+      }, 100);
+      // Safety timeout — stop trying after 5 seconds.
+      setTimeout(function () { clearInterval(autoSearchInterval); }, 5000);
+    }
 
     console.log("[scolta] Initialized");
   }

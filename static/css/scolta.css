@@ -119,53 +119,71 @@
 }
 .scolta-result-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 .scolta-result-title {
-  font-size: 1.05rem;
+  font-size: 1.1rem;
   font-weight: 600;
   color: var(--scolta-primary);
   text-decoration: none;
   display: block;
-  margin-bottom: 0.3rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-bottom: 0.35rem;
+  line-height: 1.35;
 }
 .scolta-result-title:hover { text-decoration: underline; }
 .scolta-result-meta {
   display: flex;
   gap: 0.5rem;
   align-items: center;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.5rem;
   flex-wrap: wrap;
 }
-.scolta-site-badge {
+.scolta-site-badge,
+.scolta-type-badge {
   display: inline-block;
   background: var(--scolta-badge-bg);
   color: var(--scolta-primary);
-  padding: 0.1rem 0.45rem;
+  padding: 0.15rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.scolta-result-location,
+.scolta-result-event-dates {
+  font-size: 0.8rem;
+  color: var(--scolta-text-muted);
+}
+.scolta-result-meta > span + span::before {
+  content: "\00b7";
+  margin-right: 0.5rem;
+  color: var(--scolta-border);
+  font-weight: 700;
 }
 .scolta-result-date {
   font-size: 0.8rem;
   color: var(--scolta-text-light);
 }
+.scolta-result-description {
+  font-size: 0.9rem;
+  color: var(--scolta-text);
+  line-height: 1.6;
+  margin-bottom: 0.3rem;
+}
 .scolta-result-url {
-  font-size: 0.8rem;
-  color: #0066cc;
+  font-size: 0.78rem;
+  color: #5a8a5a;
   text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   display: block;
   max-width: 100%;
+  margin-top: 0.3rem;
 }
 .scolta-result-url:hover { text-decoration: underline; }
 .scolta-result-excerpt {
-  font-size: 0.9rem;
-  color: #555;
-  line-height: 1.6;
-  margin-top: 0.3rem;
+  font-size: 0.85rem;
+  color: #666;
+  line-height: 1.55;
+  margin-top: 0.15rem;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
@@ -176,6 +194,7 @@
   font-style: italic;
 }
 .scolta-result-excerpt mark,
+.scolta-result-description mark,
 .scolta-result-title mark {
   background: var(--scolta-highlight);
   color: inherit;

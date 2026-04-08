@@ -32,6 +32,13 @@ struct IndexableItem {
     created: i64,
 }
 
+/// Row type for URL alias lookup.
+#[derive(sqlx::FromRow)]
+struct AliasRow {
+    source: String,
+    alias: String,
+}
+
 /// Row type for search field configuration.
 #[derive(sqlx::FromRow)]
 struct FieldConfigRow {
@@ -152,26 +159,87 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
             .push(row.field_name.clone());
     }
 
+    // Batch-load URL aliases for all items so we can use friendly paths.
+    let alias_rows = sqlx::query_as::<_, AliasRow>(
+        "SELECT source, alias FROM url_alias WHERE source LIKE '/item/%'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let alias_map: HashMap<String, String> = alias_rows
+        .into_iter()
+        .map(|r| (r.source, r.alias))
+        .collect();
+
     let count = items.len();
     debug!(count = count, "exporting items for pagefind");
 
-    // Write each item as an HTML fragment
+    // Write each item as an HTML fragment with rich metadata
     for item in &items {
         let body = extract_searchable_text(&item.fields, &item.item_type, &config_map);
+
+        // Use friendly URL alias if available, otherwise /item/{id}
+        let source_path = format!("/item/{}", item.id);
+        let url = alias_map.get(&source_path).cloned().unwrap_or(source_path);
+
+        // Extract structured metadata from fields for richer result cards
+        let description = extract_field_text(&item.fields, "field_description")
+            .or_else(|| extract_field_text(&item.fields, "field_body"))
+            .unwrap_or_default();
+        // Strip HTML and truncate for a clean description meta
+        let description_clean = ammonia::clean(&description);
+        let description_meta = truncate_meta(&description_clean, 200);
+
+        let location = build_location_meta(&item.fields);
+        let date_range = build_date_range_meta(&item.fields);
+
+        // Format created date as human-readable
+        let created_display = format_unix_date(item.created);
+
+        let mut meta_tags = format!(
+            "<meta data-pagefind-meta=\"type:{}\" />\n\
+             <meta data-pagefind-meta=\"date:{}\" />",
+            html_escape(&item.item_type),
+            html_escape(&created_display),
+        );
+
+        if !description_meta.is_empty() {
+            meta_tags.push_str(&format!(
+                "\n<meta data-pagefind-meta=\"description:{}\" />",
+                html_escape(&description_meta)
+            ));
+        }
+        if !location.is_empty() {
+            meta_tags.push_str(&format!(
+                "\n<meta data-pagefind-meta=\"location:{}\" />",
+                html_escape(&location)
+            ));
+        }
+        if !date_range.is_empty() {
+            meta_tags.push_str(&format!(
+                "\n<meta data-pagefind-meta=\"event_dates:{}\" />",
+                html_escape(&date_range)
+            ));
+        }
+
+        // Store the item URL as a meta tag. Pagefind treats `url` as
+        // a special key that overrides the auto-detected file URL.
+        meta_tags.push_str(&format!(
+            "\n<meta data-pagefind-meta=\"url:{}\" />",
+            html_escape(&url)
+        ));
+
         let html = format!(
-            r#"<html><head><title>{title}</title></head>
-<body>
-<h1 data-pagefind-meta="title">{title}</h1>
-<div data-pagefind-body>{body}</div>
-<meta data-pagefind-meta="type:{item_type}" />
-<meta data-pagefind-meta="date:{created}" />
-<a data-pagefind-meta="url" href="/item/{id}"></a>
-</body></html>"#,
+            "<html><head><title>{title}</title></head>\n\
+             <body>\n\
+             <h1 data-pagefind-meta=\"title\">{title}</h1>\n\
+             <div data-pagefind-body>{body}</div>\n\
+             {meta_tags}\n\
+             </body></html>",
             title = html_escape(&item.title),
             body = html_escape(&body),
-            item_type = html_escape(&item.item_type),
-            created = item.created,
-            id = item.id,
+            meta_tags = meta_tags,
         );
 
         let file_path = temp_dir.join(format!("{}.html", item.id));
@@ -244,10 +312,49 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
     Ok(count)
 }
 
-/// Extract searchable text from item fields using `search_field_config`.
-///
-/// Collects text from all fields configured for the item's bundle.
-/// Falls back to `field_body` if no fields are configured.
+/// Build a location string from city/country fields.
+fn build_location_meta(fields: &serde_json::Value) -> String {
+    let city = extract_field_text(fields, "field_city").unwrap_or_default();
+    let country = extract_field_text(fields, "field_country").unwrap_or_default();
+    match (city.is_empty(), country.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => city,
+        (true, false) => country,
+        (false, false) => format!("{city}, {country}"),
+    }
+}
+
+/// Build a date range string from date start/end fields.
+fn build_date_range_meta(fields: &serde_json::Value) -> String {
+    let start = extract_field_text(fields, "field_date_start").unwrap_or_default();
+    let end = extract_field_text(fields, "field_date_end").unwrap_or_default();
+    match (start.is_empty(), end.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => start,
+        (true, false) => end,
+        (false, false) => format!("{start} – {end}"),
+    }
+}
+
+/// Format a Unix timestamp as a human-readable date (YYYY-MM-DD).
+fn format_unix_date(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| timestamp.to_string())
+}
+
+/// Truncate a string to at most `max_len` bytes on a char boundary.
+fn truncate_meta(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
 /// Extract searchable text from item fields, ordered by search weight.
 ///
 /// Higher-weight fields (A=description, B=body) come first so Pagefind's
