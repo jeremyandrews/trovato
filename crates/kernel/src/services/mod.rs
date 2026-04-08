@@ -12,6 +12,7 @@ pub mod audit;
 pub mod comment;
 pub mod content_lock;
 pub mod email;
+pub mod email_templates;
 pub mod image_style;
 pub mod locale;
 pub mod oauth;

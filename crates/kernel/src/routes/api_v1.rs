@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::file::service::FileStatus;
 use crate::gather::{FilterValue, QueryContext};
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::Subscription;
@@ -111,6 +112,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/v1/user/export", get(export_user_data))
         .route("/api/v1/items/autocomplete", get(autocomplete_items))
+        .route("/api/v1/media/browse", get(browse_media))
         .route("/api/openapi.json", get(openapi_spec))
         .layer(axum::middleware::from_fn(inject_api_version))
 }
@@ -895,6 +897,152 @@ async fn autocomplete_items(
             Json(serde_json::json!([])).into_response()
         }
     }
+}
+
+// -------------------------------------------------------------------------
+// Media browse endpoint
+// -------------------------------------------------------------------------
+
+/// Response envelope for the media browse API.
+#[derive(Debug, Serialize)]
+struct MediaBrowseResponse {
+    /// Media items for the current page.
+    items: Vec<MediaItem>,
+    /// Total number of matching files.
+    total: i64,
+    /// Current page number (1-based).
+    page: i64,
+    /// Items per page.
+    page_size: i64,
+}
+
+/// A single media file in browse results.
+#[derive(Debug, Serialize)]
+struct MediaItem {
+    /// File UUID.
+    id: String,
+    /// Original filename.
+    filename: String,
+    /// MIME type (e.g. `image/jpeg`).
+    mime_type: String,
+    /// File size in bytes.
+    size: i64,
+    /// Public URL to serve/download the file.
+    url: String,
+    /// Thumbnail URL for images, `None` for non-image files.
+    thumbnail_url: Option<String>,
+    /// Upload timestamp (Unix epoch).
+    created: i64,
+}
+
+/// Browse the media library with filtering, search, and pagination.
+///
+/// `GET /api/v1/media/browse?page=1&page_size=24&type=image&q=logo&sort=newest`
+///
+/// Query parameters:
+/// - `page` — page number (default 1)
+/// - `page_size` — items per page (default 24, max 100)
+/// - `type` — MIME type prefix filter: `image`, `document`, or `all` (default)
+/// - `q` — case-insensitive filename search
+/// - `sort` — `newest` (default), `oldest`, `name`, `size`
+async fn browse_media(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    // Require authentication
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    if user_id.is_none() {
+        return error_response(StatusCode::UNAUTHORIZED, "Authentication required").into_response();
+    }
+
+    let page: i64 = params
+        .get("page")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let page_size: i64 = params
+        .get("page_size")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(24)
+        .clamp(1, 100);
+    let sort = params.get("sort").map(String::as_str).unwrap_or("newest");
+    let search = params.get("q").map(String::as_str);
+
+    // Map the `type` parameter to a MIME prefix
+    let mime_prefix: Option<&str> = match params.get("type").map(String::as_str) {
+        Some("image") => Some("image/"),
+        Some("document") => Some("application/"),
+        _ => None,
+    };
+
+    let offset = (page - 1) * page_size;
+
+    let total = match state
+        .files()
+        .count_filtered_media(Some(FileStatus::Permanent), mime_prefix, search)
+        .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to count media");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to browse media")
+                .into_response();
+        }
+    };
+
+    let files = match state
+        .files()
+        .list_filtered_media(
+            Some(FileStatus::Permanent),
+            mime_prefix,
+            search,
+            sort,
+            page_size,
+            offset,
+        )
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list media");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to browse media")
+                .into_response();
+        }
+    };
+
+    let storage = state.files().storage();
+    let items: Vec<MediaItem> = files
+        .iter()
+        .map(|f| {
+            let url = storage.public_url(&f.uri);
+            let thumbnail_url = if f.filemime.starts_with("image/") {
+                Some(format!(
+                    "/files/styles/thumbnail/{}",
+                    f.uri.strip_prefix("local://").unwrap_or(&f.uri)
+                ))
+            } else {
+                None
+            };
+            MediaItem {
+                id: f.id.to_string(),
+                filename: f.filename.clone(),
+                mime_type: f.filemime.clone(),
+                size: f.filesize,
+                url,
+                thumbnail_url,
+                created: f.created,
+            }
+        })
+        .collect();
+
+    Json(MediaBrowseResponse {
+        items,
+        total,
+        page,
+        page_size,
+    })
+    .into_response()
 }
 
 /// Get field names marked `personal_data: true` for a content type.

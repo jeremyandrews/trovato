@@ -1,0 +1,13 @@
+name = "trovato_seo"
+description = "Search engine optimization: meta tags, Open Graph, sitemap.xml, JSON-LD"
+version = "1.0.0"
+api_version = "0.2"
+dependencies = []
+
+[taps]
+implements = [
+    "tap_item_view",
+    "tap_perm",
+    "tap_menu",
+]
+weight = 90

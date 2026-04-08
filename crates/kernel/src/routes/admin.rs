@@ -223,6 +223,90 @@ async fn delete_file(
 }
 
 // =============================================================================
+// Media Library
+// =============================================================================
+
+/// Media library page with grid display.
+///
+/// GET /admin/media
+async fn media_library(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(redirect) = require_admin(&state, &session).await {
+        return redirect;
+    }
+
+    let page: i64 = params
+        .get("page")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let page_size: i64 = 24;
+    let offset = (page - 1) * page_size;
+
+    let type_filter = params.get("type").map(String::as_str);
+    let search = params.get("q").map(String::as_str);
+
+    let mime_prefix: Option<&str> = match type_filter {
+        Some("image") => Some("image/"),
+        Some("document") => Some("application/"),
+        _ => None,
+    };
+
+    let files = match state
+        .files()
+        .list_filtered_media(
+            Some(FileStatus::Permanent),
+            mime_prefix,
+            search,
+            "newest",
+            page_size,
+            offset,
+        )
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list media");
+            return render_server_error("Failed to load media library.");
+        }
+    };
+
+    let total = state
+        .files()
+        .count_filtered_media(Some(FileStatus::Permanent), mime_prefix, search)
+        .await
+        .unwrap_or(0);
+
+    // Build public URLs for each file
+    let storage = state.files().storage().clone();
+    let file_urls: std::collections::HashMap<String, String> = files
+        .iter()
+        .map(|f| (f.id.to_string(), storage.public_url(&f.uri)))
+        .collect();
+
+    let total_pages = (total + page_size - 1) / page_size;
+
+    let csrf_token = generate_csrf_token(&session).await;
+
+    let mut context = tera::Context::new();
+    context.insert("files", &files);
+    context.insert("file_urls", &file_urls);
+    context.insert("total", &total);
+    context.insert("page", &page);
+    context.insert("page_size", &page_size);
+    context.insert("total_pages", &total_pages);
+    context.insert("type_filter", &type_filter.unwrap_or("all"));
+    context.insert("search", &search.unwrap_or(""));
+    context.insert("csrf_token", &csrf_token);
+    context.insert("path", "/admin/media");
+
+    render_admin_template(&state, "admin/media-library.html", context).await
+}
+
+// =============================================================================
 // AJAX Endpoint
 // =============================================================================
 
@@ -564,6 +648,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/content/files", get(list_files))
         .route("/admin/content/files/{id}", get(file_details))
         .route("/admin/content/files/{id}/delete", post(delete_file))
+        // Media library
+        .route("/admin/media", get(media_library))
         // Content type and search configuration management
         .merge(super::admin_content_type::router())
         // URL Alias management
@@ -576,6 +662,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_ai_budget::router())
         // AI Chat configuration
         .merge(super::admin_ai_chat::router())
+        // Site configuration
+        .merge(super::admin_config::router())
         // AJAX endpoint
         .route("/system/ajax", post(ajax_callback))
 }

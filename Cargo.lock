@@ -6343,6 +6343,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_seo"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_webhooks"
 version = "1.0.0"
 dependencies = [

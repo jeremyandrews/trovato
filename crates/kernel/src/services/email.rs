@@ -128,6 +128,107 @@ impl EmailService {
 
         self.send(to, &subject, &body).await
     }
+
+    /// Send a templated email with optional HTML body.
+    ///
+    /// If `html_body` is provided, sends a multipart message with both
+    /// HTML and plain text alternatives. Otherwise sends plain text only.
+    pub async fn send_templated(
+        &self,
+        to: &str,
+        subject: &str,
+        text_body: &str,
+        html_body: Option<&str>,
+    ) -> Result<()> {
+        let from = self.from_email.parse().context("invalid from email")?;
+        let to_addr = to.parse().context("invalid recipient email")?;
+
+        let email = if let Some(html) = html_body {
+            Message::builder()
+                .from(from)
+                .to(to_addr)
+                .subject(subject)
+                .multipart(
+                    lettre::message::MultiPart::alternative()
+                        .singlepart(
+                            lettre::message::SinglePart::builder()
+                                .header(ContentType::TEXT_PLAIN)
+                                .body(text_body.to_string()),
+                        )
+                        .singlepart(
+                            lettre::message::SinglePart::builder()
+                                .header(lettre::message::header::ContentType::TEXT_HTML)
+                                .body(html.to_string()),
+                        ),
+                )
+                .context("failed to build multipart email")?
+        } else {
+            Message::builder()
+                .from(from)
+                .to(to_addr)
+                .subject(subject)
+                .header(ContentType::TEXT_PLAIN)
+                .body(text_body.to_string())
+                .context("failed to build email")?
+        };
+
+        self.circuit_breaker
+            .call(|| async {
+                self.transport
+                    .send(email)
+                    .await
+                    .context("failed to send email")?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            .map_err(|e| e.into_anyhow("Email"))
+    }
+
+    /// Send an email verification link using the template system.
+    pub async fn send_verification_email_templated(
+        &self,
+        tera: &tera::Tera,
+        to: &str,
+        token: &str,
+        site_name: &str,
+    ) -> Result<()> {
+        let verify_url = format!("{}/user/verify/{}", self.site_url, token);
+        let subject = format!("Verify your account at {site_name}");
+
+        let mut context = tera::Context::new();
+        context.insert("site_name", site_name);
+        context.insert("action_url", &verify_url);
+        context.insert("subject", &subject);
+
+        let (html, text) =
+            crate::services::email_templates::render(tera, "registration_verify", &context)?;
+
+        self.send_templated(to, &subject, &text, html.as_deref())
+            .await
+    }
+
+    /// Send a password reset email using the template system.
+    pub async fn send_password_reset_templated(
+        &self,
+        tera: &tera::Tera,
+        to: &str,
+        token: &str,
+        site_name: &str,
+    ) -> Result<()> {
+        let reset_url = format!("{}/user/password-reset/{}", self.site_url, token);
+        let subject = format!("Password reset for {site_name}");
+
+        let mut context = tera::Context::new();
+        context.insert("site_name", site_name);
+        context.insert("action_url", &reset_url);
+        context.insert("subject", &subject);
+
+        let (html, text) =
+            crate::services::email_templates::render(tera, "password_reset", &context)?;
+
+        self.send_templated(to, &subject, &text, html.as_deref())
+            .await
+    }
 }
 
 #[cfg(test)]

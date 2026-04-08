@@ -347,6 +347,122 @@ impl FileService {
         Ok(count)
     }
 
+    /// List files with optional MIME type prefix and filename search filters.
+    ///
+    /// `mime_prefix` filters to files whose MIME type starts with the given
+    /// string (e.g. `"image/"` for all images). `search` does a
+    /// case-insensitive filename LIKE match. Both filters are AND-combined
+    /// with an optional status filter.
+    pub async fn list_filtered_media(
+        &self,
+        status: Option<FileStatus>,
+        mime_prefix: Option<&str>,
+        search: Option<&str>,
+        sort: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<FileInfo>> {
+        // Build the query dynamically based on filters.
+        // All user-supplied values are bound as parameters (never interpolated).
+        let mut sql = String::from(
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed WHERE 1=1",
+        );
+        let mut param_idx: u8 = 1;
+
+        if status.is_some() {
+            sql.push_str(&format!(" AND status = ${param_idx}"));
+            param_idx += 1;
+        }
+        if mime_prefix.is_some() {
+            sql.push_str(&format!(" AND filemime LIKE ${param_idx}"));
+            param_idx += 1;
+        }
+        if search.is_some() {
+            sql.push_str(&format!(" AND filename ILIKE ${param_idx}"));
+            param_idx += 1;
+        }
+
+        let order = match sort {
+            "oldest" => "ORDER BY created ASC",
+            "name" => "ORDER BY filename ASC",
+            "size" => "ORDER BY filesize DESC",
+            _ => "ORDER BY created DESC", // "newest" (default)
+        };
+        sql.push_str(&format!(" {order} LIMIT ${param_idx}"));
+        param_idx += 1;
+        sql.push_str(&format!(" OFFSET ${param_idx}"));
+
+        let mut query = sqlx::query_as::<_, FileRow>(&sql);
+
+        if let Some(s) = status {
+            query = query.bind(s as i16);
+        }
+        if let Some(prefix) = mime_prefix {
+            let like_pattern = format!("{}%", prefix.replace('%', "\\%").replace('_', "\\_"));
+            query = query.bind(like_pattern);
+        }
+        if let Some(q) = search {
+            let like_pattern = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
+            query = query.bind(like_pattern);
+        }
+        query = query.bind(limit).bind(offset);
+
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list filtered media")?;
+
+        Ok(rows.into_iter().map(FileInfo::from).collect())
+    }
+
+    /// Count files matching optional MIME prefix, search, and status filters.
+    ///
+    /// Filter semantics match [`Self::list_filtered_media`].
+    pub async fn count_filtered_media(
+        &self,
+        status: Option<FileStatus>,
+        mime_prefix: Option<&str>,
+        search: Option<&str>,
+    ) -> Result<i64> {
+        let mut sql = String::from("SELECT COUNT(*) FROM file_managed WHERE 1=1");
+        let mut param_idx: u8 = 1;
+
+        if status.is_some() {
+            sql.push_str(&format!(" AND status = ${param_idx}"));
+            param_idx += 1;
+        }
+        if mime_prefix.is_some() {
+            sql.push_str(&format!(" AND filemime LIKE ${param_idx}"));
+            param_idx += 1;
+        }
+        if search.is_some() {
+            sql.push_str(&format!(" AND filename ILIKE ${param_idx}"));
+            // param_idx not needed after this but keep for consistency
+            let _ = param_idx;
+        }
+
+        let mut query = sqlx::query_scalar::<_, i64>(&sql);
+
+        if let Some(s) = status {
+            query = query.bind(s as i16);
+        }
+        if let Some(prefix) = mime_prefix {
+            let like_pattern = format!("{}%", prefix.replace('%', "\\%").replace('_', "\\_"));
+            query = query.bind(like_pattern);
+        }
+        if let Some(q) = search {
+            let like_pattern = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
+            query = query.bind(like_pattern);
+        }
+
+        let count = query
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to count filtered media")?;
+
+        Ok(count)
+    }
+
     /// Get file info by ID.
     pub async fn get(&self, id: Uuid) -> Result<Option<FileInfo>> {
         let row = sqlx::query_as::<_, FileRow>(

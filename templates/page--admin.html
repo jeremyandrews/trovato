@@ -158,6 +158,7 @@
                 <li><a href="/admin/content/add">Add content</a></li>
                 {% if "comments" in enabled_plugins %}<li><a href="/admin/content/comments" {% if path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Comments</a></li>{% endif %}
                 <li><a href="/admin/content/files" {% if path is starting_with("/admin/content/files") %}class="active"{% endif %}>Files</a></li>
+                <li><a href="/admin/media" {% if path is starting_with("/admin/media") %}class="active"{% endif %}>Media</a></li>
 
                 <div class="admin-nav-section">Structure</div>
                 <li><a href="/admin/structure/types" {% if path is starting_with("/admin/structure/types") %}class="active"{% endif %}>Content types</a></li>
@@ -172,6 +173,7 @@
                 <li><a href="/admin/people/permissions" {% if path is starting_with("/admin/people/permissions") %}class="active"{% endif %}>Permissions</a></li>
 
                 <div class="admin-nav-section">System</div>
+                <li><a href="/admin/config/site" {% if path is starting_with("/admin/config/site") %}class="active"{% endif %}>Site settings</a></li>
                 <li><a href="/admin/plugins" {% if path is starting_with("/admin/plugins") %}class="active"{% endif %}>Plugins</a></li>
                 <li><a href="/admin/system/ai-providers" {% if path is starting_with("/admin/system/ai-providers") %}class="active"{% endif %}>AI Providers</a></li>
                 <li><a href="/admin/system/ai-budgets" {% if path is starting_with("/admin/system/ai-budgets") %}class="active"{% endif %}>AI Budgets</a></li>

@@ -243,6 +243,16 @@ impl ThemeEngine {
 
         let mut tera = Tera::new(pattern_str).context("failed to initialize Tera templates")?;
 
+        // Also load plain-text templates (used by email templates).
+        let txt_pattern = template_dir.join("**/*.txt");
+        let txt_pattern_str = txt_pattern
+            .to_str()
+            .context("invalid template directory path for txt")?;
+        if let Ok(txt_tera) = Tera::new(txt_pattern_str) {
+            tera.extend(&txt_tera)
+                .context("failed to extend Tera with txt templates")?;
+        }
+
         // Register custom filters
         Self::register_filters(&mut tera, locale);
 

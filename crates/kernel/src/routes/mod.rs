@@ -6,6 +6,7 @@ pub mod admin_ai_chat;
 pub mod admin_ai_features;
 pub mod admin_ai_provider;
 pub mod admin_alias;
+pub mod admin_config;
 pub mod admin_content;
 pub mod admin_content_type;
 pub mod admin_pathauto;
@@ -39,6 +40,7 @@ pub mod password_reset;
 pub mod plugin_admin;
 pub mod route_metadata;
 pub mod search;
+pub mod sitemap;
 pub mod static_files;
 pub mod tile_admin;
 

@@ -1,0 +1,6 @@
+A new user has registered at {{ site_name }}:
+
+Username: {{ username }}
+Email: {{ user_email }}
+
+Manage users: {{ action_url }}

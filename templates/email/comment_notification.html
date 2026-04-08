@@ -1,0 +1,7 @@
+{% extends "email/base.html" %}
+{% block content %}
+<h2 style="margin: 0 0 15px; font-size: 18px; color: #1f2937;">New comment on your content</h2>
+<p style="color: #374151; line-height: 1.6;">{{ commenter_name }} commented on <strong>{{ content_title }}</strong>:</p>
+<blockquote style="border-left: 3px solid #e5e7eb; padding-left: 15px; margin: 15px 0; color: #4b5563;">{{ comment_text }}</blockquote>
+<p><a href="{{ action_url }}" style="color: #4f46e5;">View comment</a></p>
+{% endblock %}
