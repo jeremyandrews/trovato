@@ -109,7 +109,7 @@ fn ai_assist_validates_empty_text() {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["error"].as_str().unwrap().contains("empty"));
+        assert!(json["message"].as_str().unwrap().contains("empty"));
     });
 }
 
@@ -148,7 +148,7 @@ fn ai_assist_validates_invalid_operation() {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(
-            json["error"]
+            json["message"]
                 .as_str()
                 .unwrap()
                 .contains("Invalid operation")
@@ -193,7 +193,7 @@ fn ai_assist_validates_text_too_long() {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["error"].as_str().unwrap().contains("too long"));
+        assert!(json["message"].as_str().unwrap().contains("too long"));
     });
 }
 
