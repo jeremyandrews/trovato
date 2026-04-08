@@ -7724,7 +7724,9 @@ fn e2e_ai_chat_rate_limit_returns_429() {
             .await;
         let first_status = response.status();
         assert!(
-            first_status == StatusCode::OK || first_status == StatusCode::BAD_GATEWAY,
+            first_status == StatusCode::OK
+                || first_status == StatusCode::BAD_GATEWAY
+                || first_status == StatusCode::SERVICE_UNAVAILABLE,
             "First request should get 200, 502, or 503, got {first_status}"
         );
 
