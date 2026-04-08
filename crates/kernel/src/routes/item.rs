@@ -14,6 +14,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::{FilterPipeline, FormBuilder};
+use crate::error::AppError;
 use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::{CreateItem, UpdateItem, UrlAlias};
@@ -661,40 +662,23 @@ async fn create_item(
     Extension(lang): Extension<ResolvedLanguage>,
     Path(item_type): Path<String>,
     Json(request): Json<CreateItemRequest>,
-) -> Result<Json<ItemResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<ItemResponse>, AppError> {
     let user = get_user_context(&session, &state).await;
 
     // Check permission
     let permission = format!("create {item_type} content");
     if !user.has_permission(&permission) && !user.is_admin() {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(JsonError {
-                error: "Access denied".to_string(),
-            }),
-        ));
+        return Err(AppError::forbidden("Access denied"));
     }
 
     // Verify CSRF token from header
     crate::routes::helpers::require_csrf_header(&session, &headers)
         .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+        .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
     // Check content type exists
     if !state.content_types().exists(&item_type) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: format!("Content type '{item_type}' not found"),
-            }),
-        ));
+        return Err(AppError::not_found("content type"));
     }
 
     let language = lang.0;
@@ -712,38 +696,31 @@ async fn create_item(
         log: request.log,
     };
 
-    match state.items().create(input, &user).await {
-        Ok(item) => {
-            // Auto-generate URL alias if pattern configured for this type
-            if let Err(e) = crate::services::pathauto::auto_alias_item(
-                state.db(),
-                item.id,
-                &item.title,
-                &item.item_type,
-                item.created,
-            )
-            .await
-            {
-                tracing::warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
-            }
+    let item = state
+        .items()
+        .create(input, &user)
+        .await
+        .map_err(|e| AppError::internal_ctx(e, "create item"))?;
 
-            Ok(Json(ItemResponse {
-                id: item.id,
-                title: item.title,
-                item_type: item.item_type,
-                status: item.status,
-            }))
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to create item");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to create item".to_string(),
-                }),
-            ))
-        }
+    // Auto-generate URL alias if pattern configured for this type
+    if let Err(e) = crate::services::pathauto::auto_alias_item(
+        state.db(),
+        item.id,
+        &item.title,
+        &item.item_type,
+        item.created,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
     }
+
+    Ok(Json(ItemResponse {
+        id: item.id,
+        title: item.title,
+        item_type: item.item_type,
+        status: item.status,
+    }))
 }
 
 /// Display edit item form.
@@ -859,20 +836,13 @@ async fn update_item(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(request): Json<UpdateItemRequest>,
-) -> Result<Json<ItemResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<ItemResponse>, AppError> {
     let user = get_user_context(&session, &state).await;
 
     // Verify CSRF token from header
     crate::routes::helpers::require_csrf_header(&session, &headers)
         .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+        .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
     let input = UpdateItem {
         title: request.title,
@@ -938,29 +908,13 @@ async fn update_item(
                 status: item.status,
             }))
         }
-        Ok(None) => Err((
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Item not found".to_string(),
-            }),
-        )),
+        Ok(None) => Err(AppError::not_found_id("item", id)),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("access denied") {
-                Err((
-                    StatusCode::FORBIDDEN,
-                    Json(JsonError {
-                        error: "Access denied".to_string(),
-                    }),
-                ))
+                Err(AppError::forbidden("Access denied"))
             } else {
-                tracing::error!(error = %e, "failed to update item");
-                Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(JsonError {
-                        error: "Failed to update item".to_string(),
-                    }),
-                ))
+                Err(AppError::internal_ctx(e, "update item"))
             }
         }
     }
@@ -972,46 +926,23 @@ async fn delete_item(
     session: Session,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = get_user_context(&session, &state).await;
 
     // Verify CSRF token from header
     crate::routes::helpers::require_csrf_header(&session, &headers)
         .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+        .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
     match state.items().delete(id, &user).await {
         Ok(true) => Ok(Json(serde_json::json!({"deleted": true}))),
-        Ok(false) => Err((
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Item not found".to_string(),
-            }),
-        )),
+        Ok(false) => Err(AppError::not_found_id("item", id)),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("access denied") {
-                Err((
-                    StatusCode::FORBIDDEN,
-                    Json(JsonError {
-                        error: "Access denied".to_string(),
-                    }),
-                ))
+                Err(AppError::forbidden("Access denied"))
             } else {
-                tracing::error!(error = %e, "failed to delete item");
-                Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(JsonError {
-                        error: "Failed to delete item".to_string(),
-                    }),
-                ))
+                Err(AppError::internal_ctx(e, "delete item"))
             }
         }
     }
@@ -1082,40 +1013,22 @@ async fn revert_revision(
     session: Session,
     Path((id, rev_id)): Path<(Uuid, Uuid)>,
     Form(form): Form<CsrfOnlyForm>,
-) -> Result<impl IntoResponse, (StatusCode, Json<JsonError>)> {
+) -> Result<impl IntoResponse, AppError> {
     let user = get_user_context(&session, &state).await;
 
     // Verify CSRF token from form body
     crate::routes::helpers::require_csrf(&session, &form.token)
         .await
-        .map_err(|_| {
-            (
-                StatusCode::FORBIDDEN,
-                Json(JsonError {
-                    error: "Invalid or expired form token. Please try again.".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|_| AppError::forbidden("Invalid or expired form token. Please try again."))?;
 
     match state.items().revert_to_revision(id, rev_id, &user).await {
         Ok(_) => Ok(Redirect::to(&format!("/item/{id}/revisions"))),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("access denied") {
-                Err((
-                    StatusCode::FORBIDDEN,
-                    Json(JsonError {
-                        error: "Access denied".to_string(),
-                    }),
-                ))
+                Err(AppError::forbidden("Access denied"))
             } else {
-                tracing::error!(error = %e, "failed to revert revision");
-                Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(JsonError {
-                        error: "Failed to revert".to_string(),
-                    }),
-                ))
+                Err(AppError::internal_ctx(e, "revert revision"))
             }
         }
     }
@@ -1130,29 +1043,24 @@ async fn list_content_types(State(state): State<AppState>) -> Json<Vec<String>> 
 async fn list_items_by_type(
     State(state): State<AppState>,
     Path(item_type): Path<String>,
-) -> Result<Json<Vec<ItemResponse>>, (StatusCode, Json<JsonError>)> {
-    match state.items().list_by_type(&item_type).await {
-        Ok(items) => Ok(Json(
-            items
-                .into_iter()
-                .map(|i| ItemResponse {
-                    id: i.id,
-                    title: i.title,
-                    item_type: i.item_type,
-                    status: i.status,
-                })
-                .collect(),
-        )),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to list items");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to list items".to_string(),
-                }),
-            ))
-        }
-    }
+) -> Result<Json<Vec<ItemResponse>>, AppError> {
+    let items = state
+        .items()
+        .list_by_type(&item_type)
+        .await
+        .map_err(|e| AppError::internal_ctx(e, "list items by type"))?;
+
+    Ok(Json(
+        items
+            .into_iter()
+            .map(|i| ItemResponse {
+                id: i.id,
+                title: i.title,
+                item_type: i.item_type,
+                status: i.status,
+            })
+            .collect(),
+    ))
 }
 
 // =============================================================================
@@ -1166,28 +1074,14 @@ async fn get_item_api(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Query(query): Query<GetItemQuery>,
-) -> Result<Json<ItemApiResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<ItemApiResponse>, AppError> {
     // Load item
-    let item = match state.items().load(id).await {
-        Ok(Some(i)) => i,
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "Item not found".to_string(),
-                }),
-            ));
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to load item");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            ));
-        }
-    };
+    let item = state
+        .items()
+        .load(id)
+        .await
+        .map_err(|e| AppError::internal_ctx(e, "load item"))?
+        .ok_or_else(|| AppError::not_found_id("item", id))?;
 
     // Check if we should include author
     let include_author = query
@@ -1231,7 +1125,7 @@ async fn get_item_api(
 async fn list_items_api(
     State(state): State<AppState>,
     Query(query): Query<ListItemsQuery>,
-) -> Result<Json<PaginatedResponse<ItemApiResponse>>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<PaginatedResponse<ItemApiResponse>>, AppError> {
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
     let offset = (page - 1) * per_page;
@@ -1254,15 +1148,7 @@ async fn list_items_api(
             offset,
         )
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list items");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to list items".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "list items"))?;
 
     // Optionally load authors
     let mut author_cache: std::collections::HashMap<Uuid, AuthorResponse> =

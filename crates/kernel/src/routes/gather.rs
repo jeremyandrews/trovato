@@ -23,6 +23,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use super::helpers::{JsonError, html_escape as escape_html};
+use crate::error::AppError;
 
 /// Determine the language for `QueryContext` from a resolved language extension.
 ///
@@ -134,9 +135,7 @@ struct AdhocQueryRequest {
 // Handlers
 // -------------------------------------------------------------------------
 
-async fn list_queries(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<QuerySummary>>, (StatusCode, Json<JsonError>)> {
+async fn list_queries(State(state): State<AppState>) -> Result<Json<Vec<QuerySummary>>, AppError> {
     let queries = state.gather().list_queries();
 
     Ok(Json(
@@ -155,15 +154,11 @@ async fn list_queries(
 async fn get_query(
     State(state): State<AppState>,
     Path(query_id): Path<String>,
-) -> Result<Json<QueryResponse>, (StatusCode, Json<JsonError>)> {
-    let query = state.gather().get_query(&query_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "query not found".to_string(),
-            }),
-        )
-    })?;
+) -> Result<Json<QueryResponse>, AppError> {
+    let query = state
+        .gather()
+        .get_query(&query_id)
+        .ok_or_else(|| AppError::not_found_id("query", &query_id))?;
 
     Ok(Json(QueryResponse {
         query_id: query.query_id,
@@ -183,7 +178,7 @@ async fn execute_query(
     Extension(resolved_lang): Extension<ResolvedLanguage>,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
-) -> Result<Json<GatherResultResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<GatherResultResponse>, AppError> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let language = language_for_context(&resolved_lang, state.default_language());
     let context = QueryContext {
@@ -200,14 +195,7 @@ async fn execute_query(
         .gather()
         .execute(&query_id, params.page, exposed_filters, stage_id, &context)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "execute gather query"))?;
 
     Ok(Json(GatherResultResponse {
         items: result.items,
@@ -225,7 +213,7 @@ async fn execute_adhoc_query(
     session: Session,
     Extension(resolved_lang): Extension<ResolvedLanguage>,
     Json(request): Json<AdhocQueryRequest>,
-) -> Result<Json<GatherResultResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<GatherResultResponse>, AppError> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let language = language_for_context(&resolved_lang, state.default_language());
     let context = QueryContext {
@@ -254,14 +242,7 @@ async fn execute_adhoc_query(
             &context,
         )
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "execute adhoc gather query"))?;
 
     Ok(Json(GatherResultResponse {
         items: result.items,

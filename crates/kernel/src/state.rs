@@ -243,7 +243,7 @@ impl AppState {
         let lockout = LockoutService::new(redis.clone());
 
         // Discover plugins on disk (parse info.toml without compiling WASM)
-        let discovered = PluginRuntime::discover_plugins(&config.plugins_dir);
+        let discovered = PluginRuntime::discover_plugins(&config.plugins_dir).await;
 
         // Auto-install any new plugins into plugin_status table.
         // Compute per-plugin should_enable from default_enabled and DISABLED_PLUGINS.

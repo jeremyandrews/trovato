@@ -8,7 +8,7 @@ use std::convert::Infallible;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -18,8 +18,9 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::error::AppError;
 use crate::routes::auth::SESSION_USER_ID;
-use crate::routes::helpers::{JsonError, require_csrf_header};
+use crate::routes::helpers::require_csrf_header;
 use crate::services::ai_chat::{ChatRole, ChatStreamEvent, ChatTurn};
 use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
 use crate::state::AppState;
@@ -119,32 +120,20 @@ async fn chat_handler(
     Json(input): Json<ChatInput>,
 ) -> Response {
     // CSRF check
-    if let Err((status, json)) = require_csrf_header(&session, &headers).await {
-        return (status, json).into_response();
+    if require_csrf_header(&session, &headers).await.is_err() {
+        return AppError::forbidden("Invalid or missing CSRF token").into_response();
     }
 
     // Auth check: load user from session
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let Some(uid) = user_id else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "Authentication required".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::unauthorized("Authentication required").into_response();
     };
 
     let user = match state.users().find_by_id(uid).await {
         Ok(Some(u)) if u.is_active() => u,
         _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(JsonError {
-                    error: "Authentication required".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::unauthorized("Authentication required").into_response();
         }
     };
 
@@ -162,49 +151,24 @@ async fn chat_handler(
             .unwrap_or(false);
 
         if !has_base || !has_chat {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(JsonError {
-                    error: "Permission required: use ai chat".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::forbidden("Permission required: use ai chat").into_response();
         }
     }
 
     // Validate input
     let message = input.message.trim().to_string();
     if message.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Message cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Message cannot be empty").into_response();
     }
     if message.len() > 4096 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Message too long (max 4096 characters)".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Message too long (max 4096 characters)").into_response();
     }
 
     // Load config
     let config = match state.ai_chat().load_config().await {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "failed to load chat config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to load chat configuration".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::internal_ctx(e, "load chat configuration").into_response();
         }
     };
 
@@ -215,26 +179,18 @@ async fn chat_handler(
     // since rate limiting protects server resources, not billing.
     let rate_key = uid.to_string();
     if !check_chat_rate_limit(&rate_key, config.rate_limit_per_hour) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(JsonError {
-                error: "Rate limit exceeded. Please try again later.".to_string(),
-            }),
-        )
-            .into_response();
+        return (AppError::RateLimited {
+            retry_after_secs: 3600,
+            category: "chat".to_string(),
+        })
+        .into_response();
     }
 
     // Resolve provider BEFORE streaming so we can check budget
     let resolved = match state.ai_chat().resolve_chat_provider().await {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "failed to resolve chat provider");
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(JsonError {
-                    error: "Failed to connect to AI provider".to_string(),
-                }),
-            )
+            return AppError::service_unavailable("AI", format!("Failed to connect: {e}"))
                 .into_response();
         }
     };
@@ -255,13 +211,11 @@ async fn chat_handler(
                     limit = result.limit,
                     "AI chat token budget exceeded"
                 );
-                return (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    Json(JsonError {
-                        error: "Token budget exceeded. Please try again later.".to_string(),
-                    }),
-                )
-                    .into_response();
+                return (AppError::RateLimited {
+                    retry_after_secs: 3600,
+                    category: "token_budget".to_string(),
+                })
+                .into_response();
             }
             BudgetAction::Warn => {
                 tracing::warn!(
@@ -334,13 +288,7 @@ async fn chat_handler(
     {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!(error = %e, "failed to start chat stream");
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(JsonError {
-                    error: "Failed to connect to AI provider".to_string(),
-                }),
-            )
+            return AppError::service_unavailable("AI", format!("Failed to start stream: {e}"))
                 .into_response();
         }
     };

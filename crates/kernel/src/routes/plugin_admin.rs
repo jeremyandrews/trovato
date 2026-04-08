@@ -51,7 +51,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
         return redirect;
     }
 
-    let discovered = PluginRuntime::discover_plugins(state.plugins_dir());
+    let discovered = PluginRuntime::discover_plugins(state.plugins_dir()).await;
     let statuses = match status::get_all_statuses(state.db()).await {
         Ok(s) => s,
         Err(e) => {
@@ -181,7 +181,7 @@ async fn toggle_plugin(
     // Check dependencies before enabling: all declared dependencies must be
     // enabled first (mirrors the CLI's install-time check).
     if want_enabled {
-        let discovered = PluginRuntime::discover_plugins(state.plugins_dir());
+        let discovered = PluginRuntime::discover_plugins(state.plugins_dir()).await;
         if let Some((info, _)) = discovered.get(&form.plugin_name) {
             let enabled = state.enabled_plugins();
             for dep in &info.dependencies {

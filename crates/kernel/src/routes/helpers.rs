@@ -14,6 +14,9 @@ use crate::state::AppState;
 use crate::tap::UserContext;
 
 /// Standard JSON error response for API endpoints.
+///
+/// **Deprecated:** New code should use [`crate::error::AppError`] instead.
+/// Remaining usages will be migrated incrementally.
 #[derive(Debug, Serialize)]
 pub struct JsonError {
     /// Human-readable error message.
@@ -509,20 +512,15 @@ pub fn validate_username(name: &str) -> Result<(), &'static str> {
 
 /// Require an authenticated, active **admin** user for JSON API endpoints.
 ///
-/// Returns `Ok(())` on success. Returns a JSON 403 error if the user is not
-/// an admin, or the session is invalid.
+/// Returns `Ok(())` on success. Returns a `Forbidden` error if the
+/// user is not an admin, or the session is invalid.
 pub async fn require_admin_json(
     state: &AppState,
     session: &Session,
-) -> Result<(), (StatusCode, axum::Json<JsonError>)> {
+) -> Result<(), crate::error::AppError> {
     match require_admin(state, session).await {
         Ok(_) => Ok(()),
-        Err(_) => Err((
-            StatusCode::FORBIDDEN,
-            axum::Json(JsonError {
-                error: "Admin access required".to_string(),
-            }),
-        )),
+        Err(_) => Err(crate::error::AppError::forbidden("Admin access required")),
     }
 }
 

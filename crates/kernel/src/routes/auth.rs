@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use tracing::info;
 
+use crate::error::AppError;
 use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
 use crate::models::email_verification::{
@@ -16,8 +17,8 @@ use crate::models::email_verification::{
 };
 use crate::models::{CreateUser, SiteConfig, User};
 use crate::routes::helpers::{
-    CsrfOnlyForm, JsonError, JsonSuccess, html_escape, is_valid_email, is_valid_timezone,
-    require_csrf, validate_password, validate_username,
+    CsrfOnlyForm, JsonSuccess, html_escape, is_valid_email, is_valid_timezone, require_csrf,
+    validate_password, validate_username,
 };
 use crate::state::AppState;
 
@@ -357,16 +358,14 @@ async fn login(
     session: Session,
     headers: axum::http::HeaderMap,
     Json(request): Json<LoginRequest>,
-) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<JsonSuccess>, AppError> {
     // Rate limit login attempts by IP
     let client_id = crate::middleware::get_client_id(None, &headers);
     if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(JsonError {
-                error: format!("Rate limit exceeded. Retry after {retry_after} seconds."),
-            }),
-        ));
+        return Err(AppError::RateLimited {
+            retry_after_secs: retry_after,
+            category: "login".into(),
+        });
     }
 
     match do_login(&state, &session, &request).await {
@@ -374,15 +373,16 @@ async fn login(
             success: true,
             message: "Login successful".to_string(),
         })),
-        Err(e) => {
-            let status = e.status_code();
-            Err((
-                status,
-                Json(JsonError {
-                    error: e.message().to_string(),
-                }),
-            ))
-        }
+        Err(e) => Err(match e {
+            LoginError::Locked(_) => AppError::RateLimited {
+                retry_after_secs: 60,
+                category: "login".into(),
+            },
+            LoginError::InvalidCredentials => {
+                AppError::unauthorized("Invalid username or password")
+            }
+            LoginError::Internal(msg) => AppError::internal_ctx(anyhow::anyhow!(msg), "login"),
+        }),
     }
 }
 
@@ -732,25 +732,18 @@ async fn register_json(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(request): Json<RegisterJsonRequest>,
-) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<JsonSuccess>, AppError> {
     // Rate limit registration attempts (separate bucket from login)
     let client_id = crate::middleware::get_client_id(None, &headers);
     if let Err(retry_after) = state.rate_limiter().check("register", &client_id).await {
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(JsonError {
-                error: format!("Rate limit exceeded. Retry after {retry_after} seconds."),
-            }),
-        ));
+        return Err(AppError::RateLimited {
+            retry_after_secs: retry_after,
+            category: "register".into(),
+        });
     }
 
     if !is_registration_enabled(&state).await {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Registration is not enabled.".to_string(),
-            }),
-        ));
+        return Err(AppError::not_found("registration"));
     }
 
     // Validate
@@ -772,12 +765,7 @@ async fn register_json(
     }
 
     if !errors.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: errors.join(" "),
-            }),
-        ));
+        return Err(AppError::bad_request(errors.join(" ")));
     }
 
     match do_register(&state, &request.username, &request.mail, &request.password).await {
@@ -794,21 +782,11 @@ async fn register_json(
             }))
         }
         Err(e) => {
-            tracing::error!(error = %e, "JSON registration failed");
-            let (status, msg) = if is_unique_violation(&e) {
-                (StatusCode::CONFLICT, "Username or email is already in use.")
+            if is_unique_violation(&e) {
+                Err(AppError::conflict("Username or email is already in use."))
             } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Registration failed. Please try again later.",
-                )
-            };
-            Err((
-                status,
-                Json(JsonError {
-                    error: msg.to_string(),
-                }),
-            ))
+                Err(AppError::internal_ctx(e, "registration"))
+            }
         }
     }
 }

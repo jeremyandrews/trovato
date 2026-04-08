@@ -61,6 +61,8 @@ pub struct CompiledPlugin {
     pub info: PluginInfo,
     /// Compiled WASM module.
     pub module: Module,
+    /// Modification time of the `.wasm` file at load time.
+    pub mtime: Option<std::time::SystemTime>,
 }
 
 /// A plugin that failed to load.
@@ -133,16 +135,18 @@ impl PluginRuntime {
             return Ok(());
         }
 
-        let mut entries: Vec<_> = std::fs::read_dir(plugins_dir)
-            .with_context(|| {
-                format!(
-                    "failed to read plugins directory: {}",
-                    plugins_dir.display()
-                )
-            })?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .collect();
+        let mut entries = Vec::new();
+        let mut read_dir = tokio::fs::read_dir(plugins_dir).await.with_context(|| {
+            format!(
+                "failed to read plugins directory: {}",
+                plugins_dir.display()
+            )
+        })?;
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            if entry.path().is_dir() {
+                entries.push(entry);
+            }
+        }
 
         // Sort for deterministic load order
         entries.sort_by_key(|e| e.file_name());
@@ -205,6 +209,10 @@ impl PluginRuntime {
         let wasm_bytes = std::fs::read(&wasm_path)
             .with_context(|| format!("failed to read WASM file: {}", wasm_path.display()))?;
 
+        let mtime = std::fs::metadata(&wasm_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
         let module = Module::new(&self.engine, &wasm_bytes)
             .with_context(|| format!("failed to compile WASM module for plugin '{plugin_name}'"))?;
 
@@ -216,7 +224,11 @@ impl PluginRuntime {
 
         self.plugins.insert(
             plugin_name.clone(),
-            Arc::new(CompiledPlugin { info, module }),
+            Arc::new(CompiledPlugin {
+                info,
+                module,
+                mtime,
+            }),
         );
 
         Ok(())
@@ -247,7 +259,7 @@ impl PluginRuntime {
     /// Parses each plugin's `info.toml` and returns a map of plugin name to
     /// `(PluginInfo, plugin_dir_path)`. Useful for CLI commands and startup
     /// status sync.
-    pub fn discover_plugins(plugins_dir: &Path) -> HashMap<String, (PluginInfo, PathBuf)> {
+    pub async fn discover_plugins(plugins_dir: &Path) -> HashMap<String, (PluginInfo, PathBuf)> {
         let mut discovered = HashMap::new();
 
         if !plugins_dir.exists() {
@@ -258,18 +270,20 @@ impl PluginRuntime {
             return discovered;
         }
 
-        let entries = match std::fs::read_dir(plugins_dir) {
-            Ok(entries) => entries,
+        let mut read_dir = match tokio::fs::read_dir(plugins_dir).await {
+            Ok(rd) => rd,
             Err(e) => {
                 warn!(error = %e, "failed to read plugins directory");
                 return discovered;
             }
         };
 
-        let mut dirs: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .collect();
+        let mut dirs = Vec::new();
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            if entry.path().is_dir() {
+                dirs.push(entry);
+            }
+        }
 
         dirs.sort_by_key(|e| e.file_name());
 
@@ -277,29 +291,33 @@ impl PluginRuntime {
             let plugin_dir = entry.path();
 
             // Find the .info.toml file
-            let info_files: Vec<_> = match std::fs::read_dir(&plugin_dir) {
-                Ok(entries) => entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.path().extension().is_some_and(|ext| ext == "toml")
-                            && e.path()
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| n.ends_with(".info.toml"))
-                    })
-                    .collect(),
+            let mut inner_read_dir = match tokio::fs::read_dir(&plugin_dir).await {
+                Ok(rd) => rd,
                 Err(e) => {
                     warn!(dir = %plugin_dir.display(), error = %e, "failed to read plugin dir");
                     continue;
                 }
             };
 
+            let mut info_files = Vec::new();
+            while let Ok(Some(inner_entry)) = inner_read_dir.next_entry().await {
+                let path = inner_entry.path();
+                if path.extension().is_some_and(|ext| ext == "toml")
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with(".info.toml"))
+                {
+                    info_files.push(path);
+                }
+            }
+
             let info_path = match info_files.len() {
                 0 => {
                     warn!(dir = %plugin_dir.display(), "no .info.toml file found, skipping");
                     continue;
                 }
-                1 => info_files[0].path(),
+                1 => info_files[0].clone(),
                 _ => {
                     warn!(dir = %plugin_dir.display(), "multiple .info.toml files found, skipping");
                     continue;
@@ -333,16 +351,18 @@ impl PluginRuntime {
             return Ok(());
         }
 
-        let mut entries: Vec<_> = std::fs::read_dir(plugins_dir)
-            .with_context(|| {
-                format!(
-                    "failed to read plugins directory: {}",
-                    plugins_dir.display()
-                )
-            })?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .collect();
+        let mut entries = Vec::new();
+        let mut read_dir = tokio::fs::read_dir(plugins_dir).await.with_context(|| {
+            format!(
+                "failed to read plugins directory: {}",
+                plugins_dir.display()
+            )
+        })?;
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            if entry.path().is_dir() {
+                entries.push(entry);
+            }
+        }
 
         entries.sort_by_key(|e| e.file_name());
 
@@ -353,24 +373,27 @@ impl PluginRuntime {
             let dir_name = entry.file_name().to_str().unwrap_or_default().to_string();
 
             if !enabled.contains(&dir_name) {
-                let info_files: Vec<_> = match std::fs::read_dir(&plugin_dir) {
-                    Ok(entries) => entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| {
-                            e.path()
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| n.ends_with(".info.toml"))
-                        })
-                        .collect(),
-                    Err(_) => continue,
+                let Ok(mut inner_read_dir) = tokio::fs::read_dir(&plugin_dir).await else {
+                    continue;
                 };
+
+                let mut info_files = Vec::new();
+                while let Ok(Some(inner_entry)) = inner_read_dir.next_entry().await {
+                    let path = inner_entry.path();
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with(".info.toml"))
+                    {
+                        info_files.push(path);
+                    }
+                }
 
                 if info_files.len() != 1 {
                     continue;
                 }
 
-                match PluginInfo::parse(&info_files[0].path()) {
+                match PluginInfo::parse(&info_files[0]) {
                     Ok(info) if !enabled.contains(&info.name) => {
                         debug!(plugin = %info.name, "skipping disabled plugin");
                         continue;
@@ -474,6 +497,10 @@ fn compile_plugin_from_dir(
     let wasm_bytes = std::fs::read(&wasm_path)
         .with_context(|| format!("failed to read WASM file: {}", wasm_path.display()))?;
 
+    let mtime = std::fs::metadata(&wasm_path)
+        .ok()
+        .and_then(|m| m.modified().ok());
+
     let module = Module::new(engine, &wasm_bytes)
         .with_context(|| format!("failed to compile WASM module for plugin '{plugin_name}'"))?;
 
@@ -483,7 +510,14 @@ fn compile_plugin_from_dir(
         "compiled plugin"
     );
 
-    Ok((plugin_name, Arc::new(CompiledPlugin { info, module })))
+    Ok((
+        plugin_name,
+        Arc::new(CompiledPlugin {
+            info,
+            module,
+            mtime,
+        }),
+    ))
 }
 
 /// Creates a Wasmtime Engine configured with pooling allocator.

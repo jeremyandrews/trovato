@@ -1,14 +1,14 @@
 //! Password reset routes.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use tracing::info;
 
+use crate::error::AppError;
 use crate::models::password_reset::PasswordResetToken;
-use crate::routes::helpers::{JsonError, JsonSuccess, validate_password};
+use crate::routes::helpers::{JsonSuccess, validate_password};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
@@ -105,18 +105,10 @@ async fn request_reset(
 async fn validate_token(
     State(state): State<AppState>,
     Path(token): Path<String>,
-) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<JsonSuccess>, AppError> {
     let reset_token = PasswordResetToken::find_valid(state.db(), &token)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "database error validating reset token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "validate reset token"))?;
 
     if reset_token.is_some() {
         Ok(Json(JsonSuccess {
@@ -124,12 +116,7 @@ async fn validate_token(
             message: "Token is valid. You may set a new password.".to_string(),
         }))
     } else {
-        Err((
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Invalid or expired reset token".to_string(),
-            }),
-        ))
+        Err(AppError::bad_request("Invalid or expired reset token"))
     }
 }
 
@@ -140,37 +127,17 @@ async fn set_password(
     State(state): State<AppState>,
     Path(token): Path<String>,
     Json(input): Json<SetPasswordInput>,
-) -> Result<Json<JsonSuccess>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<JsonSuccess>, AppError> {
     // Validate password
     if let Err(msg) = validate_password(&input.password) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: msg.to_string(),
-            }),
-        ));
+        return Err(AppError::bad_request(msg.to_string()));
     }
 
     // Find and validate token
     let reset_token = PasswordResetToken::find_valid(state.db(), &token)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "database error validating reset token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(JsonError {
-                    error: "Invalid or expired reset token".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "validate reset token"))?
+        .ok_or_else(|| AppError::bad_request("Invalid or expired reset token"))?;
 
     // Update the password (anonymous context — user is not logged in)
     let anon = UserContext::anonymous();
@@ -178,28 +145,12 @@ async fn set_password(
         .users()
         .update_password(reset_token.user_id, &input.password, &anon)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to update password");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to update password".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "update password"))?;
 
     // Mark token as used
     PasswordResetToken::mark_used(state.db(), reset_token.id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to mark token as used");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "mark reset token as used"))?;
 
     // Invalidate any other tokens for this user
     if let Err(e) =

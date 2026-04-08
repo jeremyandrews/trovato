@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::error::AppError;
 use crate::routes::auth::SESSION_USER_ID;
-use crate::routes::helpers::{JsonError, require_csrf_header};
+use crate::routes::helpers::require_csrf_header;
 use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
 use crate::state::AppState;
 
@@ -64,32 +65,20 @@ async fn ai_assist_handler(
     Json(body): Json<AiAssistRequest>,
 ) -> Response {
     // CSRF check
-    if let Err((status, json)) = require_csrf_header(&session, &headers).await {
-        return (status, json).into_response();
+    if require_csrf_header(&session, &headers).await.is_err() {
+        return AppError::forbidden("Invalid or missing CSRF token").into_response();
     }
 
     // Auth check: load user from session
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     let Some(uid) = user_id else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "Authentication required".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::unauthorized("Authentication required").into_response();
     };
 
     let user = match state.users().find_by_id(uid).await {
         Ok(Some(u)) if u.is_active() => u,
         _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(JsonError {
-                    error: "User not found or inactive".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::unauthorized("User not found or inactive").into_response();
         }
     };
 
@@ -107,49 +96,26 @@ async fn ai_assist_handler(
             .unwrap_or(false);
 
         if !has_base || !has_chat {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(JsonError {
-                    error: "Permission required: use ai chat".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::forbidden("Permission required: use ai chat").into_response();
         }
     }
 
     // Validate input
     if body.text.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Text cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Text cannot be empty").into_response();
     }
 
     if body.text.len() > 10_000 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Text too long (max 10,000 characters)".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Text too long (max 10,000 characters)").into_response();
     }
 
     if !VALID_OPERATIONS.contains(&body.operation.as_str()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: format!(
-                    "Invalid operation '{}'. Valid: {}",
-                    body.operation,
-                    VALID_OPERATIONS.join(", ")
-                ),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request(format!(
+            "Invalid operation '{}'. Valid: {}",
+            body.operation,
+            VALID_OPERATIONS.join(", ")
+        ))
+        .into_response();
     }
 
     // Resolve AI provider
@@ -161,23 +127,11 @@ async fn ai_assist_handler(
     {
         Ok(Some(p)) => p,
         Ok(None) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(JsonError {
-                    error: "No AI provider configured for chat".to_string(),
-                }),
-            )
+            return AppError::service_unavailable("AI", "No AI provider configured for chat")
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(error = %e, "failed to resolve AI provider");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Provider resolution failed".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::internal_ctx(e, "resolve AI provider").into_response();
         }
     };
 
@@ -207,13 +161,7 @@ async fn ai_assist_handler(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "AI assist HTTP request failed");
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(JsonError {
-                    error: "AI request failed".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::service_unavailable("AI", "AI request failed").into_response();
         }
     };
 
@@ -225,12 +173,7 @@ async fn ai_assist_handler(
             body = %body_text.chars().take(200).collect::<String>(),
             "AI provider error"
         );
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(JsonError {
-                error: "AI provider returned an error".to_string(),
-            }),
-        )
+        return AppError::service_unavailable("AI", "AI provider returned an error")
             .into_response();
     }
 
@@ -239,12 +182,7 @@ async fn ai_assist_handler(
         Ok(t) => t,
         Err(e) => {
             tracing::error!(error = %e, "failed to read AI response body");
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(JsonError {
-                    error: "Failed to read AI response".to_string(),
-                }),
-            )
+            return AppError::service_unavailable("AI", "Failed to read AI response")
                 .into_response();
         }
     };

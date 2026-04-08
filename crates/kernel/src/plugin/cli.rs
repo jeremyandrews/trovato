@@ -283,7 +283,7 @@ fn append_workspace_member(workspace_root: &Path, name: &str) -> Result<()> {
 
 /// List all discovered plugins and their status.
 pub async fn cmd_plugin_list(pool: &PgPool, plugins_dir: &Path) -> Result<()> {
-    let discovered = PluginRuntime::discover_plugins(plugins_dir);
+    let discovered = PluginRuntime::discover_plugins(plugins_dir).await;
     let statuses = status::get_all_statuses(pool).await?;
     let status_map: std::collections::HashMap<String, &status::PluginStatus> =
         statuses.iter().map(|s| (s.name.clone(), s)).collect();
@@ -336,7 +336,7 @@ pub async fn cmd_plugin_list(pool: &PgPool, plugins_dir: &Path) -> Result<()> {
 
 /// Install a plugin: validate dependencies, run migrations, set status to enabled.
 pub async fn cmd_plugin_install(pool: &PgPool, plugins_dir: &Path, name: &str) -> Result<()> {
-    let discovered = PluginRuntime::discover_plugins(plugins_dir);
+    let discovered = PluginRuntime::discover_plugins(plugins_dir).await;
 
     let (info, dir) = discovered
         .get(name)
@@ -441,7 +441,7 @@ pub async fn cmd_plugin_migrate(
     plugins_dir: &Path,
     name: Option<&str>,
 ) -> Result<()> {
-    let discovered = PluginRuntime::discover_plugins(plugins_dir);
+    let discovered = PluginRuntime::discover_plugins(plugins_dir).await;
 
     if let Some(name) = name {
         // Single plugin
@@ -487,7 +487,7 @@ pub async fn cmd_plugin_enable(pool: &PgPool, plugins_dir: &Path, name: &str) ->
     }
 
     // Check API version compatibility before enabling.
-    let discovered = PluginRuntime::discover_plugins(plugins_dir);
+    let discovered = PluginRuntime::discover_plugins(plugins_dir).await;
     if let Some((info, _dir)) = discovered.get(name) {
         info.check_api_compatibility()?;
     }

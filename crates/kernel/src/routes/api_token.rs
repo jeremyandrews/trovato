@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::error::AppError;
 use crate::models::api_token::{ApiToken, MAX_TOKENS_PER_USER};
 use crate::routes::auth::SESSION_USER_ID;
-use crate::routes::helpers::{JsonError, require_csrf_header};
+use crate::routes::helpers::require_csrf_header;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -48,63 +49,33 @@ async fn create_token(
     session: Session,
     headers: HeaderMap,
     Json(body): Json<CreateTokenRequest>,
-) -> Result<(StatusCode, Json<CreateTokenResponse>), (StatusCode, Json<JsonError>)> {
+) -> Result<(StatusCode, Json<CreateTokenResponse>), AppError> {
     let user_id: Uuid = session
         .get(SESSION_USER_ID)
         .await
         .ok()
         .flatten()
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(JsonError {
-                    error: "Authentication required".to_string(),
-                }),
-            )
-        })?;
+        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
 
     // Verify CSRF token from header
     require_csrf_header(&session, &headers)
         .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+        .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
     let name = body.name.trim();
     if name.is_empty() || name.len() > 255 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Token name must be 1-255 characters".to_string(),
-            }),
-        ));
+        return Err(AppError::bad_request("Token name must be 1-255 characters"));
     }
 
     // Enforce per-user token limit
     let count = ApiToken::count_for_user(state.db(), user_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to count API tokens");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to create token".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "count API tokens"))?;
 
     if count >= MAX_TOKENS_PER_USER {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: format!("Maximum of {MAX_TOKENS_PER_USER} tokens per user"),
-            }),
-        ));
+        return Err(AppError::bad_request(format!(
+            "Maximum of {MAX_TOKENS_PER_USER} tokens per user"
+        )));
     }
 
     let expires_at = body
@@ -113,15 +84,7 @@ async fn create_token(
 
     let (token_record, raw_token) = ApiToken::create(state.db(), user_id, name, expires_at)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to create API token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to create token".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "create API token"))?;
 
     Ok((
         StatusCode::CREATED,
@@ -138,32 +101,17 @@ async fn create_token(
 async fn list_tokens(
     State(state): State<AppState>,
     session: Session,
-) -> Result<Json<Vec<TokenListItem>>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<Vec<TokenListItem>>, AppError> {
     let user_id: Uuid = session
         .get(SESSION_USER_ID)
         .await
         .ok()
         .flatten()
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(JsonError {
-                    error: "Authentication required".to_string(),
-                }),
-            )
-        })?;
+        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
 
     let tokens = ApiToken::list_for_user(state.db(), user_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list API tokens");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to list tokens".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "list API tokens"))?;
 
     let items: Vec<TokenListItem> = tokens
         .into_iter()
@@ -185,54 +133,27 @@ async fn delete_token(
     session: Session,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
+) -> Result<StatusCode, AppError> {
     let user_id: Uuid = session
         .get(SESSION_USER_ID)
         .await
         .ok()
         .flatten()
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(JsonError {
-                    error: "Authentication required".to_string(),
-                }),
-            )
-        })?;
+        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
 
     // Verify CSRF token from header
     require_csrf_header(&session, &headers)
         .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+        .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
     let deleted = ApiToken::delete(state.db(), id, user_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to delete API token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to delete token".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(e, "delete API token"))?;
 
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Token not found".to_string(),
-            }),
-        ))
+        Err(AppError::not_found_id("token", id))
     }
 }
 

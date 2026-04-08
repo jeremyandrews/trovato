@@ -17,9 +17,11 @@ use crate::state::AppState;
 
 use crate::form::csrf::generate_csrf_token;
 
+use crate::error::AppError;
+
 use super::helpers::{
-    CsrfOnlyForm, JsonError, admin_user_context, render_admin_template, render_not_found,
-    render_server_error, require_admin, require_admin_json, require_csrf,
+    CsrfOnlyForm, admin_user_context, render_admin_template, render_not_found, render_server_error,
+    require_admin, require_admin_json, require_csrf,
 };
 
 /// Stage switch request.
@@ -44,33 +46,18 @@ async fn switch_stage(
     session: Session,
     headers: HeaderMap,
     Json(request): Json<StageSwitchRequest>,
-) -> Result<Json<StageSwitchResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<StageSwitchResponse>, AppError> {
     // Verify CSRF token from header
     super::helpers::require_csrf_header(&session, &headers)
         .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+        .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
     require_admin_json(&state, &session).await?;
 
     session
         .insert(SESSION_ACTIVE_STAGE, request.stage_id.clone())
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to update active_stage in session");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to switch stage".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::internal_ctx(anyhow::anyhow!(e), "switch stage"))?;
 
     tracing::info!(stage = ?request.stage_id, "stage switched");
 
@@ -84,21 +71,13 @@ async fn switch_stage(
 async fn get_current_stage(
     State(state): State<AppState>,
     session: Session,
-) -> Result<Json<StageSwitchResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<StageSwitchResponse>, AppError> {
     require_admin_json(&state, &session).await?;
 
     let active_stage: Option<String> = session
         .get(SESSION_ACTIVE_STAGE)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to get active_stage from session");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to get stage".to_string(),
-                }),
-            )
-        })?
+        .map_err(|e| AppError::internal_ctx(anyhow::anyhow!(e), "get current stage"))?
         .flatten();
 
     Ok(Json(StageSwitchResponse {

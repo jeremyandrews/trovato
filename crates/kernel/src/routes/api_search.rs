@@ -10,15 +10,14 @@
 use std::convert::Infallible;
 
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::error::AppError;
 use crate::models::SiteConfig;
-use crate::routes::helpers::JsonError;
 use crate::search::prompts;
 use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
 use crate::state::AppState;
@@ -101,13 +100,7 @@ struct Message {
 /// state-changing operation. scolta.js calls this from the client.
 async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequest>) -> Response {
     if body.query.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Query cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Query cannot be empty").into_response();
     }
 
     // Resolve AI provider
@@ -116,13 +109,7 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
         .resolve_provider(AiOperationType::Chat, None)
         .await
     else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(JsonError {
-                error: "AI provider not configured".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::service_unavailable("AI", "AI provider not configured").into_response();
     };
 
     // Build the expand prompt
@@ -150,13 +137,7 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
     {
         Ok(r) if r.status().is_success() => r,
         _ => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(JsonError {
-                    error: "AI request failed".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::service_unavailable("AI", "AI request failed").into_response();
         }
     };
 
@@ -198,23 +179,11 @@ async fn summarize(State(state): State<AppState>, Json(body): Json<SummarizeRequ
     } else if !body.excerpts.is_empty() {
         build_excerpt_context(&body.excerpts)
     } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Query and excerpts/context required".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Query and excerpts/context required").into_response();
     };
 
     if body.query.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Query cannot be empty".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Query cannot be empty").into_response();
     }
 
     let user_prompt = format!(
@@ -250,13 +219,7 @@ async fn followup(State(state): State<AppState>, Json(body): Json<FollowupReques
         }
         prompt
     } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Query or messages required".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::bad_request("Query or messages required").into_response();
     };
 
     json_ai_response_with_key(&state, prompts::FOLLOW_UP, &user_prompt, "response").await
@@ -293,13 +256,7 @@ async fn json_ai_response_with_key(
         .resolve_provider(AiOperationType::Chat, None)
         .await
     else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(JsonError {
-                error: "AI provider not configured".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::service_unavailable("AI", "AI provider not configured").into_response();
     };
 
     let site_name = SiteConfig::site_name(state.db())
@@ -325,13 +282,7 @@ async fn json_ai_response_with_key(
     {
         Ok(r) if r.status().is_success() => r,
         _ => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(JsonError {
-                    error: "AI request failed".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::service_unavailable("AI", "AI request failed").into_response();
         }
     };
 
@@ -358,13 +309,7 @@ async fn stream_ai_response(
         .resolve_provider(AiOperationType::Chat, None)
         .await
     else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(JsonError {
-                error: "AI provider not configured".to_string(),
-            }),
-        )
-            .into_response();
+        return AppError::service_unavailable("AI", "AI provider not configured").into_response();
     };
 
     let site_name = SiteConfig::site_name(state.db())
@@ -391,13 +336,7 @@ async fn stream_ai_response(
     {
         Ok(r) if r.status().is_success() => r,
         _ => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(JsonError {
-                    error: "AI request failed".to_string(),
-                }),
-            )
-                .into_response();
+            return AppError::service_unavailable("AI", "AI request failed").into_response();
         }
     };
 

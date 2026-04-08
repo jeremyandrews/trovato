@@ -134,7 +134,8 @@ mod tests {
             plugins_dir.display()
         );
 
-        let discovered = crate::plugin::PluginRuntime::discover_plugins(&plugins_dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let discovered = rt.block_on(crate::plugin::PluginRuntime::discover_plugins(&plugins_dir));
         for gated in GATED_ROUTE_PLUGINS {
             assert!(
                 discovered.contains_key(gated.name),
