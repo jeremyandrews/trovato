@@ -255,7 +255,7 @@ On `tap_item_insert`, the plugin examines text fields (title, description) to de
 cd plugins/ritrovo_translate
 cargo build --target wasm32-wasip1 --release
 cp target/wasm32-wasip1/release/ritrovo_translate.wasm ../../plugin-dist/
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_translate.wasm
+cargo run --release --bin trovato -- plugin install ritrovo_translate
 ```
 
 ### SDK Features Used

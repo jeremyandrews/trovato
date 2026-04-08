@@ -283,7 +283,7 @@ The preference is stored in the user's JSONB `data` field:
 cd plugins/ritrovo_notify
 cargo build --target wasm32-wasip1 --release
 cp target/wasm32-wasip1/release/ritrovo_notify.wasm ../../plugin-dist/
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_notify.wasm
+cargo run --release --bin trovato -- plugin install ritrovo_notify
 ```
 
 ### SDK Features Used

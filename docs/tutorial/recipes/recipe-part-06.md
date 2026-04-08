@@ -1,7 +1,7 @@
 # Recipe: Part 6 — Community & Plugin Communication
 
 > **Synced with:** `docs/tutorial/part-06-community.md`
-> **Sync hash:** 7d8a6dcb
+> **Sync hash:** 2947e7e2
 > **Last verified:** 2026-03-15
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -210,7 +210,7 @@ cp target/wasm32-wasip1/release/ritrovo_notify.wasm ../../plugin-dist/
 `[CLI]`
 
 ```bash
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_notify.wasm
+cargo run --release --bin trovato -- plugin install ritrovo_notify
 ```
 
 ### 4.4 Verify Plugin Installation

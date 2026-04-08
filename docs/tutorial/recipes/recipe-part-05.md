@@ -1,7 +1,7 @@
 # Recipe: Part 5 — Forms & User Input
 
 > **Synced with:** `docs/tutorial/part-05-forms-and-input.md`
-> **Sync hash:** 12bc6732
+> **Sync hash:** f271cfa1
 > **Last verified:** 2026-04-02 (added AI Assist buttons section, updated deferred table)
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -88,18 +88,18 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 
 **Verify:** Output contains `"Blocks"`.
 
-### 2.3 Build and Install the block_editor Plugin
+### 2.3 Build and Install the trovato_block_editor Plugin
 
 `[CLI]`
 
 ```bash
 # Build WASM
-cargo build --target wasm32-wasip1 -p block_editor --release
+cargo build --target wasm32-wasip1 -p trovato_block_editor --release
 mkdir -p plugin-dist
-cp target/wasm32-wasip1/release/block_editor.wasm plugin-dist/
+cp target/wasm32-wasip1/release/trovato_block_editor.wasm plugin-dist/
 
 # Install
-cargo run --release --bin trovato -- plugin install block_editor
+cargo run --release --bin trovato -- plugin install trovato_block_editor
 ```
 
 > Restart the server after installing so `tap_install` fires.
@@ -108,10 +108,10 @@ cargo run --release --bin trovato -- plugin install block_editor
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugin_status WHERE name = 'block_editor';"
+  -c "SELECT name, status FROM plugin_status WHERE name = 'trovato_block_editor';"
 ```
 
-**Verify:** block_editor, status 1 (enabled).
+**Verify:** trovato_block_editor, status 1 (enabled).
 
 ### 2.4 Verify Block Editor Loads in Form
 
@@ -135,7 +135,7 @@ curl -s -b /tmp/trovato-admin.txt http://localhost:3000/admin/content/add/confer
 
 ### 2.5 Test Block Editor Upload Endpoint
 
-`[CLI]` Verify the upload endpoint is accessible (gated by block_editor plugin):
+`[CLI]` Verify the upload endpoint is accessible (gated by trovato_block_editor plugin):
 
 ```bash
 # Without auth, should get 403
@@ -460,7 +460,7 @@ curl -s -b /tmp/trovato-alice.txt http://localhost:3000/user/profile | grep -c '
 echo "=== Part 5 Completion Checklist ==="
 echo -n "1. Form state table: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'form_state_cache';" | tr -d ' '
 echo -n "2. Text format perms: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COUNT(*) FROM role_permissions WHERE permission LIKE 'use %';" | tr -d ' '
-echo -n "3. block_editor plugin: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugin_status WHERE name = 'block_editor'), 'not installed');" | tr -d ' '
+echo -n "3. trovato_block_editor plugin: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugin_status WHERE name = 'trovato_block_editor'), 'not installed');" | tr -d ' '
 echo -n "4. ritrovo_access plugin: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugin_status WHERE name = 'ritrovo_access'), 'not installed');" | tr -d ' '
 echo -n "5. Profile page: "
 rm -f /tmp/trovato-test.txt
@@ -478,7 +478,7 @@ Expected output:
 ```
 1. Form state table: 5
 2. Text format perms: >= 2
-3. block_editor plugin: 1
+3. trovato_block_editor plugin: 1
 4. ritrovo_access plugin: 1
 5. Profile page: 303
 6. Profile accessible: 200

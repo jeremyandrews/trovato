@@ -193,7 +193,7 @@ The conference content type config at `docs/tutorial/config/item_type.conference
 
 The block editor's client-side functionality is gated behind the `trovato_block_editor` plugin. The kernel provides all the infrastructure (block types, rendering, validation), but the plugin activates the Editor.js widget and its API routes.
 
-The plugin source is minimal -- it lives at `plugins/block_editor/src/lib.rs` and declares a single permission:
+The plugin source is minimal -- it lives at `plugins/trovato_block_editor/src/lib.rs` and declares a single permission:
 
 ```rust
 #[plugin_tap]
@@ -208,13 +208,13 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 Build and install:
 
 ```bash
-cargo build --target wasm32-wasip1 -p block_editor --release
+cargo build --target wasm32-wasip1 -p trovato_block_editor --release
 mkdir -p plugin-dist
-cp target/wasm32-wasip1/release/block_editor.wasm plugin-dist/
-cargo run --release --bin trovato -- plugin install block_editor
+cp target/wasm32-wasip1/release/trovato_block_editor.wasm plugin-dist/
+cargo run --release --bin trovato -- plugin install trovato_block_editor
 ```
 
-> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/block_editor/target/`.
+> **Note:** WASM output goes to the workspace `target/` directory, not `plugins/trovato_block_editor/target/`.
 
 After installation, the plugin gates two API routes via the `plugin_gate!` macro in `crates/kernel/src/plugin/gate.rs`:
 
@@ -230,8 +230,8 @@ These routes return 404 when the plugin is not installed. When it is installed, 
 ```bash
 # Plugin installed and enabled
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT name, status FROM plugin_status WHERE name = 'block_editor';"
-# Expect: block_editor, 1
+  -c "SELECT name, status FROM plugin_status WHERE name = 'trovato_block_editor';"
+# Expect: trovato_block_editor, 1
 
 # Permission is declared
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \

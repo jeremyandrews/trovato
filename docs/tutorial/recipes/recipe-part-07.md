@@ -1,7 +1,7 @@
 # Recipe: Part 7 — Going Global
 
 > **Synced with:** `docs/tutorial/part-07-going-global.md`
-> **Sync hash:** 62c24d4c
+> **Sync hash:** f148c1dc
 > **Last verified:** 2026-03-15
 >
 > Run `docs/tutorial/recipes/sync-check.sh` before starting to verify this recipe matches the current tutorial.
@@ -148,7 +148,7 @@ cp target/wasm32-wasip1/release/ritrovo_translate.wasm ../../plugin-dist/
 `[CLI]`
 
 ```bash
-cargo run --release --bin trovato -- plugin install plugin-dist/ritrovo_translate.wasm
+cargo run --release --bin trovato -- plugin install ritrovo_translate
 ```
 
 ### 3.4 Verify Plugin Installation
