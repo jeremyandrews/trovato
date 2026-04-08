@@ -6057,7 +6057,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -6118,7 +6118,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-loadtest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -6132,7 +6132,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6153,7 +6153,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-phase0"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6169,7 +6169,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6179,7 +6179,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-sdk-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6188,7 +6188,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-test-utils"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "sqlx",

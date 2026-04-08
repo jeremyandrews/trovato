@@ -1,6 +1,6 @@
 [package]
 name = "trovato-phase0"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Phase 0 spike: WASM architecture validation benchmarks"
