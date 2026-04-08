@@ -157,7 +157,6 @@ impl TestApp {
             .merge(trovato_kernel::routes::api_chat::router())
             .merge(trovato_kernel::routes::api_search::router())
             .merge(trovato_kernel::routes::api_v1::router())
-            .merge(trovato_kernel::routes::oauth::router())
             .merge(trovato_kernel::routes::tile_admin::router())
             .merge(trovato_kernel::routes::static_files::router())
             // Plugin-gated routes — runtime middleware returns 404 when disabled
