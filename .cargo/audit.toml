@@ -7,28 +7,6 @@ ignore = [
     # rsa timing sidechannel (Marvin Attack) — transitive via sqlx-mysql.
     # We only use sqlx with PostgreSQL; sqlx-mysql is an unused compile-time
     # feature dependency. No fix available upstream.
-    # Review date: 2026-02-20
-    "RUSTSEC-2023-0071",
-
-    # wasmtime fd_renumber host panic — our minimal WASI stubs only link
-    # fd_write, random_get, environ_get, and environ_sizes_get; fd_renumber
-    # is not linked and cannot be called. Upgrade to wasmtime 34+ planned.
     # Review date: 2026-06-01
-    "RUSTSEC-2025-0046",
-
-    # wasmtime shared linear memory unsoundness — we do not enable shared
-    # memory for any WASM instances. Upgrade to wasmtime 38+ planned.
-    # Review date: 2026-02-20
-    "RUSTSEC-2025-0118",
-
-    # wasmtime WASI guest resource exhaustion — mitigated by epoch
-    # interruption (10 ticks) and statement_timeout (5s) in our plugin
-    # sandbox. No patch for v28; upgrade to wasmtime 41+ planned.
-    # Review date: 2026-02-25
-    "RUSTSEC-2026-0020",
-
-    # wasmtime wasi:http/types.fields panic — we do not expose or link the
-    # wasi:http interface to plugin guests. Not exploitable.
-    # Review date: 2026-02-25
-    "RUSTSEC-2026-0021",
+    "RUSTSEC-2023-0071",
 ]

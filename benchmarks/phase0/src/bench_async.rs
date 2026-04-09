@@ -40,9 +40,8 @@ pub struct AsyncBenchHost {
 impl AsyncBenchHost {
     /// Create a new async benchmark host.
     pub fn new() -> Result<Self> {
-        // Configure engine with async support
+        // Configure engine
         let mut config = Config::new();
-        config.async_support(true);
 
         // Pooling allocator for efficient instantiation
         let mut pooling_config = PoolingAllocationConfig::default();
@@ -54,7 +53,9 @@ impl AsyncBenchHost {
         config.allocation_strategy(InstanceAllocationStrategy::Pooling(pooling_config));
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
 
-        let engine = Engine::new(&config).context("failed to create async engine")?;
+        let engine = Engine::new(&config)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
+            .context("failed to create async engine")?;
         let linker = Self::create_async_linker(&engine)?;
 
         Ok(Self { engine, linker })
@@ -70,198 +71,210 @@ impl AsyncBenchHost {
 
         // db_query_async(query_ptr, query_len) -> i64 (ptr << 32 | len)
         // Simulates a 10ms database query delay
-        linker.func_wrap_async(
-            "trovato:kernel/database",
-            "db_query_async",
-            |mut caller: wasmtime::Caller<'_, StubHostState>,
-             (_query_ptr, _query_len): (i32, i32)|
-             -> Box<dyn std::future::Future<Output = i64> + Send> {
-                Box::new(async move {
-                    // Simulate database query latency
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+        linker
+            .func_wrap_async(
+                "trovato:kernel/database",
+                "db_query_async",
+                |mut caller: wasmtime::Caller<'_, StubHostState>,
+                 (_query_ptr, _query_len): (i32, i32)|
+                 -> Box<dyn std::future::Future<Output = i64> + Send> {
+                    Box::new(async move {
+                        // Simulate database query latency
+                        tokio::time::sleep(Duration::from_millis(10)).await;
 
-                    // Return an empty JSON array result
-                    // In a real implementation, we'd read the query, execute it, and write results
-                    let result = b"[]";
+                        // Return an empty JSON array result
+                        // In a real implementation, we'd read the query, execute it, and write results
+                        let result = b"[]";
 
-                    // Get memory and write result
-                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                        return 0i64;
-                    };
+                        // Get memory and write result
+                        let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory")
+                        else {
+                            return 0i64;
+                        };
 
-                    // Get alloc function to allocate space for result
-                    let Some(wasmtime::Extern::Func(alloc_fn)) = caller.get_export("alloc") else {
-                        return 0i64;
-                    };
+                        // Get alloc function to allocate space for result
+                        let Some(wasmtime::Extern::Func(alloc_fn)) = caller.get_export("alloc")
+                        else {
+                            return 0i64;
+                        };
 
-                    // Allocate space for result
-                    let Ok(alloc_typed) = alloc_fn.typed::<i32, i32>(&caller) else {
-                        return 0i64;
-                    };
+                        // Allocate space for result
+                        let Ok(alloc_typed) = alloc_fn.typed::<i32, i32>(&caller) else {
+                            return 0i64;
+                        };
 
-                    let Ok(ptr) = alloc_typed
-                        .call_async(&mut caller, result.len() as i32)
-                        .await
-                    else {
-                        return 0i64;
-                    };
+                        let Ok(ptr) = alloc_typed
+                            .call_async(&mut caller, result.len() as i32)
+                            .await
+                        else {
+                            return 0i64;
+                        };
 
-                    // Write result to memory
-                    let data = memory.data_mut(&mut caller);
-                    let start = ptr as usize;
-                    let end = start + result.len();
-                    if end <= data.len() {
-                        data[start..end].copy_from_slice(result);
-                    }
+                        // Write result to memory
+                        let data = memory.data_mut(&mut caller);
+                        let start = ptr as usize;
+                        let end = start + result.len();
+                        if end <= data.len() {
+                            data[start..end].copy_from_slice(result);
+                        }
 
-                    // Return ptr << 32 | len
-                    ((ptr as i64) << 32) | (result.len() as i64)
-                })
-            },
-        )?;
+                        // Return ptr << 32 | len
+                        ((ptr as i64) << 32) | (result.len() as i64)
+                    })
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
         // =========================================================================
         // Sync host functions (same as regular host)
         // =========================================================================
 
         // get_title (sync)
-        linker.func_wrap(
-            "trovato:kernel/item-api",
-            "get_title",
-            |mut caller: wasmtime::Caller<'_, StubHostState>,
-             handle: i32,
-             buf_ptr: i32,
-             buf_len: i32|
-             -> i32 {
-                let Some(title) = caller.data().get_title(handle) else {
-                    return -1;
-                };
+        linker
+            .func_wrap(
+                "trovato:kernel/item-api",
+                "get_title",
+                |mut caller: wasmtime::Caller<'_, StubHostState>,
+                 handle: i32,
+                 buf_ptr: i32,
+                 buf_len: i32|
+                 -> i32 {
+                    let Some(title) = caller.data().get_title(handle) else {
+                        return -1;
+                    };
 
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return -1;
-                };
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return -1;
+                    };
 
-                let bytes = title.as_bytes();
-                let write_len = bytes.len().min(buf_len as usize);
-                let data = memory.data_mut(&mut caller);
-                let start = buf_ptr as usize;
-                let end = start + write_len;
-                if end <= data.len() {
-                    data[start..end].copy_from_slice(&bytes[..write_len]);
-                    write_len as i32
-                } else {
-                    -1
-                }
-            },
-        )?;
+                    let bytes = title.as_bytes();
+                    let write_len = bytes.len().min(buf_len as usize);
+                    let data = memory.data_mut(&mut caller);
+                    let start = buf_ptr as usize;
+                    let end = start + write_len;
+                    if end <= data.len() {
+                        data[start..end].copy_from_slice(&bytes[..write_len]);
+                        write_len as i32
+                    } else {
+                        -1
+                    }
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
         // get_field_string (sync)
-        linker.func_wrap(
-            "trovato:kernel/item-api",
-            "get_field_string",
-            |mut caller: wasmtime::Caller<'_, StubHostState>,
-             handle: i32,
-             field_ptr: i32,
-             field_len: i32,
-             buf_ptr: i32,
-             buf_len: i32|
-             -> i32 {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return -1;
-                };
+        linker
+            .func_wrap(
+                "trovato:kernel/item-api",
+                "get_field_string",
+                |mut caller: wasmtime::Caller<'_, StubHostState>,
+                 handle: i32,
+                 field_ptr: i32,
+                 field_len: i32,
+                 buf_ptr: i32,
+                 buf_len: i32|
+                 -> i32 {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return -1;
+                    };
 
-                // Read field name
-                let data = memory.data(&caller);
-                let field_start = field_ptr as usize;
-                let field_end = field_start + field_len as usize;
-                if field_end > data.len() {
-                    return -1;
-                }
-                let field_name = match std::str::from_utf8(&data[field_start..field_end]) {
-                    Ok(s) => s.to_string(),
-                    Err(_) => return -1,
-                };
+                    // Read field name
+                    let data = memory.data(&caller);
+                    let field_start = field_ptr as usize;
+                    let field_end = field_start + field_len as usize;
+                    if field_end > data.len() {
+                        return -1;
+                    }
+                    let field_name = match std::str::from_utf8(&data[field_start..field_end]) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => return -1,
+                    };
 
-                let Some(value) = caller.data().get_field_string(handle, &field_name) else {
-                    return -1;
-                };
+                    let Some(value) = caller.data().get_field_string(handle, &field_name) else {
+                        return -1;
+                    };
 
-                let bytes = value.as_bytes();
-                let write_len = bytes.len().min(buf_len as usize);
-                let data = memory.data_mut(&mut caller);
-                let start = buf_ptr as usize;
-                let end = start + write_len;
-                if end <= data.len() {
-                    data[start..end].copy_from_slice(&bytes[..write_len]);
-                    write_len as i32
-                } else {
-                    -1
-                }
-            },
-        )?;
+                    let bytes = value.as_bytes();
+                    let write_len = bytes.len().min(buf_len as usize);
+                    let data = memory.data_mut(&mut caller);
+                    let start = buf_ptr as usize;
+                    let end = start + write_len;
+                    if end <= data.len() {
+                        data[start..end].copy_from_slice(&bytes[..write_len]);
+                        write_len as i32
+                    } else {
+                        -1
+                    }
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
         // set_field_string (sync)
-        linker.func_wrap(
-            "trovato:kernel/item-api",
-            "set_field_string",
-            |mut caller: wasmtime::Caller<'_, StubHostState>,
-             handle: i32,
-             field_ptr: i32,
-             field_len: i32,
-             value_ptr: i32,
-             value_len: i32| {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return;
-                };
+        linker
+            .func_wrap(
+                "trovato:kernel/item-api",
+                "set_field_string",
+                |mut caller: wasmtime::Caller<'_, StubHostState>,
+                 handle: i32,
+                 field_ptr: i32,
+                 field_len: i32,
+                 value_ptr: i32,
+                 value_len: i32| {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return;
+                    };
 
-                let data = memory.data(&caller);
+                    let data = memory.data(&caller);
 
-                // Read field name
-                let field_start = field_ptr as usize;
-                let field_end = field_start + field_len as usize;
-                if field_end > data.len() {
-                    return;
-                }
-                let field_name = match std::str::from_utf8(&data[field_start..field_end]) {
-                    Ok(s) => s.to_string(),
-                    Err(_) => return,
-                };
+                    // Read field name
+                    let field_start = field_ptr as usize;
+                    let field_end = field_start + field_len as usize;
+                    if field_end > data.len() {
+                        return;
+                    }
+                    let field_name = match std::str::from_utf8(&data[field_start..field_end]) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => return,
+                    };
 
-                // Read value
-                let value_start = value_ptr as usize;
-                let value_end = value_start + value_len as usize;
-                if value_end > data.len() {
-                    return;
-                }
-                let value = match std::str::from_utf8(&data[value_start..value_end]) {
-                    Ok(s) => s.to_string(),
-                    Err(_) => return,
-                };
+                    // Read value
+                    let value_start = value_ptr as usize;
+                    let value_end = value_start + value_len as usize;
+                    if value_end > data.len() {
+                        return;
+                    }
+                    let value = match std::str::from_utf8(&data[value_start..value_end]) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => return,
+                    };
 
-                caller
-                    .data_mut()
-                    .set_field_string(handle, &field_name, &value);
-            },
-        )?;
+                    caller
+                        .data_mut()
+                        .set_field_string(handle, &field_name, &value);
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
         // memcmp (for wee_alloc compatibility)
-        linker.func_wrap(
-            "env",
-            "memcmp",
-            |mut caller: wasmtime::Caller<'_, StubHostState>, a: i32, b: i32, n: i32| -> i32 {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return 0;
-                };
-                let data = memory.data(&caller);
-                let slice_a = &data[a as usize..(a + n) as usize];
-                let slice_b = &data[b as usize..(b + n) as usize];
-                match slice_a.cmp(slice_b) {
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1,
-                }
-            },
-        )?;
+        linker
+            .func_wrap(
+                "env",
+                "memcmp",
+                |mut caller: wasmtime::Caller<'_, StubHostState>, a: i32, b: i32, n: i32| -> i32 {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return 0;
+                    };
+                    let data = memory.data(&caller);
+                    let slice_a = &data[a as usize..(a + n) as usize];
+                    let slice_b = &data[b as usize..(b + n) as usize];
+                    match slice_a.cmp(slice_b) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    }
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
         Ok(linker)
     }
@@ -279,6 +292,7 @@ impl AsyncBenchHost {
     /// Compile a module from file.
     pub fn compile_from_file(&self, path: &std::path::Path) -> Result<Module> {
         Module::from_file(&self.engine, path)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
             .with_context(|| format!("failed to compile module from {}", path.display()))
     }
 }
@@ -319,15 +333,20 @@ pub async fn run_async_benchmark(
                 .linker
                 .instantiate_async(&mut store, &module)
                 .await
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
                 .context("failed to instantiate plugin")?;
 
             // Get the tap function (uses async db_query internally)
             let tap_item_view: wasmtime::TypedFunc<i32, i64> = instance
                 .get_typed_func(&mut store, "tap_item_view")
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
                 .context("failed to get tap_item_view")?;
 
             // Call tap (this will internally call db_query_async)
-            let result = tap_item_view.call_async(&mut store, 0).await?;
+            let result = tap_item_view
+                .call_async(&mut store, 0)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
             let total_elapsed = total_start.elapsed();
 

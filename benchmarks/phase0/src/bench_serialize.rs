@@ -53,15 +53,19 @@ pub fn run_serialize_benchmark(
         let instance = host
             .linker
             .instantiate(&mut store, module)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
             .context("failed to instantiate plugin")?;
 
         // Get the alloc function to allocate memory for the JSON
         let alloc_fn: TypedFunc<i32, i32> = instance
             .get_typed_func(&mut store, "alloc")
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
             .context("failed to get alloc export")?;
 
         // Allocate memory for the input JSON
-        let json_ptr = alloc_fn.call(&mut store, json_bytes.len() as i32)?;
+        let json_ptr = alloc_fn
+            .call(&mut store, json_bytes.len() as i32)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
         // Write the JSON to WASM memory
         let memory = instance
@@ -73,6 +77,7 @@ pub fn run_serialize_benchmark(
         // Get the tap_item_view_full function
         let tap_item_view_full: TypedFunc<(i32, i32), i64> = instance
             .get_typed_func(&mut store, "tap_item_view_full")
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
             .context("failed to get tap_item_view_full export")?;
 
         let instantiation_elapsed = total_start.elapsed();
@@ -80,7 +85,9 @@ pub fn run_serialize_benchmark(
 
         // Time just the tap call (including JSON parsing in guest)
         let tap_start = Instant::now();
-        let result = tap_item_view_full.call(&mut store, (json_ptr, json_bytes.len() as i32))?;
+        let result = tap_item_view_full
+            .call(&mut store, (json_ptr, json_bytes.len() as i32))
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
         let tap_elapsed = tap_start.elapsed();
         tap_durations.push(tap_elapsed);
 
@@ -118,14 +125,18 @@ pub fn verify_serialize_access(host: &BenchHost, module: &Module) -> Result<()> 
     let instance = host
         .linker
         .instantiate(&mut store, module)
+        .map_err(|e| anyhow::anyhow!("{e:#}"))
         .context("failed to instantiate plugin for verification")?;
 
     // Allocate and write JSON
     let alloc_fn: TypedFunc<i32, i32> = instance
         .get_typed_func(&mut store, "alloc")
+        .map_err(|e| anyhow::anyhow!("{e:#}"))
         .context("failed to get alloc")?;
 
-    let json_ptr = alloc_fn.call(&mut store, json_bytes.len() as i32)?;
+    let json_ptr = alloc_fn
+        .call(&mut store, json_bytes.len() as i32)
+        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
     let memory = instance
         .get_memory(&mut store, "memory")
@@ -136,9 +147,12 @@ pub fn verify_serialize_access(host: &BenchHost, module: &Module) -> Result<()> 
     // Call tap_item_view_full
     let tap_item_view_full: TypedFunc<(i32, i32), i64> = instance
         .get_typed_func(&mut store, "tap_item_view_full")
+        .map_err(|e| anyhow::anyhow!("{e:#}"))
         .context("failed to get tap_item_view_full")?;
 
-    let result = tap_item_view_full.call(&mut store, (json_ptr, json_bytes.len() as i32))?;
+    let result = tap_item_view_full
+        .call(&mut store, (json_ptr, json_bytes.len() as i32))
+        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
     let ptr = (result >> 32) as i32;
     let len = (result & 0xFFFFFFFF) as i32;
 

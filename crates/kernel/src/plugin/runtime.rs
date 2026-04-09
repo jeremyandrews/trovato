@@ -15,6 +15,22 @@ use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, Linker, Module, PoolingAllocationConfig,
 };
 
+/// Extension trait to convert `Result<T, wasmtime::Error>` to `anyhow::Result<T>`.
+///
+/// Wasmtime v43+ uses a custom error type that doesn't implement
+/// `std::error::Error`, so `anyhow::Context` doesn't work directly on
+/// wasmtime results. This trait bridges the gap.
+pub(crate) trait WasmtimeExt<T> {
+    /// Convert a wasmtime result to an anyhow result.
+    fn into_anyhow(self) -> anyhow::Result<T>;
+}
+
+impl<T> WasmtimeExt<T> for std::result::Result<T, wasmtime::Error> {
+    fn into_anyhow(self) -> anyhow::Result<T> {
+        self.map_err(|e| anyhow::anyhow!("{e:#}"))
+    }
+}
+
 /// Combined state for WASM stores, including both request state and random seed.
 pub struct PluginState {
     /// Request-specific state (user context, services).
@@ -40,8 +56,6 @@ pub struct PluginConfig {
     pub max_instances: u32,
     /// Maximum memory pages per instance (64KB per page).
     pub max_memory_pages: u64,
-    /// Enable async support for async host functions.
-    pub async_support: bool,
 }
 
 impl Default for PluginConfig {
@@ -49,7 +63,6 @@ impl Default for PluginConfig {
         Self {
             max_instances: 1000,
             max_memory_pages: 1024, // 64MB max per instance
-            async_support: true,
         }
     }
 }
@@ -214,6 +227,7 @@ impl PluginRuntime {
             .and_then(|m| m.modified().ok());
 
         let module = Module::new(&self.engine, &wasm_bytes)
+            .into_anyhow()
             .with_context(|| format!("failed to compile WASM module for plugin '{plugin_name}'"))?;
 
         debug!(
@@ -502,6 +516,7 @@ fn compile_plugin_from_dir(
         .and_then(|m| m.modified().ok());
 
     let module = Module::new(engine, &wasm_bytes)
+        .into_anyhow()
         .with_context(|| format!("failed to compile WASM module for plugin '{plugin_name}'"))?;
 
     debug!(
@@ -527,9 +542,6 @@ fn compile_plugin_from_dir(
 fn create_engine(config: &PluginConfig) -> Result<Engine> {
     let mut wasmtime_config = Config::new();
 
-    // Enable async support for async host functions (db queries, etc.)
-    wasmtime_config.async_support(config.async_support);
-
     // Configure pooling allocator for efficient per-request instantiation
     let mut pooling_config = PoolingAllocationConfig::default();
     pooling_config.total_component_instances(config.max_instances);
@@ -550,7 +562,9 @@ fn create_engine(config: &PluginConfig) -> Result<Engine> {
     // Optimize for speed
     wasmtime_config.cranelift_opt_level(wasmtime::OptLevel::Speed);
 
-    Engine::new(&wasmtime_config).context("failed to create wasmtime engine with pooling allocator")
+    Engine::new(&wasmtime_config)
+        .into_anyhow()
+        .context("failed to create wasmtime engine with pooling allocator")
 }
 
 /// Creates a Linker with host function bindings and WASI support.
@@ -573,73 +587,83 @@ fn create_linker(engine: &Engine) -> Result<Linker<PluginState>> {
 fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
     // fd_write(fd, iovs, iovs_len, nwritten) -> errno
     // Stub that returns ENOSYS (not supported)
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_write",
-        |_fd: i32, _iovs: i32, _iovs_len: i32, _nwritten: i32| -> i32 {
-            52 // ENOSYS
-        },
-    )?;
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "fd_write",
+            |_fd: i32, _iovs: i32, _iovs_len: i32, _nwritten: i32| -> i32 {
+                52 // ENOSYS
+            },
+        )
+        .into_anyhow()?;
 
     // random_get(buf, buf_len) -> errno
     // Fills buffer with cryptographically secure random bytes.
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "random_get",
-        |mut caller: wasmtime::Caller<'_, PluginState>, buf: i32, buf_len: i32| -> i32 {
-            use rand::RngCore;
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "random_get",
+            |mut caller: wasmtime::Caller<'_, PluginState>, buf: i32, buf_len: i32| -> i32 {
+                use rand::RngCore;
 
-            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                return 8; // EBADF
-            };
-            let data = memory.data_mut(&mut caller);
-            let buf = buf as usize;
-            let len = buf_len as usize;
-            if buf + len > data.len() {
-                return 21; // EFAULT
-            }
-            rand::thread_rng().fill_bytes(&mut data[buf..buf + len]);
-            0 // Success
-        },
-    )?;
+                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return 8; // EBADF
+                };
+                let data = memory.data_mut(&mut caller);
+                let buf = buf as usize;
+                let len = buf_len as usize;
+                if buf + len > data.len() {
+                    return 21; // EFAULT
+                }
+                rand::thread_rng().fill_bytes(&mut data[buf..buf + len]);
+                0 // Success
+            },
+        )
+        .into_anyhow()?;
 
     // environ_get(environ, environ_buf) -> errno
     // Stub that returns no environment variables
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "environ_get",
-        |_environ: i32, _environ_buf: i32| -> i32 {
-            0 // Success (no env vars)
-        },
-    )?;
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "environ_get",
+            |_environ: i32, _environ_buf: i32| -> i32 {
+                0 // Success (no env vars)
+            },
+        )
+        .into_anyhow()?;
 
     // environ_sizes_get(environ_count, environ_buf_size) -> errno
     // Stub that returns 0 env vars
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "environ_sizes_get",
-        |mut caller: wasmtime::Caller<'_, PluginState>, count_ptr: i32, size_ptr: i32| -> i32 {
-            let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                return 8; // EBADF
-            };
-            let data = memory.data_mut(&mut caller);
-            let count_ptr = count_ptr as usize;
-            let size_ptr = size_ptr as usize;
-            if count_ptr + 4 > data.len() || size_ptr + 4 > data.len() {
-                return 21; // EFAULT
-            }
-            // Write 0 for both count and size
-            data[count_ptr..count_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
-            data[size_ptr..size_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
-            0 // Success
-        },
-    )?;
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "environ_sizes_get",
+            |mut caller: wasmtime::Caller<'_, PluginState>, count_ptr: i32, size_ptr: i32| -> i32 {
+                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return 8; // EBADF
+                };
+                let data = memory.data_mut(&mut caller);
+                let count_ptr = count_ptr as usize;
+                let size_ptr = size_ptr as usize;
+                if count_ptr + 4 > data.len() || size_ptr + 4 > data.len() {
+                    return 21; // EFAULT
+                }
+                // Write 0 for both count and size
+                data[count_ptr..count_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
+                data[size_ptr..size_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
+                0 // Success
+            },
+        )
+        .into_anyhow()?;
 
     // proc_exit(code) -> never returns
     // Stub that panics (shouldn't be called)
-    linker.func_wrap("wasi_snapshot_preview1", "proc_exit", |_code: i32| {
-        // Can't actually exit from a plugin
-    })?;
+    linker
+        .func_wrap("wasi_snapshot_preview1", "proc_exit", |_code: i32| {
+            // Can't actually exit from a plugin
+        })
+        .into_anyhow()?;
 
     Ok(())
 }
@@ -661,7 +685,6 @@ mod tests {
         let config = PluginConfig {
             max_instances: 500,
             max_memory_pages: 512,
-            async_support: true,
         };
         let runtime = PluginRuntime::new(&config);
         assert!(runtime.is_ok());

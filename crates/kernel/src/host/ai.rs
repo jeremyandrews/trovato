@@ -14,7 +14,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 use wasmtime::Linker;
 
-use crate::plugin::PluginState;
+use crate::plugin::{PluginState, WasmtimeExt};
 use crate::services::ai_provider::{ProviderProtocol, ResolvedProvider};
 use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
 use trovato_sdk::host_errors;
@@ -379,271 +379,285 @@ fn parse_anthropic_response(body: &str, latency_ms: u64) -> Result<AiResponse, S
 ///
 /// Provides the `ai-request` function under `trovato:kernel/ai-api`.
 pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
-    linker.func_wrap_async(
-        "trovato:kernel/ai-api",
-        "ai-request",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (req_ptr, req_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return host_errors::ERR_MEMORY_MISSING;
-                };
+    linker
+        .func_wrap_async(
+            "trovato:kernel/ai-api",
+            "ai-request",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (req_ptr, req_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
 
-                // Read request JSON from WASM memory
-                let Ok(request_json) = read_string_from_memory(&memory, &caller, req_ptr, req_len)
-                else {
-                    return host_errors::ERR_PARAM1_READ;
-                };
+                    // Read request JSON from WASM memory
+                    let Ok(request_json) =
+                        read_string_from_memory(&memory, &caller, req_ptr, req_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
 
-                // Get services
-                let Some(services) = caller.data().request.services() else {
-                    return host_errors::ERR_NO_SERVICES;
-                };
-                let Some(ref ai_svc) = services.ai_providers else {
-                    return host_errors::ERR_AI_NO_PROVIDER;
-                };
-                let ai_svc = ai_svc.clone();
-                let plugin_name = caller.data().plugin_name.clone();
+                    // Get services
+                    let Some(services) = caller.data().request.services() else {
+                        return host_errors::ERR_NO_SERVICES;
+                    };
+                    let Some(ref ai_svc) = services.ai_providers else {
+                        return host_errors::ERR_AI_NO_PROVIDER;
+                    };
+                    let ai_svc = ai_svc.clone();
+                    let plugin_name = caller.data().plugin_name.clone();
 
-                // Deserialize request
-                let request: AiRequest = match serde_json::from_str(&request_json) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!(
-                            plugin = %plugin_name,
-                            error = %e,
-                            "invalid AiRequest JSON from plugin"
-                        );
-                        return host_errors::ERR_AI_INVALID_REQUEST;
-                    }
-                };
-
-                // Validate message roles before processing
-                const VALID_ROLES: &[&str] = &["system", "user", "assistant"];
-                for msg in &request.messages {
-                    if !VALID_ROLES.contains(&msg.role.as_str()) {
-                        warn!(
-                            plugin = %plugin_name,
-                            role = %msg.role,
-                            "invalid message role in AiRequest"
-                        );
-                        return host_errors::ERR_AI_INVALID_REQUEST;
-                    }
-                }
-
-                // Permission check — before rate limit and budget
-                {
-                    let user = &caller.data().request.user;
-                    if !user.has_permission("use ai") {
-                        if !user.authenticated {
+                    // Deserialize request
+                    let request: AiRequest = match serde_json::from_str(&request_json) {
+                        Ok(r) => r,
+                        Err(e) => {
                             warn!(
                                 plugin = %plugin_name,
-                                "AI request denied: anonymous user (authentication required)"
+                                error = %e,
+                                "invalid AiRequest JSON from plugin"
                             );
-                        } else {
+                            return host_errors::ERR_AI_INVALID_REQUEST;
+                        }
+                    };
+
+                    // Validate message roles before processing
+                    const VALID_ROLES: &[&str] = &["system", "user", "assistant"];
+                    for msg in &request.messages {
+                        if !VALID_ROLES.contains(&msg.role.as_str()) {
+                            warn!(
+                                plugin = %plugin_name,
+                                role = %msg.role,
+                                "invalid message role in AiRequest"
+                            );
+                            return host_errors::ERR_AI_INVALID_REQUEST;
+                        }
+                    }
+
+                    // Permission check — before rate limit and budget
+                    {
+                        let user = &caller.data().request.user;
+                        if !user.has_permission("use ai") {
+                            if !user.authenticated {
+                                warn!(
+                                    plugin = %plugin_name,
+                                    "AI request denied: anonymous user (authentication required)"
+                                );
+                            } else {
+                                warn!(
+                                    plugin = %plugin_name,
+                                    user_id = %user.id,
+                                    "AI request denied: user lacks 'use ai' permission"
+                                );
+                            }
+                            return host_errors::ERR_AI_PERMISSION_DENIED;
+                        }
+                        let op_perm = permission_for_operation(&request.operation);
+                        if op_perm != "use ai" && !user.has_permission(op_perm) {
                             warn!(
                                 plugin = %plugin_name,
                                 user_id = %user.id,
-                                "AI request denied: user lacks 'use ai' permission"
+                                permission = op_perm,
+                                "AI request denied: user lacks operation permission"
                             );
+                            return host_errors::ERR_AI_PERMISSION_DENIED;
                         }
-                        return host_errors::ERR_AI_PERMISSION_DENIED;
                     }
-                    let op_perm = permission_for_operation(&request.operation);
-                    if op_perm != "use ai" && !user.has_permission(op_perm) {
-                        warn!(
-                            plugin = %plugin_name,
-                            user_id = %user.id,
-                            permission = op_perm,
-                            "AI request denied: user lacks operation permission"
-                        );
-                        return host_errors::ERR_AI_PERMISSION_DENIED;
-                    }
-                }
 
-                // Convert SDK operation type to kernel operation type via serde
-                let op_json = serde_json::to_string(&request.operation).unwrap_or_default();
-                let kernel_op: crate::services::ai_provider::AiOperationType =
-                    match serde_json::from_str(&op_json) {
-                        Ok(op) => op,
-                        Err(_) => return host_errors::ERR_AI_INVALID_REQUEST,
-                    };
+                    // Convert SDK operation type to kernel operation type via serde
+                    let op_json = serde_json::to_string(&request.operation).unwrap_or_default();
+                    let kernel_op: crate::services::ai_provider::AiOperationType =
+                        match serde_json::from_str(&op_json) {
+                            Ok(op) => op,
+                            Err(_) => return host_errors::ERR_AI_INVALID_REQUEST,
+                        };
 
-                // Resolve provider
-                let resolved = match ai_svc
-                    .resolve_provider(kernel_op, request.provider_id.as_deref())
-                    .await
-                {
-                    Ok(Some(r)) => r,
-                    Ok(None) => return host_errors::ERR_AI_NO_PROVIDER,
-                    Err(e) => {
-                        warn!(
-                            plugin = %plugin_name,
-                            error = %e,
-                            "failed to resolve AI provider"
-                        );
-                        return host_errors::ERR_AI_NO_PROVIDER;
-                    }
-                };
-
-                // Apply model override if specified in the request
-                let mut resolved = resolved;
-                if let Some(ref model_override) = request.model {
-                    resolved.model = model_override.clone();
-                }
-
-                // Check rate limit
-                if !check_rate_limit(&resolved.config.id, resolved.config.rate_limit_rpm) {
-                    warn!(
-                        plugin = %plugin_name,
-                        provider = %resolved.config.label,
-                        "AI rate limit exceeded"
-                    );
-                    return host_errors::ERR_AI_RATE_LIMITED;
-                }
-
-                // Check token budget
-                let user_id = caller.data().request.user.id;
-                if let Some(ref budget_svc) = services.ai_budgets {
-                    match budget_svc
-                        .check_budget(&services.db, user_id, &resolved.config.id)
+                    // Resolve provider
+                    let resolved = match ai_svc
+                        .resolve_provider(kernel_op, request.provider_id.as_deref())
                         .await
                     {
-                        Ok(result) if !result.allowed => match result.action {
-                            BudgetAction::Deny | BudgetAction::Queue => {
-                                warn!(
-                                    plugin = %plugin_name,
-                                    provider = %resolved.config.label,
-                                    user = %user_id,
-                                    used = result.used,
-                                    limit = result.limit,
-                                    "AI token budget exceeded"
-                                );
-                                return host_errors::ERR_AI_BUDGET_EXCEEDED;
-                            }
-                            BudgetAction::Warn => {
-                                warn!(
-                                    plugin = %plugin_name,
-                                    provider = %resolved.config.label,
-                                    user = %user_id,
-                                    used = result.used,
-                                    limit = result.limit,
-                                    "AI token budget exceeded (warn mode, allowing)"
-                                );
-                            }
-                        },
+                        Ok(Some(r)) => r,
+                        Ok(None) => return host_errors::ERR_AI_NO_PROVIDER,
                         Err(e) => {
+                            warn!(
+                                plugin = %plugin_name,
+                                error = %e,
+                                "failed to resolve AI provider"
+                            );
+                            return host_errors::ERR_AI_NO_PROVIDER;
+                        }
+                    };
+
+                    // Apply model override if specified in the request
+                    let mut resolved = resolved;
+                    if let Some(ref model_override) = request.model {
+                        resolved.model = model_override.clone();
+                    }
+
+                    // Check rate limit
+                    if !check_rate_limit(&resolved.config.id, resolved.config.rate_limit_rpm) {
+                        warn!(
+                            plugin = %plugin_name,
+                            provider = %resolved.config.label,
+                            "AI rate limit exceeded"
+                        );
+                        return host_errors::ERR_AI_RATE_LIMITED;
+                    }
+
+                    // Check token budget
+                    let user_id = caller.data().request.user.id;
+                    if let Some(ref budget_svc) = services.ai_budgets {
+                        match budget_svc
+                            .check_budget(&services.db, user_id, &resolved.config.id)
+                            .await
+                        {
+                            Ok(result) if !result.allowed => match result.action {
+                                BudgetAction::Deny | BudgetAction::Queue => {
+                                    warn!(
+                                        plugin = %plugin_name,
+                                        provider = %resolved.config.label,
+                                        user = %user_id,
+                                        used = result.used,
+                                        limit = result.limit,
+                                        "AI token budget exceeded"
+                                    );
+                                    return host_errors::ERR_AI_BUDGET_EXCEEDED;
+                                }
+                                BudgetAction::Warn => {
+                                    warn!(
+                                        plugin = %plugin_name,
+                                        provider = %resolved.config.label,
+                                        user = %user_id,
+                                        used = result.used,
+                                        limit = result.limit,
+                                        "AI token budget exceeded (warn mode, allowing)"
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    plugin = %plugin_name,
+                                    "failed to check AI budget, allowing request"
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let started = Instant::now();
+
+                    // Execute HTTP request
+                    let (response_body, _status) =
+                        match execute_ai_request(ai_svc.http(), &resolved, &request).await {
+                            Ok(r) => r,
+                            Err((code, msg)) => {
+                                warn!(
+                                    plugin = %plugin_name,
+                                    provider = %resolved.config.label,
+                                    error = %msg,
+                                    "AI request failed"
+                                );
+                                return code;
+                            }
+                        };
+
+                    let latency_ms = started.elapsed().as_millis() as u64;
+
+                    // Parse response based on protocol
+                    let ai_response = match resolved.config.protocol {
+                        ProviderProtocol::OpenAiCompatible => {
+                            parse_openai_response(&response_body, latency_ms)
+                        }
+                        ProviderProtocol::Anthropic => {
+                            parse_anthropic_response(&response_body, latency_ms)
+                        }
+                    };
+
+                    let ai_response = match ai_response {
+                        Ok(r) => r,
+                        Err(msg) => {
+                            warn!(
+                                plugin = %plugin_name,
+                                error = %msg,
+                                "failed to parse AI provider response"
+                            );
+                            return host_errors::ERR_AI_PROVIDER_ERROR;
+                        }
+                    };
+
+                    // Log request details
+                    info!(
+                        plugin = %plugin_name,
+                        operation = %kernel_op,
+                        model = %ai_response.model,
+                        prompt_tokens = ai_response.usage.prompt_tokens,
+                        completion_tokens = ai_response.usage.completion_tokens,
+                        latency_ms = latency_ms,
+                        "ai_request completed"
+                    );
+
+                    // Record usage in ai_usage_log
+                    if let Some(ref budget_svc) = services.ai_budgets {
+                        let entry = UsageLogEntry {
+                            user_id: if user_id.is_nil() {
+                                None
+                            } else {
+                                Some(user_id)
+                            },
+                            plugin_name: plugin_name.clone(),
+                            provider_id: resolved.config.id.clone(),
+                            operation: kernel_op.to_string(),
+                            model: ai_response.model.clone(),
+                            prompt_tokens: ai_response.usage.prompt_tokens.min(i32::MAX as u32)
+                                as i32,
+                            completion_tokens: ai_response
+                                .usage
+                                .completion_tokens
+                                .min(i32::MAX as u32)
+                                as i32,
+                            total_tokens: ai_response.usage.total_tokens.min(i32::MAX as u32)
+                                as i32,
+                            latency_ms: latency_ms as i64,
+                        };
+                        if let Err(e) = budget_svc.record_usage(&services.db, entry).await {
                             warn!(
                                 error = %e,
                                 plugin = %plugin_name,
-                                "failed to check AI budget, allowing request"
+                                "failed to record AI usage"
                             );
                         }
-                        _ => {}
                     }
-                }
 
-                let started = Instant::now();
-
-                // Execute HTTP request
-                let (response_body, _status) =
-                    match execute_ai_request(ai_svc.http(), &resolved, &request).await {
-                        Ok(r) => r,
-                        Err((code, msg)) => {
-                            warn!(
-                                plugin = %plugin_name,
-                                provider = %resolved.config.label,
-                                error = %msg,
-                                "AI request failed"
-                            );
-                            return code;
-                        }
+                    // Serialize response and write to WASM memory
+                    let Ok(response_json) = serde_json::to_string(&ai_response) else {
+                        return host_errors::ERR_SERIALIZE_FAILED;
                     };
 
-                let latency_ms = started.elapsed().as_millis() as u64;
-
-                // Parse response based on protocol
-                let ai_response = match resolved.config.protocol {
-                    ProviderProtocol::OpenAiCompatible => {
-                        parse_openai_response(&response_body, latency_ms)
-                    }
-                    ProviderProtocol::Anthropic => {
-                        parse_anthropic_response(&response_body, latency_ms)
-                    }
-                };
-
-                let ai_response = match ai_response {
-                    Ok(r) => r,
-                    Err(msg) => {
+                    // Guard against silent truncation — the SDK would get partial
+                    // JSON and fail with a confusing deserialization error.
+                    if response_json.len() > out_max_len as usize {
                         warn!(
                             plugin = %plugin_name,
-                            error = %msg,
-                            "failed to parse AI provider response"
+                            response_len = response_json.len(),
+                            buffer_max = out_max_len,
+                            "AI response exceeds output buffer"
                         );
-                        return host_errors::ERR_AI_PROVIDER_ERROR;
+                        return host_errors::ERR_PARAM2_OR_OUTPUT;
                     }
-                };
 
-                // Log request details
-                info!(
-                    plugin = %plugin_name,
-                    operation = %kernel_op,
-                    model = %ai_response.model,
-                    prompt_tokens = ai_response.usage.prompt_tokens,
-                    completion_tokens = ai_response.usage.completion_tokens,
-                    latency_ms = latency_ms,
-                    "ai_request completed"
-                );
-
-                // Record usage in ai_usage_log
-                if let Some(ref budget_svc) = services.ai_budgets {
-                    let entry = UsageLogEntry {
-                        user_id: if user_id.is_nil() {
-                            None
-                        } else {
-                            Some(user_id)
-                        },
-                        plugin_name: plugin_name.clone(),
-                        provider_id: resolved.config.id.clone(),
-                        operation: kernel_op.to_string(),
-                        model: ai_response.model.clone(),
-                        prompt_tokens: ai_response.usage.prompt_tokens.min(i32::MAX as u32) as i32,
-                        completion_tokens: ai_response.usage.completion_tokens.min(i32::MAX as u32)
-                            as i32,
-                        total_tokens: ai_response.usage.total_tokens.min(i32::MAX as u32) as i32,
-                        latency_ms: latency_ms as i64,
-                    };
-                    if let Err(e) = budget_svc.record_usage(&services.db, entry).await {
-                        warn!(
-                            error = %e,
-                            plugin = %plugin_name,
-                            "failed to record AI usage"
-                        );
-                    }
-                }
-
-                // Serialize response and write to WASM memory
-                let Ok(response_json) = serde_json::to_string(&ai_response) else {
-                    return host_errors::ERR_SERIALIZE_FAILED;
-                };
-
-                // Guard against silent truncation — the SDK would get partial
-                // JSON and fail with a confusing deserialization error.
-                if response_json.len() > out_max_len as usize {
-                    warn!(
-                        plugin = %plugin_name,
-                        response_len = response_json.len(),
-                        buffer_max = out_max_len,
-                        "AI response exceeds output buffer"
-                    );
-                    return host_errors::ERR_PARAM2_OR_OUTPUT;
-                }
-
-                write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &response_json)
+                    write_string_to_memory(
+                        &memory,
+                        &mut caller,
+                        out_ptr,
+                        out_max_len,
+                        &response_json,
+                    )
                     .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT)
-            })
-        },
-    )?;
+                })
+            },
+        )
+        .into_anyhow()?;
 
     Ok(())
 }

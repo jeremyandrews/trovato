@@ -9,7 +9,7 @@ use tracing::warn;
 use wasmtime::Linker;
 
 use super::read_string_from_memory;
-use crate::plugin::PluginState;
+use crate::plugin::{PluginState, WasmtimeExt};
 
 /// Register queue host functions.
 pub fn register_queue_functions(linker: &mut Linker<PluginState>) -> Result<()> {
@@ -80,7 +80,7 @@ pub fn register_queue_functions(linker: &mut Linker<PluginState>) -> Result<()> 
                 }
             })
         },
-    )?;
+    ).into_anyhow()?;
 
     Ok(())
 }
@@ -94,8 +94,7 @@ mod tests {
 
     #[test]
     fn register_queue_succeeds() {
-        let mut config = wasmtime::Config::new();
-        config.async_support(true);
+        let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
         let mut linker: Linker<PluginState> = Linker::new(&engine);
 

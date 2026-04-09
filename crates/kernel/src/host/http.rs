@@ -21,7 +21,7 @@ use tracing::warn;
 use url::Url;
 use wasmtime::Linker;
 
-use crate::plugin::PluginState;
+use crate::plugin::{PluginState, WasmtimeExt};
 use trovato_sdk::host_errors;
 
 use super::{read_string_from_memory, write_string_to_memory};
@@ -39,74 +39,83 @@ const MAX_RESPONSE_BODY: usize = 1_024 * 1_024;
 ///
 /// Provides the `request` function under `trovato:kernel/http`.
 pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
-    linker.func_wrap_async(
-        "trovato:kernel/http",
-        "request",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (req_ptr, req_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return host_errors::ERR_MEMORY_MISSING;
-                };
-
-                // Read request JSON from WASM memory
-                let Ok(request_json) = read_string_from_memory(&memory, &caller, req_ptr, req_len)
-                else {
-                    return host_errors::ERR_PARAM1_READ;
-                };
-
-                let Some(services) = caller.data().request.services() else {
-                    return host_errors::ERR_NO_SERVICES;
-                };
-                let http = services.http.clone();
-                let plugin_name = caller.data().plugin_name.clone();
-
-                // Deserialize request
-                let request: trovato_sdk::types::HttpRequest =
-                    match serde_json::from_str(&request_json) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            warn!(
-                                plugin = %plugin_name,
-                                error = %e,
-                                "invalid HttpRequest JSON from plugin"
-                            );
-                            return host_errors::ERR_PARAM_DESERIALIZE;
-                        }
+    linker
+        .func_wrap_async(
+            "trovato:kernel/http",
+            "request",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (req_ptr, req_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
                     };
 
-                // Validate URL: scheme, host, and SSRF protections
-                if let Err(code) = validate_url(&request.url, &plugin_name) {
-                    return code;
-                }
+                    // Read request JSON from WASM memory
+                    let Ok(request_json) =
+                        read_string_from_memory(&memory, &caller, req_ptr, req_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
 
-                // Execute request
-                let response = match execute_http_request(&http, &request, &plugin_name).await {
-                    Ok(r) => r,
-                    Err(code) => return code,
-                };
+                    let Some(services) = caller.data().request.services() else {
+                        return host_errors::ERR_NO_SERVICES;
+                    };
+                    let http = services.http.clone();
+                    let plugin_name = caller.data().plugin_name.clone();
 
-                // Serialize response
-                let Ok(response_json) = serde_json::to_string(&response) else {
-                    return host_errors::ERR_SERIALIZE_FAILED;
-                };
+                    // Deserialize request
+                    let request: trovato_sdk::types::HttpRequest =
+                        match serde_json::from_str(&request_json) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                warn!(
+                                    plugin = %plugin_name,
+                                    error = %e,
+                                    "invalid HttpRequest JSON from plugin"
+                                );
+                                return host_errors::ERR_PARAM_DESERIALIZE;
+                            }
+                        };
 
-                // Guard against silent truncation
-                if response_json.len() > out_max_len as usize {
-                    warn!(
-                        plugin = %plugin_name,
-                        response_len = response_json.len(),
-                        buffer_max = out_max_len,
-                        "HTTP response exceeds output buffer"
-                    );
-                    return host_errors::ERR_HTTP_RESPONSE_TOO_LARGE;
-                }
+                    // Validate URL: scheme, host, and SSRF protections
+                    if let Err(code) = validate_url(&request.url, &plugin_name) {
+                        return code;
+                    }
 
-                write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &response_json)
+                    // Execute request
+                    let response = match execute_http_request(&http, &request, &plugin_name).await {
+                        Ok(r) => r,
+                        Err(code) => return code,
+                    };
+
+                    // Serialize response
+                    let Ok(response_json) = serde_json::to_string(&response) else {
+                        return host_errors::ERR_SERIALIZE_FAILED;
+                    };
+
+                    // Guard against silent truncation
+                    if response_json.len() > out_max_len as usize {
+                        warn!(
+                            plugin = %plugin_name,
+                            response_len = response_json.len(),
+                            buffer_max = out_max_len,
+                            "HTTP response exceeds output buffer"
+                        );
+                        return host_errors::ERR_HTTP_RESPONSE_TOO_LARGE;
+                    }
+
+                    write_string_to_memory(
+                        &memory,
+                        &mut caller,
+                        out_ptr,
+                        out_max_len,
+                        &response_json,
+                    )
                     .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT)
-            })
-        },
-    )?;
+                })
+            },
+        )
+        .into_anyhow()?;
 
     Ok(())
 }

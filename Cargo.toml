@@ -49,7 +49,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1-devel"
 edition = "2024"
 license = "GPL-2.0-or-later"
 
@@ -63,8 +63,8 @@ tower-sessions-redis-store = "0.16"
 fred = { version = "10", features = ["subscriber-client"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json", "chrono", "uuid"] }
 sea-query = { version = "0.32", features = ["backend-postgres", "with-uuid"] }
-wasmtime = "28"
-wasmtime-wasi = "28"
+wasmtime = "43"
+wasmtime-wasi = "43"
 argon2 = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -214,7 +214,6 @@ async fn main() -> Result<()> {
     let host_config = HostConfig {
         max_instances,
         max_memory_pages: 1024,
-        async_support: false,
     };
     let host = BenchHost::with_config(&host_config)?;
     println!("  ✓ Engine created with pooling allocator\n");

@@ -49,11 +49,13 @@ pub fn run_handle_benchmark(
         let instance = host
             .linker
             .instantiate(&mut store, module)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
             .context("failed to instantiate plugin")?;
 
         // Get the tap_item_view function
         let tap_item_view: TypedFunc<i32, i64> = instance
             .get_typed_func(&mut store, "tap_item_view")
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
             .context("failed to get tap_item_view export")?;
 
         let instantiation_elapsed = total_start.elapsed();
@@ -61,7 +63,9 @@ pub fn run_handle_benchmark(
 
         // Time just the tap call
         let tap_start = Instant::now();
-        let result = tap_item_view.call(&mut store, 0)?;
+        let result = tap_item_view
+            .call(&mut store, 0)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
         let tap_elapsed = tap_start.elapsed();
         tap_durations.push(tap_elapsed);
 
@@ -98,13 +102,17 @@ pub fn verify_handle_access(host: &BenchHost, module: &Module) -> Result<()> {
     let instance = host
         .linker
         .instantiate(&mut store, module)
+        .map_err(|e| anyhow::anyhow!("{e:#}"))
         .context("failed to instantiate plugin for verification")?;
 
     let tap_item_view: TypedFunc<i32, i64> = instance
         .get_typed_func(&mut store, "tap_item_view")
+        .map_err(|e| anyhow::anyhow!("{e:#}"))
         .context("failed to get tap_item_view")?;
 
-    let result = tap_item_view.call(&mut store, 0)?;
+    let result = tap_item_view
+        .call(&mut store, 0)
+        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
     let ptr = (result >> 32) as i32;
     let len = (result & 0xFFFFFFFF) as i32;
 

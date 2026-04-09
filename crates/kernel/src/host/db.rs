@@ -13,6 +13,8 @@ use tracing::warn;
 use trovato_sdk::host_errors;
 use wasmtime::Linker;
 
+use crate::plugin::WasmtimeExt;
+
 /// Maximum execution time for plugin SQL queries (5 seconds).
 const PLUGIN_QUERY_TIMEOUT_MS: u32 = 5000;
 
@@ -504,251 +506,279 @@ fn default_asc() -> String {
 /// async database queries via sqlx.
 pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // select(query_json, out) -> i32 (bytes written or error)
-    linker.func_wrap_async(
-        "trovato:kernel/db",
-        "select",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (query_ptr, query_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return host_errors::ERR_MEMORY_MISSING;
-                };
+    linker
+        .func_wrap_async(
+            "trovato:kernel/db",
+            "select",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (query_ptr, query_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
 
-                let Ok(query_json) =
-                    read_string_from_memory(&memory, &caller, query_ptr, query_len)
-                else {
-                    return host_errors::ERR_PARAM1_READ;
-                };
+                    let Ok(query_json) =
+                        read_string_from_memory(&memory, &caller, query_ptr, query_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
 
-                let Some(services) = caller.data().request.services() else {
-                    return host_errors::ERR_NO_SERVICES;
-                };
-                let pool = services.db.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return host_errors::ERR_NO_SERVICES;
+                    };
+                    let pool = services.db.clone();
 
-                match do_select(&pool, &query_json).await {
-                    Ok(result) => {
-                        write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &result)
-                            .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT)
+                    match do_select(&pool, &query_json).await {
+                        Ok(result) => write_string_to_memory(
+                            &memory,
+                            &mut caller,
+                            out_ptr,
+                            out_max_len,
+                            &result,
+                        )
+                        .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT),
+                        Err(code) => code,
                     }
-                    Err(code) => code,
-                }
-            })
-        },
-    )?;
+                })
+            },
+        )
+        .into_anyhow()?;
 
     // insert(table, data_json, out) -> i32 (bytes written or error)
-    linker.func_wrap_async(
-        "trovato:kernel/db",
-        "insert",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (table_ptr, table_len, data_ptr, data_len, out_ptr, out_max_len): (
-            i32,
-            i32,
-            i32,
-            i32,
-            i32,
-            i32,
-        )| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return host_errors::ERR_MEMORY_MISSING;
-                };
+    linker
+        .func_wrap_async(
+            "trovato:kernel/db",
+            "insert",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (table_ptr, table_len, data_ptr, data_len, out_ptr, out_max_len): (
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+            )| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
 
-                let Ok(table) = read_string_from_memory(&memory, &caller, table_ptr, table_len)
-                else {
-                    return host_errors::ERR_PARAM1_READ;
-                };
+                    let Ok(table) = read_string_from_memory(&memory, &caller, table_ptr, table_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
 
-                let Ok(data_json) = read_string_from_memory(&memory, &caller, data_ptr, data_len)
-                else {
-                    return host_errors::ERR_PARAM2_OR_OUTPUT;
-                };
+                    let Ok(data_json) =
+                        read_string_from_memory(&memory, &caller, data_ptr, data_len)
+                    else {
+                        return host_errors::ERR_PARAM2_OR_OUTPUT;
+                    };
 
-                let Some(services) = caller.data().request.services() else {
-                    return host_errors::ERR_NO_SERVICES;
-                };
-                let pool = services.db.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return host_errors::ERR_NO_SERVICES;
+                    };
+                    let pool = services.db.clone();
 
-                match do_insert(&pool, &table, &data_json).await {
-                    Ok(result) => {
-                        write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &result)
-                            .unwrap_or(host_errors::ERR_PARAM3_READ)
+                    match do_insert(&pool, &table, &data_json).await {
+                        Ok(result) => write_string_to_memory(
+                            &memory,
+                            &mut caller,
+                            out_ptr,
+                            out_max_len,
+                            &result,
+                        )
+                        .unwrap_or(host_errors::ERR_PARAM3_READ),
+                        Err(code) => code,
                     }
-                    Err(code) => code,
-                }
-            })
-        },
-    )?;
+                })
+            },
+        )
+        .into_anyhow()?;
 
     // update(table, data_json, where_json) -> i64 (rows affected or error)
-    linker.func_wrap_async(
-        "trovato:kernel/db",
-        "update",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (table_ptr, table_len, data_ptr, data_len, where_ptr, where_len): (
-            i32,
-            i32,
-            i32,
-            i32,
-            i32,
-            i32,
-        )| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return i64::from(host_errors::ERR_MEMORY_MISSING);
-                };
+    linker
+        .func_wrap_async(
+            "trovato:kernel/db",
+            "update",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (table_ptr, table_len, data_ptr, data_len, where_ptr, where_len): (
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+            )| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return i64::from(host_errors::ERR_MEMORY_MISSING);
+                    };
 
-                let Ok(table) = read_string_from_memory(&memory, &caller, table_ptr, table_len)
-                else {
-                    return i64::from(host_errors::ERR_PARAM1_READ);
-                };
+                    let Ok(table) = read_string_from_memory(&memory, &caller, table_ptr, table_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM1_READ);
+                    };
 
-                let Ok(data_json) = read_string_from_memory(&memory, &caller, data_ptr, data_len)
-                else {
-                    return i64::from(host_errors::ERR_PARAM2_OR_OUTPUT);
-                };
+                    let Ok(data_json) =
+                        read_string_from_memory(&memory, &caller, data_ptr, data_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM2_OR_OUTPUT);
+                    };
 
-                let Ok(where_json) =
-                    read_string_from_memory(&memory, &caller, where_ptr, where_len)
-                else {
-                    return i64::from(host_errors::ERR_PARAM3_READ);
-                };
+                    let Ok(where_json) =
+                        read_string_from_memory(&memory, &caller, where_ptr, where_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM3_READ);
+                    };
 
-                let Some(services) = caller.data().request.services() else {
-                    return i64::from(host_errors::ERR_NO_SERVICES);
-                };
-                let pool = services.db.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return i64::from(host_errors::ERR_NO_SERVICES);
+                    };
+                    let pool = services.db.clone();
 
-                match do_update(&pool, &table, &data_json, &where_json).await {
-                    Ok(rows) => rows as i64,
-                    Err(code) => i64::from(code),
-                }
-            })
-        },
-    )?;
+                    match do_update(&pool, &table, &data_json, &where_json).await {
+                        Ok(rows) => rows as i64,
+                        Err(code) => i64::from(code),
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
 
     // delete(table, where_json) -> i64 (rows affected or error)
-    linker.func_wrap_async(
-        "trovato:kernel/db",
-        "delete",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (table_ptr, table_len, where_ptr, where_len): (i32, i32, i32, i32)| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return i64::from(host_errors::ERR_MEMORY_MISSING);
-                };
+    linker
+        .func_wrap_async(
+            "trovato:kernel/db",
+            "delete",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (table_ptr, table_len, where_ptr, where_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return i64::from(host_errors::ERR_MEMORY_MISSING);
+                    };
 
-                let Ok(table) = read_string_from_memory(&memory, &caller, table_ptr, table_len)
-                else {
-                    return i64::from(host_errors::ERR_PARAM1_READ);
-                };
+                    let Ok(table) = read_string_from_memory(&memory, &caller, table_ptr, table_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM1_READ);
+                    };
 
-                let Ok(where_json) =
-                    read_string_from_memory(&memory, &caller, where_ptr, where_len)
-                else {
-                    return i64::from(host_errors::ERR_PARAM2_OR_OUTPUT);
-                };
+                    let Ok(where_json) =
+                        read_string_from_memory(&memory, &caller, where_ptr, where_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM2_OR_OUTPUT);
+                    };
 
-                let Some(services) = caller.data().request.services() else {
-                    return i64::from(host_errors::ERR_NO_SERVICES);
-                };
-                let pool = services.db.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return i64::from(host_errors::ERR_NO_SERVICES);
+                    };
+                    let pool = services.db.clone();
 
-                match do_delete(&pool, &table, &where_json).await {
-                    Ok(rows) => rows as i64,
-                    Err(code) => i64::from(code),
-                }
-            })
-        },
-    )?;
+                    match do_delete(&pool, &table, &where_json).await {
+                        Ok(rows) => rows as i64,
+                        Err(code) => i64::from(code),
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
 
     // query-raw(sql, params_json, out) -> i32 (bytes written or error)
-    linker.func_wrap_async(
-        "trovato:kernel/db",
-        "query-raw",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (sql_ptr, sql_len, params_ptr, params_len, out_ptr, out_max_len): (
-            i32,
-            i32,
-            i32,
-            i32,
-            i32,
-            i32,
-        )| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return host_errors::ERR_MEMORY_MISSING;
-                };
+    linker
+        .func_wrap_async(
+            "trovato:kernel/db",
+            "query-raw",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (sql_ptr, sql_len, params_ptr, params_len, out_ptr, out_max_len): (
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+            )| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
 
-                let Ok(sql) = read_string_from_memory(&memory, &caller, sql_ptr, sql_len) else {
-                    return host_errors::ERR_PARAM1_READ;
-                };
+                    let Ok(sql) = read_string_from_memory(&memory, &caller, sql_ptr, sql_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
 
-                let Ok(params_json) =
-                    read_string_from_memory(&memory, &caller, params_ptr, params_len)
-                else {
-                    return host_errors::ERR_PARAM2_OR_OUTPUT;
-                };
+                    let Ok(params_json) =
+                        read_string_from_memory(&memory, &caller, params_ptr, params_len)
+                    else {
+                        return host_errors::ERR_PARAM2_OR_OUTPUT;
+                    };
 
-                let Some(services) = caller.data().request.services() else {
-                    return host_errors::ERR_NO_SERVICES;
-                };
-                let pool = services.db.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return host_errors::ERR_NO_SERVICES;
+                    };
+                    let pool = services.db.clone();
 
-                let params: Vec<serde_json::Value> = match serde_json::from_str(&params_json) {
-                    Ok(p) => p,
-                    Err(_) => return host_errors::ERR_PARAM_DESERIALIZE,
-                };
+                    let params: Vec<serde_json::Value> = match serde_json::from_str(&params_json) {
+                        Ok(p) => p,
+                        Err(_) => return host_errors::ERR_PARAM_DESERIALIZE,
+                    };
 
-                match do_query_raw(&pool, &sql, &params).await {
-                    Ok(result) => {
-                        write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &result)
-                            .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT)
+                    match do_query_raw(&pool, &sql, &params).await {
+                        Ok(result) => write_string_to_memory(
+                            &memory,
+                            &mut caller,
+                            out_ptr,
+                            out_max_len,
+                            &result,
+                        )
+                        .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT),
+                        Err(code) => code,
                     }
-                    Err(code) => code,
-                }
-            })
-        },
-    )?;
+                })
+            },
+        )
+        .into_anyhow()?;
 
     // execute-raw(sql, params_json) -> i64 (rows affected or error)
-    linker.func_wrap_async(
-        "trovato:kernel/db",
-        "execute-raw",
-        |mut caller: wasmtime::Caller<'_, PluginState>,
-         (sql_ptr, sql_len, params_ptr, params_len): (i32, i32, i32, i32)| {
-            Box::new(async move {
-                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return i64::from(host_errors::ERR_MEMORY_MISSING);
-                };
+    linker
+        .func_wrap_async(
+            "trovato:kernel/db",
+            "execute-raw",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (sql_ptr, sql_len, params_ptr, params_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return i64::from(host_errors::ERR_MEMORY_MISSING);
+                    };
 
-                let Ok(sql) = read_string_from_memory(&memory, &caller, sql_ptr, sql_len) else {
-                    return i64::from(host_errors::ERR_PARAM1_READ);
-                };
+                    let Ok(sql) = read_string_from_memory(&memory, &caller, sql_ptr, sql_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM1_READ);
+                    };
 
-                let Ok(params_json) =
-                    read_string_from_memory(&memory, &caller, params_ptr, params_len)
-                else {
-                    return i64::from(host_errors::ERR_PARAM2_OR_OUTPUT);
-                };
+                    let Ok(params_json) =
+                        read_string_from_memory(&memory, &caller, params_ptr, params_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM2_OR_OUTPUT);
+                    };
 
-                let Some(services) = caller.data().request.services() else {
-                    return i64::from(host_errors::ERR_NO_SERVICES);
-                };
-                let pool = services.db.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return i64::from(host_errors::ERR_NO_SERVICES);
+                    };
+                    let pool = services.db.clone();
 
-                let params: Vec<serde_json::Value> = match serde_json::from_str(&params_json) {
-                    Ok(p) => p,
-                    Err(_) => return i64::from(host_errors::ERR_PARAM_DESERIALIZE),
-                };
+                    let params: Vec<serde_json::Value> = match serde_json::from_str(&params_json) {
+                        Ok(p) => p,
+                        Err(_) => return i64::from(host_errors::ERR_PARAM_DESERIALIZE),
+                    };
 
-                match do_execute_raw(&pool, &sql, &params).await {
-                    Ok(rows) => rows as i64,
-                    Err(code) => i64::from(code),
-                }
-            })
-        },
-    )?;
+                    match do_execute_raw(&pool, &sql, &params).await {
+                        Ok(rows) => rows as i64,
+                        Err(code) => i64::from(code),
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
 
     Ok(())
 }
@@ -762,8 +792,7 @@ mod tests {
 
     #[test]
     fn register_db_succeeds() {
-        let mut config = wasmtime::Config::new();
-        config.async_support(true);
+        let config = wasmtime::Config::new();
         let engine = Engine::new(&config).unwrap();
         let mut linker: Linker<PluginState> = Linker::new(&engine);
 

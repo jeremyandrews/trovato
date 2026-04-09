@@ -54,7 +54,6 @@ fn create_runtime_custom_config() {
     let config = PluginConfig {
         max_instances: 100,
         max_memory_pages: 256,
-        async_support: true,
     };
     let runtime = PluginRuntime::new(&config);
     assert!(
@@ -431,8 +430,7 @@ fn request_state_context_store() {
 /// Test that all host functions can be registered successfully.
 #[test]
 fn host_functions_register_all() {
-    let mut config = wasmtime::Config::new();
-    config.async_support(true);
+    let config = wasmtime::Config::new();
     let engine = Engine::new(&config).unwrap();
     let mut linker: Linker<PluginState> = Linker::new(&engine);
 

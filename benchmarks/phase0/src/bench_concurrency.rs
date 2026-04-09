@@ -65,6 +65,7 @@ pub async fn run_concurrency_benchmark(
             let instance = host
                 .linker
                 .instantiate(&mut store, &module)
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
                 .context("failed to instantiate plugin")?;
 
             let instantiation_elapsed = total_start.elapsed();
@@ -72,11 +73,14 @@ pub async fn run_concurrency_benchmark(
             // Get the tap function
             let tap_item_view: wasmtime::TypedFunc<i32, i64> = instance
                 .get_typed_func(&mut store, "tap_item_view")
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
                 .context("failed to get tap_item_view")?;
 
             // Time just the tap call
             let tap_start = Instant::now();
-            let result = tap_item_view.call(&mut store, 0)?;
+            let result = tap_item_view
+                .call(&mut store, 0)
+                .map_err(|e| anyhow::anyhow!("{e:#}"))?;
             let tap_elapsed = tap_start.elapsed();
 
             let total_elapsed = total_start.elapsed();

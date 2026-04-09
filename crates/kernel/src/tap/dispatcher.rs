@@ -10,7 +10,7 @@ use tracing::{debug, error, warn};
 use wasmtime::{Instance, Store, TypedFunc};
 
 use super::{RequestState, TapHandler, TapRegistry};
-use crate::plugin::{PluginRuntime, PluginState};
+use crate::plugin::{PluginRuntime, PluginState, WasmtimeExt};
 
 /// Background tap names that may make many network or DB calls.
 ///
@@ -198,6 +198,7 @@ impl TapDispatcher {
             .linker()
             .instantiate_async(&mut store, &plugin.module)
             .await
+            .into_anyhow()
             .with_context(|| format!("failed to instantiate plugin '{}'", plugin.info.name))?;
 
         // Get the tap function export
@@ -219,6 +220,7 @@ fn get_tap_function(
     // Use tap name directly as export name (e.g., "tap_item_view" stays "tap_item_view")
     instance
         .get_typed_func::<(i32, i32), i64>(&mut *store, tap_name)
+        .into_anyhow()
         .with_context(|| format!("tap '{tap_name}' not exported"))
 }
 
@@ -257,6 +259,7 @@ async fn call_tap_function(
     let result = func
         .call_async(&mut *store, (input_offset, input_bytes.len() as i32))
         .await
+        .into_anyhow()
         .context("tap function call failed")?;
 
     // Decode result: high 32 bits = ptr, low 32 bits = len
