@@ -63,7 +63,7 @@
         <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
             <div class="form-item" style="flex: 1; min-width: 200px;">
                 <label for="new_field_label" class="form-item__label form-item__label--required">Label</label>
-                <input type="text" id="new_field_label" name="label" class="form-text" required>
+                <input type="text" id="new_field_label" name="label" class="form-text" required data-machine-name-source="new_field_name" data-machine-name-prefix="field_" data-machine-name-max="32">
             </div>
 
             <div class="form-item" style="flex: 1; min-width: 200px;">
@@ -98,21 +98,5 @@
     </form>
 </div>
 
-<script>
-// Auto-generate machine name from label
-document.getElementById('new_field_label').addEventListener('input', function(e) {
-    const machineNameInput = document.getElementById('new_field_name');
-    if (!machineNameInput.dataset.userEdited) {
-        machineNameInput.value = 'field_' + e.target.value
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '_')
-            .replace(/^_+|_+$/g, '')
-            .substring(0, 26);
-    }
-});
-
-document.getElementById('new_field_name').addEventListener('input', function() {
-    this.dataset.userEdited = 'true';
-});
-</script>
+{# Machine name auto-generation handled by admin-helpers.js via data attributes on the label input #}
 {% endblock %}

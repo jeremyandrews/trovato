@@ -118,32 +118,5 @@
 </div>
 {% endif %}
 
-<script>
-document.querySelectorAll('.js-test-connection').forEach(function(form) {
-    form.addEventListener('submit', function(e) {
-        e.preventDefault();
-        var resultDiv = document.getElementById('test-result');
-        var msgEl = document.getElementById('test-message');
-        var latEl = document.getElementById('test-latency');
-        msgEl.textContent = 'Testing connection...';
-        latEl.textContent = '';
-        resultDiv.style.display = 'block';
-
-        fetch(form.action, {
-            method: 'POST',
-            body: new FormData(form)
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            msgEl.textContent = (data.success ? '\u2705 ' : '\u274c ') + data.message;
-            latEl.textContent = 'Latency: ' + data.latency_ms + 'ms';
-            msgEl.style.color = data.success ? 'var(--success, green)' : 'var(--danger, red)';
-        })
-        .catch(function(err) {
-            msgEl.textContent = '\u274c Request failed: ' + err;
-            msgEl.style.color = 'var(--danger, red)';
-        });
-    });
-});
-</script>
+<script src="/static/js/ai-admin.js"></script>
 {% endblock %}

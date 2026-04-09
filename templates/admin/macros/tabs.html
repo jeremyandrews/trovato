@@ -21,38 +21,5 @@
         {% endfor %}
     </ul>
 </nav>
-<script>
-(function() {
-    var tablists = document.querySelectorAll('[role="tablist"]');
-    tablists.forEach(function(tablist) {
-        var tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
-        if (tabs.length < 2) return;
-
-        tablist.addEventListener('keydown', function(e) {
-            var current = document.activeElement;
-            var index = tabs.indexOf(current);
-            if (index === -1) return;
-
-            var newIndex = index;
-            if (e.key === 'ArrowRight') {
-                newIndex = (index + 1) % tabs.length;
-            } else if (e.key === 'ArrowLeft') {
-                newIndex = (index - 1 + tabs.length) % tabs.length;
-            } else if (e.key === 'Home') {
-                newIndex = 0;
-            } else if (e.key === 'End') {
-                newIndex = tabs.length - 1;
-            } else {
-                return;
-            }
-
-            e.preventDefault();
-            tabs[index].setAttribute('tabindex', '-1');
-            tabs[newIndex].setAttribute('tabindex', '0');
-            tabs[newIndex].focus();
-        });
-    });
-})();
-</script>
 {% endif %}
 {% endmacro tab_bar %}

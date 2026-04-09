@@ -96,46 +96,37 @@
 
 <link rel="stylesheet" href="/static/css/scolta.css">
 
-{# Scolta configuration — injected from site config #}
-<script>
-window.scolta = {
-    container: '#scolta-search',
-    pagefindPath: '/static/pagefind/pagefind.js',
-    siteName: '{{ site_name | default(value="Trovato") }}',
-    endpoints: {
-        expand: '/api/v1/search/expand',
-        summarize: '/api/v1/search/summarize',
-        followup: '/api/v1/search/followup'
+{# Scolta configuration — data block not subject to CSP (type="application/json" does not execute) #}
+<script id="scolta-config" type="application/json">
+{
+    "container": "#scolta-search",
+    "pagefindPath": "/static/pagefind/pagefind.js",
+    "siteName": "{{ site_name | default(value='Trovato') }}",
+    "endpoints": {
+        "expand": "/api/v1/search/expand",
+        "summarize": "/api/v1/search/summarize",
+        "followup": "/api/v1/search/followup"
     },
-    scoring: {
-        RECENCY_BOOST_MAX: 0.5,
-        RECENCY_HALF_LIFE_DAYS: 365,
-        RECENCY_PENALTY_AFTER_DAYS: 1825,
-        RECENCY_MAX_PENALTY: 0.3,
-        TITLE_MATCH_BOOST: 1.0,
-        TITLE_ALL_TERMS_MULTIPLIER: 1.5,
-        CONTENT_MATCH_BOOST: 0.4,
-        EXCERPT_LENGTH: 300,
-        RESULTS_PER_PAGE: 10,
-        MAX_PAGEFIND_RESULTS: 50,
-        AI_EXPAND_QUERY: true,
-        AI_SUMMARIZE: true,
-        AI_SUMMARY_TOP_N: 5,
-        AI_SUMMARY_MAX_CHARS: 2000,
-        AI_MAX_FOLLOWUPS: 3
+    "scoring": {
+        "RECENCY_BOOST_MAX": 0.5,
+        "RECENCY_HALF_LIFE_DAYS": 365,
+        "RECENCY_PENALTY_AFTER_DAYS": 1825,
+        "RECENCY_MAX_PENALTY": 0.3,
+        "TITLE_MATCH_BOOST": 1.0,
+        "TITLE_ALL_TERMS_MULTIPLIER": 1.5,
+        "CONTENT_MATCH_BOOST": 0.4,
+        "EXCERPT_LENGTH": 300,
+        "RESULTS_PER_PAGE": 10,
+        "MAX_PAGEFIND_RESULTS": 50,
+        "AI_EXPAND_QUERY": true,
+        "AI_SUMMARIZE": true,
+        "AI_SUMMARY_TOP_N": 5,
+        "AI_SUMMARY_MAX_CHARS": 2000,
+        "AI_MAX_FOLLOWUPS": 3
     },
-    disclaimer: ''
-};
+    "disclaimer": ""
+}
 </script>
 <script src="/static/js/scolta.js"></script>
-<script>
-// Hide the server-side fallback when scolta.js initializes
-document.addEventListener('DOMContentLoaded', function() {
-    var fallback = document.getElementById('search-fallback');
-    if (fallback && typeof Scolta !== 'undefined') {
-        fallback.style.display = 'none';
-        Scolta.init('#scolta-search');
-    }
-});
-</script>
+<script src="/static/js/search-init.js"></script>
 {% endblock %}

@@ -165,16 +165,5 @@
         width: 2rem;
     }
 </style>
-<script>
-document.getElementById('select-all')?.addEventListener('change', function(e) {
-    document.querySelectorAll('input[name="ids[]"]').forEach(function(cb) {
-        cb.checked = e.target.checked;
-    });
-});
-document.getElementById('bulk-form')?.addEventListener('submit', function(e) {
-    var action = this.querySelector('[name="action"]').value;
-    if (!action) { e.preventDefault(); return; }
-    if (action === 'delete' && !confirm('Delete selected items?')) { e.preventDefault(); }
-});
-</script>
+{# Bulk actions handled by admin-helpers.js #}
 {% endblock %}

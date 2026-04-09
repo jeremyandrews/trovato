@@ -109,16 +109,5 @@
     </form>
 </div>
 
-<script>
-function toggleTypeFields(type) {
-    document.querySelectorAll('.tile-type-fields').forEach(el => el.style.display = 'none');
-    const target = document.getElementById('fields-' + type);
-    if (target) target.style.display = 'block';
-}
-// Initialize on load
-(function() {
-    var sel = document.getElementById('tile_type');
-    if (sel) toggleTypeFields(sel.value);
-})();
-</script>
+{# Tile type field toggling handled by admin-helpers.js #}
 {% endblock %}

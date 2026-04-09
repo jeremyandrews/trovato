@@ -205,15 +205,5 @@
 {% block scripts %}
 {{ super() }}
 <script src="/static/js/file-upload.js"></script>
-<script>
-document.addEventListener('click', function(e) {
-    var btn = e.target.closest('[data-confirm]');
-    if (btn) {
-        var msg = btn.getAttribute('data-confirm');
-        if (!confirm(msg)) {
-            e.preventDefault();
-        }
-    }
-});
-</script>
+<script src="/static/js/admin-helpers.js"></script>
 {% endblock %}

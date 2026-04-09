@@ -20,16 +20,17 @@ static PERMISSIONS: HeaderValue =
     HeaderValue::from_static("camera=(), microphone=(), geolocation=()");
 static HSTS: HeaderValue = HeaderValue::from_static("max-age=31536000; includeSubDomains");
 
-/// The default CSP policy (no report-uri variant).
 /// The default CSP policy.
 ///
-/// `script-src` includes `'unsafe-inline'` because several pages inject
-/// configuration via inline `<script>` blocks (Scolta search config,
-/// Editor.js initialization, Trovato AJAX init). A future improvement
-/// would use nonce-based CSP to avoid unsafe-inline.
+/// All inline scripts have been externalized to static JS files.
+/// Template-dependent data is passed via `<script type="application/json">`
+/// data blocks (which are not subject to CSP because they don't execute).
+///
+/// `style-src` keeps `'unsafe-inline'` because 100+ inline `style=`
+/// attributes would break without it; inline styles are a low XSS risk.
 static DEFAULT_CSP: HeaderValue = HeaderValue::from_static(
     "default-src 'self'; \
-     script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; \
+     script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; \
      style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
      img-src 'self' data:; \
      font-src 'self' https://fonts.gstatic.com; \
@@ -57,9 +58,9 @@ pub async fn inject_security_headers(request: Request<Body>, next: Next) -> Resp
     let headers = response.headers_mut();
 
     // Content-Security-Policy
-    // style-src includes 'unsafe-inline' because base.html has inline <style>.
-    // This is tracked as tech debt — extracting styles to a static file
-    // would allow removing 'unsafe-inline'.
+    // script-src no longer includes 'unsafe-inline' — all inline scripts have been
+    // externalized to static JS files. style-src keeps 'unsafe-inline' for inline
+    // style= attributes (low XSS risk).
     let csp_report_only = std::env::var("CSP_REPORT_ONLY")
         .ok()
         .is_some_and(|v| v == "true" || v == "1");

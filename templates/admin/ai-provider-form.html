@@ -93,40 +93,9 @@
     </form>
 </div>
 
-<script>
-(function() {
-    var container = document.getElementById('model-rows');
-    var addBtn = document.getElementById('add-model-row');
-    var optionsHtml = '';
-    {% for op in operations %}
-    optionsHtml += '<option value="{{ op.key }}">{{ op.label }}</option>';
-    {% endfor %}
-
-    function getNextIndex() {
-        var rows = container.querySelectorAll('.form-item--inline');
-        return rows.length;
-    }
-
-    addBtn.addEventListener('click', function() {
-        var idx = getNextIndex();
-        var row = document.createElement('div');
-        row.className = 'form-item form-item--inline';
-        row.style.cssText = 'display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem;';
-        row.innerHTML =
-            '<select name="op_' + idx + '" style="flex: 1;"><option value="">— Select operation —</option>' + optionsHtml + '</select>' +
-            '<input type="text" name="model_' + idx + '" value="" placeholder="Model ID (e.g. gpt-4o)" style="flex: 2;">' +
-            '<button type="button" class="button button--small button--danger js-remove-row" title="Remove">&times;</button>';
-        container.appendChild(row);
-    });
-
-    container.addEventListener('click', function(e) {
-        if (e.target.classList.contains('js-remove-row')) {
-            var row = e.target.closest('.form-item--inline');
-            if (container.querySelectorAll('.form-item--inline').length > 1) {
-                row.remove();
-            }
-        }
-    });
-})();
+{# Operations data block — not subject to CSP (type="application/json" does not execute) #}
+<script id="ai-operations" type="application/json">
+[{% for op in operations %}{"key": "{{ op.key }}", "label": "{{ op.label }}"}{% if not loop.last %}, {% endif %}{% endfor %}]
 </script>
+<script src="/static/js/ai-admin.js"></script>
 {% endblock %}

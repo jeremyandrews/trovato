@@ -17,7 +17,7 @@
             <input type="text" id="label" name="label" class="form-text"
                    value="{{ values.label | default(value='') }}"
                    required
-                   data-machine-name-source="#id">
+                   data-machine-name-source="id">
             <p class="form-item__description">The human-readable name of this category.</p>
         </div>
 
@@ -54,21 +54,5 @@
     </form>
 </div>
 
-<script>
-// Auto-generate machine name from label
-document.getElementById('label').addEventListener('input', function(e) {
-    const machineNameInput = document.getElementById('id');
-    if (!machineNameInput.readOnly && !machineNameInput.dataset.userEdited) {
-        machineNameInput.value = e.target.value
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '_')
-            .replace(/^_+|_+$/g, '')
-            .substring(0, 32);
-    }
-});
-
-document.getElementById('id').addEventListener('input', function() {
-    this.dataset.userEdited = 'true';
-});
-</script>
+{# Machine name auto-generation handled by admin-helpers.js via data attributes on the label input #}
 {% endblock %}
