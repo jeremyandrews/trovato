@@ -13,6 +13,9 @@
 {% if has_compound %}
 <link rel="stylesheet" href="/static/css/compound-field.css">
 {% endif %}
+{% if has_file %}
+<link rel="stylesheet" href="/static/css/media-picker.css">
+{% endif %}
 {% if has_blocks %}
 <link rel="stylesheet" href="/static/css/block-editor.css">
 {% endif %}
@@ -91,6 +94,7 @@
                 </div>
                 <div class="file-upload-widget__input" {% if file_val %}style="display:none"{% endif %}>
                     <input type="file" class="file-upload-widget__file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.gz">
+                    <button type="button" class="button button--small media-picker-browse" data-target="{{ field.field_name }}">Browse media</button>
                     <span class="file-upload-widget__status"></span>
                 </div>
                 <p class="form-item__description">Max 10 MB. Allowed: images, PDFs, documents, archives.</p>
@@ -155,6 +159,7 @@
 {% endif %}
 {% if has_file %}
 <script src="/static/js/file-upload.js"></script>
+<script src="/static/js/media-picker.js"></script>
 {% endif %}
 {% if has_blocks %}
 <script src="https://cdn.jsdelivr.net/npm/@editorjs/editorjs@2.31.5/dist/editorjs.umd.js"></script>

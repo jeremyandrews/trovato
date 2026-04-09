@@ -209,25 +209,28 @@ async fn create_comment(
             )
         })?;
 
-    // Verify item exists
-    let item = state.items().load(item_id).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to load item");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
-
-    if item.is_none() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Item not found".to_string(),
-            }),
-        ));
-    }
+    // Verify item exists (used for notification below)
+    let item = state
+        .items()
+        .load(item_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to load item");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: "Internal server error".to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(JsonError {
+                    error: "Item not found".to_string(),
+                }),
+            )
+        })?;
 
     // Verify parent comment exists if specified
     if let Some(parent_id) = request.parent_id {
@@ -337,8 +340,8 @@ async fn create_comment(
             )
         })?;
 
-    // Get author info
-    let author = state
+    // Get commenter info
+    let commenter = state
         .users()
         .find_by_id(user_id)
         .await
@@ -349,6 +352,35 @@ async fn create_comment(
             name: u.name,
         });
 
+    // Send comment notification to content author (non-blocking)
+    if let Some(email_service) = state.email() {
+        // Only notify when commenter is not the content author
+        if comment.author_id != item.author_id {
+            let notification_state = state.clone();
+            let email = email_service.clone();
+            let comment_body = comment.body.clone();
+            let item_title = item.title.clone();
+            let item_author_id = item.author_id;
+            let commenter_name = commenter
+                .as_ref()
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| "Someone".to_string());
+
+            tokio::spawn(async move {
+                send_comment_notification(
+                    &notification_state,
+                    &email,
+                    item_author_id,
+                    &commenter_name,
+                    &item_title,
+                    &comment_body,
+                    item_id,
+                )
+                .await;
+            });
+        }
+    }
+
     let body_html = render_comment_body(&comment);
 
     Ok(Json(CommentResponse {
@@ -356,7 +388,7 @@ async fn create_comment(
         item_id: comment.item_id,
         parent_id: comment.parent_id,
         author_id: comment.author_id,
-        author,
+        author: commenter,
         body: comment.body,
         body_html,
         status: comment.status,
@@ -727,6 +759,78 @@ async fn delete_comment(
     })?;
 
     Ok(Json(serde_json::json!({"deleted": true})))
+}
+
+// =============================================================================
+// Notification helpers
+// =============================================================================
+
+/// Send a comment notification email to the content author.
+///
+/// This is called in a background task and must not panic. All errors
+/// are logged but silently swallowed.
+async fn send_comment_notification(
+    state: &AppState,
+    email_service: &std::sync::Arc<crate::services::email::EmailService>,
+    item_author_id: uuid::Uuid,
+    commenter_name: &str,
+    item_title: &str,
+    comment_text: &str,
+    item_id: uuid::Uuid,
+) {
+    // Load the content author's email
+    let author = match state.users().find_by_id(item_author_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            tracing::debug!("comment notification: author not found");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "comment notification: failed to load author");
+            return;
+        }
+    };
+
+    if author.mail.is_empty() {
+        return;
+    }
+
+    let site_name = crate::models::SiteConfig::site_name(state.db())
+        .await
+        .unwrap_or_else(|_| "Trovato".to_string());
+    let site_url = email_service.site_url();
+    let action_url = format!("{site_url}/item/{item_id}");
+    let subject = format!("New comment on \"{item_title}\" at {site_name}");
+
+    // Truncate comment preview for email
+    let preview: &str = if comment_text.len() > 500 {
+        &comment_text[..500]
+    } else {
+        comment_text
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("site_name", &site_name);
+    context.insert("commenter_name", commenter_name);
+    context.insert("content_title", item_title);
+    context.insert("comment_text", preview);
+    context.insert("action_url", &action_url);
+    context.insert("subject", &subject);
+
+    let tera = state.theme().tera();
+    match crate::services::email_templates::render(tera, "comment_notification", &context) {
+        Ok((html, text)) => {
+            if let Err(e) = email_service
+                .send_templated(&author.mail, &subject, &text, html.as_deref())
+                .await
+            {
+                tracing::warn!(error = %e, "comment notification: failed to send email");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "comment notification: failed to render template");
+        }
+    }
 }
 
 // =============================================================================

@@ -711,6 +711,55 @@ async fn do_register(
         );
     }
 
+    // Notify admin of new registration (if configured)
+    if let Some(email_svc) = state.email()
+        && let Ok(Some(notify_val)) = SiteConfig::get(state.db(), "notify_admin_on_register").await
+        && notify_val.as_bool().unwrap_or(false)
+    {
+        let admin_mail = SiteConfig::site_mail(state.db()).await.unwrap_or_default();
+        if !admin_mail.is_empty() {
+            let email = email_svc.clone();
+            let site_url = email_svc.site_url().to_string();
+            let user_name = username.trim().to_string();
+            let user_mail = mail.trim().to_string();
+            let site = site_name.clone();
+            let tera = state.theme().tera().clone();
+            let dest = admin_mail.clone();
+
+            tokio::spawn(async move {
+                let action_url = format!("{site_url}/admin/users");
+                let subject = format!("New user registration at {site}: {user_name}");
+
+                let mut ctx = tera::Context::new();
+                ctx.insert("site_name", &site);
+                ctx.insert("username", &user_name);
+                ctx.insert("user_email", &user_mail);
+                ctx.insert("action_url", &action_url);
+                ctx.insert("subject", &subject);
+
+                match crate::services::email_templates::render(&tera, "admin_new_user", &ctx) {
+                    Ok((html, text)) => {
+                        if let Err(e) = email
+                            .send_templated(&dest, &subject, &text, html.as_deref())
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "admin registration notification: failed to send"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "admin registration notification: template render failed"
+                        );
+                    }
+                }
+            });
+        }
+    }
+
     info!(user_id = %user.id, "user registered (pending verification)");
     Ok(RegistrationResult { email_sent })
 }
