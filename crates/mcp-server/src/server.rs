@@ -370,3 +370,250 @@ impl ServerHandler for TrovatoMcpServer {
         resources::read_resource(&self.state, &self.user_ctx, request).await
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // ListItemsParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn list_items_params_deserialize_full() {
+        let json = serde_json::json!({
+            "content_type": "article",
+            "status": 1,
+            "author_id": "550e8400-e29b-41d4-a716-446655440000",
+            "page": 2,
+            "per_page": 50,
+        });
+        let params: ListItemsParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.content_type.as_deref(), Some("article"));
+        assert_eq!(params.status, Some(1));
+        assert_eq!(
+            params.author_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(params.page, Some(2));
+        assert_eq!(params.per_page, Some(50));
+    }
+
+    #[test]
+    fn list_items_params_deserialize_minimal() {
+        let json = serde_json::json!({});
+        let params: ListItemsParams = serde_json::from_value(json).expect("should deserialize");
+        assert!(params.content_type.is_none());
+        assert!(params.status.is_none());
+        assert!(params.author_id.is_none());
+        assert!(params.page.is_none());
+        assert!(params.per_page.is_none());
+    }
+
+    // =========================================================================
+    // GetItemParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn get_item_params_deserialize() {
+        let json = serde_json::json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
+        let params: GetItemParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.id, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn get_item_params_requires_id() {
+        let json = serde_json::json!({});
+        let result = serde_json::from_value::<GetItemParams>(json);
+        assert!(result.is_err(), "should require 'id' parameter");
+    }
+
+    // =========================================================================
+    // CreateItemParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn create_item_params_deserialize_full() {
+        let json = serde_json::json!({
+            "content_type": "article",
+            "title": "New Article",
+            "status": 1,
+            "fields": {"body": {"value": "<p>Hello</p>"}},
+        });
+        let params: CreateItemParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.content_type, "article");
+        assert_eq!(params.title, "New Article");
+        assert_eq!(params.status, Some(1));
+        assert!(params.fields.is_some());
+    }
+
+    #[test]
+    fn create_item_params_requires_content_type_and_title() {
+        let json = serde_json::json!({"title": "Test"});
+        assert!(serde_json::from_value::<CreateItemParams>(json).is_err());
+
+        let json = serde_json::json!({"content_type": "page"});
+        assert!(serde_json::from_value::<CreateItemParams>(json).is_err());
+    }
+
+    #[test]
+    fn create_item_params_minimal() {
+        let json = serde_json::json!({
+            "content_type": "page",
+            "title": "Minimal",
+        });
+        let params: CreateItemParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.content_type, "page");
+        assert_eq!(params.title, "Minimal");
+        assert!(params.status.is_none());
+        assert!(params.fields.is_none());
+    }
+
+    // =========================================================================
+    // UpdateItemParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn update_item_params_deserialize_full() {
+        let json = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "title": "Updated",
+            "status": 0,
+            "fields": {"body": {"value": "new body"}},
+            "log": "Updated via test",
+        });
+        let params: UpdateItemParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(params.title.as_deref(), Some("Updated"));
+        assert_eq!(params.status, Some(0));
+        assert!(params.fields.is_some());
+        assert_eq!(params.log.as_deref(), Some("Updated via test"));
+    }
+
+    #[test]
+    fn update_item_params_requires_id() {
+        let json = serde_json::json!({"title": "Updated"});
+        assert!(serde_json::from_value::<UpdateItemParams>(json).is_err());
+    }
+
+    #[test]
+    fn update_item_params_minimal() {
+        let json = serde_json::json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
+        let params: UpdateItemParams = serde_json::from_value(json).expect("should deserialize");
+        assert!(params.title.is_none());
+        assert!(params.status.is_none());
+        assert!(params.fields.is_none());
+        assert!(params.log.is_none());
+    }
+
+    // =========================================================================
+    // DeleteItemParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn delete_item_params_deserialize() {
+        let json = serde_json::json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
+        let params: DeleteItemParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.id, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn delete_item_params_requires_id() {
+        let json = serde_json::json!({});
+        assert!(serde_json::from_value::<DeleteItemParams>(json).is_err());
+    }
+
+    // =========================================================================
+    // SearchParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn search_params_deserialize_full() {
+        let json = serde_json::json!({
+            "query": "rust conference",
+            "limit": 10,
+            "offset": 20,
+        });
+        let params: SearchParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.query, "rust conference");
+        assert_eq!(params.limit, Some(10));
+        assert_eq!(params.offset, Some(20));
+    }
+
+    #[test]
+    fn search_params_requires_query() {
+        let json = serde_json::json!({"limit": 10});
+        assert!(serde_json::from_value::<SearchParams>(json).is_err());
+    }
+
+    #[test]
+    fn search_params_minimal() {
+        let json = serde_json::json!({"query": "test"});
+        let params: SearchParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.query, "test");
+        assert!(params.limit.is_none());
+        assert!(params.offset.is_none());
+    }
+
+    // =========================================================================
+    // ListTagsParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn list_tags_params_deserialize() {
+        let json = serde_json::json!({"category_id": "topics"});
+        let params: ListTagsParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.category_id, "topics");
+    }
+
+    #[test]
+    fn list_tags_params_requires_category_id() {
+        let json = serde_json::json!({});
+        assert!(serde_json::from_value::<ListTagsParams>(json).is_err());
+    }
+
+    // =========================================================================
+    // RunGatherParams deserialization
+    // =========================================================================
+
+    #[test]
+    fn run_gather_params_deserialize_full() {
+        let json = serde_json::json!({
+            "query_id": "conferences_list",
+            "page": 3,
+            "filters": {"topic": "rust", "year": 2025},
+        });
+        let params: RunGatherParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.query_id, "conferences_list");
+        assert_eq!(params.page, Some(3));
+        let filters = params.filters.expect("should have filters");
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters["topic"], serde_json::json!("rust"));
+        assert_eq!(filters["year"], serde_json::json!(2025));
+    }
+
+    #[test]
+    fn run_gather_params_requires_query_id() {
+        let json = serde_json::json!({"page": 1});
+        assert!(serde_json::from_value::<RunGatherParams>(json).is_err());
+    }
+
+    #[test]
+    fn run_gather_params_minimal() {
+        let json = serde_json::json!({"query_id": "my_query"});
+        let params: RunGatherParams = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(params.query_id, "my_query");
+        assert!(params.page.is_none());
+        assert!(params.filters.is_none());
+    }
+
+    // =========================================================================
+    // SESSION_REVALIDATION_SECS
+    // =========================================================================
+
+    #[test]
+    fn session_revalidation_interval_is_five_minutes() {
+        assert_eq!(SESSION_REVALIDATION_SECS, 300);
+    }
+}

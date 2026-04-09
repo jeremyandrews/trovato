@@ -497,8 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_unique_violation_is_conflict() {
-        // PostgreSQL error code 23505 = unique_violation
+    fn classify_row_not_found_is_404() {
         assert_eq!(
             classify_db_status(&sqlx::Error::RowNotFound),
             StatusCode::NOT_FOUND
@@ -506,9 +505,31 @@ mod tests {
     }
 
     #[test]
-    fn pool_timeout_message() {
+    fn pool_timeout_message_is_user_friendly() {
         let msg = classify_db_error(&sqlx::Error::PoolTimedOut, "query");
-        assert!(msg.contains("busy"));
+        assert!(msg.contains("busy") || msg.contains("try again"));
+    }
+
+    #[test]
+    fn pool_closed_message() {
+        let msg = classify_db_error(&sqlx::Error::PoolClosed, "query");
+        assert!(msg.contains("unavailable"));
+    }
+
+    #[test]
+    fn pool_timeout_status_is_500() {
+        assert_eq!(
+            classify_db_status(&sqlx::Error::PoolTimedOut),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn pool_closed_status_is_500() {
+        assert_eq!(
+            classify_db_status(&sqlx::Error::PoolClosed),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]

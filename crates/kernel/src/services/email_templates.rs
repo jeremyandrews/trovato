@@ -89,6 +89,14 @@ mod tests {
     }
 
     #[test]
+    fn render_missing_template_fails() {
+        let tera = test_tera();
+        let ctx = tera::Context::new();
+        let result = render(&tera, "nonexistent_template_xyz", &ctx);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn render_admin_new_user() {
         let tera = test_tera();
         let mut ctx = tera::Context::new();

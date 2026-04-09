@@ -160,8 +160,10 @@ impl RateLimiter {
 
 /// Categorize a request path for rate limiting.
 pub fn categorize_path(path: &str, method: &str) -> &'static str {
-    if (path.starts_with("/user/login") || path.starts_with("/user/register")) && method == "POST" {
+    if path.starts_with("/user/login") && method == "POST" {
         "login"
+    } else if path.starts_with("/user/register") && method == "POST" {
+        "register"
     } else if path.starts_with("/file/upload") {
         "uploads"
     } else if path.starts_with("/search") || path.starts_with("/api/search") {
@@ -288,16 +290,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_categorize_path() {
+    fn categorize_login_paths() {
         assert_eq!(categorize_path("/user/login", "POST"), "login");
         assert_eq!(categorize_path("/user/login/json", "POST"), "login");
-        assert_eq!(categorize_path("/user/register", "POST"), "login");
-        assert_eq!(categorize_path("/user/register/json", "POST"), "login");
+    }
+
+    #[test]
+    fn categorize_register_paths() {
+        assert_eq!(categorize_path("/user/register", "POST"), "register");
+        assert_eq!(categorize_path("/user/register/json", "POST"), "register");
+    }
+
+    #[test]
+    fn categorize_upload_paths() {
         assert_eq!(categorize_path("/file/upload", "POST"), "uploads");
+    }
+
+    #[test]
+    fn categorize_search_paths() {
         assert_eq!(categorize_path("/search", "GET"), "search");
         assert_eq!(categorize_path("/api/search", "GET"), "search");
+    }
+
+    #[test]
+    fn categorize_api_paths() {
         assert_eq!(categorize_path("/api/items", "GET"), "api");
+        assert_eq!(categorize_path("/api/v1/chat", "POST"), "api");
+    }
+
+    #[test]
+    fn categorize_form_submission() {
         assert_eq!(categorize_path("/item/123", "POST"), "forms");
+        assert_eq!(categorize_path("/admin/content/add/blog", "POST"), "forms");
+    }
+
+    #[test]
+    fn categorize_default_get() {
+        assert_eq!(categorize_path("/some/page", "GET"), "api");
     }
 
     #[test]
@@ -320,5 +349,78 @@ mod tests {
                 .unwrap(),
             "60"
         );
+    }
+
+    // --- get_client_id tests ---
+
+    #[test]
+    fn client_id_from_x_forwarded_for() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
+        assert_eq!(get_client_id(None, &headers), "1.2.3.4");
+    }
+
+    #[test]
+    fn client_id_from_x_real_ip() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-real-ip", "10.0.0.1".parse().unwrap());
+        assert_eq!(get_client_id(None, &headers), "10.0.0.1");
+    }
+
+    #[test]
+    fn client_id_from_socket_addr() {
+        let addr = "192.168.1.1:8080".parse().ok();
+        assert_eq!(
+            get_client_id(addr, &axum::http::HeaderMap::new()),
+            "192.168.1.1"
+        );
+    }
+
+    #[test]
+    fn client_id_unknown_fallback() {
+        assert_eq!(
+            get_client_id(None, &axum::http::HeaderMap::new()),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn x_forwarded_for_takes_first_ip() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "1.1.1.1, 2.2.2.2, 3.3.3.3".parse().unwrap(),
+        );
+        assert_eq!(get_client_id(None, &headers), "1.1.1.1");
+    }
+
+    #[test]
+    fn x_forwarded_for_takes_priority_over_x_real_ip() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        headers.insert("x-real-ip", "10.0.0.1".parse().unwrap());
+        assert_eq!(get_client_id(None, &headers), "1.2.3.4");
+    }
+
+    #[test]
+    fn x_real_ip_takes_priority_over_socket_addr() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-real-ip", "10.0.0.1".parse().unwrap());
+        let addr = "192.168.1.1:8080".parse().ok();
+        assert_eq!(get_client_id(addr, &headers), "10.0.0.1");
+    }
+
+    #[test]
+    fn x_forwarded_for_single_ip() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
+        assert_eq!(get_client_id(None, &headers), "9.9.9.9");
+    }
+
+    #[test]
+    fn x_forwarded_for_trims_whitespace() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", " 1.2.3.4 , 5.6.7.8".parse().unwrap());
+        assert_eq!(get_client_id(None, &headers), "1.2.3.4");
     }
 }

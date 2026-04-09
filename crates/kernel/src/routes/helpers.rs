@@ -778,6 +778,81 @@ mod tests {
         assert!(!is_valid_slug(&"a".repeat(129)));
     }
 
+    // --- is_valid_machine_name tests ---
+
+    #[test]
+    fn valid_machine_name_accepts_alphanumeric_underscore() {
+        assert!(is_valid_machine_name("my_plugin_name"));
+        assert!(is_valid_machine_name("trovato_blog"));
+        assert!(is_valid_machine_name("a"));
+        assert!(is_valid_machine_name("abc123"));
+        assert!(is_valid_machine_name("field_1_value"));
+    }
+
+    #[test]
+    fn valid_machine_name_rejects_special_chars() {
+        assert!(!is_valid_machine_name("my-plugin"));
+        assert!(!is_valid_machine_name("my plugin"));
+        assert!(!is_valid_machine_name("../traversal"));
+        assert!(!is_valid_machine_name(""));
+    }
+
+    #[test]
+    fn valid_machine_name_rejects_leading_digit() {
+        assert!(!is_valid_machine_name("1field"));
+        assert!(!is_valid_machine_name("9_start"));
+    }
+
+    #[test]
+    fn valid_machine_name_rejects_leading_underscore() {
+        assert!(!is_valid_machine_name("_private"));
+    }
+
+    #[test]
+    fn valid_machine_name_rejects_uppercase() {
+        assert!(!is_valid_machine_name("MyPlugin"));
+        assert!(!is_valid_machine_name("ALLCAPS"));
+        assert!(!is_valid_machine_name("mixedCase"));
+    }
+
+    // --- build_hreflang_links tests ---
+
+    #[test]
+    fn hreflang_links_default_language_unprefixed() {
+        let languages = vec!["en".to_string(), "fr".to_string()];
+        let links = build_hreflang_links("/about", &languages, "en");
+        // en (default) should be unprefixed
+        assert_eq!(links[0]["lang"], "en");
+        assert_eq!(links[0]["href"], "/about");
+        // fr (non-default) should be prefixed
+        assert_eq!(links[1]["lang"], "fr");
+        assert_eq!(links[1]["href"], "/fr/about");
+        // x-default always unprefixed
+        assert_eq!(links[2]["lang"], "x-default");
+        assert_eq!(links[2]["href"], "/about");
+    }
+
+    #[test]
+    fn hreflang_links_single_language() {
+        let languages = vec!["en".to_string()];
+        let links = build_hreflang_links("/", &languages, "en");
+        assert_eq!(links.len(), 2); // en + x-default
+        assert_eq!(links[0]["lang"], "en");
+        assert_eq!(links[0]["href"], "/");
+        assert_eq!(links[1]["lang"], "x-default");
+        assert_eq!(links[1]["href"], "/");
+    }
+
+    #[test]
+    fn hreflang_links_non_default_all_prefixed() {
+        let languages = vec!["en".to_string(), "fr".to_string(), "de".to_string()];
+        let links = build_hreflang_links("/contact", &languages, "en");
+        assert_eq!(links.len(), 4); // 3 languages + x-default
+        // fr and de should be prefixed
+        assert_eq!(links[1]["href"], "/fr/contact");
+        assert_eq!(links[2]["href"], "/de/contact");
+    }
+
     #[test]
     fn test_admin_user_context_is_admin() {
         let user = User {

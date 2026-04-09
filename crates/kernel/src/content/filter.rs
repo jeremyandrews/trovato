@@ -585,4 +585,97 @@ mod tests {
         let output = pipeline.process(input);
         assert!(output.contains("&lt;b&gt;"));
     }
+
+    #[test]
+    fn empty_pipeline_is_passthrough() {
+        let pipeline = FilterPipeline::new();
+        let input = "<script>alert('xss')</script>";
+        let output = pipeline.process(input);
+        assert_eq!(input, output);
+    }
+
+    #[test]
+    fn pipeline_chains_filters_in_order() {
+        // plain_text = HtmlEscape then Newline
+        // HtmlEscape converts < to &lt;, then Newline converts \n to <br>\n
+        let pipeline = FilterPipeline::plain_text();
+        let input = "<b>bold</b>\nnext";
+        let output = pipeline.process(input);
+        // After escape: "&lt;b&gt;bold&lt;/b&gt;\nnext"
+        // After newline: "&lt;b&gt;bold&lt;/b&gt;<br>\nnext"
+        assert!(output.contains("&lt;b&gt;"));
+        assert!(output.contains("<br>\n"));
+    }
+
+    #[test]
+    fn url_filter_skips_urls_in_href() {
+        let filter = UrlFilter;
+        let input = r#"<a href="https://example.com">link</a>"#;
+        let output = filter.process(input);
+        // Should NOT double-wrap the URL since it's already in href
+        assert!(!output.contains(r#"<a href="<a href="#));
+        assert!(output.contains(r#"href="https://example.com""#));
+    }
+
+    #[test]
+    fn url_filter_skips_urls_in_src() {
+        let filter = UrlFilter;
+        let input = r#"<img src="https://example.com/photo.jpg">"#;
+        let output = filter.process(input);
+        assert!(!output.contains(r#"<a href="https://example.com/photo.jpg""#));
+    }
+
+    #[test]
+    fn filtered_html_preserves_table_structure() {
+        let filter = FilteredHtmlFilter;
+        let input = "<table><thead><tr><th>Header</th></tr></thead><tbody><tr><td>Cell</td></tr></tbody></table>";
+        let output = filter.process(input);
+        assert!(output.contains("<table>"));
+        assert!(output.contains("<thead>"));
+        assert!(output.contains("<tbody>"));
+        assert!(output.contains("<tr>"));
+        assert!(output.contains("<th>"));
+        assert!(output.contains("<td>"));
+    }
+
+    #[test]
+    fn filtered_html_preserves_text_formatting() {
+        let filter = FilteredHtmlFilter;
+        let input = "<p><strong>Bold</strong> and <em>italic</em> and <u>underline</u> and <s>strike</s></p>";
+        let output = filter.process(input);
+        assert!(output.contains("<strong>Bold</strong>"));
+        assert!(output.contains("<em>italic</em>"));
+        assert!(output.contains("<u>underline</u>"));
+        assert!(output.contains("<s>strike</s>"));
+    }
+
+    #[test]
+    fn filtered_html_preserves_headings() {
+        let filter = FilteredHtmlFilter;
+        for level in 1..=6 {
+            let input = format!("<h{level}>Heading {level}</h{level}>");
+            let output = filter.process(&input);
+            assert!(
+                output.contains(&format!("<h{level}>")),
+                "h{level} not preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn for_format_routes_correctly() {
+        // Verify each named format routes to the expected pipeline behavior
+        let plain = FilterPipeline::for_format("plain_text");
+        assert!(plain.process("<b>x</b>").contains("&lt;b&gt;"));
+
+        let filtered = FilterPipeline::for_format("filtered_html");
+        assert!(
+            filtered
+                .process("<p>ok</p><script>bad</script>")
+                .contains("<p>ok</p>")
+        );
+
+        let full = FilterPipeline::for_format("full_html");
+        assert_eq!(full.process("<script>ok</script>"), "<script>ok</script>");
+    }
 }

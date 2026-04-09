@@ -269,3 +269,166 @@ fn item_summary(item: &Item) -> serde_json::Value {
         "changed": item.changed,
     })
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use rmcp::model::ErrorCode;
+
+    // =========================================================================
+    // parse_uuid
+    // =========================================================================
+
+    #[test]
+    fn parse_uuid_accepts_valid_uuid() {
+        let id = Uuid::new_v4();
+        let result = parse_uuid(&id.to_string());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), id);
+    }
+
+    #[test]
+    fn parse_uuid_accepts_nil_uuid() {
+        let result = parse_uuid("00000000-0000-0000-0000-000000000000");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Uuid::nil());
+    }
+
+    #[test]
+    fn parse_uuid_rejects_empty_string() {
+        let result = parse_uuid("");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("invalid UUID"));
+    }
+
+    #[test]
+    fn parse_uuid_rejects_garbage() {
+        let result = parse_uuid("not-a-uuid");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn parse_uuid_rejects_partial_uuid() {
+        let result = parse_uuid("550e8400-e29b-41d4-a716");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_uuid_error_includes_input() {
+        let result = parse_uuid("bad-input");
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("bad-input"),
+            "error should include the invalid input"
+        );
+    }
+
+    // =========================================================================
+    // map_service_err
+    // =========================================================================
+
+    #[test]
+    fn map_service_err_converts_access_denied_to_not_found() {
+        let id = Uuid::new_v4();
+        let err = map_service_err(anyhow::anyhow!("access denied"), id);
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("item not found"),
+            "access denied should be mapped to 'not found'"
+        );
+        assert!(
+            err.message.contains(&id.to_string()),
+            "error should include the item ID"
+        );
+    }
+
+    #[test]
+    fn map_service_err_converts_access_denied_substring() {
+        let id = Uuid::new_v4();
+        // The kernel error may have additional context around "access denied"
+        let err = map_service_err(
+            anyhow::anyhow!("item operation failed: access denied for user"),
+            id,
+        );
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("item not found"));
+    }
+
+    #[test]
+    fn map_service_err_converts_other_errors_to_internal() {
+        let id = Uuid::new_v4();
+        let err = map_service_err(anyhow::anyhow!("database connection timeout"), id);
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        // Should NOT leak the original error message
+        assert_eq!(err.message.as_ref(), "internal error");
+    }
+
+    // =========================================================================
+    // item_summary
+    // =========================================================================
+
+    /// Build a test `Item` with the given overrides.
+    fn test_item(id: Uuid, title: &str, item_type: &str) -> Item {
+        Item {
+            id,
+            current_revision_id: None,
+            item_type: item_type.to_string(),
+            title: title.to_string(),
+            author_id: Uuid::new_v4(),
+            status: 1,
+            created: 1_700_000_000,
+            changed: 1_700_000_100,
+            promote: 0,
+            sticky: 0,
+            fields: serde_json::json!({}),
+            stage_id: trovato_kernel::LIVE_STAGE_ID,
+            language: "en".to_string(),
+            item_group_id: Uuid::new_v4(),
+            retention_days: None,
+        }
+    }
+
+    #[test]
+    fn item_summary_includes_required_fields() {
+        let id = Uuid::new_v4();
+        let item = test_item(id, "Test Article", "article");
+
+        let summary = item_summary(&item);
+        assert_eq!(summary["id"], id.to_string());
+        assert_eq!(summary["title"], "Test Article");
+        // item_summary uses json! macro with "type" key directly
+        assert_eq!(summary["type"], "article");
+        assert_eq!(summary["status"], 1);
+        assert_eq!(summary["created"], 1_700_000_000);
+        assert_eq!(summary["changed"], 1_700_000_100);
+    }
+
+    #[test]
+    fn item_summary_does_not_include_fields() {
+        let mut item = test_item(Uuid::new_v4(), "Page", "page");
+        item.fields = serde_json::json!({"body": "secret data"});
+
+        let summary = item_summary(&item);
+        assert!(
+            summary.get("fields").is_none(),
+            "summary should not include fields (use get_item for full data)"
+        );
+        assert!(summary.get("author_id").is_none());
+        assert!(summary.get("promote").is_none());
+        assert!(summary.get("sticky").is_none());
+    }
+
+    // =========================================================================
+    // MAX_TITLE_LENGTH
+    // =========================================================================
+
+    #[test]
+    fn max_title_length_is_reasonable() {
+        assert_eq!(MAX_TITLE_LENGTH, 1000);
+    }
+}

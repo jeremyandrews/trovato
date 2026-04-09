@@ -82,3 +82,123 @@ fn json_to_filter_value(v: &serde_json::Value) -> Result<FilterValue, &'static s
         serde_json::Value::Object(_) => Err("object"),
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // json_to_filter_value — string
+    // =========================================================================
+
+    #[test]
+    fn json_to_filter_value_converts_string() {
+        let v = serde_json::json!("hello");
+        let result = json_to_filter_value(&v).expect("should convert string");
+        assert!(matches!(result, FilterValue::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn json_to_filter_value_converts_empty_string() {
+        let v = serde_json::json!("");
+        let result = json_to_filter_value(&v).expect("should convert empty string");
+        assert!(matches!(result, FilterValue::String(s) if s.is_empty()));
+    }
+
+    // =========================================================================
+    // json_to_filter_value — numbers
+    // =========================================================================
+
+    #[test]
+    fn json_to_filter_value_converts_integer() {
+        let v = serde_json::json!(42);
+        let result = json_to_filter_value(&v).expect("should convert integer");
+        assert!(matches!(result, FilterValue::Integer(42)));
+    }
+
+    #[test]
+    fn json_to_filter_value_converts_negative_integer() {
+        let v = serde_json::json!(-7);
+        let result = json_to_filter_value(&v).expect("should convert negative integer");
+        assert!(matches!(result, FilterValue::Integer(-7)));
+    }
+
+    #[test]
+    fn json_to_filter_value_converts_zero() {
+        let v = serde_json::json!(0);
+        let result = json_to_filter_value(&v).expect("should convert zero");
+        assert!(matches!(result, FilterValue::Integer(0)));
+    }
+
+    #[test]
+    fn json_to_filter_value_converts_float() {
+        let v = serde_json::json!(9.75);
+        let result = json_to_filter_value(&v).expect("should convert float");
+        match result {
+            FilterValue::Float(f) => assert!((f - 9.75).abs() < f64::EPSILON),
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    // =========================================================================
+    // json_to_filter_value — boolean
+    // =========================================================================
+
+    #[test]
+    fn json_to_filter_value_converts_true() {
+        let v = serde_json::json!(true);
+        let result = json_to_filter_value(&v).expect("should convert true");
+        assert!(matches!(result, FilterValue::Boolean(true)));
+    }
+
+    #[test]
+    fn json_to_filter_value_converts_false() {
+        let v = serde_json::json!(false);
+        let result = json_to_filter_value(&v).expect("should convert false");
+        assert!(matches!(result, FilterValue::Boolean(false)));
+    }
+
+    // =========================================================================
+    // json_to_filter_value — null
+    // =========================================================================
+
+    #[test]
+    fn json_to_filter_value_converts_null() {
+        let v = serde_json::Value::Null;
+        let result = json_to_filter_value(&v).expect("should convert null");
+        assert!(matches!(result, FilterValue::Null(())));
+    }
+
+    // =========================================================================
+    // json_to_filter_value — unsupported types
+    // =========================================================================
+
+    #[test]
+    fn json_to_filter_value_rejects_array() {
+        let v = serde_json::json!([1, 2, 3]);
+        let result = json_to_filter_value(&v);
+        assert_eq!(result.unwrap_err(), "array");
+    }
+
+    #[test]
+    fn json_to_filter_value_rejects_object() {
+        let v = serde_json::json!({"key": "value"});
+        let result = json_to_filter_value(&v);
+        assert_eq!(result.unwrap_err(), "object");
+    }
+
+    #[test]
+    fn json_to_filter_value_rejects_nested_array() {
+        let v = serde_json::json!([[]]);
+        let result = json_to_filter_value(&v);
+        assert_eq!(result.unwrap_err(), "array");
+    }
+
+    #[test]
+    fn json_to_filter_value_rejects_empty_object() {
+        let v = serde_json::json!({});
+        let result = json_to_filter_value(&v);
+        assert_eq!(result.unwrap_err(), "object");
+    }
+}

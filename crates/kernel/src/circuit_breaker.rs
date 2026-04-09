@@ -313,4 +313,76 @@ mod tests {
         let svc: CircuitBreakerError<String> = CircuitBreakerError::ServiceError("timeout".into());
         assert_eq!(svc.to_string(), "timeout");
     }
+
+    #[test]
+    fn breaker_name_accessor() {
+        let cb = CircuitBreaker::new("test_service", BreakerConfig::default());
+        assert_eq!(cb.name(), "test_service");
+    }
+
+    #[test]
+    fn breaker_initial_state_is_closed() {
+        let cb = CircuitBreaker::new("svc", BreakerConfig::default());
+        assert_eq!(cb.state_name(), "closed");
+    }
+
+    #[test]
+    fn into_anyhow_open() {
+        let err: CircuitBreakerError<anyhow::Error> = CircuitBreakerError::Open;
+        let anyhow_err = err.into_anyhow("email");
+        let msg = anyhow_err.to_string();
+        assert!(msg.contains("email"));
+        assert!(msg.contains("circuit breaker is open"));
+    }
+
+    #[test]
+    fn into_anyhow_service_error() {
+        let inner = anyhow::anyhow!("connection refused");
+        let err: CircuitBreakerError<anyhow::Error> = CircuitBreakerError::ServiceError(inner);
+        let anyhow_err = err.into_anyhow("smtp");
+        assert_eq!(anyhow_err.to_string(), "connection refused");
+    }
+
+    #[tokio::test]
+    async fn success_resets_failure_count() {
+        let cb = CircuitBreaker::new(
+            "test",
+            BreakerConfig {
+                failure_threshold: 3,
+                recovery_timeout: Duration::from_secs(60),
+                failure_window: Duration::from_secs(60),
+            },
+        );
+
+        // Record 2 failures (below threshold)
+        for _ in 0..2 {
+            let _: Result<i32, _> = cb
+                .call(|| async { Err::<i32, String>("fail".into()) })
+                .await;
+        }
+        assert_eq!(cb.state_name(), "closed");
+
+        // One success should reset failure count
+        let _: Result<i32, _> = cb.call(|| async { Ok::<i32, String>(1) }).await;
+
+        // Now 2 more failures should NOT open (count was reset)
+        for _ in 0..2 {
+            let _: Result<i32, _> = cb
+                .call(|| async { Err::<i32, String>("fail".into()) })
+                .await;
+        }
+        assert_eq!(cb.state_name(), "closed");
+    }
+
+    #[test]
+    fn custom_config_values() {
+        let config = BreakerConfig {
+            failure_threshold: 10,
+            recovery_timeout: Duration::from_secs(120),
+            failure_window: Duration::from_secs(300),
+        };
+        assert_eq!(config.failure_threshold, 10);
+        assert_eq!(config.recovery_timeout, Duration::from_secs(120));
+        assert_eq!(config.failure_window, Duration::from_secs(300));
+    }
 }

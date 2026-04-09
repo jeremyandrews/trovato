@@ -94,3 +94,105 @@ pub async fn inject_security_headers(request: Request<Body>, next: Next) -> Resp
 
     response
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nosniff_header_value() {
+        assert_eq!(NOSNIFF.to_str().unwrap(), "nosniff");
+    }
+
+    #[test]
+    fn x_frame_options_value() {
+        assert_eq!(DENY.to_str().unwrap(), "DENY");
+    }
+
+    #[test]
+    fn referrer_policy_value() {
+        assert_eq!(
+            REFERRER.to_str().unwrap(),
+            "strict-origin-when-cross-origin"
+        );
+    }
+
+    #[test]
+    fn permissions_policy_value() {
+        assert_eq!(
+            PERMISSIONS.to_str().unwrap(),
+            "camera=(), microphone=(), geolocation=()"
+        );
+    }
+
+    #[test]
+    fn hsts_value() {
+        assert_eq!(
+            HSTS.to_str().unwrap(),
+            "max-age=31536000; includeSubDomains"
+        );
+    }
+
+    #[test]
+    fn default_csp_includes_self() {
+        let csp = DEFAULT_CSP.to_str().unwrap();
+        assert!(csp.contains("default-src 'self'"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+    }
+
+    #[tokio::test]
+    async fn middleware_sets_security_headers() {
+        use axum::{Router, routing::get};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(inject_security_headers));
+
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+        assert_eq!(response.headers().get("x-frame-options").unwrap(), "DENY");
+        assert_eq!(
+            response.headers().get("referrer-policy").unwrap(),
+            "strict-origin-when-cross-origin"
+        );
+        assert!(response.headers().get("content-security-policy").is_some());
+        // No HSTS without HTTPS
+        assert!(
+            response
+                .headers()
+                .get("strict-transport-security")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn middleware_sets_hsts_on_https() {
+        use axum::{Router, routing::get};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(inject_security_headers));
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-proto", "https")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.headers().get("strict-transport-security").unwrap(),
+            "max-age=31536000; includeSubDomains"
+        );
+    }
+}

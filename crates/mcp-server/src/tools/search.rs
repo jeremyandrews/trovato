@@ -49,3 +49,13 @@ pub async fn search(
     let json = to_json(&results)?;
     Ok(CallToolResult::success(vec![Content::text(json)]))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_query_length_is_1000() {
+        assert_eq!(MAX_QUERY_LENGTH, 1000);
+    }
+}
