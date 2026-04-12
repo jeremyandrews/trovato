@@ -9,9 +9,23 @@
 //! assembly. The page wrapper template is kernel-controlled and trusted.
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+/// Regex for extracting heading levels from rendered HTML.
+// Infallible: hard-coded valid regex pattern — Regex::new cannot fail here.
+#[allow(clippy::expect_used)]
+static HEADING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<h([2-6])[^>]*>").expect("hard-coded regex"));
+
+/// Regex for rewriting Markdown heading levels.
+// Infallible: hard-coded valid regex pattern — Regex::new cannot fail here.
+#[allow(clippy::expect_used)]
+static MD_HEADING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^(#{1,6})\s").expect("hard-coded regex"));
 
 /// Maximum zone depth to prevent infinite recursion from malformed JSON.
 const MAX_RECURSION_DEPTH: usize = 10;
@@ -179,6 +193,9 @@ fn validate_accessibility(
 ///
 /// Returns the rendered body HTML (component outputs concatenated).
 /// The caller wraps this in the page-level Tera template.
+///
+/// After rendering, validates heading hierarchy across the full page
+/// and logs warnings for skipped heading levels.
 pub fn render_puck_page(page: &PuckPage, tera: &tera::Tera) -> Result<String> {
     let sanitizer = build_sanitizer();
     let mut parts = Vec::with_capacity(page.content.len());
@@ -186,7 +203,63 @@ pub fn render_puck_page(page: &PuckPage, tera: &tera::Tera) -> Result<String> {
         let html = render_component(component, tera, &sanitizer, 0)?;
         parts.push(html);
     }
-    Ok(parts.join("\n"))
+    let rendered = parts.join("\n");
+
+    // Post-render heading hierarchy validation (warnings, not errors)
+    let hierarchy_warnings = validate_heading_hierarchy(&rendered);
+    for w in &hierarchy_warnings {
+        tracing::warn!(warning = %w, "page builder heading hierarchy issue");
+    }
+
+    Ok(rendered)
+}
+
+/// Validate heading hierarchy across the full rendered page.
+///
+/// Scans rendered HTML for `<h2>`..`<h6>` tags and checks that no heading
+/// level is skipped (e.g., H2 → H4 without H3 between them). Returns
+/// warnings (not errors) — broken hierarchy is a content quality issue
+/// that should surface in monitoring, not block rendering.
+fn validate_heading_hierarchy(rendered_html: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let levels: Vec<u8> = HEADING_RE
+        .captures_iter(rendered_html)
+        .filter_map(|cap| cap[1].parse().ok())
+        .collect();
+
+    if levels.is_empty() {
+        return warnings;
+    }
+
+    for window in levels.windows(2) {
+        let current = window[0];
+        let next = window[1];
+        // Going deeper: next should be at most current + 1
+        if next > current + 1 {
+            warnings.push(format!(
+                "heading hierarchy skip: H{current} → H{next} (expected H{} or same/higher level)",
+                current + 1
+            ));
+        }
+    }
+
+    warnings
+}
+
+/// Rewrite Markdown headings so the minimum level is `min_level`.
+///
+/// `# Foo` with min_level=2 becomes `## Foo`.
+/// `## Foo` with min_level=2 stays `## Foo`.
+/// `### Foo` with min_level=2 stays `### Foo`.
+pub fn rewrite_markdown_headings(text: &str, min_level: usize) -> String {
+    MD_HEADING_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let current_level = caps[1].len();
+            let new_level = current_level.max(min_level);
+            format!("{} ", "#".repeat(new_level))
+        })
+        .into_owned()
 }
 
 /// Render a single Puck component to HTML, recursively rendering zone children.
@@ -279,14 +352,23 @@ mod tests {
 
     fn test_tera() -> tera::Tera {
         let mut tera = tera::Tera::default();
-        // Register the markdown filter (used by text-block template)
+        // Register the markdown filter with min_heading support (matches engine.rs)
         tera.register_filter(
             "markdown",
-            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+            |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
                 let Some(text) = value.as_str() else {
                     return Ok(tera::Value::String(String::new()));
                 };
-                let parser = pulldown_cmark::Parser::new(text);
+                let min_heading = args
+                    .get("min_heading")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as usize;
+                let processed = if min_heading > 1 {
+                    rewrite_markdown_headings(text, min_heading)
+                } else {
+                    text.to_string()
+                };
+                let parser = pulldown_cmark::Parser::new(&processed);
                 let mut html_output = String::new();
                 pulldown_cmark::html::push_html(&mut html_output, parser);
                 Ok(tera::Value::String(ammonia::clean(&html_output)))
@@ -300,13 +382,22 @@ mod tests {
             .unwrap()
             .join("templates/pb");
 
-        // Load all pb/*.html templates from the templates directory
+        // Load all pb/*.html templates from the templates directory.
+        // Load macros.html first so {% import %} resolves in other templates.
         if template_dir.exists() {
+            let macros_path = template_dir.join("macros.html");
+            if macros_path.exists() {
+                let content = std::fs::read_to_string(&macros_path).unwrap();
+                tera.add_raw_template("pb/macros.html", &content).unwrap();
+            }
             for entry in std::fs::read_dir(&template_dir).unwrap() {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "html") {
                     let name = format!("pb/{}", path.file_name().unwrap().to_str().unwrap());
+                    if name == "pb/macros.html" {
+                        continue; // Already loaded
+                    }
                     let content = std::fs::read_to_string(&path).unwrap();
                     tera.add_raw_template(&name, &content).unwrap();
                 }
@@ -519,5 +610,77 @@ mod tests {
     fn accessibility_allows_h2_heading() {
         let result = validate_accessibility("Hero", &json!({ "headingLevel": 2 }));
         assert!(result.is_ok());
+    }
+
+    // --- Heading hierarchy tests ---
+
+    #[test]
+    fn heading_hierarchy_skip_detected() {
+        let html = r#"<h2>Title</h2><p>text</p><h5>Subtitle</h5>"#;
+        let warnings = validate_heading_hierarchy(html);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("H2 → H5"), "got: {}", warnings[0]);
+    }
+
+    #[test]
+    fn heading_hierarchy_valid() {
+        let html = r#"<h2>Title</h2><h3>Sub</h3><h3>Sub2</h3><h2>Another</h2>"#;
+        let warnings = validate_heading_hierarchy(html);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn heading_hierarchy_empty_page() {
+        let warnings = validate_heading_hierarchy("<p>No headings here</p>");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn heading_hierarchy_going_up_is_fine() {
+        // H4 → H2 (going up) is valid — only going deeper can skip
+        let html = r#"<h2>A</h2><h3>B</h3><h4>C</h4><h2>D</h2>"#;
+        let warnings = validate_heading_hierarchy(html);
+        assert!(warnings.is_empty());
+    }
+
+    // --- Markdown heading rewrite tests ---
+
+    #[test]
+    fn markdown_heading_rewrite_promotes_h1_to_h2() {
+        let result = rewrite_markdown_headings("# Title\n## Sub\n### Deep", 2);
+        assert!(result.starts_with("## Title"), "got: {result}");
+        assert!(result.contains("## Sub"));
+        assert!(result.contains("### Deep"));
+    }
+
+    #[test]
+    fn markdown_heading_rewrite_no_change_above_min() {
+        let result = rewrite_markdown_headings("## Title\n### Sub", 2);
+        assert_eq!(result, "## Title\n### Sub");
+    }
+
+    #[test]
+    fn markdown_heading_rewrite_no_change_when_min_is_1() {
+        let result = rewrite_markdown_headings("# Title", 1);
+        assert_eq!(result, "# Title");
+    }
+
+    #[test]
+    fn markdown_heading_rewrite_in_text_block() {
+        let tera = test_tera();
+        let page: PuckPage = serde_json::from_value(json!({
+            "content": [{
+                "type": "TextBlock",
+                "props": { "content": "# This Should Be H2\n\nParagraph text." }
+            }]
+        }))
+        .unwrap();
+
+        let html = render_puck_page(&page, &tera).unwrap();
+        // The template uses markdown(min_heading=2), so # becomes ##
+        assert!(
+            html.contains("<h2>") && !html.contains("<h1>"),
+            "H1 should be rewritten to H2: {html}"
+        );
     }
 }

@@ -353,18 +353,32 @@ impl ThemeEngine {
         );
 
         // Filter for rendering Markdown text to sanitized HTML.
-        // Usage: {{ item.fields.field_body.value | markdown | safe }}
+        // Usage:
+        //   {{ body | markdown | safe }}                — default, no heading rewrite
+        //   {{ body | markdown(min_heading=2) | safe }} — rewrite # to ##
         //
-        // Used for content migrated from Markdown-based CMSes (Eleventy, Hugo,
-        // etc.) where body text is stored as Markdown in TextLong fields.
+        // The `min_heading` parameter rewrites Markdown headings so the minimum
+        // level is the specified value. Used by the page builder's TextBlock to
+        // prevent rogue H1 tags (page template owns H1).
         tera.register_filter(
             "markdown",
-            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+            |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
                 let Some(text) = value.as_str() else {
                     return Ok(tera::Value::String(String::new()));
                 };
 
-                let parser = pulldown_cmark::Parser::new(text);
+                let min_heading = args
+                    .get("min_heading")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as usize;
+
+                let processed = if min_heading > 1 {
+                    crate::content::page_builder::rewrite_markdown_headings(text, min_heading)
+                } else {
+                    text.to_string()
+                };
+
+                let parser = pulldown_cmark::Parser::new(&processed);
                 let mut html_output = String::new();
                 pulldown_cmark::html::push_html(&mut html_output, parser);
 

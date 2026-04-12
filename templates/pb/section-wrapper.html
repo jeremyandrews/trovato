@@ -1,6 +1,7 @@
+{% import "pb/macros.html" as a11y %}
 <section class="pb-section pb-section--pad-{{ padding | default(value='default') }} pb-section--width-{{ maxWidth | default(value='default') }}"
-  {% if ariaLabel %} aria-label="{{ ariaLabel }}"{% endif %}
-  {% if lang %} lang="{{ lang }}"{% endif %}
+  {{- a11y::aria_label(label=ariaLabel | default(value="")) }}
+  {{- a11y::lang_attr(lang=lang | default(value="")) }}
   {% if backgroundColor %} style="background-color: {{ backgroundColor }}"{% endif %}>
   {% if zones and zones.content %}
     {% for child_html in zones.content %}{{ child_html | safe }}{% endfor %}

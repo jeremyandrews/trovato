@@ -1,7 +1,8 @@
+{% import "pb/macros.html" as a11y %}
 {% set hlevel = headingLevel | default(value=2) %}
 <section class="pb-hero pb-hero--{{ variant | default(value='standard') }}"
-  aria-label="{{ title | default(value='Hero') }}"
-  {% if lang %} lang="{{ lang }}"{% endif %}
+  {{- a11y::aria_label(label=title | default(value='Hero')) }}
+  {{- a11y::lang_attr(lang=lang | default(value="")) }}
   {% if backgroundImage and variant == "standard" %} style="background-image: url('{{ backgroundImage }}')"{% endif %}
   {% if backgroundColor and not backgroundImage %} style="background-color: {{ backgroundColor }}"{% endif %}>
 
@@ -12,7 +13,7 @@
   {% endif %}
 
   <div class="pb-hero__content">
-    {% if title %}<h{{ hlevel }} class="pb-hero__title">{{ title }}</h{{ hlevel }}>{% endif %}
+    {% if title %}{{ a11y::heading(level=hlevel, class="pb-hero__title", text=title) }}{% endif %}
     {% if subtitle %}<p class="pb-hero__subtitle">{{ subtitle }}</p>{% endif %}
     {% if ctaText and ctaUrl %}
     <a class="pb-hero__cta" href="{{ ctaUrl }}">{{ ctaText }}</a>

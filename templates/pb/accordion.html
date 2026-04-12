@@ -1,15 +1,28 @@
-<div class="pb-accordion"{% if lang %} lang="{{ lang }}"{% endif %}>
+{% import "pb/macros.html" as a11y %}
+<div class="pb-accordion" role="region" aria-label="Accordion"{{ a11y::lang_attr(lang=lang | default(value="")) }}>
   {% if items %}
     {% for item in items %}
-    <details class="pb-accordion__item"{% if not allowMultiple %} name="accordion-group"{% endif %}>
-      <summary class="pb-accordion__title">{{ item.title }}</summary>
-      <div class="pb-accordion__content">{{ item.content }}</div>
+    <details class="pb-accordion__item"
+      {% if not allowMultiple %} name="accordion-group"{% endif %}
+      id="accordion-item-{{ loop.index }}">
+      <summary class="pb-accordion__title"
+        id="accordion-summary-{{ loop.index }}"
+        {{- a11y::aria_controls(id="accordion-content-" ~ loop.index) }}>
+        {{ item.title }}
+      </summary>
+      <div class="pb-accordion__content"
+        id="accordion-content-{{ loop.index }}"
+        role="region"
+        aria-labelledby="accordion-summary-{{ loop.index }}">
+        {{ item.content }}
+      </div>
     </details>
     {% endfor %}
   {% elif zones %}
     {% for zone_key, zone_children in zones %}
       {% if zone_key is starting_with("item-") %}
-      <details class="pb-accordion__item"{% if not allowMultiple %} name="accordion-group"{% endif %}>
+      <details class="pb-accordion__item"
+        {% if not allowMultiple %} name="accordion-group"{% endif %}>
         <div class="pb-accordion__content">
           {% for child_html in zone_children %}{{ child_html | safe }}{% endfor %}
         </div>
