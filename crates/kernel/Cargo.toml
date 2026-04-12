@@ -60,6 +60,7 @@ subtle = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
 ammonia = { workspace = true }
+pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
 parking_lot = { workspace = true }
 tokio-stream = { workspace = true }

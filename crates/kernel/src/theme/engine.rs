@@ -352,6 +352,29 @@ impl ThemeEngine {
             },
         );
 
+        // Filter for rendering Markdown text to sanitized HTML.
+        // Usage: {{ item.fields.field_body.value | markdown | safe }}
+        //
+        // Used for content migrated from Markdown-based CMSes (Eleventy, Hugo,
+        // etc.) where body text is stored as Markdown in TextLong fields.
+        tera.register_filter(
+            "markdown",
+            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+                let Some(text) = value.as_str() else {
+                    return Ok(tera::Value::String(String::new()));
+                };
+
+                let parser = pulldown_cmark::Parser::new(text);
+                let mut html_output = String::new();
+                pulldown_cmark::html::push_html(&mut html_output, parser);
+
+                // Sanitize to prevent XSS from raw HTML in Markdown
+                let clean = ammonia::clean(&html_output);
+
+                Ok(tera::Value::String(clean))
+            },
+        );
+
         // Filter for displaying FieldType enum variants as human-readable labels.
         // FieldType serializes as either a string ("Date", "Boolean", "Blocks") or
         // an object ({"Text": {"max_length": null}}). This filter extracts the
@@ -864,5 +887,83 @@ mod tests {
         ctx.insert("ts", &1739577600_i64);
         let result = tera.render("test", &ctx).unwrap();
         assert_eq!(result, "2025-02-15");
+    }
+
+    #[test]
+    fn markdown_filter_renders_basic_markdown() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", "{{ body | markdown | safe }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("body", "# Hello\n\nThis is **bold** and *italic*.");
+        let result = tera.render("test", &ctx).unwrap();
+
+        assert!(result.contains("<h1>Hello</h1>"));
+        assert!(result.contains("<strong>bold</strong>"));
+        assert!(result.contains("<em>italic</em>"));
+    }
+
+    #[test]
+    fn markdown_filter_renders_links_and_lists() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", "{{ body | markdown | safe }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("body", "- Item 1\n- [Link](https://example.com)");
+        let result = tera.render("test", &ctx).unwrap();
+
+        assert!(result.contains("<li>"));
+        assert!(result.contains("https://example.com"));
+    }
+
+    #[test]
+    fn markdown_filter_sanitizes_dangerous_html() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", "{{ body | markdown | safe }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("body", "Hello <script>alert('xss')</script> world");
+        let result = tera.render("test", &ctx).unwrap();
+
+        assert!(
+            !result.contains("<script>"),
+            "script tags must be stripped: {result}"
+        );
+        assert!(result.contains("Hello"));
+        assert!(result.contains("world"));
+    }
+
+    #[test]
+    fn markdown_filter_handles_empty_input() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", "{{ body | markdown | safe }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("body", "");
+        let result = tera.render("test", &ctx).unwrap();
+
+        assert!(result.trim().is_empty());
+    }
+
+    #[test]
+    fn markdown_filter_handles_non_string_input() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", "{{ body | markdown | safe }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("body", &42);
+        let result = tera.render("test", &ctx).unwrap();
+
+        assert!(result.is_empty());
     }
 }

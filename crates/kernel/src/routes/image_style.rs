@@ -63,8 +63,7 @@ async fn serve_derivative(
     let cache_path = image_service.cache_path(&style_name, &file_path);
     match tokio::fs::read(&cache_path).await {
         Ok(data) => {
-            // Derivatives are always JPEG regardless of the original file extension.
-            let content_type = "image/jpeg".to_string();
+            let content_type = guess_content_type(&file_path);
             return (
                 StatusCode::OK,
                 [
@@ -148,7 +147,7 @@ async fn serve_derivative(
         }
     };
 
-    let content_type = "image/jpeg".to_string(); // Derivatives are always JPEG
+    let content_type = guess_content_type(&file_path);
     (
         StatusCode::OK,
         [
@@ -164,7 +163,6 @@ async fn serve_derivative(
 }
 
 /// Guess content type from file extension.
-#[cfg(test)]
 fn guess_content_type(path: &str) -> String {
     match path.rsplit('.').next() {
         Some("jpg" | "jpeg") => "image/jpeg",

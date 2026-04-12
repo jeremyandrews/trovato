@@ -43,6 +43,10 @@ pub struct ImageEffect {
     pub effect_type: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// Output format override. If `None`, defaults to JPEG.
+    /// Supported values: `"jpeg"`, `"png"`, `"webp"`, `"avif"`.
+    #[serde(default)]
+    pub output_format: Option<String>,
 }
 
 /// Image style service.
@@ -149,9 +153,12 @@ impl ImageStyleService {
             img = apply_effect(img, effect);
         }
 
-        // Encode as JPEG (reasonable default for derivatives)
+        // Determine output format from the last effect that specifies one,
+        // or fall back to JPEG (reasonable default for derivatives).
+        let image_format = resolve_output_format(&effects);
+
         let mut buf = Cursor::new(Vec::new());
-        img.write_to(&mut buf, image::ImageFormat::Jpeg)
+        img.write_to(&mut buf, image_format)
             .context("failed to encode derivative")?;
 
         Ok(buf.into_inner())
@@ -184,6 +191,61 @@ impl ImageStyleService {
         );
 
         Ok(path)
+    }
+
+    /// Generate multiple width derivatives for responsive `<picture>` srcset.
+    ///
+    /// Returns a vec of `(width, encoded_bytes)` pairs. Widths larger than the
+    /// original image are skipped to avoid upscaling.
+    pub fn process_responsive(
+        &self,
+        original_bytes: &[u8],
+        style: &ImageStyle,
+        widths: &[u32],
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        if original_bytes.len() > MAX_INPUT_SIZE {
+            anyhow::bail!(
+                "image too large: {} bytes exceeds {} byte limit",
+                original_bytes.len(),
+                MAX_INPUT_SIZE
+            );
+        }
+
+        let effects: Vec<ImageEffect> = serde_json::from_value(style.effects.clone())
+            .context("failed to parse image effects")?;
+
+        let base_img = image::load_from_memory(original_bytes).context("failed to load image")?;
+
+        let image_format = resolve_output_format(&effects);
+
+        let mut results = Vec::with_capacity(widths.len());
+
+        for &target_width in widths {
+            let width = target_width.min(MAX_DIMENSION);
+            // Skip widths larger than the original to avoid upscaling
+            if width >= base_img.width() {
+                continue;
+            }
+
+            let mut img = base_img.clone();
+
+            // Apply non-dimensional effects (desaturate, etc.)
+            for effect in &effects {
+                if effect.effect_type == "desaturate" {
+                    img = apply_effect(img, effect);
+                }
+            }
+
+            // Scale to target width, preserving aspect ratio
+            img = img.resize(width, MAX_DIMENSION, image::imageops::FilterType::Lanczos3);
+
+            let mut buf = Cursor::new(Vec::new());
+            img.write_to(&mut buf, image_format)
+                .context("failed to encode responsive derivative")?;
+            results.push((width, buf.into_inner()));
+        }
+
+        Ok(results)
     }
 
     /// List all image styles.
@@ -256,6 +318,25 @@ fn apply_effect(img: DynamicImage, effect: &ImageEffect) -> DynamicImage {
             debug!(effect = %effect.effect_type, "unknown image effect, skipping");
             img
         }
+    }
+}
+
+/// Determine the output image format from an effect chain.
+///
+/// Scans effects in reverse order for the first `output_format` override.
+/// Defaults to JPEG if no effect specifies a format.
+fn resolve_output_format(effects: &[ImageEffect]) -> image::ImageFormat {
+    let format = effects
+        .iter()
+        .rev()
+        .find_map(|e| e.output_format.as_deref())
+        .unwrap_or("jpeg");
+
+    match format {
+        "avif" => image::ImageFormat::Avif,
+        "webp" => image::ImageFormat::WebP,
+        "png" => image::ImageFormat::Png,
+        _ => image::ImageFormat::Jpeg,
     }
 }
 
@@ -341,5 +422,207 @@ mod tests {
     #[test]
     fn max_input_size_constant() {
         assert_eq!(MAX_INPUT_SIZE, 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn output_format_deserialization_with_format() {
+        let json = serde_json::json!(
+            {"type": "scale", "width": 800, "output_format": "avif"}
+        );
+        let effect: ImageEffect = serde_json::from_value(json).unwrap();
+        assert_eq!(effect.output_format.as_deref(), Some("avif"));
+    }
+
+    #[test]
+    fn output_format_deserialization_without_format() {
+        let json = serde_json::json!(
+            {"type": "scale", "width": 800}
+        );
+        let effect: ImageEffect = serde_json::from_value(json).unwrap();
+        assert!(effect.output_format.is_none());
+    }
+
+    #[test]
+    fn resolve_output_format_defaults_to_jpeg() {
+        let effects = vec![ImageEffect {
+            effect_type: "scale".to_string(),
+            width: Some(800),
+            height: None,
+            output_format: None,
+        }];
+        assert_eq!(resolve_output_format(&effects), image::ImageFormat::Jpeg);
+    }
+
+    #[test]
+    fn resolve_output_format_picks_avif() {
+        let effects = vec![ImageEffect {
+            effect_type: "scale".to_string(),
+            width: Some(800),
+            height: None,
+            output_format: Some("avif".to_string()),
+        }];
+        assert_eq!(resolve_output_format(&effects), image::ImageFormat::Avif);
+    }
+
+    #[test]
+    fn resolve_output_format_picks_webp() {
+        let effects = vec![ImageEffect {
+            effect_type: "scale".to_string(),
+            width: Some(800),
+            height: None,
+            output_format: Some("webp".to_string()),
+        }];
+        assert_eq!(resolve_output_format(&effects), image::ImageFormat::WebP);
+    }
+
+    #[test]
+    fn resolve_output_format_uses_last_specified() {
+        let effects = vec![
+            ImageEffect {
+                effect_type: "scale".to_string(),
+                width: Some(800),
+                height: None,
+                output_format: Some("png".to_string()),
+            },
+            ImageEffect {
+                effect_type: "crop".to_string(),
+                width: Some(400),
+                height: Some(400),
+                output_format: Some("webp".to_string()),
+            },
+        ];
+        assert_eq!(resolve_output_format(&effects), image::ImageFormat::WebP);
+    }
+
+    /// Generate a minimal 2x2 PNG image for testing.
+    fn test_png_bytes() -> Vec<u8> {
+        let img = image::RgbImage::from_fn(2, 2, |_, _| image::Rgb([128u8, 64, 32]));
+        let mut buf = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    /// Generate a 100x80 PNG image for responsive tests.
+    fn test_png_100x80() -> Vec<u8> {
+        let img = image::RgbImage::from_fn(100, 80, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+        let mut buf = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    fn make_style(effects_json: serde_json::Value) -> ImageStyle {
+        ImageStyle {
+            id: uuid::Uuid::nil(),
+            name: "test".to_string(),
+            label: "Test".to_string(),
+            effects: effects_json,
+            created: 0,
+            changed: 0,
+        }
+    }
+
+    /// Apply an effect chain and encode to the resolved format (no DB/service needed).
+    fn encode_test_image(original: &[u8], effects_json: serde_json::Value) -> Vec<u8> {
+        let effects: Vec<ImageEffect> = serde_json::from_value(effects_json).unwrap();
+        let mut img = image::load_from_memory(original).unwrap();
+        for effect in &effects {
+            img = apply_effect(img, effect);
+        }
+        let image_format = resolve_output_format(&effects);
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image_format).unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn process_image_avif_output() {
+        let result = encode_test_image(
+            &test_png_bytes(),
+            serde_json::json!([{"type": "scale", "width": 2, "output_format": "avif"}]),
+        );
+        // AVIF is an ISOBMFF container: starts with an ftyp box.
+        // Bytes 4..8 = "ftyp", bytes 8..12 = brand (usually "avif" or "avis")
+        assert_eq!(&result[4..8], b"ftyp", "AVIF must start with ftyp box");
+    }
+
+    #[test]
+    fn process_image_default_jpeg_output() {
+        let result = encode_test_image(
+            &test_png_bytes(),
+            serde_json::json!([{"type": "scale", "width": 2}]),
+        );
+        // JPEG magic bytes: FF D8
+        assert_eq!(result[0], 0xFF);
+        assert_eq!(result[1], 0xD8);
+    }
+
+    #[test]
+    fn process_image_webp_output() {
+        let result = encode_test_image(
+            &test_png_bytes(),
+            serde_json::json!([{"type": "scale", "width": 2, "output_format": "webp"}]),
+        );
+        // WebP magic bytes: RIFF....WEBP
+        assert_eq!(&result[0..4], b"RIFF");
+        assert_eq!(&result[8..12], b"WEBP");
+    }
+
+    #[test]
+    fn process_image_png_output() {
+        let result = encode_test_image(
+            &test_png_bytes(),
+            serde_json::json!([{"type": "scale", "width": 2, "output_format": "png"}]),
+        );
+        // PNG magic bytes: 89 50 4E 47
+        assert_eq!(&result[0..4], &[0x89, 0x50, 0x4E, 0x47]);
+    }
+
+    #[test]
+    fn process_responsive_generates_widths() {
+        let src = test_png_100x80();
+        let effects_json = serde_json::json!([{"type": "scale", "width": 100}]);
+        let effects: Vec<ImageEffect> = serde_json::from_value(effects_json).unwrap();
+        let base_img = image::load_from_memory(&src).unwrap();
+        let image_format = resolve_output_format(&effects);
+
+        let widths = [20u32, 50, 80];
+        let mut results = Vec::new();
+        for &w in &widths {
+            if w >= base_img.width() {
+                continue;
+            }
+            let img = base_img.resize(w, MAX_DIMENSION, image::imageops::FilterType::Lanczos3);
+            let mut buf = Cursor::new(Vec::new());
+            img.write_to(&mut buf, image_format).unwrap();
+            results.push((w, buf.into_inner()));
+        }
+        assert_eq!(results.len(), 3);
+        for (_, bytes) in &results {
+            assert!(!bytes.is_empty());
+            // Default JPEG output
+            assert_eq!(bytes[0], 0xFF);
+            assert_eq!(bytes[1], 0xD8);
+        }
+    }
+
+    #[test]
+    fn process_responsive_skips_widths_larger_than_original() {
+        let src = test_png_100x80();
+        let base_img = image::load_from_memory(&src).unwrap();
+        // Original is 100px wide; widths >= 100 should be skipped
+        let widths = [50u32, 100, 200];
+        let kept: Vec<u32> = widths
+            .iter()
+            .copied()
+            .filter(|&w| w < base_img.width())
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0], 50);
     }
 }
