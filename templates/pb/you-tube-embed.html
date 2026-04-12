@@ -1,0 +1,16 @@
+{% set ar_class = aspectRatio | default(value="16:9") | replace(from=":", to="-") %}
+<figure class="pb-youtube pb-youtube--{{ ar_class }}"{% if lang %} lang="{{ lang }}"{% endif %}>
+  <iframe
+    src="https://www.youtube-nocookie.com/embed/{{ videoId }}"
+    title="{{ title | default(value='Video') }}"
+    frameborder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+    allowfullscreen
+    loading="lazy">
+  </iframe>
+  {% if transcriptUrl %}
+  <figcaption class="pb-youtube__transcript">
+    <a href="{{ transcriptUrl }}">View transcript</a>
+  </figcaption>
+  {% endif %}
+</figure>

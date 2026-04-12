@@ -1,0 +1,21 @@
+{% set hlevel = headingLevel | default(value=2) %}
+<section class="pb-hero pb-hero--{{ variant | default(value='standard') }}"
+  aria-label="{{ title | default(value='Hero') }}"
+  {% if lang %} lang="{{ lang }}"{% endif %}
+  {% if backgroundImage and variant == "standard" %} style="background-image: url('{{ backgroundImage }}')"{% endif %}
+  {% if backgroundColor and not backgroundImage %} style="background-color: {{ backgroundColor }}"{% endif %}>
+
+  {% if variant == "split" and backgroundImage %}
+  <div class="pb-hero__image">
+    <img src="{{ backgroundImage }}" alt="{{ imageAlt | default(value='') }}" loading="lazy">
+  </div>
+  {% endif %}
+
+  <div class="pb-hero__content">
+    {% if title %}<h{{ hlevel }} class="pb-hero__title">{{ title }}</h{{ hlevel }}>{% endif %}
+    {% if subtitle %}<p class="pb-hero__subtitle">{{ subtitle }}</p>{% endif %}
+    {% if ctaText and ctaUrl %}
+    <a class="pb-hero__cta" href="{{ ctaUrl }}">{{ ctaText }}</a>
+    {% endif %}
+  </div>
+</section>

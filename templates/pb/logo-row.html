@@ -1,0 +1,19 @@
+{% set hlevel = headingLevel | default(value=3) %}
+<div class="pb-logos"{% if lang %} lang="{{ lang }}"{% endif %}>
+  {% if title %}<h{{ hlevel }} class="pb-logos__title">{{ title }}</h{{ hlevel }}>{% endif %}
+  <div class="pb-logos__row" role="list" aria-label="{{ title | default(value='Logos') }}">
+    {% if logos %}
+      {% for logo in logos %}
+        {% if logo.link_url %}
+        <a href="{{ logo.link_url }}" class="pb-logos__link" role="listitem">
+          <img src="{{ logo.image_url }}" alt="{{ logo.alt | default(value='') }}" class="pb-logos__img" loading="lazy">
+        </a>
+        {% else %}
+        <div role="listitem">
+          <img src="{{ logo.image_url }}" alt="{{ logo.alt | default(value='') }}" class="pb-logos__img" loading="lazy">
+        </div>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>

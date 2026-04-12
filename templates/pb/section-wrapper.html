@@ -1,0 +1,8 @@
+<section class="pb-section pb-section--pad-{{ padding | default(value='default') }} pb-section--width-{{ maxWidth | default(value='default') }}"
+  {% if ariaLabel %} aria-label="{{ ariaLabel }}"{% endif %}
+  {% if lang %} lang="{{ lang }}"{% endif %}
+  {% if backgroundColor %} style="background-color: {{ backgroundColor }}"{% endif %}>
+  {% if zones and zones.content %}
+    {% for child_html in zones.content %}{{ child_html | safe }}{% endfor %}
+  {% endif %}
+</section>

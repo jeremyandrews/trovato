@@ -1,0 +1,12 @@
+{% set layout_class = layout | default(value="1/2+1/2") | replace(from="/", to="-") | replace(from="+", to="-") %}
+<div class="pb-columns pb-columns--{{ layout_class }}"{% if gap %} style="gap: {{ gap }}"{% endif %}>
+  {% if zones %}
+    {% for zone_key, zone_children in zones %}
+      {% if zone_key is starting_with("zone-") %}
+      <div class="pb-columns__zone">
+        {% for child_html in zone_children %}{{ child_html | safe }}{% endfor %}
+      </div>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+</div>

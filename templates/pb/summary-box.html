@@ -1,0 +1,13 @@
+{% set hlevel = headingLevel | default(value=3) %}
+<aside class="pb-summary pb-summary--{{ variant | default(value='info') }}"
+  {% if variant == "warning" %} role="alert"{% endif %}
+  {% if lang %} lang="{{ lang }}"{% endif %}>
+  {% if title %}<h{{ hlevel }} class="pb-summary__title">{{ title }}</h{{ hlevel }}>{% endif %}
+  {% if zones and zones.content %}
+    <div class="pb-summary__content">
+      {% for child_html in zones.content %}{{ child_html | safe }}{% endfor %}
+    </div>
+  {% elif content %}
+    <div class="pb-summary__content">{{ content }}</div>
+  {% endif %}
+</aside>

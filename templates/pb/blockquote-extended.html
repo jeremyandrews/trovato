@@ -1,0 +1,12 @@
+<figure class="pb-blockquote">
+  <blockquote class="pb-blockquote__text">{{ text | default(value='') }}</blockquote>
+  {% if attribution %}
+  <figcaption class="pb-blockquote__attribution">
+    {% if imageUrl %}
+    <img src="{{ imageUrl }}" alt="{{ attribution }}" class="pb-blockquote__avatar" loading="lazy">
+    {% endif %}
+    <span class="pb-blockquote__name">{{ attribution }}</span>
+    {% if role %}<span class="pb-blockquote__role">{{ role }}</span>{% endif %}
+  </figcaption>
+  {% endif %}
+</figure>

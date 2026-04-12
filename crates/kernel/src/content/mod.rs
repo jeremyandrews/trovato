@@ -14,6 +14,7 @@ pub mod compound;
 mod filter;
 mod form;
 mod item_service;
+pub mod page_builder;
 mod type_registry;
 
 pub use block_render::render_blocks;

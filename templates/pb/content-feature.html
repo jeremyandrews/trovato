@@ -1,0 +1,15 @@
+{% set hlevel = headingLevel | default(value=2) %}
+<div class="pb-feature pb-feature--img-{{ imagePosition | default(value='left') }}"{% if lang %} lang="{{ lang }}"{% endif %}>
+  {% if imageUrl %}
+  <div class="pb-feature__image">
+    <img src="{{ imageUrl }}" alt="{{ imageAlt | default(value='') }}" loading="lazy">
+  </div>
+  {% endif %}
+  <div class="pb-feature__text">
+    {% if title %}<h{{ hlevel }} class="pb-feature__title">{{ title }}</h{{ hlevel }}>{% endif %}
+    {% if body %}<div class="pb-feature__body">{{ body }}</div>{% endif %}
+    {% if linkUrl %}
+    <a href="{{ linkUrl }}" class="pb-feature__link">{{ linkText | default(value="Learn more") }}</a>
+    {% endif %}
+  </div>
+</div>

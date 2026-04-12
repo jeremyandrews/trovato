@@ -1,0 +1,20 @@
+<div class="pb-accordion"{% if lang %} lang="{{ lang }}"{% endif %}>
+  {% if items %}
+    {% for item in items %}
+    <details class="pb-accordion__item"{% if not allowMultiple %} name="accordion-group"{% endif %}>
+      <summary class="pb-accordion__title">{{ item.title }}</summary>
+      <div class="pb-accordion__content">{{ item.content }}</div>
+    </details>
+    {% endfor %}
+  {% elif zones %}
+    {% for zone_key, zone_children in zones %}
+      {% if zone_key is starting_with("item-") %}
+      <details class="pb-accordion__item"{% if not allowMultiple %} name="accordion-group"{% endif %}>
+        <div class="pb-accordion__content">
+          {% for child_html in zone_children %}{{ child_html | safe }}{% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+</div>
