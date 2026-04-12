@@ -1,0 +1,7 @@
+<section class="pb-hero pb-hero--{{ variant | default(value='standard') }}"{% if backgroundImage and variant == "standard" %} style="background-image: url('{{ backgroundImage }}')"{% endif %}>
+  <div class="pb-hero__content">
+    <h1 class="pb-hero__title">{{ title }}</h1>
+    {% if subtitle %}<p class="pb-hero__subtitle">{{ subtitle }}</p>{% endif %}
+    {% if ctaText and ctaUrl %}<a class="pb-hero__cta" href="{{ ctaUrl }}">{{ ctaText }}</a>{% endif %}
+  </div>
+</section>

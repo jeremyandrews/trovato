@@ -1,0 +1,39 @@
+{
+  "root": { "props": { "title": "Edge Cases" } },
+  "content": [
+    {
+      "type": "Hero",
+      "props": {
+        "title": "Title with <script>alert('xss')</script> in it",
+        "subtitle": "",
+        "variant": "standard"
+      }
+    },
+    {
+      "type": "Hero",
+      "props": {
+        "title": "Minimal hero, no subtitle, no CTA",
+        "variant": "minimal"
+      }
+    },
+    {
+      "type": "Columns",
+      "props": { "layout": "1/2+1/2" },
+      "zones": {
+        "zone-0": [
+          {
+            "type": "TextBlock",
+            "props": { "content": "Left column with content" }
+          }
+        ],
+        "zone-1": []
+      }
+    },
+    {
+      "type": "TextBlock",
+      "props": {
+        "content": "Special chars: café, naïve, über, 日本語, emoji 🎉, ampersand & less-than < greater-than >"
+      }
+    }
+  ]
+}

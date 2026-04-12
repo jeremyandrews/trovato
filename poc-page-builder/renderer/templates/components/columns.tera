@@ -1,0 +1,7 @@
+<div class="pb-columns pb-columns--{{ layout_class }}"{% if gap %} style="gap: {{ gap }}"{% endif %}>
+{% for zone_html in zones %}
+  <div class="pb-columns__zone">
+    {{ zone_html }}
+  </div>
+{% endfor %}
+</div>

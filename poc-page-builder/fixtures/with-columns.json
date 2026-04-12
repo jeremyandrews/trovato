@@ -1,0 +1,35 @@
+{
+  "root": { "props": { "title": "Columns Test" } },
+  "content": [
+    {
+      "type": "Hero",
+      "props": {
+        "title": "Our Services",
+        "subtitle": "What we do best",
+        "variant": "minimal"
+      }
+    },
+    {
+      "type": "Columns",
+      "props": { "layout": "2/3+1/3", "gap": "2rem" },
+      "zones": {
+        "zone-0": [
+          {
+            "type": "TextBlock",
+            "props": { "content": "### Main Content\n\nThis is the **primary column** with the main content area. It takes up two-thirds of the width." }
+          }
+        ],
+        "zone-1": [
+          {
+            "type": "TextBlock",
+            "props": { "content": "### Sidebar\n\nThis is the sidebar column at one-third width." }
+          }
+        ]
+      }
+    },
+    {
+      "type": "TextBlock",
+      "props": { "content": "---\n\n*Footer content below the columns.*" }
+    }
+  ]
+}

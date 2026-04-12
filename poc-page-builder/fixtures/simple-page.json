@@ -1,0 +1,21 @@
+{
+  "root": { "props": { "title": "Test Page" } },
+  "content": [
+    {
+      "type": "Hero",
+      "props": {
+        "title": "Welcome to Trovato",
+        "subtitle": "A modern CMS built in Rust",
+        "ctaText": "Get Started",
+        "ctaUrl": "/docs",
+        "variant": "standard"
+      }
+    },
+    {
+      "type": "TextBlock",
+      "props": {
+        "content": "## About Trovato\n\nTrovato is a **content management system** built from the ground up in Rust.\n\n- Fast server-side rendering\n- Structured content\n- Plugin architecture\n\nLearn more at [trovato.dev](https://trovato.dev)."
+      }
+    }
+  ]
+}
