@@ -13,6 +13,8 @@ use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::helpers::{create_alias, live_stage_id};
+
 use crate::categories::extract_frontmatter;
 
 struct PageSource {
@@ -306,23 +308,3 @@ fn split_njk_sections(body: &str) -> Vec<NjkSection> {
     sections
 }
 
-/// Live stage UUID matching the kernel's `LIVE_STAGE_ID`.
-const LIVE_STAGE_UUID: &str = "0193a5a0-0000-7000-8000-000000000001";
-
-fn live_stage_id() -> Uuid {
-    Uuid::parse_str(LIVE_STAGE_UUID).expect("LIVE_STAGE_UUID is valid") // Infallible: hard-coded valid UUID
-}
-
-async fn create_alias(pool: &PgPool, source: &str, alias: &str, now: i64) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO url_alias (id, source, alias, created) \
-         VALUES ($1, $2, $3, $4) ON CONFLICT (alias) DO NOTHING",
-    )
-    .bind(Uuid::now_v7())
-    .bind(source)
-    .bind(alias)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    Ok(())
-}

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 /// Scan all blog posts for tags and create category terms.
 ///
-/// Returns a map of tag name → term UUID for use in blog migration.
+/// Returns a map of tag name (lowercase) -> term UUID for use in blog migration.
 pub async fn migrate_categories(
     source: &Path,
     pool: &PgPool,
@@ -19,56 +19,56 @@ pub async fn migrate_categories(
 ) -> Result<HashMap<String, Uuid>> {
     let mut tag_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Scan blog posts for tags
-    let blog_dir = source.join("src/blog");
-    if blog_dir.exists() {
-        scan_tags_in_dir(&blog_dir, &mut tag_set)?;
-    }
-    let talks_dir = source.join("src/tag1-team-talks");
-    if talks_dir.exists() {
-        scan_tags_in_dir(&talks_dir, &mut tag_set)?;
-    }
-    let howto_dir = source.join("src/how-to");
-    if howto_dir.exists() {
-        scan_tags_in_dir(&howto_dir, &mut tag_set)?;
+    for dir_name in ["src/blog", "src/tag1-team-talks", "src/how-to"] {
+        let dir = source.join(dir_name);
+        if dir.exists() {
+            scan_tags_in_dir(&dir, &mut tag_set)?;
+        }
     }
 
     tracing::info!(unique_tags = tag_set.len(), "found tags in content");
 
+    // Ensure the "tags" category vocabulary exists
+    let category_id = if dry_run {
+        "tags".to_string()
+    } else {
+        ensure_category(pool, "tags", "Tags", "Blog post tags").await?
+    };
+
     let mut tag_map = HashMap::new();
     for tag_name in &tag_set {
         if dry_run {
-            tag_map.insert(tag_name.clone(), Uuid::now_v7());
+            tag_map.insert(tag_name.to_lowercase(), Uuid::now_v7());
             continue;
         }
 
         // Check if term already exists
-        let existing: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM category_tag WHERE name = $1 LIMIT 1",
-        )
-        .bind(tag_name)
-        .fetch_optional(pool)
-        .await?;
+        let existing: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM category_tag WHERE label = $1 AND category_id = $2")
+                .bind(tag_name)
+                .bind(&category_id)
+                .fetch_optional(pool)
+                .await?;
 
         if let Some((id,)) = existing {
-            tag_map.insert(tag_name.clone(), id);
+            tag_map.insert(tag_name.to_lowercase(), id);
         } else {
             let id = Uuid::now_v7();
             let slug = slug_from_name(tag_name);
             let now = chrono::Utc::now().timestamp();
             sqlx::query(
-                "INSERT INTO category_tag (id, category_id, name, slug, weight, created, changed) \
+                "INSERT INTO category_tag (id, category_id, label, slug, weight, created, changed) \
                  VALUES ($1, $2, $3, $4, 0, $5, $5) \
-                 ON CONFLICT (name) DO NOTHING",
+                 ON CONFLICT DO NOTHING",
             )
             .bind(id)
-            .bind(default_category_id(pool).await?)
+            .bind(&category_id)
             .bind(tag_name)
             .bind(&slug)
             .bind(now)
             .execute(pool)
             .await?;
-            tag_map.insert(tag_name.clone(), id);
+            tag_map.insert(tag_name.to_lowercase(), id);
             tracing::debug!(tag = %tag_name, "created tag");
         }
     }
@@ -135,28 +135,32 @@ fn slug_from_name(name: &str) -> String {
         .to_string()
 }
 
-/// Get or create the default "Tags" category.
-async fn default_category_id(pool: &PgPool) -> Result<Uuid> {
-    let existing: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM category WHERE name = 'tags' LIMIT 1")
+/// Ensure the category vocabulary exists, returns the category machine-name ID.
+async fn ensure_category(
+    pool: &PgPool,
+    id: &str,
+    label: &str,
+    description: &str,
+) -> Result<String> {
+    let existing: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM category WHERE id = $1")
+            .bind(id)
             .fetch_optional(pool)
             .await?;
 
-    if let Some((id,)) = existing {
-        return Ok(id);
+    if existing.is_some() {
+        return Ok(id.to_string());
     }
 
-    let id = Uuid::now_v7();
-    let now = chrono::Utc::now().timestamp();
     sqlx::query(
-        "INSERT INTO category (id, name, label, description, created, changed) \
-         VALUES ($1, 'tags', 'Tags', 'Blog post tags', $2, $2) \
-         ON CONFLICT (name) DO NOTHING",
+        "INSERT INTO category (id, label, description, hierarchy, weight) \
+         VALUES ($1, $2, $3, 0, 0) ON CONFLICT DO NOTHING",
     )
     .bind(id)
-    .bind(now)
+    .bind(label)
+    .bind(description)
     .execute(pool)
     .await?;
 
-    Ok(id)
+    Ok(id.to_string())
 }

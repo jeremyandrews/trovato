@@ -56,13 +56,13 @@ pub async fn migrate_redirects(
             tracing::debug!(from = %from, to = %to, status, "would create redirect");
         } else {
             sqlx::query(
-                "INSERT INTO redirect (id, source_path, target_path, status_code, created, changed) \
-                 VALUES ($1, $2, $3, $4, $5, $5) ON CONFLICT (source_path) DO NOTHING",
+                "INSERT INTO redirect (id, source, destination, status_code, language, created) \
+                 VALUES ($1, $2, $3, $4, 'en', $5) ON CONFLICT DO NOTHING",
             )
             .bind(Uuid::now_v7())
             .bind(from)
             .bind(to)
-            .bind(status)
+            .bind(status as i16)
             .bind(now)
             .execute(pool)
             .await?;

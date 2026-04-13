@@ -6,6 +6,7 @@
 
 mod blog;
 mod categories;
+mod helpers;
 mod pages;
 mod redirects;
 mod team;
