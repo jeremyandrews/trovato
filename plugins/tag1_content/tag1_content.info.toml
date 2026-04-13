@@ -1,0 +1,18 @@
+name = "tag1_content"
+description = "Tag1 Consulting content types: blog, case study, team member, composed page"
+version = "1.0.0"
+api_version = "0.2"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_item_info",
+    "tap_item_access",
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = []
