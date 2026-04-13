@@ -67,9 +67,15 @@ impl RouteRegistry {
         // Register the core API v1 routes
         self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
-            path: "/api/v1/conferences".to_string(),
-            summary: "List conferences with filters and pagination".to_string(),
+            path: "/api/v1/items".to_string(),
+            summary: "List content items with filters and pagination".to_string(),
             parameters: vec![
+                ParamMeta {
+                    name: "type".to_string(),
+                    location: "query".to_string(),
+                    required: false,
+                    description: "Content type filter".to_string(),
+                },
                 ParamMeta {
                     name: "page".to_string(),
                     location: "query".to_string(),
@@ -84,22 +90,22 @@ impl RouteRegistry {
                 },
             ],
             response_type: "application/json".to_string(),
-            tags: vec!["conferences".to_string()],
+            tags: vec!["content".to_string()],
             deprecated: false,
         });
 
         self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
-            path: "/api/v1/conferences/{id}".to_string(),
-            summary: "Get a single conference by ID".to_string(),
+            path: "/api/v1/items/{id}".to_string(),
+            summary: "Get a single content item by ID".to_string(),
             parameters: vec![ParamMeta {
                 name: "id".to_string(),
                 location: "path".to_string(),
                 required: true,
-                description: "Conference UUID".to_string(),
+                description: "Item UUID".to_string(),
             }],
             response_type: "application/json".to_string(),
-            tags: vec!["conferences".to_string()],
+            tags: vec!["content".to_string()],
             deprecated: false,
         });
 
@@ -135,34 +141,11 @@ impl RouteRegistry {
 
         self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
-            path: "/api/v1/topics".to_string(),
-            summary: "List topic categories".to_string(),
+            path: "/api/v1/categories".to_string(),
+            summary: "List categories".to_string(),
             parameters: vec![],
             response_type: "application/json".to_string(),
-            tags: vec!["topics".to_string()],
-            deprecated: false,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::GET.to_string(),
-            path: "/api/v1/speakers".to_string(),
-            summary: "List speakers with pagination".to_string(),
-            parameters: vec![
-                ParamMeta {
-                    name: "page".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "Page number (default 1)".to_string(),
-                },
-                ParamMeta {
-                    name: "per_page".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "Items per page (default 25)".to_string(),
-                },
-            ],
-            response_type: "application/json".to_string(),
-            tags: vec!["speakers".to_string()],
+            tags: vec!["categories".to_string()],
             deprecated: false,
         });
 

@@ -274,6 +274,29 @@ async fn view_item(
                 continue;
             }
 
+            // PageBuilder field: Puck JSON component tree.
+            // Detect via field type definition OR structural check (root+content keys).
+            let is_page_builder_field = content_type_fields.iter().any(|f| {
+                f.field_name == *name
+                    && matches!(f.field_type, trovato_sdk::types::FieldType::PageBuilder)
+            }) || (value.get("root").is_some()
+                && value.get("content").is_some());
+            if is_page_builder_field {
+                match state.theme().render_page_builder_content(value) {
+                    Ok(rendered) => {
+                        children_html.push_str(&format!(
+                            "<div class=\"field field--page-builder field-{}\">{}</div>",
+                            html_escape(name),
+                            rendered
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!(field = %name, error = %e, "failed to render page builder field");
+                    }
+                }
+                continue;
+            }
+
             // Compound field: has "sections" array
             if let Some(sections_raw) = value.get("sections").and_then(|s| s.as_array()) {
                 // Sort sections by weight for correct display order

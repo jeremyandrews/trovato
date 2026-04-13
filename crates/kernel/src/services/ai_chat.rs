@@ -1231,7 +1231,7 @@ mod tests {
             "field_country": {"value": "U.S.A."},
             "field_date_start": {"value": "2026-05-01"},
             "field_date_end": {"value": "2026-05-03"},
-            "field_description": {"value": "A conference about Rust programming."},
+            "field_description": {"value": "An article about Rust programming."},
             "field_url": {"value": "https://example.com"},
             "field_empty": {"value": ""},
             "field_body": {"value": "<p>Hello <strong>world</strong></p>"}
@@ -1240,7 +1240,7 @@ mod tests {
         assert!(result.contains("City: Portland"));
         assert!(result.contains("Country: U.S.A."));
         assert!(result.contains("Date Start: 2026-05-01"));
-        assert!(result.contains("Description: A conference about Rust programming."));
+        assert!(result.contains("Description: An article about Rust programming."));
         assert!(result.contains("Url: https://example.com"));
         // HTML should be stripped from body
         assert!(result.contains("Body: Hello world"));

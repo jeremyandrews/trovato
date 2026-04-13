@@ -5602,6 +5602,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tag1_content"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "tag1_hubspot"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6324,6 +6342,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_captcha"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_categories"
 version = "1.0.0"
 dependencies = [
@@ -6369,6 +6396,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_feeds"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_image_styles"
 version = "1.0.0"
 dependencies = [
@@ -6405,6 +6441,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_page_builder"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_redirects"
 version = "1.0.0"
 dependencies = [
@@ -6423,6 +6468,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_scolta"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_search"
 version = "1.0.0"
 dependencies = [
@@ -6433,6 +6487,15 @@ dependencies = [
 
 [[package]]
 name = "trovato_seo"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_series"
 version = "1.0.0"
 dependencies = [
  "serde",

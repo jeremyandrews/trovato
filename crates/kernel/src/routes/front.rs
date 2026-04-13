@@ -63,7 +63,7 @@ async fn render_configured_front_page(
     }
 
     // Render item fields and plugin outputs
-    let mut children_html = render_item_fields(&item);
+    let mut children_html = render_item_fields(&item, state);
     for output in render_outputs {
         children_html.push_str(&output);
     }
@@ -166,11 +166,29 @@ async fn render_promoted_listing(state: &AppState) -> String {
 }
 
 /// Render item fields to HTML.
-fn render_item_fields(item: &Item) -> String {
+fn render_item_fields(item: &Item, state: &AppState) -> String {
     let mut html = String::new();
 
     if let Some(fields) = item.fields.as_object() {
         for (name, value) in fields {
+            // PageBuilder field: Puck JSON with root + content keys
+            if value.get("root").is_some() && value.get("content").is_some() {
+                match state.theme().render_page_builder_content(value) {
+                    Ok(rendered) => {
+                        html.push_str(&format!(
+                            "<div class=\"field field--page-builder field-{}\">{}</div>",
+                            html_escape(name),
+                            rendered
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!(field = %name, error = %e, "failed to render page builder field on front page");
+                    }
+                }
+                continue;
+            }
+
+            // Text field with {value, format}
             if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
                 let format = value
                     .get("format")

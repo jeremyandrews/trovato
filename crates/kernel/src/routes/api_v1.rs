@@ -1,4 +1,4 @@
-//! Versioned REST API (v1) for Ritrovo conferences.
+//! Versioned REST API (v1) for content management.
 //!
 //! Provides a stable, paginated JSON API with envelope responses.
 //! All list endpoints return `{ data, total, page, per_page }`.

@@ -122,9 +122,9 @@ mod tests {
 
     #[test]
     fn resolve_replaces_placeholders() {
-        let result = resolve(EXPAND_QUERY, "Ritrovo", "a tech conference aggregator");
-        assert!(result.contains("Ritrovo"));
-        assert!(result.contains("tech conference aggregator"));
+        let result = resolve(EXPAND_QUERY, "Trovato", "a content management platform");
+        assert!(result.contains("Trovato"));
+        assert!(result.contains("content management platform"));
         assert!(!result.contains("{SITE_NAME}"));
         assert!(!result.contains("{SITE_DESCRIPTION}"));
     }
