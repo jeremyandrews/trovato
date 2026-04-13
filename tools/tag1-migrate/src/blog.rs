@@ -150,7 +150,7 @@ pub async fn migrate_blogs(
             } else {
                 let id = Uuid::now_v7();
                 sqlx::query(
-                    "INSERT INTO item (id, item_type, title, status, author_id, fields, \
+                    "INSERT INTO item (id, type, title, status, author_id, fields, \
                      stage_id, created, changed) \
                      VALUES ($1, 'blog', $2, 1, $3, $4, $5, $6, $6) \
                      ON CONFLICT DO NOTHING",
@@ -182,9 +182,11 @@ pub async fn migrate_blogs(
     Ok(total)
 }
 
+/// Live stage UUID matching the kernel's `LIVE_STAGE_ID`.
+const LIVE_STAGE_UUID: &str = "0193a5a0-0000-7000-8000-000000000001";
+
 fn live_stage_id() -> Uuid {
-    Uuid::parse_str("00000000-0000-0000-0000-000000000001")
-        .expect("live stage ID is valid") // Infallible: hard-coded valid UUID
+    Uuid::parse_str(LIVE_STAGE_UUID).expect("LIVE_STAGE_UUID is valid") // Infallible: hard-coded valid UUID
 }
 
 async fn create_alias(pool: &PgPool, source: &str, alias: &str, now: i64) -> Result<()> {

@@ -80,7 +80,7 @@ pub async fn migrate_team(
                 tracing::info!(name = %full_name, shortname = %member.shortname, "would create team member");
             } else {
                 sqlx::query(
-                    "INSERT INTO item (id, item_type, title, status, author_id, fields, \
+                    "INSERT INTO item (id, type, title, status, author_id, fields, \
                      stage_id, created, changed) \
                      VALUES ($1, 'team_member', $2, 1, $3, $4, $5, $6, $6) \
                      ON CONFLICT DO NOTHING",
@@ -118,10 +118,11 @@ pub async fn migrate_team(
     Ok(team_map)
 }
 
+/// Live stage UUID matching the kernel's `LIVE_STAGE_ID`.
+const LIVE_STAGE_UUID: &str = "0193a5a0-0000-7000-8000-000000000001";
+
 fn live_stage_id() -> Uuid {
-    // Trovato's live stage ID is a well-known UUID
-    Uuid::parse_str("00000000-0000-0000-0000-000000000001")
-        .expect("live stage ID is valid") // Infallible: hard-coded valid UUID
+    Uuid::parse_str(LIVE_STAGE_UUID).expect("LIVE_STAGE_UUID is valid") // Infallible: hard-coded valid UUID
 }
 
 async fn create_alias(pool: &PgPool, source: &str, alias: &str, now: i64) -> Result<()> {
