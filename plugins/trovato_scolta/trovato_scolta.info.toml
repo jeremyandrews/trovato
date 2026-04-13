@@ -1,0 +1,13 @@
+name = "trovato_scolta"
+description = "AI-powered search integration: query expansion, result summarization, and follow-up"
+version = "1.0.0"
+api_version = "0.2"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_menu",
+]
+weight = 0

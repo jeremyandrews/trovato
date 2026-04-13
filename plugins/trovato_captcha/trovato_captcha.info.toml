@@ -1,0 +1,13 @@
+name = "trovato_captcha"
+description = "Cloudflare Turnstile CAPTCHA validation for form submissions"
+version = "1.0.0"
+api_version = "0.2"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_form_validate",
+]
+weight = 0

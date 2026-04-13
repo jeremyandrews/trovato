@@ -1,0 +1,13 @@
+name = "tag1_hubspot"
+description = "HubSpot CRM integration for contact form submissions"
+version = "1.0.0"
+api_version = "0.2"
+default_enabled = false
+dependencies = ["trovato_captcha"]
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_form_submit",
+]
+weight = 0

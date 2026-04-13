@@ -1,0 +1,13 @@
+name = "trovato_series"
+description = "Blog series navigation with previous/next links"
+version = "1.0.0"
+api_version = "0.2"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_item_view",
+]
+weight = 0
