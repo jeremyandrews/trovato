@@ -368,6 +368,25 @@ impl FormBuilder {
                 )
             }
 
+            FieldType::PageBuilder => {
+                // Page builder: hidden input + container div for Puck editor
+                let existing_json = value
+                    .map(|v| serde_json::to_string(v).unwrap_or_default())
+                    .unwrap_or_else(|| r#"{"root":{"title":""},"content":[]}"#.to_string());
+                let existing_escaped = html_escape(&existing_json);
+
+                format!(
+                    r#"
+                    <div class="form-group">
+                        <label>{label}{required_star}</label>
+                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}">
+                        <div data-page-builder data-page-builder-input="{field_name}"
+                             data-components-url="/api/v1/page-builder/components"></div>
+                    </div>
+                    "#
+                )
+            }
+
             FieldType::Compound {
                 allowed_types,
                 min_items,

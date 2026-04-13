@@ -114,6 +114,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/items/autocomplete", get(autocomplete_items))
         .route("/api/v1/media/browse", get(browse_media))
         .route("/api/openapi.json", get(openapi_spec))
+        .route(
+            "/api/v1/page-builder/components",
+            get(list_page_builder_components),
+        )
         .layer(axum::middleware::from_fn(inject_api_version))
 }
 
@@ -1064,4 +1068,18 @@ async fn get_personal_fields(pool: &sqlx::PgPool, item_type: &str) -> Vec<String
         .filter(|f| f.personal_data)
         .map(|f| f.field_name)
         .collect()
+}
+
+// -------------------------------------------------------------------------
+// Page builder component registry
+// -------------------------------------------------------------------------
+
+/// GET /api/v1/page-builder/components — list available page builder components.
+///
+/// Returns the component registry for the Puck editor to initialize with.
+async fn list_page_builder_components() -> impl IntoResponse {
+    let registry = crate::content::page_builder_components::ComponentRegistry::new();
+    Json(serde_json::json!({
+        "data": registry.all(),
+    }))
 }

@@ -199,6 +199,11 @@ pub enum FieldType {
     /// Storage format: JSON array of `{type, weight, data}` in JSONB `fields`.
     /// Block validation is handled by `BlockTypeRegistry`.
     Blocks,
+    /// A Puck-format JSON component tree rendered via `render_puck_page()`.
+    ///
+    /// Storage format: `{"root": {...}, "content": [{type, props, zones}, ...]}`.
+    /// Supports 12 component types with nested zones for visual page composition.
+    PageBuilder,
 }
 
 /// A content type definition returned by `tap_item_info`.

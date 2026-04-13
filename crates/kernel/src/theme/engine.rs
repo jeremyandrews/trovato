@@ -389,6 +389,61 @@ impl ThemeEngine {
             },
         );
 
+        // Filter for generating responsive <picture> elements with AVIF/WebP/JPEG.
+        //
+        // Usage:
+        //   {{ "/uploads/photo.jpg" | responsive_image(alt="Photo", widths="400,800,1200") | safe }}
+        //
+        // Generates width-based image style URLs (w400, w800, w1200) for each format.
+        tera.register_filter(
+            "responsive_image",
+            |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
+                let url = value.as_str().unwrap_or_default();
+                if url.is_empty() {
+                    return Ok(tera::Value::String(String::new()));
+                }
+                let alt = args.get("alt").and_then(|v| v.as_str()).unwrap_or("");
+                let widths_str = args
+                    .get("widths")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("400,800,1200");
+                let loading = args
+                    .get("loading")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("lazy");
+
+                let base = url.trim_start_matches('/');
+                let clean_alt = ammonia::clean(alt);
+
+                let mut avif_srcset = Vec::new();
+                let mut webp_srcset = Vec::new();
+                let mut jpeg_srcset = Vec::new();
+                let mut last_w = "1200";
+
+                for w in widths_str.split(',') {
+                    let w = w.trim();
+                    avif_srcset.push(format!("/files/styles/w{w}/{base}.avif {w}w"));
+                    webp_srcset.push(format!("/files/styles/w{w}/{base}.webp {w}w"));
+                    jpeg_srcset.push(format!("/files/styles/w{w}/{base} {w}w"));
+                    last_w = w;
+                }
+
+                let html = format!(
+                    "<picture>\n\
+                     <source type=\"image/avif\" srcset=\"{}\">\n\
+                     <source type=\"image/webp\" srcset=\"{}\">\n\
+                     <img src=\"/files/styles/w{last_w}/{base}\" \
+                     srcset=\"{}\" alt=\"{clean_alt}\" loading=\"{loading}\" decoding=\"async\">\n\
+                     </picture>",
+                    avif_srcset.join(", "),
+                    webp_srcset.join(", "),
+                    jpeg_srcset.join(", "),
+                );
+
+                Ok(tera::Value::String(html))
+            },
+        );
+
         // Filter for displaying FieldType enum variants as human-readable labels.
         // FieldType serializes as either a string ("Date", "Boolean", "Blocks") or
         // an object ({"Text": {"max_length": null}}). This filter extracts the
@@ -725,6 +780,21 @@ impl ThemeEngine {
             .context("failed to render page template")
     }
 
+    /// Render a Puck page builder JSON value to HTML.
+    ///
+    /// Parses the Puck JSON, recursively renders components via `pb/*.html`
+    /// templates, sanitizes each component with Ammonia, and validates
+    /// heading hierarchy.
+    ///
+    /// Call this from route handlers before passing content to Tera context.
+    /// The rendered HTML string can then be output with `| safe` in templates.
+    pub fn render_page_builder_content(&self, page_json: &serde_json::Value) -> Result<String> {
+        let page: crate::content::page_builder::PuckPage =
+            serde_json::from_value(page_json.clone())
+                .context("failed to parse page builder JSON")?;
+        crate::content::page_builder::render_puck_page(&page, &self.tera)
+    }
+
     /// Clear the suggestion cache (useful for development hot-reload).
     pub fn clear_cache(&self) {
         self.suggestion_cache.clear();
@@ -978,6 +1048,51 @@ mod tests {
         ctx.insert("body", &42);
         let result = tera.render("test", &ctx).unwrap();
 
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn responsive_image_filter_generates_picture() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template(
+            "test",
+            r#"{{ url | responsive_image(alt="Photo", widths="400,800") | safe }}"#,
+        )
+        .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("url", "/uploads/photo.jpg");
+        let result = tera.render("test", &ctx).unwrap();
+
+        assert!(result.contains("<picture>"), "missing <picture>: {result}");
+        assert!(
+            result.contains("image/avif"),
+            "missing avif source: {result}"
+        );
+        assert!(
+            result.contains("image/webp"),
+            "missing webp source: {result}"
+        );
+        assert!(result.contains("w400/"), "missing w400: {result}");
+        assert!(result.contains("w800/"), "missing w800: {result}");
+        assert!(result.contains("alt=\"Photo\""), "missing alt: {result}");
+        assert!(
+            result.contains("loading=\"lazy\""),
+            "missing lazy: {result}"
+        );
+    }
+
+    #[test]
+    fn responsive_image_filter_empty_url() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", r#"{{ url | responsive_image(alt="X") }}"#)
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("url", "");
+        let result = tera.render("test", &ctx).unwrap();
         assert!(result.is_empty());
     }
 }

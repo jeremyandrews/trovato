@@ -86,11 +86,16 @@ async fn serve_derivative(
         }
     }
 
-    // Load style from DB
+    // Load style from DB — or synthesize a width-based auto-style (w400, w800, etc.)
     let style = match image_service.load_style(&style_name).await {
         Ok(Some(s)) => s,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, "Image style not found").into_response();
+            // Auto-generate width styles: w{N} scales to width N preserving aspect ratio
+            if let Some(auto) = synthesize_width_style(&style_name) {
+                auto
+            } else {
+                return (StatusCode::NOT_FOUND, "Image style not found").into_response();
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to load image style");
@@ -162,6 +167,27 @@ async fn serve_derivative(
         .into_response()
 }
 
+/// Synthesize a width-based image style from a `w{N}` style name.
+///
+/// Returns `None` if the name doesn't match the `w{N}` pattern or the width
+/// is out of range (1..=4096).
+fn synthesize_width_style(style_name: &str) -> Option<crate::services::image_style::ImageStyle> {
+    let width_str = style_name.strip_prefix('w')?;
+    let width: u32 = width_str.parse().ok()?;
+    if width == 0 || width > 4096 {
+        return None;
+    }
+
+    Some(crate::services::image_style::ImageStyle {
+        id: uuid::Uuid::nil(),
+        name: style_name.to_string(),
+        label: format!("Width {width}"),
+        effects: serde_json::json!([{"type": "scale", "width": width}]),
+        created: 0,
+        changed: 0,
+    })
+}
+
 /// Guess content type from file extension.
 fn guess_content_type(path: &str) -> String {
     match path.rsplit('.').next() {
@@ -210,5 +236,33 @@ mod tests {
         assert!(validate_image_path("my-image_001.png"));
         // Filenames with dots are fine (component-based check allows this)
         assert!(validate_image_path("file..name.jpg"));
+    }
+
+    #[test]
+    fn synthesize_width_style_valid() {
+        let style = synthesize_width_style("w800").unwrap();
+        assert_eq!(style.name, "w800");
+        let effects: Vec<serde_json::Value> = serde_json::from_value(style.effects).unwrap();
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0]["type"], "scale");
+        assert_eq!(effects[0]["width"], 800);
+    }
+
+    #[test]
+    fn synthesize_width_style_rejects_invalid() {
+        assert!(synthesize_width_style("thumbnail").is_none());
+        assert!(synthesize_width_style("w0").is_none());
+        assert!(synthesize_width_style("w9999").is_none());
+        assert!(synthesize_width_style("wabc").is_none());
+    }
+
+    #[test]
+    fn content_type_avif() {
+        assert_eq!(guess_content_type("photo.avif"), "image/avif");
+    }
+
+    #[test]
+    fn content_type_webp() {
+        assert_eq!(guess_content_type("photo.webp"), "image/webp");
     }
 }
