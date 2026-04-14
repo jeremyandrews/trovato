@@ -1,4 +1,0 @@
--- No-op: /conferences alias is now managed via config import (YAML files in
--- docs/tutorial/config/). This migration previously deleted a stale alias
--- created by tap_install, but config import now handles URL aliases as
--- first-class config entities.

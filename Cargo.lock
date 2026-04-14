@@ -5557,24 +5557,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tag1_content"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "tag1_hubspot"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

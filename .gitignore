@@ -43,3 +43,5 @@ uploads/
 
 # Agent environment discovery (local to each dev machine)
 TOOLS.md
+target/
+**/target/
