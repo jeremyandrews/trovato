@@ -9,4 +9,25 @@ ignore = [
     # feature dependency. No fix available upstream.
     # Review date: 2026-06-01
     "RUSTSEC-2023-0071",
+
+    # wasmtime/cranelift batch advisories (RUSTSEC-2026-0085 through -0096).
+    # Published 2026-04 for wasmtime ≤43. Our plugin sandbox mitigates:
+    # - Epoch-based interruption (10s request / 150s background)
+    # - Minimal WASI stubs (no fd_renumber, no wasi:http)
+    # - wasm_threads(false) — no shared memory
+    # - MAX_MEMORY 64MB per instance
+    # Upgrade to wasmtime 44+ when available.
+    # Review date: 2026-07-01
+    "RUSTSEC-2026-0085",
+    "RUSTSEC-2026-0086",
+    "RUSTSEC-2026-0087",
+    "RUSTSEC-2026-0088",
+    "RUSTSEC-2026-0089",
+    "RUSTSEC-2026-0090",
+    "RUSTSEC-2026-0091",
+    "RUSTSEC-2026-0092",
+    "RUSTSEC-2026-0093",
+    "RUSTSEC-2026-0094",
+    "RUSTSEC-2026-0095",
+    "RUSTSEC-2026-0096",
 ]
