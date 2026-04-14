@@ -4559,51 +4559,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ritrovo_access"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "ritrovo_cfp"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "ritrovo_importer"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "ritrovo_notify"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "ritrovo_translate"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "rmcp"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

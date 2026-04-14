@@ -12,7 +12,7 @@ pub struct RouteMetadata {
     /// HTTP method.
     pub method: String,
 
-    /// Route path pattern (e.g., "/api/v1/conferences/{id}").
+    /// Route path pattern (e.g., "/api/v1/items/{id}").
     pub path: String,
 
     /// Short summary of the route's purpose.
@@ -24,7 +24,7 @@ pub struct RouteMetadata {
     /// Description of the response content type.
     pub response_type: String,
 
-    /// Tags for grouping (e.g., "conferences", "admin").
+    /// Tags for grouping (e.g., "content", "admin").
     pub tags: Vec<String>,
 
     /// Whether this route is deprecated.
