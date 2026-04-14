@@ -25,9 +25,9 @@ RUN cargo build --target wasm32-wasip1 --release \
     -p trovato_categories -p trovato_comments \
     -p trovato_locale -p trovato_content_translation \
     -p trovato_config_translation -p trovato_block_editor \
-    -p trovato_search -p trovato_ai \
-    -p ritrovo_importer -p ritrovo_cfp -p ritrovo_access \
-    -p ritrovo_notify -p ritrovo_translate \
+    -p trovato_search -p trovato_ai -p trovato_seo \
+    -p trovato_page_builder -p trovato_scolta -p trovato_captcha \
+    -p trovato_feeds -p trovato_series \
     -p argus -p netgrasp -p goose
 
 # ---- Runtime stage ----
