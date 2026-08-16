@@ -146,6 +146,20 @@ CI provisions a fresh database per run, so it never sees this. Locally it means
 recreated. The fix is for the test to clean up after itself, or to use a unique
 username per run.
 
+### One notification test is timing-sensitive under coverage
+
+`the_pipeline_turns_a_summarized_story_into_a_dispatched_notification` in
+`crates/kernel/tests/argus_notify_test.rs` drives the real Argus WASM plugin and
+asserts that the notification captured the story as it stood when it was
+founded, with one member rather than two. It depends on a fixed 1200ms sleep
+winning a race against a second report joining the story.
+
+Under `cargo llvm-cov`, instrumentation slows execution enough that the race can
+go the other way, and the CI Coverage job fails with `article_count` 2. It
+passes on re-run and passes in the ordinary test job. Observed once on
+2026-08-16. If Coverage fails on that assertion, re-run it; the fix is to make
+the test wait on the state it needs instead of on a duration.
+
 ### The local test gate is stronger than CI
 
 CI splits the integration tests across three shards with three separate
