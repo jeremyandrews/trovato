@@ -76,9 +76,12 @@ reads it from the plugin search path. There is no archive format, no install
 from a URL, and no index to discover plugins from. Distribution today means
 telling someone where the directory is.
 
-`PLUGINS_DIR` and `TEMPLATES_DIR` accept several directories, so an application
-can keep its plugins in its own repository rather than inside a Trovato
-checkout. That is the mechanism a package format would eventually build on.
+`PLUGINS_DIR`, `TEMPLATES_DIR` and `STATIC_DIR` accept several directories, so
+an application can keep its plugins, templates and assets in its own repository
+rather than inside a Trovato checkout. That is the mechanism a package format
+would eventually build on. Each directory still has to be named in the search
+path by hand; a plugin's own `static/` and `templates/` subdirectories are not
+discovered automatically.
 
 ### The committed reference plugin is a binary artifact
 
