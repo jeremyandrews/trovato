@@ -1,0 +1,69 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Permissions</h2>
+</div>
+
+<div class="admin-card">
+    <form id="permissions-form" method="post" action="/admin/people/permissions">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        <table class="table permissions-table">
+            <thead>
+                <tr>
+                    <th>Permission</th>
+                    {% for role in roles %}
+                    <th class="role-column">{{ role.name }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for permission in available_permissions %}
+                <tr>
+                    <td class="permission-name">{{ permission }}</td>
+                    {% for role in roles %}
+                    {% set role_id_str = role.id %}
+                    {% set perm_key = "perm_" ~ role.id ~ "_" ~ permission | replace(from=" ", to="_") %}
+                    {% set role_perms = role_permissions[role_id_str] | default(value=[]) %}
+                    <td class="permission-checkbox">
+                        <input type="checkbox"
+                               name="{{ perm_key }}"
+                               value="1"
+                               {% if permission in role_perms %}checked{% endif %}>
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">Save permissions</button>
+        </div>
+    </form>
+</div>
+
+<style>
+    .permissions-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .permissions-table th,
+    .permissions-table td {
+        padding: 0.5rem;
+        border: 1px solid #ddd;
+    }
+    .role-column {
+        text-align: center;
+        min-width: 100px;
+    }
+    .permission-name {
+        font-weight: 500;
+    }
+    .permission-checkbox {
+        text-align: center;
+    }
+</style>
+{% endblock %}

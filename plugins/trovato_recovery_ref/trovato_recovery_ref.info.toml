@@ -1,0 +1,18 @@
+name = "trovato_recovery_ref"
+description = "FR-7c reference plugin: canonical tap_account_recovery (describe/initiate/verify) over the namespaced method_id trovato_recovery_ref:code"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_account_recovery",
+]
+weight = 0
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). Derived from the
+# compiled .wasm import section:
+#   logging — referenced by the #[plugin_tap] macro on its error path
+[capabilities]
+host_interfaces = ["logging"]

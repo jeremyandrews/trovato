@@ -1,0 +1,17 @@
+[package]
+name = "test_queue_worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "P11d e2e test fixture: plugin queue v2 (D-45..D-48) — a tap_queue_worker that can succeed or trap, tap_queue_info declaring concurrency, and a tap_cron that exercises the additive enqueue host function"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

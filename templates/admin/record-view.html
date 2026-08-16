@@ -1,0 +1,26 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title=title | default(value="Record")) }}
+
+<div class="admin-card">
+    <p><a href="/admin/structure/records/{{ record_type }}">&larr; All {{ record_type }} records</a> &middot; plugin <code>{{ plugin }}</code></p>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Column</th>
+                <th>Value</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for pair in fields %}
+            <tr>
+                <td><code>{{ pair.column }}</code></td>
+                <td>{{ pair.value }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

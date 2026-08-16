@@ -1,0 +1,7 @@
+# Footer menu — About link
+menu_name: footer
+path: /about
+title: About
+weight: 0
+hidden: false
+plugin: core

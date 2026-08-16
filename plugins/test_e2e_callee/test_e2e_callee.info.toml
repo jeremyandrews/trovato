@@ -1,0 +1,20 @@
+name = "test_e2e_callee"
+description = "Epic 2 e2e fixture: plugin-to-plugin invocation callee + sandbox probes"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[migrations]
+files = ["migrations/001_owned.sql"]
+
+# host_interfaces: logging (the #[plugin_tap] macro references it), db (read_undeclared
+# calls query_raw), plugin-api (recurse self-invokes). Note raw_sql is intentionally
+# NOT declared, so the SDK's raw-SQL path is gated (raw-sql-not-declared).
+#
+# public_functions is the callee-consent allowlist: `secret` is exported but omitted
+# (permission-denied), and `not_exported` is listed but has no WASM export
+# (function-not-exported).
+[capabilities]
+host_interfaces = ["logging", "db", "plugin-api"]
+public_functions = ["echo", "big_out", "recurse", "read_undeclared", "greedy_mem", "not_exported"]

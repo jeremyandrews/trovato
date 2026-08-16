@@ -1,0 +1,16 @@
+<article class="gather-row">
+    {% if row.title %}
+    <h3 class="gather-row__title">
+        <a href="/item/{{ row.id }}">{{ row.title }}</a>
+    </h3>
+    {% endif %}
+
+    {% if row.created %}
+    <time class="gather-row__date" datetime="{{ row.created }}">{{ row.created | format_date }}</time>
+    {% endif %}
+
+    {% if row.summary %}
+    <p class="gather-row__summary">{{ row.summary }}</p>
+    {% endif %}
+</article>
+{# Gather row styles live in static/css/theme.css #}

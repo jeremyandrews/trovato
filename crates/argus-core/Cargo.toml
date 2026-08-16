@@ -1,0 +1,22 @@
+[package]
+name = "argus-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-agnostic pipeline core for the Argus news-intelligence plugin"
+
+[lints]
+workspace = true
+
+[lib]
+# Plain rlib: this crate is host-agnostic pure logic. It is pulled into the
+# `plugins/argus` cdylib (compiled to wasm32-wasip1) AND compiled natively for
+# its own unit tests, so every dependency must be wasm-safe (no net/fs/clock).
+crate-type = ["lib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+roxmltree = { workspace = true }

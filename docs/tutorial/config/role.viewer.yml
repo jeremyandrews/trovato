@@ -1,0 +1,7 @@
+# Viewer role — can view content on all editorial stages
+name: viewer
+label: Viewer
+permissions:
+  - access content
+  - view incoming conferences
+  - view curated conferences

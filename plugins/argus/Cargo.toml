@@ -1,0 +1,18 @@
+[package]
+name = "argus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "News intelligence and analysis plugin for Trovato"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+argus-core = { path = "../../crates/argus-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

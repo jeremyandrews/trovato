@@ -1,0 +1,250 @@
+{% extends "page.html" %}
+
+{% block title %}Passkeys{% endblock %}
+
+{% block content %}
+<div style="max-width: 720px; margin: 60px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 0.5rem;">Passkeys</h1>
+    <p style="color: #555; margin-bottom: 1.5rem;">
+        A passkey lets you sign in with your device instead of a password. You can
+        register more than one, so losing a single device does not lock you out.
+    </p>
+
+    <div id="passkey-message" role="status" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;"></div>
+
+    <noscript>
+        <div style="background: #fee; border: 1px solid #c00; padding: 1rem; border-radius: 4px;">
+            Registering a passkey needs JavaScript, because the browser performs the
+            cryptographic ceremony itself.
+        </div>
+    </noscript>
+
+    <div id="passkey-unsupported" style="display: none; background: #ffd; border: 1px solid #cc0; padding: 1rem; border-radius: 4px;">
+        This browser does not support passkeys.
+    </div>
+
+    {# ── Registered passkeys ─────────────────────────────────────────────── #}
+    <h2 style="margin-top: 2rem;">Your passkeys</h2>
+    {% if credentials %}
+    <table style="width: 100%; border-collapse: collapse; margin-top: 0.5rem;">
+        <thead>
+            <tr style="text-align: left; border-bottom: 2px solid #ddd;">
+                <th style="padding: 0.5rem 0;">Device</th>
+                <th style="padding: 0.5rem 0;">Registered</th>
+                <th style="padding: 0.5rem 0;">Last used</th>
+                <th style="padding: 0.5rem 0;"></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for credential in credentials %}
+            <tr style="border-bottom: 1px solid #eee;" data-credential-id="{{ credential.id }}">
+                <td style="padding: 0.6rem 0;">
+                    <span class="passkey-name">{{ credential.device_name | escape }}</span>
+                    {% if credential.backup_state %}
+                    <span style="color: #777; font-size: 0.85em;" title="Synced across your devices">(synced)</span>
+                    {% endif %}
+                    {% if credential.flagged %}
+                    <div style="color: #a00; font-size: 0.85em; margin-top: 0.25rem;">
+                        Flagged: {{ credential.flag_reason | default(value="unusual activity") | escape }}.
+                        This passkey has not been removed; check that it is still yours.
+                    </div>
+                    {% endif %}
+                </td>
+                <td style="padding: 0.6rem 0; color: #555;">{{ credential.created_at }}</td>
+                <td style="padding: 0.6rem 0; color: #555;">
+                    {{ credential.last_used_at | default(value="never") }}
+                </td>
+                <td style="padding: 0.6rem 0; text-align: right; white-space: nowrap;">
+                    <button type="button" class="passkey-rename" data-id="{{ credential.id }}"
+                            style="cursor: pointer;">Rename</button>
+                    <button type="button" class="passkey-revoke" data-id="{{ credential.id }}"
+                            style="cursor: pointer;">Remove</button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color: #777;">No passkeys registered yet.</p>
+    {% endif %}
+
+    {# ── Register a new one ──────────────────────────────────────────────── #}
+    <div style="margin: 1.5rem 0;">
+        <label for="new-passkey-name" class="form-item__label">Name this device (optional)</label>
+        <input type="text" id="new-passkey-name" class="form-text" maxlength="64"
+               placeholder="e.g. Work laptop"
+               style="width: 100%; padding: 0.5rem; font-size: 1rem; margin-bottom: 0.75rem;">
+        <button type="button" id="register-passkey"
+                style="padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer;">
+            Register a passkey
+        </button>
+    </div>
+
+    {# ── Passwordless ────────────────────────────────────────────────────── #}
+    <h2 style="margin-top: 2.5rem;">Password</h2>
+    {% if has_password %}
+    <p style="color: #555;">
+        Your account still has a password. You can remove it and sign in with
+        passkeys alone — but only once you also have a recovery method, so a lost
+        device cannot lock you out permanently.
+    </p>
+    {% if can_go_passwordless %}
+    <button type="button" id="remove-password" style="padding: 0.6rem 1.2rem; cursor: pointer;">
+        Remove my password
+    </button>
+    {% else %}
+    <p style="color: #a60;">{{ passwordless_blocker | escape }}</p>
+    <button type="button" disabled style="padding: 0.6rem 1.2rem;">Remove my password</button>
+    {% endif %}
+    {% else %}
+    <p style="color: #555;">This account has no password. You sign in with passkeys.</p>
+    {% endif %}
+
+    <p style="margin-top: 2rem;"><a href="/user/profile">Back to my account</a></p>
+</div>
+
+{# The ceremony is intrinsically browser-side: the server emits options, the
+   browser calls navigator.credentials.create(), and the result is posted back.
+   This glue calls exactly the same JSON endpoints an API client would. #}
+<script>
+(function () {
+  "use strict";
+
+  var CSRF = {{ csrf_token | json_encode | safe }}; {# SAFE: json_encode emits a quoted, escaped JSON string literal #}
+
+  var messageEl = document.getElementById("passkey-message");
+  var button = document.getElementById("register-passkey");
+  var nameInput = document.getElementById("new-passkey-name");
+
+  function show(text, ok) {
+    messageEl.textContent = text;
+    messageEl.style.display = "block";
+    messageEl.style.background = ok ? "#efe" : "#fee";
+    messageEl.style.border = "1px solid " + (ok ? "#0a0" : "#c00");
+  }
+
+  function post(url, body) {
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
+      body: JSON.stringify(body || {})
+    });
+  }
+
+  function handle(response) {
+    return response.json().then(function (body) {
+      if (!response.ok) { throw new Error(body.error || "That did not work."); }
+      return body;
+    });
+  }
+
+  // ── Rename / revoke / go passwordless ────────────────────────────────────
+  // Each management action consumes the page's single-use CSRF token, so every
+  // success reloads: it refreshes the token and keeps the rendered list honest.
+  Array.prototype.forEach.call(document.querySelectorAll(".passkey-rename"), function (el) {
+    el.addEventListener("click", function () {
+      var row = el.closest("tr");
+      var current = row.querySelector(".passkey-name").textContent.trim();
+      var name = window.prompt("Name for this passkey:", current);
+      if (name === null) { return; }
+      post("/user/passkeys/" + el.dataset.id + "/rename", { device_name: name })
+        .then(handle)
+        .then(function () { window.location.reload(); })
+        .catch(function (err) { show(err.message, false); });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".passkey-revoke"), function (el) {
+    el.addEventListener("click", function () {
+      post("/user/passkeys/" + el.dataset.id + "/revoke")
+        .then(handle)
+        .then(function () { window.location.reload(); })
+        .catch(function (err) { show(err.message, false); });
+    });
+  });
+
+  var removePassword = document.getElementById("remove-password");
+  if (removePassword) {
+    removePassword.addEventListener("click", function () {
+      post("/user/password/remove")
+        .then(handle)
+        .then(function () { window.location.reload(); })
+        .catch(function (err) { show(err.message, false); });
+    });
+  }
+
+  // ── Registration ceremony ────────────────────────────────────────────────
+  if (!window.PublicKeyCredential) {
+    document.getElementById("passkey-unsupported").style.display = "block";
+    button.disabled = true;
+    return;
+  }
+
+  // WebAuthn speaks ArrayBuffers; the JSON wire format uses base64url.
+  function b64urlToBuffer(value) {
+    var padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    while (padded.length % 4) { padded += "="; }
+    var binary = window.atob(padded);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) { bytes[i] = binary.charCodeAt(i); }
+    return bytes.buffer;
+  }
+
+  function bufferToB64url(buffer) {
+    var bytes = new Uint8Array(buffer);
+    var binary = "";
+    for (var i = 0; i < bytes.length; i++) { binary += String.fromCharCode(bytes[i]); }
+    return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  }
+
+  button.addEventListener("click", function () {
+    button.disabled = true;
+    show("Follow your device's prompt…", true);
+
+    post("/user/webauthn/register/start")
+      .then(function (response) {
+        if (!response.ok) { throw new Error("Could not start registration."); }
+        return response.json();
+      })
+      .then(function (started) {
+        // CSRF tokens are single-use; /start hands back the one /finish needs.
+        CSRF = started.csrf_token;
+        var pk = started.options.publicKey;
+        pk.challenge = b64urlToBuffer(pk.challenge);
+        pk.user.id = b64urlToBuffer(pk.user.id);
+        if (pk.excludeCredentials) {
+          pk.excludeCredentials = pk.excludeCredentials.map(function (c) {
+            return { id: b64urlToBuffer(c.id), type: c.type, transports: c.transports };
+          });
+        }
+        return navigator.credentials.create({ publicKey: pk });
+      })
+      .then(function (credential) {
+        return post("/user/webauthn/register/finish", {
+          device_name: nameInput.value || null,
+          credential: {
+            id: credential.id,
+            rawId: bufferToB64url(credential.rawId),
+            type: credential.type,
+            extensions: credential.getClientExtensionResults(),
+            response: {
+              attestationObject: bufferToB64url(credential.response.attestationObject),
+              clientDataJSON: bufferToB64url(credential.response.clientDataJSON)
+            }
+          }
+        });
+      })
+      .then(handle)
+      .then(function () {
+        show("Passkey registered.", true);
+        window.location.reload();
+      })
+      .catch(function (err) {
+        show(err.message || "Registration failed.", false);
+        button.disabled = false;
+      });
+  });
+})();
+</script>
+{% endblock %}

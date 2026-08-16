@@ -1,0 +1,17 @@
+[package]
+name = "test_plugin_api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "K1 e2e test fixture: a plugin that serves HTTP requests via tap_api and writes its own table (G-NO-PLUGIN-HTTP)"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

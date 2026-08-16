@@ -1,0 +1,714 @@
+//! Category API routes.
+//!
+//! REST endpoints for managing categories and tags, plus an HTML browse page
+//! for the "topics" category that renders tags as a link grid.
+
+use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
+use crate::routes::helpers::{
+    JsonError, inject_site_context, require_csrf_header, require_permission_json,
+};
+use crate::state::AppState;
+use axum::{
+    Router,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::{Html, Json},
+    routing::{delete, get, post, put},
+};
+use serde::{Deserialize, Serialize};
+use tower_sessions::Session;
+use uuid::Uuid;
+
+/// Permission required to mutate the taxonomy (create/update/delete/reparent
+/// categories and tags).
+const ADMINISTER_CATEGORIES: &str = "administer categories";
+
+/// Authorize a state-changing taxonomy request: the session user must hold
+/// `administer categories` (admins implicitly do) **and** present a valid CSRF
+/// token in the `X-CSRF-Token` header.
+///
+/// This closes AC-W1/CSRF-1 (the category & tag mutation API shipped fully
+/// unauthenticated, no permission, no CSRF). All seven write handlers call it
+/// before touching the service, mirroring the item-mutation pattern
+/// (`item.rs` `create_item`).
+async fn authorize_category_mutation(
+    state: &AppState,
+    session: &Session,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, Json<JsonError>)> {
+    require_permission_json(state, session, ADMINISTER_CATEGORIES).await?;
+    // Map the header-CSRF helper's `serde_json::Value` error body onto this
+    // module's `JsonError` shape so the response is uniform.
+    require_csrf_header(session, headers).await.map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(JsonError {
+                error: "Invalid or missing CSRF token. Include X-CSRF-Token header.".to_string(),
+            }),
+        )
+    })?;
+    Ok(())
+}
+
+/// Create the category router.
+pub fn router() -> Router<AppState> {
+    Router::new()
+        // HTML browse page for topics
+        .route("/topics", get(browse_topics))
+        // Category routes
+        .route("/api/categories", get(list_categories))
+        .route("/api/category", post(create_category))
+        .route("/api/category/{id}", get(get_category))
+        .route("/api/category/{id}", put(update_category))
+        .route("/api/category/{id}", delete(delete_category))
+        .route("/api/category/{id}/tags", get(list_tags))
+        .route("/api/category/{id}/roots", get(get_root_tags))
+        // Tag routes
+        .route("/api/tag", post(create_tag))
+        .route("/api/tag/{id}", get(get_tag))
+        .route("/api/tag/{id}", put(update_tag))
+        .route("/api/tag/{id}", delete(delete_tag))
+        .route("/api/tag/{id}/parents", get(get_parents))
+        .route("/api/tag/{id}/parents", put(set_parents))
+        .route("/api/tag/{id}/children", get(get_children))
+        .route("/api/tag/{id}/ancestors", get(get_ancestors))
+        .route("/api/tag/{id}/descendants", get(get_descendants))
+        .route("/api/tag/{id}/breadcrumb", get(get_breadcrumb))
+}
+
+// -------------------------------------------------------------------------
+// Response types
+// -------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct CategoryResponse {
+    id: String,
+    label: String,
+    description: Option<String>,
+    hierarchy: i16,
+    weight: i16,
+}
+
+#[derive(Serialize)]
+struct TagResponse {
+    id: Uuid,
+    category_id: String,
+    label: String,
+    description: Option<String>,
+    weight: i16,
+    created: i64,
+    changed: i64,
+}
+
+#[derive(Serialize)]
+struct TagWithDepthResponse {
+    tag: TagResponse,
+    depth: i32,
+}
+
+// -------------------------------------------------------------------------
+// Request types
+// -------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SetParentsRequest {
+    parent_ids: Vec<Uuid>,
+}
+
+// -------------------------------------------------------------------------
+// Category handlers
+// -------------------------------------------------------------------------
+
+async fn list_categories(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CategoryResponse>>, (StatusCode, Json<JsonError>)> {
+    let categories = state.categories().list_categories().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(
+        categories
+            .into_iter()
+            .map(|c| CategoryResponse {
+                id: c.id,
+                label: c.label,
+                description: c.description,
+                hierarchy: c.hierarchy,
+                weight: c.weight,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_category(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<CategoryResponse>, (StatusCode, Json<JsonError>)> {
+    let category = state
+        .categories()
+        .get_category(&id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(JsonError {
+                    error: "category not found".to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(CategoryResponse {
+        id: category.id,
+        label: category.label,
+        description: category.description,
+        hierarchy: category.hierarchy,
+        weight: category.weight,
+    }))
+}
+
+async fn create_category(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Json(input): Json<CreateCategory>,
+) -> Result<(StatusCode, Json<CategoryResponse>), (StatusCode, Json<JsonError>)> {
+    authorize_category_mutation(&state, &session, &headers).await?;
+
+    let category = state
+        .categories()
+        .create_category(input)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CategoryResponse {
+            id: category.id,
+            label: category.label,
+            description: category.description,
+            hierarchy: category.hierarchy,
+            weight: category.weight,
+        }),
+    ))
+}
+
+async fn update_category(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(input): Json<UpdateCategory>,
+) -> Result<Json<CategoryResponse>, (StatusCode, Json<JsonError>)> {
+    authorize_category_mutation(&state, &session, &headers).await?;
+
+    let category = state
+        .categories()
+        .update_category(&id, input)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(JsonError {
+                    error: "category not found".to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(CategoryResponse {
+        id: category.id,
+        label: category.label,
+        description: category.description,
+        hierarchy: category.hierarchy,
+        weight: category.weight,
+    }))
+}
+
+async fn delete_category(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
+    authorize_category_mutation(&state, &session, &headers).await?;
+
+    let deleted = state.categories().delete_category(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(JsonError {
+                error: "category not found".to_string(),
+            }),
+        ))
+    }
+}
+
+// -------------------------------------------------------------------------
+// Tag handlers
+// -------------------------------------------------------------------------
+
+async fn list_tags(
+    State(state): State<AppState>,
+    Path(category_id): Path<String>,
+) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
+    let tags = state
+        .categories()
+        .list_tags(&category_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(
+        tags.into_iter()
+            .map(|t| TagResponse {
+                id: t.id,
+                category_id: t.category_id,
+                label: t.label,
+                description: t.description,
+                weight: t.weight,
+                created: t.created,
+                changed: t.changed,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_root_tags(
+    State(state): State<AppState>,
+    Path(category_id): Path<String>,
+) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
+    let tags = state
+        .categories()
+        .get_root_tags(&category_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(
+        tags.into_iter()
+            .map(|t| TagResponse {
+                id: t.id,
+                category_id: t.category_id,
+                label: t.label,
+                description: t.description,
+                weight: t.weight,
+                created: t.created,
+                changed: t.changed,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_tag(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TagResponse>, (StatusCode, Json<JsonError>)> {
+    let tag = state
+        .categories()
+        .get_tag(id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(JsonError {
+                    error: "tag not found".to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(TagResponse {
+        id: tag.id,
+        category_id: tag.category_id,
+        label: tag.label,
+        description: tag.description,
+        weight: tag.weight,
+        created: tag.created,
+        changed: tag.changed,
+    }))
+}
+
+async fn create_tag(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Json(input): Json<CreateTag>,
+) -> Result<(StatusCode, Json<TagResponse>), (StatusCode, Json<JsonError>)> {
+    authorize_category_mutation(&state, &session, &headers).await?;
+
+    let tag = state.categories().create_tag(input).await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(TagResponse {
+            id: tag.id,
+            category_id: tag.category_id,
+            label: tag.label,
+            description: tag.description,
+            weight: tag.weight,
+            created: tag.created,
+            changed: tag.changed,
+        }),
+    ))
+}
+
+async fn update_tag(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<UpdateTag>,
+) -> Result<Json<TagResponse>, (StatusCode, Json<JsonError>)> {
+    authorize_category_mutation(&state, &session, &headers).await?;
+
+    let tag = state
+        .categories()
+        .update_tag(id, input)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(JsonError {
+                    error: "tag not found".to_string(),
+                }),
+            )
+        })?;
+
+    Ok(Json(TagResponse {
+        id: tag.id,
+        category_id: tag.category_id,
+        label: tag.label,
+        description: tag.description,
+        weight: tag.weight,
+        created: tag.created,
+        changed: tag.changed,
+    }))
+}
+
+async fn delete_tag(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
+    authorize_category_mutation(&state, &session, &headers).await?;
+
+    let deleted = state.categories().delete_tag(id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(JsonError {
+                error: "tag not found".to_string(),
+            }),
+        ))
+    }
+}
+
+// -------------------------------------------------------------------------
+// Hierarchy handlers
+// -------------------------------------------------------------------------
+
+async fn get_parents(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
+    let parents = state.categories().get_parents(id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(
+        parents
+            .into_iter()
+            .map(|t| TagResponse {
+                id: t.id,
+                category_id: t.category_id,
+                label: t.label,
+                description: t.description,
+                weight: t.weight,
+                created: t.created,
+                changed: t.changed,
+            })
+            .collect(),
+    ))
+}
+
+async fn set_parents(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<SetParentsRequest>,
+) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
+    authorize_category_mutation(&state, &session, &headers).await?;
+
+    state
+        .categories()
+        .set_parents(id, &input.parent_ids)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JsonError {
+                    error: e.to_string(),
+                }),
+            )
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_children(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
+    let children = state.categories().get_children(id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(
+        children
+            .into_iter()
+            .map(|t| TagResponse {
+                id: t.id,
+                category_id: t.category_id,
+                label: t.label,
+                description: t.description,
+                weight: t.weight,
+                created: t.created,
+                changed: t.changed,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_ancestors(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TagWithDepthResponse>>, (StatusCode, Json<JsonError>)> {
+    let ancestors = state.categories().get_ancestors(id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(
+        ancestors
+            .into_iter()
+            .map(|a| TagWithDepthResponse {
+                tag: TagResponse {
+                    id: a.tag.id,
+                    category_id: a.tag.category_id,
+                    label: a.tag.label,
+                    description: a.tag.description,
+                    weight: a.tag.weight,
+                    created: a.tag.created,
+                    changed: a.tag.changed,
+                },
+                depth: a.depth,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_descendants(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TagWithDepthResponse>>, (StatusCode, Json<JsonError>)> {
+    let descendants = state.categories().get_descendants(id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(
+        descendants
+            .into_iter()
+            .map(|d| TagWithDepthResponse {
+                tag: TagResponse {
+                    id: d.tag.id,
+                    category_id: d.tag.category_id,
+                    label: d.tag.label,
+                    description: d.tag.description,
+                    weight: d.tag.weight,
+                    created: d.tag.created,
+                    changed: d.tag.changed,
+                },
+                depth: d.depth,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_breadcrumb(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
+    let breadcrumb = state.categories().get_breadcrumb(id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(JsonError {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(
+        breadcrumb
+            .into_iter()
+            .map(|t| TagResponse {
+                id: t.id,
+                category_id: t.category_id,
+                label: t.label,
+                description: t.description,
+                weight: t.weight,
+                created: t.created,
+                changed: t.changed,
+            })
+            .collect(),
+    ))
+}
+
+// -------------------------------------------------------------------------
+// HTML browse page
+// -------------------------------------------------------------------------
+
+/// Render a browsable topics index page.
+///
+/// Lists all tags in the "topics" category as a link grid pointing to
+/// `/topics/{slug}`.
+async fn browse_topics(State(state): State<AppState>, session: Session) -> Html<String> {
+    let mut tags = state
+        .categories()
+        .list_tags("topics")
+        .await
+        .unwrap_or_default();
+    // Re-sort case-insensitively for the browse page. list_tags returns
+    // weight-based order; alphabetical is more intuitive for a directory.
+    tags.sort_by_key(|a| a.label.to_lowercase());
+
+    let mut content = String::from("<div class=\"topics-grid\">");
+    for tag in &tags {
+        let slug = tag.slug.as_deref().unwrap_or_default();
+        if slug.is_empty() {
+            continue;
+        }
+        let label = crate::routes::helpers::html_escape(&tag.label);
+        // Infallible: writing to String never fails
+        use std::fmt::Write;
+        // Infallible: write! to String never fails
+        #[allow(clippy::unwrap_used)]
+        write!(
+            content,
+            "<a href=\"/topics/{slug}\" class=\"topic-chip\">{label}</a>"
+        )
+        .unwrap();
+    }
+    content.push_str("</div>");
+
+    let mut context = tera::Context::new();
+    inject_site_context(&state, &session, &mut context, "/topics").await;
+
+    let html = state
+        .theme()
+        .render_page("/topics", "Topics", &content, &mut context)
+        .unwrap_or_else(|_| format!("<html><body>{content}</body></html>"));
+
+    Html(html)
+}

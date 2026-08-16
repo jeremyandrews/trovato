@@ -1,0 +1,33 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title=record_type ~ " records") }}
+
+<div class="admin-card">
+    <p><a href="/admin/structure/records">&larr; All record types</a> &middot; plugin <code>{{ plugin }}</code></p>
+    {% if records %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>ID</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in records %}
+            <tr>
+                <td><a href="/admin/structure/records/{{ record_type }}/{{ r.id }}">{{ r.title | default(value="(untitled)") }}</a></td>
+                <td><code>{{ r.id }}</code></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% if truncated %}
+    <p><em>Showing the most recently changed records only.</em></p>
+    {% endif %}
+    {% else %}
+    {{ list::empty(message="This record type has no rows yet.") }}
+    {% endif %}
+</div>
+{% endblock %}

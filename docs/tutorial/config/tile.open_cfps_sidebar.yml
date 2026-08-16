@@ -1,0 +1,11 @@
+# Open CFPs sidebar tile — Sidebar slot
+machine_name: open_cfps_sidebar
+label: Open Call for Papers
+region: sidebar
+tile_type: gather_query
+config:
+  query_id: ritrovo.open_cfps
+visibility: {}
+weight: 5
+status: 1
+plugin: core

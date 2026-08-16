@@ -1,0 +1,20 @@
+[package]
+name = "trovato_field_access_ref"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FR-8 reference plugin: tap_field_access demonstrating the Cairn encryption-tier and Ritrovo role-based field-visibility patterns"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

@@ -1,0 +1,134 @@
+{% extends "page.html" %}
+
+{% block title %}Recover your account{% endblock %}
+
+{% block content %}
+<div style="max-width: 520px; margin: 60px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 0.5rem;">Recover your account</h1>
+    <p style="color: #555; margin-bottom: 1.5rem;">
+        Enter your username or email address. If the account exists and has a
+        recovery method set up, we will offer you the ways back in.
+    </p>
+
+    <div id="recover-message" role="status" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;"></div>
+
+    {# Step 1: identify the account. #}
+    <div id="step-identify">
+        <label for="identifier" class="form-item__label">Username or email</label>
+        <input type="text" id="identifier" class="form-text" autofocus
+               style="width: 100%; padding: 0.5rem; font-size: 1rem; margin-bottom: 0.75rem;">
+        <button type="button" id="start" style="padding: 0.6rem 1.2rem; cursor: pointer;">Continue</button>
+    </div>
+
+    {# Step 2: choose a method. Populated from the describe answers. #}
+    <div id="step-choose" style="display: none;">
+        <h2 style="margin-top: 1.5rem;">How would you like to prove it is you?</h2>
+        <div id="method-list"></div>
+    </div>
+
+    {# Step 3: submit the challenge response. #}
+    <div id="step-verify" style="display: none;">
+        <h2 style="margin-top: 1.5rem;">Enter your code</h2>
+        <p id="challenge-hint" style="color: #555;"></p>
+        <input type="text" id="response" class="form-text" autocomplete="one-time-code"
+               style="width: 100%; padding: 0.5rem; font-size: 1rem; margin-bottom: 0.75rem;">
+        <button type="button" id="verify" style="padding: 0.6rem 1.2rem; cursor: pointer;">Verify</button>
+    </div>
+
+    {# Step 4: spend the scoped grant. #}
+    <div id="step-reset" style="display: none;">
+        <h2 style="margin-top: 1.5rem;">Set a new password</h2>
+        <p style="color: #555;">
+            Recovery lets you set a new password and nothing else. You will be
+            signed in once it is set.
+        </p>
+        <input type="password" id="new-password" class="form-text" autocomplete="new-password"
+               style="width: 100%; padding: 0.5rem; font-size: 1rem; margin-bottom: 0.75rem;">
+        <button type="button" id="reset" style="padding: 0.6rem 1.2rem; cursor: pointer;">Set password</button>
+    </div>
+
+    <p style="margin-top: 2rem;"><a href="/user/login">Back to sign in</a></p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var CSRF = {{ csrf_token | json_encode | safe }}; {# SAFE: json_encode emits a quoted, escaped JSON string literal #}
+  var messageEl = document.getElementById("recover-message");
+
+  function show(text, ok) {
+    messageEl.textContent = text;
+    messageEl.style.display = "block";
+    messageEl.style.background = ok ? "#efe" : "#fee";
+    messageEl.style.border = "1px solid " + (ok ? "#0a0" : "#c00");
+  }
+
+  function step(id) {
+    ["step-identify", "step-choose", "step-verify", "step-reset"].forEach(function (s) {
+      document.getElementById(s).style.display = (s === id) ? "block" : "none";
+    });
+  }
+
+  function post(url, body) {
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
+      body: JSON.stringify(body || {})
+    }).then(function (response) {
+      return response.json().then(function (parsed) {
+        if (!response.ok) { throw new Error(parsed.error || "That did not work."); }
+        return parsed;
+      });
+    });
+  }
+
+  document.getElementById("start").addEventListener("click", function () {
+    post("/user/recover/start", { identifier: document.getElementById("identifier").value })
+      .then(function (body) {
+        show(body.message, true);
+        var list = document.getElementById("method-list");
+        list.textContent = "";
+        if (!body.methods || body.methods.length === 0) { return; }
+        body.methods.forEach(function (method) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.textContent = method.display_name;
+          button.style.cssText = "display:block;margin:0.5rem 0;padding:0.6rem 1.2rem;cursor:pointer;";
+          button.addEventListener("click", function () {
+            post("/user/recover/choose", { method_id: method.method_id })
+              .then(function (chosen) {
+                document.getElementById("challenge-hint").textContent = chosen.challenge_hint;
+                step("step-verify");
+              })
+              .catch(function (err) { show(err.message, false); });
+          });
+          list.appendChild(button);
+        });
+        step("step-choose");
+      })
+      .catch(function (err) { show(err.message, false); });
+  });
+
+  document.getElementById("verify").addEventListener("click", function () {
+    post("/user/recover/verify", { response: document.getElementById("response").value })
+      .then(function (body) {
+        if (body.next === "reset") {
+          show(body.message, true);
+          step("step-reset");
+        } else {
+          show(body.message, true);
+        }
+      })
+      .catch(function (err) { show(err.message, false); });
+  });
+
+  document.getElementById("reset").addEventListener("click", function () {
+    post("/user/recover/reset", { new_password: document.getElementById("new-password").value })
+      .then(function () { window.location.href = "/"; })
+      .catch(function (err) { show(err.message, false); });
+  });
+})();
+</script>
+{% endblock %}

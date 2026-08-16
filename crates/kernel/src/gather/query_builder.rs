@@ -1,0 +1,2030 @@
+//! Gather query builder using SeaQuery.
+//!
+//! Generates type-safe SQL queries from QueryDefinition with support for:
+//! - JSONB field extraction
+//! - Category hierarchy filters
+//! - Stage-aware queries
+//! - Pagination
+
+use super::access::ACCESS_COLUMNS;
+use super::extension::{FilterContext, GatherExtensionRegistry};
+use super::handlers::is_safe_identifier;
+use super::types::{
+    FilterOperator, FilterValue, JoinType, NullsOrder, QueryDefinition, QueryFilter, SortDirection,
+};
+use crate::tap::UserContext;
+use sea_query::{
+    Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order, PostgresQueryBuilder, Query,
+    SelectStatement, SimpleExpr, extension::postgres::PgExpr,
+};
+use std::sync::Arc;
+use uuid::Uuid;
+
+/// Identifier for dynamic table/column names.
+#[allow(dead_code)]
+#[derive(Iden)]
+#[iden = "item"]
+struct ItemTable;
+
+/// Query builder for Gather queries.
+pub struct GatherQueryBuilder {
+    definition: QueryDefinition,
+    stage_ids: Vec<Uuid>,
+    extensions: Option<Arc<GatherExtensionRegistry>>,
+    /// Optional language code for translation overlay.
+    ///
+    /// When set, the builder LEFT JOINs `item_translation` and COALESCEs
+    /// `title` and `fields` so translated content is returned when available.
+    language: Option<String>,
+    /// Optional tenant ID for multi-tenant filtering.
+    ///
+    /// When set, adds `WHERE tenant_id = $id` to all queries.
+    /// `None` means no tenant filtering (backward compatible).
+    tenant_id: Option<Uuid>,
+    /// The viewer whose SQL-expressible access is pushed into the query as a
+    /// mandatory predicate (Story 3.4). `None` disables the SQL predicate
+    /// (item-access is then enforced entirely by the post-fetch pass); a viewer
+    /// scopes the DB scan cheaply. See [`Self::add_access_predicate`].
+    viewer: Option<UserContext>,
+    /// For a lightweight-record gather (P11g / D-55): the record type's declared
+    /// published-flag column, if any. When set and the viewer is not an admin,
+    /// the builder restricts results to published rows (`<col> = true`) — the
+    /// record-level visibility tier. `None` for Item gathers (which have no
+    /// record published column) and for always-published record types, leaving
+    /// the emitted Item SQL untouched.
+    record_published_column: Option<String>,
+}
+
+impl GatherQueryBuilder {
+    /// Create a new query builder targeting a single stage.
+    pub fn new(definition: QueryDefinition, stage_id: Uuid) -> Self {
+        Self {
+            definition,
+            stage_ids: vec![stage_id],
+            extensions: None,
+            language: None,
+            tenant_id: None,
+            viewer: None,
+            record_published_column: None,
+        }
+    }
+
+    /// Create a query builder with stage overlay (hierarchy).
+    ///
+    /// When multiple stages are provided, the query will match items in
+    /// ANY of those stages, enabling content overlay across stages.
+    pub fn new_with_stages(definition: QueryDefinition, stage_ids: Vec<Uuid>) -> Self {
+        Self {
+            definition,
+            stage_ids,
+            extensions: None,
+            language: None,
+            tenant_id: None,
+            viewer: None,
+            record_published_column: None,
+        }
+    }
+
+    /// Set the lightweight-record published-flag column (P11g / D-55).
+    ///
+    /// Applied by the access-predicate pass as the record-level visibility tier:
+    /// non-admin viewers see only published rows. Pass `None` for an
+    /// always-published record type (no predicate).
+    pub fn with_record_published(mut self, column: Option<String>) -> Self {
+        self.record_published_column = column;
+        self
+    }
+
+    /// Set the tenant ID for multi-tenant query filtering.
+    pub fn with_tenant(mut self, tenant_id: Uuid) -> Self {
+        self.tenant_id = Some(tenant_id);
+        self
+    }
+
+    /// Set the viewer whose SQL-expressible access is pushed into the query as a
+    /// mandatory predicate (Story 3.4). Applied by `build`/`build_count`.
+    pub fn with_viewer(mut self, viewer: Option<UserContext>) -> Self {
+        self.viewer = viewer;
+        self
+    }
+
+    /// Set the extension registry for custom filter/sort/relationship handling.
+    pub fn with_extensions(mut self, extensions: Arc<GatherExtensionRegistry>) -> Self {
+        self.extensions = Some(extensions);
+        self
+    }
+
+    /// Set the language for translation overlay.
+    ///
+    /// When set, the query will LEFT JOIN `item_translation` on the base
+    /// table's `id` column and COALESCE `title` and `fields` from the
+    /// translation row, falling back to the original item values.
+    pub fn with_language(mut self, language: Option<String>) -> Self {
+        self.language = language;
+        self
+    }
+
+    /// Build the main SELECT query for the given 1-indexed `page` of `per_page`.
+    pub fn build(&self, page: u32, per_page: u32) -> String {
+        let offset = (page.saturating_sub(1) as u64) * per_page as u64;
+        self.build_window(offset, per_page as u64)
+    }
+
+    /// Build the main SELECT query for an explicit `(offset, limit)` window.
+    ///
+    /// The over-fetch/backfill loop (Story 3.4) calls this directly with growing
+    /// windows over the same rank order, rather than page-at-a-time.
+    pub fn build_window(&self, offset: u64, limit: u64) -> String {
+        let mut query = Query::select();
+
+        // SELECT fields
+        self.add_select_fields(&mut query);
+
+        // FROM base table
+        query.from(Alias::new(&self.definition.base_table));
+
+        // Translation overlay: LEFT JOIN item_translation when language is set
+        self.add_translation_join(&mut query);
+
+        // JOINs
+        self.add_joins(&mut query);
+
+        // WHERE conditions
+        self.add_filters(&mut query);
+
+        // Mandatory item-access predicate (Story 3.4, SQL-expressible tier)
+        self.add_access_predicate(&mut query);
+
+        // Filter by stage (only for stage-aware tables like `item`)
+        self.add_stage_filter(&mut query);
+
+        // Filter by tenant (multi-tenancy — injected automatically)
+        if let Some(tid) = self.tenant_id {
+            query.and_where(
+                Expr::col((
+                    Alias::new(&self.definition.base_table),
+                    Alias::new("tenant_id"),
+                ))
+                .eq(tid),
+            );
+        }
+
+        // Filter by item_type if specified
+        if let Some(ref item_type) = self.definition.item_type {
+            query.and_where(
+                Expr::col((Alias::new(&self.definition.base_table), Alias::new("type")))
+                    .eq(item_type),
+            );
+        }
+
+        // ORDER BY
+        self.add_sorts(&mut query);
+
+        // LIMIT/OFFSET for the requested window
+        query.limit(limit);
+        query.offset(offset);
+
+        let mut sql = query.to_string(PostgresQueryBuilder);
+
+        // Post-process: replace placeholders with COALESCE expressions for
+        // translated title and fields when a translation JOIN is active.
+        if self.language.is_some() && self.is_item_table() {
+            sql = self.apply_translation_coalesce(sql);
+        }
+
+        sql
+    }
+
+    /// Build a COUNT query for total results.
+    pub fn build_count(&self) -> String {
+        let mut query = Query::select();
+
+        // SELECT COUNT(*)
+        query.expr(Expr::col(Asterisk).count());
+
+        // FROM base table
+        query.from(Alias::new(&self.definition.base_table));
+
+        // Translation overlay does not affect COUNT — the JOIN does not
+        // change the number of rows (it's a LEFT JOIN matched on item_id
+        // + language, which is at most one row per item).
+
+        // JOINs
+        self.add_joins(&mut query);
+
+        // WHERE conditions
+        self.add_filters(&mut query);
+
+        // Mandatory item-access predicate (Story 3.4, SQL-expressible tier)
+        self.add_access_predicate(&mut query);
+
+        // Stage filter (only for stage-aware tables)
+        self.add_stage_filter(&mut query);
+
+        // Tenant filter (multi-tenancy)
+        if let Some(tid) = self.tenant_id {
+            query.and_where(
+                Expr::col((
+                    Alias::new(&self.definition.base_table),
+                    Alias::new("tenant_id"),
+                ))
+                .eq(tid),
+            );
+        }
+
+        // Item type filter
+        if let Some(ref item_type) = self.definition.item_type {
+            query.and_where(
+                Expr::col((Alias::new(&self.definition.base_table), Alias::new("type")))
+                    .eq(item_type),
+            );
+        }
+
+        query.to_string(PostgresQueryBuilder)
+    }
+
+    /// Push the SQL-expressible slice of item access into the query as a
+    /// mandatory predicate (Story 3.4, design §1 tier a).
+    ///
+    /// This is a **sound superset** filter: it only ever excludes rows the
+    /// authoritative post-fetch `check_access` pass would also deny, so it can
+    /// never hide an item the viewer may see. The residual (plugin
+    /// `tap_item_access` votes, and the authenticated role tier) is enforced by
+    /// that post-fetch pass — this predicate only cheaply narrows the candidate
+    /// scan so the over-fetch loop is not scanning the corpus.
+    ///
+    /// Scope (deliberately conservative — flagged for review): the predicate is
+    /// applied only for an **anonymous** viewer whose permission set carries no
+    /// `any`/`own` grant marker (the standard anonymous role), as `status = 1`.
+    /// For authenticated / richly-permissioned viewers, encoding the full role
+    /// tier in SQL risks diverging from `check_access` and over-excluding
+    /// `view any`-granted unpublished content, so their item access is enforced
+    /// entirely by the post-fetch pass (bounded by the over-fetch scan cap).
+    fn add_access_predicate(&self, query: &mut SelectStatement) {
+        if self.is_item_table() {
+            let Some(viewer) = &self.viewer else {
+                return;
+            };
+            if viewer.is_admin() {
+                return;
+            }
+            // Only push down for an anonymous viewer with no unpublished-granting
+            // permission — the case that is provably sound without replicating the
+            // role-permission logic in SQL.
+            let unpublished_grant_possible = viewer
+                .permissions
+                .iter()
+                .any(|p| p.contains("any") || p.contains("own"));
+            if !viewer.authenticated && !unpublished_grant_possible {
+                query.and_where(
+                    Expr::col((
+                        Alias::new(&self.definition.base_table),
+                        Alias::new("status"),
+                    ))
+                    .eq(1i16),
+                );
+            }
+            return;
+        }
+
+        // Lightweight-record record-level visibility (P11g / D-55): a record type
+        // with a declared published-flag column is visible to non-admins only
+        // when published. Records have no per-row access tap in 1.0 (that would be
+        // a second access path), so this boolean predicate is the *exact*
+        // record-level filter — admin sees all, everyone else sees published rows.
+        // Field-level visibility is refined post-fetch through the same FR-8 seam
+        // Items use. An always-published record type declares no column, so no
+        // predicate is emitted.
+        if let Some(published_col) = &self.record_published_column {
+            let is_admin = self.viewer.as_ref().is_some_and(UserContext::is_admin);
+            if !is_admin {
+                query.and_where(
+                    Expr::col((
+                        Alias::new(&self.definition.base_table),
+                        Alias::new(published_col),
+                    ))
+                    .eq(true),
+                );
+            }
+        }
+    }
+
+    /// Add stage_id filter to the query if the definition is stage-aware.
+    ///
+    /// Uses `= $val` for a single stage, `IN (...)` for hierarchy overlay.
+    /// UUIDs are passed directly to SeaQuery (via `with-uuid` feature).
+    fn add_stage_filter(&self, query: &mut SelectStatement) {
+        if !self.definition.stage_aware {
+            return;
+        }
+        let col = Expr::col((
+            Alias::new(&self.definition.base_table),
+            Alias::new("stage_id"),
+        ));
+        if self.stage_ids.len() == 1 {
+            query.and_where(col.eq(self.stage_ids[0]));
+        } else {
+            query.and_where(col.is_in(self.stage_ids.clone()));
+        }
+    }
+
+    /// Returns `true` when the base table is `"item"` — the only table
+    /// that has a corresponding `item_translation` table.
+    fn is_item_table(&self) -> bool {
+        self.definition.base_table == "item"
+    }
+
+    /// Add a LEFT JOIN to `item_translation` when a language is set and the
+    /// base table is `item`.
+    ///
+    /// The join matches on `item.id = item_translation.item_id` and the
+    /// requested language code. Because `(item_id, language)` is unique in
+    /// `item_translation`, this produces at most one translation row per
+    /// item and does not change result cardinality.
+    fn add_translation_join(&self, query: &mut SelectStatement) {
+        let Some(ref lang) = self.language else {
+            return;
+        };
+        if !self.is_item_table() {
+            return;
+        }
+
+        // LEFT JOIN item_translation AS _tr
+        //   ON item.id = _tr.item_id AND _tr.language = '<lang>'
+        let on_condition = Expr::col((Alias::new(&self.definition.base_table), Alias::new("id")))
+            .equals((Alias::new("_tr"), Alias::new("item_id")))
+            .and(Expr::col((Alias::new("_tr"), Alias::new("language"))).eq(lang.as_str()));
+
+        query.join_as(
+            sea_query::JoinType::LeftJoin,
+            Alias::new("item_translation"),
+            Alias::new("_tr"),
+            on_condition,
+        );
+    }
+
+    /// Post-process the generated SQL to replace `item.title` and
+    /// `item.fields` references with COALESCE expressions that prefer
+    /// translated values.
+    ///
+    /// Strategy: when SELECT uses `item.*`, we append override columns
+    /// that shadow the base columns in the `row_to_json(t)` wrapper.
+    /// When specific fields are selected, the COALESCE is applied
+    /// inline by `add_select_fields`.
+    ///
+    /// For the `SELECT item.*` case we append:
+    /// ```sql
+    /// , COALESCE(_tr.title, item.title) AS title
+    /// , COALESCE(_tr.fields || item.fields, item.fields) AS fields
+    /// ```
+    ///
+    /// The `_tr.fields || item.fields` merge uses PostgreSQL's `||`
+    /// operator on JSONB: translated keys override originals, but
+    /// untranslated keys are preserved from the base item.
+    fn apply_translation_coalesce(&self, sql: String) -> String {
+        // The SeaQuery output for SELECT item.* produces:
+        //   SELECT "item".*
+        // We append COALESCE columns that the row_to_json wrapper will
+        // pick up (later columns override earlier ones in row_to_json).
+        let base = &self.definition.base_table;
+        let select_all = format!("SELECT \"{base}\".*");
+
+        if sql.starts_with(&select_all) {
+            let coalesce_cols = format!(
+                "{select_all}, \
+                 COALESCE(\"_tr\".\"title\", \"{base}\".\"title\") AS \"title\", \
+                 COALESCE(\"_tr\".\"fields\" || \"{base}\".\"fields\", \"{base}\".\"fields\") AS \"fields\""
+            );
+            sql.replacen(&select_all, &coalesce_cols, 1)
+        } else {
+            sql
+        }
+    }
+
+    /// Add SELECT fields to the query.
+    ///
+    /// The `SELECT item.*` case already includes every access column. For an
+    /// explicit field list, [`add_access_columns`](Self::add_access_columns)
+    /// appends the access-relevant columns (id/type/status/author_id/stage_id)
+    /// so the post-fetch item-access pass (Story 3.4) can reconstruct each
+    /// candidate — the gather layer strips any it did not originally request
+    /// before returning rows.
+    fn add_select_fields(&self, query: &mut SelectStatement) {
+        if self.definition.fields.is_empty() {
+            // Select all from base table
+            query.column((Alias::new(&self.definition.base_table), Asterisk));
+        } else {
+            for field in &self.definition.fields {
+                let table = field
+                    .table_alias
+                    .as_deref()
+                    .unwrap_or(&self.definition.base_table);
+
+                if field.field_name.starts_with("fields.") {
+                    // JSONB field extraction
+                    let jsonb_path = &field.field_name[7..]; // Strip "fields."
+                    let expr = self.jsonb_extract_expr(table, jsonb_path);
+                    if let Some(ref label) = field.label {
+                        query.expr_as(expr, Alias::new(label));
+                    } else {
+                        query.expr_as(expr, Alias::new(jsonb_path));
+                    }
+                } else {
+                    // Regular column
+                    query.column((Alias::new(table), Alias::new(&field.field_name)));
+                }
+            }
+            self.add_access_columns(query);
+        }
+    }
+
+    /// Append the access-relevant base-table columns not already projected, so
+    /// an explicit-field gather's rows can still be item-access-checked. Only
+    /// applies to the `item` base table (other tables have no item-access
+    /// model). Columns a raw projection already selected are skipped to avoid a
+    /// duplicate `row_to_json` key.
+    fn add_access_columns(&self, query: &mut SelectStatement) {
+        if !self.is_item_table() {
+            return;
+        }
+        for col in ACCESS_COLUMNS {
+            let already_projected = self.definition.fields.iter().any(|f| {
+                f.field_name == col
+                    || f.label.as_deref() == Some(col)
+                    || f.field_name.strip_prefix("fields.") == Some(col)
+            });
+            if !already_projected {
+                query.column((Alias::new(&self.definition.base_table), Alias::new(col)));
+            }
+        }
+    }
+
+    /// Add JOIN clauses.
+    fn add_joins(&self, query: &mut SelectStatement) {
+        for rel in &self.definition.relationships {
+            let join_type = match rel.join_type {
+                JoinType::Inner => sea_query::JoinType::InnerJoin,
+                JoinType::Left => sea_query::JoinType::LeftJoin,
+                JoinType::Right => sea_query::JoinType::RightJoin,
+            };
+
+            let on_condition = Expr::col((
+                Alias::new(&self.definition.base_table),
+                Alias::new(&rel.local_field),
+            ))
+            .equals((Alias::new(&rel.name), Alias::new(&rel.foreign_field)));
+
+            query.join_as(
+                join_type,
+                Alias::new(&rel.target_table),
+                Alias::new(&rel.name),
+                on_condition,
+            );
+        }
+    }
+
+    /// Add WHERE conditions from filters.
+    fn add_filters(&self, query: &mut SelectStatement) {
+        for filter in &self.definition.filters {
+            if let Some(condition) = self.build_filter_condition(filter) {
+                query.and_where(condition);
+            }
+        }
+    }
+
+    /// Build a single filter condition.
+    fn build_filter_condition(&self, filter: &QueryFilter) -> Option<SimpleExpr> {
+        let field_expr = self.field_expr(&filter.field);
+
+        match &filter.operator {
+            FilterOperator::Equals => {
+                let value = filter.value.as_string()?;
+                Some(field_expr.eq(value))
+            }
+            FilterOperator::NotEquals => {
+                let value = filter.value.as_string()?;
+                Some(field_expr.ne(value))
+            }
+            FilterOperator::Contains => {
+                let value = filter.value.as_string()?;
+                Some(field_expr.ilike(format!("%{}%", escape_like_wildcards(&value))))
+            }
+            FilterOperator::StartsWith => {
+                let value = filter.value.as_string()?;
+                Some(field_expr.like(format!("{}%", escape_like_wildcards(&value))))
+            }
+            FilterOperator::EndsWith => {
+                let value = filter.value.as_string()?;
+                Some(field_expr.like(format!("%{}", escape_like_wildcards(&value))))
+            }
+            FilterOperator::GreaterThan => {
+                // Try integer first (Unix timestamps), fall back to string (ISO dates).
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.gt(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.gt(s))
+                }
+            }
+            FilterOperator::LessThan => {
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.lt(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.lt(s))
+                }
+            }
+            FilterOperator::GreaterOrEqual => {
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.gte(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.gte(s))
+                }
+            }
+            FilterOperator::LessOrEqual => {
+                if let Some(v) = filter.value.as_i64() {
+                    Some(field_expr.lte(v))
+                } else {
+                    filter.value.as_string().map(|s| field_expr.lte(s))
+                }
+            }
+            FilterOperator::In => {
+                // When every value is an explicit UUID (e.g. the `id IN (...)`
+                // set produced by semantic-similarity resolution), bind them as
+                // `uuid` so the comparison matches a `uuid` column. Binding the
+                // canonical strings as text would raise `operator does not
+                // exist: uuid = text`. Only triggers for genuine `Uuid`
+                // variants, so ordinary string `In` filters are unaffected.
+                if let FilterValue::List(items) = &filter.value
+                    && !items.is_empty()
+                    && items.iter().all(|v| matches!(v, FilterValue::Uuid(_)))
+                {
+                    let uuids: Vec<Uuid> = items.iter().filter_map(FilterValue::as_uuid).collect();
+                    return Some(field_expr.is_in(uuids));
+                }
+                let values = self.extract_string_list(&filter.value);
+                if values.is_empty() {
+                    return None;
+                }
+                Some(field_expr.is_in(values))
+            }
+            FilterOperator::NotIn => {
+                let values = self.extract_string_list(&filter.value);
+                if values.is_empty() {
+                    return None;
+                }
+                Some(field_expr.is_not_in(values))
+            }
+            FilterOperator::IsNull => Some(field_expr.is_null()),
+            FilterOperator::IsNotNull => Some(field_expr.is_not_null()),
+            // Full-text search using PostgreSQL tsvector
+            FilterOperator::FullTextSearch => {
+                let value = filter.value.as_string()?;
+                if value.is_empty() {
+                    return None;
+                }
+                // Defense-in-depth: validate base_table before interpolation
+                if !is_safe_identifier(&self.definition.base_table) {
+                    tracing::error!(
+                        base_table =
+                            &self.definition.base_table[..self.definition.base_table.len().min(64)],
+                        "unsafe base table in FTS expression; restricting results"
+                    );
+                    return Some(Expr::cust("FALSE"));
+                }
+                // Sanitize: keep only alphanumeric + spaces, then join with &
+                let sanitized: String = value
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == ' ' {
+                            c
+                        } else {
+                            ' '
+                        }
+                    })
+                    .collect();
+                let terms: Vec<&str> = sanitized.split_whitespace().collect();
+                if terms.is_empty() {
+                    return None;
+                }
+                let tsquery = terms.join(" & ");
+                // Use parameterized query to prevent SQL injection
+                Some(Expr::cust_with_values(
+                    format!(
+                        "{}.search_vector @@ to_tsquery('english', $1)",
+                        self.definition.base_table
+                    ),
+                    [tsquery],
+                ))
+            }
+            // Category operators - these need special handling with subqueries
+            FilterOperator::HasTag => {
+                let uuid = filter.value.as_uuid()?;
+                self.build_category_filter(&filter.field, vec![uuid], false)
+            }
+            FilterOperator::HasAnyTag => {
+                let uuids = filter.value.as_uuid_list();
+                if uuids.is_empty() {
+                    return None;
+                }
+                self.build_category_filter(&filter.field, uuids, false)
+            }
+            FilterOperator::HasAllTags => {
+                // For "has all", we need AND conditions for each tag
+                let uuids = filter.value.as_uuid_list();
+                if uuids.is_empty() {
+                    return None;
+                }
+                let mut cond = Cond::all();
+                for uuid in uuids {
+                    if let Some(expr) = self.build_category_filter(&filter.field, vec![uuid], false)
+                    {
+                        cond = cond.add(expr);
+                    }
+                }
+                Some(cond.into())
+            }
+            FilterOperator::HasTagOrDescendants => {
+                let uuid = filter.value.as_uuid()?;
+                self.build_category_filter(&filter.field, vec![uuid], true)
+            }
+            FilterOperator::SemanticSimilarity => {
+                // Semantic similarity requires pgvector. At query-build time
+                // we cannot run an async embedding request, so this operator
+                // is handled at the GatherService level. If it reaches here,
+                // the vector store is not available — return no-match.
+                tracing::warn!(
+                    "SemanticSimilarity filter reached query builder; pgvector may not be available"
+                );
+                Some(Expr::cust("FALSE"))
+            }
+            FilterOperator::Custom(name) => {
+                if let Some(ref extensions) = self.extensions
+                    && let Some((handler, config)) = extensions.get_filter(name)
+                {
+                    let ctx = FilterContext {
+                        base_table: self.definition.base_table.clone(),
+                        stage_id: self.stage_ids.first().copied().unwrap_or(Uuid::nil()),
+                    };
+                    match handler.build_condition(filter, config, &ctx) {
+                        Ok(expr) => return expr,
+                        Err(e) => {
+                            tracing::error!(
+                                filter = name,
+                                error = %e,
+                                "custom filter handler failed; restricting results"
+                            );
+                            // Return FALSE to restrict rather than widen query results
+                            return Some(Expr::cust("FALSE"));
+                        }
+                    }
+                }
+                tracing::error!(
+                    filter = name,
+                    "custom filter operator has no registered extension; restricting results"
+                );
+                // Return FALSE to restrict rather than widen query results
+                Some(Expr::cust("FALSE"))
+            }
+        }
+    }
+
+    /// Build expression for a field (handles JSONB paths).
+    fn field_expr(&self, field: &str) -> SimpleExpr {
+        if let Some(jsonb_path) = field.strip_prefix("fields.") {
+            self.jsonb_extract_expr(&self.definition.base_table, jsonb_path)
+        } else {
+            Expr::col((Alias::new(&self.definition.base_table), Alias::new(field))).into()
+        }
+    }
+
+    /// Extract a value from a JSONB column.
+    ///
+    /// Validates table and path components against SQL identifier rules
+    /// (defense-in-depth). Returns NULL expression if validation fails.
+    fn jsonb_extract_expr(&self, table: &str, path: &str) -> SimpleExpr {
+        // Defense-in-depth: validate table name before interpolation
+        if !is_safe_identifier(table) {
+            tracing::error!(
+                table = &table[..table.len().min(64)],
+                "unsafe table name in JSONB expression; returning NULL"
+            );
+            return Expr::cust("NULL");
+        }
+
+        // Use ->> for text extraction from JSONB
+        // e.g., fields->>'body' for fields.body
+        if path.contains('.') {
+            // Nested path: fields->'nested'->>'field'
+            let parts: Vec<&str> = path.split('.').collect();
+            for part in &parts {
+                if !is_safe_identifier(part) {
+                    tracing::error!(
+                        path = &path[..path.len().min(64)],
+                        "unsafe JSONB path component; returning NULL"
+                    );
+                    return Expr::cust("NULL");
+                }
+            }
+            let mut expr = format!("{table}.fields");
+            for (i, part) in parts.iter().enumerate() {
+                if i == parts.len() - 1 {
+                    expr = format!("({expr}->>'{part}')");
+                } else {
+                    expr = format!("({expr}->'{part}')");
+                }
+            }
+            Expr::cust(expr)
+        } else {
+            if !is_safe_identifier(path) {
+                tracing::error!(
+                    path = &path[..path.len().min(64)],
+                    "unsafe JSONB path; returning NULL"
+                );
+                return Expr::cust("NULL");
+            }
+            Expr::cust(format!("{table}.fields->>'{path}'"))
+        }
+    }
+
+    /// Build a category filter condition.
+    ///
+    /// Category tag IDs are stored as a JSONB **array of UUID strings**:
+    /// `["uuid1", "uuid2"]`. Uses PostgreSQL's `@>` containment operator
+    /// (`field->'col' @> json_build_array(uuid::text)::jsonb`) rather than
+    /// the text-extraction `->>`+`IN` approach, which cannot match inside arrays.
+    ///
+    /// When `include_descendants = true` (i.e. `HasTagOrDescendants`), a
+    /// recursive CTE walks `category_tag_hierarchy` to find all descendant
+    /// term IDs and checks whether any of them appear in the array.
+    fn build_category_filter(
+        &self,
+        field: &str,
+        tag_ids: Vec<uuid::Uuid>,
+        include_descendants: bool,
+    ) -> Option<SimpleExpr> {
+        if tag_ids.is_empty() {
+            return None;
+        }
+
+        let jsonb_path = field.strip_prefix("fields.").unwrap_or(field);
+        let table = &self.definition.base_table;
+
+        // Validate identifiers before SQL interpolation (defense-in-depth).
+        if !is_safe_identifier(table) {
+            tracing::error!(
+                table = &table[..table.len().min(64)],
+                "unsafe base_table in category filter; restricting results"
+            );
+            return Some(Expr::cust("FALSE"));
+        }
+        for part in jsonb_path.split('.') {
+            if !is_safe_identifier(part) {
+                tracing::error!(
+                    path = &jsonb_path[..jsonb_path.len().min(64)],
+                    "unsafe JSONB path in category filter; restricting results"
+                );
+                return Some(Expr::cust("FALSE"));
+            }
+        }
+
+        if include_descendants {
+            // Recursive CTE: walks category_tag_hierarchy from root down to
+            // all descendants, then checks JSONB array containment.
+            if tag_ids.len() == 1 {
+                Some(self.descendants_exists_expr(table, jsonb_path, tag_ids[0]))
+            } else {
+                let mut cond = Cond::any();
+                for uuid in tag_ids {
+                    cond = cond.add(self.descendants_exists_expr(table, jsonb_path, uuid));
+                }
+                Some(cond.into())
+            }
+        } else {
+            // Exact membership: field->'path' @> json_build_array($uuid::text)::jsonb
+            if tag_ids.len() == 1 {
+                Some(Expr::cust_with_values(
+                    format!(
+                        "{table}.fields->'{jsonb_path}' @> \
+                         json_build_array($1::text)::jsonb"
+                    ),
+                    [tag_ids[0]],
+                ))
+            } else {
+                // OR: item matches any of the specified tags.
+                let mut cond = Cond::any();
+                for uuid in tag_ids {
+                    cond = cond.add(Expr::cust_with_values(
+                        format!(
+                            "{table}.fields->'{jsonb_path}' @> \
+                             json_build_array($1::text)::jsonb"
+                        ),
+                        [uuid],
+                    ));
+                }
+                Some(cond.into())
+            }
+        }
+    }
+
+    /// Build an `EXISTS` subquery that uses a recursive CTE to check whether
+    /// the JSONB array field contains the given tag UUID **or any of its
+    /// descendants** in the `category_tag_hierarchy` table.
+    ///
+    /// The generated SQL looks like:
+    ///
+    /// ```sql
+    /// EXISTS (
+    ///     WITH RECURSIVE td AS (
+    ///         SELECT $1::uuid AS id
+    ///         UNION ALL
+    ///         SELECT h.tag_id FROM category_tag_hierarchy h
+    ///         JOIN td ON h.parent_id = td.id
+    ///     )
+    ///     SELECT 1 FROM td
+    ///     WHERE item.fields->'field_topics'
+    ///           @> json_build_array(td.id::text)::jsonb
+    /// )
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Callers must pre-validate `table` and `jsonb_path` with
+    /// `is_safe_identifier` before calling this function.
+    fn descendants_exists_expr(
+        &self,
+        table: &str,
+        jsonb_path: &str,
+        root_uuid: Uuid,
+    ) -> SimpleExpr {
+        Expr::cust_with_values(
+            format!(
+                "EXISTS (\
+                WITH RECURSIVE td AS (\
+                    SELECT $1::uuid AS id \
+                    UNION ALL \
+                    SELECT h.tag_id FROM category_tag_hierarchy h \
+                    JOIN td ON h.parent_id = td.id\
+                ) \
+                SELECT 1 FROM td \
+                WHERE {table}.fields->'{jsonb_path}' \
+                      @> json_build_array(td.id::text)::jsonb\
+            )"
+            ),
+            [root_uuid],
+        )
+    }
+
+    /// Add ORDER BY clauses.
+    ///
+    /// Relevance ordering takes effect only when a `SemanticSimilarity` filter
+    /// produced a ranked candidate set (`relevance_order`) **and** the gather
+    /// defines no explicit `sorts`: results are then ordered most-similar-first.
+    /// An explicit gather sort always wins — a user sorting a semantic search by
+    /// date gets date order, not relevance order.
+    fn add_sorts(&self, query: &mut SelectStatement) {
+        if self.definition.sorts.is_empty()
+            && let Some(ids) = self.definition.relevance_order.as_ref()
+            && !ids.is_empty()
+        {
+            self.add_relevance_order(query, ids);
+            return;
+        }
+
+        for sort in &self.definition.sorts {
+            let order = match sort.direction {
+                SortDirection::Asc => Order::Asc,
+                SortDirection::Desc => Order::Desc,
+            };
+
+            let null_order = sort.nulls.as_ref().map(|n| match n {
+                NullsOrder::First => sea_query::NullOrdering::First,
+                NullsOrder::Last => sea_query::NullOrdering::Last,
+            });
+
+            if sort.field.starts_with("fields.") {
+                let jsonb_path = &sort.field[7..];
+                let expr = self.jsonb_extract_expr(&self.definition.base_table, jsonb_path);
+                if let Some(nulls) = null_order {
+                    query.order_by_expr_with_nulls(expr, order, nulls);
+                } else {
+                    query.order_by_expr(expr, order);
+                }
+            } else if let Some(nulls) = null_order {
+                query.order_by_with_nulls(
+                    (
+                        Alias::new(&self.definition.base_table),
+                        Alias::new(&sort.field),
+                    ),
+                    order,
+                    nulls,
+                );
+            } else {
+                query.order_by(
+                    (
+                        Alias::new(&self.definition.base_table),
+                        Alias::new(&sort.field),
+                    ),
+                    order,
+                );
+            }
+        }
+    }
+
+    /// Emit `ORDER BY array_position(ARRAY[...]::uuid[], <base>.id)` so rows are
+    /// returned in the relevance order produced by the semantic pre-pass
+    /// (most-similar-first). Every returned row matches the companion
+    /// `id IN (...)` predicate, so `array_position` is never NULL here.
+    ///
+    /// # Safety (SQL)
+    ///
+    /// The candidate ids are `uuid::Uuid`, whose `Display` impl produces only
+    /// hex digits and hyphens — safe for direct interpolation into SQL literals
+    /// (the same rationale as `CategoryHierarchyQuery::descendants_cte`).
+    /// `base_table` is a trusted config/plugin-supplied identifier, quoted the
+    /// same way SeaQuery quotes it elsewhere.
+    fn add_relevance_order(&self, query: &mut SelectStatement, ids: &[Uuid]) {
+        let array_literal = ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let id_col = format!("\"{}\".\"id\"", self.definition.base_table);
+        let expr = Expr::cust(format!(
+            "array_position(ARRAY[{array_literal}]::uuid[], {id_col})"
+        ));
+        query.order_by_expr(expr, Order::Asc);
+    }
+
+    /// Extract a list of strings from a FilterValue.
+    fn extract_string_list(&self, value: &FilterValue) -> Vec<String> {
+        match value {
+            FilterValue::List(items) => items.iter().filter_map(|v| v.as_string()).collect(),
+            FilterValue::String(s) => vec![s.clone()],
+            FilterValue::Uuid(u) => vec![u.to_string()],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Escape SQL LIKE wildcard characters (`%`, `_`, `\`) in a value.
+fn escape_like_wildcards(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Builder for creating category hierarchy subqueries.
+#[allow(dead_code)]
+pub struct CategoryHierarchyQuery;
+
+#[allow(dead_code)]
+impl CategoryHierarchyQuery {
+    /// Build a recursive CTE to get a tag and all its descendants.
+    /// Returns the SQL for the WITH clause that can be prepended to the main query.
+    ///
+    /// # Safety (SQL)
+    ///
+    /// `tag_id` is `uuid::Uuid` whose `Display` impl only produces hex digits
+    /// and hyphens — safe for direct interpolation into SQL literals.
+    pub fn descendants_cte(tag_id: uuid::Uuid) -> String {
+        format!(
+            r#"WITH RECURSIVE tag_descendants AS (
+    SELECT '{tag_id}'::uuid as id
+    UNION ALL
+    SELECT h.tag_id
+    FROM category_tag_hierarchy h
+    INNER JOIN tag_descendants d ON h.parent_id = d.id
+)"#
+        )
+    }
+
+    /// Build a filter expression that checks if a JSONB field is in the descendants CTE.
+    ///
+    /// Validates `field_path` against SQL identifier rules (defense-in-depth).
+    /// Returns `FALSE` expression if validation fails.
+    pub fn in_descendants_expr(field_path: &str) -> SimpleExpr {
+        if !is_safe_identifier(field_path) {
+            tracing::error!(
+                field_path = &field_path[..field_path.len().min(64)],
+                "unsafe field path in descendants expression"
+            );
+            return Expr::cust("FALSE");
+        }
+        Expr::cust(format!(
+            "(fields->>'{field_path}')::uuid IN (SELECT id FROM tag_descendants)"
+        ))
+    }
+}
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    //! Tests marked `SECURITY REGRESSION TEST` verify fixes for specific security
+    //! findings from Epic 27. Do not remove without security review.
+
+    use super::*;
+    use crate::gather::types::{QueryField, QueryFilter, QuerySort};
+    use crate::models::stage::LIVE_STAGE_ID;
+
+    // ── P11g / D-54 GOLDEN-SQL FENCE ──
+    //
+    // These lock the byte-exact SQL emitted for representative **Item** gathers so
+    // the lightweight-record generalization can never silently alter it. The
+    // record path is gated on `record_type`/`with_record_published`, and the Item
+    // branch of `add_access_predicate` is unchanged — these tests are the proof.
+    // A deliberate item-SQL change updates the golden string with review; an
+    // accidental one fails here.
+
+    #[test]
+    fn golden_item_star_gather_sql_is_byte_stable() {
+        use crate::tap::UserContext;
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            filters: vec![QueryFilter {
+                field: "fields.city".to_string(),
+                operator: FilterOperator::Equals,
+                value: FilterValue::String("Barga".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            sorts: vec![QuerySort {
+                field: "created".to_string(),
+                direction: SortDirection::Desc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID)
+            .with_viewer(Some(UserContext::anonymous()))
+            .build(1, 10);
+        assert_eq!(
+            sql,
+            "SELECT \"item\".* FROM \"item\" WHERE (item.fields->>'city') = 'Barga' \
+             AND \"item\".\"status\" = 1 AND \"item\".\"stage_id\" = \
+             '0193a5a0-0000-7000-8000-000000000001' AND \"item\".\"type\" = 'blog' \
+             ORDER BY \"item\".\"created\" DESC LIMIT 10 OFFSET 0"
+        );
+    }
+
+    #[test]
+    fn golden_item_count_sql_is_byte_stable() {
+        use crate::tap::UserContext;
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID)
+            .with_viewer(Some(UserContext::anonymous()))
+            .build_count();
+        assert_eq!(
+            sql,
+            "SELECT COUNT(*) FROM \"item\" WHERE \"item\".\"status\" = 1 \
+             AND \"item\".\"stage_id\" = '0193a5a0-0000-7000-8000-000000000001' \
+             AND \"item\".\"type\" = 'blog'"
+        );
+    }
+
+    #[test]
+    fn record_gather_emits_published_predicate_no_item_only_clauses() {
+        use crate::tap::UserContext;
+        // A lightweight-record gather post-resolution: base_table swapped,
+        // stage_aware cleared, no item_type, published column supplied.
+        let def = QueryDefinition {
+            base_table: "conf_records".to_string(),
+            stage_aware: false,
+            record_type: Some("conference".to_string()),
+            sorts: vec![QuerySort {
+                field: "created_at".to_string(),
+                direction: SortDirection::Desc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID)
+            .with_viewer(Some(UserContext::anonymous()))
+            .with_record_published(Some("is_public".to_string()))
+            .build(1, 10);
+        // Targets the record table, filters on the record's published column, and
+        // carries NONE of the item-only machinery (status / stage_id / type /
+        // item_translation).
+        assert!(sql.contains("FROM \"conf_records\""), "{sql}");
+        assert!(
+            sql.contains("\"conf_records\".\"is_public\" = TRUE"),
+            "{sql}"
+        );
+        assert!(!sql.contains("status"), "{sql}");
+        assert!(!sql.contains("stage_id"), "{sql}");
+        assert!(!sql.contains("item_translation"), "{sql}");
+        assert!(!sql.contains("\"type\""), "{sql}");
+    }
+
+    #[test]
+    fn record_gather_admin_sees_all_no_published_predicate() {
+        use crate::tap::UserContext;
+        let def = QueryDefinition {
+            base_table: "conf_records".to_string(),
+            stage_aware: false,
+            record_type: Some("conference".to_string()),
+            ..Default::default()
+        };
+        let admin =
+            UserContext::authenticated(uuid::Uuid::now_v7(), vec!["administer site".to_string()]);
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID)
+            .with_viewer(Some(admin))
+            .with_record_published(Some("is_public".to_string()))
+            .build(1, 10);
+        assert!(sql.contains("FROM \"conf_records\""), "{sql}");
+        assert!(!sql.contains("is_public"), "admin sees all rows: {sql}");
+    }
+
+    #[test]
+    fn record_gather_always_published_emits_no_predicate() {
+        use crate::tap::UserContext;
+        let def = QueryDefinition {
+            base_table: "notes".to_string(),
+            stage_aware: false,
+            record_type: Some("note".to_string()),
+            ..Default::default()
+        };
+        // No published column declared ⇒ always-published ⇒ no predicate.
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID)
+            .with_viewer(Some(UserContext::anonymous()))
+            .with_record_published(None)
+            .build(1, 10);
+        assert_eq!(sql, "SELECT \"notes\".* FROM \"notes\" LIMIT 10 OFFSET 0");
+    }
+
+    #[test]
+    fn simple_query_build() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            filters: vec![QueryFilter {
+                field: "status".to_string(),
+                operator: FilterOperator::Equals,
+                value: FilterValue::Integer(1),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            sorts: vec![QuerySort {
+                field: "created".to_string(),
+                direction: SortDirection::Desc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(sql.contains("FROM \"item\""));
+        assert!(sql.contains("stage_id"));
+        assert!(sql.contains("LIMIT 10"));
+        assert!(sql.contains("ORDER BY"));
+    }
+
+    #[test]
+    fn count_query_build() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build_count();
+
+        assert!(sql.contains("COUNT(*)"));
+        assert!(sql.contains("FROM \"item\""));
+        assert!(!sql.contains("LIMIT"));
+    }
+
+    #[test]
+    fn jsonb_field_query() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            fields: vec![QueryField {
+                field_name: "fields.body".to_string(),
+                table_alias: None,
+                label: Some("body".to_string()),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(sql.contains("fields->>'body'"));
+    }
+
+    #[test]
+    fn category_descendants_cte() {
+        let tag_id = uuid::Uuid::nil();
+        let cte = CategoryHierarchyQuery::descendants_cte(tag_id);
+
+        assert!(cte.contains("WITH RECURSIVE"));
+        assert!(cte.contains("tag_descendants"));
+        assert!(cte.contains("category_tag_hierarchy"));
+    }
+
+    #[test]
+    fn pagination_offset() {
+        let def = QueryDefinition::default();
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+
+        let sql_page1 = builder.build(1, 10);
+        assert!(sql_page1.contains("OFFSET 0"));
+
+        let def2 = QueryDefinition::default();
+        let builder2 = GatherQueryBuilder::new(def2, LIVE_STAGE_ID);
+        let sql_page2 = builder2.build(2, 10);
+        assert!(sql_page2.contains("OFFSET 10"));
+    }
+
+    #[test]
+    fn filter_operators() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "title".to_string(),
+                operator: FilterOperator::Contains,
+                value: FilterValue::String("rust".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(sql.contains("LIKE"));
+        assert!(sql.contains("%rust%"));
+    }
+
+    /// The `SemanticSimilarity` arm is the no-match safety net: it is only
+    /// reached when the GatherService pre-pass could not produce an id-set
+    /// (pgvector unavailable / no provider / embedding failure / zero matches).
+    /// It must restrict results, never widen them.
+    #[test]
+    fn semantic_similarity_builds_false_safety_net() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "id".to_string(),
+                operator: FilterOperator::SemanticSimilarity,
+                value: FilterValue::String("a query that was never embedded".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // No-match: the WHERE clause carries a FALSE predicate.
+        assert!(sql.contains("FALSE"), "semantic stub must restrict: {sql}");
+    }
+
+    /// The id-set predicate the semantic pre-pass rewrites into: an `In` filter
+    /// on the `uuid`-typed `id` column whose values are explicit `Uuid`s. This
+    /// must emit an `IN (...)` clause with the ids bound as `uuid` (not text),
+    /// so it matches the `id` column at runtime.
+    #[test]
+    fn in_filter_on_id_with_uuids_builds_in_clause() {
+        let a = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let b = uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "id".to_string(),
+                operator: FilterOperator::In,
+                value: FilterValue::List(vec![FilterValue::Uuid(a), FilterValue::Uuid(b)]),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(sql.contains("IN ("), "expected an IN clause: {sql}");
+        assert!(
+            sql.contains("11111111-1111-1111-1111-111111111111"),
+            "first id missing: {sql}"
+        );
+        assert!(
+            sql.contains("22222222-2222-2222-2222-222222222222"),
+            "second id missing: {sql}"
+        );
+    }
+
+    #[test]
+    fn stage_aware_false_omits_stage_filter() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 20);
+
+        assert!(sql.contains("FROM \"users\""));
+        assert!(
+            !sql.contains("stage_id"),
+            "stage_id should not appear when stage_aware=false"
+        );
+        assert!(sql.contains("LIMIT 20"));
+    }
+
+    #[test]
+    fn stage_aware_false_count_omits_stage_filter() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build_count();
+
+        assert!(sql.contains("COUNT(*)"));
+        assert!(sql.contains("FROM \"users\""));
+        assert!(
+            !sql.contains("stage_id"),
+            "stage_id should not appear in count when stage_aware=false"
+        );
+    }
+
+    #[test]
+    fn stage_aware_default_true() {
+        let def = QueryDefinition::default();
+        assert!(def.stage_aware, "stage_aware should default to true");
+
+        let builder = GatherQueryBuilder::new(def, Uuid::now_v7());
+        let sql = builder.build(1, 10);
+        assert!(
+            sql.contains("stage_id"),
+            "stage_id should appear when stage_aware=true (default)"
+        );
+    }
+
+    #[test]
+    fn stage_aware_false_deserializes_from_json() {
+        let json = r#"{"base_table": "users", "stage_aware": false}"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert!(!def.stage_aware);
+        assert_eq!(def.base_table, "users");
+    }
+
+    #[test]
+    fn stage_aware_missing_defaults_true() {
+        let json = r#"{"base_table": "item"}"#;
+        let def: QueryDefinition = serde_json::from_str(json).unwrap();
+        assert!(
+            def.stage_aware,
+            "stage_aware should default to true when not in JSON"
+        );
+    }
+
+    #[test]
+    fn stage_overlay_single_stage_uses_equals() {
+        let def = QueryDefinition::default();
+        let builder = GatherQueryBuilder::new_with_stages(def, vec![LIVE_STAGE_ID]);
+        let sql = builder.build(1, 10);
+
+        // Single stage should use =
+        let live_str = LIVE_STAGE_ID.to_string();
+        assert!(
+            sql.contains(&format!("\"stage_id\" = '{live_str}'")),
+            "single stage should use =: {sql}"
+        );
+        assert!(!sql.contains("IN"), "single stage should not use IN: {sql}");
+    }
+
+    #[test]
+    fn stage_overlay_multiple_stages_uses_in() {
+        let def = QueryDefinition::default();
+        let stage_a = Uuid::now_v7();
+        let stage_b = Uuid::now_v7();
+        let stages = vec![stage_a, stage_b, LIVE_STAGE_ID];
+        let builder = GatherQueryBuilder::new_with_stages(def, stages);
+        let sql = builder.build(1, 10);
+
+        // Multiple stages should use IN
+        assert!(
+            sql.contains("IN"),
+            "multiple stages should use IN clause: {sql}"
+        );
+        assert!(
+            sql.contains(&stage_a.to_string()),
+            "should contain stage_a: {sql}"
+        );
+        assert!(
+            sql.contains(&stage_b.to_string()),
+            "should contain stage_b: {sql}"
+        );
+        assert!(
+            sql.contains(&LIVE_STAGE_ID.to_string()),
+            "should contain live: {sql}"
+        );
+    }
+
+    #[test]
+    fn stage_overlay_count_uses_in() {
+        let def = QueryDefinition::default();
+        let stage_a = Uuid::now_v7();
+        let stages = vec![stage_a, LIVE_STAGE_ID];
+        let builder = GatherQueryBuilder::new_with_stages(def, stages);
+        let sql = builder.build_count();
+
+        assert!(
+            sql.contains("IN"),
+            "count with multiple stages should use IN: {sql}"
+        );
+        assert!(
+            sql.contains(&stage_a.to_string()),
+            "count should contain stage_a: {sql}"
+        );
+        assert!(
+            sql.contains(&LIVE_STAGE_ID.to_string()),
+            "count should contain live: {sql}"
+        );
+    }
+
+    #[test]
+    fn full_text_search_filter() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("rust programming".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            sql.contains("search_vector @@ to_tsquery"),
+            "should contain tsvector search: {sql}"
+        );
+        // Parameterized: value appears as 'rust & programming' after Expr::cust_with_values
+        assert!(
+            sql.contains("rust & programming"),
+            "should AND terms: {sql}"
+        );
+    }
+
+    #[test]
+    fn full_text_search_empty_value_skipped() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("search_vector"),
+            "empty search should be skipped: {sql}"
+        );
+    }
+
+    #[test]
+    fn full_text_search_sanitizes_special_chars() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("rust's | ! & (test)".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // Special chars should be stripped, only words remain
+        assert!(
+            sql.contains("search_vector @@ to_tsquery"),
+            "should contain search: {sql}"
+        );
+        assert!(!sql.contains("|"), "pipe should be stripped: {sql}");
+        assert!(!sql.contains("!"), "bang should be stripped: {sql}");
+    }
+
+    #[test]
+    fn full_text_search_operator_serialization() {
+        let op = FilterOperator::FullTextSearch;
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, "\"full_text_search\"");
+        let parsed: FilterOperator = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, FilterOperator::FullTextSearch);
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: LIKE wildcards in user input escaped
+    #[test]
+    fn like_wildcards_escaped() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "title".to_string(),
+                operator: FilterOperator::Contains,
+                value: FilterValue::String("100%_done".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // SeaQuery renders with E prefix and double-backslash escaping
+        assert!(
+            sql.contains("100\\\\%\\\\_done") || sql.contains("100\\%\\_done"),
+            "LIKE wildcards should be escaped: {sql}"
+        );
+        // The important thing: literal % and _ are escaped, not used as wildcards
+        assert!(
+            !sql.contains("%100%_done%"),
+            "raw wildcard chars should NOT appear unescaped: {sql}"
+        );
+    }
+
+    #[test]
+    fn escape_like_wildcards_function() {
+        assert_eq!(super::escape_like_wildcards("hello"), "hello");
+        assert_eq!(super::escape_like_wildcards("100%"), "100\\%");
+        assert_eq!(super::escape_like_wildcards("a_b"), "a\\_b");
+        assert_eq!(super::escape_like_wildcards("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn stage_overlay_not_applied_when_not_stage_aware() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+        let stages = vec![Uuid::now_v7(), LIVE_STAGE_ID];
+        let builder = GatherQueryBuilder::new_with_stages(def, stages);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("stage_id"),
+            "stage_aware=false should skip stage filter even with overlay: {sql}"
+        );
+    }
+
+    // ── Security regression tests (Story 27.2 — SQL Injection) ──
+    // Note: is_safe_identifier() is tested in handlers::tests
+
+    // SECURITY REGRESSION TEST — Story 27.2: JSONB path injection neutralized to NULL
+    #[test]
+    fn jsonb_path_injection_returns_null() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            fields: vec![QueryField {
+                field_name: "fields.body'; DROP TABLE item; --".to_string(),
+                table_alias: None,
+                label: Some("injected".to_string()),
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // The unsafe path is neutralized to a bare NULL expression.
+        // Check that no JSONB extraction operator appears with the injection payload.
+        assert!(
+            sql.contains("NULL AS"),
+            "unsafe path should produce NULL alias expression: {sql}"
+        );
+        assert!(
+            !sql.contains("->>"),
+            "should not generate JSONB extraction for unsafe path: {sql}"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: nested JSONB path injection neutralized
+    #[test]
+    fn jsonb_nested_path_injection_returns_null() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            fields: vec![QueryField {
+                field_name: "fields.meta.source'; DROP TABLE item;--".to_string(),
+                table_alias: None,
+                label: Some("injected".to_string()),
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // Nested path with injection should also be neutralized to NULL.
+        assert!(
+            sql.contains("NULL AS"),
+            "unsafe nested path should produce NULL alias expression: {sql}"
+        );
+        assert!(
+            !sql.contains("->>"),
+            "should not generate JSONB extraction for unsafe nested path: {sql}"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: unsafe table name neutralized to NULL
+    #[test]
+    fn jsonb_table_injection_returns_null() {
+        // When base_table contains injection, jsonb_extract_expr returns NULL.
+        // SeaQuery safely quotes the base_table in FROM via Alias::new(),
+        // so it appears as a quoted identifier (harmless at SQL level).
+        let def = QueryDefinition {
+            base_table: "item; DROP TABLE users".to_string(),
+            fields: vec![QueryField {
+                field_name: "fields.body".to_string(),
+                table_alias: None,
+                label: Some("body".to_string()),
+            }],
+            stage_aware: false,
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // JSONB expression neutralized to NULL (not the raw interpolation).
+        // The unsafe table name should not appear before a JSONB operator.
+        assert!(
+            sql.contains("NULL AS"),
+            "unsafe base table should yield NULL expression: {sql}"
+        );
+        assert!(
+            !sql.contains(".fields->>"),
+            "should not interpolate unsafe table into JSONB expression: {sql}"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: category UUID values parameterized
+    #[test]
+    fn category_filter_uses_parameterized_values() {
+        let tag_id = uuid::Uuid::nil();
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "fields.category".to_string(),
+                operator: FilterOperator::HasTag,
+                value: FilterValue::Uuid(tag_id),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // UUID should appear as a value, not injected via format!.
+        // The expression uses JSONB array containment (@>) rather than ->>/IN,
+        // so it correctly handles multi-value (array-stored) tag fields.
+        assert!(
+            sql.contains("@>"),
+            "should use JSONB containment for category field: {sql}"
+        );
+        assert!(
+            sql.contains(&tag_id.to_string()),
+            "should contain UUID value: {sql}"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: category field injection neutralized to NULL
+    #[test]
+    fn category_filter_field_injection_blocked() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "fields.cat' OR '1'='1".to_string(),
+                operator: FilterOperator::HasTag,
+                value: FilterValue::Uuid(uuid::Uuid::nil()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // Injection payload should be neutralized to FALSE (field validation failed),
+        // not executed. The new containment-based filter returns FALSE on validation failure.
+        assert!(
+            sql.contains("FALSE"),
+            "unsafe field should produce FALSE expression: {sql}"
+        );
+        assert!(
+            !sql.contains("'1'='1'"),
+            "SQL injection payload should not appear in output: {sql}"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: FTS with unsafe table returns FALSE
+    #[test]
+    fn fts_unsafe_base_table_returns_false() {
+        // When base_table contains injection, FTS filter returns FALSE.
+        // SeaQuery safely quotes the base_table in FROM via Alias::new().
+        let def = QueryDefinition {
+            base_table: "item; DROP TABLE users".to_string(),
+            stage_aware: false,
+            filters: vec![QueryFilter {
+                field: "search_vector".to_string(),
+                operator: FilterOperator::FullTextSearch,
+                value: FilterValue::String("test".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // FTS expression neutralized to FALSE (not interpolated into search_vector).
+        // The WHERE clause should contain FALSE, and no @@ operator should appear.
+        assert!(
+            sql.contains("FALSE"),
+            "should return FALSE for unsafe base table: {sql}"
+        );
+        assert!(
+            !sql.contains("@@"),
+            "should not generate FTS operator for unsafe base table: {sql}"
+        );
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: sort field injection neutralized to NULL
+    #[test]
+    fn sort_field_injection_returns_null() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            sorts: vec![QuerySort {
+                field: "fields.x'; DROP TABLE item;--".to_string(),
+                direction: SortDirection::Asc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        // Sort expression should be neutralized to NULL ORDER BY, not raw injection.
+        assert!(
+            !sql.contains("->>"),
+            "should not generate JSONB extraction for unsafe sort field: {sql}"
+        );
+        assert!(
+            sql.contains("NULL"),
+            "unsafe sort field should produce NULL expression: {sql}"
+        );
+    }
+
+    // PF-4.1 Task 1: relevance ordering for unsorted semantic gathers.
+    #[test]
+    fn relevance_order_emitted_when_no_explicit_sort() {
+        let a = Uuid::now_v7();
+        let b = Uuid::now_v7();
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            relevance_order: Some(vec![a, b]),
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            sql.contains("array_position(ARRAY["),
+            "unsorted semantic gather should order by relevance: {sql}"
+        );
+        // The ranked ids appear in order inside the ARRAY literal, and the
+        // ordering keys off the item id column.
+        assert!(sql.contains(&format!("'{a}'")) && sql.contains(&format!("'{b}'")));
+        assert!(sql.contains("\"item\".\"id\""), "{sql}");
+    }
+
+    // PF-4.1 Task 1: an explicit gather sort overrides relevance ordering.
+    #[test]
+    fn explicit_sort_overrides_relevance_order() {
+        let a = Uuid::now_v7();
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            relevance_order: Some(vec![a]),
+            sorts: vec![QuerySort {
+                field: "created".to_string(),
+                direction: SortDirection::Desc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("array_position"),
+            "explicit sort must win over relevance order: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY") && sql.contains("created"),
+            "explicit sort should drive ORDER BY: {sql}"
+        );
+    }
+
+    /// Helper: render a SimpleExpr to SQL string via a dummy SELECT.
+    fn expr_to_sql(expr: SimpleExpr) -> String {
+        let mut q = Query::select();
+        q.expr(expr);
+        q.to_string(PostgresQueryBuilder)
+    }
+
+    // SECURITY REGRESSION TEST — Story 27.2: descendants expression injection returns FALSE
+    #[test]
+    fn descendants_expr_injection_returns_false() {
+        let result = CategoryHierarchyQuery::in_descendants_expr("cat'; DROP TABLE item;--");
+        let sql = expr_to_sql(result);
+        assert!(
+            sql.contains("FALSE"),
+            "unsafe field path should produce FALSE: {sql}"
+        );
+        assert!(
+            !sql.contains("fields"),
+            "should not generate JSONB extraction for unsafe path: {sql}"
+        );
+    }
+
+    #[test]
+    fn descendants_expr_valid_path() {
+        let result = CategoryHierarchyQuery::in_descendants_expr("category");
+        let sql = expr_to_sql(result);
+        assert!(sql.contains("category"), "should contain field path: {sql}");
+        assert!(
+            sql.contains("tag_descendants"),
+            "should reference descendants CTE: {sql}"
+        );
+    }
+
+    // ── Translation overlay tests ────────────────────────────────────
+
+    #[test]
+    fn translation_join_absent_without_language() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder = GatherQueryBuilder::new(def, LIVE_STAGE_ID);
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("item_translation"),
+            "no language → no translation JOIN: {sql}"
+        );
+        assert!(!sql.contains("_tr"), "no language → no _tr alias: {sql}");
+    }
+
+    #[test]
+    fn translation_join_present_with_language() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("fr".to_string()));
+        let sql = builder.build(1, 10);
+
+        assert!(
+            sql.contains("item_translation"),
+            "language set → should JOIN item_translation: {sql}"
+        );
+        assert!(
+            sql.contains("\"_tr\""),
+            "translation table should be aliased as _tr: {sql}"
+        );
+        assert!(
+            sql.contains("'fr'"),
+            "JOIN should filter on language 'fr': {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_coalesce_title_and_fields() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("de".to_string()));
+        let sql = builder.build(1, 10);
+
+        assert!(
+            sql.contains("COALESCE(\"_tr\".\"title\", \"item\".\"title\") AS \"title\""),
+            "should COALESCE title: {sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(\"_tr\".\"fields\" || \"item\".\"fields\", \"item\".\"fields\") AS \"fields\""),
+            "should COALESCE fields with JSONB merge: {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_join_skipped_for_non_item_table() {
+        let def = QueryDefinition {
+            base_table: "users".to_string(),
+            stage_aware: false,
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("fr".to_string()));
+        let sql = builder.build(1, 10);
+
+        assert!(
+            !sql.contains("item_translation"),
+            "non-item table should not JOIN item_translation: {sql}"
+        );
+        assert!(
+            !sql.contains("COALESCE"),
+            "non-item table should not have COALESCE: {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_count_query_no_join() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder =
+            GatherQueryBuilder::new(def, LIVE_STAGE_ID).with_language(Some("fr".to_string()));
+        let sql = builder.build_count();
+
+        // COUNT query should NOT include translation JOIN (cardinality unchanged)
+        assert!(
+            !sql.contains("item_translation"),
+            "count query should not JOIN item_translation: {sql}"
+        );
+    }
+
+    #[test]
+    fn translation_with_language_none_same_as_no_language() {
+        let def1 = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder1 = GatherQueryBuilder::new(def1, LIVE_STAGE_ID).with_language(None);
+        let sql1 = builder1.build(1, 10);
+
+        let def2 = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some("blog".to_string()),
+            ..Default::default()
+        };
+        let builder2 = GatherQueryBuilder::new(def2, LIVE_STAGE_ID);
+        let sql2 = builder2.build(1, 10);
+
+        assert_eq!(
+            sql1, sql2,
+            "with_language(None) should produce identical SQL"
+        );
+    }
+}

@@ -1,0 +1,144 @@
+# Known issues
+
+What is outstanding in 0.99.0. This is the list that would otherwise be a
+surprise, so it is written down rather than discovered.
+
+Trovato was developed privately and is published as a pre-1.0 release for
+exactly the reasons on this page. Nothing here is a secret being managed; it is
+a backlog being worked in the open. [ROADMAP.md](ROADMAP.md) says what happens
+to each item.
+
+## Security
+
+### Security findings from private development are not independently verified
+
+Several security audits were run during private development and their findings
+were addressed, but the fixes have not been re-verified by anyone other than the
+person who made them, and the audits themselves were not independent. Treat the
+security posture as "reviewed once, by the author" until that changes. Reviewing
+those findings on a public codebase is a 1.0 blocker.
+
+### Page-builder components accept arbitrary inline CSS
+
+`crates/kernel/src/content/page_builder.rs:91` carries a TODO to restrict
+allowed CSS properties to an allowlist. The Ammonia sanitizer currently permits
+the `style` attribute wholesale, so a component's markup can carry any
+declaration it likes. HTML tags and non-style attributes are constrained; CSS
+properties are not.
+
+This is related to the item below and the two should be fixed together.
+
+### Content-Security-Policy still allows inline styles
+
+`style-src` keeps `'unsafe-inline'`
+(`crates/kernel/src/middleware/security_headers.rs`) because the base template
+and the admin screens carry inline `style=` attributes. `script-src` no longer
+needs it, so this is the last inline exception. Extracting the styles allows the
+directive to be tightened, which is also what makes the page-builder allowlist
+above worth having.
+
+### Dependency advisories are suppressed with justifications
+
+`cargo audit` runs in CI and `.cargo/audit.toml` lists what is suppressed and
+why. Each entry has reasoning; none is suppressed silently. The open ones:
+
+- **RUSTSEC-2026-0194 / RUSTSEC-2026-0195** (quick-xml denial of service): the
+  live one. Reachable only through `plist` and `syntect`, which parse the
+  bundled syntax-highlighting theme files at startup rather than anything an
+  attacker supplies. The fix is quick-xml 0.41, and `plist` pins `^0.38`, so it
+  needs an upstream release before Trovato can take it.
+- **RUSTSEC-2026-0085 through -0096, RUSTSEC-2026-0114** (wasmtime and
+  cranelift): a batch that clears with the wasmtime 44 upgrade. Trovato is on
+  wasmtime 43.
+- **RUSTSEC-2026-0141** (lettre TLS hostname verification with the Boring
+  backend): not applicable. Trovato builds lettre with `default-features =
+  false` and the rustls backend, so the vulnerable code is never compiled.
+- **RUSTSEC-2023-0071** (rsa timing sidechannel): transitive through
+  `sqlx-mysql`; Trovato uses PostgreSQL only.
+
+## Completeness
+
+### There is no plugin registry, and no package format
+
+A plugin is a directory containing a compiled `.wasm`, an `.info.toml` manifest
+and any migrations. `trovato plugin install <name>` takes a machine name and
+reads it from the plugin search path. There is no archive format, no install
+from a URL, and no index to discover plugins from. Distribution today means
+telling someone where the directory is.
+
+`PLUGINS_DIR` and `TEMPLATES_DIR` accept several directories, so an application
+can keep its plugins in its own repository rather than inside a Trovato
+checkout. That is the mechanism a package format would eventually build on.
+
+### The committed reference plugin is a binary artifact
+
+`plugins/ritrovo_importer/ritrovo_importer.wasm` is checked in so the tutorial
+works without a second repository. It is reproducible (the header of
+`crates/kernel/tests/ritrovo_paired_consumer_test.rs` records the source commit,
+the pinned SDK commit and the sha256, and two clean checkouts produced it byte
+for byte), but a compiled binary in a source repository is still something to
+resolve rather than keep.
+
+### Some admin screens are configuration import only
+
+Roles and permissions, stages, and system configuration are managed by editing
+YAML and running `trovato config import`. There is no form for them. Content
+types, fields, users, categories, content, gather queries, tiles, aliases,
+menus, plugins and AI providers all do have admin screens.
+
+### Semantic search has no approximate index
+
+Vector similarity is computed exactly, comparing against every candidate row.
+This is correct and it is fine at small scale; it does not stay fine as the
+corpus grows. There is no ivfflat or hnsw index on the embeddings table yet.
+
+### Migrations only move forward
+
+There is no down migration and no rollback. Recovering from a bad migration
+means restoring the database. Plan accordingly before upgrading a production
+site.
+
+### Template reloading on file change is for development only
+
+The filesystem watch that reloads templates is a development convenience. In
+production, templates are read at startup and a change needs a restart.
+
+## Contract and versioning
+
+### The frozen plugin contract is enforced by policy, not by tooling
+
+The plugin boundary is frozen and does not change through the 0.99 series. The
+`SDK Semver Gate` CI job runs `cargo-semver-checks` against it, but under
+SemVer's 0.x rules a breaking change is permitted by a minor bump, so the gate
+cannot fail one. Until 1.0.0 the freeze is held by review. See
+[docs/design/Versioning.md](docs/design/Versioning.md).
+
+### An old pre-freeze manifest passes the version check
+
+The compatibility rule is `major ==` and `minor <=`, so a manifest declaring an
+early `api_version` such as `"0.2"` is accepted by a kernel at `(0, 99)`.
+Nothing was ever released against the pre-freeze API, so no such plugin exists
+outside this repository's own history, but the check is a compatibility gate and
+not a provenance check, and it is worth knowing which of the two it is.
+
+## Testing
+
+### Some tests only pass on a database they have never run against
+
+`crates/kernel/tests/webauthn_registration_test.rs` registers a passkey for a
+fixed username (`wa_reg_ok`, `wa_reg_multi`) and then asserts that exactly one
+`passkey.registered` row exists for that user. The assertion is scoped to the
+user, but the user is the same one on every run and nothing cleans up, so the
+second run against the same database sees two rows and fails.
+
+CI provisions a fresh database per run, so it never sees this. Locally it means
+`cargo test --all` passes once and then fails until the database is dropped and
+recreated. The fix is for the test to clean up after itself, or to use a unique
+username per run.
+
+### The local test gate is stronger than CI
+
+CI splits the integration tests across three shards with three separate
+databases. A local `cargo test --all` runs every target against one database, so
+it catches cross-file interference through shared fixtures that CI can miss. The
+local run is the stronger gate; see CONTRIBUTING.md.

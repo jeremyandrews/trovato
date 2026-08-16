@@ -1,0 +1,384 @@
+package trovato:kernel;
+
+/// Item API — full-serialization access to items.
+/// Plugins receive and return complete item JSON, avoiding multiple
+/// boundary crossings. Phase 0 benchmarks proved this is 1.2-1.6x faster
+/// than handle-based field access.
+interface item-api {
+    /// Get an item by ID, returns full item JSON.
+    get-item: func(id: string) -> result<string, string>;
+
+    /// Save an item from JSON (insert or update based on whether id exists).
+    save-item: func(item-json: string) -> result<string, string>;
+
+    /// Delete an item by ID.
+    delete-item: func(id: string) -> result<_, string>;
+
+    /// Query items with structured query, returns JSON array.
+    query-items: func(query-json: string) -> result<string, string>;
+}
+
+/// Structured database API — prevents SQL injection from plugins.
+///
+/// WASM-2 / D-19 table scoping (enforced since the WASM-2 build): the structured
+/// calls (select/insert/update/delete) are confined to the plugin's *effective
+/// allowlist* — the tables its own migrations CREATE, unioned with the explicit
+/// `db_tables` in its `[capabilities]` manifest. A structured call targeting a
+/// table outside that set is rejected (host error code -16, `table-not-declared`)
+/// before any query runs. The raw calls (query-raw/execute-raw) are gated on the
+/// declared `raw_sql = true` capability (host error code -17,
+/// `raw-sql-not-declared`); they are NOT parsed against the allowlist — holding
+/// `raw_sql` is the documented, auditable escape hatch that weakens the table
+/// guarantee for that plugin.
+interface db {
+    select: func(query-json: string) -> result<string, string>;
+    insert: func(table: string, data-json: string) -> result<string, string>;
+    update: func(table: string, data-json: string, where-json: string) -> result<u64, string>;
+    delete: func(table: string, where-json: string) -> result<u64, string>;
+    query-raw: func(sql: string, params-json: string) -> result<string, string>;
+    execute-raw: func(sql: string, params-json: string) -> result<u64, string>;
+}
+
+/// Persistent key-value configuration.
+interface variables {
+    get: func(name: string, default-value: string) -> string;
+    set: func(name: string, value: string) -> result<_, string>;
+}
+
+/// Per-request shared state (key-value).
+interface request-context {
+    get: func(key: string) -> option<string>;
+    set: func(key: string, value: string);
+}
+
+/// User and permission checks.
+interface user-api {
+    current-user-has-permission: func(permission: string) -> bool;
+    current-user-id: func() -> string;
+}
+
+/// Cache operations with tag-based invalidation.
+interface cache-api {
+    get: func(bin: string, key: string) -> option<string>;
+    set: func(bin: string, key: string, value: string, tags-json: string);
+    invalidate-tag: func(tag: string);
+}
+
+/// Inter-plugin communication.
+interface plugin-api {
+    invoke: func(plugin-name: string, function-name: string, payload: string)
+        -> result<string, string>;
+    plugin-exists: func(plugin-name: string) -> bool;
+}
+
+/// Structured logging.
+interface logging {
+    log: func(level: string, plugin: string, message: string);
+}
+
+/// AI API — access to AI providers via the kernel's secure provider registry.
+/// Plugins submit requests as JSON; the kernel resolves the provider,
+/// injects the API key, and returns a normalized response.
+/// API keys never cross the WASM boundary.
+interface ai-api {
+    /// Make an AI request. Input is JSON-serialized `AiRequest`,
+    /// output is JSON-serialized `AiResponse`.
+    ai-request: func(request-json: string) -> result<string, string>;
+}
+
+/// Cryptographic primitives — SHA-256, HMAC-SHA256, secure random bytes,
+/// and constant-time comparison. Plugins use these instead of bundling
+/// their own crypto into WASM (large, slow, and risky). All byte outputs
+/// are hex-encoded strings.
+///
+/// ABI note (PF-3 / D-21): the registered host import field names now match
+/// these kebab-case identifiers exactly (`sha256`, `hmac-sha256`,
+/// `random-bytes`, `constant-time-eq`). The earlier snake_case host fields
+/// (`hmac_sha256`, `random_bytes`, `constant_time_eq`) were normalized to
+/// kebab-case so host imports and the WIT share one convention; the SDK
+/// `#[link_name]` bindings link against these exact kebab-case names.
+interface crypto-api {
+    /// Hex-encoded SHA-256 of the input.
+    sha256: func(data: string) -> result<string, string>;
+
+    /// Hex-encoded HMAC-SHA256 of `message` keyed by `key`.
+    hmac-sha256: func(key: string, message: string) -> result<string, string>;
+
+    /// Hex-encoded cryptographically-secure random bytes (length 1..=256).
+    random-bytes: func(len: u32) -> result<string, string>;
+
+    /// Constant-time equality of two byte strings (timing-attack safe).
+    constant-time-eq: func(a: string, b: string) -> bool;
+}
+
+/// Outbound HTTP — the kernel performs the request on the plugin's behalf,
+/// enforcing SSRF protection, scheme/host rules, a timeout, and a
+/// response-size cap. Plugins cannot open sockets directly from WASM.
+/// Input is JSON-serialized `HttpRequest`; output is JSON-serialized
+/// `HttpResponse`.
+interface http {
+    request: func(request-json: string) -> result<string, string>;
+
+    /// Open a streaming HTTP fetch (P11e / D-49; response metadata p11j /
+    /// G-HTTP-META). Additive companion to `request` for response bodies too large
+    /// to buffer whole in WASM memory (article HTML routinely exceeds 1 MB).
+    /// Returns a JSON-serialized `HttpOpenResponse` `{handle, status, headers}`:
+    /// the opaque streaming handle plus the response status and headers in the
+    /// SAME representation as `request`'s `HttpResponse` (so conditional GET works
+    /// on the streaming path — a `304` is distinguishable from an empty `200`, and
+    /// a fresh `ETag`/`Last-Modified` is readable). The plugin then calls
+    /// `http-read` on the handle repeatedly (each returning at most 64 KB, the tap
+    /// I/O buffer) until it returns 0 (EOF), and must `http-close` the handle.
+    /// `request`'s one-shot semantics and 1 MB cap are byte-identical and
+    /// unaffected.
+    ///
+    /// A `304 Not Modified` response has no body, so the first `http-read` on its
+    /// handle returns a clean EOF immediately (the status in the metadata is how a
+    /// conditional GET is short-circuited).
+    ///
+    /// The metadata must fit the tap I/O buffer. A pathologically large header
+    /// block that does not fit errors the open (parity with `request`'s
+    /// response-too-large behavior) rather than silently truncating headers, so a
+    /// dropped `ETag`/`Content-Type` can never go unnoticed.
+    ///
+    /// The handle is scoped to the current tap invocation's `Store`: it cannot be
+    /// used from a later or concurrent tap call. The SAME SSRF fence as `request`
+    /// (scheme allowlist; localhost/.local/.internal/.localhost + private,
+    /// loopback, link-local and CGNAT IP-literal blocks, plus the rebinding-safe
+    /// resolver and per-hop redirect revalidation — p11i) is applied on open.
+    ///
+    /// Total transferred bytes are bounded by the plugin's manifest-declared,
+    /// kernel-capped total-transfer ceiling (`http_max_transfer`, default 1 MB,
+    /// kernel max 16 MB — D-50). The old 60 s ceiling becomes a total-transfer
+    /// wall-clock budget across all reads, plus a per-read timeout
+    /// (`HttpRequest.timeout_ms`); a background tap is additionally bounded by the
+    /// 150 s epoch (the epoch cuts CPU, the transfer budget cuts the wire).
+    http-open: func(request-json: string) -> result<string, string>;
+
+    /// Read up to 64 KB of the next body bytes from an open streaming handle
+    /// (P11e / D-49). An empty result signals EOF. Fails if the handle is unknown,
+    /// already closed, or from another tap call; if a read times out or the
+    /// total-transfer wall-clock budget expires; on a network error; or if the
+    /// total-transfer ceiling is exceeded mid-stream (which also catches a server
+    /// that under-reports `Content-Length`).
+    http-read: func(handle: u32) -> result<list<u8>, string>;
+
+    /// Close a streaming handle and release its connection (P11e / D-49). Frees
+    /// the slot so a subsequent read on the same handle fails cleanly. Closing an
+    /// unknown or already-closed handle is an error.
+    http-close: func(handle: u32) -> result<_, string>;
+}
+
+/// Plugin job queue — enqueue work (typically from `tap-cron`) for later
+/// draining by the kernel, which invokes `tap-queue-worker` on the owning
+/// plugin for each item. The calling plugin's name is injected by the
+/// kernel so plugins cannot enqueue under another plugin's identity.
+/// `payload-json` must be well-formed JSON.
+interface queue {
+    push: func(queue-name: string, payload-json: string) -> result<_, string>;
+
+    /// Enqueue a job with options (P11d / D-48). Additive companion to `push`:
+    /// `push` stays byte-identical for callers that need neither priority nor
+    /// delay. `opts-json` is a JSON object with optional fields:
+    ///   - `priority` (integer): higher values are drained first (default 0);
+    ///   - `delay` (integer seconds): defer the first attempt by this many
+    ///     seconds (default 0 = eligible immediately).
+    /// The kernel injects the calling plugin's name (no impersonation) and
+    /// applies v2 retry/backoff/dead-letter semantics regardless of entry point.
+    /// `payload-json` must be well-formed JSON.
+    enqueue: func(queue-name: string, payload-json: string, opts-json: string) -> result<_, string>;
+}
+
+/// The plugin world — all imports and exports for a Trovato plugin.
+/// All tap functions use full-serialization (JSON in, JSON out).
+///
+/// Capability declaration (WASM-1 / WASM-2, contract shape — PF-2 / D-2 / D-19):
+/// the `world` below lists the full superset of host interfaces. *Which* subset a
+/// given plugin actually receives is declared per-plugin in the `[capabilities]`
+/// table of its `{name}.info.toml` manifest (the real surface is the kernel's
+/// `PluginInfo`/`PluginCapabilities` struct; this `.wit` is documentation):
+///
+///   [capabilities]
+///   host_interfaces = ["db", "logging", "item-api"]  # WASM-1: imports this plugin may use
+///   db_tables       = ["importer_jobs"]              # WASM-2: table allowlist (else derived
+///                                                    #   from the plugin's migration-owned tables)
+///   raw_sql         = false                          # D-19: gates `db.query-raw`/`db.execute-raw`
+///
+/// Semantics (frozen surface):
+///   - `host_interfaces` is ENFORCED (WASM-1 / D-18): the per-plugin linker exposes
+///     only the declared interfaces. Absent `[capabilities]` table (or empty
+///     `host_interfaces`) → deny-all host imports (the WASM-1 flip; no longer
+///     grant-all).
+///   - `db_tables` is ENFORCED (WASM-2 / D-19): structured `db` calls are confined
+///     to the effective allowlist = the plugin's migration-owned tables ∪ this list.
+///     A structured call outside it is rejected before any query. The declaration
+///     states table scope, not the enforcement mechanism — the same list can drive
+///     the kernel-side allowlist (1.0) or per-plugin Postgres roles (post-1.0,
+///     opt-in) with no contract change (the Option-B seam).
+///   - `raw_sql = true` is ENFORCED (WASM-2 / D-19): required to call
+///     `db.query-raw`/`db.execute-raw`; it WEAKENS the `db_tables` guarantee for that
+///     plugin (the kernel does not parse raw SQL against the allowlist — the SQLI-1
+///     surface) — a declared, auditable risk.
+world plugin {
+    import item-api;
+    import db;
+    import variables;
+    import request-context;
+    import user-api;
+    import cache-api;
+    import plugin-api;
+    import logging;
+    import ai-api;
+    import crypto-api;
+    import http;
+    import queue;
+
+    // --- Tap export naming convention (PF-3 / D-1, sub-decision 1) ----------
+    // Host *import* fields above are kebab-case and match these WIT identifiers
+    // exactly. Tap *exports* below are documented in kebab-case here, but the
+    // REAL exported WASM symbol the kernel dispatcher looks up is the snake_case
+    // Rust function name the SDK `#[plugin_tap]` macro generates (e.g. this
+    // `tap-item-view` is exported by the plugin as `tap_item_view`, looked up
+    // verbatim at `tap/dispatcher.rs`). The kebab↔snake mapping is a pure
+    // `-`↔`_` substitution; the D-20 consistency test (`plugin_test.rs`)
+    // enforces that this documented export set equals the kernel's `KNOWN_TAPS`
+    // under that mapping, so the two conventions cannot silently drift.
+    //
+    // Some taps below are DECLARED in the frozen contract but not yet dispatched
+    // by the kernel (forward-declared in `KNOWN_TAPS`); these are marked
+    // "(dispatch pending)". Their signatures document the intended payload shape.
+    // ------------------------------------------------------------------------
+
+    // Lifecycle — `tap-install` is dispatched (state.rs); `tap-enable`,
+    // `tap-disable`, `tap-uninstall` are declared but not yet dispatched
+    // (dispatch pending). Their `() -> result<_, string>` shape is the same
+    // validated lifecycle signature `tap-install` uses, so nothing is guessed.
+    export tap-install: func() -> result<_, string>;
+    export tap-enable: func() -> result<_, string>;        // (dispatch pending)
+    export tap-disable: func() -> result<_, string>;       // (dispatch pending)
+    export tap-uninstall: func() -> result<_, string>;     // (dispatch pending)
+
+    // Content type registration (returns JSON array of ContentTypeDefinition)
+    export tap-item-info: func() -> string;
+
+    // Item CRUD — full-serialization (item-json contains complete item)
+    export tap-item-view: func(item-json: string) -> string;
+    // (dispatch pending) — render+item payload grounded by the dispatched
+    // `tap-item-view` and the render pipeline.
+    export tap-item-view-alter: func(render-json: string, item-json: string) -> string;
+    export tap-item-insert: func(item-json: string) -> result<_, string>;
+    export tap-item-update: func(item-json: string) -> result<_, string>;
+    export tap-item-delete: func(item-id: string) -> result<_, string>;
+    export tap-item-access: func(item-json: string, op: string) -> string;
+
+    // Pre-save mutation hook — fires before insert/update; plugins may return
+    // a JSON object with a "fields" map to merge into the item (last wins).
+    export tap-item-presave: func(item-json: string) -> string;
+
+    // Field-level access control. The opaque `field-access-json` carries a
+    // BATCH: a FieldAccessBatchInput { user{user_id,authenticated,permissions},
+    // item_type, operation ("view"|"edit"), fields[] } — one dispatch decides a
+    // whole field set for one type. The plugin returns a FieldAccessBatchResult
+    // { decisions: map<field, "Allow"|"Deny"|"NoOpinion"> }; an absent field is
+    // NoOpinion. The kernel aggregates deny-wins across plugins with a fail-open
+    // default (NoOpinion / no implementer => visible). Granularity is type-level
+    // (no per-item identity); per-item is a post-1.0 additive `item` block.
+    export tap-field-access: func(field-access-json: string) -> string;
+
+    // Categories (dispatch pending) — term-json/term-id payloads grounded by the
+    // dispatched `tap-item-*` CRUD family.
+    export tap-categories-term-insert: func(term-json: string) -> result<_, string>;
+    export tap-categories-term-update: func(term-json: string) -> result<_, string>;
+    export tap-categories-term-delete: func(term-id: string) -> result<_, string>;
+
+    // Forms
+    export tap-form-alter: func(form-id: string, form-json: string) -> string;
+    export tap-form-validate: func(form-id: string, values-json: string) -> string;
+    export tap-form-submit: func(form-id: string, values-json: string) -> result<_, string>;
+    // AJAX form callback — fires for a custom trigger; receives a JSON object
+    // {trigger, form_id, values} and returns an AjaxResponse (commands array).
+    export tap-form-ajax: func(callback-json: string) -> string;
+
+    // Routing & permissions (return JSON arrays). `tap-menu` is dispatched
+    // (state.rs); `tap-perm` is declared but not yet dispatched (dispatch
+    // pending). Its no-input `() -> string` JSON-array shape has nothing to guess.
+    export tap-menu: func() -> string;
+    export tap-perm: func() -> string;                     // (dispatch pending)
+
+    // Serves one HTTP request for a `tap-menu` entry whose handler-type is
+    // "api" and which names a callback (G-NO-PLUGIN-HTTP; added in
+    // KERNEL_API_VERSION (1,1)). Input is an ApiRequest JSON object
+    // {callback, method, path, params, query, body, user_id, authenticated};
+    // output is an ApiResponse {status, body, content_type}. Dispatched by
+    // routes/plugin_api.rs with services attached and the menu entry's
+    // `permission` already checked, so the tap may write a plugin-owned table.
+    export tap-api: func(request-json: string) -> string;
+
+    // Theme (dispatch pending) — `tap-theme` no-input shape has nothing to guess;
+    // `tap-preprocess-item` context+item payload grounded by `tap-item-view`.
+    export tap-theme: func() -> string;
+    export tap-preprocess-item: func(context-json: string, item-json: string) -> string;
+
+    // Search
+    export tap-item-update-index: func(item-json: string) -> string;
+
+    // Cron & queues
+    export tap-cron: func() -> result<_, string>;
+    export tap-queue-info: func() -> string;
+    export tap-queue-worker: func(item-json: string) -> result<_, string>;
+
+    // User lifecycle — the login/logout/register/update/delete taps all receive
+    // a JSON object carrying the affected user's id (`{"user_id": "..."}`).
+    export tap-user-login: func(user-json: string) -> result<_, string>;
+    export tap-user-logout: func(user-json: string) -> result<_, string>;
+    export tap-user-register: func(user-json: string) -> result<_, string>;
+    export tap-user-update: func(user-json: string) -> result<_, string>;
+    export tap-user-delete: func(user-json: string) -> result<_, string>;
+
+    // GDPR user-data export (dispatch pending) — plugins return their
+    // per-user records as a JSON array of UserExportData.
+    export tap-user-export: func(user-json: string) -> string;
+
+    // Account-recovery extension point (FR-7c). A plugin provides one or more
+    // recovery *methods*; the kernel owns the *flow* (account binding, the flow
+    // nonce, expiry, single-use, rate limiting). The opaque `recovery-json` is
+    // discriminated by `op` (describe | initiate | verify), exactly the
+    // single-opaque-string convention `tap-field-access` uses:
+    //   - describe  -> { "result":"methods", "methods":[ {method_id, display_name, available} ] }
+    //   - initiate  -> { "result":"initiated", "status", "challenge_hint" (NO secrets), "expires_in_secs" }
+    //   - verify    -> { "result":"verdict", "verdict":"Verified"|"Rejected"|"Pending"|"NoOpinion" }
+    // The `verify` result carries a verdict and NOTHING else (no account id, no
+    // session material): a plugin cannot name a different account to escalate
+    // into. Method ids MUST be namespaced `<plugin_name>:<method>`. The kernel
+    // fold is owner-scoped + fail-closed: a `Verified` counts ONLY from the
+    // plugin owning the method_id namespace; any owner `Rejected` fails; no owner
+    // `Verified` denies; a trapped handler casts no vote. The `-> string` is
+    // transport-opaque only — the SDK binds a typed op-discriminated param
+    // (RecoveryTapInput), never a literal `string` (which fails into a
+    // silently-skipped error output). Frozen at PF-5; see `recovery.rs`.
+    export tap-account-recovery: func(recovery-json: string) -> string;
+
+    // Comments — full-serialization (comment-json contains the complete comment).
+    export tap-comment-insert: func(comment-json: string) -> result<_, string>;
+    export tap-comment-update: func(comment-json: string) -> result<_, string>;
+    export tap-comment-delete: func(comment-json: string) -> result<_, string>;
+    // Access check receives a single JSON object bundling the comment ids, the
+    // operation, and the acting user id; returns an AccessResult (deny wins).
+    export tap-comment-access: func(access-json: string) -> string;
+
+    // Gather extensions — plugins declare extra filters/relationships/sorts
+    // (returns a JSON GatherExtensionDeclaration; no input).
+    export tap-gather-extend: func() -> string;
+
+    // AI governance (dispatch pending) — `tap-ai-request` decides allow/modify/
+    // deny for an outbound AI request (AiRequestContext in, AiRequestDecision
+    // out); `tap-chat-actions` returns the plugin's chat action definitions.
+    export tap-ai-request: func(context-json: string) -> string;
+    export tap-chat-actions: func() -> string;
+
+    // NOTE: a CSP-alteration tap was removed pre-1.0 (PF-4.1). It had zero
+    // implementation and zero dispatch, and its `(csp-json) -> string`
+    // signature was inferred rather than derived from a real call site —
+    // freezing it would have locked an unvalidated guess into the contract.
+    // Re-add post-1.0 with a signature grounded in an actual CSP dispatch site.
+}

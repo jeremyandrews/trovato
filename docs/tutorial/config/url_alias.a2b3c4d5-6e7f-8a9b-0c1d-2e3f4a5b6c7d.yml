@@ -1,0 +1,7 @@
+# Italian URL alias for the speakers listing page.
+id: 'a2b3c4d5-6e7f-8a9b-0c1d-2e3f4a5b6c7d'
+source: /gather/ritrovo.all_speakers
+alias: /it/relatori
+language: it
+stage_id: '0193a5a0-0000-7000-8000-000000000001'
+created: 1772772201

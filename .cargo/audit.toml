@@ -1,0 +1,87 @@
+# cargo-audit configuration
+# See: https://docs.rs/cargo-audit/
+
+[advisories]
+# Advisories to ignore (with justification and review date)
+ignore = [
+    # rsa timing sidechannel (Marvin Attack) — transitive via sqlx-mysql.
+    # We only use sqlx with PostgreSQL; sqlx-mysql is an unused compile-time
+    # feature dependency. No fix available upstream.
+    # Review date: 2026-06-01
+    "RUSTSEC-2023-0071",
+
+    # wasmtime/cranelift batch advisories (RUSTSEC-2026-0085 through -0096).
+    # Published 2026-04 for wasmtime ≤43. Our plugin sandbox mitigates:
+    # - Epoch-based interruption (10s request / 150s background)
+    # - Minimal WASI stubs (no fd_renumber, no wasi:http)
+    # - wasm_threads(false) — no shared memory
+    # - MAX_MEMORY 64MB per instance
+    # Upgrade to wasmtime 44+ when available.
+    # Review date: 2026-07-01
+    "RUSTSEC-2026-0085",
+    "RUSTSEC-2026-0086",
+    "RUSTSEC-2026-0087",
+    "RUSTSEC-2026-0088",
+    "RUSTSEC-2026-0089",
+    "RUSTSEC-2026-0090",
+    "RUSTSEC-2026-0091",
+    "RUSTSEC-2026-0092",
+    "RUSTSEC-2026-0093",
+    "RUSTSEC-2026-0094",
+    "RUSTSEC-2026-0095",
+    "RUSTSEC-2026-0096",
+
+    # wasmtime 43 table-allocation panic / DoS (RUSTSEC-2026-0114).
+    # Same wasmtime ≤43 line as the batch above; the wasmtime 43→44 major
+    # bump is tracked in Epic 6 (FR-5). Near-term the same sandbox
+    # mitigations apply: epoch-based interruption bounds any single guest
+    # invocation, pooling allocator caps total tables/memories at
+    # max_instances, and max_memory_size is 64 MB per instance — a guest
+    # cannot allocate a table exceeding the host address space within
+    # those limits before the epoch deadline fires.
+    # Review date: 2026-07-01 (clears with the Epic 6 wasmtime 44 bump)
+    "RUSTSEC-2026-0114",
+
+    # NOTE: RUSTSEC-2026-0149 (wasmtime-wasi 43 path_open(TRUNCATE) bypasses
+    # FilePerms::WRITE) is no longer suppressed. The advisory was always
+    # unreachable — the Trovato plugin sandbox hand-writes its five
+    # wasi_snapshot_preview1 stubs and never constructs a WasiCtx or preopens a
+    # directory — and the wasmtime-wasi crate that carried it was a vestigial
+    # dependency referenced in zero source files. It has been removed from the
+    # kernel and the phase0 benchmark; no wasmtime-wasi remains in Cargo.lock.
+
+    # NOTE: RUSTSEC-2026-0098/-0099/-0104 (rustls-webpki cert-validation bugs)
+    # are no longer suppressed. Both carriers are now gone: the reachable lettre
+    # chain was fixed by bumping rustls-webpki to 0.103.13, and the only other
+    # hit (rustls-webpki 0.101.7, pinned transitively by the AWS SDK's legacy
+    # rustls 0.21 path) was eliminated by dropping the unused s3 feature + AWS
+    # SDK for 1.0. No webpki 0.101 / rustls 0.21 remains in Cargo.lock.
+
+    # lettre 0.11 TLS hostname verification disabled with the Boring backend
+    # (RUSTSEC-2026-0141).
+    # NOT APPLICABLE. Trovato builds lettre with default-features = false and
+    # features = ["tokio1-rustls-tls", ...] (Cargo.toml:113) — the rustls
+    # backend, not Boring. The vulnerable Boring TLS path is never compiled.
+    # Review date: 2026-07-01
+    "RUSTSEC-2026-0141",
+
+    # PENDING JEREMY REVIEW — quick-xml 0.38.4 DoS pair (RUSTSEC-2026-0194
+    # quadratic duplicate-attribute check, RUSTSEC-2026-0195 unbounded
+    # namespace-declaration allocation). Both fix in quick-xml >=0.41.0.
+    # Reachable only via plist 1.8.0 -> syntect 5.3.0 -> trovato-kernel, which
+    # parses bundled Sublime .tmTheme/.plist syntax assets at startup, not
+    # attacker-controlled XML. plist 1.8.0 pins quick-xml "^0.38", so 0.41 is a
+    # semver-incompatible transitive bump that needs a new plist (and likely
+    # syntect) upstream release — out of scope for an idle-rot hygiene pass.
+    # Review date: 2026-07-09
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+
+    # PENDING JEREMY REVIEW — rmcp 0.16.0 DNS rebinding in the Streamable HTTP
+    # server transport (RUSTSEC-2026-0189, CVSS 8.8). Fix in rmcp >=1.4.0,
+    # a 0.x -> 1.x major bump with breaking API changes to trovato-mcp.
+    # trovato-mcp pins rmcp "^0.16", so the upgrade is a deliberate code change
+    # (contract-affecting) that exceeds a hygiene session's scope.
+    # Review date: 2026-07-09
+    "RUSTSEC-2026-0189",
+]

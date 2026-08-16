@@ -1,0 +1,31 @@
+[package]
+name = "phase0-guest"
+# Deliberately NOT the project version. This is a benchmark fixture, kept out of
+# the root workspace (see below) so it cannot inherit `version.workspace`, and it
+# is never released. Every crate that ships carries the single project version.
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Minimal test plugin for Phase 0 WASM benchmarks"
+
+# Standalone package: kept out of the root workspace so it can define its own
+# release profile (panic=abort, LTO) and build for wasm32-wasip1 independently.
+# Build: cargo build --release --target wasm32-wasip1 \
+#          --manifest-path benchmarks/phase0/guest/Cargo.toml
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+test = false
+
+[dependencies]
+# Minimal allocator for no_std WASM
+wee_alloc = "0.4"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

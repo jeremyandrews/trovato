@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+    .admin-layout {
+        display: flex;
+        min-height: 100vh;
+    }
+
+    .admin-sidebar {
+        width: 250px;
+        background: var(--gray-900);
+        color: white;
+        padding: 1.5rem 0;
+        flex-shrink: 0;
+    }
+
+    .admin-sidebar h1 {
+        font-size: 1.125rem;
+        /* 1.5rem of side padding against a 170px lockup in a 250px rail leaves
+           clearspace wider than the t's crossbar on every side, which is the
+           brand minimum. Narrowing the rail means narrowing the lockup too. */
+        padding: 0 1.5rem;
+        margin: 0 0 1.5rem 0;
+    }
+
+    .admin-sidebar h1 a {
+        color: white;
+    }
+
+    .admin-brand a {
+        display: block;
+    }
+
+    .admin-brand img {
+        display: block;
+        width: 170px;
+        height: auto;
+    }
+
+    .admin-nav {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    .admin-nav li {
+        margin: 0;
+    }
+
+    .admin-nav a {
+        display: block;
+        padding: 0.625rem 1.5rem;
+        color: var(--gray-300);
+        transition: background-color 0.15s, color 0.15s;
+    }
+
+    .admin-nav a:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        text-decoration: none;
+    }
+
+    .admin-nav a.active {
+        background: var(--primary);
+        color: white;
+    }
+
+    .admin-nav-section {
+        padding: 0.5rem 1.5rem;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+        margin-top: 1rem;
+    }
+
+    .admin-content {
+        flex: 1;
+        padding: 2rem;
+        background: var(--gray-100);
+    }
+
+    .admin-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+    }
+
+    .admin-header h2 {
+        margin: 0;
+        font-size: 1.5rem;
+        color: var(--gray-900);
+    }
+
+    .admin-card {
+        background: white;
+        border-radius: 0.5rem;
+        padding: 1.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .admin-card + .admin-card {
+        margin-top: 1rem;
+    }
+
+    .link-button {
+        background: none;
+        border: none;
+        color: var(--primary);
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+    }
+    .link-button:hover {
+        text-decoration: underline;
+    }
+    .link-button--danger {
+        color: #dc3545;
+    }
+
+    .admin-tabs {
+        margin-bottom: 1.5rem;
+    }
+
+    .admin-tabs__list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        border-bottom: 2px solid var(--gray-300);
+    }
+
+    .admin-tabs__item {
+        margin: 0;
+    }
+
+    .admin-tabs__link {
+        display: block;
+        padding: 0.625rem 1.25rem;
+        color: var(--gray-600);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: color 0.15s, border-color 0.15s;
+    }
+
+    .admin-tabs__link:hover {
+        color: var(--gray-900);
+        text-decoration: none;
+    }
+
+    .admin-tabs__link--active {
+        color: var(--primary);
+        border-bottom-color: var(--primary);
+        font-weight: 600;
+    }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="admin-layout">
+    <aside class="admin-sidebar">
+        {# The on-dark lockup: the sidebar is --gray-900, so the white wordmark
+           with the clay-light dot. Width is set here and the height follows the
+           viewBox; do not set both independently or the locked gap between mark
+           and wordmark distorts. See assets/brand/BRAND.md. #}
+        <h1 class="admin-brand">
+            <a href="/admin">
+                <img src="/static/brand/trovato-lockup-horizontal-white.svg"
+                     alt="Trovato" width="170" height="46">
+                <span class="visually-hidden">Admin</span>
+            </a>
+        </h1>
+        <nav aria-label="Admin navigation">
+            <ul class="admin-nav">
+                <li><a href="/admin" {% if path == "/admin" %}class="active"{% endif %}>Dashboard</a></li>
+
+                <div class="admin-nav-section">Content</div>
+                <li><a href="/admin/content" {% if path is starting_with("/admin/content") and not path is starting_with("/admin/content/files") and not path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Content</a></li>
+                <li><a href="/admin/content/add">Add content</a></li>
+                {% if "comments" in enabled_plugins %}<li><a href="/admin/content/comments" {% if path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Comments</a></li>{% endif %}
+                <li><a href="/admin/content/files" {% if path is starting_with("/admin/content/files") %}class="active"{% endif %}>Files</a></li>
+                <li><a href="/admin/media" {% if path is starting_with("/admin/media") %}class="active"{% endif %}>Media</a></li>
+
+                <div class="admin-nav-section">Structure</div>
+                <li><a href="/admin/structure/types" {% if path is starting_with("/admin/structure/types") %}class="active"{% endif %}>Content types</a></li>
+                {% if "categories" in enabled_plugins %}<li><a href="/admin/structure/categories" {% if path is starting_with("/admin/structure/categories") or path is starting_with("/admin/structure/tags") %}class="active"{% endif %}>Categories</a></li>{% endif %}
+                <li><a href="/admin/structure/aliases" {% if path is starting_with("/admin/structure/aliases") %}class="active"{% endif %}>URL aliases</a></li>
+                <li><a href="/admin/gather" {% if path is starting_with("/admin/gather") %}class="active"{% endif %}>Gather queries</a></li>
+                <li><a href="/admin/structure/tiles" {% if path is starting_with("/admin/structure/tiles") %}class="active"{% endif %}>Tiles</a></li>
+
+                <div class="admin-nav-section">People</div>
+                <li><a href="/admin/people" {% if path == "/admin/people" or path is starting_with("/admin/people/add") or (path is starting_with("/admin/people/") and not path is starting_with("/admin/people/roles") and not path is starting_with("/admin/people/permissions")) %}class="active"{% endif %}>Users</a></li>
+                <li><a href="/admin/people/roles" {% if path is starting_with("/admin/people/roles") %}class="active"{% endif %}>Roles</a></li>
+                <li><a href="/admin/people/permissions" {% if path is starting_with("/admin/people/permissions") %}class="active"{% endif %}>Permissions</a></li>
+
+                <div class="admin-nav-section">System</div>
+                <li><a href="/admin/config/site" {% if path is starting_with("/admin/config/site") %}class="active"{% endif %}>Site settings</a></li>
+                <li><a href="/admin/plugins" {% if path is starting_with("/admin/plugins") %}class="active"{% endif %}>Plugins</a></li>
+                <li><a href="/admin/system/ai-providers" {% if path is starting_with("/admin/system/ai-providers") %}class="active"{% endif %}>AI Providers</a></li>
+                <li><a href="/admin/system/ai-budgets" {% if path is starting_with("/admin/system/ai-budgets") %}class="active"{% endif %}>AI Budgets</a></li>
+                <li><a href="/admin/system/ai-chat" {% if path is starting_with("/admin/system/ai-chat") %}class="active"{% endif %}>AI Chat</a></li>
+            </ul>
+        </nav>
+    </aside>
+
+    <main class="admin-content">
+        {% block messages %}
+        {% if messages %}
+        <div class="messages">
+            {% for message in messages %}
+            <div class="message message--{{ message.type | default(value='info') }}" role="status">
+                {{ message.text }}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endblock %}
+
+        {% block content %}
+        {{ content | safe }} {# SAFE: kernel render pipeline output — admin page content already rendered and sanitized #}
+        {% endblock %}
+    </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="/static/js/file-upload.js"></script>
+<script src="/static/js/admin-helpers.js"></script>
+{% endblock %}

@@ -1,0 +1,24 @@
+[package]
+name = "trovato-phase0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Phase 0 spike: WASM architecture validation benchmarks"
+
+[[bin]]
+name = "phase0"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+wasmtime = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

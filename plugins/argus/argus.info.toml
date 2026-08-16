@@ -1,0 +1,186 @@
+name = "argus"
+description = "News intelligence: RSS/Atom ingest, relevance scoring, and story clustering"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+# tap_item_info declares argus_story as a kernel Item (semantic search), plus
+# argus_feed and argus_topic, whose configuration an admin edits through the
+# kernel's content forms (M3-DESIGN.md Decision 1).
+# tap_cron enqueues due feeds; tap_queue_worker runs every pipeline stage
+# (self-routed by the payload's stage discriminator); tap_queue_info declares
+# the stage queues and their concurrency.
+# M3 reader/admin surface:
+#   tap_item_view    — renders the story page fragment and records read state.
+#   tap_item_presave — coerces an admin's feed/topic edit (it cannot refuse one).
+#   tap_item_delete  — retires a feed's state row with its configuration Item.
+# M4 adds no tap: a notification channel is another configuration Item handled by
+# the same presave/delete taps, and dispatch is another stage on the one
+# tap_queue_worker. tap_cron gained the operator alert pass beside maintenance.
+implements = [
+    "tap_item_info",
+    "tap_item_view",
+    "tap_item_presave",
+    "tap_item_delete",
+    "tap_perm",
+    "tap_menu",
+    # K1: the reader-state write API (G-NO-PLUGIN-HTTP).
+    "tap_api",
+    "tap_cron",
+    "tap_queue_info",
+    "tap_queue_worker",
+]
+weight = 0
+
+# Migrations are forward-only (no rollback). Creating a table here is what puts
+# it in the plugin's db allowlist.
+[migrations]
+files = [
+    "migrations/001_argus_schema.sql",
+    "migrations/002_argus_gather.sql",
+    "migrations/003_argus_intelligence.sql",
+    "migrations/004_argus_reader.sql",
+    "migrations/005_argus_notify.sql",
+]
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared).
+#   db       — execute_raw / query_raw against the argus_* tables (raw_sql).
+#   http     — streaming feed fetch (http-open/read/close).
+#   ai-api   — the ai-request host fn for the decide/analyze/summarize stages.
+#   item-api — save-item for the argus_story Item (M2 cluster/summarize). The
+#              SDK ships no binding for this interface; argus declares the
+#              externs itself in host_ports.rs (see M2-FRICTION G-SDK-NO-ITEM).
+#   queue    — enqueue for stage handoff on queue v2.
+#   user-api — current-user-id, so tap_item_view can key read state to the
+#              reader looking at the story (M3).
+#   logging   — structured logging from the taps.
+#   variables — read the stage model routing and M2 tuning from site config.
+# ai_background authorizes ai-request from the background (cron/queue) principal
+# without granting the human `use ai` permission (P11c / D-41).
+# http_max_transfer raises the streaming ceiling to 16 MB (clamped kernel-side).
+[capabilities]
+host_interfaces = [
+    "db",
+    "http",
+    "ai-api",
+    "item-api",
+    "queue",
+    "user-api",
+    "logging",
+    "variables",
+]
+raw_sql = true
+ai_background = true
+http_max_transfer = 16777216
+
+# Lightweight record types (P11g / D-53). Articles are the high-volume pipeline
+# entity: gather + read-only admin + reverse reference at plain-table cost.
+# Feeds and topics are declared too so their operational rows are visible in the
+# read-only record admin; the pipeline still writes them through the db host.
+[[record_types]]
+name = "argus_article"
+table = "argus_articles"
+title_column = "title"
+
+[record_types.fields]
+url = "url"
+content = "content"
+published_at = "published_at"
+feed_id = "feed_id"
+topic_id = "topic_id"
+story_id = "story_id"
+relevance_score = "relevance_score"
+relevance_reason = "relevance_reason"
+summary = "summary"
+analysis = "analysis"
+critical_analysis = "critical_analysis"
+fallacy_analysis = "fallacy_analysis"
+source_analysis = "source_analysis"
+is_duplicate = "is_duplicate"
+duplicate_of = "duplicate_of"
+pipeline_state = "pipeline_state"
+pipeline_error = "pipeline_error"
+content_hash = "content_hash"
+
+[[record_types]]
+name = "argus_feed"
+table = "argus_feeds"
+title_column = "name"
+
+[record_types.fields]
+url = "url"
+topic_id = "topic_id"
+fetch_interval_seconds = "fetch_interval_seconds"
+etag = "etag"
+last_modified = "last_modified"
+last_fetched_at = "last_fetched_at"
+failure_count = "failure_count"
+last_error = "last_error"
+enabled = "enabled"
+
+[[record_types]]
+name = "argus_topic"
+table = "argus_topics"
+title_column = "name"
+
+[record_types.fields]
+relevance_prompt = "relevance_prompt"
+relevance_threshold = "relevance_threshold"
+enabled = "enabled"
+
+# M2: extracted entities, declared so an operator can inspect what the analyze
+# stage is naming without a SQL client. Written through the db host like the
+# rest; the record admin is read-only.
+[[record_types]]
+name = "argus_entity"
+table = "argus_entities"
+title_column = "canonical_name"
+
+[record_types.fields]
+match_key = "match_key"
+entity_type = "entity_type"
+aliases = "aliases"
+article_count = "article_count"
+first_seen_at = "first_seen_at"
+last_seen_at = "last_seen_at"
+
+# M4: the notification outbox and its per-channel deliveries. Declared read-only
+# so an operator can answer "was anyone told, and what did they get" without a
+# SQL client. The *configuration* of a channel is not here — it is the
+# argus_notify_channel Item, because the record admin cannot write
+# (M4-DESIGN.md Decision 1).
+[[record_types]]
+name = "argus_notify_event"
+table = "argus_notify_events"
+title_column = "title"
+
+[record_types.fields]
+event_type = "event_type"
+priority = "priority"
+subject_id = "subject_id"
+state = "state"
+reason = "reason"
+body = "body"
+link = "link"
+data = "data"
+scheduled_at = "scheduled_at"
+sent_at = "sent_at"
+created = "created"
+
+[[record_types]]
+name = "argus_notify_delivery"
+table = "argus_notify_deliveries"
+title_column = "channel_name"
+
+[record_types.fields]
+event_id = "event_id"
+channel_id = "channel_id"
+state = "state"
+attempts = "attempts"
+http_status = "http_status"
+last_error = "last_error"
+request_url = "request_url"
+request_body = "request_body"
+changed = "changed"

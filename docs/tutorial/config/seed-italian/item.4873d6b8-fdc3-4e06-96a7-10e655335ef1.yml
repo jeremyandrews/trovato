@@ -1,0 +1,28 @@
+# IA per l'Italia — in_progress (Italian complete, English partial)
+id: '4873d6b8-fdc3-4e06-96a7-10e655335ef1'
+type: conference
+title: "IA per l'Italia 2026"
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>IA per l'Italia è la conferenza nazionale sull'intelligenza artificiale applicata. Due giorni dedicati a machine learning, NLP, computer vision e AI etica, con un focus sulle startup e la ricerca italiana.</p>"
+      format: filtered_html
+    en:
+      value: "<p>AI for Italy is the national applied artificial intelligence conference.</p>"
+      format: filtered_html
+  field_start_date: '2026-10-22'
+  field_end_date: '2026-10-23'
+  field_city: Bologna
+  field_country: IT
+  field_online: false
+  field_url: https://iaperitalia.it
+  field_language: it
+  field_topics:
+    - d8308e31-4664-4eea-871b-26ad8fdf8766
+    - 677d0ddd-ae02-4dfb-b914-cad6b53dd54b
+  primary_language: it
+  translation_status: in_progress

@@ -1,0 +1,36 @@
+{% extends "gather/query.html" %}
+
+{% block query_content %}
+<div class="speaker-list">
+    {% for row in rows %}
+    <article class="card card--speaker">
+        {% if row.fields.field_photo %}
+        <div class="speaker-card__photo">
+            <img src="/files/{{ row.fields.field_photo }}" alt="{{ row.title }}" loading="lazy">
+        </div>
+        {% else %}
+        <div class="speaker-card__photo speaker-card__photo--placeholder">
+            <span>{{ row.title | truncate(length=1, end="") }}</span>
+        </div>
+        {% endif %}
+        <div class="speaker-card__info">
+            <h3 class="speaker-card__name">
+                <a href="/item/{{ row.id }}">{{ row.title }}</a>
+            </h3>
+            {% if row.fields.field_company %}
+            <span class="speaker-card__company">{{ row.fields.field_company }}</span>
+            {% endif %}
+            {% if row.fields.field_bio %}
+            <p class="speaker-card__bio">{{ row.fields.field_bio | truncate(length=120) }}</p>
+            {% endif %}
+        </div>
+    </article>
+    {% endfor %}
+</div>
+
+{% if not rows %}
+<p class="gather-empty">No speakers found.</p>
+{% endif %}
+
+{# Speaker card styles live in static/css/theme.css #}
+{% endblock %}

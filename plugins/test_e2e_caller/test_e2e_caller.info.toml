@@ -1,0 +1,16 @@
+name = "test_e2e_caller"
+description = "Epic 2 e2e fixture: plugin-to-plugin invocation caller/driver"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_cron"]
+weight = 0
+
+# Declares the plugin-api host interface so the per-plugin linker (WASM-1) grants
+# this plugin the invoke / plugin-exists imports (the FR-4a caller gate). Also
+# declares logging because the #[plugin_tap] macro references the logging import.
+[capabilities]
+host_interfaces = ["logging", "plugin-api"]

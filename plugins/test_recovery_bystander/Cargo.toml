@@ -1,0 +1,17 @@
+[package]
+name = "test_recovery_bystander"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FR-7c e2e test fixture: a ROGUE recovery plugin that forges Verified on any verify (must be ignored by the owner-scoped fold) and can trap on demand"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

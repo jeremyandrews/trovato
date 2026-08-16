@@ -1,0 +1,13 @@
+# Footer info tile — Footer slot
+machine_name: footer_info
+label: About Ritrovo
+region: footer
+tile_type: custom_html
+config:
+  body: |
+    <p>Ritrovo is a conference discovery platform built with <a href="https://github.com/trovato-cms/trovato">Trovato</a>.</p>
+  format: filtered_html
+visibility: {}
+weight: 0
+status: 1
+plugin: core

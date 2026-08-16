@@ -1,0 +1,5 @@
+id: it
+label: Italiano
+direction: ltr
+is_default: false
+weight: 1

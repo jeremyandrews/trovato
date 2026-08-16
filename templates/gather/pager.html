@@ -1,0 +1,28 @@
+<nav class="pager" aria-label="Pagination">
+    <ul class="pager__items">
+        {% if pager.current_page > 1 %}
+        <li class="pager__item pager__item--previous">
+            <a href="{{ pager.page_url_prefix }}page={{ pager.current_page - 1 }}">Previous</a>
+        </li>
+        {% endif %}
+
+        {% for page in pager.pages %}
+        <li class="pager__item{% if page == pager.current_page %} pager__item--active{% endif %}">
+            {% if page == pager.current_page %}
+            <span>{{ page }}</span>
+            {% elif page == "..." %}
+            <span class="pager__ellipsis">...</span>
+            {% else %}
+            <a href="{{ pager.page_url_prefix }}page={{ page }}">{{ page }}</a>
+            {% endif %}
+        </li>
+        {% endfor %}
+
+        {% if pager.current_page < pager.total_pages %}
+        <li class="pager__item pager__item--next">
+            <a href="{{ pager.page_url_prefix }}page={{ pager.current_page + 1 }}">Next</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{# Pager styles live in static/css/theme.css #}

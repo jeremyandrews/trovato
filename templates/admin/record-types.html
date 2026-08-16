@@ -1,0 +1,36 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Lightweight Records") }}
+
+<div class="admin-card">
+    <p>Read-only view of plugin-declared lightweight-record types. Plugins own writes to these tables; the kernel serves gather, listing, field access, and reference resolution over them.</p>
+    {% if record_types %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Plugin</th>
+                <th>Table</th>
+                <th>Published gate</th>
+                <th>Mapped fields</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for rt in record_types %}
+            <tr>
+                <td><a href="/admin/structure/records/{{ rt.name }}">{{ rt.name }}</a></td>
+                <td><code>{{ rt.plugin }}</code></td>
+                <td><code>{{ rt.table }}</code></td>
+                <td>{% if rt.published %}yes{% else %}always published{% endif %}</td>
+                <td>{{ rt.field_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    {{ list::empty(message="No lightweight-record types are declared by any enabled plugin.") }}
+    {% endif %}
+</div>
+{% endblock %}

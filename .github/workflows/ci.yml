@@ -1,0 +1,683 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      # Documentation-only commits cannot change build or test outcomes, and a
+      # full CI run costs roughly 58 job-minutes plus a Docker image build.
+      #
+      # This is safe only while `main` has no required status checks. If branch
+      # protection with required checks is ever enabled, revisit it: a skipped
+      # required check stays pending forever and blocks the merge.
+      - '**/*.md'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      # Documentation-only commits cannot change build or test outcomes, and a
+      # full CI run costs roughly 58 job-minutes plus a Docker image build.
+      #
+      # This is safe only while `main` has no required status checks. If branch
+      # protection with required checks is ever enabled, revisit it: a skipped
+      # required check stays pending forever and blocks the merge.
+      - '**/*.md'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The pinned toolchain version, kept in lock-step with rust-toolchain.toml's
+  # `channel` (see the bump-protocol comment there). dtolnay/rust-toolchain
+  # requires an explicit toolchain and does NOT read rust-toolchain.toml, so CI
+  # pins the version here; centralizing it in one env var keeps every job in sync.
+  RUST_TOOLCHAIN: "1.96.0"
+  # Incremental artifacts are pure bloat in CI (no edit-rebuild loop) and add to
+  # the target/ size that exhausts the runner disk during linking — see the Test
+  # and Coverage jobs' free-disk-space steps. Turn them off everywhere.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      # DO NOT add `shared-key` here to "deduplicate" the clippy/doc caches.
+      # It was tried on 2026-07-27 and reverted, measured both ways:
+      #
+      #   - The premise was false. Swatinem/rust-cache keys on the job ID, so the
+      #     matrix Test shards ALREADY share one cache (run 30281455368: all
+      #     three restored the same key, "full match: true"). There was no
+      #     fragmentation to fix, and no cold starts anywhere — all seven cached
+      #     jobs reported full matches.
+      #   - It cost minutes. A new key guarantees a miss: Clippy 2.2 -> 6.0 and
+      #     Doc 1.2 -> 5.2 job-minutes on run 30284784322.
+      #   - It did not even achieve its own storage goal. The shared cache is a
+      #     THIRD entry alongside the clippy and doc caches it replaces, so usage
+      #     went 9.72 -> 10.18 GB and crossed the 10 GB limit.
+      #
+      # If cache storage needs reducing, the target is Docker: buildkit blobs
+      # were 3.74 GB of that total, which is what the paths-ignore filters at the
+      # top of this file address.
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # THE LOCAL GATE IS STRICTLY STRONGER THAN THIS JOB. Read this before trusting
+  # a green CI run as equivalent to a green local run.
+  #
+  # `./scripts/pre-commit-check.sh --full` followed by `cargo test --all` runs
+  # every test target against ONE database, so cross-file interference is
+  # observable. This job splits the targets across three runners with three
+  # separate databases, so two files that interact through shared state can land
+  # in different shards and never meet. CI green therefore does NOT imply
+  # `cargo test --all` green.
+  #
+  # That asymmetry is accepted deliberately rather than closed, because the two
+  # ways to close it are both worse:
+  #
+  #   - Un-sharding puts us back on one runner linking 43 test binaries at
+  #     ~180 MB each, which is the disk exhaustion that caused this in the first
+  #     place (see the reclaim step below).
+  #   - A fresh database per test target would make cross-file contamination
+  #     structurally IMPOSSIBLE to observe, which is worse than observing it in
+  #     only one shard: it would convert a detectable bug class into an
+  #     undetectable one, while costing 43 migration runs per shard.
+  #
+  # So the gap is mitigated instead: the shared seeders are made concurrency-safe
+  # at the root (advisory lock, tests/common/mod.rs), and each shard runs a
+  # contamination guard after its targets. Anyone changing shared test fixtures
+  # should run `cargo test --all` locally — CI will not catch it for you.
+  #
+  # CAPACITY, when this job starts running out of disk again. Shard 1 also
+  # carries the unit and doc tests and finishes at ~13 GB free, against 19-20 GB
+  # for shards 2 and 3, so it is the one that tips first. The recorded remedy is
+  # backlog key `ci-split-unit-doc-job`: move the unit/doc step into its own job,
+  # NOT add a fourth shard (a fourth shard re-pays the whole dependency build for
+  # no additional linking relief). A GitHub-hosted larger runner is not an
+  # option — it needs an organization-owned repo, and `ci-larger-runner` is
+  # closed as REJECTED, not deferred.
+  test:
+    name: Test (shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      # One shard's failure should not hide another's.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trovato
+          POSTGRES_PASSWORD: trovato
+          POSTGRES_DB: trovato_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      DATABASE_URL: postgres://trovato:trovato@localhost:5432/trovato_test
+      REDIS_URL: redis://127.0.0.1:6379
+      RUST_LOG: warn
+      TOTAL_SHARDS: 3
+    steps:
+      - uses: actions/checkout@v5
+
+      # Reclaim the ~25-30 GB of preinstalled toolchains we never use.
+      #
+      # This step alone used to be the whole fix for the intermittent
+      # "No space left on device" + "ld terminated with signal 7 [Bus error]"
+      # failures — the SIGBUS during ld is the linker mmap-ing temp/output files
+      # on a volume that ran out of space mid-link, so the Bus error and the
+      # disk-full error are the SAME event. It is no longer sufficient on its
+      # own, which is why the job is now sharded (see "Run tests" below):
+      # ubuntu-latest gives ~14 GB free and this gets us to ~33 GB, but a full
+      # `cargo test --all` links 50+ integration test binaries at ~180 MB each
+      # (~9.5 GB) on top of the dependency build, sqlx-cli, and the WASM
+      # plugins. Measured 2026-07-27 after Epic 4 pushed it over the edge.
+      # Cutting debuginfo was tried and rejected: `line-tables-only` shrinks a
+      # test binary only 182 MB -> 172 MB, ~5%, nowhere near enough.
+      - name: Free up runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/local/share/powershell || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+
+      # NOT switched to taiki-e/install-action: it has no sqlx-cli manifest
+      # (verified 2026-07-27 — manifests/sqlx-cli.json 404s), so this stays a
+      # from-source build. The --no-default-features/--features flags matter
+      # here precisely because it IS built from source: they keep the dependency
+      # tree small.
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features rustls,postgres
+
+      - name: Run migrations
+        run: sqlx migrate run --source crates/kernel/migrations
+
+      - name: Build WASM plugins
+        run: |
+          cargo build -p trovato_blog -p trovato_search \
+            -p test_e2e_caller -p test_e2e_callee -p test_e2e_bystander -p test_e2e_nocaps \
+            -p test_ai_background \
+            -p trovato_field_access_ref \
+            -p trovato_recovery_ref -p test_recovery_bystander \
+            -p test_queue_worker \
+            -p trovato_record_ref \
+            -p argus -p netgrasp -p trovato_series -p test_plugin_api \
+            --target wasm32-wasip1 --release
+          mkdir -p plugins/trovato_blog plugins/trovato_search \
+            plugins/test_e2e_caller plugins/test_e2e_callee \
+            plugins/test_e2e_bystander plugins/test_e2e_nocaps \
+            plugins/test_ai_background \
+            plugins/trovato_field_access_ref \
+            plugins/trovato_recovery_ref plugins/test_recovery_bystander \
+            plugins/test_queue_worker plugins/trovato_record_ref plugins/argus plugins/netgrasp plugins/trovato_series plugins/test_plugin_api
+          cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
+          cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
+          cp target/wasm32-wasip1/release/test_e2e_caller.wasm plugins/test_e2e_caller/
+          cp target/wasm32-wasip1/release/test_e2e_callee.wasm plugins/test_e2e_callee/
+          cp target/wasm32-wasip1/release/test_e2e_bystander.wasm plugins/test_e2e_bystander/
+          cp target/wasm32-wasip1/release/test_e2e_nocaps.wasm plugins/test_e2e_nocaps/
+          cp target/wasm32-wasip1/release/test_ai_background.wasm plugins/test_ai_background/
+          cp target/wasm32-wasip1/release/trovato_field_access_ref.wasm plugins/trovato_field_access_ref/
+          cp target/wasm32-wasip1/release/trovato_recovery_ref.wasm plugins/trovato_recovery_ref/
+          cp target/wasm32-wasip1/release/test_recovery_bystander.wasm plugins/test_recovery_bystander/
+          cp target/wasm32-wasip1/release/test_queue_worker.wasm plugins/test_queue_worker/
+          cp target/wasm32-wasip1/release/trovato_record_ref.wasm plugins/trovato_record_ref/
+          cp target/wasm32-wasip1/release/argus.wasm plugins/argus/
+          cp target/wasm32-wasip1/release/netgrasp.wasm plugins/netgrasp/
+          cp target/wasm32-wasip1/release/trovato_series.wasm plugins/trovato_series/
+          cp target/wasm32-wasip1/release/test_plugin_api.wasm plugins/test_plugin_api/
+
+      # Unit + doc tests are cheap relative to the integration binaries, so one
+      # shard carries them for the whole workspace rather than all three
+      # repeating the work.
+      #
+      # `--bins` is NOT redundant with `--lib`, and leaving it off silently drops
+      # tests: `trovato-phase0` has no library target at all, so its 13 unit
+      # tests exist only in its bin target. (For `trovato-kernel` the two do
+      # overlap — main.rs declares the same module set as lib.rs and defines no
+      # tests of its own, so its unit tests run twice. That duplication costs a
+      # few seconds and one binary link, which is a price worth paying to avoid
+      # hard-coding which packages need `--bins` — the same fail-open trap the
+      # dynamic target enumeration below exists to avoid.)
+      - name: Run unit and doc tests
+        if: matrix.shard == 1
+        run: |
+          cargo test --all --lib --bins -- --test-threads=1
+          cargo test --all --doc
+
+      # Integration tests, split across shards so no single runner has to link
+      # all 50+ test binaries onto one 33 GB volume.
+      #
+      # The target list is enumerated from `cargo metadata` rather than
+      # hard-coded, and partitioned by index modulo TOTAL_SHARDS over a sorted
+      # list. That matters: with a hard-coded list, adding a test file and
+      # forgetting to register it would leave it silently unrun and CI green,
+      # which is a worse failure than a red build. Here every discovered target
+      # lands in exactly one shard by construction.
+      #
+      # The enumeration itself is the one thing that could fail open, so it is
+      # checked: an empty workspace list, or an empty shard, fails the job.
+      - name: Run integration tests (shard ${{ matrix.shard }}/3)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+
+          # Deliberately free of bash-4isms (no mapfile, no associative arrays)
+          # so this same script can be run and verified on a developer machine,
+          # including macOS's bash 3.2. A CI script nobody can execute locally
+          # is a script that only gets debugged by pushing.
+          ALL=$(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | .name as $p
+                       | .targets[] | select(.kind[] == "test")
+                       | "\($p) \(.name)"' \
+              | sort
+          )
+
+          TOTAL=$(printf '%s\n' "$ALL" | grep -c . || true)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::enumerated zero integration test targets — refusing to pass vacuously"
+            exit 1
+          fi
+          echo "Discovered $TOTAL integration test targets across the workspace."
+
+          MINE=$(printf '%s\n' "$ALL" \
+            | awk -v s="$SHARD" -v n="$TOTAL_SHARDS" '(NR - 1) % n == (s - 1)')
+
+          COUNT=$(printf '%s\n' "$MINE" | grep -c . || true)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::shard $SHARD selected no targets out of $TOTAL"
+            exit 1
+          fi
+          echo "shard $SHARD runs $COUNT of $TOTAL target(s):"
+          printf '%s\n' "$MINE" | sed 's/^/  /'
+
+          # One cargo invocation per package, with all of that package's
+          # selected test targets.
+          for pkg in $(printf '%s\n' "$MINE" | awk '{print $1}' | sort -u); do
+            FLAGS=$(printf '%s\n' "$MINE" | awk -v p="$pkg" '$1 == p {printf " --test %s", $2}')
+            echo "::group::cargo test -p $pkg$FLAGS"
+            # Unquoted on purpose: FLAGS is a built-up list of --test arguments.
+            # shellcheck disable=SC2086
+            cargo test -p "$pkg" $FLAGS -- --test-threads=1
+            echo "::endgroup::"
+          done
+
+          df -h /
+
+      # Shared-fixture contamination guard.
+      #
+      # Sharding costs CI a real property: with the targets split across three
+      # runners and three databases, a file that corrupts shared state and a
+      # file that asserts on it can land in different shards, so the damage is
+      # invisible. That is not hypothetical — it is exactly how
+      # `tutorial_test`'s "exactly 3 hand-created conferences" assertion was
+      # passing in CI while `cargo test --all` failed locally: the
+      # contaminating file (`gather_semantic_test`, three parallel callers
+      # racing the check-then-insert in `ensure_conference_items`) was in a
+      # different shard from the file that noticed.
+      #
+      # The race itself is fixed at its root (an advisory lock in the shared
+      # seeder). This step is the standing guard against the CLASS returning:
+      # after each shard's targets have run, the shared fixture must be exactly
+      # what it claims to be. It catches duplication caused by any file in this
+      # shard, which is the most a sharded job can check.
+      #
+      # It does NOT make CI equivalent to a single-database `cargo test --all` —
+      # see the note at the top of this job. That gap is documented, not closed.
+      - name: Shared-fixture contamination guard
+        run: |
+          set -euo pipefail
+          # Do not assume the runner image ships psql: a missing binary here
+          # would fail a green build for the wrong reason.
+          command -v psql >/dev/null 2>&1 || sudo apt-get install -y -qq postgresql-client
+          DUPES=$(psql "$DATABASE_URL" -tAc "
+            SELECT COALESCE(string_agg(title || '=' || n, ', '), '')
+            FROM (
+              SELECT title, count(*) AS n
+              FROM item
+              WHERE type = 'conference'
+                AND title IN ('RustConf 2026', 'EuroRust 2026', 'WasmCon Online 2026')
+                AND (fields->>'field_source_id' IS NULL OR fields->>'field_source_id' = '')
+              GROUP BY title
+              HAVING count(*) > 1
+            ) d")
+          if [ -n "$DUPES" ]; then
+            echo "::error::shared conference fixture duplicated by a target in this shard: $DUPES"
+            echo "A test seeded the shared fixture without going through the locked seeder,"
+            echo "or the advisory lock in tests/common/mod.rs regressed."
+            exit 1
+          fi
+          echo "shared conference fixture is unique — no contamination from this shard."
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trovato
+          POSTGRES_PASSWORD: trovato
+          POSTGRES_DB: trovato_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      DATABASE_URL: postgres://trovato:trovato@localhost:5432/trovato_test
+      REDIS_URL: redis://127.0.0.1:6379
+      RUST_LOG: warn
+      # Coverage instrumentation (-C instrument-coverage) bloats every binary with
+      # full debug info; line-tables-only keeps line coverage accurate while
+      # shrinking the instrumented artifacts that drive this job's target/ size.
+      # cargo-llvm-cov appends its own flags to RUSTFLAGS, so this composes.
+      RUSTFLAGS: "-C debuginfo=line-tables-only"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same root-cause fix as the Test job — see that job's comment. Coverage is
+      # the heavier of the two (llvm-cov instrumentation balloons target/ further),
+      # so the disk-reclaim matters even more here.
+      - name: Free up runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/local/share/powershell || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: llvm-tools-preview
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # NOT switched to taiki-e/install-action: it has no sqlx-cli manifest
+      # (verified 2026-07-27 — manifests/sqlx-cli.json 404s), so this stays a
+      # from-source build. The --no-default-features/--features flags matter
+      # here precisely because it IS built from source: they keep the dependency
+      # tree small.
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features rustls,postgres
+
+      - name: Run migrations
+        run: sqlx migrate run --source crates/kernel/migrations
+
+      - name: Build WASM plugins
+        run: |
+          cargo build -p trovato_blog -p trovato_search \
+            -p test_e2e_caller -p test_e2e_callee -p test_e2e_bystander -p test_e2e_nocaps \
+            -p test_ai_background \
+            -p trovato_field_access_ref \
+            -p trovato_recovery_ref -p test_recovery_bystander \
+            -p test_queue_worker \
+            -p trovato_record_ref \
+            -p argus -p netgrasp -p trovato_series -p test_plugin_api \
+            --target wasm32-wasip1 --release
+          mkdir -p plugins/trovato_blog plugins/trovato_search \
+            plugins/test_e2e_caller plugins/test_e2e_callee \
+            plugins/test_e2e_bystander plugins/test_e2e_nocaps \
+            plugins/test_ai_background \
+            plugins/trovato_field_access_ref \
+            plugins/trovato_recovery_ref plugins/test_recovery_bystander \
+            plugins/test_queue_worker plugins/trovato_record_ref plugins/argus plugins/netgrasp plugins/trovato_series plugins/test_plugin_api
+          cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
+          cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
+          cp target/wasm32-wasip1/release/test_e2e_caller.wasm plugins/test_e2e_caller/
+          cp target/wasm32-wasip1/release/test_e2e_callee.wasm plugins/test_e2e_callee/
+          cp target/wasm32-wasip1/release/test_e2e_bystander.wasm plugins/test_e2e_bystander/
+          cp target/wasm32-wasip1/release/test_e2e_nocaps.wasm plugins/test_e2e_nocaps/
+          cp target/wasm32-wasip1/release/test_ai_background.wasm plugins/test_ai_background/
+          cp target/wasm32-wasip1/release/trovato_field_access_ref.wasm plugins/trovato_field_access_ref/
+          cp target/wasm32-wasip1/release/trovato_recovery_ref.wasm plugins/trovato_recovery_ref/
+          cp target/wasm32-wasip1/release/test_recovery_bystander.wasm plugins/test_recovery_bystander/
+          cp target/wasm32-wasip1/release/test_queue_worker.wasm plugins/test_queue_worker/
+          cp target/wasm32-wasip1/release/trovato_record_ref.wasm plugins/trovato_record_ref/
+          cp target/wasm32-wasip1/release/argus.wasm plugins/argus/
+          cp target/wasm32-wasip1/release/netgrasp.wasm plugins/netgrasp/
+          cp target/wasm32-wasip1/release/trovato_series.wasm plugins/trovato_series/
+          cp target/wasm32-wasip1/release/test_plugin_api.wasm plugins/test_plugin_api/
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info -- --test-threads=1
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      # Prebuilt binary; see the sqlx-cli note in the Test job.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Run security audit
+        run: cargo audit
+
+  semver:
+    name: SDK Semver Gate
+    runs-on: ubuntu-latest
+    # PF-5 / NFR-2 — the frozen-contract breakage guard. The enforceable plugin
+    # contract is the SDK crate `trovato-sdk` (its `#[link_name]` host externs,
+    # its types, its tap-side support) plus the macros plugins compile against
+    # (`trovato-sdk-macros`). This job runs cargo-semver-checks against the crate
+    # as it stood on the merge base and FAILS on any SDK-breaking change that is
+    # not accompanied by a MAJOR version bump.
+    #
+    # Bump protocol. The SDK crates no longer carry their own version: they
+    # inherit the one project version from [workspace.package], which moves in
+    # lock-step with KERNEL_API_VERSION in crates/kernel/src/plugin/mod.rs. What
+    # cargo-semver-checks enforces therefore depends on where that version sits:
+    #   - ADDITIVE (new pub item; new field on a `#[non_exhaustive]` type):
+    #     a MINOR bump suffices. cargo-semver-checks passes.
+    #   - BREAKING (removed/renamed/re-typed pub item; new field on a type that is
+    #     NOT `#[non_exhaustive]`; new required host import): from 1.0.0 onward
+    #     this requires a MAJOR bump and a written justification, and the gate
+    #     fails without one.
+    #
+    # PRE-1.0 CAVEAT, READ THIS. While the project version is 0.x, Cargo's semver
+    # rules treat a MINOR bump as sufficient for a breaking change, so this gate
+    # will NOT stop an SDK break that bumps 0.99 to 0.100. The plugin contract is
+    # frozen regardless; in the 0.99 series that freeze is policy, enforced by
+    # review rather than by this job. Do not break the SDK. The tooling starts
+    # backing the policy again at 1.0.0.
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # rustdoc JSON (cargo-semver-checks' input) is nightly-gated; nightly is
+      # used ONLY to extract the API surface — the crates still target stable.
+      #
+      # PINNED, and it must stay pinned. rustdoc's JSON format version is
+      # unstable and bumps without notice; cargo-semver-checks only reads the
+      # formats a released version knows. A floating `nightly` therefore breaks
+      # this job the day rustc bumps the format, on a commit that changed
+      # nothing — which is exactly what happened between 2026-07-27 (last green,
+      # run 30304475649) and 2026-07-31 (run 30615091502), with
+      #   error: unsupported rustdoc format v61 (supported formats are v56, v57, v60)
+      # Measured, both directions: nightly-2026-07-27 emits format_version 60,
+      # today's nightly emits 61, and the newest released cargo-semver-checks
+      # (v0.49.0, 2026-07-18) supports 56/57/60. No tool upgrade fixes it; only
+      # the toolchain pin does.
+      #
+      # UNPIN PROTOCOL: when a cargo-semver-checks release supports the format
+      # a newer nightly emits, move this pin forward to a nightly of that era
+      # and record the new (toolchain date, format version, tool version) triple
+      # here. Verify before pushing with:
+      #   cargo +<nightly> rustdoc -p trovato-sdk -Z unstable-options \
+      #     --output-format json && jq .format_version target/doc/trovato_sdk.json
+      # `cargo-semver-checks` itself is deliberately left floating, so a release
+      # that adds the newer format arrives on its own and makes the unpin
+      # possible without a second change here.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-27
+      - uses: Swatinem/rust-cache@v2
+      # Prebuilt binary; see the sqlx-cli note in the Test job.
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: Check SDK contract stability (fails on an unbumped SDK break)
+        env:
+          # Override the repo's pinned stable (rust-toolchain.toml) for this step
+          # so cargo-semver-checks can emit rustdoc JSON. Pinned; see above.
+          RUSTUP_TOOLCHAIN: nightly-2026-07-27
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          [ -z "$BASE" ] && BASE="${{ github.event.before }}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            # No usable event baseline. Fall back to the previous commit, but the
+            # root commit has none: on the initial commit of the repository there
+            # is no earlier SDK to compare against, so there is nothing this gate
+            # can check and it passes rather than erroring on `HEAD~1`.
+            if ! BASE="$(git rev-parse --verify --quiet HEAD~1)"; then
+              echo "No baseline commit (root commit); nothing to compare. Skipping."
+              exit 0
+            fi
+          fi
+          echo "cargo-semver-checks baseline rev: $BASE"
+          cargo semver-checks check-release \
+            --baseline-rev "$BASE" \
+            --package trovato-sdk \
+            --package trovato-sdk-macros
+
+  sql-guard:
+    name: SQL Custom-Expr Guard
+    runs-on: ubuntu-latest
+    # PF-5 durable convention (the SQLI-1 class). The gather pipeline renders via
+    # `to_string(PostgresQueryBuilder)`, which INLINES any value carried by a bare
+    # `Expr::cust(...)` directly into the SQL string. Value-bearing custom SQL MUST
+    # therefore use `Expr::cust_with_values(...)` (a bound parameter). This gate
+    # ratchets the count of bare `Expr::cust(` sites: a NEW one fails until the
+    # author confirms it is value-free (a constant or validated-identifier
+    # fragment) and bumps CUST_BASELINE with a one-line justification in the PR.
+    # The count is coarse by design — it flags the site for review, it does not
+    # classify it. Keep CUST_BASELINE identical here and in pre-commit-check.sh.
+    steps:
+      - uses: actions/checkout@v5
+      - name: No new bare Expr::cust( without justification
+        run: |
+          CUST_BASELINE=16
+          COUNT=$(grep -rn --include='*.rs' 'Expr::cust(' crates/ | wc -l | tr -d ' ')
+          echo "bare Expr::cust( call sites: $COUNT (baseline $CUST_BASELINE)"
+          if [ "$COUNT" -gt "$CUST_BASELINE" ]; then
+            echo "::error::New bare Expr::cust( site(s) detected ($COUNT > $CUST_BASELINE)."
+            echo "Value-bearing custom SQL MUST use Expr::cust_with_values (bound params)."
+            echo "If the new site is provably value-free, bump CUST_BASELINE in"
+            echo ".github/workflows/ci.yml AND scripts/pre-commit-check.sh with a"
+            echo "one-line justification in the PR."
+            grep -rn --include='*.rs' 'Expr::cust(' crates/
+            exit 1
+          fi
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build kernel
+        run: cargo build -p trovato-kernel --release
+
+      - name: Build plugins
+        run: |
+          cargo build -p trovato_blog -p trovato_search \
+            -p test_e2e_caller -p test_e2e_callee -p test_e2e_bystander -p test_e2e_nocaps \
+            -p test_ai_background \
+            -p test_queue_worker \
+            -p argus -p netgrasp -p trovato_series -p test_plugin_api \
+            --target wasm32-wasip1 --release
+
+  doc:
+    name: Doc Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # No shared-key — see the note on the Clippy job for the measurements.
+      - uses: Swatinem/rust-cache@v2
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --document-private-items
+
+  terminology:
+    name: Terminology Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check for Drupal terminology in Rust sources
+        run: |
+          # Search for Drupal terms that should use Trovato equivalents
+          FOUND=0
+          for term in '\bnode\b' '\btaxonomy\b' '\bvocabulary\b' '\bhook_' '\bmodule\b' '\bviews\b'; do
+            # Skip false positives: "node" in dependency/URL contexts, "module" in Rust module keyword
+            case "$term" in
+              '\bnode\b')
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -vi 'node_modules\|nodejs\|tree node\|ast node\|xml node\|html node\|mod \|module path\|pub mod\|use ' || true)
+                ;;
+              '\bmodule\b')
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -vi 'mod \|pub mod\|use \|module path\|wasm module\|Module for\|this module\|the module\|route module\|Module::\|\.module\|host module\|engine module\|management module\|Arc<Module\|&Module\|module: \|, module\|module,\|module)\|{ .* module\|compile.*module\|instantiate.*module\|let module\|&module' || true)
+                ;;
+              '\bviews\b')
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -vi 'database views\|sql views\|materialized view' || true)
+                ;;
+              '\btaxonomy\b'|'\bvocabulary\b')
+                # Allow serde aliases for backward-compatible deserialization of existing DB data
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ \
+                  | grep -v 'serde(alias' || true)
+                ;;
+              *)
+                MATCHES=$(grep -rnE "$term" --include='*.rs' crates/ benchmarks/ || true)
+                ;;
+            esac
+            if [ -n "$MATCHES" ]; then
+              echo "::warning::Found Drupal terminology '$term' in source files:"
+              echo "$MATCHES"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 1 ]; then
+            echo "::warning::Drupal terminology found. See docs/coding-standards.md for Trovato equivalents."
+          fi

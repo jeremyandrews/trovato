@@ -1,0 +1,21 @@
+name = "test_plugin_api"
+description = "K1 e2e fixture: plugin-served HTTP requests (G-NO-PLUGIN-HTTP)"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_menu", "tap_perm", "tap_api"]
+weight = 0
+
+# `db` + `raw_sql` so the tap can write its own table — the whole point of the
+# finding this fixture exercises. `user-api` is not needed: the authenticated
+# user's id arrives in the ApiRequest payload.
+[capabilities]
+host_interfaces = ["logging", "db"]
+db_tables = ["tpa_notes"]
+raw_sql = true
+
+[migrations]
+files = ["migrations/001_tpa_schema.sql"]

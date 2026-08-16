@@ -1,0 +1,28 @@
+# phpDay Verona — translated (both EN + IT complete)
+id: '8540f069-59ac-46b2-91f3-2beb222091e7'
+type: conference
+title: phpDay Verona 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>phpDay è la conferenza italiana per la comunità PHP, organizzata da GrUSP a Verona. Due giorni di talk su Laravel, Symfony, performance e architettura backend.</p>"
+      format: filtered_html
+    en:
+      value: "<p>phpDay is the Italian conference for the PHP community, organized by GrUSP in Verona. Two days of talks on Laravel, Symfony, performance, and backend architecture.</p>"
+      format: filtered_html
+  field_start_date: '2026-05-14'
+  field_end_date: '2026-05-15'
+  field_city: Verona
+  field_country: IT
+  field_online: false
+  field_url: https://phpday.it
+  field_language: it
+  field_topics:
+    - 62af2b72-7ffc-444b-9984-a533c9548b87
+    - b1617d9e-46ac-4f1f-8401-0019175c11af
+  primary_language: it
+  translation_status: translated

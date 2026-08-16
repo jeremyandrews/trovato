@@ -1,0 +1,23 @@
+name = "trovato_page_builder"
+description = "Visual page composition with drag-and-drop editor (Puck) and server-side Tera rendering"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_menu",
+]
+weight = 0
+
+[migrations]
+files = []
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel
+# builds this plugin's WASM linker from host_interfaces — it receives exactly
+# the host interfaces named here (plus baseline WASI). Derived from the
+# compiled .wasm import section.
+[capabilities]
+host_interfaces = []

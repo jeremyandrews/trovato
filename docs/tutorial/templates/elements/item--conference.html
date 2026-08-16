@@ -1,0 +1,69 @@
+<article class="item item--conference">
+    <header class="item__header">
+        <h1 class="item__title">{{ item.title }}</h1>
+        <div class="conf-detail__meta">
+            {% if item.fields.field_start_date %}
+            <span class="conf-detail__dates">
+                {{ item.fields.field_start_date }}{% if item.fields.field_end_date %} &ndash; {{ item.fields.field_end_date }}{% endif %}
+            </span>
+            {% endif %}
+            {% if item.fields.field_city %}
+            <span class="conf-detail__location">
+                {{ item.fields.field_city }}{% if item.fields.field_country %}, {{ item.fields.field_country }}{% endif %}
+            </span>
+            {% elif item.fields.field_online is defined and item.fields.field_online == "1" %}
+            <span class="conf-detail__location">Online</span>
+            {% endif %}
+        </div>
+    </header>
+
+    {% if item.fields.field_logo %}
+    <div class="conf-detail__logo">
+        <img src="/file/{{ item.fields.field_logo }}/download" alt="{{ item.title }} logo" loading="lazy">
+    </div>
+    {% endif %}
+
+    {% if item.fields.field_description %}
+    <div class="conf-detail__description">
+        {{ item.fields.field_description | render_blocks | safe }} {# SAFE: render_blocks output is sanitized by ammonia #}
+    </div>
+    {% endif %}
+
+    {% if item.fields.field_venue_photo %}
+    <div class="conf-detail__venue">
+        <img src="/file/{{ item.fields.field_venue_photo }}/download" alt="Venue photo" loading="lazy">
+    </div>
+    {% endif %}
+
+    <div class="conf-detail__links">
+        {% if safe_urls.field_url is defined and safe_urls.field_url %}
+        <a href="{{ safe_urls.field_url }}" class="conf-detail__link" target="_blank" rel="noopener noreferrer">Website &nearr;</a>
+        {% endif %}
+        {% if safe_urls.field_cfp_url is defined and safe_urls.field_cfp_url %}
+        <a href="{{ safe_urls.field_cfp_url }}" class="conf-detail__link conf-detail__link--cfp" target="_blank" rel="noopener noreferrer">Submit a Talk &nearr;</a>
+        {% endif %}
+    </div>
+
+    {% if item.fields.field_cfp_end_date %}
+    <div class="conf-detail__cfp-deadline">
+        <strong>CFP Deadline:</strong> {{ item.fields.field_cfp_end_date }}
+    </div>
+    {% endif %}
+
+    {% if reverse_references.speaker is defined and reverse_references.speaker %}
+    <div class="conf-detail__speakers">
+        <h2>Speakers</h2>
+        <ul>
+            {% for spk in reverse_references.speaker %}
+            <li><a href="/item/{{ spk.id }}">{{ spk.title }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="item__content">
+        {{ children | safe }} {# SAFE: kernel render pipeline output — child elements already rendered and sanitized #}
+    </div>
+</article>
+
+{# Conference detail styles live in static/css/theme.css #}

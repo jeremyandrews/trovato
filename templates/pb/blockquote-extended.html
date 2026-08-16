@@ -1,0 +1,17 @@
+{% import "pb/macros.html" as a11y %}
+<figure class="pb-blockquote"{{ a11y::lang_attr(lang=lang | default(value="")) }}>
+  <blockquote class="pb-blockquote__text"{% if sourceUrl %} cite="{{ sourceUrl }}"{% endif %}>
+    {{ text | default(value='') }}
+  </blockquote>
+  {% if attribution %}
+  <figcaption class="pb-blockquote__attribution">
+    {% if imageUrl %}
+    <img src="{{ imageUrl }}" alt="Photo of {{ attribution }}" class="pb-blockquote__avatar" loading="lazy">
+    {% endif %}
+    <cite>
+      <span class="pb-blockquote__name">{{ attribution }}</span>
+      {% if role %}<span class="pb-blockquote__role">, {{ role }}</span>{% endif %}
+    </cite>
+  </figcaption>
+  {% endif %}
+</figure>

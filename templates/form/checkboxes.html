@@ -1,0 +1,28 @@
+<div class="form-item form-item--checkboxes">
+    {% if element.title %}
+    <span class="form-item__label{% if element.required %} form-item__label--required{% endif %}">
+        {{ element.title }}
+    </span>
+    {% endif %}
+
+    <div class="form-checkboxes">
+        {% for option in element.element_type.options %}
+        <div class="form-checkbox-wrapper">
+            <input
+                type="checkbox"
+                id="{{ name }}_{{ loop.index0 }}"
+                name="{{ name }}[]"
+                value="{{ option.0 }}"
+                class="form-checkbox"
+                {% if element.default_value is containing(option.0) %}checked{% endif %}
+                {% if element.disabled %}disabled{% endif %}
+            >
+            <label for="{{ name }}_{{ loop.index0 }}">{{ option.1 }}</label>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% if element.description %}
+    <p class="form-item__description">{{ element.description }}</p>
+    {% endif %}
+</div>

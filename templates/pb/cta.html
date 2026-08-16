@@ -1,0 +1,10 @@
+{% set hlevel = headingLevel | default(value=2) %}
+<aside class="pb-cta pb-cta--{{ variant | default(value='inline') }}"
+  {% if lang %} lang="{{ lang }}"{% endif %}
+  {% if backgroundColor %} style="background-color: {{ backgroundColor }}"{% endif %}>
+  {% if heading %}<h{{ hlevel }} class="pb-cta__heading">{{ heading }}</h{{ hlevel }}>{% endif %}
+  {% if body %}<p class="pb-cta__body">{{ body }}</p>{% endif %}
+  {% if buttonText and buttonUrl %}
+  <a href="{{ buttonUrl }}" class="pb-cta__button">{{ buttonText }}</a>
+  {% endif %}
+</aside>

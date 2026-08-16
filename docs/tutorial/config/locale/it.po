@@ -1,0 +1,155 @@
+# Italian translations for Ritrovo (Trovato CMS conference listing site).
+# Copyright (C) 2026 Trovato Project
+# This file is distributed under the same license as the Trovato package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: ritrovo 1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-03-15 00:00+0000\n"
+"PO-Revision-Date: 2026-03-15 00:00+0000\n"
+"Last-Translator: Tutorial <tutorial@example.com>\n"
+"Language-Team: Italian\n"
+"Language: it\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+# -- Navigation --
+
+msgid "Home"
+msgstr "Home"
+
+msgid "Conferences"
+msgstr "Conferenze"
+
+msgid "Topics"
+msgstr "Argomenti"
+
+msgid "Speakers"
+msgstr "Relatori"
+
+msgid "Search"
+msgstr "Cerca"
+
+msgid "Login"
+msgstr "Accedi"
+
+msgid "Logout"
+msgstr "Esci"
+
+msgid "Register"
+msgstr "Registrati"
+
+msgid "My Account"
+msgstr "Il mio account"
+
+# -- Content --
+
+msgid "Read more"
+msgstr "Leggi tutto"
+
+msgid "Subscribe"
+msgstr "Iscriviti"
+
+msgid "Unsubscribe"
+msgstr "Annulla iscrizione"
+
+msgid "Share"
+msgstr "Condividi"
+
+msgid "Comments"
+msgstr "Commenti"
+
+msgid "Add comment"
+msgstr "Aggiungi commento"
+
+msgid "Reply"
+msgstr "Rispondi"
+
+# -- Conference fields --
+
+msgid "Start date"
+msgstr "Data di inizio"
+
+msgid "End date"
+msgstr "Data di fine"
+
+msgid "Location"
+msgstr "Luogo"
+
+msgid "Country"
+msgstr "Paese"
+
+msgid "Online"
+msgstr "Online"
+
+msgid "CFP deadline"
+msgstr "Scadenza CFP"
+
+msgid "Website"
+msgstr "Sito web"
+
+msgid "Description"
+msgstr "Descrizione"
+
+# -- Forms & Actions --
+
+msgid "Save"
+msgstr "Salva"
+
+msgid "Cancel"
+msgstr "Annulla"
+
+msgid "Delete"
+msgstr "Elimina"
+
+msgid "Edit"
+msgstr "Modifica"
+
+msgid "Submit"
+msgstr "Invia"
+
+msgid "Back"
+msgstr "Indietro"
+
+msgid "Next"
+msgstr "Avanti"
+
+msgid "Previous"
+msgstr "Precedente"
+
+# -- Messages --
+
+msgid "No results found"
+msgstr "Nessun risultato trovato"
+
+msgid "Page not found"
+msgstr "Pagina non trovata"
+
+msgid "Loading"
+msgstr "Caricamento"
+
+msgid "Showing %count results"
+msgstr "Visualizzazione di %count risultati"
+
+# -- Filters --
+
+msgid "Filter by topic"
+msgstr "Filtra per argomento"
+
+msgid "Filter by country"
+msgstr "Filtra per paese"
+
+msgid "All topics"
+msgstr "Tutti gli argomenti"
+
+msgid "All countries"
+msgstr "Tutti i paesi"
+
+msgid "Upcoming"
+msgstr "In programma"
+
+msgid "Past"
+msgstr "Passate"

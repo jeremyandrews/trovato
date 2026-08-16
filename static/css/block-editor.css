@@ -1,0 +1,31 @@
+/* Block editor field widget styles */
+
+[data-block-editor] {
+    border: 1px solid var(--gray-300, #d1d5db);
+    border-radius: 4px;
+    padding: 1rem;
+    min-height: 200px;
+    background: var(--white, #fff);
+}
+
+/* Editor.js overrides for admin theme */
+.codex-editor {
+    font-size: 1rem;
+}
+
+.ce-block__content {
+    max-width: 100%;
+}
+
+.ce-toolbar__content {
+    max-width: 100%;
+}
+
+/* Block editor preview */
+.block-editor-preview {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px dashed var(--gray-300, #d1d5db);
+    border-radius: 4px;
+    background: var(--gray-50, #f9fafb);
+}

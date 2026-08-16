@@ -1,0 +1,30 @@
+# Tutorial Part 3, Step 3: speaker content type.
+# Import with: cargo run --release --bin trovato -- config import docs/tutorial/config
+type: speaker
+label: Speaker
+description: A conference speaker profile
+has_title: true
+title_label: Speaker Name
+plugin: core
+settings:
+  fields:
+    - field_name: field_bio
+      field_type: TextLong
+      label: Bio
+    - field_name: field_company
+      field_type:
+        Text:
+          max_length: null
+      label: Company
+    - field_name: field_website
+      field_type:
+        Text:
+          max_length: null
+      label: Website
+    - field_name: field_photo
+      field_type: File
+      label: Photo
+    - field_name: field_conferences
+      field_type:
+        RecordReference: conference
+      label: Conferences

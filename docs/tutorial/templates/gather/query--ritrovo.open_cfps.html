@@ -1,0 +1,43 @@
+{% extends "gather/query.html" %}
+
+{% block query_content %}
+<div class="card-list">
+    {% for row in rows %}
+    <article class="card card--cfp">
+        <h3 class="card__title">
+            <a href="/item/{{ row.id }}">{{ row.title }}</a>
+        </h3>
+
+        <div class="card__meta">
+            {% if row.fields.field_cfp_end_date %}
+            <span class="card__deadline">
+                <strong>Deadline:</strong> {{ row.fields.field_cfp_end_date }}
+            </span>
+            {% endif %}
+            {% if row.fields.field_start_date %}
+            <span class="card__dates">
+                {{ row.fields.field_start_date }}{% if row.fields.field_end_date %} &ndash; {{ row.fields.field_end_date }}{% endif %}
+            </span>
+            {% endif %}
+            {% if row.fields.field_city %}
+            <span class="card__location">
+                {{ row.fields.field_city }}{% if row.fields.field_country %}, {{ row.fields.field_country }}{% endif %}
+            </span>
+            {% elif row.fields.field_online is defined and row.fields.field_online == "1" %}
+            <span class="card__location">Online</span>
+            {% endif %}
+        </div>
+
+        <div class="card__actions">
+            <a href="/item/{{ row.id }}" class="card__more">View details &amp; submit &rarr;</a>
+        </div>
+    </article>
+    {% endfor %}
+</div>
+
+{% if not rows %}
+<p class="gather-empty">No open CFPs at this time.</p>
+{% endif %}
+
+{# Card styles live in static/css/theme.css #}
+{% endblock %}

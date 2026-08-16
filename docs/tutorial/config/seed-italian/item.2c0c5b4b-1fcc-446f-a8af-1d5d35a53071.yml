@@ -1,0 +1,25 @@
+# Meetup DevOps Napoli — needs_translation (Italian only)
+id: '2c0c5b4b-1fcc-446f-a8af-1d5d35a53071'
+type: conference
+title: Meetup DevOps Napoli 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>Il meetup DevOps di Napoli riunisce professionisti e appassionati di automazione, CI/CD e infrastruttura cloud. Incontri mensili con speaker locali e internazionali.</p>"
+      format: filtered_html
+  field_start_date: '2026-04-10'
+  field_end_date: '2026-04-10'
+  field_city: Napoli
+  field_country: IT
+  field_online: false
+  field_url: https://devops.napoli.dev
+  field_language: it
+  field_topics:
+    - 25119316-f777-47d8-8593-86ee5609c2cd
+    - de735a3a-8a7d-4285-9d6d-28b10a9b3ed4
+  primary_language: it
+  translation_status: needs_translation

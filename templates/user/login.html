@@ -1,0 +1,161 @@
+{% extends "page.html" %}
+
+{% block title %}Log in{% endblock %}
+
+{% block content %}
+<div class="login-page">
+    <div class="login-card">
+        <div class="login-card__header">
+            <h1 class="login-card__title">Welcome back</h1>
+            <p class="login-card__subtitle">Sign in to your account</p>
+        </div>
+
+        {% if success %}
+        <div class="message message--success" role="status">{{ success | escape }}</div>
+        {% endif %}
+
+        {% if error %}
+        <div class="message message--error" role="status">{{ error | escape }}</div>
+        {% endif %}
+
+        <form method="post" action="/user/login" class="login-form">
+            <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+            <div class="login-form__field">
+                <label for="username" class="login-form__label">Username</label>
+                <input type="text" id="username" name="username" class="login-form__input" required autofocus placeholder="Enter your username">
+            </div>
+
+            <div class="login-form__field">
+                <label for="password" class="login-form__label">Password</label>
+                <input type="password" id="password" name="password" class="login-form__input" required placeholder="Enter your password">
+            </div>
+
+            <div class="login-form__options">
+                <label class="login-form__remember">
+                    <input type="checkbox" name="remember_me" value="1">
+                    <span>Remember me</span>
+                </label>
+                <a href="/user/password-reset" class="login-form__forgot">Forgot password?</a>
+            </div>
+
+            <button type="submit" class="login-form__submit">Sign in</button>
+        </form>
+
+        {# The passkey path is the SSR entry point onto the same JSON ceremony
+           endpoints an API client drives. Hidden unless the browser supports
+           WebAuthn, so password login is never obstructed. #}
+        <div id="passkey-login" style="display: none; margin-top: 1rem;">
+            <button type="button" id="passkey-login-button" class="login-form__submit">
+                Sign in with a passkey
+            </button>
+            <div id="passkey-login-message" role="status" style="display: none; margin-top: 0.75rem;"></div>
+        </div>
+
+        <div class="login-card__footer">
+            Don't have an account? <a href="/user/register">Create one</a>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  if (!window.PublicKeyCredential) { return; }
+
+  var wrapper = document.getElementById("passkey-login");
+  var button = document.getElementById("passkey-login-button");
+  var messageEl = document.getElementById("passkey-login-message");
+  var usernameInput = document.getElementById("username");
+  wrapper.style.display = "block";
+
+  function show(text) {
+    messageEl.textContent = text;
+    messageEl.style.display = "block";
+  }
+
+  function b64urlToBuffer(value) {
+    var padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    while (padded.length % 4) { padded += "="; }
+    var binary = window.atob(padded);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) { bytes[i] = binary.charCodeAt(i); }
+    return bytes.buffer;
+  }
+
+  function bufferToB64url(buffer) {
+    var bytes = new Uint8Array(buffer);
+    var binary = "";
+    for (var i = 0; i < bytes.length; i++) { binary += String.fromCharCode(bytes[i]); }
+    return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  }
+
+  function post(url, body) {
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    });
+  }
+
+  button.addEventListener("click", function () {
+    var username = (usernameInput.value || "").trim();
+    if (!username) {
+      show("Enter your username first.");
+      usernameInput.focus();
+      return;
+    }
+
+    button.disabled = true;
+    show("Follow your device's prompt…");
+
+    post("/user/webauthn/login/start", { username: username })
+      .then(function (response) {
+        if (!response.ok) { throw new Error("Could not start passkey sign-in."); }
+        return response.json();
+      })
+      .then(function (options) {
+        var pk = options.publicKey;
+        pk.challenge = b64urlToBuffer(pk.challenge);
+        if (pk.allowCredentials) {
+          pk.allowCredentials = pk.allowCredentials.map(function (c) {
+            return { id: b64urlToBuffer(c.id), type: c.type, transports: c.transports };
+          });
+        }
+        return navigator.credentials.get({ publicKey: pk });
+      })
+      .then(function (assertion) {
+        return post("/user/webauthn/login/finish", {
+          credential: {
+            id: assertion.id,
+            rawId: bufferToB64url(assertion.rawId),
+            type: assertion.type,
+            extensions: assertion.getClientExtensionResults(),
+            response: {
+              authenticatorData: bufferToB64url(assertion.response.authenticatorData),
+              clientDataJSON: bufferToB64url(assertion.response.clientDataJSON),
+              signature: bufferToB64url(assertion.response.signature),
+              userHandle: assertion.response.userHandle
+                ? bufferToB64url(assertion.response.userHandle)
+                : null
+            }
+          }
+        });
+      })
+      .then(function (response) {
+        return response.json().then(function (body) {
+          if (!response.ok) { throw new Error(body.error || "Sign-in failed."); }
+          return body;
+        });
+      })
+      .then(function () { window.location.href = "/"; })
+      .catch(function (err) {
+        show(err.message || "Sign-in failed.");
+        button.disabled = false;
+      });
+  });
+})();
+</script>
+{% endblock %}

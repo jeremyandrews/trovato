@@ -1,0 +1,18 @@
+name = "test_ai_background"
+description = "P11c e2e fixture: background-AI principal (D-40/D-41)"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_cron"]
+weight = 0
+
+# Declares the ai-api host interface so the per-plugin linker (WASM-1) grants the
+# ai-request import, and `ai_background = true` so the background-AI principal
+# (P11c / D-40) authorizes an AI call from tap_cron. `logging` is present because
+# the #[plugin_tap] macro references the logging import.
+[capabilities]
+host_interfaces = ["logging", "ai-api"]
+ai_background = true

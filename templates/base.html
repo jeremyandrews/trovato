@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="{{ active_language | default(value='en') }}" dir="{{ text_direction | default(value='ltr') }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if csrf_token is defined %}<meta name="csrf-token" content="{{ csrf_token }}">{% endif %}
+    {% if hreflang_links is defined %}{% for alt in hreflang_links %}
+    <link rel="alternate" hreflang="{{ alt.lang }}" href="{{ alt.href }}">
+    {% endfor %}{% endif %}
+    <title>{% block title %}{{ title | default(value="Trovato") }}{% endblock %}</title>
+    {# Favicon. The PNGs are the tiled mark (clay tile, white t, peach dot), not
+       the bare glyph: at 16px a bare glyph turns to mush and the tile survives.
+       See assets/brand/BRAND.md. #}
+    <link rel="icon" type="image/svg+xml" href="/static/brand/trovato-favicon.svg">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/brand/favicon-16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="/static/brand/favicon-64.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/trovato-appicon-180.png">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --danger: #dc2626;
+            --success: #16a34a;
+            --warning: #d97706;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-500: #6b7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.5;
+            margin: 0;
+            padding: 0;
+            color: var(--gray-900);
+            background: var(--gray-50);
+        }
+
+        a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+
+        /* Messages */
+        .messages {
+            margin: 1rem 0;
+        }
+
+        .message {
+            padding: 0.75rem 1rem;
+            border-radius: 0.375rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .message--error {
+            background: #fef2f2;
+            color: var(--danger);
+            border: 1px solid #fecaca;
+        }
+
+        .message--success {
+            background: #f0fdf4;
+            color: var(--success);
+            border: 1px solid #bbf7d0;
+        }
+
+        .message--warning {
+            background: #fffbeb;
+            color: var(--warning);
+            border: 1px solid #fde68a;
+        }
+
+        /* Buttons */
+        .button {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 0.375rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background-color 0.15s;
+        }
+
+        .button--primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .button--primary:hover {
+            background: var(--primary-dark);
+            text-decoration: none;
+        }
+
+        .button--secondary {
+            background: var(--gray-200);
+            color: var(--gray-700);
+        }
+
+        .button--secondary:hover {
+            background: var(--gray-300);
+        }
+
+        .button--danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .button-link {
+            background: none;
+            border: none;
+            color: var(--primary);
+            cursor: pointer;
+            padding: 0;
+            font: inherit;
+            text-decoration: underline;
+        }
+
+        .button-link:hover {
+            color: var(--primary-dark);
+        }
+
+        /* Tables */
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .table th,
+        .table td {
+            padding: 0.75rem 1rem;
+            text-align: start;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .table th {
+            background: var(--gray-100);
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: var(--gray-700);
+        }
+
+        .table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .table tr:hover td {
+            background: var(--gray-50);
+        }
+
+        /* Item styles */
+        .item {
+            margin-bottom: 2rem;
+        }
+
+        .item__title {
+            margin: 0 0 0.25rem 0;
+            font-size: 1.75rem;
+        }
+
+        .item__meta {
+            color: var(--gray-500);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+
+        .item__content {
+            line-height: 1.7;
+        }
+
+        .item__content p {
+            margin-bottom: 1rem;
+        }
+
+        /* Blog teaser styles */
+        .blog-teaser {
+            padding: 1.5rem 0;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .blog-teaser:last-child {
+            border-bottom: none;
+        }
+
+        .blog-teaser__title {
+            margin: 0 0 0.25rem 0;
+            font-size: 1.25rem;
+        }
+
+        .blog-teaser__title a {
+            color: var(--gray-900);
+        }
+
+        .blog-teaser__title a:hover {
+            color: var(--primary);
+        }
+
+        .blog-teaser__meta {
+            color: var(--gray-500);
+            font-size: 0.8rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .blog-teaser__summary {
+            color: var(--gray-700);
+            line-height: 1.6;
+        }
+
+        .blog-teaser__read-more {
+            display: inline-block;
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        /* Front page styles */
+        .front-listing {
+            margin-top: 1rem;
+        }
+
+        .front-welcome {
+            text-align: center;
+            padding: 3rem 1rem;
+        }
+
+        .front-welcome h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .front-welcome p {
+            color: var(--gray-500);
+            font-size: 1.1rem;
+        }
+
+        /* Focus indicators for keyboard navigation */
+        :focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+        }
+
+        /* Visually hidden but accessible to screen readers */
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Skip link — visible only on keyboard focus */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: auto;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            z-index: 1000;
+        }
+
+        .skip-link:focus {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: auto;
+            height: auto;
+            padding: 0.75rem 1.5rem;
+            background: var(--gray-900);
+            color: white;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            z-index: 10000;
+        }
+    </style>
+    <link rel="stylesheet" href="/static/css/theme.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    {% block body %}
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <header class="header">
+        {% block header %}{% endblock %}
+    </header>
+
+    <main id="main-content" class="main">
+        <div class="container">
+            {% block messages %}
+            {% if messages %}
+            <div class="messages">
+                {% for message in messages %}
+                <div class="message message--{{ message.type | default(value='info') }}" role="status">
+                    {{ message.text }}
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% endblock %}
+
+            {% block content %}
+            {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
+            {% endblock %}
+        </div>
+    </main>
+
+    <footer class="footer">
+        {% block footer %}{% endblock %}
+    </footer>
+
+    {% endblock %}
+
+    <div aria-live="polite" id="trovato-announcements" class="visually-hidden"></div>
+
+    {% block scripts %}{% endblock %}
+    <script src="/static/js/trovato.js"></script>
+</body>
+</html>

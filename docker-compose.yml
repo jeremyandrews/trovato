@@ -1,0 +1,166 @@
+services:
+  # Postgres 17 with pgvector *available*. Same server and same data directory
+  # layout as the plain postgres:17 image this used to be; the extension is not
+  # installed until something runs CREATE EXTENSION, which the kernel's
+  # conditional embedding migration does. That is what turns semantic search on
+  # for a fresh install (20260402000001_create_item_embeddings.sql). CI is
+  # unaffected: it runs postgres:16 service containers, not compose.
+  #
+  # ON AN EXISTING VOLUME this image change is not free. The two images are
+  # built on different bases, so Postgres reports
+  #   database "trovato" has a collation version mismatch
+  # and text index ordering could in principle differ from what those indexes
+  # were built with. Observed, not hypothetical. Either accept it and repair —
+  #   REINDEX DATABASE trovato;
+  #   ALTER DATABASE trovato REFRESH COLLATION VERSION;
+  # — or pin the old image for that volume with POSTGRES_IMAGE=postgres:17.
+  # A fresh volume has nothing to reconcile and needs neither.
+  postgres:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg17}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trovato}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trovato}
+      POSTGRES_DB: ${POSTGRES_DB:-trovato}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trovato}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Trovato runtime — only starts with: docker compose --profile full up
+  # Pulls the nightly image by default; use --build for local compilation.
+  # Mapped to port 3001 so it doesn't conflict with native dev server on 3000.
+  trovato:
+    profiles: ["full"]
+    image: ghcr.io/jeremyandrews/trovato:nightly
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgres://trovato:trovato@postgres:5432/trovato
+      REDIS_URL: redis://redis:6379
+      DATABASE_MAX_CONNECTIONS: "10"
+      RUST_LOG: info,tower_http=debug,sqlx=warn
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Argus — Trovato with the news-intelligence plugin installed and running.
+  #
+  #   cp .env.example .env      # then set at least ARGUS_AI_* if you want AI
+  #   docker compose --profile argus up -d
+  #
+  # `plugin install` runs the kernel migrations, then argus's own, then enables
+  # the plugin; only then does the server start. It is idempotent, so a restart
+  # is a no-op and an upgrade applies whatever migrations are new.
+  # ---------------------------------------------------------------------------
+  argus:
+    profiles: ["argus"]
+    image: ghcr.io/jeremyandrews/trovato:nightly
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${ARGUS_PORT:-3002}:3000"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-trovato}:${POSTGRES_PASSWORD:-trovato}@postgres:5432/${POSTGRES_DB:-trovato}
+      REDIS_URL: redis://redis:6379
+      DATABASE_MAX_CONNECTIONS: "${DATABASE_MAX_CONNECTIONS:-10}"
+      RUST_LOG: "${RUST_LOG:-info,tower_http=info,sqlx=warn}"
+      PORT: "3000"
+      CRON_KEY: "${CRON_KEY:-default-cron-key}"
+    command:
+      - /bin/sh
+      - -c
+      - "./trovato plugin install argus && exec ./trovato serve"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # Argus's clock.
+  #
+  # `tap_cron` fires only when something calls the cron route — the kernel runs
+  # no internal scheduler (the "cron cadence is external-only" residual from M1).
+  # Without this container Argus never polls a feed, never runs maintenance and
+  # never raises an operator alert. It is not optional.
+  argus-cron:
+    profiles: ["argus"]
+    image: curlimages/curl:8.11.1
+    restart: unless-stopped
+    environment:
+      CRON_KEY: "${CRON_KEY:-default-cron-key}"
+      ARGUS_CRON_INTERVAL: "${ARGUS_CRON_INTERVAL:-60}"
+    # `|| true` so a single failed poke (a restarting server, a slow migration)
+    # does not kill the loop and stop the pipeline for good.
+    command:
+      - /bin/sh
+      - -c
+      - 'while true; do curl -fsS -m 30 -X POST "http://argus:3000/cron/$$CRON_KEY" >/dev/null || true; sleep "$$ARGUS_CRON_INTERVAL"; done'
+    depends_on:
+      argus:
+        condition: service_healthy
+
+  # Trovato dev container — only starts with: docker compose --profile dev up
+  # Provides full Rust toolchain for development without native Rust install.
+  # Source code is mounted from host; edits are instant, builds use cached volumes.
+  dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - .:/workspace:cached
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-dir:/workspace/target
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://trovato:trovato@postgres:5432/trovato
+      REDIS_URL: redis://redis:6379
+      RUST_LOG: info,tower_http=debug,sqlx=warn
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+
+volumes:
+  postgres_data:
+  redis_data:
+  cargo-registry:
+  cargo-git:
+  target-dir:

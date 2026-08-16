@@ -1,0 +1,15 @@
+{% extends "gather/query.html" %}
+
+{% block query_content %}
+<div class="card-list">
+    {% for row in rows %}
+    {% include "gather/includes/conf-card.html" %}
+    {% endfor %}
+</div>
+
+{% if not rows %}
+<p class="gather-empty">No upcoming conferences found for this topic.</p>
+{% endif %}
+
+{# Card styles live in static/css/theme.css #}
+{% endblock %}

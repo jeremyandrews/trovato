@@ -1,0 +1,17 @@
+[package]
+name = "test_e2e_caller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Epic 2 e2e test fixture: plugin-to-plugin invocation caller (declares plugin-api)"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

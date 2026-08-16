@@ -1,0 +1,47 @@
+name = "trovato_record_ref"
+description = "P11g reference plugin: a lightweight-record type (event_record) exercised through real gather + the real FR-8 tap_field_access seam"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_field_access",
+    "tap_perm",
+]
+weight = 0
+
+# The plugin owns the `record_event` table through its own migration, so the
+# table is inside the plugin's effective DB allowlist (migration-owned) and the
+# record-type registry admits the declaration.
+[migrations]
+files = ["migrations/001_create_event_record.sql"]
+
+# The lightweight-record declaration (P11g / D-53) — the manifest surface that
+# enters the FR-4 1.0 freeze (D-59). `event_record` is an item-like table:
+# id/title/created/changed columns, an author column, a published flag, and a
+# logical-field -> column map. `secret_notes` is the governed field the plugin's
+# tap_field_access below denies without the "view secret_notes" permission,
+# proving the FR-8 seam governs a lightweight record exactly as it governs an
+# Item.
+[[record_types]]
+name = "event_record"
+table = "record_event"
+id_column = "id"
+title_column = "title"
+created_column = "created"
+changed_column = "changed"
+author_column = "author_id"
+published_column = "published"
+
+[record_types.fields]
+location = "location"
+capacity = "capacity"
+secret_notes = "secret_notes"
+
+# Declared capabilities (WASM-1, deny-unless-declared). tap_field_access reads
+# its rules from the `variables` host function (falling back to baked-in
+# defaults); `logging` is referenced by the #[plugin_tap] macro.
+[capabilities]
+host_interfaces = ["logging", "variables"]

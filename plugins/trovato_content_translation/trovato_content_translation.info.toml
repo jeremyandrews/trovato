@@ -1,0 +1,24 @@
+name = "trovato_content_translation"
+description = "Field-level content translation with language overlay"
+version = "0.99.0"
+api_version = "0.99"
+dependencies = ["trovato_locale"]
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_perm",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_create_item_translation.sql",
+]
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel
+# builds this plugin's WASM linker from host_interfaces — it receives exactly
+# the host interfaces named here (plus baseline WASI). Derived from the
+# compiled .wasm import section.
+[capabilities]
+host_interfaces = []

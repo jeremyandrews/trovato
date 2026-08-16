@@ -1,0 +1,28 @@
+# DevSecOps Day Milano — translated (both EN + IT complete)
+id: '4080cf55-0af4-47a7-a5c5-5ace536149c4'
+type: conference
+title: DevSecOps Day Milano 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>DevSecOps Day è la conferenza italiana dedicata alla sicurezza nel ciclo di vita del software. Talk su supply chain security, SAST/DAST, container hardening e compliance nel cloud.</p>"
+      format: filtered_html
+    en:
+      value: "<p>DevSecOps Day is the Italian conference dedicated to security in the software lifecycle. Talks on supply chain security, SAST/DAST, container hardening, and cloud compliance.</p>"
+      format: filtered_html
+  field_start_date: '2026-06-12'
+  field_end_date: '2026-06-12'
+  field_city: Milano
+  field_country: IT
+  field_online: false
+  field_url: https://devsecopsday.it
+  field_language: it
+  field_topics:
+    - b83ee8f6-5116-4ddc-913a-6670e9b39bae
+    - 25119316-f777-47d8-8593-86ee5609c2cd
+  primary_language: it
+  translation_status: translated

@@ -1,0 +1,15 @@
+<svg viewBox="0 0 706 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="trovato wordmark">
+  <g fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 36 60 L 36 156 Q 36 200 78 200"/>
+    <path d="M 10 98 L 72 98"/>
+    <path d="M 102 104 L 102 200"/>
+    <path d="M 102 152 Q 102 104 144 104"/>
+    <path d="M 174 152 a 48 48 0 1 0 96 0 a 48 48 0 1 0 -96 0"/>
+    <path d="M 292 104 L 330 198 L 368 104"/>
+    <path d="M 390 154 a 46 46 0 1 0 92 0 a 46 46 0 1 0 -92 0"/>
+    <path d="M 484 104 L 484 200"/>
+    <path d="M 520 60 L 520 156 Q 520 200 562 200"/>
+    <path d="M 494 98 L 556 98"/>
+    <path d="M 586 152 a 48 48 0 1 0 96 0 a 48 48 0 1 0 -96 0"/>
+  </g>
+</svg>

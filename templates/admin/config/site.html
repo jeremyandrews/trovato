@@ -1,0 +1,136 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Site Settings</h2>
+</div>
+
+{% if flash %}
+<div class="message message--info" role="status">{# SAFE: flash is set by kernel with static string, not user input #}{{ flash | safe }}</div>
+{% endif %}
+
+<div class="admin-card">
+    <form method="post" action="/admin/config/site">
+        {{ form::csrf(csrf_token=csrf_token) }}
+
+        {% if errors %}
+        {{ form::errors(errors=errors) }}
+        {% endif %}
+
+        <fieldset class="fieldset">
+            <legend>General</legend>
+            <div class="fieldset__content">
+                <div class="form-item">
+                    <label for="site_name" class="form-item__label form-item__label--required">Site name</label>
+                    <input type="text" id="site_name" name="site_name" class="form-text" value="{{ site_name }}" required>
+                </div>
+                <div class="form-item">
+                    <label for="site_slogan" class="form-item__label">Site slogan</label>
+                    <input type="text" id="site_slogan" name="site_slogan" class="form-text" value="{{ site_slogan }}">
+                </div>
+                <div class="form-item">
+                    <label for="site_mail" class="form-item__label form-item__label--required">Site email</label>
+                    <input type="email" id="site_mail" name="site_mail" class="form-text" value="{{ site_mail }}" required>
+                    <div class="form-item__description">Used as the From address for system emails.</div>
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
+            <legend>Front page</legend>
+            <div class="fieldset__content">
+                <div class="form-item">
+                    <label for="front_page" class="form-item__label">Default front page</label>
+                    <input type="text" id="front_page" name="front_page" class="form-text" value="{{ front_page }}" placeholder="/">
+                    <div class="form-item__description">Path to use as the site front page (e.g., /blog or /conferences).</div>
+                </div>
+                <div class="form-item">
+                    <label for="items_per_page" class="form-item__label">Items per page</label>
+                    <input type="number" id="items_per_page" name="items_per_page" class="form-text" value="{{ items_per_page }}" min="1" max="100">
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
+            <legend>User registration</legend>
+            <div class="fieldset__content">
+                <div class="form-item">
+                    <div class="form-checkbox-wrapper">
+                        <input type="radio" id="reg_open" name="registration_mode" value="open" {% if registration_mode == "open" %}checked{% endif %}>
+                        <label for="reg_open">Open — anyone can register</label>
+                    </div>
+                    <div class="form-checkbox-wrapper">
+                        <input type="radio" id="reg_admin" name="registration_mode" value="admin_only" {% if registration_mode == "admin_only" or not registration_mode %}checked{% endif %}>
+                        <label for="reg_admin">Admin only — administrators create accounts</label>
+                    </div>
+                    <div class="form-checkbox-wrapper">
+                        <input type="radio" id="reg_closed" name="registration_mode" value="closed" {% if registration_mode == "closed" %}checked{% endif %}>
+                        <label for="reg_closed">Closed — no new registrations</label>
+                    </div>
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
+            <legend>Email / SMTP</legend>
+            <div class="fieldset__content">
+                <div class="form-item">
+                    <label for="smtp_host" class="form-item__label">SMTP host</label>
+                    <input type="text" id="smtp_host" name="smtp_host" class="form-text" value="{{ smtp_host }}" placeholder="smtp.example.com">
+                </div>
+                <div class="form-item">
+                    <label for="smtp_port" class="form-item__label">SMTP port</label>
+                    <input type="number" id="smtp_port" name="smtp_port" class="form-text" value="{{ smtp_port | default(value='587') }}" min="1" max="65535">
+                </div>
+                <div class="form-item">
+                    <label for="smtp_username" class="form-item__label">SMTP username</label>
+                    <input type="text" id="smtp_username" name="smtp_username" class="form-text" value="{{ smtp_username }}">
+                </div>
+                <div class="form-item">
+                    <label for="smtp_password" class="form-item__label">SMTP password</label>
+                    {% if smtp_password_is_env %}
+                    <p class="form-item__description"><em>Configured via environment variable.</em></p>
+                    {% else %}
+                    <input type="password" id="smtp_password" name="smtp_password" class="form-text" value="{{ smtp_password }}" autocomplete="new-password">
+                    {% endif %}
+                </div>
+                <div class="form-item">
+                    <label for="smtp_encryption" class="form-item__label">Encryption</label>
+                    <select id="smtp_encryption" name="smtp_encryption" class="form-select">
+                        <option value="starttls" {% if smtp_encryption == "starttls" or not smtp_encryption %}selected{% endif %}>STARTTLS (port 587)</option>
+                        <option value="tls" {% if smtp_encryption == "tls" %}selected{% endif %}>TLS (port 465)</option>
+                        <option value="none" {% if smtp_encryption == "none" %}selected{% endif %}>None (insecure)</option>
+                    </select>
+                </div>
+                <div class="form-item">
+                    <label for="smtp_from" class="form-item__label">From address</label>
+                    <input type="email" id="smtp_from" name="smtp_from" class="form-text" value="{{ smtp_from }}" placeholder="Uses site email if empty">
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
+            <legend>Notifications</legend>
+            <div class="fieldset__content">
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="notify_admin_on_register" name="notify_admin_on_register" value="1" {% if notify_admin_on_register %}checked{% endif %}>
+                        <label for="notify_admin_on_register">Notify admin when new users register</label>
+                    </div>
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">Save settings</button>
+        </div>
+    </form>
+
+    <form method="post" action="/admin/config/site/test-email" style="margin-top: 1rem;">
+        {{ form::csrf(csrf_token=csrf_token) }}
+        <button type="submit" class="button button--secondary">Send test email</button>
+        <span class="form-item__description">Sends a test email to the site email address.</span>
+    </form>
+</div>
+{% endblock %}

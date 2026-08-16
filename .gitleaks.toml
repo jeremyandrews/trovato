@@ -1,0 +1,32 @@
+# gitleaks configuration.
+#
+# Run over the working tree with:
+#   gitleaks dir .
+#
+# The allowlist below covers documentation placeholders that match the generic
+# secret rules. Each is a truncated example token ending in an ellipsis, written
+# to show the shape of a value rather than to be a value. Add to this list only
+# for the same reason, and say which file and why.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "trovato-doc-placeholder"
+description = "Placeholder, not a secret"
+regex = '''\bnever-matches-anything-placeholder\b'''
+
+[allowlist]
+description = "Documentation placeholders"
+paths = [
+  # Build output. Not tracked, and compiled dependency blobs produce noise that
+  # says nothing about this repository's contents.
+  '''^target/''',
+]
+regexes = [
+  # docs/api-reference.md: an example API-token response body.
+  '''abcdef0123456789\.\.\.''',
+  # docs/tutorial/part-07-going-global.md and its recipe: an example bearer
+  # token in a curl invocation, showing the token prefix only.
+  '''trovato_api_sk_\.\.\.''',
+]

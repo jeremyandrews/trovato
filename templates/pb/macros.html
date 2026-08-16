@@ -1,0 +1,26 @@
+{#- ARIA attribute helpers for page builder templates.
+
+    Mirrors Trovato's kernel-level ElementBuilder ARIA helpers for consistency.
+    Update this file when WCAG requirements change — all pb/ templates inherit.
+
+    Usage: {% import "pb/macros.html" as a11y %}
+           {{ a11y::aria_label(label=title) }}
+           {{ a11y::lang_attr(lang=lang) }}
+           {{ a11y::heading(level=2, class="pb-hero__title", text=title) }}
+-#}
+
+{% macro aria_label(label) %}{% if label %} aria-label="{{ label }}"{% endif %}{% endmacro aria_label %}
+
+{% macro aria_describedby(id) %}{% if id %} aria-describedby="{{ id }}"{% endif %}{% endmacro aria_describedby %}
+
+{% macro aria_expanded(expanded) %} aria-expanded="{{ expanded }}"{% endmacro aria_expanded %}
+
+{% macro aria_controls(id) %}{% if id %} aria-controls="{{ id }}"{% endif %}{% endmacro aria_controls %}
+
+{% macro aria_live(mode) %}{% if mode %} aria-live="{{ mode }}"{% endif %}{% endmacro aria_live %}
+
+{% macro lang_attr(lang) %}{% if lang %} lang="{{ lang }}"{% endif %}{% endmacro lang_attr %}
+
+{% macro heading(level, class, text) %}
+<h{{ level }}{% if class %} class="{{ class }}"{% endif %}>{{ text }}</h{{ level }}>
+{% endmacro heading %}

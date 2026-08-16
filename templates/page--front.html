@@ -1,0 +1,24 @@
+{% extends "page.html" %}
+
+{% block title %}{{ site_name | default(value="Trovato") }}{% endblock %}
+
+{% block content %}
+<div class="front-page">
+    <div class="front-hero">
+        <h1>{{ site_name | default(value="Trovato") }}</h1>
+        {% if site_slogan %}<p class="front-hero__slogan">{{ site_slogan }}</p>{% endif %}
+    </div>
+
+    {% if content %}
+    <div class="front-content">
+        {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
+    </div>
+    {% else %}
+    <div class="front-welcome">
+        <h2>Welcome</h2>
+        <p>This site is powered by <strong>Trovato</strong>, a modular content management system.</p>
+        <p>Visit <a href="/admin">/admin</a> to start building your site.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

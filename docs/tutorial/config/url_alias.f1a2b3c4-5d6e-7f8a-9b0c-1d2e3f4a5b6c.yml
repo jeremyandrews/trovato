@@ -1,0 +1,7 @@
+# Italian URL alias for the conferences listing page.
+id: 'f1a2b3c4-5d6e-7f8a-9b0c-1d2e3f4a5b6c'
+source: /gather/ritrovo.upcoming_conferences
+alias: /it/conferenze
+language: it
+stage_id: '0193a5a0-0000-7000-8000-000000000001'
+created: 1772772200

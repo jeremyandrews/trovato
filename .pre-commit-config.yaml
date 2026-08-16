@@ -1,0 +1,48 @@
+# Pre-commit hooks for Trovato
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --all -- --test-threads=1
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [manual]
+
+      - id: terminology-check
+        name: terminology check
+        # Checks the two unambiguous Drupal terms locally. CI runs a broader
+        # check covering node/module/views/hook_ with false-positive filtering.
+        entry: bash -c 'grep -rnE "\b(taxonomy|vocabulary|hook_)\b" --include="*.rs" crates/ benchmarks/ | grep -v "serde(alias" && echo "ERROR: Use Trovato terminology (see docs/coding-standards.md)" && exit 1 || exit 0'
+        language: system
+        types: [rust]
+        pass_filenames: false

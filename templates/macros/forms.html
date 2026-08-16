@@ -1,0 +1,136 @@
+{# Form helper macros #}
+
+{# Render a form item wrapper - use with call/endcall to provide input content #}
+{% macro form_item(name, title="", description="", required=false, error="") %}
+<div class="form-item form-item--{{ name }}{% if error %} form-item--error{% endif %}">
+    {% if title %}
+    <label for="{{ name }}" class="form-item__label{% if required %} form-item__label--required{% endif %}">
+        {{ title }}
+    </label>
+    {% endif %}
+
+    {{ caller() }}
+
+    {% if error %}
+    <p class="form-item__error">{{ error }}</p>
+    {% endif %}
+
+    {% if description %}
+    <p class="form-item__description">{{ description }}</p>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Render a text input - standalone version without wrapper #}
+{% macro textfield_input(name, value="", placeholder="", maxlength=0, required=false, disabled=false) %}
+<input type="text" id="{{ name }}" name="{{ name }}" class="form-text"
+       value="{{ value }}"
+       {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+       {% if maxlength > 0 %}maxlength="{{ maxlength }}"{% endif %}
+       {% if required %}required{% endif %}
+       {% if disabled %}disabled{% endif %}>
+{% endmacro %}
+
+{# Render a complete text field with label and wrapper #}
+{% macro textfield(name, value="", title="", description="", required=false, placeholder="", maxlength=0, disabled=false, error="") %}
+<div class="form-item form-item--{{ name }}{% if error %} form-item--error{% endif %}">
+    {% if title %}
+    <label for="{{ name }}" class="form-item__label{% if required %} form-item__label--required{% endif %}">
+        {{ title }}
+    </label>
+    {% endif %}
+    <input type="text" id="{{ name }}" name="{{ name }}" class="form-text"
+           value="{{ value }}"
+           {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+           {% if maxlength > 0 %}maxlength="{{ maxlength }}"{% endif %}
+           {% if required %}required{% endif %}
+           {% if disabled %}disabled{% endif %}>
+    {% if error %}
+    <p class="form-item__error">{{ error }}</p>
+    {% endif %}
+    {% if description %}
+    <p class="form-item__description">{{ description }}</p>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Render a textarea #}
+{% macro textarea(name, value="", title="", description="", required=false, rows=5, placeholder="", disabled=false, error="") %}
+<div class="form-item form-item--{{ name }}{% if error %} form-item--error{% endif %}">
+    {% if title %}
+    <label for="{{ name }}" class="form-item__label{% if required %} form-item__label--required{% endif %}">
+        {{ title }}
+    </label>
+    {% endif %}
+    <textarea id="{{ name }}" name="{{ name }}" class="form-textarea"
+              rows="{{ rows }}"
+              {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+              {% if required %}required{% endif %}
+              {% if disabled %}disabled{% endif %}>{{ value }}</textarea>
+    {% if error %}
+    <p class="form-item__error">{{ error }}</p>
+    {% endif %}
+    {% if description %}
+    <p class="form-item__description">{{ description }}</p>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Render a select dropdown #}
+{% macro select(name, options, value="", title="", description="", required=false, multiple=false, disabled=false, error="") %}
+<div class="form-item form-item--{{ name }}{% if error %} form-item--error{% endif %}">
+    {% if title %}
+    <label for="{{ name }}" class="form-item__label{% if required %} form-item__label--required{% endif %}">
+        {{ title }}
+    </label>
+    {% endif %}
+    <select id="{{ name }}" name="{{ name }}{% if multiple %}[]{% endif %}" class="form-select"
+            {% if multiple %}multiple{% endif %}
+            {% if required %}required{% endif %}
+            {% if disabled %}disabled{% endif %}>
+        {% if not required and not multiple %}
+        <option value="">- Select -</option>
+        {% endif %}
+        {% for opt in options %}
+        <option value="{{ opt.0 }}"{% if value == opt.0 %} selected{% endif %}>{{ opt.1 }}</option>
+        {% endfor %}
+    </select>
+    {% if error %}
+    <p class="form-item__error">{{ error }}</p>
+    {% endif %}
+    {% if description %}
+    <p class="form-item__description">{{ description }}</p>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Render a checkbox #}
+{% macro checkbox(name, checked=false, title="", description="", disabled=false) %}
+<div class="form-item form-item--checkbox">
+    <div class="form-checkbox-wrapper">
+        <input type="checkbox" id="{{ name }}" name="{{ name }}" value="1"
+               {% if checked %}checked{% endif %}
+               {% if disabled %}disabled{% endif %}>
+        {% if title %}
+        <label for="{{ name }}">{{ title }}</label>
+        {% endif %}
+    </div>
+    {% if description %}
+    <p class="form-item__description">{{ description }}</p>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Render a submit button #}
+{% macro submit(text="Submit", class="button button--primary") %}
+<div class="form-actions">
+    <button type="submit" class="{{ class }}">{{ text }}</button>
+</div>
+{% endmacro %}
+
+{# Render form actions with multiple buttons - use with call/endcall #}
+{% macro actions() %}
+<div class="form-actions">
+    {{ caller() }}
+</div>
+{% endmacro %}

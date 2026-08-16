@@ -1,0 +1,9 @@
+# Match workspace edition
+edition = "2024"
+# Foo { x: x } → Foo { x }
+use_field_init_shorthand = true
+# try!(expr) → expr?
+use_try_shorthand = true
+# Nightly-only (enable when CI uses nightly rustfmt):
+# group_imports = "StdExternalCrate"
+# imports_granularity = "Crate"

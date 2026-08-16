@@ -1,0 +1,27 @@
+query_id: ritrovo.all_speakers
+label: Speakers
+description: All speaker profiles, sorted alphabetically
+definition:
+  base_table: item
+  fields: []
+  filters: []
+  includes: {}
+  item_type: speaker
+  relationships: []
+  sorts:
+  - direction: asc
+    field: title
+    nulls: last
+  stage_aware: true
+display:
+  canonical_url: /speakers
+  empty_text: No speakers found.
+  footer: null
+  format: table
+  header: null
+  items_per_page: 24
+  pager:
+    enabled: true
+    show_count: true
+    style: full
+plugin: ritrovo_importer

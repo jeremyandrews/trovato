@@ -1,0 +1,5 @@
+{{ commenter_name }} commented on "{{ content_title }}":
+
+{{ comment_text }}
+
+View: {{ action_url }}

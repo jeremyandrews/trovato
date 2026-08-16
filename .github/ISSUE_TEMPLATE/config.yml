@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/jeremyandrews/trovato/security/advisories/new
+    about: Report a vulnerability privately rather than opening a public issue.
+  - name: Known issues and roadmap
+    url: https://github.com/jeremyandrews/trovato/blob/main/KNOWN-ISSUES.md
+    about: What is already known to be outstanding in 0.99.0, before you file it.

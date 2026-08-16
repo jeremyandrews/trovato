@@ -1,0 +1,80 @@
+<div class="gather-query gather-query--{{ query.query_id }}" data-query-id="{{ query.query_id }}">
+    {% if query.label %}
+    <h2 class="gather-query__title">{{ query.label }}</h2>
+    {% endif %}
+
+    {% if query.description %}
+    <p class="gather-query__description">{{ query.description }}</p>
+    {% endif %}
+
+    {% if exposed_filters is defined and exposed_filters | length > 0 %}
+    <form method="get" action="{{ base_path | default(value='/gather/' ~ query.query_id) }}" class="gather-exposed-filters">
+        {% for filter in exposed_filters %}
+        {% set current_value = filter_values[filter.field] | default(value="") %}
+        <div class="form-group form-group--inline">
+            <label for="filter-{{ filter.field }}">{{ filter.label }}</label>
+
+            {% if filter.widget_type == "boolean" %}
+            {# Boolean widget: Any / Yes / No select #}
+            <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
+                <option value="">Any</option>
+                <option value="true"{% if current_value == "true" %} selected{% endif %}>Yes</option>
+                <option value="false"{% if current_value == "false" %} selected{% endif %}>No</option>
+            </select>
+
+            {% elif filter.widget_type == "category_select" %}
+            {# Category select: hierarchical terms from a category #}
+            <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
+                <option value="">Any</option>
+                {% for opt in filter.options %}
+                <option value="{{ opt.value }}"{% if current_value == opt.value %} selected{% endif %}>
+                    {%- for i in range(end=opt.depth) %}&nbsp;&nbsp;{% endfor %}{{ opt.label -}}
+                </option>
+                {% endfor %}
+            </select>
+
+            {% elif filter.widget_type == "dynamic_options" %}
+            {# Dynamic options: dropdown below threshold, datalist autocomplete above #}
+            {% if filter.is_autocomplete %}
+            <input type="text" id="filter-{{ filter.field }}" name="{{ filter.field }}"
+                   value="{{ current_value }}" class="form-control"
+                   list="{{ filter.field }}-options">
+            <datalist id="{{ filter.field }}-options">
+                {% for opt in filter.options %}<option value="{{ opt }}">{% endfor %}
+            </datalist>
+            {% else %}
+            <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
+                <option value="">Any</option>
+                {% for opt in filter.options %}
+                <option value="{{ opt }}"{% if current_value == opt %} selected{% endif %}>{{ opt }}</option>
+                {% endfor %}
+            </select>
+            {% endif %}
+
+            {% else %}
+            {# Default text input #}
+            <input type="text" id="filter-{{ filter.field }}" name="{{ filter.field }}"
+                   value="{{ current_value }}" class="form-control">
+            {% endif %}
+
+        </div>
+        {% endfor %}
+        <div class="form-actions">
+            <button type="submit" class="btn">Apply</button>
+            <a href="{{ base_path | default(value='/gather/' ~ query.query_id) }}" class="btn btn--secondary">Clear</a>
+        </div>
+    </form>
+    {% endif %}
+
+    <div class="gather-query__content">
+        {% block query_content %}
+        {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
+        {% endblock %}
+    </div>
+
+    {% if pager %}
+    {% include "gather/pager.html" %}
+    {% endif %}
+</div>
+
+{# Gather query styles live in static/css/theme.css #}

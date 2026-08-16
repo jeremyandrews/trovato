@@ -1,0 +1,3 @@
+{%- set href = attributes.href | default(value="#") -%}
+{# SAFE: `attributes` is filtered in Rust before this context is built (RenderTreeConsumer::sanitize_attributes) — `href`/`src` with a non-allowlisted scheme (javascript:, data:, …) are dropped, so a dropped href falls back to "#" here, and invalid/on* keys are removed. Attribute values are Tera-autoescaped; `value` is pre-sanitized by the render pipeline. #}
+<a href="{{ href }}"{% if class %} class="{{ class }}"{% endif %}{% if attributes %}{% for key, value in attributes %}{% if key != "class" and key != "href" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>{{ value | safe }}</a>

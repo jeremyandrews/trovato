@@ -1,0 +1,8 @@
+Welcome to {{ site_name }}!
+
+To activate your account, visit the following link:
+{{ action_url }}
+
+If you did not register for an account, you can safely ignore this email.
+
+This link will expire in 24 hours.

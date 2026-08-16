@@ -1,0 +1,58 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit category{% else %}Add category{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="category-form" method="post" action="{{ action }}">
+        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
+
+        {{ form::errors(errors=errors) }}
+
+        <div class="form-item">
+            <label for="label" class="form-item__label form-item__label--required">Name</label>
+            <input type="text" id="label" name="label" class="form-text"
+                   value="{{ values.label | default(value='') }}"
+                   required
+                   data-machine-name-source="id">
+            <p class="form-item__description">The human-readable name of this category.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="id" class="form-item__label form-item__label--required">Machine name</label>
+            <input type="text" id="id" name="id" class="form-text"
+                   value="{{ values.id | default(value='') }}"
+                   pattern="[a-z][a-z0-9_]*"
+                   required
+                   {% if editing %}readonly{% endif %}>
+            <p class="form-item__description">A unique machine-readable name. Can only contain lowercase letters, numbers, and underscores.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="description" class="form-item__label">Description</label>
+            <textarea id="description" name="description" class="form-textarea" rows="3">{{ values.description | default(value='') }}</textarea>
+        </div>
+
+        <div class="form-item">
+            <label for="hierarchy" class="form-item__label">Hierarchy type</label>
+            <select id="hierarchy" name="hierarchy" class="form-select">
+                <option value="0" {% if values.hierarchy == 0 %}selected{% endif %}>Flat (no hierarchy)</option>
+                <option value="1" {% if values.hierarchy == 1 %}selected{% endif %}>Single parent</option>
+                <option value="2" {% if values.hierarchy == 2 %}selected{% endif %}>Multiple parents</option>
+            </select>
+            <p class="form-item__description">Whether tags can have parent tags.</p>
+        </div>
+
+        {% if editing %}
+        {{ form::actions(submit_label="Save changes", cancel_url="/admin/structure/categories") }}
+        {% else %}
+        {{ form::actions(submit_label="Create category", cancel_url="/admin/structure/categories") }}
+        {% endif %}
+    </form>
+</div>
+
+{# Machine name auto-generation handled by admin-helpers.js via data attributes on the label input #}
+{% endblock %}

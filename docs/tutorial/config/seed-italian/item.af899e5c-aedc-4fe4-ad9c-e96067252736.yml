@@ -1,0 +1,29 @@
+# Droidcon Italy — translated (both EN + IT complete)
+id: 'af899e5c-aedc-4fe4-ad9c-e96067252736'
+type: conference
+title: Droidcon Italy 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>Droidcon Italy è il principale evento italiano per sviluppatori Android e mobile. Talk avanzati su Kotlin, Jetpack Compose e architetture moderne a Torino.</p>"
+      format: filtered_html
+    en:
+      value: "<p>Droidcon Italy is the premier Italian event for Android and mobile developers. Advanced talks on Kotlin, Jetpack Compose, and modern architectures in Turin.</p>"
+      format: filtered_html
+  field_start_date: '2026-10-08'
+  field_end_date: '2026-10-09'
+  field_city: Torino
+  field_country: IT
+  field_online: false
+  field_url: https://it.droidcon.com
+  field_language: it
+  field_topics:
+    - 0f57f225-c537-4391-8836-1250894c8ea4
+    - b97810d3-d2e0-4fd8-9717-17f11e07486a
+    - df3aab6c-4746-47a0-97bb-23e4e6eb36c6
+  primary_language: it
+  translation_status: translated

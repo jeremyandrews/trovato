@@ -1,0 +1,39 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Content Types", add_url="/admin/structure/types/add", add_label="Add content type") }}
+
+<div class="admin-card">
+    {% if content_types %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Machine name</th>
+                <th>Description</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ct in content_types %}
+            <tr>
+                <td>
+                    <a href="/admin/structure/types/{{ ct.machine_name }}/edit">{{ ct.label }}</a>
+                </td>
+                <td><code>{{ ct.machine_name }}</code></td>
+                <td>{{ ct.description | default(value="-") }}</td>
+                <td>
+                    <a href="/admin/structure/types/{{ ct.machine_name }}/edit">Edit</a>
+                    &middot;
+                    <a href="/admin/structure/types/{{ ct.machine_name }}/fields">Manage fields</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    {{ list::empty(message="No content types defined.", add_url="/admin/structure/types/add") }}
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,6 @@
+# Curated stage — internal, reviewed content awaiting publication
+category_id: stages
+label: Curated
+visibility: internal
+is_default: false
+weight: 5

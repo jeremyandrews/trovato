@@ -1,0 +1,31 @@
+# Pinned Rust toolchain for Trovato.
+#
+# WHY THIS FILE EXISTS
+# CI runs the toolchain action against this pin, and local development reads it
+# automatically (rustup honors rust-toolchain.toml in the working tree). Pinning
+# both sides to ONE version closes the toolchain-drift hole that turned CI red on
+# 2026-06-04: CI floated to stable 1.96.0 (which added new clippy lints) while
+# local dev was still on 1.94.1, so every local gate passed green while CI failed.
+#
+# BUMP PROTOCOL — read before changing `channel`
+# Bumping the channel is a deliberate action. The person who bumps it MUST, in the
+# SAME commit:
+#   1. Edit `channel` below to the new version.
+#   2. Edit `RUST_TOOLCHAIN` in .github/workflows/ci.yml to the SAME version.
+#      (dtolnay/rust-toolchain does not read this file, so CI carries its own pin;
+#      the two must stay in lock-step — that is the whole point of the protocol.)
+#   3. Run `./scripts/pre-commit-check.sh --full` on the new toolchain.
+#   4. Fix any new clippy/rustc lints the new version surfaces.
+#   5. Run `cargo audit` (a toolchain bump can change the resolved dependency set).
+# This is what makes future toolchain bumps non-surprising: the lints are fixed by
+# the bumper, deliberately, instead of ambushing the next unrelated CI run.
+#
+# 1.96.0 specifically: `main` is already clippy-clean against it (commit 52e8260
+# fixed those lints). Pinning to the older 1.94.1 would re-introduce the divergence.
+
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+# wasm32-wasip1 is the plugin compile target used by the Test, Coverage, and Build
+# CI jobs; carrying it here means every consumer of the pin gets it automatically.
+targets = ["wasm32-wasip1"]

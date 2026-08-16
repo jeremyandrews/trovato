@@ -1,0 +1,17 @@
+{% extends "gather/query.html" %}
+
+{% block query_content %}
+<ul class="gather-list">
+    {% for row in rows %}
+    <li class="gather-list__item" data-id="{{ row.id }}">
+        {% include "gather/row.html" %}
+    </li>
+    {% endfor %}
+</ul>
+
+{% if not rows %}
+<p class="gather-empty">No results found.</p>
+{% endif %}
+
+{# Gather list styles live in static/css/theme.css #}
+{% endblock %}

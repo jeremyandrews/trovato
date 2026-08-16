@@ -1,0 +1,152 @@
+{% extends "page.html" %}
+
+{% block title %}Active sessions{% endblock %}
+
+{% block content %}
+<div style="max-width: 820px; margin: 60px auto; padding: 2rem;">
+    {% if is_admin_view %}
+    <h1 style="margin-bottom: 0.5rem;">Active sessions for {{ user.name | escape }}</h1>
+    <p style="color: #555; margin-bottom: 1.5rem;">
+        Every device currently signed in to this account. Revoking one signs that
+        device out on its next request.
+    </p>
+    {% else %}
+    <h1 style="margin-bottom: 0.5rem;">Active sessions</h1>
+    <p style="color: #555; margin-bottom: 1.5rem;">
+        Every device currently signed in to your account. If you do not recognise
+        one, sign it out — and change your password or review your passkeys.
+    </p>
+    {% endif %}
+
+    <div id="session-message" role="status" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;"></div>
+
+    {% if sessions %}
+    <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+            <tr style="text-align: left; border-bottom: 2px solid #ddd;">
+                <th style="padding: 0.5rem 0;">Device</th>
+                <th style="padding: 0.5rem 0;">IP address</th>
+                <th style="padding: 0.5rem 0;">Signed in</th>
+                <th style="padding: 0.5rem 0;">Last active</th>
+                <th style="padding: 0.5rem 0;"></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for s in sessions %}
+            <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.6rem 0;">
+                    <span class="session-name">{{ s.device_name | escape }}</span>
+                    {% if s.is_current %}
+                    <strong style="color: #060; font-size: 0.85em;">(this device)</strong>
+                    {% endif %}
+                    <div style="color: #888; font-size: 0.8em; margin-top: 0.2rem;">
+                        {{ s.user_agent | escape | truncate(length=90) }}
+                    </div>
+                </td>
+                <td style="padding: 0.6rem 0; color: #555;">{{ s.ip | escape }}</td>
+                <td style="padding: 0.6rem 0; color: #555;">{{ s.created_at }}</td>
+                <td style="padding: 0.6rem 0; color: #555;">{{ s.last_seen }}</td>
+                <td style="padding: 0.6rem 0; text-align: right; white-space: nowrap;">
+                    {% if not is_admin_view %}
+                    <button type="button" class="session-rename" data-id="{{ s.device_id }}"
+                            style="cursor: pointer;">Rename</button>
+                    {% endif %}
+                    {% if not s.is_current %}
+                    <button type="button" class="session-revoke" data-id="{{ s.device_id }}"
+                            style="cursor: pointer;">Sign out</button>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% if not is_admin_view %}
+    <div style="margin-top: 1.5rem;">
+        <button type="button" id="revoke-others" style="padding: 0.6rem 1.2rem; cursor: pointer;">
+            Sign out everywhere else
+        </button>
+    </div>
+    {% endif %}
+    {% else %}
+    <p style="color: #777;">No active sessions recorded.</p>
+    {% endif %}
+
+    <p style="margin-top: 2rem;">
+        {% if is_admin_view %}
+        <a href="/admin/users">Back to users</a>
+        {% else %}
+        <a href="/user/profile">Back to my account</a>
+        {% endif %}
+    </p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var CSRF = {{ csrf_token | json_encode | safe }}; {# SAFE: json_encode emits a quoted, escaped JSON string literal #}
+  var IS_ADMIN_VIEW = {{ is_admin_view | json_encode | safe }}; {# SAFE: boolean #}
+  var SUBJECT_ID = {{ user.id | json_encode | safe }}; {# SAFE: uuid, json-encoded #}
+
+  var messageEl = document.getElementById("session-message");
+
+  function show(text, ok) {
+    messageEl.textContent = text;
+    messageEl.style.display = "block";
+    messageEl.style.background = ok ? "#efe" : "#fee";
+    messageEl.style.border = "1px solid " + (ok ? "#0a0" : "#c00");
+  }
+
+  function post(url, body) {
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
+      body: JSON.stringify(body || {})
+    }).then(function (response) {
+      return response.json().then(function (parsed) {
+        if (!response.ok) { throw new Error(parsed.error || "That did not work."); }
+        return parsed;
+      });
+    });
+  }
+
+  function revokeUrl(deviceId) {
+    return IS_ADMIN_VIEW
+      ? "/admin/users/" + SUBJECT_ID + "/sessions/" + deviceId + "/revoke"
+      : "/user/sessions/" + deviceId + "/revoke";
+  }
+
+  // Each action consumes the page's single-use CSRF token, so success reloads.
+  Array.prototype.forEach.call(document.querySelectorAll(".session-revoke"), function (el) {
+    el.addEventListener("click", function () {
+      post(revokeUrl(el.dataset.id))
+        .then(function () { window.location.reload(); })
+        .catch(function (err) { show(err.message, false); });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".session-rename"), function (el) {
+    el.addEventListener("click", function () {
+      var row = el.closest("tr");
+      var current = row.querySelector(".session-name").textContent.trim();
+      var name = window.prompt("Name for this device:", current);
+      if (name === null) { return; }
+      post("/user/sessions/" + el.dataset.id + "/rename", { device_name: name })
+        .then(function () { window.location.reload(); })
+        .catch(function (err) { show(err.message, false); });
+    });
+  });
+
+  var revokeOthers = document.getElementById("revoke-others");
+  if (revokeOthers) {
+    revokeOthers.addEventListener("click", function () {
+      post("/user/sessions/revoke-others")
+        .then(function () { window.location.reload(); })
+        .catch(function (err) { show(err.message, false); });
+    });
+  }
+})();
+</script>
+{% endblock %}

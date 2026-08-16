@@ -1,0 +1,45 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit role{% else %}Add role{% endif %}</h2>
+</div>
+
+<div class="admin-card">
+    <form id="role-form" method="post" action="{{ action }}">
+        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
+
+        {{ form::errors(errors=errors) }}
+
+        <div class="form-item">
+            <label for="name" class="form-item__label form-item__label--required">Role name</label>
+            <input type="text" id="name" name="name" class="form-text"
+                   value="{{ values.name | default(value='') }}"
+                   required>
+            <p class="form-item__description">The human-readable name of this role.</p>
+        </div>
+
+        {% if editing %}
+        {{ form::actions(submit_label="Save changes", cancel_url="/admin/people/roles") }}
+        {% else %}
+        {{ form::actions(submit_label="Create role", cancel_url="/admin/people/roles") }}
+        {% endif %}
+    </form>
+</div>
+
+{% if editing and role_permissions %}
+<div class="admin-card" style="margin-top: 1rem;">
+    <h3>Current Permissions</h3>
+    {% if role_permissions | length > 0 %}
+    <ul>
+        {% for perm in role_permissions %}
+        <li>{{ perm }}</li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>No permissions assigned. Use the <a href="/admin/people/permissions">permission matrix</a> to assign permissions.</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,27 @@
+{% set hlevel = cardHeadingLevel | default(value=3) %}
+<div class="pb-cards pb-cards--{{ variant | default(value='standard') }} pb-cards--cols-{{ columns | default(value=3) }}"{% if lang %} lang="{{ lang }}"{% endif %}>
+  {% if zones %}
+    {% for zone_key, zone_children in zones %}
+      {% if zone_key is starting_with("card-") %}
+      <article class="pb-card">
+        {% for child_html in zone_children %}{{ child_html | safe }}{% endfor %}
+      </article>
+      {% endif %}
+    {% endfor %}
+  {% elif cards %}
+    {% for card in cards %}
+    <article class="pb-card">
+      {% if card.image_url and variant != "compact" %}
+      <img src="{{ card.image_url }}" alt="{{ card.image_alt | default(value='') }}" class="pb-card__image" loading="lazy">
+      {% endif %}
+      <div class="pb-card__body">
+        {% if card.title %}<h{{ hlevel }} class="pb-card__title">{{ card.title }}</h{{ hlevel }}>{% endif %}
+        {% if card.body %}<p class="pb-card__text">{{ card.body }}</p>{% endif %}
+        {% if card.link_url %}
+        <a href="{{ card.link_url }}" class="pb-card__link">{{ card.link_text | default(value="Learn more") }}</a>
+        {% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  {% endif %}
+</div>

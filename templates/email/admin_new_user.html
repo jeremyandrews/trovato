@@ -1,0 +1,10 @@
+{% extends "email/base.html" %}
+{% block content %}
+<h2 style="margin: 0 0 15px; font-size: 18px; color: #1f2937;">New user registration</h2>
+<p style="color: #374151; line-height: 1.6;">A new user has registered at {{ site_name }}:</p>
+<table style="margin: 15px 0; border-collapse: collapse;">
+<tr><td style="padding: 5px 15px 5px 0; font-weight: 600; color: #374151;">Username:</td><td style="color: #374151;">{{ username }}</td></tr>
+<tr><td style="padding: 5px 15px 5px 0; font-weight: 600; color: #374151;">Email:</td><td style="color: #374151;">{{ user_email }}</td></tr>
+</table>
+<p><a href="{{ action_url }}" style="color: #4f46e5;">Manage users</a></p>
+{% endblock %}

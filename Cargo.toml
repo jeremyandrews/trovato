@@ -1,0 +1,172 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kernel",
+    "crates/mcp-server",
+    "crates/plugin-sdk",
+    "crates/plugin-sdk-macros",
+    "crates/test-utils",
+    "crates/argus-core",
+    "crates/netgrasp-core",
+    "benchmarks/phase0",
+    "benchmarks/load-test",
+    "plugins/trovato_blog",
+    "plugins/trovato_media",
+    "plugins/trovato_redirects",
+    "plugins/trovato_audit_log",
+    "plugins/trovato_scheduled_publishing",
+    "plugins/trovato_content_locking",
+    "plugins/trovato_webhooks",
+    "plugins/trovato_image_styles",
+    "plugins/trovato_oauth2",
+    "plugins/trovato_categories",
+    "plugins/trovato_comments",
+    "plugins/trovato_locale",
+    "plugins/trovato_content_translation",
+    "plugins/trovato_config_translation",
+    "plugins/trovato_block_editor",
+    "plugins/trovato_search",
+    "plugins/trovato_ai",
+    "plugins/argus",
+    "plugins/netgrasp",
+    "plugins/goose",
+"plugins/trovato_seo",
+    "plugins/trovato_page_builder",
+    "plugins/trovato_scolta",
+    "plugins/trovato_captcha",
+    "plugins/trovato_feeds",
+    "plugins/test_plugin_api",
+    "plugins/trovato_series",
+    # Epic 2 (Story 2.4) plugin-to-plugin invocation e2e test fixtures. Built with
+    # --target wasm32-wasip1 (like the other plugin cdylibs); not default-members.
+    "plugins/test_e2e_caller",
+    "plugins/test_e2e_callee",
+    "plugins/test_e2e_bystander",
+    "plugins/test_e2e_nocaps",
+    # P11c (D-40/D-41) background-AI principal e2e fixture: calls ai_request from
+    # tap_cron; built with --target wasm32-wasip1 like the other plugin cdylibs.
+    "plugins/test_ai_background",
+    # P11d (D-45..D-48) plugin-queue-v2 e2e fixture: tap_queue_worker that can
+    # trap, tap_queue_info declaring concurrency, tap_cron exercising `enqueue`;
+    # built with --target wasm32-wasip1 like the other plugin cdylibs.
+    "plugins/test_queue_worker",
+    # FR-8 (Story 3.8) reference plugin: the canonical tap_field_access
+    # implementation (Cairn tier + Ritrovo role patterns). Real, enableable
+    # plugin; built with --target wasm32-wasip1 like the other plugin cdylibs.
+    "plugins/trovato_field_access_ref",
+    # FR-7c (Story 4.5) recovery-tap freeze-gate fixtures: the canonical
+    # tap_account_recovery reference (owner of trovato_recovery_ref:code) and a
+    # rogue bystander that forges Verified (owner-scoped fold must ignore it);
+    # built with --target wasm32-wasip1 like the other plugin cdylibs.
+    "plugins/trovato_recovery_ref",
+    "plugins/test_recovery_bystander",
+    # P11g (D-59) lightweight-record freeze-gate fixture: declares the
+    # `event_record` record type and governs it with tap_field_access, exercised
+    # through real gather + the real FR-8 seam; built with --target wasm32-wasip1.
+    "plugins/trovato_record_ref",
+]
+# Guest WASM crate must be built separately with --target wasm32-wasip1
+# Plugin cdylibs (argus, netgrasp, goose) excluded — build with --target wasm32-wasip1
+default-members = [
+    "crates/kernel",
+    "crates/mcp-server",
+    "crates/plugin-sdk",
+    "crates/plugin-sdk-macros",
+    "crates/test-utils",
+    "crates/argus-core",
+    "crates/netgrasp-core",
+    "benchmarks/phase0",
+    "benchmarks/load-test",
+    "plugins/trovato_blog",
+]
+
+[workspace.package]
+# The single version string for the whole project. Every in-tree crate inherits
+# it with `version.workspace = true`, and the plugin manifests, the plugin API
+# tuple (KERNEL_API_VERSION) and the Docker tags all move with it in lock-step.
+# See docs/design/Versioning.md and docs/design/version-map.md.
+version = "0.99.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Jeremiah Andrews"]
+repository = "https://github.com/jeremyandrews/trovato"
+homepage = "https://github.com/jeremyandrews/trovato"
+
+[workspace.dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "timeout", "compression-gzip", "cors"] }
+tower-sessions = "0.14"
+tower-sessions-redis-store = "0.16"
+fred = { version = "10", features = ["subscriber-client"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json", "chrono", "uuid"] }
+sea-query = { version = "0.32", features = ["backend-postgres", "with-uuid"] }
+wasmtime = "43"
+argon2 = "0.5"
+# FR-7a (D-34): the WebAuthn/passkey ceremony implementation. `danger-allow-state-
+# serialisation` is required to hold the in-flight PasskeyRegistration /
+# PasskeyAuthentication in the Redis-backed session (design §1: no new challenge
+# store). `danger-credential-internals` is required to read the denormalized
+# lookup/display columns (counter, backup flags, AAGUID) that D-35 puts alongside
+# the authoritative serialized `Passkey` blob. Both are read-only escapes; neither
+# weakens verification, which stays entirely inside the library.
+webauthn-rs = { version = "0.5", features = [
+    "danger-allow-state-serialisation",
+    "danger-credential-internals",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml = "=0.0.12"
+toml = "0.8"
+moka = { version = "0.12", features = ["future", "sync"] }
+redis = { version = "0.27", features = ["tokio-comp", "cluster-async"] }
+dashmap = "6"
+tera = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v7", "serde"] }
+anyhow = "1"
+dotenvy = "0.15"
+hex = "0.4"
+infer = "0.19"
+rand = "0.8"
+regex = "1"
+sha2 = "0.10"
+hostname = "0.4"
+async-trait = "0.1"
+urlencoding = "2"
+prometheus-client = "0.22"
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+jsonwebtoken = "9"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+hmac = "0.12"
+aes-gcm = "0.10"
+hkdf = "0.12"
+subtle = "2"
+base64 = "0.22"
+url = "2"
+ammonia = "4"
+syntect = "5"
+parking_lot = "0.12"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
+async-stream = "0.3"
+futures-core = "0.3"
+roxmltree = "0.20"
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+# The following are already covered by `all` but listed explicitly so they
+# remain visible as project-level expectations and survive any future change
+# to the `all` group.
+manual_let_else = "warn"
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"

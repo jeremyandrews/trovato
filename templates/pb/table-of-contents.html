@@ -1,0 +1,17 @@
+{# Table of contents — requires headings array injected by a two-pass renderer.
+   Deferred to a follow-up: for now renders a placeholder if headings not provided. #}
+<nav class="pb-toc" aria-label="Table of contents">
+  {% if headings %}
+  <ul class="pb-toc__list">
+    {% for heading in headings %}
+      {% if heading.level <= maxDepth | default(value=3) %}
+      <li class="pb-toc__item pb-toc__item--level-{{ heading.level }}">
+        <a href="#{{ heading.id }}">{{ heading.text }}</a>
+      </li>
+      {% endif %}
+    {% endfor %}
+  </ul>
+  {% else %}
+  <!-- TableOfContents: no headings data available -->
+  {% endif %}
+</nav>

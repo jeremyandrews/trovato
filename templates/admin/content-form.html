@@ -1,0 +1,179 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/tabs.html" as tabs %}
+
+{% block content %}
+{% set_global has_compound = false %}
+{% set_global has_file = false %}
+{% set_global has_blocks = false %}
+{% for field in content_type.fields %}
+{% if field.field_type.Compound %}{% set_global has_compound = true %}{% endif %}
+{% if field.field_type == "File" %}{% set_global has_file = true %}{% endif %}
+{% if field.field_type == "Blocks" %}{% set_global has_blocks = true %}{% endif %}
+{% endfor %}
+{% if has_compound %}
+<link rel="stylesheet" href="/static/css/compound-field.css">
+{% endif %}
+{% if has_file %}
+<link rel="stylesheet" href="/static/css/media-picker.css">
+{% endif %}
+{% if has_blocks %}
+<link rel="stylesheet" href="/static/css/block-editor.css">
+{% endif %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit {{ content_type.label }}{% else %}Create {{ content_type.label }}{% endif %}</h2>
+</div>
+
+{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}
+
+<div class="admin-card">
+    <form id="content-form" method="post" action="{{ action }}">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+
+        {% if errors %}
+        <div class="form__errors">
+            <ul>
+                {% for error in errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        <div class="form-item">
+            <label for="title" class="form-item__label form-item__label--required">{{ content_type.title_label | default(value="Title") }}</label>
+            <input type="text" id="title" name="title" class="form-text"
+                   value="{{ values.title | default(value='') }}"
+                   required>
+            {% if ai_assist_enabled %}<button type="button" class="ai-assist-btn" data-field="title" title="AI Assist">AI Assist</button>{% endif %}
+        </div>
+
+        {% for field in content_type.fields %}
+        <div class="form-item">
+            <label for="{{ field.field_name }}" class="form-item__label {% if field.required %}form-item__label--required{% endif %}">
+                {{ field.label }}
+            </label>
+            {% if field.field_type.Text %}
+            <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% if ai_assist_enabled %}<button type="button" class="ai-assist-btn" data-field="{{ field.field_name }}" title="AI Assist">AI Assist</button>{% endif %}
+            {% elif field.field_type == "TextLong" %}
+            <textarea id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-textarea" rows="5"
+                      {% if field.required %}required{% endif %}>{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}</textarea>
+            {% if ai_assist_enabled %}<button type="button" class="ai-assist-btn" data-field="{{ field.field_name }}" title="AI Assist">AI Assist</button>{% endif %}
+            {% elif field.field_type == "Boolean" %}
+            <div class="form-checkbox-wrapper">
+                <input type="checkbox" id="{{ field.field_name }}" name="{{ field.field_name }}" value="1"
+                       {% if values.fields[field.field_name] or (item and item.fields[field.field_name]) %}checked{% endif %}>
+            </div>
+            {% elif field.field_type == "Integer" %}
+            <input type="number" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Float" %}
+            <input type="number" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" step="any"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Date" %}
+            <input type="date" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Email" %}
+            <input type="email" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "File" %}
+            {% set file_val = "" %}
+            {% if values.fields[field.field_name] is defined %}{% set file_val = values.fields[field.field_name] %}{% elif item and item.fields[field.field_name] is defined %}{% set file_val = item.fields[field.field_name] %}{% endif %}
+            <div class="file-upload-widget" data-field="{{ field.field_name }}">
+                <input type="hidden" id="{{ field.field_name }}" name="{{ field.field_name }}" value="{{ file_val }}">
+                <div class="file-upload-widget__preview" {% if not file_val %}style="display:none"{% endif %}>
+                    {% if file_val %}<span class="file-upload-widget__filename">File attached</span>{% endif %}
+                    <button type="button" class="button button--small file-upload-widget__remove">Remove</button>
+                </div>
+                <div class="file-upload-widget__input" {% if file_val %}style="display:none"{% endif %}>
+                    <input type="file" class="file-upload-widget__file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.gz">
+                    <button type="button" class="button button--small media-picker-browse" data-target="{{ field.field_name }}">Browse media</button>
+                    <span class="file-upload-widget__status"></span>
+                </div>
+                <p class="form-item__description">Max 10 MB. Allowed: images, PDFs, documents, archives.</p>
+            </div>
+            {% elif field.field_type.RecordReference %}
+            <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" placeholder="UUID"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% elif field.field_type == "Blocks" %}
+            <input type="hidden" id="{{ field.field_name }}" name="{{ field.field_name }}"
+                   value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}[]{% endif %}">
+            <div data-block-editor data-block-editor-input="{{ field.field_name }}"></div>
+            {% elif field.field_type.Compound %}
+            <div class="compound-field" id="compound-{{ field.field_name }}"
+                 data-field="{{ field.field_name }}"
+                 data-config="{{ field.field_type.Compound | json_encode() | escape }}"
+                 data-section-types="{{ field.settings.section_types | default(value=[]) | json_encode() | escape }}">
+                <div class="compound-field__sections">
+                </div>
+                <input type="hidden" name="{{ field.field_name }}" class="compound-field__value"
+                       value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}{&quot;sections&quot;:[]}{% endif %}">
+                <div class="compound-field__actions">
+                    <button type="button" class="button compound-field__add">Add section</button>
+                </div>
+            </div>
+            {% else %}
+            <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
+                   value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
+                   {% if field.required %}required{% endif %}>
+            {% endif %}
+            {% if field.description %}
+            <p class="form-item__description">{{ field.description }}</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <fieldset class="fieldset">
+            <legend>Publishing options</legend>
+            <div class="fieldset__content">
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="status" name="status" value="1"
+                               {% if values.status %}checked{% elif not editing %}checked{% endif %}>
+                        <label for="status">Published</label>
+                    </div>
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create content{% endif %}</button>
+            <a href="/admin/content" class="button button--secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{% if has_compound %}
+<script src="/static/js/compound-field.js"></script>
+{% endif %}
+{% if has_file %}
+<script src="/static/js/file-upload.js"></script>
+<script src="/static/js/media-picker.js"></script>
+{% endif %}
+{% if has_blocks %}
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/editorjs@2.31.5/dist/editorjs.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/header@2.8.8/dist/header.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/list@1.9.0/dist/list.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/quote@2.7.6/dist/quote.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/code@2.9.4/dist/code.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/image@2.10.3/dist/image.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/delimiter@1.4.2/dist/delimiter.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@editorjs/embed@2.8.0/dist/embed.umd.js"></script>
+<script src="/static/js/block-editor.js"></script>
+{% endif %}
+<link rel="stylesheet" href="/static/css/ai-assist.css">
+<script src="/static/js/ai-assist.js"></script>
+<link rel="stylesheet" href="/static/css/record-ref.css">
+<script src="/static/js/record-ref.js"></script>
+{% endblock %}

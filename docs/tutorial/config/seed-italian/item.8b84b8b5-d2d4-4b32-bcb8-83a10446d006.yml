@@ -1,0 +1,28 @@
+# Cloudconf Torino — in_progress (Italian complete, English partial)
+id: '8b84b8b5-d2d4-4b32-bcb8-83a10446d006'
+type: conference
+title: Cloudconf Torino 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>Cloudconf è la conferenza italiana sul cloud computing. Talk su AWS, Azure, GCP, architetture serverless, Kubernetes in produzione e strategie multi-cloud per aziende italiane.</p>"
+      format: filtered_html
+    en:
+      value: "<p>Cloudconf is the Italian cloud computing conference.</p>"
+      format: filtered_html
+  field_start_date: '2026-06-19'
+  field_end_date: '2026-06-19'
+  field_city: Torino
+  field_country: IT
+  field_online: false
+  field_url: https://cloudconf.it
+  field_language: it
+  field_topics:
+    - de735a3a-8a7d-4285-9d6d-28b10a9b3ed4
+    - 25119316-f777-47d8-8593-86ee5609c2cd
+  primary_language: it
+  translation_status: in_progress

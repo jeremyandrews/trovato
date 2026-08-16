@@ -1,0 +1,22 @@
+{
+    "name": "Trovato Dev",
+    "dockerComposeFile": ["../docker-compose.yml"],
+    "service": "dev",
+    "workspaceFolder": "/workspace",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "vadimcn.vscode-lldb"
+            ],
+            "settings": {
+                "rust-analyzer.check.command": "clippy",
+                "rust-analyzer.check.extraArgs": ["--all-targets", "--", "-D", "warnings"],
+                "editor.formatOnSave": true
+            }
+        }
+    },
+    "forwardPorts": [3000],
+    "postCreateCommand": "cargo fetch"
+}

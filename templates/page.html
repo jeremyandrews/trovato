@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block head %}
+{# All page-layout styles live in static/css/theme.css #}
+{% endblock %}
+
+{% block header %}
+{# ═══ Header Slot ═══ #}
+<div class="site-header">
+    <div class="container">
+        <div class="site-branding">
+            <a href="/" class="site-branding__name">{{ site_name | default(value="Trovato") }}</a>
+            {% if site_slogan %}
+            <span class="site-branding__slogan">{{ site_slogan }}</span>
+            {% endif %}
+        </div>
+        <nav class="site-nav">
+            {% if main_menu is defined and main_menu %}
+            {% for link in main_menu %}
+            {% if not link.hidden %}
+            <a href="{{ link.path }}" class="site-nav__link{% if current_path is defined and current_path == link.path %} site-nav__link--active{% endif %}">{{ link.title }}</a>
+            {% endif %}
+            {% endfor %}
+            {% elif menus is defined %}
+            {% for menu in menus %}
+            <a href="{{ menu.path }}" class="site-nav__link">{{ menu.title }}</a>
+            {% endfor %}
+            {% endif %}
+            <div class="site-nav__divider"></div>
+            {% if user_authenticated %}
+            {% if user_is_admin %}<a href="/admin" class="site-nav__link">Admin</a>{% endif %}
+            <a href="/user/profile" class="site-nav__link">Profile</a>
+            <form method="post" action="/user/logout" class="site-nav__logout-form">
+                <input type="hidden" name="_token" value="{{ csrf_token }}">
+                <button type="submit" class="site-nav__link site-nav__logout">Logout</button>
+            </form>
+            {% else %}
+            <a href="/user/login" class="site-nav__link">Login</a>
+            {% endif %}
+        </nav>
+    </div>
+    {% if header_tiles is defined and header_tiles %}
+    <div class="container">
+        {{ header_tiles | safe }} {# SAFE: kernel tile render pipeline output #}
+    </div>
+    {% endif %}
+</div>
+
+{# ═══ Navigation Slot ═══ #}
+{% if navigation_tiles is defined and navigation_tiles %}
+<div class="site-navigation">
+    <div class="container">
+        {{ navigation_tiles | safe }} {# SAFE: kernel tile render pipeline output #}
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{# ═══ Content + Sidebar Slots ═══ #}
+{% if sidebar_tiles is defined and sidebar_tiles %}
+<div class="page-layout">
+    <div class="page-layout__main">
+        {% if breadcrumbs is defined and breadcrumbs %}
+        <nav class="breadcrumb">
+            {% for crumb in breadcrumbs %}
+            {% if not loop.last %}
+            <a href="{{ crumb.path }}">{{ crumb.title }}</a>
+            <span class="breadcrumb__separator">&rsaquo;</span>
+            {% else %}
+            <span>{{ crumb.title }}</span>
+            {% endif %}
+            {% endfor %}
+        </nav>
+        {% endif %}
+        {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
+    </div>
+    <aside class="page-layout__sidebar">
+        {{ sidebar_tiles | safe }} {# SAFE: kernel tile render pipeline output #}
+    </aside>
+</div>
+{% else %}
+{% if breadcrumbs is defined and breadcrumbs %}
+<nav class="breadcrumb">
+    {% for crumb in breadcrumbs %}
+    {% if not loop.last %}
+    <a href="{{ crumb.path }}">{{ crumb.title }}</a>
+    <span class="breadcrumb__separator">&rsaquo;</span>
+    {% else %}
+    <span>{{ crumb.title }}</span>
+    {% endif %}
+    {% endfor %}
+</nav>
+{% endif %}
+{{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
+{% endif %}
+{% endblock %}
+
+{% block footer %}
+{# ═══ Footer Slot ═══ #}
+<div class="site-footer">
+    {% if footer_menu is defined and footer_menu %}
+    <nav class="footer-nav">
+        {% for link in footer_menu %}
+        {% if not link.hidden %}
+        <a href="{{ link.path }}">{{ link.title }}</a>
+        {% endif %}
+        {% endfor %}
+    </nav>
+    {% endif %}
+    {% if footer_tiles is defined and footer_tiles %}
+    {{ footer_tiles | safe }} {# SAFE: kernel tile render pipeline output #}
+    {% endif %}
+    &copy; {{ site_name | default(value="Trovato") }}. Powered by Trovato.
+</div>
+{% endblock %}

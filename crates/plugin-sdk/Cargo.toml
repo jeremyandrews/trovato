@@ -1,0 +1,15 @@
+[package]
+name = "trovato-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Trovato Plugin SDK — types, traits, and host function bindings for WASM plugins"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+trovato-sdk-macros = { path = "../plugin-sdk-macros" }

@@ -1,0 +1,3 @@
+{%- set tag = element.tag | default(value="span") -%}
+{# SAFE: `element.tag` is clamped to SAFE_TAGS and `attributes` is filtered (invalid/on* keys and unsafe href/src schemes dropped) in Rust before this context is built — see RenderTreeConsumer::render_element / sanitize_attributes. Attribute values are Tera-autoescaped; `value` is pre-sanitized by the render pipeline. #}
+<{{ tag }}{% if class %} class="{{ class }}"{% endif %}{% if attributes %}{% for key, value in attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>{{ value | safe }}</{{ tag }}>

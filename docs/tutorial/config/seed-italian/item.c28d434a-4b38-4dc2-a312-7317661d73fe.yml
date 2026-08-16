@@ -1,0 +1,28 @@
+# RustLab Firenze — translated (both EN + IT complete)
+id: 'c28d434a-4b38-4dc2-a312-7317661d73fe'
+type: conference
+title: RustLab Firenze 2026
+language: it
+status: 1
+created: 1741824000
+changed: 1741824000
+fields:
+  field_description:
+    it:
+      value: "<p>RustLab è la conferenza italiana dedicata al linguaggio Rust. Due giorni di talk tecnici e workshop pratici nel cuore di Firenze.</p>"
+      format: filtered_html
+    en:
+      value: "<p>RustLab is the Italian conference dedicated to the Rust language. Two days of technical talks and hands-on workshops in the heart of Florence.</p>"
+      format: filtered_html
+  field_start_date: '2026-11-09'
+  field_end_date: '2026-11-10'
+  field_city: Firenze
+  field_country: IT
+  field_online: false
+  field_url: https://rustlab.it
+  field_language: it
+  field_topics:
+    - d953559d-2669-4bfb-b652-170b58993d2e
+    - f9e32cee-d315-4baa-bc0a-4394b86df998
+  primary_language: it
+  translation_status: translated

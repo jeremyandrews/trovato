@@ -1,0 +1,23 @@
+name = "trovato_series"
+description = "Blog series navigation with previous/next links"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_item_view",
+]
+weight = 0
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel
+# builds this plugin's WASM linker from host_interfaces — it receives exactly
+# the host interfaces named here (plus baseline WASI). Derived from the
+# compiled .wasm import section.
+[capabilities]
+host_interfaces = ["db", "logging"]
+# Uses the raw-SQL host functions (query-raw/execute-raw). WASM-2 field
+# (declared now, enforced later); inert under WASM-1.
+raw_sql = true

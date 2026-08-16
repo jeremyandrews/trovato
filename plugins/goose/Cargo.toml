@@ -1,0 +1,17 @@
+[package]
+name = "goose"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Load testing metrics and results plugin for Trovato"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

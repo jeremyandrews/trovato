@@ -1,0 +1,57 @@
+{# Comment section for displaying on item pages #}
+<section class="comments" id="comments">
+    <h2 class="comments__title">Comments{% if total %} ({{ total }}){% endif %}</h2>
+
+    {% if comments %}
+    <div class="comments__list">
+        {% for comment in comments %}
+        <article class="comment comment--depth-{{ comment.depth }}" id="comment-{{ comment.id }}" style="margin-left: {{ comment.depth * 2 }}rem;">
+            <header class="comment__header">
+                <span class="comment__author">{{ comment.author_name | default(value="Anonymous") }}</span>
+                <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
+            </header>
+            <div class="comment__body">
+                {{ comment.body_html | safe }} {# SAFE: stored HTML from sanitized input pipeline — body_html is pre-sanitized on save #}
+            </div>
+            <footer class="comment__footer">
+                {% if can_reply %}
+                <a href="#comment-form" class="comment__reply-link" data-parent-id="{{ comment.id }}">Reply</a>
+                {% endif %}
+            </footer>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="comments__empty">No comments yet. Be the first to comment!</p>
+    {% endif %}
+
+    {% if can_comment %}
+    <div class="comment-form-wrapper" id="comment-form">
+        <h3 class="comment-form__title">Add a Comment</h3>
+        <form class="comment-form" method="post" action="/api/item/{{ item_id }}/comments">
+            <input type="hidden" name="parent_id" id="comment-parent-id" value="">
+
+            <div class="form-group">
+                <label for="comment-body" class="sr-only">Your comment</label>
+                <textarea id="comment-body" name="body" rows="4" placeholder="Write your comment..." required></textarea>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="button button--primary">Post Comment</button>
+                <span id="replying-to" class="replying-indicator" style="display: none;">
+                    Replying to comment <span id="reply-parent-id"></span>
+                    <button type="button" class="cancel-reply" onclick="cancelReply()">Cancel</button>
+                </span>
+            </div>
+        </form>
+    </div>
+    {% elif not user_logged_in %}
+    <p class="comments__login-prompt">
+        <a href="/user/login?destination={{ current_path | urlencode }}">Log in</a> to post a comment.
+    </p>
+    {% endif %}
+</section>
+
+{# Comment styles live in static/css/theme.css #}
+
+<script src="/static/js/comment-reply.js"></script>

@@ -1,0 +1,84 @@
+{% extends "page.html" %}
+
+{% block title %}Account recovery settings{% endblock %}
+
+{% block content %}
+<div style="max-width: 720px; margin: 60px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 0.5rem;">Account recovery</h1>
+    <p style="color: #555; margin-bottom: 1rem;">
+        Which built-in recovery paths this site offers. Plugins can add their own
+        methods; those are configured by the plugin, not here.
+    </p>
+
+    <div style="background: #ffd; border: 1px solid #cc0; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem;">
+        <strong>Recovery is the weakest link.</strong> A passkey sign-in cannot be
+        phished; an emailed recovery code can. Whichever recovery paths you leave
+        on set the real strength of every account on this site. A high-assurance
+        deployment should turn email recovery off and require saved codes or a
+        plugin-provided method.
+    </div>
+
+    <div id="recovery-message" role="status" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;"></div>
+
+    <div style="margin-bottom: 1rem;">
+        <label>
+            <input type="checkbox" id="email-enabled" {% if email_enabled %}checked{% endif %}
+                   {% if not smtp_configured %}disabled{% endif %}>
+            Emailed recovery code
+        </label>
+        {% if not smtp_configured %}
+        <div style="color: #a60; font-size: 0.9em; margin-left: 1.5rem;">
+            SMTP is not configured, so this path is inert regardless of this setting.
+        </div>
+        {% else %}
+        <div style="color: #777; font-size: 0.9em; margin-left: 1.5rem;">
+            Sends a one-time code to the address on the account. Phishable.
+        </div>
+        {% endif %}
+    </div>
+
+    <div style="margin-bottom: 1.5rem;">
+        <label>
+            <input type="checkbox" id="codes-enabled" {% if codes_enabled %}checked{% endif %}>
+            Saved recovery codes
+        </label>
+        <div style="color: #777; font-size: 0.9em; margin-left: 1.5rem;">
+            Users generate codes and keep them. No email, no second device.
+        </div>
+    </div>
+
+    <button type="button" id="save" style="padding: 0.6rem 1.2rem; cursor: pointer;">Save</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var CSRF = {{ csrf_token | json_encode | safe }}; {# SAFE: json_encode emits a quoted, escaped JSON string literal #}
+  var messageEl = document.getElementById("recovery-message");
+
+  document.getElementById("save").addEventListener("click", function () {
+    fetch("/admin/recovery", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
+      body: JSON.stringify({
+        email_enabled: document.getElementById("email-enabled").checked,
+        codes_enabled: document.getElementById("codes-enabled").checked
+      })
+    }).then(function (response) {
+      messageEl.style.display = "block";
+      if (response.ok) {
+        messageEl.textContent = "Saved.";
+        messageEl.style.background = "#efe";
+        messageEl.style.border = "1px solid #0a0";
+      } else {
+        messageEl.textContent = "Could not save.";
+        messageEl.style.background = "#fee";
+        messageEl.style.border = "1px solid #c00";
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

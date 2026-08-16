@@ -1,0 +1,49 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Categories", add_url="/admin/structure/categories/add", add_label="Add category") }}
+
+<div class="admin-card">
+    {% if categories %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Machine name</th>
+                <th>Hierarchy</th>
+                <th>Tags</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for cat in categories %}
+            <tr>
+                <td>
+                    <a href="/admin/structure/categories/{{ cat.id }}/tags">{{ cat.label }}</a>
+                </td>
+                <td><code>{{ cat.id }}</code></td>
+                <td>
+                    {% if cat.hierarchy == 0 %}Flat
+                    {% elif cat.hierarchy == 1 %}Single parent
+                    {% else %}Multiple parents
+                    {% endif %}
+                </td>
+                <td>{{ tag_counts[cat.id] | default(value=0) }}</td>
+                <td>
+                    <a href="/admin/structure/categories/{{ cat.id }}/tags">List tags</a>
+                    &middot;
+                    <a href="/admin/structure/categories/{{ cat.id }}/edit">Edit</a>
+                    &middot;
+                    {{ list::delete_button(action="/admin/structure/categories/" ~ cat.id ~ "/delete", confirm_text="Are you sure you want to delete this category and all its tags?", csrf_token=csrf_token) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    {{ list::empty(message="No categories found.", add_url="/admin/structure/categories/add") }}
+    {% endif %}
+</div>
+
+{% endblock %}

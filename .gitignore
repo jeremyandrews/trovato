@@ -1,0 +1,51 @@
+# Database backups
+/backups/
+
+# Build artifacts
+/target
+**/*.rs.bk
+
+# WASM binaries (generated, not source)
+*.wasm
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local coding-agent configuration and worktrees (per developer, never shared)
+.claude/
+.agents/
+.codex/
+.cursor/
+AGENTS.md
+CLAUDE.md
+
+# SQLx offline cache (regenerated with cargo sqlx prepare)
+# Uncomment if not using offline mode in CI
+# .sqlx/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# Docker compose override (may contain API keys or local config)
+docker-compose.override.yml
+
+# Docker volumes (local dev data)
+docker-data/
+
+# File uploads (runtime data)
+uploads/
+**/uploads/
+
+# Python virtual environments
+.venv/
+**/.venv/
+
+# Local environment-discovery notes (per developer machine)
+TOOLS.md
+target/
+**/target/

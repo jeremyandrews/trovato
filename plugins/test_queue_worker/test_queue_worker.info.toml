@@ -1,0 +1,16 @@
+name = "test_queue_worker"
+description = "P11d e2e fixture: plugin queue v2 (D-45..D-48)"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_cron", "tap_queue_info", "tap_queue_worker"]
+weight = 0
+
+# `queue` grants the push/enqueue host imports (tap_cron exercises the additive
+# `enqueue`); `logging` is present because the #[plugin_tap] macro references the
+# logging import on its error paths.
+[capabilities]
+host_interfaces = ["logging", "queue"]

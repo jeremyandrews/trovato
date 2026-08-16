@@ -1,0 +1,129 @@
+//! Permission checking service with TTL-based caching.
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use moka::sync::Cache;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::models::role::well_known;
+use crate::models::{Role, User};
+
+/// Maximum entries in the permission cache.
+const MAX_CAPACITY: u64 = 10_000;
+
+/// Permission cache entry.
+#[derive(Debug, Clone)]
+struct CachedPermissions {
+    permissions: HashSet<String>,
+}
+
+/// Permission service with TTL-based cached lookups.
+#[derive(Clone)]
+pub struct PermissionService {
+    inner: Arc<PermissionServiceInner>,
+}
+
+struct PermissionServiceInner {
+    /// Cache of user_id -> permissions (TTL-bounded).
+    user_cache: Cache<Uuid, CachedPermissions>,
+
+    /// Database pool for cache misses.
+    pool: PgPool,
+}
+
+impl PermissionService {
+    /// Create a new permission service.
+    pub fn new(pool: PgPool, ttl: Duration) -> Self {
+        Self {
+            inner: Arc::new(PermissionServiceInner {
+                user_cache: Cache::builder()
+                    .max_capacity(MAX_CAPACITY)
+                    .time_to_live(ttl)
+                    .build(),
+                pool,
+            }),
+        }
+    }
+
+    /// Check if a user has a specific permission.
+    ///
+    /// - Admin users always return true.
+    /// - Anonymous users check only the anonymous role.
+    /// - Authenticated users check their assigned roles + authenticated role.
+    pub async fn user_has_permission(&self, user: &User, permission: &str) -> Result<bool> {
+        // Admins have all permissions
+        if user.is_admin {
+            return Ok(true);
+        }
+
+        // Check cache first
+        if let Some(cached) = self.inner.user_cache.get(&user.id) {
+            return Ok(cached.permissions.contains(permission));
+        }
+
+        // Cache miss - load from database
+        let permissions = self.load_user_permissions(user).await?;
+        let has_permission = permissions.contains(permission);
+
+        // Cache the result
+        self.inner
+            .user_cache
+            .insert(user.id, CachedPermissions { permissions });
+
+        Ok(has_permission)
+    }
+
+    /// Load all permissions for a user from the database.
+    ///
+    /// Returns the raw role-based permission set (does **not** include the
+    /// implicit admin bypass). Callers building a [`UserContext`](crate::tap::UserContext) for admin
+    /// users should add `"administer site"` themselves so that
+    /// [`UserContext::is_admin`](crate::tap::UserContext::is_admin) returns `true`.
+    pub async fn load_user_permissions(&self, user: &User) -> Result<HashSet<String>> {
+        let mut permissions = HashSet::new();
+
+        // Note: Uses Role model directly (not RoleService) because
+        // PermissionService is initialized before RoleService in AppState.
+        // These are read-only lookups with no cache invalidation needed.
+        if user.is_anonymous() {
+            // Anonymous users only get anonymous role permissions
+            let anon_perms =
+                Role::get_permissions(&self.inner.pool, well_known::ANONYMOUS_ROLE_ID).await?;
+            permissions.extend(anon_perms);
+        } else {
+            // Get user's direct role permissions
+            let user_perms = Role::get_user_permissions(&self.inner.pool, user.id).await?;
+            permissions.extend(user_perms);
+
+            // All authenticated users also get the authenticated role permissions
+            let auth_perms =
+                Role::get_permissions(&self.inner.pool, well_known::AUTHENTICATED_ROLE_ID).await?;
+            permissions.extend(auth_perms);
+        }
+
+        Ok(permissions)
+    }
+
+    /// Invalidate the cache for a specific user.
+    ///
+    /// Call this when a user's roles or permissions change.
+    pub fn invalidate_user(&self, user_id: Uuid) {
+        self.inner.user_cache.invalidate(&user_id);
+    }
+
+    /// Invalidate the entire cache.
+    ///
+    /// Call this when role permissions change.
+    pub fn invalidate_all(&self) {
+        self.inner.user_cache.invalidate_all();
+    }
+
+    /// Get the number of cached entries (for monitoring).
+    pub fn cache_size(&self) -> usize {
+        self.inner.user_cache.entry_count() as usize
+    }
+}

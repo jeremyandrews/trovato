@@ -1,0 +1,20 @@
+name = "trovato_field_access_ref"
+description = "FR-8 reference plugin: canonical tap_field_access (Cairn encryption-tier + Ritrovo role patterns), rules read from variables config"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_field_access",
+    "tap_perm",
+]
+weight = 0
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). Derived from the
+# compiled .wasm import section:
+#   logging   — referenced by the #[plugin_tap] macro
+#   variables — tap_field_access reads its `field_rules` config via variables_get
+[capabilities]
+host_interfaces = ["logging", "variables"]

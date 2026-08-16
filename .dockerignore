@@ -1,0 +1,11 @@
+target/
+.git/
+.github/
+.env
+*.md
+!README.md
+!INSTALL.md
+.pre-commit-config.yaml
+backups/
+uploads/
+node_modules/

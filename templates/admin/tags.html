@@ -1,0 +1,51 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title=category.label ~ " - Tags", add_url="/admin/structure/categories/" ~ category.id ~ "/tags/add", add_label="Add tag") }}
+
+<nav class="breadcrumb">
+    <a href="/admin/structure/categories">Categories</a>
+    &raquo;
+    <span>{{ category.label }}</span>
+</nav>
+
+<div class="admin-card">
+    {% if tags %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Weight</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for tag in tags %}
+            <tr>
+                <td>{{ tag.label }}</td>
+                <td>{{ tag.weight }}</td>
+                <td>
+                    <a href="/admin/structure/tags/{{ tag.id }}/edit">Edit</a>
+                    &middot;
+                    {{ list::delete_button(action="/admin/structure/tags/" ~ tag.id ~ "/delete", confirm_text="Are you sure you want to delete this tag?", csrf_token=csrf_token) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    {{ list::empty(message="No tags in this category.", add_url="/admin/structure/categories/" ~ category.id ~ "/tags/add", add_label="Add one now") }}
+    {% endif %}
+</div>
+
+<style>
+    .breadcrumb {
+        margin: 0 0 1rem 0;
+        font-size: 0.875rem;
+    }
+    .breadcrumb a {
+        color: var(--primary);
+    }
+</style>
+{% endblock %}

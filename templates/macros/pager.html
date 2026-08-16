@@ -1,0 +1,94 @@
+{# Pager macros #}
+
+{# Render a full pager #}
+{% macro pager(current_page, total_pages, base_url, window=2) %}
+{% if total_pages > 1 %}
+<nav class="pager" aria-label="Pagination">
+    <ul class="pager__items">
+        {# Previous link #}
+        {% if current_page > 1 %}
+        <li class="pager__item pager__item--previous">
+            <a href="{{ base_url }}?page={{ current_page - 1 }}" rel="prev">Previous</a>
+        </li>
+        {% endif %}
+
+        {# First page #}
+        {% if current_page > window + 1 %}
+        <li class="pager__item">
+            <a href="{{ base_url }}?page=1">1</a>
+        </li>
+        {% if current_page > window + 2 %}
+        <li class="pager__item pager__item--ellipsis">
+            <span>...</span>
+        </li>
+        {% endif %}
+        {% endif %}
+
+        {# Page window #}
+        {% for page in range(start=1, end=total_pages + 1) %}
+        {% if page >= current_page - window and page <= current_page + window %}
+        <li class="pager__item{% if page == current_page %} pager__item--active{% endif %}">
+            {% if page == current_page %}
+            <span aria-current="page">{{ page }}</span>
+            {% else %}
+            <a href="{{ base_url }}?page={{ page }}">{{ page }}</a>
+            {% endif %}
+        </li>
+        {% endif %}
+        {% endfor %}
+
+        {# Last page #}
+        {% if current_page < total_pages - window %}
+        {% if current_page < total_pages - window - 1 %}
+        <li class="pager__item pager__item--ellipsis">
+            <span>...</span>
+        </li>
+        {% endif %}
+        <li class="pager__item">
+            <a href="{{ base_url }}?page={{ total_pages }}">{{ total_pages }}</a>
+        </li>
+        {% endif %}
+
+        {# Next link #}
+        {% if current_page < total_pages %}
+        <li class="pager__item pager__item--next">
+            <a href="{{ base_url }}?page={{ current_page + 1 }}" rel="next">Next</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% endmacro %}
+
+{# Render mini pager (just prev/next) #}
+{% macro mini_pager(current_page, total_pages, base_url) %}
+{% if total_pages > 1 %}
+<nav class="pager pager--mini" aria-label="Pagination">
+    <div class="pager__items">
+        {% if current_page > 1 %}
+        <a href="{{ base_url }}?page={{ current_page - 1 }}" class="pager__prev" rel="prev">Previous</a>
+        {% endif %}
+
+        <span class="pager__current">Page {{ current_page }} of {{ total_pages }}</span>
+
+        {% if current_page < total_pages %}
+        <a href="{{ base_url }}?page={{ current_page + 1 }}" class="pager__next" rel="next">Next</a>
+        {% endif %}
+    </div>
+</nav>
+{% endif %}
+{% endmacro %}
+
+{# Render load more button (for infinite scroll) #}
+{% macro load_more(next_page, total_pages, base_url, text="Load more") %}
+{% if next_page <= total_pages %}
+<div class="pager pager--load-more">
+    <button type="button"
+            class="button button--secondary"
+            data-load-more
+            data-next-url="{{ base_url }}?page={{ next_page }}">
+        {{ text }}
+    </button>
+</div>
+{% endif %}
+{% endmacro %}

@@ -1,0 +1,11 @@
+name = "test_e2e_nocaps"
+description = "Epic 2 e2e fixture: no [capabilities] table (invoke deny-by-default)"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+# Intentionally no [capabilities] table: capabilities parse as None, so this
+# plugin publishes no invocable surface and imports no host interface. It still
+# loads (it imports nothing to gate) and exports `ping`, so invoking it exercises
+# the "capabilities None denies an exported function" path.

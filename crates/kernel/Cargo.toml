@@ -1,0 +1,81 @@
+[package]
+name = "trovato-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Trovato CMS kernel — HTTP server, plugin runtime, and core services"
+
+[lib]
+name = "trovato_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trovato"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tower-sessions = { workspace = true }
+tower-sessions-redis-store = { workspace = true }
+fred = { workspace = true }
+sqlx = { workspace = true }
+sea-query = { workspace = true }
+wasmtime = { workspace = true }
+argon2 = { workspace = true }
+webauthn-rs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yml = { workspace = true }
+toml = { workspace = true }
+moka = { workspace = true }
+redis = { workspace = true }
+dashmap = { workspace = true }
+tera = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+infer = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+hostname = { workspace = true }
+async-trait = { workspace = true }
+urlencoding = { workspace = true }
+prometheus-client = { workspace = true }
+clap = { workspace = true }
+trovato-sdk = { path = "../plugin-sdk" }
+image = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+subtle = { workspace = true }
+base64 = { workspace = true }
+url = { workspace = true }
+ammonia = { workspace = true }
+pulldown-cmark = { workspace = true }
+syntect = { workspace = true }
+parking_lot = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+async-stream = { workspace = true }
+futures-core = { workspace = true }
+lettre = { workspace = true }
+
+[features]
+default = []
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+uuid = { workspace = true }
+webauthn-authenticator-rs = { version = "0.5.5", default-features = false, features = ["softpasskey"] }

@@ -1,0 +1,23 @@
+name = "trovato_search"
+description = "Client-side search powered by Pagefind"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_cron"]
+weight = 10
+
+[migrations]
+files = ["migrations/001_create_index_status.sql"]
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel
+# builds this plugin's WASM linker from host_interfaces — it receives exactly
+# the host interfaces named here (plus baseline WASI). Derived from the
+# compiled .wasm import section.
+[capabilities]
+host_interfaces = ["db", "logging"]
+# Uses the raw-SQL host functions (query-raw/execute-raw). WASM-2 field
+# (declared now, enforced later); inert under WASM-1.
+raw_sql = true
