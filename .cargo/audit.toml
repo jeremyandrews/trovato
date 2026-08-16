@@ -42,6 +42,19 @@ ignore = [
     # Review date: 2026-07-01 (clears with the Epic 6 wasmtime 44 bump)
     "RUSTSEC-2026-0114",
 
+    # wasmtime: stores can mix up type indices between engines
+    # (RUSTSEC-2026-0222, CVSS 3.8 LOW).
+    # UNREACHABLE. The bug needs two `Engine`s and a `Store` used across them.
+    # Trovato constructs exactly one Engine, in `create_engine`, called once
+    # from `PluginRuntime::new` (crates/kernel/src/plugin/runtime.rs); every
+    # other `Engine::new` in the tree is inside a `#[cfg(test)]` module. With a
+    # single engine there are no indices to confuse.
+    # No fix exists on the 43.x line: the patched versions are >=46.0.2 (<47)
+    # and >=47.0.3, so this clears on the upgrade to wasmtime 46 or newer, NOT
+    # on the 44 bump the entries above are waiting for.
+    # Review date: 2026-11-01
+    "RUSTSEC-2026-0222",
+
     # NOTE: RUSTSEC-2026-0149 (wasmtime-wasi 43 path_open(TRUNCATE) bypasses
     # FilePerms::WRITE) is no longer suppressed. The advisory was always
     # unreachable — the Trovato plugin sandbox hand-writes its five

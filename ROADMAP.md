@@ -22,10 +22,11 @@ land together.
 
 ### Dependency advisories
 
-The wasmtime and cranelift batch clears with the wasmtime 44 upgrade, which is a
-version bump plus whatever the runtime API changes require. The quick-xml pair
-is blocked on an upstream `plist` release and will be taken when one arrives; it
-is tracked rather than worked.
+The wasmtime and cranelift batch clears with the wasmtime 44 upgrade. One
+advisory in that family (RUSTSEC-2026-0222) is first fixed in 46.0.2, so the
+upgrade target is 46 or newer rather than 44. The quick-xml pair is blocked on
+an upstream `plist` release and will be taken when one arrives; it is tracked
+rather than worked.
 
 ### The remaining admin screens
 

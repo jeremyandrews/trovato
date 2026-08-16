@@ -50,6 +50,12 @@ why. Each entry has reasoning; none is suppressed silently. The open ones:
 - **RUSTSEC-2026-0085 through -0096, RUSTSEC-2026-0114** (wasmtime and
   cranelift): a batch that clears with the wasmtime 44 upgrade. Trovato is on
   wasmtime 43.
+- **RUSTSEC-2026-0222** (wasmtime, stores can mix up type indices between
+  engines, CVSS 3.8 low): unreachable. The bug needs two engines and a store
+  used across them; Trovato constructs exactly one engine, in `create_engine`,
+  and every other `Engine::new` is test-only. It is not fixed anywhere on the
+  43.x line, so it clears on the upgrade to wasmtime 46 or newer rather than on
+  the 44 bump the entries above wait for.
 - **RUSTSEC-2026-0141** (lettre TLS hostname verification with the Boring
   backend): not applicable. Trovato builds lettre with `default-features =
   false` and the rustls backend, so the vulnerable code is never compiled.
