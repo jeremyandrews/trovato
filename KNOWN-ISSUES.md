@@ -42,20 +42,24 @@ above worth having.
 `cargo audit` runs in CI and `.cargo/audit.toml` lists what is suppressed and
 why. Each entry has reasoning; none is suppressed silently. The open ones:
 
+Every wasmtime and cranelift advisory is **fixed rather than suppressed**:
+RUSTSEC-2026-0085 through -0096, -0114 and -0222 all cleared by upgrading the
+runtime to wasmtime 47.0.3. Nothing about the plugin sandbox is being carried on
+a justification.
+
+Five suppressions remain, none of them in the WASM runtime:
+
 - **RUSTSEC-2026-0194 / RUSTSEC-2026-0195** (quick-xml denial of service): the
   live one. Reachable only through `plist` and `syntect`, which parse the
   bundled syntax-highlighting theme files at startup rather than anything an
   attacker supplies. The fix is quick-xml 0.41, and `plist` pins `^0.38`, so it
   needs an upstream release before Trovato can take it.
-- **RUSTSEC-2026-0085 through -0096, RUSTSEC-2026-0114** (wasmtime and
-  cranelift): a batch that clears with the wasmtime 44 upgrade. Trovato is on
-  wasmtime 43.
-- **RUSTSEC-2026-0222** (wasmtime, stores can mix up type indices between
-  engines, CVSS 3.8 low): unreachable. The bug needs two engines and a store
-  used across them; Trovato constructs exactly one engine, in `create_engine`,
-  and every other `Engine::new` is test-only. It is not fixed anywhere on the
-  43.x line, so it clears on the upgrade to wasmtime 46 or newer rather than on
-  the 44 bump the entries above wait for.
+- **RUSTSEC-2026-0189** (rmcp DNS rebinding, CVSS 8.8): not compiled. The
+  vulnerable code is rmcp's Streamable HTTP server transport, behind the
+  `transport-streamable-http-server` feature. `trovato-mcp` enables only
+  `transport-io` and serves over STDIO, so the MCP server has no HTTP listener
+  to rebind against. The fix is rmcp 1.4, a major bump with breaking API
+  changes; worth taking on its own merits, but not a live exposure.
 - **RUSTSEC-2026-0141** (lettre TLS hostname verification with the Boring
   backend): not applicable. Trovato builds lettre with `default-features =
   false` and the rustls backend, so the vulnerable code is never compiled.

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- wasmtime 43 → 47.0.3. Clears every outstanding wasmtime and cranelift
+  advisory (RUSTSEC-2026-0085 through -0096, -0114, -0222); 14 suppressions
+  removed from `.cargo/audit.toml`. No source change was required and the
+  plugin ABI is unaffected: a plugin binary built against the pre-freeze SDK
+  still loads and runs.
+
 ## v0.99.0 — 2026-08-16
 
 First public release. Pre-1.0: the plugin contract is frozen, the CMS is not

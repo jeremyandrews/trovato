@@ -10,50 +10,13 @@ ignore = [
     # Review date: 2026-06-01
     "RUSTSEC-2023-0071",
 
-    # wasmtime/cranelift batch advisories (RUSTSEC-2026-0085 through -0096).
-    # Published 2026-04 for wasmtime ≤43. Our plugin sandbox mitigates:
-    # - Epoch-based interruption (10s request / 150s background)
-    # - Minimal WASI stubs (no fd_renumber, no wasi:http)
-    # - wasm_threads(false) — no shared memory
-    # - MAX_MEMORY 64MB per instance
-    # Upgrade to wasmtime 44+ when available.
-    # Review date: 2026-07-01
-    "RUSTSEC-2026-0085",
-    "RUSTSEC-2026-0086",
-    "RUSTSEC-2026-0087",
-    "RUSTSEC-2026-0088",
-    "RUSTSEC-2026-0089",
-    "RUSTSEC-2026-0090",
-    "RUSTSEC-2026-0091",
-    "RUSTSEC-2026-0092",
-    "RUSTSEC-2026-0093",
-    "RUSTSEC-2026-0094",
-    "RUSTSEC-2026-0095",
-    "RUSTSEC-2026-0096",
-
-    # wasmtime 43 table-allocation panic / DoS (RUSTSEC-2026-0114).
-    # Same wasmtime ≤43 line as the batch above; the wasmtime 43→44 major
-    # bump is tracked in Epic 6 (FR-5). Near-term the same sandbox
-    # mitigations apply: epoch-based interruption bounds any single guest
-    # invocation, pooling allocator caps total tables/memories at
-    # max_instances, and max_memory_size is 64 MB per instance — a guest
-    # cannot allocate a table exceeding the host address space within
-    # those limits before the epoch deadline fires.
-    # Review date: 2026-07-01 (clears with the Epic 6 wasmtime 44 bump)
-    "RUSTSEC-2026-0114",
-
-    # wasmtime: stores can mix up type indices between engines
-    # (RUSTSEC-2026-0222, CVSS 3.8 LOW).
-    # UNREACHABLE. The bug needs two `Engine`s and a `Store` used across them.
-    # Trovato constructs exactly one Engine, in `create_engine`, called once
-    # from `PluginRuntime::new` (crates/kernel/src/plugin/runtime.rs); every
-    # other `Engine::new` in the tree is inside a `#[cfg(test)]` module. With a
-    # single engine there are no indices to confuse.
-    # No fix exists on the 43.x line: the patched versions are >=46.0.2 (<47)
-    # and >=47.0.3, so this clears on the upgrade to wasmtime 46 or newer, NOT
-    # on the 44 bump the entries above are waiting for.
-    # Review date: 2026-11-01
-    "RUSTSEC-2026-0222",
+    # NOTE: every wasmtime and cranelift advisory is FIXED, not suppressed.
+    # RUSTSEC-2026-0085 through -0096, -0114 (the 2026-04 batch against
+    # wasmtime <=43) and -0222 (type-index confusion across engines) all cleared
+    # by upgrading wasmtime 43 -> 47.0.3. `cargo audit` with this whole ignore
+    # list removed reports no wasmtime or cranelift advisory. Do not re-add
+    # entries here for them; if one reappears, the runtime needs upgrading
+    # again.
 
     # NOTE: RUSTSEC-2026-0149 (wasmtime-wasi 43 path_open(TRUNCATE) bypasses
     # FilePerms::WRITE) is no longer suppressed. The advisory was always
@@ -90,11 +53,17 @@ ignore = [
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 
-    # PENDING JEREMY REVIEW — rmcp 0.16.0 DNS rebinding in the Streamable HTTP
-    # server transport (RUSTSEC-2026-0189, CVSS 8.8). Fix in rmcp >=1.4.0,
-    # a 0.x -> 1.x major bump with breaking API changes to trovato-mcp.
-    # trovato-mcp pins rmcp "^0.16", so the upgrade is a deliberate code change
-    # (contract-affecting) that exceeds a hygiene session's scope.
-    # Review date: 2026-07-09
+    # rmcp 0.16.0 DNS rebinding in the Streamable HTTP server transport
+    # (RUSTSEC-2026-0189, CVSS 8.8).
+    # NOT COMPILED. The vulnerable transport is behind rmcp's
+    # `transport-streamable-http-server` feature. trovato-mcp declares
+    # `features = ["transport-io"]` and serves over STDIO
+    # (`rmcp::transport::stdio()`, crates/mcp-server/src/main.rs); the resolved
+    # feature set is base64, default, macros, server, transport-async-rw,
+    # transport-io. There is no HTTP listener in the MCP server at all, so
+    # there is nothing to rebind against.
+    # The fix is rmcp >=1.4.0, a 0.x -> 1.x bump with breaking API changes.
+    # Worth taking on its own merits, but it is not a live exposure here.
+    # Review date: 2026-11-01
     "RUSTSEC-2026-0189",
 ]

@@ -102,7 +102,7 @@ tower-sessions-redis-store = "0.16"
 fred = { version = "10", features = ["subscriber-client"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json", "chrono", "uuid"] }
 sea-query = { version = "0.32", features = ["backend-postgres", "with-uuid"] }
-wasmtime = "43"
+wasmtime = "47"
 argon2 = "0.5"
 # FR-7a (D-34): the WebAuthn/passkey ceremony implementation. `danger-allow-state-
 # serialisation` is required to hold the in-flight PasskeyRegistration /

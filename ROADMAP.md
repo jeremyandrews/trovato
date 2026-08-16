@@ -22,11 +22,12 @@ land together.
 
 ### Dependency advisories
 
-The wasmtime and cranelift batch clears with the wasmtime 44 upgrade. One
-advisory in that family (RUSTSEC-2026-0222) is first fixed in 46.0.2, so the
-upgrade target is 46 or newer rather than 44. The quick-xml pair is blocked on
-an upstream `plist` release and will be taken when one arrives; it is tracked
-rather than worked.
+The wasmtime and cranelift batch is **done**: the runtime is on 47.0.3 and no
+advisory against it remains. What is left is smaller. The quick-xml pair is
+blocked on an upstream `plist` release and is tracked rather than worked. The
+rmcp DNS-rebinding advisory does not apply to the STDIO transport Trovato uses,
+but taking rmcp 1.4 is worthwhile independently, and it is a breaking API change
+to `trovato-mcp`.
 
 ### The remaining admin screens
 
