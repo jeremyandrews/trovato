@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/brand/png/trovato-lockup-2000w.png" alt="Trovato" width="440">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/png/trovato-lockup-white-2000w.png">
+    <img src="assets/brand/png/trovato-lockup-2000w.png" alt="Trovato" width="440">
+  </picture>
 </p>
 
 <p align="center">A content management system written in Rust.</p>
