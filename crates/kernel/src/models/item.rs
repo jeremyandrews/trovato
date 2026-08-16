@@ -202,6 +202,26 @@ impl Item {
         Ok(items)
     }
 
+    /// List published items promoted to the front page (live stage only).
+    ///
+    /// Selects on `promote` in SQL rather than filtering a page of published
+    /// items in memory. Filtering a fixed page is wrong at any page size: a
+    /// promoted item that sits behind that many newer published items is
+    /// simply never seen, however many promoted items the site has.
+    pub async fn list_promoted(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
+        let items = sqlx::query_as::<_, Item>(
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE status = 1 AND promote = 1 AND stage_id = $1 ORDER BY sticky DESC, created DESC LIMIT $2 OFFSET $3"
+        )
+        .bind(LIVE_STAGE_ID)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .context("failed to list promoted items")?;
+
+        Ok(items)
+    }
+
     /// Create a new item with initial revision.
     pub async fn create(pool: &PgPool, input: CreateItem) -> Result<Self> {
         let now = chrono::Utc::now().timestamp();

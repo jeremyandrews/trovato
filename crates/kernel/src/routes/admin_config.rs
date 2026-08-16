@@ -217,6 +217,17 @@ async fn site_config_submit(
         errors.push("Please enter a valid email address.".to_string());
     }
 
+    // Any internal route may be the front page, but only an internal one:
+    // rejected here as well as at serve time, so an operator finds out at the
+    // form rather than at the home page.
+    let front_page = form.front_page.trim();
+    if !front_page.is_empty() && !super::front::is_local_path(front_page) {
+        errors.push(
+            "Front page must be a path on this site, beginning with \"/\" (for example /blog)."
+                .to_string(),
+        );
+    }
+
     let items_per_page_str = form.items_per_page.trim();
     if !items_per_page_str.is_empty() {
         match items_per_page_str.parse::<u32>() {
@@ -308,7 +319,7 @@ async fn site_config_submit(
         return render_server_error("Failed to save site settings.");
     }
 
-    if let Err(e) = SiteConfig::set_front_page(pool, form.front_page.trim()).await {
+    if let Err(e) = SiteConfig::set_front_page(pool, front_page).await {
         tracing::error!(error = %e, "failed to save front_page");
         return render_server_error("Failed to save site settings.");
     }

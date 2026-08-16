@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- The site front page can be any path the site serves. `site_front_page` was
+  parsed as `/item/{uuid}` and nothing else, so every other value — a gather
+  alias, a plugin route, an aliased path — silently fell back to the promoted
+  listing, and the home page was the one route on the site that could not be
+  any route. An item path still renders inline at `/`; any other path
+  redirects (307) to itself, carrying the query string, so the handler that
+  owns the route serves it and the front page needs no knowledge of route
+  types. The path must be local (absolute, no scheme, no host); the admin form
+  rejects a non-local value with the same rule that serves it.
+- The front page listed only promoted items that happened to be among the ten
+  most recent published items: it fetched a fixed page of published items and
+  filtered it in memory. Promotion now decides the query
+  (`Item::list_promoted`, with paging), so a promoted item appears however many
+  newer published items precede it.
+- An item front page was access-checked against a hard-coded permission list
+  rather than the viewer's real permissions, so anonymous visitors were handed
+  none at all and a configured item front page fell through to the promoted
+  listing on a default install (whose anonymous role does have "access
+  content"). The front page now builds the same user context as the item
+  route.
 - wasmtime 43 → 47.0.3. Clears every outstanding wasmtime and cranelift
   advisory (RUSTSEC-2026-0085 through -0096, -0114, -0222); 14 suppressions
   removed from `.cargo/audit.toml`. No source change was required and the
