@@ -362,7 +362,7 @@ impl DirectConfigStorage {
 
     async fn fetch_all_tags(&self) -> Result<Vec<Tag>> {
         sqlx::query_as::<_, Tag>(
-            "SELECT id, category_id, label, description, weight, created, changed FROM category_tag ORDER BY category_id, weight, label"
+            "SELECT id, category_id, label, description, slug, weight, created, changed FROM category_tag ORDER BY category_id, weight, label"
         )
         .fetch_all(&self.pool)
         .await
