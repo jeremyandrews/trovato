@@ -32,7 +32,6 @@ members = [
     "plugins/goose",
 "plugins/trovato_seo",
     "plugins/trovato_page_builder",
-    "plugins/trovato_scolta",
     "plugins/trovato_captcha",
     "plugins/trovato_feeds",
     "plugins/test_plugin_api",
