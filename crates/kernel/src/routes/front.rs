@@ -1,16 +1,23 @@
 //! Front page route handler.
 
-use axum::{Router, extract::State, response::Html, routing::get};
+use axum::{
+    Router,
+    extract::{RawQuery, State},
+    http::{HeaderValue, StatusCode, header},
+    response::{Html, IntoResponse, Response},
+    routing::get,
+};
 use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::FilterPipeline;
 use crate::models::{Item, SiteConfig};
 use crate::state::AppState;
-use crate::tap::UserContext;
 
-use super::auth::SESSION_USER_ID;
 use super::helpers::{html_escape, inject_site_context};
+
+/// How many promoted items the default front page lists.
+const PROMOTED_LISTING_LIMIT: i64 = 10;
 
 /// Create the front page router.
 pub fn router() -> Router<AppState> {
@@ -19,14 +26,25 @@ pub fn router() -> Router<AppState> {
 
 /// Front page handler.
 ///
-/// If `site_front_page` is configured, loads and renders that item.
-/// Otherwise, shows promoted content or a welcome message.
-async fn front_page(State(state): State<AppState>, session: Session) -> Html<String> {
-    // Check for configured front page item
+/// If `site_front_page` names an item (`/item/{uuid}`), that item is rendered
+/// inline at `/`. Any other configured path redirects to itself, so whichever
+/// handler owns that route serves it — a gather alias, a plugin route, an
+/// aliased path, or a route type that does not exist yet. Nothing here knows
+/// about any particular route.
+///
+/// With nothing configured (or a configured path that cannot be served), the
+/// promoted items listing is shown.
+async fn front_page(
+    State(state): State<AppState>,
+    session: Session,
+    RawQuery(query): RawQuery,
+) -> Response {
+    // Check for a configured front page
     if let Ok(Some(front_path)) = SiteConfig::front_page(state.db()).await
-        && let Some(html) = render_configured_front_page(&state, &session, &front_path).await
+        && let Some(response) =
+            render_configured_front_page(&state, &session, &front_path, query.as_deref()).await
     {
-        return Html(html);
+        return response;
     }
 
     // Fall back to promoted items listing
@@ -40,22 +58,115 @@ async fn front_page(State(state): State<AppState>, session: Session) -> Html<Str
         .render_page("/front", "Home", &content, &mut context)
         .unwrap_or_else(|_| format!("<html><body>{content}</body></html>"));
 
-    Html(html)
+    Html(html).into_response()
 }
 
-/// Render a configured front page item.
+/// Serve the configured front page, or `None` to fall through to the default.
+///
+/// An `/item/{uuid}` path is rendered inline; anything else redirects.
 async fn render_configured_front_page(
     state: &AppState,
     session: &Session,
     front_path: &str,
-) -> Option<String> {
-    // Extract item ID from path like "/item/{uuid}"
-    let item_id = front_path
-        .strip_prefix("/item/")
-        .and_then(|id_str| Uuid::parse_str(id_str).ok())?;
+    query: Option<&str>,
+) -> Option<Response> {
+    let path = local_front_path(front_path)?;
 
-    // Use load_for_view to invoke tap hooks and check access
-    let user = get_user_context(session).await;
+    if let Some(item_id) = path
+        .strip_prefix("/item/")
+        .and_then(|id_str| Uuid::parse_str(id_str).ok())
+    {
+        return render_front_page_item(state, session, item_id)
+            .await
+            .map(|html| Html(html).into_response());
+    }
+
+    redirect_to_front_path(path, query)
+}
+
+/// Whether a path is a local absolute path this site can serve.
+///
+/// Local means absolute, with no scheme and no host, so that a site's front
+/// page can never be aimed at another origin. Shared with the admin form so
+/// that what is saved and what is served agree on what a path is.
+pub(crate) fn is_local_path(path: &str) -> bool {
+    // Absolute local path only. This rejects "https://example.com/" and
+    // "example.com/path" outright, and "//example.com" is protocol-relative:
+    // a browser reads it as another host.
+    if !path.starts_with('/') || path.starts_with("//") {
+        return false;
+    }
+
+    // Browsers fold a backslash into a slash when parsing a URL, so "/\evil"
+    // is protocol-relative by another spelling.
+    if path.contains('\\') {
+        return false;
+    }
+
+    // Whitespace and control characters have no place in a path, and a browser
+    // may strip them before parsing what is left.
+    !path
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<' || c == '>')
+}
+
+/// Validate a configured front page path and return it for serving.
+///
+/// `/` is rejected along with anything non-local: it is this handler's own
+/// route, and redirecting it to itself would loop.
+fn local_front_path(configured: &str) -> Option<&str> {
+    let path = configured.trim();
+
+    if !is_local_path(path) || path == "/" {
+        return None;
+    }
+
+    Some(path)
+}
+
+/// Redirect `/` to the configured path, preserving any query string.
+///
+/// Temporary, not permanent: the front page is a setting an operator can
+/// change, and a cached permanent redirect would outlive the change.
+fn redirect_to_front_path(path: &str, query: Option<&str>) -> Option<Response> {
+    let location = match query {
+        // The configured path may carry a query of its own — a gather alias
+        // with a preset filter, say — so join rather than assume.
+        Some(q) if !q.is_empty() => {
+            let separator = if path.contains('?') { '&' } else { '?' };
+            format!("{path}{separator}{q}")
+        }
+        _ => path.to_string(),
+    };
+
+    // Built rather than unwrapped: a header value is the last place to trust a
+    // string that reached us through a URL.
+    let location = HeaderValue::from_str(&location).ok()?;
+
+    Some(
+        (
+            StatusCode::TEMPORARY_REDIRECT,
+            [(header::LOCATION, location)],
+        )
+            .into_response(),
+    )
+}
+
+/// Render an item inline as the front page.
+async fn render_front_page_item(
+    state: &AppState,
+    session: &Session,
+    item_id: Uuid,
+) -> Option<String> {
+    // Use load_for_view to invoke tap hooks and check access.
+    //
+    // The same user context the item route itself builds — real permissions,
+    // loaded from the database, including the anonymous role's. A hard-coded
+    // permission list here meant an item front page was access-checked against
+    // permissions nobody actually holds: anonymous visitors were handed none at
+    // all, so a default install (whose anonymous role does have "access
+    // content") silently fell through to the promoted listing.
+    let user = super::item::get_user_context(session, state).await;
     let (item, render_outputs) = state.items().load_for_view(item_id, &user).await.ok()??;
 
     if !item.is_published() {
@@ -96,14 +207,16 @@ async fn render_configured_front_page(
 }
 
 /// Render promoted items listing HTML.
+///
+/// Asks for promoted items directly, with paging, rather than filtering a page
+/// of published items: promotion is what decides membership of this list, so
+/// it has to decide the query too.
 async fn render_promoted_listing(state: &AppState) -> String {
-    let items = state
+    let promoted = state
         .items()
-        .list_published(10, 0)
+        .list_promoted(PROMOTED_LISTING_LIMIT, 0)
         .await
         .unwrap_or_default();
-
-    let promoted: Vec<&Item> = items.iter().filter(|i| i.is_promoted()).collect();
 
     if promoted.is_empty() {
         return String::new();
@@ -111,7 +224,7 @@ async fn render_promoted_listing(state: &AppState) -> String {
 
     let mut html = String::from("<div class=\"front-listing\">");
 
-    for item in promoted {
+    for item in &promoted {
         html.push_str("<div class=\"blog-teaser\">");
         html.push_str(&format!(
             "<h2 class=\"blog-teaser__title\"><a href=\"/item/{}\">{}</a></h2>",
@@ -206,11 +319,99 @@ fn render_item_fields(item: &Item, state: &AppState) -> String {
     html
 }
 
-/// Get user context from session for access control.
-async fn get_user_context(session: &Session) -> UserContext {
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    match user_id {
-        Some(id) => UserContext::authenticated(id, vec!["access content".to_string()]),
-        None => UserContext::anonymous(),
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn any_internal_path_is_a_valid_front_page() {
+        // Nothing here is a route type the front page knows about — that is
+        // the point. A gather alias, a plugin route and an aliased path are
+        // all just paths.
+        for path in [
+            "/devices/online",
+            "/blog",
+            "/item/0192f0c0-0000-7000-8000-000000000000",
+            "/topics/rust",
+            "/a/deeply/nested/path",
+            "/gather/devices?status=online",
+            "/percent%20encoded",
+        ] {
+            assert_eq!(local_front_path(path), Some(path), "rejected {path}");
+        }
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        assert_eq!(local_front_path("  /blog\n"), Some("/blog"));
+    }
+
+    #[test]
+    fn external_and_malformed_paths_are_rejected() {
+        for path in [
+            "https://example.com/",
+            "http://example.com/blog",
+            "//example.com/blog",
+            "example.com/blog",
+            "blog",
+            "/\\example.com",
+            "/blog\\..",
+            "/blog with space",
+            "/blog\r\nLocation: https://example.com",
+            "",
+        ] {
+            assert_eq!(local_front_path(path), None, "accepted {path:?}");
+        }
+    }
+
+    #[test]
+    fn the_front_page_itself_is_not_a_front_page_target() {
+        // Otherwise "/" redirects to "/" forever.
+        assert_eq!(local_front_path("/"), None);
+        assert!(is_local_path("/"), "\"/\" is still a local path");
+    }
+
+    #[test]
+    fn redirect_is_temporary_and_carries_the_query_string() {
+        let response = redirect_to_front_path("/devices/online", Some("page=2"))
+            .expect("valid path redirects");
+
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("/devices/online?page=2")
+        );
+    }
+
+    #[test]
+    fn a_configured_query_string_is_joined_not_overwritten() {
+        let response = redirect_to_front_path("/gather/devices?status=online", Some("page=2"))
+            .expect("valid path redirects");
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("/gather/devices?status=online&page=2")
+        );
+    }
+
+    #[test]
+    fn redirect_without_a_query_string_is_the_bare_path() {
+        let response =
+            redirect_to_front_path("/devices/online", None).expect("valid path redirects");
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("/devices/online")
+        );
     }
 }

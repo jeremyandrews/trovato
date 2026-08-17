@@ -1368,6 +1368,11 @@ impl ItemService {
         Item::list_published(&self.inner.pool, limit, offset).await
     }
 
+    /// List published items promoted to the front page.
+    pub async fn list_promoted(&self, limit: i64, offset: i64) -> Result<Vec<Item>> {
+        Item::list_promoted(&self.inner.pool, limit, offset).await
+    }
+
     /// List items with filtering and return total count for pagination.
     pub async fn list_filtered(
         &self,

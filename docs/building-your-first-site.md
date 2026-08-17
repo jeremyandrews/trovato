@@ -23,12 +23,22 @@ Complete the wizard to finish installation.
 
 To make this the dedicated front page:
 - Note the item URL (e.g., `/item/01234567-...`)
-- Set the `site_front_page` config key to that path. This can be done by inserting a row into the `site_config` table:
+- Set it under **Admin > Configuration > Site settings > Default front page**, or set the `site_front_page` config key directly by inserting a row into the `site_config` table:
   ```sql
   INSERT INTO site_config (key, value)
   VALUES ('site_front_page', '"/item/YOUR-ITEM-UUID"')
   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
   ```
+
+The front page is not limited to an item. Any path this site serves can be the front page — a gather route such as `/conferences`, a plugin route, an aliased path:
+
+```sql
+INSERT INTO site_config (key, value)
+VALUES ('site_front_page', '"/conferences"')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+```
+
+An `/item/{uuid}` path renders that item at `/`, with the address bar unchanged. Any other path redirects `/` to it, so the handler that owns the route serves it. The path must be local — absolute, no scheme, no host — so a front page can never point off-site.
 
 If no front page is configured, the home page (`/`) automatically shows all promoted published content.
 
