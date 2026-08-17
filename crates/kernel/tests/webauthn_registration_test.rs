@@ -17,6 +17,25 @@ use common::TestApp;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 
+/// A fixture username nothing else in this database has ever used.
+///
+/// The shared test database is not reset between runs, and
+/// `create_test_user` upserts on `LOWER(name)`, so a fixed username resolves to
+/// the *same* user row on every run, carrying that row's credentials and audit
+/// events forward with it. The per-user assertions below are exact counts, so
+/// the second run against a database sees the first run's rows and fails. A
+/// fresh name per run gives each test a user whose history is only its own.
+///
+/// Derive the email from the name too. `users.mail` is unique on `LOWER(mail)`
+/// and the upsert only resolves the *name* conflict, so a fresh name paired with
+/// a fixed address trades the stale-count failure for a unique violation.
+fn unique_username(prefix: &str) -> String {
+    format!(
+        "{prefix}_{}",
+        &uuid::Uuid::now_v7().simple().to_string()[..12]
+    )
+}
+
 /// Extract the CSRF token from the passkeys page (rendered into base.html's
 /// `<meta name="csrf-token">`).
 async fn csrf_token(app: &TestApp, cookies: &str) -> String {
@@ -122,9 +141,13 @@ async fn register_passkey(
 fn registers_a_passkey_end_to_end() {
     common::run_test(async {
         let app = common::shared_app().await;
-        let username = "wa_reg_ok";
+        let username = unique_username("wa_reg_ok");
         let cookies = app
-            .create_and_login_user(username, "test-password-123", "wa_reg_ok@example.com")
+            .create_and_login_user(
+                &username,
+                "test-password-123",
+                &format!("{username}@example.com"),
+            )
             .await;
         let csrf = csrf_token(app, &cookies).await;
 
@@ -149,7 +172,7 @@ fn registers_a_passkey_end_to_end() {
 
         // AC-2: the credential is persisted with its denormalized columns.
         let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
-            .bind(username)
+            .bind(&username)
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -227,11 +250,12 @@ fn register_start_requires_an_authenticated_session() {
 fn register_start_requires_csrf() {
     common::run_test(async {
         let app = common::shared_app().await;
+        let username = unique_username("wa_reg_csrf");
         let cookies = app
             .create_and_login_user(
-                "wa_reg_csrf",
+                &username,
                 "test-password-123",
-                "wa_reg_csrf@example.com",
+                &format!("{username}@example.com"),
             )
             .await;
 
@@ -255,12 +279,12 @@ fn register_start_requires_csrf() {
 fn register_finish_without_a_ceremony_is_rejected_and_audited() {
     common::run_test(async {
         let app = common::shared_app().await;
-        let username = "wa_reg_noceremony";
+        let username = unique_username("wa_reg_noceremony");
         let cookies = app
             .create_and_login_user(
-                username,
+                &username,
                 "test-password-123",
-                "wa_reg_noceremony@example.com",
+                &format!("{username}@example.com"),
             )
             .await;
         let csrf = csrf_token(app, &cookies).await;
@@ -296,14 +320,15 @@ fn register_finish_without_a_ceremony_is_rejected_and_audited() {
         );
 
         let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
-            .bind(username)
+            .bind(&username)
             .fetch_one(&app.db)
             .await
             .unwrap();
+        // The user is new to this run, so the rejection this test provoked is
+        // the only `registration_failed` event it can possibly have.
         let reason: Option<String> = sqlx::query_scalar(
             "SELECT details->>'reason' FROM security_audit_log
-             WHERE user_id = $1 AND kind = 'passkey.registration_failed'
-             ORDER BY created DESC LIMIT 1",
+             WHERE user_id = $1 AND kind = 'passkey.registration_failed'",
         )
         .bind(user_id)
         .fetch_optional(&app.db)
@@ -322,11 +347,12 @@ fn register_finish_without_a_ceremony_is_rejected_and_audited() {
 fn a_ceremony_is_single_use() {
     common::run_test(async {
         let app = common::shared_app().await;
+        let username = unique_username("wa_reg_replay");
         let cookies = app
             .create_and_login_user(
-                "wa_reg_replay",
+                &username,
                 "test-password-123",
-                "wa_reg_replay@example.com",
+                &format!("{username}@example.com"),
             )
             .await;
         let csrf = csrf_token(app, &cookies).await;
@@ -389,9 +415,13 @@ fn a_ceremony_is_single_use() {
 fn a_user_can_register_several_passkeys() {
     common::run_test(async {
         let app = common::shared_app().await;
-        let username = "wa_reg_multi";
+        let username = unique_username("wa_reg_multi");
         let cookies = app
-            .create_and_login_user(username, "test-password-123", "wa_reg_multi@example.com")
+            .create_and_login_user(
+                &username,
+                "test-password-123",
+                &format!("{username}@example.com"),
+            )
             .await;
         let csrf = csrf_token(app, &cookies).await;
 
@@ -414,7 +444,7 @@ fn a_user_can_register_several_passkeys() {
         );
 
         let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
-            .bind(username)
+            .bind(&username)
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -434,10 +464,10 @@ fn registering_a_passkey_leaves_the_password_untouched() {
         // D-33: credentials are PARALLEL to the password. Adding a passkey must
         // not remove, weaken, or bypass password login.
         let app = common::shared_app().await;
-        let username = "wa_reg_parallel";
+        let username = unique_username("wa_reg_parallel");
         let password = "test-password-123";
         let cookies = app
-            .create_and_login_user(username, password, "wa_reg_parallel@example.com")
+            .create_and_login_user(&username, password, &format!("{username}@example.com"))
             .await;
         let csrf = csrf_token(app, &cookies).await;
 
@@ -451,7 +481,7 @@ fn registering_a_passkey_leaves_the_password_untouched() {
 
         // The password hash is still set...
         let pass: Option<String> = sqlx::query_scalar("SELECT pass FROM users WHERE name = $1")
-            .bind(username)
+            .bind(&username)
             .fetch_one(&app.db)
             .await
             .unwrap();
@@ -461,6 +491,6 @@ fn registering_a_passkey_leaves_the_password_untouched() {
         );
 
         // ...and still works.
-        let _ = app.login(username, password).await;
+        let _ = app.login(&username, password).await;
     });
 }
