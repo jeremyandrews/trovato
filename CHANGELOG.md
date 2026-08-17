@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- `config export` no longer fails on a database that contains a tag.
+  `DirectConfigStorage::fetch_all_tags` selected seven of `Tag`'s eight columns,
+  omitting `slug`, so `query_as::<_, Tag>` failed at row decode with "no column
+  found for name: slug" and the command exited non-zero. The column has existed
+  since `20260307000001_add_category_tag_slug.sql`; only this one query never
+  asked for it, and it is the only `FROM category_tag` select in that file, so
+  nothing compensated.
+
+  The blast radius was every real site: stages are rows in the `stages` category,
+  so a database has a tag as soon as it has stages, and `config export` was
+  therefore broken for anyone with anything to export. `config import` was
+  unaffected, because it never reads tags back, which is why an application could
+  install from files while being unable to write them back out.
+
+  Existing tag coverage missed it for a specific reason. `list("tag", filter)`
+  routes a `category_id` filter to `Tag::list_by_category`, which does select
+  `slug`; only the unfiltered path that export uses was broken, and the tag test
+  listed by category. The regression test exports a database holding a tag with a
+  slug set and asserts on the exported file's contents, so neither dropping the
+  column from the struct nor restoring the old select can pass it.
+
 - The admin record view route now honors the key column a record type actually
   declares. `[[record_types]]` lets a plugin name its own `id_column`, and every
   other reader trusts it — the list route projects `{id_column}::text`, gather

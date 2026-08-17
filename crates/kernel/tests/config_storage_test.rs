@@ -607,3 +607,107 @@ async fn config_storage_list_with_filter() {
             .ok();
     }
 }
+
+/// Exporting a database that contains a tag must succeed, and the exported file
+/// must carry the tag's `slug`.
+///
+/// Regression: `fetch_all_tags` selected seven of `Tag`'s eight columns, omitting
+/// `slug` (the column comes from `20260307000001_add_category_tag_slug.sql`), so
+/// `query_as::<_, Tag>` failed at row decode with "no column found for name:
+/// slug" and `config export` exited non-zero against **any** database holding a
+/// single tag.
+///
+/// `config_storage_tag_crud` did not catch it because it lists tags *by
+/// category*, which routes through `Tag::list_by_category` and does select
+/// `slug`. Only the unfiltered path, the one export uses, was broken. So this
+/// test drives both the unfiltered list and a whole export, and asserts on the
+/// file contents rather than only on the exit path.
+#[tokio::test]
+async fn config_export_carries_tag_slug() {
+    let app = TestApp::new().await;
+
+    let category_id = format!("scat{}", &Uuid::now_v7().simple().to_string()[..8]);
+    app.config_storage()
+        .save(&ConfigEntity::Category(Category {
+            id: category_id.clone(),
+            label: "Slug Export Category".to_string(),
+            description: None,
+            hierarchy: 0,
+            weight: 0,
+        }))
+        .await
+        .expect("failed to save category");
+
+    let tag_id = Uuid::now_v7();
+    let slug = format!("slug-{}", &tag_id.simple().to_string()[..8]);
+    let now = chrono::Utc::now().timestamp();
+
+    app.config_storage()
+        .save(&ConfigEntity::Tag(Tag {
+            id: tag_id,
+            category_id: category_id.clone(),
+            label: "Slug Export Tag".to_string(),
+            description: None,
+            slug: Some(slug.clone()),
+            weight: 0,
+            created: now,
+            changed: now,
+        }))
+        .await
+        .expect("failed to save tag");
+
+    // The unfiltered list path, which is the one export uses.
+    let all_tags = app
+        .config_storage()
+        .list(entity_types::TAG, None)
+        .await
+        .expect("listing every tag must not fail when a tag has a slug");
+    assert!(
+        all_tags.iter().any(|t| t.id() == tag_id.to_string()),
+        "the saved tag should appear in an unfiltered tag list"
+    );
+
+    // And a whole export, which is what the operator actually runs.
+    let dir =
+        std::env::temp_dir().join(format!("trovato_config_export_{}", Uuid::now_v7().simple()));
+    let result = trovato_kernel::config_storage::yaml::export_config(
+        app.config_storage().as_ref(),
+        &app.db,
+        &dir,
+        false,
+    )
+    .await;
+
+    let exported = match result {
+        Ok(exported) => exported,
+        Err(e) => {
+            std::fs::remove_dir_all(&dir).ok();
+            panic!("config export failed on a database containing a tag: {e:#}");
+        }
+    };
+    assert!(
+        exported.counts.get(entity_types::TAG).copied().unwrap_or(0) > 0,
+        "export should report at least one tag"
+    );
+
+    let tag_file = dir.join(format!("tag.{tag_id}.yml"));
+    let contents = std::fs::read_to_string(&tag_file)
+        .unwrap_or_else(|e| panic!("expected {} to exist: {e}", tag_file.display()));
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        contents.contains(&slug),
+        "exported tag file should carry the slug, got:\n{contents}"
+    );
+
+    // Clean up
+    app.config_storage()
+        .delete(entity_types::TAG, &tag_id.to_string())
+        .await
+        .ok();
+    app.config_storage()
+        .delete(entity_types::CATEGORY, &category_id)
+        .await
+        .ok();
+}
