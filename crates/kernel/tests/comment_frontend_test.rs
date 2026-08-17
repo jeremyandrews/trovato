@@ -27,6 +27,11 @@ fn admin() -> UserContext {
 }
 
 async fn ensure_item_type(app: &TestApp) {
+    // The comment routes are behind the `trovato_comments` gate, and the thread
+    // renderer asks `comments_if_enabled`, so on a database where the plugin was
+    // never enabled there is no form, no thread and no route to post to.
+    app.ensure_plugin_enabled("trovato_comments").await;
+
     let mut tx = app.db.begin().await.expect("begin type seed");
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(TYPE_SEED_LOCK)
