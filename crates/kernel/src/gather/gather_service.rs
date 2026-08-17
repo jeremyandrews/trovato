@@ -7,6 +7,7 @@
 //! - Result caching
 
 use super::access;
+use super::access::GatherAccessConfig;
 use super::category_service::CategoryService;
 use super::extension::GatherExtensionRegistry;
 use super::query_builder::GatherQueryBuilder;
@@ -46,7 +47,7 @@ const DISTINCT_VALUES_TTL: Duration = Duration::from_secs(300);
 /// Maximum entries in the distinct-values cache.
 const DISTINCT_VALUES_CAPACITY: u64 = 500;
 
-// The semantic candidate pool size is `access::SEMANTIC_SEARCH_MAX` (Story 3.4 /
+// The semantic candidate pool size is `GatherAccessConfig::semantic_search_max` (Story 3.4 /
 // D-26 over-fetch): the top-N nearest embeddings become the `id IN (...)`
 // candidate set that the gather's own filters/sorts/pagination — and the
 // access pass — compose over. No hard cosine-distance cutoff is applied
@@ -63,6 +64,10 @@ pub struct GatherService {
     distinct_values_cache: Cache<String, Vec<String>>,
     /// Maximum per_page for query execution (from `GATHER_MAX_PAGE_SIZE`).
     max_page_size: u32,
+    /// D-26 over-fetch and backfill bounds for access-filtered pages. Was a set
+    /// of process-wide `LazyLock` statics reading the environment on first use;
+    /// now an input, so two services in one process can differ.
+    access: GatherAccessConfig,
     /// Optional embedding provider used to resolve `SemanticSimilarity`
     /// filters. `None` in builds without an AI provider wired (e.g. tests).
     ai_providers: Option<Arc<AiProviderService>>,
@@ -96,19 +101,34 @@ struct RecordContext {
     field_targets: HashMap<String, String>,
 }
 
+/// The settings [`GatherService`] runs with.
+///
+/// Grouped rather than passed as three more positional arguments: collaborators
+/// stay explicit in [`GatherService::new`], while values that merely come from
+/// configuration travel together. `access` used to arrive as process-wide
+/// `LazyLock` statics that read the environment on first use, which is what this
+/// struct replaces.
+#[derive(Debug, Clone, Copy)]
+pub struct GatherConfig {
+    /// Registered-query cache TTL.
+    pub ttl: Duration,
+    /// Maximum `per_page` a request may ask for (`GATHER_MAX_PAGE_SIZE`).
+    pub max_page_size: u32,
+    /// D-26 over-fetch and backfill bounds for access-filtered pages.
+    pub access: GatherAccessConfig,
+}
+
 impl GatherService {
     /// Create a new GatherService.
     ///
     /// `ai_providers` and `vector_store` back the `SemanticSimilarity` gather
     /// operator (embed query → pgvector search). Pass `None` for both in builds
     /// without semantic search; semantic filters then degrade to no-match.
-    #[allow(clippy::too_many_arguments)] // Collaborators are injected explicitly; a config struct would obscure them.
     pub fn new(
         pool: PgPool,
         categories: Arc<CategoryService>,
         extensions: Arc<GatherExtensionRegistry>,
-        ttl: Duration,
-        max_page_size: u32,
+        config: GatherConfig,
         ai_providers: Option<Arc<AiProviderService>>,
         vector_store: Option<Arc<PgVectorStore>>,
     ) -> Arc<Self> {
@@ -118,13 +138,14 @@ impl GatherService {
             extensions,
             queries: Cache::builder()
                 .max_capacity(MAX_CAPACITY)
-                .time_to_live(ttl)
+                .time_to_live(config.ttl)
                 .build(),
             distinct_values_cache: Cache::builder()
                 .max_capacity(DISTINCT_VALUES_CAPACITY)
                 .time_to_live(DISTINCT_VALUES_TTL)
                 .build(),
-            max_page_size,
+            max_page_size: config.max_page_size,
+            access: config.access,
             ai_providers,
             vector_store,
             item_access: OnceLock::new(),
@@ -819,9 +840,9 @@ impl GatherService {
 
         let page_size = per_page.max(1) as usize;
         let base_offset = (page.saturating_sub(1) as u64) * per_page as u64;
-        let max_scan = u64::from(*access::MAX_ACCESS_SCAN);
-        let max_rounds = *access::MAX_BACKFILL_ROUNDS;
-        let mut window = u64::from(per_page.max(1)) * u64::from(*access::FETCH_FACTOR);
+        let max_scan = u64::from(self.access.max_scan);
+        let max_rounds = self.access.max_backfill_rounds;
+        let mut window = u64::from(per_page.max(1)) * u64::from(self.access.fetch_factor);
 
         let mut visible: Vec<serde_json::Value> = Vec::with_capacity(page_size);
         let mut scanned: u64 = 0;
@@ -1264,12 +1285,12 @@ impl GatherService {
 
         // Over-fetch the candidate pool (Story 3.4 / D-26): access filtering runs
         // after this cap, so a restricted viewer needs a deeper pool than the
-        // historical top-100 to avoid starvation. Bounded by SEMANTIC_SEARCH_MAX.
+        // historical top-100 to avoid starvation. Bounded by `semantic_search_max`.
         match store
             .similarity_search(
                 &embedding.vector,
                 &embedding.model,
-                *access::SEMANTIC_SEARCH_MAX,
+                self.access.semantic_search_max,
             )
             .await
         {

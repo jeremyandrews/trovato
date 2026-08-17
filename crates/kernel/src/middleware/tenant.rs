@@ -10,23 +10,60 @@
 //! - `path_prefix`: `/t/tenant-a/...` → strip prefix and resolve
 //! - `header`: `X-Tenant-ID: {uuid}` → direct UUID resolution
 
-use axum::{body::Body, http::Request, middleware::Next, response::Response};
+use axum::{body::Body, extract::State, http::Request, middleware::Next, response::Response};
 
 use crate::models::tenant::{DEFAULT_TENANT_ID, TenantContext};
+use crate::state::AppState;
+
+/// How the active tenant is resolved for a request.
+///
+/// Resolved once at startup from `TENANT_RESOLUTION_METHOD` rather than read on
+/// every request, so the strategy is an input a caller sets rather than a
+/// process-global. An unrecognized value is [`Self::Default`]: a typo must not
+/// silently enable header-driven tenant selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TenantResolution {
+    /// Always [`DEFAULT_TENANT_ID`], with no database overhead.
+    #[default]
+    Default,
+    /// Read `X-Tenant-ID` from the request.
+    ///
+    /// Only meaningful behind a proxy that sets the header itself — the kernel
+    /// trusts it, so it must not be reachable from a client.
+    Header,
+}
+
+impl TenantResolution {
+    /// Resolve the strategy from a settings lookup.
+    ///
+    /// `subdomain` and `path_prefix` are named in the module docs but require
+    /// database lookups, so they are not implemented and fall back to
+    /// [`Self::Default`] like any other unrecognized value.
+    pub(crate) fn from_lookup(lookup: crate::config::Lookup<'_>) -> Self {
+        match lookup("TENANT_RESOLUTION_METHOD")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "header" => Self::Header,
+            _ => Self::Default,
+        }
+    }
+}
 
 /// Resolve the tenant for the current request.
 ///
-/// The resolution method is controlled by `TENANT_RESOLUTION_METHOD` env var.
-/// Default is `"default"` — always returns `DEFAULT_TENANT_ID` with zero
-/// database overhead (static `TenantContext` construction).
-pub async fn resolve_tenant(mut request: Request<Body>, next: Next) -> Response {
-    let method = std::env::var("TENANT_RESOLUTION_METHOD").unwrap_or_default();
-
-    let tenant_context = match method.as_str() {
-        "header" => resolve_from_header(&request),
-        // "subdomain" and "path_prefix" require database lookups —
-        // deferred until a multi-tenant deployment needs them.
-        _ => TenantContext::default_tenant(),
+/// The strategy comes from [`TenantResolution`] on the application state; the
+/// default costs one static `TenantContext` construction and no database work.
+pub async fn resolve_tenant(
+    State(state): State<AppState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let tenant_context = match state.runtime().tenant_resolution {
+        TenantResolution::Header => resolve_from_header(&request),
+        TenantResolution::Default => TenantContext::default_tenant(),
     };
 
     request.extensions_mut().insert(tenant_context);
@@ -49,4 +86,49 @@ fn resolve_from_header(request: &Request<Body>) -> TenantContext {
         };
     }
     TenantContext::default_tenant()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// Resolve the strategy from an explicit settings map, no globals involved.
+    fn from_map(value: Option<&str>) -> TenantResolution {
+        TenantResolution::from_lookup(&|name| match name {
+            "TENANT_RESOLUTION_METHOD" => value.map(str::to_string),
+            _ => None,
+        })
+    }
+
+    /// Nothing configured means the single-tenant fast path.
+    #[test]
+    fn unconfigured_resolves_to_the_default_tenant() {
+        assert_eq!(from_map(None), TenantResolution::Default);
+        assert_eq!(TenantResolution::default(), TenantResolution::Default);
+    }
+
+    #[test]
+    fn header_strategy_is_recognized_case_insensitively() {
+        for spelling in ["header", "HEADER", " Header "] {
+            assert_eq!(
+                from_map(Some(spelling)),
+                TenantResolution::Header,
+                "{spelling:?} should select the header strategy"
+            );
+        }
+    }
+
+    /// A typo, or one of the two documented-but-unimplemented strategies, must
+    /// fail closed to the default rather than enabling header-driven selection.
+    #[test]
+    fn unrecognized_strategies_fail_closed() {
+        for value in ["", "subdomain", "path_prefix", "headers", "hdr", "1"] {
+            assert_eq!(
+                from_map(Some(value)),
+                TenantResolution::Default,
+                "{value:?} must not enable header resolution"
+            );
+        }
+    }
 }

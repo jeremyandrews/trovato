@@ -22,7 +22,6 @@ use crate::gather::types::QueryField;
 use crate::models::Item;
 use crate::models::stage::LIVE_STAGE_ID;
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
 use uuid::Uuid;
 
 /// Columns the query builder always projects so the item-access pass can run on
@@ -30,36 +29,79 @@ use uuid::Uuid;
 /// list. `type` is the item-type column (`Item`'s `#[sqlx(rename = "type")]`).
 pub(crate) const ACCESS_COLUMNS: [&str; 5] = ["id", "type", "status", "author_id", "stage_id"];
 
-fn env_u32(name: &str, default: u32) -> u32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(default)
+/// Tuning for the D-26 over-fetch / geometric-backfill loop.
+///
+/// These were `LazyLock` statics reading the environment on first use, which made
+/// them un-steerable from a test without mutating a process-global — and once
+/// resolved, un-steerable at all for the life of the process, so no two gather
+/// tests could exercise different bounds. Resolved once by `Config::from_env` and
+/// carried on `GatherService`, they are ordinary inputs.
+///
+/// Every field is required to be positive: a zero fetch factor cannot return a
+/// row, a zero scan or round cap cannot terminate usefully, so a non-positive
+/// configured value falls back to the documented default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatherAccessConfig {
+    /// Initial over-fetch window multiplier: the first backfill round fetches
+    /// `page_size × fetch_factor` candidates. `GATHER_ACCESS_FETCH_FACTOR`,
+    /// default 2.
+    pub fetch_factor: u32,
+
+    /// Hard cap on candidate rows examined by the over-fetch loop for one page —
+    /// the deliberate request-amplification/DoS bound (D-26).
+    /// `GATHER_ACCESS_MAX_SCAN`, default 1000.
+    pub max_scan: u32,
+
+    /// Hard cap on backfill rounds (a second termination guard alongside the
+    /// scan cap). `GATHER_ACCESS_MAX_ROUNDS`, default 6.
+    pub max_backfill_rounds: u32,
+
+    /// Upper bound on the pgvector semantic candidate pool once access filtering
+    /// is active — raised from the historical top-100 so restricted viewers are
+    /// not starved, but bounded (exact cosine cost grows with the pool).
+    /// `GATHER_SEMANTIC_SEARCH_MAX`, default 500.
+    pub semantic_search_max: u32,
 }
 
-/// Initial over-fetch window multiplier: the first backfill round fetches
-/// `page_size × FETCH_FACTOR` candidates. `GATHER_ACCESS_FETCH_FACTOR`, default 2.
-pub(crate) static FETCH_FACTOR: LazyLock<u32> =
-    LazyLock::new(|| env_u32("GATHER_ACCESS_FETCH_FACTOR", 2));
+impl Default for GatherAccessConfig {
+    fn default() -> Self {
+        Self {
+            fetch_factor: 2,
+            max_scan: 1000,
+            max_backfill_rounds: 6,
+            semantic_search_max: 500,
+        }
+    }
+}
 
-/// Hard cap on candidate rows examined by the over-fetch loop for one page — the
-/// deliberate request-amplification/DoS bound (D-26). `GATHER_ACCESS_MAX_SCAN`,
-/// default 1000.
-pub(crate) static MAX_ACCESS_SCAN: LazyLock<u32> =
-    LazyLock::new(|| env_u32("GATHER_ACCESS_MAX_SCAN", 1000));
-
-/// Hard cap on backfill rounds (a second termination guard alongside the scan
-/// cap). `GATHER_ACCESS_MAX_ROUNDS`, default 6.
-pub(crate) static MAX_BACKFILL_ROUNDS: LazyLock<u32> =
-    LazyLock::new(|| env_u32("GATHER_ACCESS_MAX_ROUNDS", 6));
-
-/// Upper bound on the pgvector semantic candidate pool once access filtering is
-/// active — raised from the historical top-100 so restricted viewers are not
-/// starved, but bounded (exact cosine cost grows with the pool).
-/// `GATHER_SEMANTIC_SEARCH_MAX`, default 500.
-pub(crate) static SEMANTIC_SEARCH_MAX: LazyLock<u32> =
-    LazyLock::new(|| env_u32("GATHER_SEMANTIC_SEARCH_MAX", 500));
+impl GatherAccessConfig {
+    /// Resolve the tuning from a settings lookup, as documented per field.
+    pub(crate) fn from_lookup(lookup: crate::config::Lookup<'_>) -> Self {
+        let defaults = Self::default();
+        Self {
+            fetch_factor: crate::config::parse_positive_or(
+                lookup,
+                "GATHER_ACCESS_FETCH_FACTOR",
+                defaults.fetch_factor,
+            ),
+            max_scan: crate::config::parse_positive_or(
+                lookup,
+                "GATHER_ACCESS_MAX_SCAN",
+                defaults.max_scan,
+            ),
+            max_backfill_rounds: crate::config::parse_positive_or(
+                lookup,
+                "GATHER_ACCESS_MAX_ROUNDS",
+                defaults.max_backfill_rounds,
+            ),
+            semantic_search_max: crate::config::parse_positive_or(
+                lookup,
+                "GATHER_SEMANTIC_SEARCH_MAX",
+                defaults.semantic_search_max,
+            ),
+        }
+    }
+}
 
 fn parse_uuid(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<Uuid> {
     obj.get(key)
@@ -171,6 +213,57 @@ pub(crate) fn filter_row_fields(
 mod tests {
     use super::*;
     use crate::gather::types::QueryField;
+
+    /// Resolve the access tuning from an explicit settings map. Nothing global
+    /// is involved, which is what the `LazyLock` statics made impossible.
+    fn access_from_map(pairs: &[(&str, &str)]) -> GatherAccessConfig {
+        let settings: HashMap<&str, &str> = pairs.iter().copied().collect();
+        GatherAccessConfig::from_lookup(&|name| settings.get(name).map(|v| (*v).to_string()))
+    }
+
+    #[test]
+    fn access_config_defaults_when_nothing_is_configured() {
+        assert_eq!(access_from_map(&[]), GatherAccessConfig::default());
+        let defaults = GatherAccessConfig::default();
+        assert_eq!(defaults.fetch_factor, 2);
+        assert_eq!(defaults.max_scan, 1000);
+        assert_eq!(defaults.max_backfill_rounds, 6);
+        assert_eq!(defaults.semantic_search_max, 500);
+    }
+
+    #[test]
+    fn access_config_reads_every_documented_setting() {
+        let config = access_from_map(&[
+            ("GATHER_ACCESS_FETCH_FACTOR", "3"),
+            ("GATHER_ACCESS_MAX_SCAN", "250"),
+            ("GATHER_ACCESS_MAX_ROUNDS", "4"),
+            ("GATHER_SEMANTIC_SEARCH_MAX", "120"),
+        ]);
+        assert_eq!(config.fetch_factor, 3);
+        assert_eq!(config.max_scan, 250);
+        assert_eq!(config.max_backfill_rounds, 4);
+        assert_eq!(config.semantic_search_max, 120);
+    }
+
+    /// Zero, negative and unparseable all fall back. Zero matters most: a zero
+    /// fetch factor makes the over-fetch window zero rows wide, so the backfill
+    /// loop could never return a page.
+    #[test]
+    fn access_config_rejects_non_positive_values() {
+        for bad in ["0", "-1", "", "lots", "2.5"] {
+            let config = access_from_map(&[
+                ("GATHER_ACCESS_FETCH_FACTOR", bad),
+                ("GATHER_ACCESS_MAX_SCAN", bad),
+                ("GATHER_ACCESS_MAX_ROUNDS", bad),
+                ("GATHER_SEMANTIC_SEARCH_MAX", bad),
+            ]);
+            assert_eq!(
+                config,
+                GatherAccessConfig::default(),
+                "{bad:?} must fall back to the documented defaults"
+            );
+        }
+    }
 
     #[test]
     fn access_item_reconstructs_from_full_row() {

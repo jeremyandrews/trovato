@@ -21,6 +21,12 @@ pub struct CronTasks {
     content_lock: Option<Arc<services::content_lock::ContentLockService>>,
     audit: Option<Arc<services::audit::AuditService>>,
     email: Option<Arc<services::email::EmailService>>,
+    /// Retention window for the kernel security audit stream, in days.
+    ///
+    /// Defaults to [`crate::audit::DEFAULT_RETENTION_DAYS`] so a harness that
+    /// builds tasks without a `Config` still prunes to a bounded window;
+    /// `AppState` overwrites it from [`crate::config::RuntimeConfig`].
+    security_audit_retention_days: i64,
 }
 
 impl CronTasks {
@@ -33,6 +39,7 @@ impl CronTasks {
             content_lock: None,
             audit: None,
             email: None,
+            security_audit_retention_days: crate::audit::DEFAULT_RETENTION_DAYS,
         }
     }
 
@@ -49,6 +56,7 @@ impl CronTasks {
             content_lock: None,
             audit: None,
             email: None,
+            security_audit_retention_days: crate::audit::DEFAULT_RETENTION_DAYS,
         }
     }
 
@@ -65,6 +73,17 @@ impl CronTasks {
     /// Set the email service for sending queued emails.
     pub fn set_email_service(&mut self, email: Option<Arc<services::email::EmailService>>) {
         self.email = email;
+    }
+
+    /// Set the security-audit retention window, in days.
+    ///
+    /// Non-positive values are ignored rather than honoured, for the reason given
+    /// on `audit::retention_days_from`: a zero-day window prunes the
+    /// whole stream.
+    pub fn set_security_audit_retention_days(&mut self, days: i64) {
+        if days > 0 {
+            self.security_audit_retention_days = days;
+        }
     }
 
     /// Cleanup temporary files older than 6 hours.
@@ -231,9 +250,12 @@ impl CronTasks {
     /// which security events survived a prune. Unlike `cleanup_audit_log` this
     /// is unconditional — the stream is kernel infrastructure, not a plugin
     /// feature, so it always exists and always needs bounding.
+    /// The window comes from the `security_audit_retention_days` field, resolved
+    /// once at startup — this used to read `SECURITY_AUDIT_RETENTION_DAYS` on
+    /// every prune.
     pub async fn cleanup_security_audit_log(&self) -> Result<u64> {
         crate::audit::SecurityAudit::new(self.pool.clone())
-            .prune(crate::audit::retention_days_from_env())
+            .prune(self.security_audit_retention_days)
             .await
     }
 

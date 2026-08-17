@@ -131,42 +131,41 @@ impl TestApp {
     /// binary too, and cannot be undone once another thread may have read it.
     pub async fn with_config(customize: impl FnOnce(&mut Config)) -> Self {
         // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
-        // through the workspace env lock like any other mutation.
+        // through the workspace env lock like any other mutation. It is also the
+        // last environment *mutation* left in this fixture: everything below is a
+        // field override, because `Config` now owns every value the kernel used
+        // to re-read from the environment at the point of use.
         trovato_test_utils::env::load_dotenv();
 
         let project_root = project_root();
 
-        // TEMPLATES_DIR and STATIC_DIR are not `Config` fields: the theme engine
-        // and the static-file handler read them from the process environment on
-        // each use, so a process-wide default is the only lever a test has. Same
-        // for TRUSTED_PROXIES, which is read per request — it has to name the
-        // mocked loopback peer (see MockConnectInfo below) for the per-test
-        // X-Forwarded-For isolation `login` relies on to pass the RATE-1
-        // trusted-proxy gate.
-        //
-        // These writes are NOT "before spawning threads", which is what the
-        // comment here used to claim: libtest has already spawned every test
-        // thread by the time any fixture runs, and this binary runs on the order
-        // of a hundred tests concurrently. What `set_env_default` does provide is
-        // that the check and the write happen together under the workspace env
-        // lock, and that a variable is written at most once per process — so no
-        // reader ever observes one of these values change, and a value supplied
-        // by the environment is always left alone. The residual `setenv`/`getenv`
-        // race against a concurrent reader cannot be closed from inside a test;
-        // closing it means moving those three reads into `Config`, which is
-        // deliberately not part of this change.
-        trovato_test_utils::env::set_env_default("TEMPLATES_DIR", project_root.join("templates"));
-        trovato_test_utils::env::set_env_default("STATIC_DIR", project_root.join("static"));
-        trovato_test_utils::env::set_env_default("TRUSTED_PROXIES", "127.0.0.1");
-
         // Create config from environment
         let mut config = Config::from_env().expect("Failed to load config");
 
+        // Tests run from `crates/kernel/`, so the defaults (`./templates`,
+        // `./static`) resolve to nothing. These used to be `set_env_default`
+        // writes, because the theme engine and the static-file handler read the
+        // variables themselves; they are `Config` fields now, so pointing them at
+        // the real directories steers this app and touches nothing global.
+        //
+        // Each still defers to the environment when it says something, so a
+        // deployment-shaped run can override them exactly as before.
+        if std::env::var_os("TEMPLATES_DIR").is_none() {
+            config.templates_dirs = vec![project_root.join("templates")];
+        }
+        if std::env::var_os("STATIC_DIR").is_none() {
+            config.runtime.static_dirs = vec![project_root.join("static")];
+        }
+
+        // Trust the mocked loopback peer (see MockConnectInfo below) so the
+        // per-test X-Forwarded-For isolation `login` relies on passes the RATE-1
+        // trusted-proxy gate.
+        if std::env::var_os("TRUSTED_PROXIES").is_none() {
+            config.trusted_proxies = vec![std::net::IpAddr::from([127, 0, 0, 1])];
+        }
+
         // Tests run 100 tests concurrently — bump the default pool size so
-        // serialization locks don't starve other tests of connections. A field
-        // override rather than a `DATABASE_MAX_CONNECTIONS` write, because it is
-        // a `Config` field: an explicit input needs no global state. Still
-        // deferring to the environment when it says something, as before.
+        // serialization locks don't starve other tests of connections.
         if std::env::var_os("DATABASE_MAX_CONNECTIONS").is_none() {
             config.database_max_connections = 25;
         }

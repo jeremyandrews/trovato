@@ -60,16 +60,31 @@ impl CacheConfig {
     }
 }
 
-/// How [`PluginConfig::from_lookup`](crate::plugin::PluginConfig::from_lookup)
-/// asks for a setting: by name, `None` when not configured.
+/// How a `from_lookup` constructor asks for a setting: by name, `None` when not
+/// configured.
+///
+/// Every group of settings in the kernel resolves through one of these rather
+/// than reading the environment directly, which is what lets the resolution be
+/// tested from an explicit map. [`env_lookup`] is the one adapter that closes
+/// over the real environment, and `Config::from_env` is the only place it is
+/// used.
 ///
 /// A trait object rather than a generic, so the parse helpers below can be
 /// ordinary functions instead of one monomorphized per call site.
-type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+pub(crate) type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// The lookup that reads the real process environment.
+///
+/// Deliberately the only one: `Config::from_env` is the single boundary at which
+/// this process's environment is consulted, so nothing downstream of it has to
+/// re-read a variable, and no test has to mutate one to steer behaviour.
+fn env_lookup(name: &str) -> Option<String> {
+    env::var(name).ok()
+}
 
 /// Parse a looked-up setting via [`std::str::FromStr`], falling back to
 /// `default` when it is absent or unparseable.
-fn parse_or<T: std::str::FromStr>(lookup: Lookup<'_>, name: &str, default: T) -> T {
+pub(crate) fn parse_or<T: std::str::FromStr>(lookup: Lookup<'_>, name: &str, default: T) -> T {
     lookup(name)
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(default)
@@ -77,13 +92,26 @@ fn parse_or<T: std::str::FromStr>(lookup: Lookup<'_>, name: &str, default: T) ->
 
 /// Parse a boolean-ish looked-up setting. Truthy: `1`, `true`, `yes`, `on`
 /// (case-insensitive); anything else present is `false`; absent is `default`.
-fn parse_bool_or(lookup: Lookup<'_>, name: &str, default: bool) -> bool {
+pub(crate) fn parse_bool_or(lookup: Lookup<'_>, name: &str, default: bool) -> bool {
     lookup(name).map_or(default, |v| {
         matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         )
     })
+}
+
+/// Parse a looked-up setting that must be positive to be meaningful, falling
+/// back to `default` when it is absent, unparseable, or zero.
+///
+/// Zero is rejected rather than honoured for every setting that uses this: a
+/// zero over-fetch factor, scan cap, or round cap would make the loop it bounds
+/// either infinite or unable to return a single row.
+pub(crate) fn parse_positive_or(lookup: Lookup<'_>, name: &str, default: u32) -> u32 {
+    lookup(name)
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
 }
 
 impl crate::plugin::PluginConfig {
@@ -111,7 +139,7 @@ impl crate::plugin::PluginConfig {
     /// resolution logic and the variable names. The split is what lets the
     /// resolution be tested without mutating the process environment.
     pub fn from_env() -> Self {
-        Self::from_lookup(|name| env::var(name).ok())
+        Self::from_lookup(env_lookup)
     }
 
     /// Resolve the plugin runtime configuration from an arbitrary settings
@@ -261,6 +289,46 @@ mod tests {
     }
 }
 
+/// The configuration that request handling reads.
+///
+/// Everything here used to be read from the process environment at the point of
+/// use — per request for the CSP headers, the cron key and the tenant strategy,
+/// per query for the slow-request threshold, per served file for the static
+/// search path. Reading the environment lazily and repeatedly meant the only way
+/// to steer any of it was to mutate a process-global, which is what forced the
+/// test suite into `set_var`. Resolved once by [`Config::from_env`] and carried
+/// on `AppState`, these are ordinary inputs a caller can set.
+///
+/// Kept separate from [`Config`] rather than putting `Config` itself on
+/// `AppState`: `Config` holds `database_url`, `smtp_password` and `jwt_secret`,
+/// and `AppState` is handed to every request handler in the process.
+#[derive(Debug, Clone)]
+pub struct RuntimeConfig {
+    /// Static-asset search path. A later directory wins a collision.
+    pub static_dirs: Vec<PathBuf>,
+
+    /// Secret path segment guarding `POST /cron/{key}`.
+    pub cron_key: String,
+
+    /// Security response headers, with the Content-Security-Policy already
+    /// assembled. Built once so serving a response is a header clone rather
+    /// than two environment reads and a string concatenation.
+    pub security_headers: crate::middleware::SecurityHeaders,
+
+    /// Tenant resolution strategy for each request.
+    pub tenant_resolution: crate::middleware::TenantResolution,
+
+    /// Request duration above which a request is logged as slow, and above five
+    /// times which it is logged as an error.
+    pub slow_request_threshold_ms: u128,
+
+    /// Retention window for the kernel security audit stream, in days.
+    pub security_audit_retention_days: i64,
+
+    /// D-26 over-fetch and backfill bounds for access-filtered gather pages.
+    pub gather_access: crate::gather::GatherAccessConfig,
+}
+
 /// Application configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -334,27 +402,79 @@ pub struct Config {
     /// Default: `url_prefix,accept_header`.
     /// Single-language sites skip negotiation entirely regardless of this setting.
     pub language_negotiation_methods: Vec<String>,
+
+    /// Template search path (default: a single `./templates` entry).
+    ///
+    /// Read once here rather than by the theme engine, so a caller that wants a
+    /// different template root sets a field instead of an environment variable.
+    /// Later directories override earlier ones.
+    pub templates_dirs: Vec<PathBuf>,
+
+    /// Proxies whose `X-Forwarded-For` header is believed (RATE-1).
+    ///
+    /// Empty means trust none, which is the safe default: an unset
+    /// `TRUSTED_PROXIES` must not let any client spoof its own address.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
+
+    /// HMAC secret for OAuth2 access tokens. `None` disables OAuth2.
+    ///
+    /// Kept out of [`RuntimeConfig`] deliberately — it is consumed once at
+    /// startup by `OAuthService`, so it never needs to reach a request handler.
+    pub jwt_secret: Option<String>,
+
+    /// How long graceful shutdown waits for in-flight work (default: 30s).
+    pub shutdown_timeout: Duration,
+
+    /// The configuration request handling reads. See [`RuntimeConfig`].
+    pub runtime: RuntimeConfig,
 }
 
-/// Read an environment variable as a platform search path.
+/// The settings a [`Config`] is resolved from.
 ///
-/// Splits on the platform path separator (`:` on unix, `;` on windows) via
-/// `env::split_paths`, so a plain single-directory value parses to a
-/// one-element list and every pre-existing deployment keeps its old behaviour.
-/// Empty segments are dropped, which is what makes a trailing or doubled
-/// separator harmless rather than a silent "current directory" entry.
-///
-/// Falls back to `default` when the variable is unset, or when it is set to
-/// something that contains no usable segment at all.
-///
-/// A one-line edge over [`split_search_path_value`], which holds the parsing so
-/// that it can be tested without touching the process environment.
-pub(crate) fn split_search_path(var: &str, default: &str) -> Vec<PathBuf> {
-    split_search_path_value(env::var_os(var).as_deref(), default)
+/// Two lookups rather than one because search-path settings are paths: reading
+/// them as `OsString` keeps a directory name that is not valid UTF-8 working,
+/// which `env::var` would have rejected outright.
+pub(crate) struct Settings<'a> {
+    /// Look a setting up as a string.
+    pub get: Lookup<'a>,
+    /// Look a setting up as an OS string. Used for path-valued settings.
+    pub get_os: &'a dyn Fn(&str) -> Option<std::ffi::OsString>,
+}
+
+impl Settings<'_> {
+    /// Resolve a path-valued setting as a platform search path.
+    ///
+    /// Splits on the platform path separator (`:` on unix, `;` on windows) via
+    /// `env::split_paths`, so a plain single-directory value parses to a
+    /// one-element list and every pre-existing deployment keeps its old
+    /// behaviour. Empty segments are dropped, which is what makes a trailing or
+    /// doubled separator harmless rather than a silent "current directory"
+    /// entry. Falls back to `default` when unset, or set to something with no
+    /// usable segment at all.
+    fn search_path(&self, name: &str, default: &str) -> Vec<PathBuf> {
+        split_search_path_value((self.get_os)(name).as_deref(), default)
+    }
+
+    /// Resolve a comma-separated list, dropping empty entries.
+    fn csv(&self, name: &str, default: &[&str]) -> Vec<String> {
+        (self.get)(name)
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|| default.iter().map(|s| (*s).to_string()).collect())
+    }
+}
+
+/// The environment lookup for path-valued settings. See [`env_lookup`].
+fn env_os_lookup(name: &str) -> Option<std::ffi::OsString> {
+    env::var_os(name)
 }
 
 /// Parse an already-read search-path value, as documented on
-/// [`split_search_path`]. `None` is "the variable is not set".
+/// [`Settings::search_path`]. `None` is "the setting is not configured".
 pub(crate) fn split_search_path_value(
     value: Option<&std::ffi::OsStr>,
     default: &str,
@@ -375,84 +495,123 @@ pub(crate) fn split_search_path_value(
 
 impl Config {
     /// Load configuration from environment variables.
+    ///
+    /// **This is the one place in the process that reads the environment.**
+    /// Everything downstream — request handlers, middleware, the gather
+    /// over-fetch loop, the cron tasks — takes its values from the `Config` this
+    /// produces or from the [`RuntimeConfig`] carried on `AppState`. That is what
+    /// makes those components steerable by a caller, and what removed the last
+    /// reason for a test to mutate a process-global.
+    ///
+    /// A one-line edge over `from_settings`, which holds the resolution.
     pub fn from_env() -> Result<Self> {
-        let port = env::var("PORT")
-            .unwrap_or_else(|_| "3000".to_string())
-            .parse()
-            .context("PORT must be a valid u16")?;
+        Self::from_settings(&Settings {
+            get: &env_lookup,
+            get_os: &env_os_lookup,
+        })
+    }
+
+    /// Resolve the configuration from an arbitrary settings source.
+    ///
+    /// Holds every setting name and every documented default, so a test can
+    /// drive the whole resolution from an explicit map. `DATABASE_URL` is the
+    /// only required setting; `PORT`, `DATABASE_MAX_CONNECTIONS` and `SMTP_PORT`
+    /// are hard errors when present but unparseable, because silently serving on
+    /// the wrong port is worse than refusing to start.
+    pub(crate) fn from_settings(settings: &Settings<'_>) -> Result<Self> {
+        let get = settings.get;
+
+        let port = match get("PORT") {
+            Some(raw) => raw.trim().parse().context("PORT must be a valid u16")?,
+            None => 3000,
+        };
 
         let database_url =
-            env::var("DATABASE_URL").context("DATABASE_URL environment variable is required")?;
+            get("DATABASE_URL").context("DATABASE_URL environment variable is required")?;
 
-        let redis_url =
-            env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis_url = get("REDIS_URL").unwrap_or_else(|| "redis://127.0.0.1:6379".to_string());
 
-        let database_max_connections = env::var("DATABASE_MAX_CONNECTIONS")
-            .unwrap_or_else(|_| "10".to_string())
-            .parse()
-            .context("DATABASE_MAX_CONNECTIONS must be a valid u32")?;
+        let database_max_connections = match get("DATABASE_MAX_CONNECTIONS") {
+            Some(raw) => raw
+                .trim()
+                .parse()
+                .context("DATABASE_MAX_CONNECTIONS must be a valid u32")?,
+            None => 10,
+        };
 
-        // PLUGINS_DIR is a search path, not a single directory. It is split on
-        // the platform path separator (`:` on unix), so the historical
-        // single-directory value keeps parsing to a one-element list and
-        // existing deployments are unaffected.
-        let plugins_dirs = split_search_path("PLUGINS_DIR", "./plugins");
+        // PLUGINS_DIR, TEMPLATES_DIR and STATIC_DIR are search paths, not single
+        // directories. Each is split on the platform path separator (`:` on
+        // unix), so the historical single-directory value keeps parsing to a
+        // one-element list and existing deployments are unaffected.
+        let plugins_dirs = settings.search_path("PLUGINS_DIR", "./plugins");
+        let templates_dirs = settings.search_path("TEMPLATES_DIR", "./templates");
+        let static_dirs = settings.search_path("STATIC_DIR", "./static");
 
-        let uploads_dir = env::var("UPLOADS_DIR")
+        let uploads_dir = get("UPLOADS_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("./uploads"));
+            .unwrap_or_else(|| PathBuf::from("./uploads"));
 
-        let files_url = env::var("FILES_URL").unwrap_or_else(|_| "/files".to_string());
+        let files_url = get("FILES_URL").unwrap_or_else(|| "/files".to_string());
 
-        let cors_allowed_origins = env::var("CORS_ALLOWED_ORIGINS")
-            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
-            .unwrap_or_else(|_| Vec::new());
+        // Note the empty default: no configured origins means no cross-origin
+        // allowance, which `build_cors_layer` turns into a same-origin policy.
+        let cors_allowed_origins = settings.csv("CORS_ALLOWED_ORIGINS", &[]);
 
-        let cookie_same_site = env::var("COOKIE_SAME_SITE")
-            .unwrap_or_else(|_| "strict".to_string())
+        let cookie_same_site = get("COOKIE_SAME_SITE")
+            .unwrap_or_else(|| "strict".to_string())
             .to_lowercase();
 
-        let disabled_plugins = env::var("DISABLED_PLUGINS")
-            .map(|v| {
-                v.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let disabled_plugins = settings.csv("DISABLED_PLUGINS", &[]);
 
-        let smtp_host = env::var("SMTP_HOST").ok();
+        let smtp_host = get("SMTP_HOST");
 
-        let smtp_port = env::var("SMTP_PORT")
-            .unwrap_or_else(|_| "587".to_string())
-            .parse()
-            .context("SMTP_PORT must be a valid u16")?;
+        let smtp_port = match get("SMTP_PORT") {
+            Some(raw) => raw
+                .trim()
+                .parse()
+                .context("SMTP_PORT must be a valid u16")?,
+            None => 587,
+        };
 
-        let smtp_username = env::var("SMTP_USERNAME").ok();
-        let smtp_password = env::var("SMTP_PASSWORD").ok();
+        let smtp_username = get("SMTP_USERNAME");
+        let smtp_password = get("SMTP_PASSWORD");
 
-        let smtp_encryption = env::var("SMTP_ENCRYPTION")
-            .unwrap_or_else(|_| "starttls".to_string())
+        let smtp_encryption = get("SMTP_ENCRYPTION")
+            .unwrap_or_else(|| "starttls".to_string())
             .to_lowercase();
 
         let smtp_from_email =
-            env::var("SMTP_FROM_EMAIL").unwrap_or_else(|_| "noreply@localhost".to_string());
+            get("SMTP_FROM_EMAIL").unwrap_or_else(|| "noreply@localhost".to_string());
 
-        let site_url = env::var("SITE_URL").unwrap_or_else(|_| format!("http://localhost:{port}"));
+        let site_url = get("SITE_URL").unwrap_or_else(|| format!("http://localhost:{port}"));
 
-        let gather_max_page_size = env::var("GATHER_MAX_PAGE_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(100);
+        let gather_max_page_size = parse_or(get, "GATHER_MAX_PAGE_SIZE", 100);
 
-        let language_negotiation_methods = env::var("LANGUAGE_NEGOTIATION_METHODS")
-            .map(|v| {
-                v.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_else(|_| vec!["url_prefix".to_string(), "accept_header".to_string()]);
+        let language_negotiation_methods = settings.csv(
+            "LANGUAGE_NEGOTIATION_METHODS",
+            &["url_prefix", "accept_header"],
+        );
+
+        // Trusted proxies whose X-Forwarded-For is believed (RATE-1). Unset ⇒
+        // trust none, so no client can spoof its own address by default.
+        let trusted_proxies =
+            crate::middleware::parse_trusted_proxies(&get("TRUSTED_PROXIES").unwrap_or_default());
+
+        let jwt_secret = get("JWT_SECRET");
+
+        let shutdown_timeout = Duration::from_secs(parse_or(get, "SHUTDOWN_TIMEOUT_SECS", 30));
+
+        let runtime = RuntimeConfig {
+            static_dirs,
+            cron_key: get("CRON_KEY").unwrap_or_else(|| "default-cron-key".to_string()),
+            security_headers: crate::middleware::SecurityHeaders::from_lookup(get),
+            tenant_resolution: crate::middleware::TenantResolution::from_lookup(get),
+            slow_request_threshold_ms: parse_or(get, "QUERY_SLOW_THRESHOLD_MS", 100),
+            security_audit_retention_days: crate::audit::retention_days_from(
+                get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
+            ),
+            gather_access: crate::gather::GatherAccessConfig::from_lookup(get),
+        };
 
         Ok(Self {
             port,
@@ -474,6 +633,11 @@ impl Config {
             site_url,
             gather_max_page_size,
             language_negotiation_methods,
+            templates_dirs,
+            trusted_proxies,
+            jwt_secret,
+            shutdown_timeout,
+            runtime,
         })
     }
 }
@@ -529,5 +693,232 @@ mod search_path_tests {
         // A value with nothing usable in it falls back to the default.
         assert_eq!(parse(":"), vec![PathBuf::from("./plugins")]);
         assert_eq!(parse(""), vec![PathBuf::from("./plugins")]);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod config_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Resolve a whole [`Config`] from an explicit settings map.
+    ///
+    /// This is what makes every setting name and every documented default
+    /// assertable without touching the process environment — and, transitively,
+    /// what let the last environment-mutating test in the workspace go away.
+    fn config_from(pairs: &[(&str, &str)]) -> Result<Config> {
+        let settings: HashMap<&str, &str> = pairs.iter().copied().collect();
+        let get = |name: &str| settings.get(name).map(|v| (*v).to_string());
+        let get_os = |name: &str| settings.get(name).map(std::ffi::OsString::from);
+        Config::from_settings(&Settings {
+            get: &get,
+            get_os: &get_os,
+        })
+    }
+
+    /// The one required setting, so the happy path below can stay terse.
+    fn with_db(extra: &[(&str, &str)]) -> Config {
+        let mut pairs = vec![("DATABASE_URL", "postgres://localhost/x")];
+        pairs.extend_from_slice(extra);
+        config_from(&pairs).expect("config resolves")
+    }
+
+    #[test]
+    fn database_url_is_required() {
+        let err = config_from(&[]).expect_err("no DATABASE_URL must fail");
+        assert!(err.to_string().contains("DATABASE_URL"), "got: {err}");
+    }
+
+    /// Every documented default, asserted against a lookup that returns nothing.
+    #[test]
+    fn nothing_configured_yields_the_documented_defaults() {
+        let config = with_db(&[]);
+        assert_eq!(config.port, 3000);
+        assert_eq!(config.redis_url, "redis://127.0.0.1:6379");
+        assert_eq!(config.database_max_connections, 10);
+        assert_eq!(config.plugins_dirs, vec![PathBuf::from("./plugins")]);
+        assert_eq!(config.templates_dirs, vec![PathBuf::from("./templates")]);
+        assert_eq!(config.uploads_dir, PathBuf::from("./uploads"));
+        assert_eq!(config.files_url, "/files");
+        assert!(config.cors_allowed_origins.is_empty());
+        assert_eq!(config.cookie_same_site, "strict");
+        assert!(config.disabled_plugins.is_empty());
+        assert_eq!(config.smtp_port, 587);
+        assert_eq!(config.smtp_encryption, "starttls");
+        assert_eq!(config.smtp_from_email, "noreply@localhost");
+        assert_eq!(config.site_url, "http://localhost:3000");
+        assert_eq!(config.gather_max_page_size, 100);
+        assert_eq!(
+            config.language_negotiation_methods,
+            vec!["url_prefix".to_string(), "accept_header".to_string()]
+        );
+        assert_eq!(config.shutdown_timeout, Duration::from_secs(30));
+        assert!(config.jwt_secret.is_none());
+        // Unset TRUSTED_PROXIES must trust nothing (RATE-1), not everything.
+        assert!(config.trusted_proxies.is_empty());
+
+        // The values request handling reads.
+        assert_eq!(config.runtime.static_dirs, vec![PathBuf::from("./static")]);
+        assert_eq!(config.runtime.cron_key, "default-cron-key");
+        assert_eq!(config.runtime.slow_request_threshold_ms, 100);
+        assert_eq!(
+            config.runtime.security_audit_retention_days,
+            crate::audit::DEFAULT_RETENTION_DAYS
+        );
+        assert_eq!(
+            config.runtime.tenant_resolution,
+            crate::middleware::TenantResolution::Default
+        );
+        assert_eq!(
+            config.runtime.gather_access,
+            crate::gather::GatherAccessConfig::default()
+        );
+    }
+
+    /// `SITE_URL` defaults to the *configured* port, not the default port.
+    #[test]
+    fn site_url_default_follows_the_configured_port() {
+        assert_eq!(
+            with_db(&[("PORT", "8080")]).site_url,
+            "http://localhost:8080"
+        );
+        assert_eq!(
+            with_db(&[("PORT", "8080"), ("SITE_URL", "https://example.com")]).site_url,
+            "https://example.com"
+        );
+    }
+
+    /// The three settings that refuse to start rather than guess. Serving on the
+    /// wrong port is worse than not serving.
+    #[test]
+    fn unparseable_scalars_are_startup_errors() {
+        for (name, message) in [
+            ("PORT", "PORT"),
+            ("DATABASE_MAX_CONNECTIONS", "DATABASE_MAX_CONNECTIONS"),
+            ("SMTP_PORT", "SMTP_PORT"),
+        ] {
+            let err = config_from(&[("DATABASE_URL", "postgres://localhost/x"), (name, "http")])
+                .expect_err("{name} must be a startup error");
+            assert!(err.to_string().contains(message), "got: {err}");
+        }
+    }
+
+    /// Every search-path setting is a search path, not a single directory.
+    #[test]
+    fn search_path_settings_split() {
+        let config = with_db(&[
+            ("PLUGINS_DIR", "/srv/plugins:/opt/app/plugins"),
+            ("TEMPLATES_DIR", "/srv/templates:/opt/app/templates"),
+            ("STATIC_DIR", "/srv/static:/opt/app/static"),
+        ]);
+        assert_eq!(
+            config.plugins_dirs,
+            vec![
+                PathBuf::from("/srv/plugins"),
+                PathBuf::from("/opt/app/plugins")
+            ]
+        );
+        assert_eq!(
+            config.templates_dirs,
+            vec![
+                PathBuf::from("/srv/templates"),
+                PathBuf::from("/opt/app/templates")
+            ]
+        );
+        assert_eq!(
+            config.runtime.static_dirs,
+            vec![
+                PathBuf::from("/srv/static"),
+                PathBuf::from("/opt/app/static")
+            ]
+        );
+    }
+
+    /// Comma-separated lists drop empty entries rather than yielding blanks — a
+    /// trailing comma is a typo, not a plugin named "".
+    #[test]
+    fn comma_separated_lists_drop_blanks() {
+        let config = with_db(&[
+            ("DISABLED_PLUGINS", "trovato_blog, ,trovato_search,"),
+            ("LANGUAGE_NEGOTIATION_METHODS", "cookie , url_prefix"),
+        ]);
+        assert_eq!(
+            config.disabled_plugins,
+            vec!["trovato_blog", "trovato_search"]
+        );
+        assert_eq!(
+            config.language_negotiation_methods,
+            vec!["cookie", "url_prefix"]
+        );
+    }
+
+    /// Each setting the runtime used to re-read is now resolved here, under its
+    /// documented name.
+    #[test]
+    fn runtime_settings_are_resolved_under_their_documented_names() {
+        let config = with_db(&[
+            ("CRON_KEY", "s3cret"),
+            ("QUERY_SLOW_THRESHOLD_MS", "250"),
+            ("SECURITY_AUDIT_RETENTION_DAYS", "30"),
+            ("TENANT_RESOLUTION_METHOD", "header"),
+            ("GATHER_ACCESS_MAX_SCAN", "77"),
+            ("TRUSTED_PROXIES", "127.0.0.1, 10.0.0.5"),
+            ("JWT_SECRET", "0123456789abcdef0123456789abcdef"),
+            ("SHUTDOWN_TIMEOUT_SECS", "5"),
+        ]);
+        assert_eq!(config.runtime.cron_key, "s3cret");
+        assert_eq!(config.runtime.slow_request_threshold_ms, 250);
+        assert_eq!(config.runtime.security_audit_retention_days, 30);
+        assert_eq!(
+            config.runtime.tenant_resolution,
+            crate::middleware::TenantResolution::Header
+        );
+        assert_eq!(config.runtime.gather_access.max_scan, 77);
+        assert_eq!(config.trusted_proxies.len(), 2);
+        assert_eq!(
+            config.jwt_secret.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(config.shutdown_timeout, Duration::from_secs(5));
+    }
+
+    /// A zero-day retention window would prune the entire audit stream, so it
+    /// falls back rather than being honoured.
+    #[test]
+    fn a_non_positive_retention_window_falls_back() {
+        for bad in ["0", "-30", "forever"] {
+            assert_eq!(
+                with_db(&[("SECURITY_AUDIT_RETENTION_DAYS", bad)])
+                    .runtime
+                    .security_audit_retention_days,
+                crate::audit::DEFAULT_RETENTION_DAYS,
+                "{bad:?} must not shorten retention"
+            );
+        }
+    }
+
+    /// The environment edge itself: that `Config::from_env` reads the real
+    /// process environment, and reads it under the names `from_settings` uses.
+    ///
+    /// The only test in the workspace that mutates the environment. Everything
+    /// else drives `from_settings` with an explicit map, which is why this can be
+    /// one narrow test rather than a pattern. It goes through `EnvGuard`, so the
+    /// write is serialized against every other mutation in the process and is
+    /// restored on drop even if an assert below fails.
+    #[test]
+    fn from_env_reads_the_process_environment() {
+        let mut env = trovato_test_utils::env::EnvGuard::new();
+        env.set("DATABASE_URL", "postgres://localhost/from_env_probe");
+        env.set("CRON_KEY", "from-the-environment");
+        env.set("STATIC_DIR", "/srv/from_env_probe");
+
+        let config = Config::from_env().expect("config resolves from the environment");
+        assert_eq!(config.database_url, "postgres://localhost/from_env_probe");
+        assert_eq!(config.runtime.cron_key, "from-the-environment");
+        assert_eq!(
+            config.runtime.static_dirs,
+            vec![PathBuf::from("/srv/from_env_probe")]
+        );
     }
 }

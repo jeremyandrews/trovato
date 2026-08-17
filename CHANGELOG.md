@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- `Config::from_env` is now the only place in the process that reads the
+  environment. Twelve settings were read lazily and repeatedly at the point of
+  use instead: the static search path on every served file, the CSP headers on
+  every response, the cron key on every call to `/cron/{key}`, the tenant
+  strategy and the slow-request threshold on every request, the security-audit
+  retention window on every prune, and the gather over-fetch bounds through
+  `LazyLock` statics that froze on first touch. Reading configuration at the
+  point of use has three costs, and this pays off all of them: the work is
+  repeated (a `HeaderValue` was rebuilt and re-parsed per response, a search path
+  re-split per file), the value cannot be steered by a caller at all, and the
+  only way for a test to reach it was to mutate a process-global.
+
+  Values request handling needs travel on a new `RuntimeConfig`, carried on
+  `AppState` and reachable as `state.runtime()`. It is kept separate from
+  `Config` deliberately: `Config` holds `database_url`, `smtp_password` and
+  `jwt_secret`, and `AppState` is handed to every request handler. Startup-only
+  settings — `templates_dirs`, `trusted_proxies`, `jwt_secret`,
+  `shutdown_timeout` — became `Config` fields consumed where they already were.
+  Each group of settings resolves through a `from_lookup` constructor owned by
+  the module it configures (`SecurityHeaders`, `TenantResolution`,
+  `GatherAccessConfig`), so every setting name and documented default is
+  assertable from an explicit map.
+
+  Two fixes fell out of the consolidation. An unusable `CSP_REPORT_URI` — one
+  with a newline or a control character — used to leave the response with **no
+  CSP at all**, because the `HeaderValue::from_str` failure skipped the insert
+  entirely; it now logs and serves the policy without the report endpoint. And
+  `QUERY_SLOW_THRESHOLD_MS` multiplied by five without a guard, so a large
+  configured threshold could overflow; the comparison saturates.
+
+  Behaviour is otherwise unchanged, including every default and the precedence
+  of an explicitly set variable. `PATH`, the per-provider AI key variable, and
+  `site_config`'s `env:` secret references still read the environment on use, and
+  correctly so: in each the *variable name* is runtime data, not configuration.
+
 - Tests no longer mutate the process environment without a guard. Seven places
   called `std::env::set_var` / `remove_var` from code running on a live libtest
   thread pool: the environment is process-global, `cargo test` runs a binary's

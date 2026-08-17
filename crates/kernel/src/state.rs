@@ -48,6 +48,14 @@ pub struct AppState {
 }
 
 struct AppStateInner {
+    /// The configuration request handling reads.
+    ///
+    /// Every value here was previously read from the process environment at the
+    /// point of use — per request, per response, or per query. Resolved once by
+    /// `Config::from_env` and carried here, so handlers and middleware take an
+    /// input instead of consulting a process-global.
+    runtime: crate::config::RuntimeConfig,
+
     /// PostgreSQL connection pool.
     db: PgPool,
 
@@ -551,8 +559,11 @@ impl AppState {
             db.clone(),
             categories.clone(),
             gather_extensions,
-            cache_config.ttl_gather_queries,
-            config.gather_max_page_size,
+            crate::gather::GatherConfig {
+                ttl: cache_config.ttl_gather_queries,
+                max_page_size: config.gather_max_page_size,
+                access: config.runtime.gather_access,
+            },
             Some(ai_providers.clone()),
             Some(vector_store.clone()),
         );
@@ -595,11 +606,12 @@ impl AppState {
             None
         };
 
-        // Create theme engine
-        let template_dirs = Self::resolve_template_dirs();
-        info!(?template_dirs, "loading templates from search path");
+        // Create theme engine. The search path is a `Config` field, resolved at
+        // startup, so an embedder points the engine at its own templates by
+        // setting a field rather than exporting `TEMPLATES_DIR`.
+        info!(template_dirs = ?config.templates_dirs, "loading templates from search path");
         let theme = Arc::new(
-            ThemeEngine::new(&template_dirs, locale.clone())
+            ThemeEngine::new(&config.templates_dirs, locale.clone())
                 .inspect_err(
                     |e| tracing::warn!(error = ?e, "failed to load templates, using empty engine"),
                 )
@@ -691,14 +703,12 @@ impl AppState {
         let metrics = Arc::new(Metrics::new());
 
         // Create rate limiter. Trusted proxies (whose X-Forwarded-For is
-        // believed) come from TRUSTED_PROXIES; unset ⇒ trust none (RATE-1).
-        let trusted_proxies = crate::middleware::parse_trusted_proxies(
-            &std::env::var("TRUSTED_PROXIES").unwrap_or_default(),
-        );
+        // believed) are parsed once by `Config::from_env` from TRUSTED_PROXIES;
+        // an empty list ⇒ trust none (RATE-1).
         let rate_limiter = Arc::new(RateLimiter::new(
             redis.clone(),
             RateLimitConfig::default(),
-            trusted_proxies,
+            config.trusted_proxies.clone(),
         ));
 
         // Create batch service
@@ -819,8 +829,8 @@ impl AppState {
         };
 
         let oauth = if enabled_set.contains("trovato_oauth2") {
-            match std::env::var("JWT_SECRET") {
-                Ok(secret) if secret.len() >= 32 => {
+            match config.jwt_secret.as_deref() {
+                Some(secret) if secret.len() >= 32 => {
                     // Warn about low-entropy secrets
                     let unique_chars: std::collections::HashSet<u8> = secret.bytes().collect();
                     if unique_chars.len() < 8 {
@@ -834,15 +844,15 @@ impl AppState {
                         secret.as_bytes(),
                     )))
                 }
-                Ok(secret) => {
+                Some(secret) => {
                     tracing::error!(
                         len = secret.len(),
                         "JWT_SECRET is too short (must be >= 32 bytes); OAuth2 disabled"
                     );
                     None
                 }
-                Err(_) => {
-                    tracing::error!("JWT_SECRET environment variable is not set; OAuth2 disabled");
+                None => {
+                    tracing::error!("JWT_SECRET is not configured; OAuth2 disabled");
                     None
                 }
             }
@@ -869,6 +879,9 @@ impl AppState {
         // pgvector store the gather read path and sync index path share.
         cron.set_vector_store(vector_store.clone());
         cron.set_pagefind_enabled(enabled_set.contains("trovato_search"));
+        // The security-audit retention window and the Pagefind index destination
+        // used to be read from the environment inside the tasks themselves.
+        cron.apply_runtime_config(&config.runtime);
         let cron = Arc::new(cron);
 
         // Spawn background cache reload tasks for collection caches.
@@ -906,6 +919,7 @@ impl AppState {
 
         Ok(Self {
             inner: Arc::new(AppStateInner {
+                runtime: config.runtime.clone(),
                 db,
                 db_pool_max_connections: config.database_max_connections,
                 plugins_dirs: config.plugins_dirs.clone(),
@@ -964,14 +978,13 @@ impl AppState {
         })
     }
 
-    /// Resolve the template search path.
+    /// The configuration request handling reads.
     ///
-    /// `TEMPLATES_DIR` is a platform search path (`:` separated on unix), so a
-    /// plain single-directory value keeps behaving exactly as before while an
-    /// application can append its own template directory. Later entries
-    /// override earlier ones.
-    fn resolve_template_dirs() -> Vec<PathBuf> {
-        crate::config::split_search_path("TEMPLATES_DIR", "./templates")
+    /// One accessor rather than one per value: these travel together as
+    /// configuration, and grouping them keeps the reason they exist legible —
+    /// each was an environment read at the point of use before.
+    pub fn runtime(&self) -> &crate::config::RuntimeConfig {
+        &self.inner.runtime
     }
 
     /// Get the database pool.

@@ -26,6 +26,6 @@ pub use rate_limit::{
     check_rate_limit, get_client_id, parse_trusted_proxies, rate_limit_response, resolve_client_ip,
 };
 pub use redirect::check_redirect;
-pub use security_headers::inject_security_headers;
+pub use security_headers::{SecurityHeaders, inject_security_headers};
 pub use session_tracking::track_session;
-pub use tenant::resolve_tenant;
+pub use tenant::{TenantResolution, resolve_tenant};

@@ -10,6 +10,7 @@ mod tasks;
 pub use queue::{Queue, RedisQueue};
 pub use tasks::CronTasks;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -459,6 +460,11 @@ pub struct CronService {
     vector_store: Option<Arc<PgVectorStore>>,
     http: reqwest::Client,
     pagefind_enabled: bool,
+    /// Base directory the generated Pagefind index is written into.
+    ///
+    /// Defaults to `./static` so a harness without a `Config` still has a
+    /// destination; `apply_runtime_config` sets it from the static search path.
+    pagefind_static_dir: PathBuf,
 }
 
 impl CronService {
@@ -477,6 +483,7 @@ impl CronService {
             vector_store: None,
             http: build_http_client(),
             pagefind_enabled: false,
+            pagefind_static_dir: PathBuf::from("./static"),
         }
     }
 
@@ -495,6 +502,7 @@ impl CronService {
             vector_store: None,
             http: build_http_client(),
             pagefind_enabled: false,
+            pagefind_static_dir: PathBuf::from("./static"),
         }
     }
 
@@ -521,6 +529,21 @@ impl CronService {
     /// Enable pagefind index rebuilding (requires `trovato_search` plugin).
     pub fn set_pagefind_enabled(&mut self, enabled: bool) {
         self.pagefind_enabled = enabled;
+    }
+
+    /// Apply the configuration the cron tasks used to read from the environment.
+    ///
+    /// The Pagefind index needs one destination, so it goes into the **base**
+    /// (first) static directory: writing it into every root would leave several
+    /// copies of a generated artifact to keep in step, and writing it into the
+    /// last root would mean a cron job dropping build output into an
+    /// application's own repository.
+    pub fn apply_runtime_config(&mut self, runtime: &crate::config::RuntimeConfig) {
+        self.tasks
+            .set_security_audit_retention_days(runtime.security_audit_retention_days);
+        if let Some(base) = runtime.static_dirs.first() {
+            self.pagefind_static_dir = base.clone();
+        }
     }
 
     /// Set optional plugin services for cron tasks.
@@ -755,7 +778,7 @@ impl CronService {
 
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
-            match pagefind::maybe_rebuild_index(&self.pool).await {
+            match pagefind::maybe_rebuild_index(&self.pool, &self.pagefind_static_dir).await {
                 Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
                 Ok(false) => {}
                 Err(e) => warn!(error = %e, "pagefind index rebuild failed"),

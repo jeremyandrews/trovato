@@ -487,18 +487,6 @@ impl std::fmt::Debug for SecurityAudit {
     }
 }
 
-/// Read the configured retention window from `SECURITY_AUDIT_RETENTION_DAYS`.
-///
-/// A one-line edge over `retention_days_from`, which holds the resolution so
-/// that it can be tested without mutating the process environment.
-pub fn retention_days_from_env() -> i64 {
-    retention_days_from(
-        std::env::var("SECURITY_AUDIT_RETENTION_DAYS")
-            .ok()
-            .as_deref(),
-    )
-}
-
 /// Resolve the retention window from a configured value, falling back to
 /// [`DEFAULT_RETENTION_DAYS`] when it is absent, unparseable, or not positive.
 ///
@@ -506,6 +494,10 @@ pub fn retention_days_from_env() -> i64 {
 /// everything older than `now - days`: a zero or negative window would empty the
 /// whole stream on the next cron run, which is the opposite of a retention
 /// policy.
+///
+/// Called once by `Config::from_env` for `SECURITY_AUDIT_RETENTION_DAYS`; the
+/// cron task takes the resolved value from `RuntimeConfig` rather than re-reading
+/// the environment on every prune.
 pub(crate) fn retention_days_from(value: Option<&str>) -> i64 {
     value
         .and_then(|v| v.parse::<i64>().ok())
