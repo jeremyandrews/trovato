@@ -37,6 +37,45 @@
   listing on a default install (whose anonymous role does have "access
   content"). The front page now builds the same user context as the item
   route.
+- Navigation hid every permission-gated menu item from everyone. The menu was
+  built as `root_menus().filter(|m| m.permission.is_empty())`, which reads as a
+  permission check and is not one: it kept only the entries needing no
+  permission, so an entry declaring one was dropped for every viewer, including
+  a viewer who held it and an admin. A plugin could not get a gated navigation
+  entry into the menu at all — Argus's `/stories` and `/articles`, both gated on
+  `access content`, were unreachable from the navigation for everyone.
+  `MenuRegistry::root_menus_for` now filters per viewer: an entry appears when
+  it requires no permission, when the viewer holds the one it requires, or when
+  the viewer is an admin, matching `require_permission`.
+- Admin contexts are loaded rather than fabricated. `admin_user_context`
+  returned `authenticated(user.id, vec!["administer site"])`, dropping the
+  admin's real permissions across eleven admin handlers, and the admin AJAX
+  callback hard-coded the same list. Both worked only because `is_admin()`
+  short-circuits every permission check — the same fabricate-instead-of-load
+  shape that broke the item front page, one short-circuit from the same
+  failure. Every request-scoped context now comes from one loader:
+  `PermissionService::user_context` assembles it, `routes::helpers`
+  `get_user_context` (from a session) and `user_context_for` (from an
+  already-loaded `User`) are the two sanctioned ways to reach it, and the
+  hand-rolled copies in `routes::comment` and the MCP server were folded into
+  it.
+- Self-service updates pass the owner's real permissions as the acting
+  principal. Profile update, password change, email-change verification and
+  password reset built `authenticated(id, vec![])`. Those service methods
+  authorize nothing — the route gates on identity or a verified token — but the
+  context is dispatched to plugins as the `tap_user_update` principal, so an
+  empty list told every listener that a permission-less user acted. Documented
+  on `UserService::update` and `update_password`: `acting_user` is the tap
+  principal, not an authorization subject.
+- A failed permission load no longer degrades a request silently. Both loaders
+  ended in `unwrap_or_default()`, so a transient database error produced an
+  empty permission set — safe, but indistinguishable from a permission model
+  that is working, which is exactly how the front-page bug presented. The
+  policy is now explicit per caller: paths that can propagate fail closed
+  (`PermissionService::user_context`, the MCP server), and the web loader
+  degrades to the deny-all set while logging at ERROR and incrementing
+  `trovato_permission_load_failures_total`, which should alert on any non-zero
+  value.
 - wasmtime 43 → 47.0.3. Clears every outstanding wasmtime and cranelift
   advisory (RUSTSEC-2026-0085 through -0096, -0114, -0222); 14 suppressions
   removed from `.cargo/audit.toml`. No source change was required and the

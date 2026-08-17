@@ -115,6 +115,20 @@ impl UserService {
     }
 
     /// Update a user with `tap_user_update` invocation.
+    ///
+    /// **`acting_user` is the tap principal, not an authorization subject.** This
+    /// method performs no access check of its own: it writes the update and then
+    /// dispatches `tap_user_update` with `acting_user` as the request context
+    /// every listening plugin sees. Authorization belongs to the caller — the
+    /// admin routes gate on `require_admin`, and the self-service routes in
+    /// `routes::auth` and `routes::recovery` gate on the session user's identity
+    /// or a verified token, then pass that same user as the principal.
+    ///
+    /// Because the principal reaches plugins, it must carry the acting user's
+    /// **real** permissions (`routes::helpers::user_context_for`). Passing
+    /// `authenticated(id, vec![])` tells every listener that a permission-less
+    /// user acted, which is both false and the thing that makes a plugin's own
+    /// permission check deny an entitled user.
     pub async fn update(
         &self,
         id: Uuid,
@@ -133,6 +147,11 @@ impl UserService {
     }
 
     /// Update a user's password with `tap_user_update` invocation.
+    ///
+    /// As with [`update`](Self::update), `acting_user` is the tap principal and
+    /// not an authorization subject: this method authorizes nothing, and the
+    /// caller (password change past a verified current password, or a spent
+    /// recovery grant) is what gates it.
     pub async fn update_password(
         &self,
         id: Uuid,

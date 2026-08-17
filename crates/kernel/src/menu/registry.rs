@@ -197,6 +197,33 @@ impl MenuRegistry {
             .collect()
     }
 
+    /// Root navigation entries this viewer may access, sorted by weight.
+    ///
+    /// The `permission` field on a [`MenuDefinition`] gates visibility **per
+    /// viewer**: an entry appears when it requires no permission, when the
+    /// viewer holds the one it requires, or when the viewer is an admin. Admins
+    /// implicitly hold every permission, matching
+    /// [`require_permission`](crate::routes::helpers::require_permission), so
+    /// navigation never hides a page an admin can in fact open.
+    ///
+    /// Navigation used to be built as `root_menus().filter(|m|
+    /// m.permission.is_empty())`, which reads as a permission check and is not
+    /// one: it kept only the entries that need no permission, so **every**
+    /// gated entry was hidden from **every** viewer, the holder and the admin
+    /// included. A plugin declaring a gated nav entry could not get it into the
+    /// navigation at all — Argus's `/stories` and `/articles`, both gated on
+    /// `access content`, were unreachable from the menu for everyone.
+    pub fn root_menus_for(&self, viewer: &crate::tap::UserContext) -> Vec<MenuDefinition> {
+        let mut menus: Vec<MenuDefinition> = self
+            .root_menus()
+            .into_iter()
+            .filter(|m| viewer_may_see(m, viewer))
+            .cloned()
+            .collect();
+        menus.sort_by_key(|m| m.weight);
+        menus
+    }
+
     /// Get visible local task menus for a parent path, sorted by weight.
     ///
     /// Only returns menus where `visible` is `true`. Menus with
@@ -233,6 +260,13 @@ impl Default for MenuRegistry {
     }
 }
 
+/// Whether a viewer may see a menu entry, by the entry's declared permission.
+///
+/// Empty permission means public. Admins hold every permission implicitly.
+fn viewer_may_see(menu: &MenuDefinition, viewer: &crate::tap::UserContext) -> bool {
+    menu.permission.is_empty() || viewer.is_admin() || viewer.has_permission(&menu.permission)
+}
+
 /// Match a route pattern against a path, extracting parameters.
 ///
 /// Pattern: "/blog/:slug/edit"
@@ -265,6 +299,8 @@ fn match_pattern(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use uuid::Uuid;
+
     use super::*;
 
     #[test]
@@ -347,6 +383,73 @@ mod tests {
         // Non-local-task items should not appear
         let no_tasks = registry.local_tasks("/admin/content");
         assert!(no_tasks.is_empty());
+    }
+
+    // --- root_menus_for: per-viewer navigation visibility ---
+
+    /// A public entry, a gated one, an admin-gated one, a child, and an
+    /// invisible API route — the five shapes navigation has to sort out.
+    fn nav_registry() -> MenuRegistry {
+        let json = r#"[
+            {"path": "/", "title": "Home", "weight": -10},
+            {"path": "/stories", "title": "Stories", "permission": "access content", "weight": 0},
+            {"path": "/admin/argus/feeds", "title": "Argus feeds", "permission": "argus:administer", "weight": 5},
+            {"path": "/stories/:id", "title": "Story", "parent": "/stories"},
+            {"path": "/argus/story/:id/react", "title": "React", "permission": "argus:react", "visible": false, "handler_type": "api", "method": "POST"}
+        ]"#;
+        MenuRegistry::from_tap_results(vec![("argus".to_string(), json.to_string())])
+    }
+
+    fn viewer(permissions: &[&str]) -> crate::tap::UserContext {
+        crate::tap::UserContext::authenticated(
+            Uuid::now_v7(),
+            permissions.iter().map(|p| (*p).to_string()).collect(),
+        )
+    }
+
+    fn titles(menus: &[MenuDefinition]) -> Vec<&str> {
+        menus.iter().map(|m| m.title.as_str()).collect()
+    }
+
+    #[test]
+    fn gated_menu_appears_for_a_viewer_holding_the_permission() {
+        let menus = nav_registry().root_menus_for(&viewer(&["access content"]));
+        assert_eq!(titles(&menus), vec!["Home", "Stories"]);
+    }
+
+    #[test]
+    fn gated_menu_is_absent_for_a_viewer_without_the_permission() {
+        let menus = nav_registry().root_menus_for(&viewer(&[]));
+        assert_eq!(titles(&menus), vec!["Home"]);
+    }
+
+    #[test]
+    fn gated_menu_appears_for_an_admin() {
+        // Admins implicitly hold every permission, so navigation shows both
+        // gated entries even though the admin's roles grant neither by name.
+        let menus = nav_registry().root_menus_for(&viewer(&["administer site"]));
+        assert_eq!(titles(&menus), vec!["Home", "Stories", "Argus feeds"]);
+    }
+
+    #[test]
+    fn anonymous_viewer_with_the_permission_still_sees_the_gated_menu() {
+        // The anonymous role commonly grants "access content", and an anonymous
+        // context is not `authenticated` — visibility must key on the
+        // permission, not on being logged in.
+        let mut anon = crate::tap::UserContext::anonymous();
+        anon.permissions = vec!["access content".to_string()];
+        let menus = nav_registry().root_menus_for(&anon);
+        assert_eq!(titles(&menus), vec!["Home", "Stories"]);
+    }
+
+    #[test]
+    fn navigation_excludes_children_and_invisible_api_routes() {
+        // An admin sees everything permission can allow, so anything still
+        // missing here is excluded structurally: child entries belong under
+        // their parent, and an `api` route is a write endpoint, not a link.
+        let menus = nav_registry().root_menus_for(&viewer(&["administer site"]));
+        assert!(!titles(&menus).contains(&"Story"));
+        assert!(!titles(&menus).contains(&"React"));
     }
 
     #[test]

@@ -320,7 +320,7 @@ async fn ajax_callback(
     Json(request): Json<AjaxRequest>,
 ) -> Response {
     use crate::form::AjaxResponse;
-    use crate::tap::{RequestState, UserContext};
+    use crate::tap::RequestState;
 
     // Verify CSRF token from header
     if let Err((status, json)) = super::helpers::require_csrf_header(&session, &headers).await {
@@ -341,13 +341,10 @@ async fn ajax_callback(
         return super::admin_content_type::handle_ajax_add_field(&state, &request).await;
     }
 
-    // Build user context with permissions
-    let permissions = if user.is_admin {
-        vec!["administer site".to_string()]
-    } else {
-        vec![]
-    };
-    let user_context = UserContext::authenticated(user.id, permissions);
+    // Build the acting context through the shared loader so the AJAX callback
+    // sees the admin's real permissions. This used to hard-code
+    // `vec!["administer site"]`, dropping them exactly as the old front page did.
+    let user_context = admin_user_context(&state, &user).await;
     let request_state = RequestState::without_services(user_context);
 
     match state
@@ -526,7 +523,7 @@ async fn edit_comment_submit(
         return resp;
     }
 
-    let user_ctx = admin_user_context(&user);
+    let user_ctx = admin_user_context(&state, &user).await;
     let input = UpdateComment {
         body: Some(form.body),
         body_format: None,
@@ -561,7 +558,7 @@ async fn set_comment_status(
         return resp;
     }
 
-    let user_ctx = admin_user_context(&user);
+    let user_ctx = admin_user_context(state, &user).await;
     let input = UpdateComment {
         body: None,
         body_format: None,
@@ -620,7 +617,7 @@ async fn delete_comment_admin(
         return resp;
     }
 
-    let user_ctx = admin_user_context(&user);
+    let user_ctx = admin_user_context(&state, &user).await;
     match state.comments().delete(id, &user_ctx).await {
         Ok(true) => Redirect::to("/admin/content/comments").into_response(),
         Ok(false) => render_not_found(),

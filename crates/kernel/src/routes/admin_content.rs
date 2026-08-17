@@ -295,7 +295,7 @@ async fn add_content_submit(
         log: Some("Created via admin UI".to_string()),
     };
 
-    let user_ctx = admin_user_context(&user);
+    let user_ctx = admin_user_context(&state, &user).await;
     match state.items().create(input, &user_ctx).await {
         Ok(item) => {
             // Promote temporary file uploads to permanent
@@ -509,7 +509,7 @@ async fn edit_content_submit(
         log: Some("Updated via admin UI".to_string()),
     };
 
-    let user_ctx = admin_user_context(&user);
+    let user_ctx = admin_user_context(&state, &user).await;
     match state.items().update(item_id, input, &user_ctx).await {
         Ok(updated) => {
             // Promote temporary file uploads to permanent
@@ -575,7 +575,7 @@ async fn delete_content(
         return resp;
     }
 
-    let user_ctx = admin_user_context(&user);
+    let user_ctx = admin_user_context(&state, &user).await;
     match state.items().delete(item_id, &user_ctx).await {
         Ok(true) => {
             tracing::info!(item_id = %item_id, "content deleted");
@@ -645,7 +645,7 @@ async fn bulk_content_action(
         return Redirect::to("/admin/content").into_response();
     }
 
-    let user_ctx = admin_user_context(&user);
+    let user_ctx = admin_user_context(&state, &user).await;
 
     let mut success_count = 0u32;
     let mut fail_count = 0u32;

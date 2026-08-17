@@ -21,7 +21,6 @@ use crate::models::{CreateItem, UpdateItem, UrlAlias};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
-use super::auth::SESSION_USER_ID;
 use super::helpers::{CsrfOnlyForm, JsonError, html_escape};
 
 /// Response for successful item operations.
@@ -277,57 +276,12 @@ pub fn router() -> Router<AppState> {
         .route("/api/items", get(list_items_api))
 }
 
-/// Get current user from session with permissions loaded from the database.
-///
-/// Shared with sibling read-path routes (e.g. comments, FR-8 Story 3.3) that
-/// need the same access-check user context.
-pub(crate) async fn get_user_context(session: &Session, state: &AppState) -> UserContext {
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    match user_id {
-        Some(id) => {
-            // Load user from database
-            let Ok(Some(user)) = crate::models::User::find_by_id(state.db(), id).await else {
-                return UserContext::anonymous();
-            };
-            let perms = state
-                .permissions()
-                .load_user_permissions(&user)
-                .await
-                .unwrap_or_default();
-            if user.is_admin {
-                let mut p: Vec<String> = perms.into_iter().collect();
-                p.push("administer site".to_string());
-                UserContext::authenticated(id, p)
-            } else {
-                UserContext::authenticated(id, perms.into_iter().collect())
-            }
-        }
-        None => {
-            // Load anonymous user permissions from the database
-            let anon = crate::models::User::find_by_id(state.db(), Uuid::nil())
-                .await
-                .ok()
-                .flatten();
-            if let Some(anon_user) = anon {
-                let perms = state
-                    .permissions()
-                    .load_user_permissions(&anon_user)
-                    .await
-                    .unwrap_or_default();
-                // Anonymous web caller carrying the anonymous role's permissions.
-                // Built from `anonymous()` so it can never be the kernel
-                // background principal (P11c / D-40): that marker is private and
-                // set only by `UserContext::background()`.
-                let mut ctx = UserContext::anonymous();
-                ctx.permissions = perms.into_iter().collect();
-                ctx
-            } else {
-                UserContext::anonymous()
-            }
-        }
-    }
-}
+// The session-derived loader lives in `routes::helpers` alongside its sibling
+// for handlers that already hold a `User`, so there is one implementation of
+// "the viewer's real permissions" rather than one per module. Re-exported here
+// because the read-path routes (comments, gather, search, file, batch, api_v1)
+// reach it as `routes::item::get_user_context`.
+pub(crate) use super::helpers::get_user_context;
 
 /// Determine which text formats the user is allowed to use.
 ///

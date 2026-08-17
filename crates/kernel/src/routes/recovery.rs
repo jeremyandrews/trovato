@@ -682,7 +682,31 @@ async fn recover_reset(
         return json_error(StatusCode::BAD_REQUEST, message);
     }
 
-    let user_ctx = crate::tap::UserContext::authenticated(grant.user_id, vec![]);
+    // The acting principal for `tap_user_update`: the account owner, carrying
+    // their real permissions. The grant above is what authorizes the reset —
+    // this context is who a plugin sees acting, and an empty permission list
+    // would tell every listener that a permission-less user changed the
+    // password. If the row cannot be loaded the reset still proceeds (the grant
+    // is spent and the password write is keyed on the id), but say so rather
+    // than passing a fabricated principal silently.
+    let recovering_user = match state.users().find_by_id(grant.user_id).await {
+        Ok(user) => user,
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %grant.user_id, "failed to load recovering user");
+            None
+        }
+    };
+    let user_ctx = match recovering_user {
+        Some(user) => super::helpers::user_context_for(&state, &user).await,
+        None => {
+            tracing::error!(
+                user_id = %grant.user_id,
+                "could not load the recovering user; dispatching tap_user_update with an \
+                 identity-only principal"
+            );
+            crate::tap::UserContext::authenticated(grant.user_id, vec![])
+        }
+    };
     match state
         .users()
         .update_password(grant.user_id, &body.new_password, &user_ctx)
