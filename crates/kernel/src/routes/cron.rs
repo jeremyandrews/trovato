@@ -34,9 +34,10 @@ pub struct CronResponse {
 
 /// Run cron tasks (protected by secret key).
 async fn run_cron(State(state): State<AppState>, Path(key): Path<String>) -> Response {
-    // Validate cron key
-    let expected_key = std::env::var("CRON_KEY").unwrap_or_else(|_| "default-cron-key".to_string());
-    if key != expected_key {
+    // Validate cron key. Resolved once at startup rather than read from the
+    // environment on every request to this endpoint.
+    let expected_key = &state.runtime().cron_key;
+    if &key != expected_key {
         info!(provided_key = %key, "invalid cron key");
         return (
             StatusCode::FORBIDDEN,

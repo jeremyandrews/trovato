@@ -16,6 +16,8 @@ mod query_builder;
 pub mod types;
 
 #[allow(unused_imports)]
+pub use access::GatherAccessConfig;
+#[allow(unused_imports)]
 pub use category_service::CategoryService;
 #[allow(unused_imports)]
 pub use extension::{
@@ -24,7 +26,7 @@ pub use extension::{
     RelationshipHandler, SortContext, SortExtension, SortHandler,
 };
 #[allow(unused_imports)]
-pub use gather_service::{GatherService, MAX_ITEMS_PER_PAGE};
+pub use gather_service::{GatherConfig, GatherService, MAX_ITEMS_PER_PAGE};
 #[allow(unused_imports)]
 pub use handlers::{HierarchicalInFilterHandler, JsonbArrayContainsFilterHandler};
 #[allow(unused_imports)]

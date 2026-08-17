@@ -366,7 +366,8 @@ async fn run_server() -> Result<()> {
         ))
         .layer(session_layer)
         .layer(cors)
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             crate::middleware::inject_security_headers,
         ))
         .layer(TraceLayer::new_for_http())
@@ -382,11 +383,6 @@ async fn run_server() -> Result<()> {
         .context("failed to bind to address")?;
 
     info!(%addr, "Server listening");
-
-    let shutdown_timeout = std::env::var("SHUTDOWN_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(30);
 
     axum::serve(
         listener,
@@ -406,16 +402,15 @@ async fn run_server() -> Result<()> {
 
     // Close external connections with a timeout.
     info!("Closing external connections...");
-    let drain_result =
-        tokio::time::timeout(std::time::Duration::from_secs(shutdown_timeout), async {
-            db_pool.close().await;
-            info!("Database pool closed");
-        })
-        .await;
+    let drain_result = tokio::time::timeout(config.shutdown_timeout, async {
+        db_pool.close().await;
+        info!("Database pool closed");
+    })
+    .await;
 
     if drain_result.is_err() {
         warn!(
-            timeout_secs = shutdown_timeout,
+            timeout_secs = config.shutdown_timeout.as_secs(),
             "Shutdown timeout reached, forcing exit"
         );
     }

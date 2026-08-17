@@ -1183,8 +1183,11 @@ async fn wire_gather(pool: &PgPool) -> Arc<GatherService> {
         pool.clone(),
         categories,
         Arc::new(GatherExtensionRegistry::new()),
-        Duration::from_secs(60),
-        100,
+        trovato_kernel::gather::GatherConfig {
+            ttl: Duration::from_secs(60),
+            max_page_size: 100,
+            access: trovato_kernel::gather::GatherAccessConfig::default(),
+        },
         None,
         None,
     );

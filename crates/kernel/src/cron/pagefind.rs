@@ -52,7 +52,10 @@ struct FieldConfigRow {
 ///
 /// Returns `Ok(true)` if an index was built, `Ok(false)` if no rebuild
 /// was needed (or the signal table doesn't exist), and `Err` on failure.
-pub async fn maybe_rebuild_index(pool: &PgPool) -> Result<bool> {
+/// `static_dir` is the base directory the generated index is written into,
+/// supplied by the caller from the configured static search path rather than
+/// read back out of the environment here.
+pub async fn maybe_rebuild_index(pool: &PgPool, static_dir: &Path) -> Result<bool> {
     // Check if the signal table exists and a rebuild is requested.
     // If the table doesn't exist (plugin not installed), return early.
     let requested: Option<bool> =
@@ -79,7 +82,7 @@ pub async fn maybe_rebuild_index(pool: &PgPool) -> Result<bool> {
         .context("failed to clear pagefind rebuild signal")?;
 
     // Run the actual build, recording errors in the status table
-    match build_index(pool).await {
+    match build_index(pool, static_dir).await {
         Ok(count) => {
             sqlx::query(
                 "UPDATE pagefind_index_status SET last_indexed_at = $1, last_error = NULL WHERE id = 1",
@@ -107,19 +110,10 @@ pub async fn maybe_rebuild_index(pool: &PgPool) -> Result<bool> {
 }
 
 /// Build the Pagefind index from published live-stage items.
-async fn build_index(pool: &PgPool) -> Result<usize> {
-    // STATIC_DIR is a search path, but deploying an index needs one
-    // destination, so the generated index goes into the base (first) directory
-    // and is served from there unless a later root ships a `pagefind/` of its
-    // own, which an application has no reason to do. Writing it into every root would leave several
-    // copies of a generated artifact to keep in step, and writing it into the
-    // last root would mean a cron job dropping build output into an
-    // application's own repository.
-    let static_dir = crate::routes::static_files::static_dirs()
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| PathBuf::from("./static"));
-
+///
+/// `static_dir` is the base (first) entry of the static search path, chosen by
+/// `CronService::apply_runtime_config`: the index needs exactly one destination.
+async fn build_index(pool: &PgPool, static_dir: &Path) -> Result<usize> {
     // Create a temp directory inside static/ (same filesystem for atomic rename)
     let temp_dir = static_dir.join(format!(".pagefind_build_{}", std::process::id()));
     tokio::fs::create_dir_all(&temp_dir)
@@ -127,7 +121,7 @@ async fn build_index(pool: &PgPool) -> Result<usize> {
         .context("failed to create pagefind temp directory")?;
 
     // Ensure cleanup on both success and failure
-    let result = build_index_inner(pool, &static_dir, &temp_dir).await;
+    let result = build_index_inner(pool, static_dir, &temp_dir).await;
 
     // Clean up temp directory
     if let Err(e) = tokio::fs::remove_dir_all(&temp_dir).await {

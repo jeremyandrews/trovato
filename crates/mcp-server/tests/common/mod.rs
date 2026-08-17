@@ -17,12 +17,15 @@ use trovato_mcp::server::TrovatoMcpServer;
 
 /// Shared Tokio runtime that outlives all test runtimes.
 ///
-/// The process-wide test defaults are installed from here, which gets them in
-/// place exactly once per binary and before the runtime's worker threads exist.
-/// That is *not* the same as "before any thread exists" — see [`init_test_env`].
+/// `.env` is loaded from here, once per binary, before the runtime's worker
+/// threads exist. That is *not* the same as "before any thread exists" — libtest
+/// has already spawned a thread per test — which is why the load goes through the
+/// workspace environment lock rather than calling `dotenvy` directly.
 pub static SHARED_RT: std::sync::LazyLock<tokio::runtime::Runtime> =
     std::sync::LazyLock::new(|| {
-        init_test_env();
+        // `dotenvy::dotenv` calls `set_var` for every line it applies, so it is an
+        // environment mutation like any other and takes the same lock.
+        trovato_test_utils::env::load_dotenv();
 
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -48,36 +51,18 @@ pub async fn shared_app() -> &'static TestContext {
     })
 }
 
-/// Install the process-wide defaults tests need, once per binary.
+/// The project root, resolved from this crate's manifest directory.
 ///
-/// `TEMPLATES_DIR` and `STATIC_DIR` are not `Config` fields — the theme engine
-/// and the static-file handler read them from the process environment on each
-/// use — so a process-wide default is the only lever a test has. Everything with
-/// a `Config` field is set on the config instead, in [`TestContext::new`].
-///
-/// This used to claim "no other threads exist yet". It does not hold: libtest
-/// spawns a thread per test before any of them runs, and `SHARED_RT` is a
-/// `LazyLock` first touched from inside one of those threads, so the others are
-/// already alive. What is true is narrower and enough to make the writes
-/// order-independent: `set_env_default` performs the check and the write together
-/// under the workspace env lock, and never overwrites, so a variable is written
-/// at most once per process and no reader can observe one of these values
-/// change. The residual `setenv`/`getenv` race with a concurrent reader is not
-/// closable from the test side; closing it means moving those two reads into
-/// `Config`.
-fn init_test_env() {
-    // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
-    // through the same lock as everything else.
-    trovato_test_utils::env::load_dotenv();
-
+/// Tests run with `crates/mcp-server/` as the working directory, so the template
+/// and static defaults (`./templates`, `./static`) resolve to nothing and have to
+/// be built from here.
+fn project_root() -> std::path::PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let project_root = std::path::Path::new(&manifest_dir)
+    std::path::Path::new(&manifest_dir)
         .parent() // crates/
         .and_then(|p| p.parent()) // project root
-        .unwrap_or(std::path::Path::new("."));
-
-    trovato_test_utils::env::set_env_default("TEMPLATES_DIR", project_root.join("templates"));
-    trovato_test_utils::env::set_env_default("STATIC_DIR", project_root.join("static"));
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf()
 }
 
 /// Shared test context with AppState and pre-created test users.
@@ -94,9 +79,18 @@ pub struct TestContext {
 impl TestContext {
     async fn new() -> Self {
         let mut config = Config::from_env().expect("Failed to load config");
-        // A field override rather than a `DATABASE_MAX_CONNECTIONS` write: it is
-        // a `Config` field, so this needs no process-global state. The
-        // environment still wins when it says something, as it did before.
+        let project_root = project_root();
+        // Field overrides rather than environment writes. `templates_dirs` and
+        // `static_dirs` used to need `set_env_default`, because the theme engine
+        // and the static-file handler read the variables themselves; they are
+        // `Config` fields now. Each still defers to the environment when it says
+        // something.
+        if std::env::var_os("TEMPLATES_DIR").is_none() {
+            config.templates_dirs = vec![project_root.join("templates")];
+        }
+        if std::env::var_os("STATIC_DIR").is_none() {
+            config.runtime.static_dirs = vec![project_root.join("static")];
+        }
         if std::env::var_os("DATABASE_MAX_CONNECTIONS").is_none() {
             config.database_max_connections = 10;
         }
