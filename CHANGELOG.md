@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- The admin record view route now honors the key column a record type actually
+  declares. `[[record_types]]` lets a plugin name its own `id_column`, and every
+  other reader trusts it — the list route projects `{id_column}::text`, gather
+  resolves the logical `id` to it — but the view handler extracted the path
+  segment as `Path<(String, uuid::Uuid)>`. Axum parses that before the handler
+  body runs, so a record type keyed by a bigint (or any other scalar) listed
+  correctly and returned **400 on every row link**, with the guard and the
+  registry lookup never reached. The route was hard-coding the id type in the one
+  place that did not need to assume it, one line above the query it built from
+  `def.id_column`.
+
+  The id is extracted as a string and compared as text, `WHERE {id_col}::text =
+  $1`, with the segment bound as a parameter — as injection-safe as before, since
+  the column name is still the registry-validated identifier and the value is
+  still bound. One path serves a uuid key, a bigint key and any other scalar key,
+  with no per-type branching and no registry addition. A uuid-shaped segment is
+  normalized to the canonical lowercase form Postgres renders `uuid::text` as, so
+  the uppercase, braced and unhyphenated spellings the uuid extractor accepted
+  still open their row. A miss renders not-found rather than erroring, including
+  for a segment that is not a number at all on a bigint-keyed type, and
+  `require_admin` still gates the route.
+
+  The reference plugin `trovato_record_ref` grew a second record type,
+  `legacy_record` over a BIGINT-keyed table, so the non-uuid case is exercised
+  end-to-end through the real router and the real registry rather than asserted
+  in the abstract.
+
 - `Config::from_env` is now the only place in the process that reads the
   environment. Twelve settings were read lazily and repeatedly at the point of
   use instead: the static search path on every served file, the CSP headers on

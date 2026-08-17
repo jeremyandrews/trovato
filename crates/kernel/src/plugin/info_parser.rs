@@ -103,7 +103,8 @@ pub struct RecordTypeDecl {
     /// Validated as a safe SQL identifier here.
     pub table: String,
 
-    /// Primary-key column (UUID). Defaults to `"id"`.
+    /// Primary-key column, of any scalar type — the kernel's read surfaces
+    /// compare it as text rather than assuming a uuid. Defaults to `"id"`.
     #[serde(default = "default_id_column")]
     pub id_column: String,
 

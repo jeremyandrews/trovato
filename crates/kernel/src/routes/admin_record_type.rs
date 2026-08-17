@@ -15,6 +15,10 @@
 //! that was validated as a safe SQL identifier at manifest parse and admitted to
 //! the registry only after the effective-allowlist cross-check — so interpolation
 //! carries no injection surface. The record id is always a bound parameter.
+//!
+//! Neither read surface assumes anything about the *type* of the declared id
+//! column: both compare it as text, so a record type keyed by a uuid, a bigint,
+//! or any other scalar lists and opens through the same route.
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -111,7 +115,7 @@ async fn list_records(
 async fn view_record(
     State(state): State<AppState>,
     session: Session,
-    Path((type_name, id)): Path<(String, uuid::Uuid)>,
+    Path((type_name, id)): Path<(String, String)>,
 ) -> Response {
     if let Err(redirect) = require_admin(&state, &session).await {
         return redirect;
@@ -122,14 +126,27 @@ async fn view_record(
     };
 
     // Registry-validated identifiers; the id is a bound parameter.
+    //
+    // The id is compared **as text**, which is what lets one route serve a
+    // record type keyed by a uuid, a bigint, or any other scalar: the registry
+    // declares the key column, and nothing here assumes its type. The list
+    // route already projects `{id}::text` as the row key, so the ids this
+    // compares against are exactly the ids that route links to.
     let sql = format!(
-        "SELECT row_to_json(t) FROM (SELECT * FROM {table} WHERE {id_col} = $1) t",
+        "SELECT row_to_json(t) FROM (SELECT * FROM {table} WHERE {id_col}::text = $1) t",
         table = def.table,
         id_col = def.id_column,
     );
 
+    // A uuid-shaped segment is normalized to the canonical lowercase hyphenated
+    // form Postgres renders `uuid::text` as, so a uuid-keyed type still opens
+    // from an uppercase, braced or unhyphenated spelling — the ones the uuid
+    // extractor used to accept. Anything that is not a uuid is compared exactly
+    // as it arrived.
+    let id_param = uuid::Uuid::parse_str(&id).map_or_else(|_| id.clone(), |u| u.to_string());
+
     let row: Option<serde_json::Value> = match sqlx::query_scalar(&sql)
-        .bind(id)
+        .bind(&id_param)
         .fetch_optional(state.db())
         .await
     {
@@ -162,7 +179,7 @@ async fn view_record(
     let mut context = tera::Context::new();
     context.insert("record_type", &type_name);
     context.insert("plugin", &def.plugin);
-    context.insert("record_id", &id.to_string());
+    context.insert("record_id", &id);
     context.insert(
         "title",
         &row.get(&def.title_column)

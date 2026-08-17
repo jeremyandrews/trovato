@@ -41,7 +41,8 @@ pub struct RecordTypeDef {
     pub plugin: String,
     /// Backing base table (inside the plugin's effective DB allowlist).
     pub table: String,
-    /// Primary-key column (UUID).
+    /// Primary-key column. Any scalar type — the kernel's read surfaces compare
+    /// it as text rather than assuming a uuid.
     pub id_column: String,
     /// Title/label column.
     pub title_column: String,
