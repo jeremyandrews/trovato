@@ -25,7 +25,10 @@ serde_json = { workspace = true }
 # thing on this side that ever meets the schema the plugin is written for.
 [dev-dependencies]
 chrono = { workspace = true }
-dotenvy = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+# `.env` loading goes through `trovato_test_utils::env::load_dotenv`, which takes
+# the workspace env lock — `dotenvy::dotenv` mutates the process environment, and
+# `scratch()` calls it once per test function while the others are running.
+trovato-test-utils = { path = "../test-utils" }

@@ -68,22 +68,7 @@ fn app_with_recovery_plugins() -> &'static TestApp {
 /// has to say "enabled" before the app exists — which is why this uses a direct
 /// pool rather than the app's own.
 async fn build_app_with_recovery_plugins() -> TestApp {
-    dotenvy::dotenv().ok();
-
-    // Integration tests run with the crate directory as CWD, so `Config`'s
-    // default `./plugins` resolves to nothing. Point it at the real directory,
-    // the same way every other fixture-plugin test does.
-    if std::env::var("PLUGINS_DIR").is_err() {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        let plugins = std::path::Path::new(&manifest_dir)
-            .parent()
-            .and_then(|p| p.parent())
-            .unwrap_or(std::path::Path::new("."))
-            .join("plugins");
-        // SAFETY: set before any thread that reads it is spawned, matching the
-        // TEMPLATES_DIR/STATIC_DIR pattern in `common::TestApp::new`.
-        unsafe { std::env::set_var("PLUGINS_DIR", plugins) };
-    }
+    trovato_test_utils::env::load_dotenv();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -99,7 +84,17 @@ async fn build_app_with_recovery_plugins() -> TestApp {
     }
     pool.close().await;
 
-    TestApp::new().await
+    // Integration tests run with the crate directory as CWD, so `Config`'s
+    // default `./plugins` resolves to nothing. Point it at the real directory
+    // through the config rather than through `PLUGINS_DIR`: `plugins_dirs` is a
+    // `Config` field, so this fixture needs no process-global write at all. The
+    // environment still wins when it says something, as it did before.
+    TestApp::with_config(|config| {
+        if std::env::var_os("PLUGINS_DIR").is_none() {
+            config.plugins_dirs = vec![common::project_root().join("plugins")];
+        }
+    })
+    .await
 }
 
 /// Undo the enable so the fixtures do not leak into other test binaries.

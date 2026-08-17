@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Tests no longer mutate the process environment without a guard. Seven places
+  called `std::env::set_var` / `remove_var` from code running on a live libtest
+  thread pool: the environment is process-global, `cargo test` runs a binary's
+  tests in parallel, and `setenv` is not thread-safe against the `getenv` that
+  dependency C code performs for timezone lookups and name resolution. None of
+  the mutating tests restored what they found unless every assert passed, so one
+  failure leaked state into every test that ran afterwards, and the SAFETY
+  comments justifying the `unsafe` blocks asserted a "before any threads are
+  spawned" guarantee that libtest does not provide.
+
+  The fix is mostly to remove the need. `PluginConfig::from_env`,
+  `audit::retention_days_from_env` and `config::split_search_path` are now
+  one-line edges over `from_lookup`, `retention_days_from` and
+  `split_search_path_value`, which take their input as a parameter; their tests
+  drive those cores with explicit values and touch nothing global, and they
+  cover the defaults and the unparseable-value fallbacks that the old
+  environment-reading tests could not state (asserting a default by *assuming*
+  a variable was unset failed spuriously on any machine that exported it). The
+  integration fixtures set `Config` fields — `plugins_dirs`,
+  `database_max_connections` — instead of the variables those fields are loaded
+  from. What legitimately remains goes through one mechanism for the whole
+  workspace, `trovato_test_utils::env`: a single lock serializing every
+  mutation, an `EnvGuard` that restores what it found when it drops (including
+  while a failing assert unwinds), and `load_dotenv` so that `dotenvy`'s own
+  `set_var` calls take the same lock. Every SAFETY comment now states only what
+  is actually guaranteed, and names the part that no test-side lock can close.
+
+  No runtime behaviour changes. The variables still read lazily and repeatedly
+  deep inside runtime call paths — the cron key, CSP headers, tenant
+  resolution, the query profiler threshold, `TEMPLATES_DIR`, `STATIC_DIR`,
+  `TRUSTED_PROXIES` — are why a fixture has to reach for the environment at
+  all; consolidating them into the startup config is the follow-up.
+
 - `STATIC_DIR` is a search path, like `PLUGINS_DIR` and `TEMPLATES_DIR`.
   0.99.0 generalized two of the three asset roots and left the third a single
   directory, so an application could overlay its templates but not the CSS

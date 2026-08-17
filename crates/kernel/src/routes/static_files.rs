@@ -403,19 +403,33 @@ mod tests {
         std::fs::remove_dir_all(&kernel).ok();
     }
 
-    /// `STATIC_DIR` itself parses as a search path, and a plain single value
-    /// still parses to exactly one entry.
+    /// `static_dirs` reads `STATIC_DIR`, and a plain single value still parses
+    /// to exactly one entry.
     ///
-    /// This is the only test here that touches the process environment; it
-    /// keeps `STATIC_DIR` to itself and restores what it found.
+    /// The only test in this crate that mutates the process environment, and it
+    /// is here rather than spread over the parsing cases because parsing is
+    /// covered without touching anything global by `config::search_path_tests`.
+    /// What is left, and can only be tested at the edge, is the wiring: that the
+    /// variable is spelled `STATIC_DIR`, that its value reaches the search-path
+    /// split, and that the default is `./static`.
+    ///
+    /// [`EnvGuard`](trovato_test_utils::env::EnvGuard) makes that honest. It
+    /// serializes this write against every other environment mutation in the
+    /// workspace and restores `STATIC_DIR` when it drops — including while a
+    /// failing assert unwinds, which a hand-rolled restore placed after the
+    /// asserts does not. What no lock can prevent is a concurrent *read* racing
+    /// the write, so this stays one call site rather than a pattern to copy: in
+    /// this test binary the only readers of `STATIC_DIR` are `static_dirs` calls
+    /// made from here, since `serve_static`, `build_asset_manifest` and the
+    /// Pagefind indexer all need a running app or a database to reach.
     #[test]
-    fn static_dir_parses_as_a_search_path() {
-        let restore = std::env::var_os("STATIC_DIR");
+    fn static_dir_names_the_search_path() {
+        let mut env = trovato_test_utils::env::EnvGuard::new();
 
-        unsafe { std::env::remove_var("STATIC_DIR") };
+        env.remove("STATIC_DIR");
         assert_eq!(static_dirs(), vec![PathBuf::from("./static")]);
 
-        unsafe { std::env::set_var("STATIC_DIR", "/srv/static") };
+        env.set("STATIC_DIR", "/srv/static");
         assert_eq!(static_dirs(), vec![PathBuf::from("/srv/static")]);
 
         let joined = std::env::join_paths([
@@ -423,7 +437,7 @@ mod tests {
             PathBuf::from("/opt/app/static"),
         ])
         .expect("join search path");
-        unsafe { std::env::set_var("STATIC_DIR", &joined) };
+        env.set("STATIC_DIR", &joined);
         assert_eq!(
             static_dirs(),
             vec![
@@ -431,10 +445,5 @@ mod tests {
                 PathBuf::from("/opt/app/static"),
             ]
         );
-
-        match restore {
-            Some(value) => unsafe { std::env::set_var("STATIC_DIR", value) },
-            None => unsafe { std::env::remove_var("STATIC_DIR") },
-        }
     }
 }

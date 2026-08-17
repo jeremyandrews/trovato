@@ -31,6 +31,8 @@ dotenvy = { workspace = true }
 [dev-dependencies]
 argon2 = { workspace = true }
 sqlx = { workspace = true }
+# One env-mutation mechanism for the whole workspace — see `trovato_test_utils::env`.
+trovato-test-utils = { path = "../test-utils" }
 
 [lints]
 workspace = true

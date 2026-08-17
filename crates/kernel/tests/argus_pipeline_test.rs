@@ -83,7 +83,7 @@ fn dispatcher() -> Arc<TapDispatcher> {
 
 /// Connect, run kernel migrations, and apply the argus schema (idempotent).
 async fn fresh_pool() -> PgPool {
-    dotenvy::dotenv().ok();
+    trovato_test_utils::env::load_dotenv();
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:5432/trovato".to_string());
     let pool = PgPool::connect(&url).await.expect("connect test DB");
