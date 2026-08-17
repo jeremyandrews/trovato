@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- Item pages carry a meta description, a canonical link and Open Graph tags.
+  Nothing could emit them before, and the reason was structural rather than an
+  oversight: `<head>` is not reachable from a plugin. `trovato_seo` implements
+  `tap_item_view`, whose return value the item route appends to the item's body,
+  so the best it could do was a hidden `<div data-description>` and its JSON-LD
+  script blocks. `tap_item_view_alter`, which could have rewritten the
+  surrounding document, is declared in `kernel.wit` but never dispatched. Search
+  engines got the JSON-LD; every link preview on every chat and social platform
+  got a title and nothing else.
+
+  The kernel now derives the metadata (`content::page_meta`) and puts it in the
+  template context, and `templates/base.html` emits it: `description`,
+  `canonical`, `og:title`, `og:type`, `og:url`, `og:site_name`,
+  `og:description`, `og:image`, `article:published_time`,
+  `article:modified_time`, and the one Twitter tag that is not covered by the
+  Open Graph fallbacks, `twitter:card`. Every tag is guarded by its value, since
+  an empty description tag is a worse signal to a crawler than no description
+  tag.
+
+  The description is derived from `field_description`, then `field_body`, then
+  the first paragraph block — the same two field names `trovato_seo` reads, plus
+  a fallback for block-editor content types, which have no `field_body`. Tags
+  are stripped, entities decoded, whitespace collapsed, and the result truncated
+  to 160 bytes on a word boundary. `og:image` comes from the item's first image
+  block, the only image the kernel can identify without a theme naming a lead
+  image field. `og:type` is `article` for the `blog`, `article` and `news` item
+  types, matching the mapping `trovato_seo` uses for its JSON-LD `@type` so the
+  two cannot disagree on one page.
+
+  Two details worth knowing. The canonical URL is the item's URL alias when it
+  has one, so the address a crawler indexes is the address the site links to,
+  and both `/item/{uuid}` and the alias name the alias as canonical. And the URL
+  values are resolved with `url::Url` and emitted with `| safe`: Tera's escaper
+  renders every `/` in a URL as `&#x2F;`, which is legal HTML that naive
+  unfurlers read wrong. `Url` resolution percent-encodes anything that could
+  close the attribute, non-http(s) schemes are dropped rather than emitted, and
+  `&` is written as `&amp;`.
+
+  `SITE_URL` is now on `RuntimeConfig`, since request handling needs it: a
+  canonical link and `og:url` are absolute by definition, resolved by a crawler
+  with no request context to resolve a relative path against.
+
 - Netgrasp is gone from this tree. It now lives in its own repository,
   `jeremyandrews/netgrasp-trovato`, where it builds against `trovato-sdk` as a
   pinned git dependency and installs by appending its own directories to
