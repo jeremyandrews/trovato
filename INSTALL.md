@@ -70,7 +70,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `UPLOADS_DIR` | `./uploads` | Path for file uploads |
 | `FILES_URL` | `/files` | Base URL that uploaded files are served under |
 | `TEMPLATES_DIR` | `./templates` | Tera template search path. Several directories may be given, separated by `:`; later ones override templates of the same name. |
-| `STATIC_DIR` | `./static` | Directory served under `/static` |
+| `STATIC_DIR` | `./static` | Static asset search path, served under `/static`. Several directories may be given, separated by `:`; later ones override assets of the same path. The generated Pagefind index is written to the first directory. |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins |
 | `COOKIE_SAME_SITE` | `strict` | Cookie SameSite policy (`strict`, `lax`, `none`) |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |

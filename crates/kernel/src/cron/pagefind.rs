@@ -4,7 +4,8 @@
 //! `trovato_search` plugin) and rebuilds the client-side search index
 //! when requested. Exports published live-stage items as HTML fragments,
 //! runs the Pagefind CLI, and atomically deploys the index to
-//! `./static/pagefind/`.
+//! `pagefind/` under the base directory of the static search path
+//! (`./static/pagefind/` by default).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -107,9 +108,17 @@ pub async fn maybe_rebuild_index(pool: &PgPool) -> Result<bool> {
 
 /// Build the Pagefind index from published live-stage items.
 async fn build_index(pool: &PgPool) -> Result<usize> {
-    let static_dir = std::env::var("STATIC_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./static"));
+    // STATIC_DIR is a search path, but deploying an index needs one
+    // destination, so the generated index goes into the base (first) directory
+    // and is served from there unless a later root ships a `pagefind/` of its
+    // own, which an application has no reason to do. Writing it into every root would leave several
+    // copies of a generated artifact to keep in step, and writing it into the
+    // last root would mean a cron job dropping build output into an
+    // application's own repository.
+    let static_dir = crate::routes::static_files::static_dirs()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from("./static"));
 
     // Create a temp directory inside static/ (same filesystem for atomic rename)
     let temp_dir = static_dir.join(format!(".pagefind_build_{}", std::process::id()));

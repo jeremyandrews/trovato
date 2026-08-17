@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `STATIC_DIR` is a search path, like `PLUGINS_DIR` and `TEMPLATES_DIR`.
+  0.99.0 generalized two of the three asset roots and left the third a single
+  directory, so an application could overlay its templates but not the CSS
+  those templates reference: shipping a stylesheet meant writing into the one
+  `./static`, which is the kernel tree the overlay exists to leave alone.
+  Several directories separated by the platform separator are now read in
+  order, a later one overrides an asset of the same path, and the asset
+  manifest hashes the file that is actually served. A single-directory value
+  is unchanged in behaviour. The generated Pagefind index needs one
+  destination and is written to the first directory.
+
+  ```
+  STATIC_DIR=./static:/path/to/app/static trovato serve
+  ```
+
 - The site front page can be any path the site serves. `site_front_page` was
   parsed as `/item/{uuid}` and nothing else, so every other value — a gather
   alias, a plugin route, an aliased path — silently fell back to the promoted
