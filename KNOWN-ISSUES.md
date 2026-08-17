@@ -159,19 +159,6 @@ not a provenance check, and it is worth knowing which of the two it is.
 
 ## Testing
 
-### Some tests only pass on a database they have never run against
-
-`crates/kernel/tests/webauthn_registration_test.rs` registers a passkey for a
-fixed username (`wa_reg_ok`, `wa_reg_multi`) and then asserts that exactly one
-`passkey.registered` row exists for that user. The assertion is scoped to the
-user, but the user is the same one on every run and nothing cleans up, so the
-second run against the same database sees two rows and fails.
-
-CI provisions a fresh database per run, so it never sees this. Locally it means
-`cargo test --all` passes once and then fails until the database is dropped and
-recreated. The fix is for the test to clean up after itself, or to use a unique
-username per run.
-
 ### One notification test is timing-sensitive under coverage
 
 `the_pipeline_turns_a_summarized_story_into_a_dispatched_notification` in

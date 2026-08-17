@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The WebAuthn registration tests pass on a database they have already run
+  against. `webauthn_registration_test.rs` created its fixture users under fixed
+  names, and `create_test_user` upserts on `LOWER(name)`, so every run resolved
+  the same user row and inherited the previous run's credentials and audit
+  events. Two per-user assertions are exact counts (one `passkey.registered`
+  event, two credentials for the multi-passkey account), so the first run passed
+  and every run after it failed until the database was recreated. CI provisions a
+  fresh database per run and never saw it; a local `cargo test --all` paid for it
+  every time. Each test now derives a fresh username per run, and its email from
+  that name, so it only ever counts rows its own actions produced. Removed the
+  corresponding `KNOWN-ISSUES.md` entry.
+
 - `config import` no longer reports success over files it could not apply, and
   the tutorial's own config set now imports clean. Two halves of one defect.
 
