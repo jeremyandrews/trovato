@@ -498,6 +498,42 @@ pub struct QueryDisplay {
     /// redirect to the gather query with that UUID as a filter value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<GatherRoute>,
+
+    /// RSS feed for this query, served at the path it names.
+    ///
+    /// Registered at startup by [`crate::routes::feed::build_feed_router`], and
+    /// advertised in every page's head as an autodiscovery link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed: Option<GatherFeed>,
+}
+
+/// An RSS feed rendering of a gather query.
+///
+/// The feed carries whatever the fetching viewer's own execution of the query
+/// returns, so an anonymous aggregator sees exactly what an anonymous visitor
+/// would see on the query's page.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatherFeed {
+    /// Absolute path the feed is served at, for example `/rss/blog.xml`.
+    ///
+    /// Not a route pattern: a feed is one document at one address.
+    pub path: String,
+
+    /// Feed title. Defaults to the query's label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// Feed description. Defaults to the query's description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Number of entries to carry, clamped to the feed router's hard maximum.
+    #[serde(default = "default_feed_items")]
+    pub items: u32,
+}
+
+fn default_feed_items() -> u32 {
+    20
 }
 
 fn default_items_per_page() -> u32 {
@@ -515,6 +551,7 @@ impl Default for QueryDisplay {
             footer: None,
             canonical_url: None,
             routes: Vec::new(),
+            feed: None,
         }
     }
 }

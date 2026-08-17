@@ -223,6 +223,10 @@ impl TestApp {
             .merge(trovato_kernel::routes::sitemap::router())
             // Plugin-gated routes — runtime middleware returns 404 when disabled
             .merge(trovato_kernel::routes::gated_plugin_routes(&state))
+            // RSS feeds declared by gather query display configs.
+            .merge(trovato_kernel::routes::feed::build_feed_router(
+                &state.gather().list_queries(),
+            ))
             // Plugin-served API routes (G-NO-PLUGIN-HTTP).
             .merge(trovato_kernel::routes::plugin_api::build_plugin_api_router(
                 &state.menu_registry().all().cloned().collect::<Vec<_>>(),
