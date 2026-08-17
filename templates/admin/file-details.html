@@ -5,10 +5,10 @@
     <h2>File: {{ file.filename }}</h2>
 </div>
 
-<nav class="breadcrumb">
+<nav class="breadcrumb" aria-label="Breadcrumb">
     <a href="/admin/content/files">Files</a>
     &raquo;
-    <span>{{ file.filename }}</span>
+    <span aria-current="page">{{ file.filename }}</span>
 </nav>
 
 <div class="admin-card">

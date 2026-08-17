@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Every navigation landmark is labelled, and every active link says it is the
+  current page.
+
+  `templates/page.html` had four `<nav>` elements and not one `aria-label`: the
+  site nav, two breadcrumbs and the footer nav. A screen reader lists landmarks by
+  label, so several unlabelled navigations on one page mean entering each one to
+  work out which is which. The active main-menu link was marked only by the CSS
+  class `site-nav__link--active`, and assistive technology cannot see a class.
+
+  Labelled: the site nav ("Main"), both breadcrumb trails ("Breadcrumb"), the
+  footer nav ("Footer"), the pagination nav in `admin/aliases.html`, and the
+  breadcrumbs in `admin/file-details.html`, `admin/tag-form.html` and
+  `admin/tags.html`. The already-labelled pagers under `templates/macros/` and
+  `templates/gather/` were the pattern.
+
+  `aria-current="page"` now accompanies every active-link marker: the main menu
+  (both the database-menu and plugin-menu branches), the trailing breadcrumb in
+  the public theme and in the three admin trails, the current page in the gather
+  and alias pagers, and all 18 links in the admin sidebar, where it sits inside
+  the same condition that already emitted `class="active"`.
+
+  The regression test is the general one rather than a list of expected labels: it
+  renders nine pages, extracts every `<nav>` opening tag, and fails on any that
+  carries neither `aria-label` nor `aria-labelledby`. A new template cannot
+  quietly reintroduce the defect.
+
 - The WebAuthn registration tests pass on a database they have already run
   against. `webauthn_registration_test.rs` created its fixture users under fixed
   names, and `create_test_user` upserts on `LOWER(name)`, so every run resolved
