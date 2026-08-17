@@ -15,9 +15,8 @@ use uuid::Uuid;
 use crate::content::FilterPipeline;
 use crate::models::{Comment, CreateComment, UpdateComment};
 use crate::routes::auth::SESSION_USER_ID;
-use crate::routes::helpers::{JsonError, require_csrf_header};
+use crate::routes::helpers::{JsonError, require_csrf_header, user_context_for};
 use crate::state::AppState;
-use crate::tap::UserContext;
 
 /// Render a comment body to HTML with safe format whitelisting.
 fn render_comment_body(comment: &Comment) -> String {
@@ -308,20 +307,9 @@ async fn create_comment(
             }),
         )
     })?;
-    let user_perms = state
-        .permissions()
-        .load_user_permissions(&user)
-        .await
-        .unwrap_or_default();
-    let user_ctx = if user.is_admin {
-        UserContext::authenticated(user_id, {
-            let mut p: Vec<String> = user_perms.into_iter().collect();
-            p.push("administer site".to_string());
-            p
-        })
-    } else {
-        UserContext::authenticated(user_id, user_perms.into_iter().collect())
-    };
+    // One loader, one context shape: the same one every read handler in this
+    // module gets from `get_user_context`, reached from an already-loaded user.
+    let user_ctx = user_context_for(&state, &user).await;
 
     // Check "post comments" permission
     if !user_ctx.is_admin() && !user_ctx.has_permission("post comments") {
@@ -566,20 +554,9 @@ async fn update_comment(
             }),
         )
     })?;
-    let user_perms = state
-        .permissions()
-        .load_user_permissions(&user)
-        .await
-        .unwrap_or_default();
-    let user_ctx = if user.is_admin {
-        UserContext::authenticated(user_id, {
-            let mut p: Vec<String> = user_perms.into_iter().collect();
-            p.push("administer site".to_string());
-            p
-        })
-    } else {
-        UserContext::authenticated(user_id, user_perms.into_iter().collect())
-    };
+    // One loader, one context shape: the same one every read handler in this
+    // module gets from `get_user_context`, reached from an already-loaded user.
+    let user_ctx = user_context_for(&state, &user).await;
 
     // Check permission via service (admin, tap, or permission fallback)
     let has_access = state
@@ -742,20 +719,9 @@ async fn delete_comment(
             }),
         )
     })?;
-    let user_perms = state
-        .permissions()
-        .load_user_permissions(&user)
-        .await
-        .unwrap_or_default();
-    let user_ctx = if user.is_admin {
-        UserContext::authenticated(user_id, {
-            let mut p: Vec<String> = user_perms.into_iter().collect();
-            p.push("administer site".to_string());
-            p
-        })
-    } else {
-        UserContext::authenticated(user_id, user_perms.into_iter().collect())
-    };
+    // One loader, one context shape: the same one every read handler in this
+    // module gets from `get_user_context`, reached from an already-loaded user.
+    let user_ctx = user_context_for(&state, &user).await;
 
     // Check permission via service
     let has_access = state

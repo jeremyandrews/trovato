@@ -70,6 +70,16 @@ pub struct Metrics {
     /// Rate limit rejections counter.
     pub rate_limit_rejections: Counter,
 
+    /// Permission loads that failed and degraded the request to the deny-all
+    /// permission set.
+    ///
+    /// The signature of the front-page bug this counter exists to make visible
+    /// is content silently vanishing for every visitor: an empty permission set
+    /// looks exactly like a permission model that is working. Any non-zero value
+    /// here means at least one request was answered with permissions the viewer
+    /// did not actually have (none), so it should alert.
+    pub permission_load_failures: Counter,
+
     /// AI provider circuit breaker state (0=closed, 1=open, 2=half_open).
     pub ai_circuit_breaker_state: Gauge,
 
@@ -180,6 +190,13 @@ impl Metrics {
             rate_limit_rejections.clone(),
         );
 
+        let permission_load_failures = Counter::default();
+        registry.register(
+            "trovato_permission_load_failures_total",
+            "Permission loads that failed and degraded a request to the deny-all permission set",
+            permission_load_failures.clone(),
+        );
+
         let ai_circuit_breaker_state = Gauge::default();
         registry.register(
             "trovato_circuit_breaker_ai",
@@ -210,6 +227,7 @@ impl Metrics {
             file_uploads,
             file_upload_bytes,
             rate_limit_rejections,
+            permission_load_failures,
             ai_circuit_breaker_state,
             email_circuit_breaker_state,
         }

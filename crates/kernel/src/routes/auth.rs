@@ -1039,9 +1039,12 @@ async fn verify_email_change(
         ..Default::default()
     };
 
-    // Email change verification is a self-service action — build user context
-    // from the owning user.
-    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    // Email change verification is a self-service action: the acting principal
+    // is the owning user, carrying their real permissions (see
+    // `user_context_for`). It is not an authorization gate — the token above is
+    // — but it is the principal every `tap_user_update` listener sees, so it has
+    // to be the truth about who acted.
+    let user_ctx = super::helpers::user_context_for(&state, &user).await;
     if let Err(e) = state.users().update(user.id, update, &user_ctx).await {
         tracing::error!(error = %e, user_id = %user.id, "failed to update email");
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update email").into_response();
@@ -1073,7 +1076,7 @@ async fn clear_pending_email(state: &AppState, user: &User) {
         data: Some(data),
         ..Default::default()
     };
-    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    let user_ctx = super::helpers::user_context_for(state, user).await;
     if let Err(e) = state.users().update(user.id, update, &user_ctx).await {
         tracing::warn!(error = %e, user_id = %user.id, "failed to clear pending_email");
     }
@@ -1369,8 +1372,9 @@ async fn profile_update(
         update
     };
 
-    // Profile update is a self-service action.
-    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    // Profile update is a self-service action; the acting principal is the
+    // owner, with their real permissions.
+    let user_ctx = super::helpers::user_context_for(&state, &user).await;
     match state.users().update(user.id, update, &user_ctx).await {
         Ok(Some(updated_user)) => {
             // Cycle session ID after credential changes to prevent fixation
@@ -1543,8 +1547,9 @@ async fn password_change(
         .await;
     }
 
-    // Password change is a self-service action.
-    let user_ctx = crate::tap::UserContext::authenticated(user.id, vec![]);
+    // Password change is a self-service action; the acting principal is the
+    // owner, with their real permissions.
+    let user_ctx = super::helpers::user_context_for(&state, &user).await;
     match state
         .users()
         .update_password(user.id, &form.new_password, &user_ctx)

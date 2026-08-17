@@ -207,7 +207,7 @@ async fn add_user_submit(
         is_admin: form.is_admin.is_some(),
     };
 
-    let user_ctx = admin_user_context(&current_user);
+    let user_ctx = admin_user_context(&state, &current_user).await;
     match state.users().create(input, &user_ctx).await {
         Ok(_user) => {
             tracing::info!(name = %form.name, "user created");
@@ -375,7 +375,7 @@ async fn edit_user_submit(
         data: None,
     };
 
-    let user_ctx = admin_user_context(&current_user);
+    let user_ctx = admin_user_context(&state, &current_user).await;
     match state.users().update(user_id, input, &user_ctx).await {
         Ok(_) => {
             // Update password if provided
@@ -444,7 +444,7 @@ async fn delete_user(
         return render_error("Cannot delete your own account.");
     }
 
-    let user_ctx = admin_user_context(&current_user);
+    let user_ctx = admin_user_context(&state, &current_user).await;
     match state.users().delete(user_id, &user_ctx).await {
         Ok(true) => {
             tracing::info!(user_id = %user_id, "user deleted");

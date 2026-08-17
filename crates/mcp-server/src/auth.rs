@@ -44,21 +44,16 @@ pub async fn resolve_token(state: &AppState, raw_token: &str) -> Result<User> {
 /// The returned context includes all role-based permissions from the database.
 /// Admin users additionally receive `"administer site"` so that
 /// [`UserContext::is_admin`] returns `true`.
+///
+/// Delegates to the kernel's one context builder rather than assembling the
+/// permission list here, so an MCP caller and a web request cannot drift into
+/// two different notions of the same user's permissions. This path **fails
+/// closed** on a permission-load error, which a token API can afford: it has one
+/// error channel and no page to degrade.
 pub async fn build_user_context(state: &AppState, user: &User) -> Result<UserContext> {
-    let perms_set = state
+    state
         .permissions()
-        .load_user_permissions(user)
+        .user_context(user)
         .await
-        .context("failed to load user permissions")?;
-
-    let mut permissions: Vec<String> = perms_set.into_iter().collect();
-
-    // Admin users need "administer site" for UserContext::is_admin() to work.
-    // The permission service bypasses permission loading for admins, so this
-    // permission may not be in their role-based set.
-    if user.is_admin && !permissions.iter().any(|p| p == "administer site") {
-        permissions.push("administer site".to_string());
-    }
-
-    Ok(UserContext::authenticated(user.id, permissions))
+        .context("failed to load user permissions")
 }

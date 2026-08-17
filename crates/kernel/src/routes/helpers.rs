@@ -1,5 +1,7 @@
 //! Shared route helpers for page rendering.
 
+use std::collections::HashSet;
+
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use tower_sessions::Session;
@@ -156,6 +158,15 @@ pub async fn require_permission_json(
 ///
 /// The `path` parameter is the current request path, used for sidebar tile
 /// visibility filtering.
+///
+/// The viewer is loaded once through [`get_user_context`] and drives three
+/// things: which plugin-registered menus appear in `menus` (see
+/// [`MenuRegistry::root_menus_for`](crate::menu::MenuRegistry::root_menus_for)),
+/// the `user_authenticated` / `user_is_admin` flags, and the roles that tile
+/// visibility is filtered by. `user_authenticated` therefore reflects whether
+/// the session's user actually exists, not merely whether the session names
+/// one — a session pointing at a deleted user now renders as logged out
+/// instead of showing a logout form for an account that is gone.
 pub async fn inject_site_context(
     state: &AppState,
     session: &Session,
@@ -201,39 +212,33 @@ pub async fn inject_site_context(
             .unwrap_or_default();
     context.insert("footer_menu", &footer_menu_links);
 
-    // Public plugin-registered menus (legacy, sorted by weight)
-    let mut menus: Vec<_> = state
-        .menu_registry()
-        .root_menus()
-        .into_iter()
-        .filter(|m| m.permission.is_empty())
-        .cloned()
-        .collect();
-    menus.sort_by_key(|m| m.weight);
+    // The viewer, with real permissions, loaded once and used for everything
+    // below: navigation visibility, the authentication flags, and tile roles.
+    let viewer = get_user_context(session, state).await;
+
+    // Plugin-registered navigation, filtered to what this viewer may reach.
+    // `root_menus_for` is the permission check; the old `permission.is_empty()`
+    // filter here hid every gated entry from everyone, admins included.
+    let menus = state.menu_registry().root_menus_for(&viewer);
     context.insert("menus", &menus);
 
     // User authentication status and roles for tile visibility
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    context.insert("user_authenticated", &user_id.is_some());
+    context.insert("user_authenticated", &viewer.authenticated);
 
     // Generate CSRF token for authenticated users (used by logout form in page.html)
-    if user_id.is_some() {
+    if viewer.authenticated {
         let csrf_token = crate::form::csrf::generate_csrf_token(session).await;
         context.insert("csrf_token", &csrf_token);
     }
 
     let mut user_roles = vec!["anonymous user".to_string()];
-    let mut is_admin = false;
-    if let Some(id) = user_id {
+    if viewer.authenticated {
         user_roles.push("authenticated user".to_string());
-        if let Ok(Some(user)) = state.users().find_by_id(id).await
-            && user.is_admin
-        {
-            user_roles.push("administrator".to_string());
-            is_admin = true;
-        }
     }
-    context.insert("user_is_admin", &is_admin);
+    if viewer.is_admin() {
+        user_roles.push("administrator".to_string());
+    }
+    context.insert("user_is_admin", &viewer.is_admin());
 
     // Load tiles for all regions filtered by request path and user roles
     for region in &["header", "navigation", "sidebar", "footer"] {
@@ -524,14 +529,113 @@ pub async fn require_admin_json(
     }
 }
 
-/// Build a [`UserContext`] for an admin user.
+/// Build a [`UserContext`] for an admin user, carrying their real permissions.
 ///
-/// Admin routes call [`require_admin`] which returns a [`User`]. Service-layer
-/// methods need a `UserContext`. This helper bridges the gap by creating a
-/// context with the `"administer site"` permission, which makes
-/// `UserContext::is_admin()` return `true`.
-pub fn admin_user_context(user: &User) -> UserContext {
-    UserContext::authenticated(user.id, vec!["administer site".to_string()])
+/// Admin routes call [`require_admin`], which returns a [`User`]; service-layer
+/// methods need a `UserContext`. This is the sibling of [`get_user_context`] for
+/// handlers that already hold the loaded user, and it goes through the same
+/// loader: [`user_context_for`].
+///
+/// It used to return `authenticated(user.id, vec!["administer site"])`, which
+/// dropped the admin's real permissions and worked only because `is_admin()`
+/// short-circuits every permission check. That is the same
+/// fabricate-instead-of-load shape that broke the front page, one short-circuit
+/// away from the same failure, so it now loads.
+pub async fn admin_user_context(state: &AppState, user: &User) -> UserContext {
+    user_context_for(state, user).await
+}
+
+/// Build a request-scoped [`UserContext`] for an already-loaded [`User`].
+///
+/// The sanctioned loader for handlers past [`require_admin`], [`require_login`]
+/// or [`require_permission`], all of which hand back the `User`. Session-derived
+/// callers want [`get_user_context`] instead.
+///
+/// Delegates the context shape to
+/// [`PermissionService::user_context`](crate::permissions::PermissionService::user_context)
+/// and applies the web failure policy from [`permissions_or_deny_all`].
+pub async fn user_context_for(state: &AppState, user: &User) -> UserContext {
+    let permissions = permissions_or_deny_all(
+        state.permissions().user_permissions(user).await,
+        state.metrics(),
+        user.id,
+    );
+    crate::permissions::context_from_permissions(user, permissions)
+}
+
+/// Get the current viewer's context from the session, with **real** permissions
+/// loaded from the database.
+///
+/// This is the sanctioned way for a request handler to obtain a
+/// [`UserContext`], and the only one that starts from a session. Around thirty
+/// read and render handlers use it (item, gather, search, file, comment, batch,
+/// api_v1, and the navigation builder in [`inject_site_context`]). Handlers that
+/// already hold a loaded [`User`] use [`user_context_for`] instead. Nothing in a
+/// request path should build a context from a literal permission list.
+///
+/// A session naming a user who no longer exists yields the anonymous context,
+/// which then carries the anonymous role's permissions.
+pub async fn get_user_context(session: &Session, state: &AppState) -> UserContext {
+    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+
+    // Both branches load a real user and go through the same builder: the
+    // session user, or the anonymous user row that carries the anonymous role's
+    // permissions.
+    let user = match user_id {
+        Some(id) => crate::models::User::find_by_id(state.db(), id).await.ok(),
+        None => crate::models::User::find_by_id(state.db(), Uuid::nil())
+            .await
+            .ok(),
+    };
+
+    match user.flatten() {
+        Some(user) => user_context_for(state, &user).await,
+        None => UserContext::anonymous(),
+    }
+}
+
+/// The web failure policy for a permission load: **degrade to the deny-all set,
+/// loudly**.
+///
+/// [`get_user_context`] cannot propagate an error — it returns a `UserContext`
+/// to two dozen render handlers with a dozen different return types — so the
+/// policy has to be chosen here rather than fall out of an `unwrap_or_default`.
+/// It is chosen deliberately:
+///
+/// - **Degrade, not fail closed.** A permission-load error almost always means
+///   the database is unreachable, and the handler is about to query it anyway;
+///   turning it into a 500 here buys nothing over the 500 the handler produces
+///   on its own, at the cost of routing an error type through every read path.
+/// - **Loudly.** The reason the old `unwrap_or_default()` was dangerous is not
+///   the empty set, which denies rather than grants; it is that an empty set is
+///   *indistinguishable from a working permission model*. Content vanishes, the
+///   site looks fine, and nothing says why — the exact signature of the
+///   front-page bug. So each failure logs at ERROR with the user id and
+///   increments `trovato_permission_load_failures_total`, which should alert on
+///   any non-zero value.
+///
+/// Callers that *can* propagate should fail closed instead: use
+/// [`PermissionService::user_context`](crate::permissions::PermissionService::user_context),
+/// which returns the error.
+pub fn permissions_or_deny_all(
+    loaded: anyhow::Result<HashSet<String>>,
+    metrics: &crate::metrics::Metrics,
+    user_id: Uuid,
+) -> HashSet<String> {
+    match loaded {
+        Ok(permissions) => permissions,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                user_id = %user_id,
+                "failed to load user permissions; degrading this request to the deny-all \
+                 permission set. The viewer sees only what is public, so content they are \
+                 entitled to will be missing"
+            );
+            metrics.permission_load_failures.inc();
+            HashSet::new()
+        }
+    }
 }
 
 pub fn html_escape(s: &str) -> String {
@@ -853,31 +957,36 @@ mod tests {
         assert_eq!(links[2]["href"], "/de/contact");
     }
 
-    #[test]
-    fn test_admin_user_context_is_admin() {
-        let user = User {
-            id: Uuid::new_v4(),
-            name: "admin".to_string(),
-            pass: String::new(),
-            mail: "admin@example.com".to_string(),
-            is_admin: true,
-            created: chrono::Utc::now(),
-            access: None,
-            login: None,
-            status: 1,
-            timezone: None,
-            language: None,
-            data: serde_json::Value::Null,
-            consent_given: None,
-            consent_date: None,
-            consent_version: None,
-            data_retention_days: None,
-        };
+    // --- permissions_or_deny_all: the chosen failure policy ---
+    //
+    // `admin_user_context` now loads from the database, so what it produces is
+    // pinned in `tests/user_context_test.rs` against a real user and role.
 
-        let ctx = admin_user_context(&user);
-        assert_eq!(ctx.id, user.id);
-        assert!(ctx.authenticated);
-        assert!(ctx.is_admin());
-        assert!(ctx.has_permission("administer site"));
+    #[test]
+    fn permission_load_success_passes_the_set_through_untouched() {
+        let metrics = crate::metrics::Metrics::new();
+        let loaded: HashSet<String> = ["access content".to_string()].into_iter().collect();
+
+        let permissions = permissions_or_deny_all(Ok(loaded), &metrics, Uuid::now_v7());
+
+        assert!(permissions.contains("access content"));
+        assert_eq!(metrics.permission_load_failures.get(), 0);
+    }
+
+    #[test]
+    fn permission_load_failure_denies_all_and_is_counted() {
+        let metrics = crate::metrics::Metrics::new();
+
+        let permissions = permissions_or_deny_all(
+            Err(anyhow::anyhow!("connection closed")),
+            &metrics,
+            Uuid::now_v7(),
+        );
+
+        // Deny-all, not grant-all: the degraded request is safe.
+        assert!(permissions.is_empty());
+        // And it is observable, which is the whole point — an empty permission
+        // set is otherwise indistinguishable from a working permission model.
+        assert_eq!(metrics.permission_load_failures.get(), 1);
     }
 }
