@@ -1,0 +1,10 @@
+# Curated stage (machine_name: curated) — internal, reviewed content awaiting
+# publication.
+id: 0193a5a0-0000-7000-8000-000000000003
+machine_name: curated
+label: Curated
+visibility: internal
+is_default: false
+weight: 5
+created: 1767225600
+changed: 1767225600

@@ -7,12 +7,22 @@
 //! re-running import on a partially-imported database converges to the
 //! correct state.
 //!
+//! # Import is all-or-nothing on validation
+//!
+//! Import validates the whole config set — every file parsed, schema checked,
+//! and its references resolved — before it writes anything. If any file in the
+//! set fails, [`import_config`] returns [`ConfigImportFailed`] naming every
+//! offending file and no write happens at all. A config set is therefore atomic
+//! with respect to bad input, and a typo cannot produce a quietly partial
+//! import.
+//!
 //! # Transaction Safety
 //!
-//! Import saves entities individually, not in a single database transaction,
-//! because [`ConfigStorage`] is a trait that may wrap different backends.
-//! If the process is interrupted mid-import, simply re-run the import to
-//! converge to the correct state.
+//! Once validation passes, entities are saved individually rather than in a
+//! single database transaction, because [`ConfigStorage`] is a trait that may
+//! wrap different backends. A save that fails at that point is still reported
+//! as a failure (so the caller exits non-zero), but earlier writes stand; the
+//! fix is to re-run the import, which converges because save is an upsert.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -105,6 +115,64 @@ impl ConfigOpResult {
         self.counts.values().sum()
     }
 }
+
+/// One config file that could not be applied, and why.
+#[derive(Debug, Clone)]
+pub struct ConfigImportFailure {
+    /// The config file the failure belongs to.
+    pub filename: String,
+    /// What went wrong, with enough detail to fix the file.
+    pub error: String,
+}
+
+/// Every failure from a single [`import_config`] run.
+///
+/// This is the error type of a failed import, deliberately: a failure that is
+/// only a warning in a success result is a failure an operator can miss, and
+/// for entity types whose sole management path is `config import` — roles and
+/// stages — missing it means the entity silently never arrives. Returning an
+/// error makes the CLI exit non-zero, and `Display` lists every offending file
+/// rather than only the first.
+#[derive(Debug)]
+pub struct ConfigImportFailed {
+    /// Every file that failed, in the order they were validated or saved.
+    pub failures: Vec<ConfigImportFailure>,
+    /// What was written before the failure was reported. Empty when validation
+    /// failed, because validation completes before the first write.
+    pub imported: BTreeMap<String, usize>,
+}
+
+impl ConfigImportFailed {
+    /// Total number of entities written before the failure was reported.
+    pub fn imported_total(&self) -> usize {
+        self.imported.values().sum()
+    }
+}
+
+impl std::fmt::Display for ConfigImportFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.failures.len();
+        let written = self.imported_total();
+        if written == 0 {
+            write!(
+                f,
+                "config import failed: {n} file(s) did not validate, nothing was written"
+            )?;
+        } else {
+            write!(
+                f,
+                "config import failed: {n} file(s) could not be saved; {written} entities were \
+                 written before that and remain — re-run the import once the files below are fixed"
+            )?;
+        }
+        for failure in &self.failures {
+            write!(f, "\n  {}: {}", failure.filename, failure.error)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ConfigImportFailed {}
 
 /// Generate the filename for a config entity.
 fn entity_filename(entity_type: &str, id: &str) -> String {
@@ -368,20 +436,26 @@ pub async fn export_config(
 
 /// Import config entities from YAML files in the given directory.
 ///
-/// Performs a two-phase approach:
-/// 1. **Validation pass**: reads and parses all YAML files, checking for errors.
-/// 2. **Save pass**: writes parsed entities to storage in dependency order.
+/// Validate first, then apply:
+/// 1. **Parse pass**: every `.yml` file in the set is read, parsed and schema
+///    checked against its config entity type.
+/// 2. **Reference pass**: every reference an entity makes (a tag's category, a
+///    search field config's bundle, a tag's parents) is resolved against the
+///    import set and, failing that, the database. Reads only.
+/// 3. **Save pass**: parsed entities are written to storage in dependency order.
 ///
-/// When `dry_run` is true, only the validation pass runs (no database writes).
+/// If any file fails phase 1 or 2, this returns [`ConfigImportFailed`] naming
+/// every failure and **nothing is written**. That makes a config set atomic with
+/// respect to bad input: a single typo can no longer produce a partial import
+/// that reports success. A failure in phase 3 is also reported as an error, but
+/// earlier writes in that phase stand — see the module docs on transaction
+/// safety — so the fix is to re-run once the named files are corrected.
+///
+/// When `dry_run` is true, phases 1 and 2 run and phase 3 is skipped, which
+/// makes `--dry-run` a true preflight for the whole set.
 ///
 /// Import is idempotent — `ConfigStorage::save()` performs upsert, so
 /// re-running import on a partially-imported database converges correctly.
-///
-/// # Transaction Safety
-///
-/// Entities are saved individually, not in a single database transaction,
-/// because [`ConfigStorage`] is a trait that may wrap different backends.
-/// If the process is interrupted mid-import, re-run the import to converge.
 pub async fn import_config(
     storage: &dyn ConfigStorage,
     pool: &PgPool,
@@ -391,52 +465,116 @@ pub async fn import_config(
     info!(dir = %dir.display(), dry_run, "Starting config import");
 
     let mut result = ConfigOpResult::default();
+    let mut failures: Vec<ConfigImportFailure> = Vec::new();
 
-    // Phase 1: Read and validate all files
-    let parsed = read_and_validate_files(dir, &mut result.warnings).await?;
+    // Phase 1: read, parse and schema check every file. No write happens until
+    // the whole set has passed, so one bad file cannot leave a half-applied
+    // config behind.
+    let parsed = read_and_validate_files(dir, &mut result.warnings, &mut failures).await?;
     let parsed_total: usize = parsed.values().map(|v| v.len()).sum();
     debug!(
         files = parsed_total,
+        failures = failures.len(),
         warnings = result.warnings.len(),
-        "Validation complete"
+        "Parse pass complete"
     );
 
+    // Phase 2: resolve every reference the set makes, before writing anything.
+    validate_references(storage, &parsed, &mut failures).await;
+
+    if !failures.is_empty() {
+        return Err(ConfigImportFailed {
+            failures,
+            imported: BTreeMap::new(),
+        }
+        .into());
+    }
+
     if dry_run {
-        // Count what would be imported
         for (entity_type, entities) in &parsed {
             if !entities.is_empty() {
                 result.counts.insert(entity_type.clone(), entities.len());
             }
         }
+        info!(total = result.total(), "Config import dry run complete");
+        return Ok(result);
+    }
 
-        // Validate tag hierarchy references within the import set
-        if let Some(tag_entities) = parsed.get(entity_types::TAG) {
-            let all_tag_ids: HashSet<Uuid> = tag_entities
-                .iter()
-                .filter_map(|pe| pe.entity.as_tag().map(|t| t.id))
-                .collect();
-            for pe in tag_entities {
-                let tag_id = pe.entity.as_tag().map(|t| t.id);
-                for parent_id in &pe.tag_parents {
-                    if tag_id == Some(*parent_id) {
-                        result
-                            .warnings
-                            .push(format!("{}: tag references itself as parent", pe.filename));
-                    } else if !all_tag_ids.contains(parent_id) {
-                        result.warnings.push(format!(
-                            "{}: parent tag {} not found in import set (may exist in database)",
-                            pe.filename, parent_id
-                        ));
+    // Phase 3: save in dependency order. Everything here has already been
+    // validated, so a failure means the storage layer rejected a valid entity.
+    let mut tag_parents: Vec<(String, Uuid, Vec<Uuid>)> = Vec::new();
+
+    for &entity_type in ENTITY_TYPE_ORDER {
+        let Some(entities) = parsed.get(entity_type) else {
+            continue;
+        };
+
+        let mut count = 0usize;
+
+        for pe in entities {
+            if let Err(e) = storage.save(&pe.entity).await {
+                failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!("failed to save: {e:#}"),
+                });
+                continue;
+            }
+            count += 1;
+
+            if !pe.tag_parents.is_empty() {
+                match pe.entity.id().parse::<Uuid>() {
+                    Ok(tag_id) => {
+                        tag_parents.push((pe.filename.clone(), tag_id, pe.tag_parents.clone()));
+                    }
+                    Err(e) => {
+                        failures.push(ConfigImportFailure {
+                            filename: pe.filename.clone(),
+                            error: format!("tag ID is not a valid UUID: {e}"),
+                        });
                     }
                 }
             }
         }
 
-        return Ok(result);
+        if count > 0 {
+            debug!(entity_type, count, "Imported entity type");
+            result.counts.insert(entity_type.to_string(), count);
+        }
     }
 
-    // Phase 2: Save in dependency order
-    // Build reference sets from parsed entities for pre-save validation
+    // Restore tag hierarchy. Parents were resolved in phase 2, so anything that
+    // fails here is a storage failure rather than a bad reference.
+    for (filename, tag_id, parent_ids) in &tag_parents {
+        if let Err(e) = Tag::set_parents(pool, *tag_id, parent_ids).await {
+            failures.push(ConfigImportFailure {
+                filename: filename.clone(),
+                error: format!("failed to set parents for tag {tag_id}: {e:#}"),
+            });
+        }
+    }
+
+    if !failures.is_empty() {
+        return Err(ConfigImportFailed {
+            failures,
+            imported: result.counts,
+        }
+        .into());
+    }
+
+    info!(total = result.total(), "Config import complete");
+
+    Ok(result)
+}
+
+/// Resolve every reference the import set makes, against the set and then the
+/// database. Reads only — this runs before the first write so that an
+/// unresolvable reference aborts the whole import instead of silently skipping
+/// one entity.
+async fn validate_references(
+    storage: &dyn ConfigStorage,
+    parsed: &BTreeMap<String, Vec<ParsedEntity>>,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
     let known_categories: HashSet<String> = parsed
         .get(entity_types::CATEGORY)
         .map(|cats| {
@@ -453,173 +591,93 @@ pub async fn import_config(
                 .collect()
         })
         .unwrap_or_default();
+    let known_tags: HashSet<Uuid> = parsed
+        .get(entity_types::TAG)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(|pe| pe.entity.as_tag().map(|t| t.id))
+                .collect()
+        })
+        .unwrap_or_default();
 
-    // Track successfully saved tag IDs (only tags that actually saved)
-    let mut saved_tag_ids: HashSet<Uuid> = HashSet::new();
-    // Track tags that need hierarchy restoration
-    let mut tag_parents: Vec<(Uuid, Vec<Uuid>)> = Vec::new();
+    if let Some(tags) = parsed.get(entity_types::TAG) {
+        for pe in tags {
+            let Some(tag) = pe.entity.as_tag() else {
+                continue;
+            };
 
-    for &entity_type in ENTITY_TYPE_ORDER {
-        let Some(entities) = parsed.get(entity_type) else {
-            continue;
-        };
-
-        let mut count = 0usize;
-
-        for pe in entities {
-            // Pre-validate foreign key references
-            if entity_type == entity_types::TAG
-                && let Some(tag) = pe.entity.as_tag()
-                && !known_categories.contains(&tag.category_id)
-            {
-                // Check database as fallback
+            if !known_categories.contains(&tag.category_id) {
                 match storage.load(entity_types::CATEGORY, &tag.category_id).await {
-                    Ok(Some(_)) => {} // exists in DB
-                    Ok(None) => {
-                        result.warnings.push(format!(
-                            "{}: category '{}' not found in import set or database (skipping tag)",
-                            pe.filename, tag.category_id
-                        ));
-                        continue;
-                    }
-                    Err(e) => {
-                        result.warnings.push(format!(
-                            "{}: failed to verify category '{}': {e}",
-                            pe.filename, tag.category_id
-                        ));
-                        continue;
-                    }
-                }
-            }
-            if entity_type == entity_types::SEARCH_FIELD_CONFIG
-                && let Some(sfc) = pe.entity.as_search_field_config()
-                && !known_item_types.contains(&sfc.bundle)
-            {
-                match storage.load(entity_types::ITEM_TYPE, &sfc.bundle).await {
-                    Ok(Some(_)) => {} // exists in DB
-                    Ok(None) => {
-                        result.warnings.push(format!(
-                            "{}: bundle '{}' not found in import set or database (skipping search_field_config)",
-                            pe.filename, sfc.bundle
-                        ));
-                        continue;
-                    }
-                    Err(e) => {
-                        result.warnings.push(format!(
-                            "{}: failed to verify bundle '{}': {e}",
-                            pe.filename, sfc.bundle
-                        ));
-                        continue;
-                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!(
+                            "category '{}' not found in import set or database",
+                            tag.category_id
+                        ),
+                    }),
+                    Err(e) => failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!("failed to verify category '{}': {e:#}", tag.category_id),
+                    }),
                 }
             }
 
-            if let Err(e) = storage.save(&pe.entity).await {
-                result
-                    .warnings
-                    .push(format!("failed to save {}: {e}", pe.filename));
+            for parent_id in &pe.tag_parents {
+                if *parent_id == tag.id {
+                    failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: "tag references itself as parent".to_string(),
+                    });
+                    continue;
+                }
+                if known_tags.contains(parent_id) {
+                    continue;
+                }
+                match storage
+                    .load(entity_types::TAG, &parent_id.to_string())
+                    .await
+                {
+                    Ok(Some(_)) => {}
+                    Ok(None) => failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!(
+                            "parent tag {parent_id} not found in import set or database"
+                        ),
+                    }),
+                    Err(e) => failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!("failed to verify parent tag {parent_id}: {e:#}"),
+                    }),
+                }
+            }
+        }
+    }
+
+    if let Some(configs) = parsed.get(entity_types::SEARCH_FIELD_CONFIG) {
+        for pe in configs {
+            let Some(sfc) = pe.entity.as_search_field_config() else {
+                continue;
+            };
+            if known_item_types.contains(&sfc.bundle) {
                 continue;
             }
-            count += 1;
-
-            // Track successfully saved tags
-            if entity_type == entity_types::TAG
-                && let Ok(tag_id) = pe.entity.id().parse::<Uuid>()
-            {
-                saved_tag_ids.insert(tag_id);
+            match storage.load(entity_types::ITEM_TYPE, &sfc.bundle).await {
+                Ok(Some(_)) => {}
+                Ok(None) => failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!(
+                        "bundle '{}' not found in import set or database",
+                        sfc.bundle
+                    ),
+                }),
+                Err(e) => failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!("failed to verify bundle '{}': {e:#}", sfc.bundle),
+                }),
             }
-
-            // Collect tag parents for hierarchy restoration
-            if !pe.tag_parents.is_empty() {
-                match pe.entity.id().parse::<Uuid>() {
-                    Ok(tag_id) => {
-                        tag_parents.push((tag_id, pe.tag_parents.clone()));
-                    }
-                    Err(e) => {
-                        result
-                            .warnings
-                            .push(format!("{}: tag ID is not a valid UUID: {e}", pe.filename));
-                    }
-                }
-            }
-        }
-
-        if count > 0 {
-            debug!(entity_type, count, "Imported entity type");
-            result.counts.insert(entity_type.to_string(), count);
         }
     }
-
-    // Restore tag hierarchy with parent validation
-    for (tag_id, parent_ids) in &tag_parents {
-        // Reject self-referencing parents
-        let parent_ids: Vec<Uuid> = parent_ids
-            .iter()
-            .filter(|pid| {
-                if *pid == tag_id {
-                    result
-                        .warnings
-                        .push(format!("tag {tag_id}: ignoring self-referencing parent"));
-                    false
-                } else {
-                    true
-                }
-            })
-            .copied()
-            .collect();
-
-        if parent_ids.is_empty() {
-            continue;
-        }
-
-        // Check parents not in the saved set against the database
-        let not_in_import: Vec<&Uuid> = parent_ids
-            .iter()
-            .filter(|pid| !saved_tag_ids.contains(pid))
-            .collect();
-
-        let mut truly_missing: HashSet<Uuid> = HashSet::new();
-        for pid in not_in_import {
-            match storage.load(entity_types::TAG, &pid.to_string()).await {
-                Ok(Some(_)) => {} // exists in database, fine
-                Ok(None) => {
-                    truly_missing.insert(*pid);
-                }
-                Err(e) => {
-                    result
-                        .warnings
-                        .push(format!("tag {tag_id}: failed to verify parent {pid}: {e}"));
-                }
-            }
-        }
-
-        if !truly_missing.is_empty() {
-            let missing_strs: Vec<String> = truly_missing.iter().map(|u| u.to_string()).collect();
-            result.warnings.push(format!(
-                "tag {tag_id}: parent(s) not found in import set or database: {}",
-                missing_strs.join(", ")
-            ));
-        }
-
-        // Filter out missing parents to avoid creating orphaned hierarchy rows
-        let valid_parents: Vec<Uuid> = parent_ids
-            .iter()
-            .filter(|pid| !truly_missing.contains(pid))
-            .copied()
-            .collect();
-
-        if !valid_parents.is_empty()
-            && let Err(e) = Tag::set_parents(pool, *tag_id, &valid_parents).await
-        {
-            result
-                .warnings
-                .push(format!("failed to set parents for tag {tag_id}: {e}"));
-        }
-    }
-
-    info!(total = result.total(), "Config import complete");
-
-    Ok(result)
 }
 
 /// A parsed entity with metadata from its source file.
@@ -632,12 +690,21 @@ struct ParsedEntity {
 /// Read all `.yml` files from a directory and validate/parse them.
 ///
 /// Returns entities grouped by type, sorted by filename within each group
-/// for deterministic ordering. Duplicate entities (same type and content ID)
-/// are detected and skipped with a warning. Parse errors and filename-content
-/// ID mismatches are also recorded as warnings (not fatal).
+/// for deterministic ordering.
+///
+/// The two output channels are deliberately different in kind:
+///
+/// - `failures` collects anything that means a recognized config file cannot be
+///   applied — an unreadable file, invalid YAML, or content that does not match
+///   its entity type's schema. These abort the import in [`import_config`].
+/// - `warnings` collects advisory observations that do not stop the import: a
+///   file the config set does not claim (unrecognized prefix, symlink,
+///   oversized), a filename whose ID disagrees with its content, or a duplicate
+///   entity ID.
 async fn read_and_validate_files(
     dir: &Path,
     warnings: &mut Vec<String>,
+    failures: &mut Vec<ConfigImportFailure>,
 ) -> Result<BTreeMap<String, Vec<ParsedEntity>>> {
     let mut grouped: BTreeMap<String, Vec<ParsedEntity>> = BTreeMap::new();
 
@@ -698,7 +765,10 @@ async fn read_and_validate_files(
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) => {
-                warnings.push(format!("failed to read {}: {e}", path.display()));
+                failures.push(ConfigImportFailure {
+                    filename,
+                    error: format!("failed to read: {e}"),
+                });
                 continue;
             }
         };
@@ -706,7 +776,10 @@ async fn read_and_validate_files(
         let (entity, tag_parents) = match deserialize_entity(&entity_type, &content) {
             Ok(result) => result,
             Err(e) => {
-                warnings.push(format!("failed to parse {filename}: {e}"));
+                failures.push(ConfigImportFailure {
+                    filename,
+                    error: format!("{e:#}"),
+                });
                 continue;
             }
         };
@@ -1482,7 +1555,10 @@ parents:
             .unwrap();
 
         let mut warnings = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
 
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(parsed.get("item_type").unwrap().len(), 1);
@@ -1510,7 +1586,10 @@ parents:
             .unwrap();
 
         let mut warnings = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
 
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(parsed.get("variable").unwrap().len(), 1);
@@ -1526,7 +1605,10 @@ parents:
             .unwrap();
 
         let mut warnings = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
 
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(parsed.get("variable").unwrap().len(), 1);
@@ -1543,7 +1625,10 @@ parents:
             .unwrap();
 
         let mut warnings = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
 
         // Entity should still be parsed (non-fatal)
         assert_eq!(parsed.get("item_type").unwrap().len(), 1);
@@ -1556,8 +1641,10 @@ parents:
         );
     }
 
+    /// Malformed YAML is a failure, not a warning. A warning is something an
+    /// operator can miss; this is a file that will not be applied.
     #[tokio::test]
-    async fn filesystem_warns_on_bad_yaml() {
+    async fn filesystem_fails_on_bad_yaml() {
         let dir = TestDir::new("badyaml");
 
         tokio::fs::write(dir.join("variable.broken.yml"), "not: [valid: yaml: {}")
@@ -1565,11 +1652,46 @@ parents:
             .unwrap();
 
         let mut warnings = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
 
         assert!(!parsed.contains_key("variable") || parsed["variable"].is_empty());
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("failed to parse"));
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(failures.len(), 1, "expected one failure: {failures:?}");
+        assert_eq!(failures[0].filename, "variable.broken.yml");
+    }
+
+    /// A file that is valid YAML but does not match its entity type's schema is
+    /// the same class of failure as malformed YAML: it cannot be applied. This is
+    /// what every stage, role, tile and menu link in the tutorial config set hit.
+    #[tokio::test]
+    async fn filesystem_fails_on_schema_mismatch() {
+        let dir = TestDir::new("schema_mismatch");
+
+        // Valid YAML, but Stage requires `id` and `machine_name`.
+        tokio::fs::write(
+            dir.join("stage.incoming.yml"),
+            "label: Incoming\nvisibility: internal\nis_default: false\nweight: 0\n",
+        )
+        .await
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
+
+        assert!(!parsed.contains_key("stage") || parsed["stage"].is_empty());
+        assert_eq!(failures.len(), 1, "expected one failure: {failures:?}");
+        assert_eq!(failures[0].filename, "stage.incoming.yml");
+        assert!(
+            failures[0].error.contains("missing field"),
+            "failure should name the missing field, got: {}",
+            failures[0].error
+        );
     }
 
     #[tokio::test]
@@ -1633,7 +1755,10 @@ parents:
             .unwrap();
 
         let mut warnings = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
 
         // Only one entity should survive deduplication
         assert_eq!(parsed.get("item_type").unwrap().len(), 1);
@@ -1664,7 +1789,10 @@ parents:
         .unwrap();
 
         let mut warnings = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings).await.unwrap();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+            .await
+            .unwrap();
 
         let vars = parsed.get("variable").unwrap();
         assert_eq!(vars.len(), 2);

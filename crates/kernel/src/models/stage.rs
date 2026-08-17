@@ -170,6 +170,17 @@ impl Stage {
     /// Validates `machine_name` (lowercase alphanumeric + underscores, starts with letter)
     /// and `visibility` (must be "internal", "public", or "accessible").
     pub async fn create(pool: &PgPool, input: CreateStage) -> Result<Self> {
+        Self::create_with_id(pool, Uuid::now_v7(), input).await
+    }
+
+    /// Create a new stage under a caller-supplied UUID.
+    ///
+    /// Config import needs this: a `stage.{uuid}.yml` file declares the stage's
+    /// identity, and generating a fresh UUID instead would make the file's `id`
+    /// a lie, break re-import (the second run would not find the stage and would
+    /// try to create it again, colliding on `machine_name`), and make export not
+    /// round-trip.
+    pub async fn create_with_id(pool: &PgPool, id: Uuid, input: CreateStage) -> Result<Self> {
         // Validate machine_name format
         if !is_valid_machine_name(&input.machine_name) {
             anyhow::bail!(
@@ -178,7 +189,6 @@ impl Stage {
             );
         }
 
-        let id = Uuid::now_v7();
         let now = chrono::Utc::now().timestamp();
         let visibility_str = input.visibility.unwrap_or_else(|| "internal".to_string());
         // Validate visibility — reject unknown values rather than silently defaulting

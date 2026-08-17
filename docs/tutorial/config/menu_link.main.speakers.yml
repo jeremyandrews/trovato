@@ -1,7 +1,0 @@
-# Main menu — Speakers link
-menu_name: main
-path: /speakers
-title: Speakers
-weight: 5
-hidden: false
-plugin: core

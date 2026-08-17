@@ -2,6 +2,86 @@
 
 ## Unreleased
 
+- `config import` no longer reports success over files it could not apply, and
+  the tutorial's own config set now imports clean. Two halves of one defect.
+
+  **The reporting half.** Import walked the config directory applying whatever
+  parsed. A file that failed — malformed YAML or content that no longer matched
+  its entity's schema — became one line in a warning list, did not stop the run,
+  and did not change the exit code. `trovato config import <dir>` on a set with
+  one typo printed "Imported N config entities" and exited 0. Roles and stages
+  have no admin form (`KNOWN-ISSUES.md`), so for those two types import is the
+  only management path and a skipped file was an entity that never arrived with
+  nothing saying why.
+
+  Import now validates before it applies. Every file is read, parsed and schema
+  checked, and every reference it makes (a tag's category, a search field
+  config's bundle, a tag's parents) is resolved against the import set and then
+  the database — all before the first write. If anything fails, the run returns
+  `ConfigImportFailed` naming every offending file with its reason, the CLI exits
+  non-zero, and **nothing is written**: not even the valid files sitting next to
+  the bad one, so a config set is atomic with respect to bad input. `--dry-run`
+  runs exactly that validation and skips only the writes, which makes it a real
+  preflight instead of a report of what would have been attempted. A failure in
+  the save pass is also an error rather than a warning; those writes are not in
+  one transaction (`ConfigStorage` is a trait over backends), so earlier writes
+  stand and the fix is to re-run, but the exit code no longer says success.
+
+  The failure messages also carry their cause now. `{e}` on an `anyhow::Error`
+  prints only the outermost context, so every one of the tutorial's 18 failures
+  read "invalid tile YAML" or "invalid stage YAML" with no hint of what was
+  wrong; `{e:#}` appends the chain, so the same failure now names the missing
+  field.
+
+  What stayed a warning, deliberately: a file the config set does not claim (an
+  unrecognized filename prefix, a symlink, an oversized file), a filename whose
+  ID disagrees with its content, and a duplicate entity ID. These are advisory
+  observations about the directory rather than a recognized config file that
+  cannot be applied, and promoting them would hard-fail directories that are
+  working today.
+
+- The tutorial's config set no longer drifts from the config schemas. 18 of its
+  76 files did not parse — every stage, role, tile and menu link — so
+  `config import docs/tutorial/config` applied 58 and skipped the rest while
+  reporting success. Each was missing required fields: `id` on all of them,
+  `machine_name` on stages, `stage_id` and the timestamps on tiles and menu
+  links. The files were repaired against the current schemas; no schema was
+  loosened to accept them.
+
+  They were also renamed. Import names an entity's file `{entity_type}.{id}.yml`
+  where the ID is the entity's own identifier, and roles, stages, tiles and menu
+  links are keyed by UUID, so `stage.incoming.yml` disagreed with its content and
+  would have warned on every import. They now use the UUID that `config export`
+  would write, drawn from the `0193a5a0-` family the stage seeds already use, so
+  the directory is what an export produces and re-importing it round-trips.
+  `docs/tutorial/config/README.md` is a new index mapping each UUID back to its
+  machine name, and the tutorial and recipe text that referenced the old names
+  was updated — including two recipe steps that told the reader roles and stages
+  were "not importable" and had them create both by hand, which after the repair
+  would collide with what the import creates.
+
+- `DirectConfigStorage::save_stage` now honors the UUID a stage's config file
+  declares, and its update path works at all. Two bugs found by making the
+  tutorial's stage files import:
+
+  The create path called `Stage::create`, which generates its own `Uuid::now_v7()`
+  and ignored the `id` in the file. So a stage landed under a UUID nobody
+  declared, export would not round-trip it, and a **second import failed**: the
+  lookup by declared id still missed, so it tried to create the stage again and
+  collided on `stage_config.machine_name`'s unique constraint. `create` now
+  delegates to a new `Stage::create_with_id`, and config import passes the file's
+  id.
+
+  The update path ran `UPDATE stage_config ... WHERE stage_id = $4`, and that
+  column is named `tag_id` — it has been `tag_id` since
+  `20260225000002_create_stage_config.sql` and was never renamed. Every update of
+  an existing stage therefore failed with "column stage_id does not exist",
+  which importing the well-known Live stage hits immediately. `delete_stage` had
+  the same wrong column. Fixed both, and the update now also writes
+  `category_tag`'s label, description and weight inside a transaction with the
+  `stage_config` update; it previously touched only `stage_config`, so
+  re-importing a relabelled or reweighted stage silently did nothing.
+
 - `config export` no longer fails on a database that contains a tag.
   `DirectConfigStorage::fetch_all_tags` selected seven of `Tag`'s eight columns,
   omitting `slug`, so `query_as::<_, Tag>` failed at row decode with "no column

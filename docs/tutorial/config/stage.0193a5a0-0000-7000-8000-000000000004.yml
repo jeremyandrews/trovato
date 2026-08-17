@@ -1,0 +1,12 @@
+# Legal Review stage (machine_name: legal_review) — the extensibility demo from
+# Part 4: an internal stage between Curated and Live, added as configuration
+# with no code changes. The editorial workflow variable does not yet route
+# through it; adding the transitions is left as an exercise.
+id: 0193a5a0-0000-7000-8000-000000000004
+machine_name: legal_review
+label: Legal Review
+visibility: internal
+is_default: false
+weight: 7
+created: 1767225600
+changed: 1767225600

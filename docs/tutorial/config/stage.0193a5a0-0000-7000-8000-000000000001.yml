@@ -1,0 +1,15 @@
+# Live stage (machine_name: live) — the public stage.
+#
+# Created by the installer, and included here so the tutorial's config set is
+# complete. Importing it updates the existing stage rather than creating a
+# second one. `is_default` is true because only one stage may be the default
+# (uq_stage_is_default) and the installer gives it to Live; a production
+# editorial setup would move it to Incoming instead.
+id: 0193a5a0-0000-7000-8000-000000000001
+machine_name: live
+label: Live
+visibility: public
+is_default: true
+weight: 10
+created: 1767225600
+changed: 1767225600

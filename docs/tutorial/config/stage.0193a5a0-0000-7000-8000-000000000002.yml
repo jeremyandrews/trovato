@@ -1,0 +1,10 @@
+# Incoming stage (machine_name: incoming) — internal, where the importer lands
+# conferences before an editor has reviewed them. Weight 0 so it sorts first.
+id: 0193a5a0-0000-7000-8000-000000000002
+machine_name: incoming
+label: Incoming
+visibility: internal
+is_default: false
+weight: 0
+created: 1767225600
+changed: 1767225600

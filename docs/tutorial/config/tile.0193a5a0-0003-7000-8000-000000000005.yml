@@ -1,4 +1,5 @@
-# Footer info tile — Footer slot
+# About Ritrovo tile (machine_name: footer_info) — Footer.
+id: 0193a5a0-0003-7000-8000-000000000005
 machine_name: footer_info
 label: About Ritrovo
 region: footer
@@ -11,3 +12,6 @@ visibility: {}
 weight: 0
 status: 1
 plugin: core
+stage_id: 0193a5a0-0000-7000-8000-000000000001
+created: 1767225600
+changed: 1767225600

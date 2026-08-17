@@ -1,0 +1,11 @@
+# Main menu — Topics link.
+id: 0193a5a0-0004-7000-8000-000000000004
+menu_name: main
+path: /topics
+title: Topics
+weight: 15
+hidden: false
+plugin: core
+stage_id: 0193a5a0-0000-7000-8000-000000000001
+created: 1767225600
+changed: 1767225600

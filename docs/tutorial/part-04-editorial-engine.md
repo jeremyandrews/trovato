@@ -164,7 +164,7 @@ For the editorial workflow, Ritrovo needs three additional roles:
 | **editor** | Reviews and curates content | Viewer permissions + `create content`, `edit own content`, `edit any content`, `access files`, `use filtered_html`, `edit conferences` |
 | **publisher** | Publishes content to Live | Editor permissions + `delete any content`, `administer files`, `use full_html`, `publish conferences` |
 
-The role definitions live at `docs/tutorial/config/role.viewer.yml`, `role.editor.yml`, and `role.publisher.yml`. These YAML files can be imported via `config import`, or roles can be managed through the admin UI at `/admin/people/roles` and `/admin/people/permissions`.
+The role definitions live in `docs/tutorial/config/`, one `role.{uuid}.yml` file each; `docs/tutorial/config/README.md` maps the UUIDs to `viewer`, `editor` and `publisher`. `config import` creates the roles themselves. It does not assign permissions, because the `role` config entity does not carry them — each file lists the permissions the role is meant to hold, and you assign them through the admin UI at `/admin/people/permissions` or with the SQL in the recipe.
 
 [<img src="images/part-04/roles-admin.png" width="600" alt="The roles administration page showing the list of defined roles">](images/part-04/roles-admin.png)
 
@@ -342,12 +342,12 @@ One of Trovato's strengths is that stages are configuration, not code. You can a
 
 To add a "Legal Review" stage between Curated and Live, you would:
 
-1. Create the stage in the database (a `category_tag` row in the `stages` category plus a `stage_config` row with `visibility: internal`). A reference config is at `docs/tutorial/config/stage.legal_review.yml`.
+1. Create the stage. The tutorial's config set already contains one: the `legal_review` stage file listed in `docs/tutorial/config/README.md`, which `config import` applies as a `category_tag` row in the `stages` category plus a `stage_config` row with `visibility: internal`.
 2. Update `variable.workflow.editorial.yml` to replace the `curated → live` transition with `curated → legal_review` and `legal_review → live`, then re-import.
 
 No code changes, no plugin rebuild. The new workflow path works as soon as the config is imported and the stage exists in the database.
 
-Stages can be imported via `config import` using `stage.{machine_name}.yml` files, or created via the admin UI. The workflow variable is also importable.
+Stages are imported via `config import` using `stage.{uuid}.yml` files, where the UUID is the stage's identity and the machine name lives in the file. The workflow variable is also importable.
 
 ### Verify
 
