@@ -12,11 +12,14 @@ implements = [
 ]
 weight = 0
 
-# The plugin owns the `record_event` table through its own migration, so the
-# table is inside the plugin's effective DB allowlist (migration-owned) and the
-# record-type registry admits the declaration.
+# The plugin owns the `record_event` and `record_legacy` tables through its own
+# migrations, so both are inside the plugin's effective DB allowlist
+# (migration-owned) and the record-type registry admits the declarations.
 [migrations]
-files = ["migrations/001_create_event_record.sql"]
+files = [
+    "migrations/001_create_event_record.sql",
+    "migrations/002_create_legacy_record.sql",
+]
 
 # The lightweight-record declaration (P11g / D-53) — the manifest surface that
 # enters the FR-4 1.0 freeze (D-59). `event_record` is an item-like table:
@@ -39,6 +42,18 @@ published_column = "published"
 location = "location"
 capacity = "capacity"
 secret_notes = "secret_notes"
+
+# A second record type over a BIGINT-keyed table. The record tier never required
+# a UUID key — `id_column` names the key column and says nothing about its type —
+# and this declaration is what holds the kernel's read surfaces to that: a
+# non-uuid-keyed record type lists and opens through the same admin routes.
+[[record_types]]
+name = "legacy_record"
+table = "record_legacy"
+id_column = "id"
+title_column = "title"
+created_column = "created"
+changed_column = "changed"
 
 # Declared capabilities (WASM-1, deny-unless-declared). tap_field_access reads
 # its rules from the `variables` host function (falling back to baked-in
