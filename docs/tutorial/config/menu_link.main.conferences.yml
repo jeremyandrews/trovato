@@ -1,7 +1,0 @@
-# Main menu — Conferences link
-menu_name: main
-path: /conferences
-title: Conferences
-weight: 0
-hidden: false
-plugin: core

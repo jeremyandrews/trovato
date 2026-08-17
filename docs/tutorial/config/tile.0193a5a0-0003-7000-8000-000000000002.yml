@@ -1,0 +1,15 @@
+# Open Call for Papers tile (machine_name: open_cfps_sidebar) — Sidebar.
+id: 0193a5a0-0003-7000-8000-000000000002
+machine_name: open_cfps_sidebar
+label: Open Call for Papers
+region: sidebar
+tile_type: gather_query
+config:
+  query_id: ritrovo.open_cfps
+visibility: {}
+weight: 5
+status: 1
+plugin: core
+stage_id: 0193a5a0-0000-7000-8000-000000000001
+created: 1767225600
+changed: 1767225600

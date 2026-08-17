@@ -356,12 +356,31 @@ Entity types are imported in dependency order: variables → languages → roles
 | URL alias | `url_alias.{uuid}.yml` | `url_alias.a1b2c3d4-....yml` |
 | Language | `language.{code}.yml` | `language.it.yml` |
 | Variable | `variable.{key}.yml` | `variable.pathauto_patterns.yml` |
-| Role | `role.{name}.yml` | `role.editor.yml` |
-| Stage | `stage.{machine_name}.yml` | `stage.incoming.yml` |
+| Role | `role.{uuid}.yml` | `role.a1b2c3d4-....yml` |
+| Stage | `stage.{uuid}.yml` | `stage.a1b2c3d4-....yml` |
 | Item | `item.{uuid}.yml` | `item.a1b2c3d4-....yml` |
-| Tile | `tile.{machine_name}.yml` | `tile.search_box.yml` |
-| Menu link | `menu_link.{menu}.{title}.yml` | `menu_link.main.conferences.yml` |
+| Tile | `tile.{uuid}.yml` | `tile.a1b2c3d4-....yml` |
+| Menu link | `menu_link.{uuid}.yml` | `menu_link.a1b2c3d4-....yml` |
 | Search config | `search_field_config.{uuid}.yml` | `search_field_config.a1b2c3d4-....yml` |
+
+The filename ID is always the entity's own identifier, which is what `config
+export` writes. Roles, stages, tiles and menu links are keyed by UUID, so their
+filenames carry the UUID rather than the machine name; the machine name lives in
+the file. `docs/tutorial/config/README.md` indexes the tutorial's set by machine
+name if you need to find one by hand.
+
+### Import is all-or-nothing on validation
+
+Import parses and schema checks every file, and resolves every reference it
+makes, before it writes anything. If any file in the set fails, the run prints
+every failure with its filename and reason, exits non-zero, and writes nothing —
+so a typo cannot leave a partially applied config set behind reporting success.
+This matters most for roles and stages, which have no admin form: `config import`
+is their only management path, so a file that failed silently was an entity that
+never arrived with nothing saying why.
+
+`--dry-run` runs exactly that validation and skips the writes, so it fails on
+anything the real run would fail on.
 
 ---
 

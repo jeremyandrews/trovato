@@ -137,11 +137,10 @@ Record user creation commands and credentials in `TOOLS.md -> Roles & Access`.
 
 ### 2.1 Review Role Definitions
 
-`[REFERENCE]` Review the role YAML configs:
+`[REFERENCE]` Review the role YAML configs. They are named by UUID, so glob them:
 
 ```bash
-cat docs/tutorial/config/role.editor.yml
-cat docs/tutorial/config/role.publisher.yml
+head -n 30 docs/tutorial/config/role.*.yml
 ```
 
 Key permissions:
@@ -151,11 +150,11 @@ Key permissions:
 
 > **Note:** The `view incoming conferences`, `view curated conferences`, `edit conferences`, and `publish conferences` permissions are declared by the `ritrovo_access` plugin (Part 5). They are included in the role YAML files to document the final intended state. At this point in the tutorial, only the base permissions are assigned; the ritrovo_access permissions are added in Part 5 after the plugin is installed.
 
-### 2.2 Note: Role Config Not Importable
+### 2.2 Note: Roles Import, Permissions Do Not
 
-`[REFERENCE]` ConfigStorage does not yet support the `role` entity type. The YAML files serve as reference documentation. Roles can be created via `/admin/people/roles/add` and permissions assigned via `/admin/people/permissions`, but there is no admin UI for assigning roles to users — use SQL for that.
+`[REFERENCE]` `config import` creates the three roles: the `role` config entity carries the role's UUID and name, and Step 1.2's `config import` already applied them. What it does not carry is permissions, so those still have to be assigned — via `/admin/people/permissions` or the SQL in 2.5 below. There is also no admin UI for assigning roles to users; that is SQL too.
 
-> Also review `docs/tutorial/config/role.viewer.yml` — the viewer role for viewer_carol.
+> The `viewer` role is the one for viewer_carol. `docs/tutorial/config/README.md` maps each role UUID to its name.
 
 ### 2.3 Log In as Admin
 
@@ -172,47 +171,22 @@ curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
 # Expect: 303
 ```
 
-### 2.4 Create Roles
+### 2.4 Verify the Roles Landed
 
-`[CLI]` Create the viewer, editor, and publisher roles via the admin API:
+`[CLI]` Step 1.2's `config import` created the three roles. Confirm they are rows,
+under the UUIDs their config files declare:
 
 ```bash
-# Create viewer role
-FORM_PAGE=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt http://localhost:3000/admin/people/roles/add)
-CSRF=$(echo "$FORM_PAGE" | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
-FBID=$(echo "$FORM_PAGE" | grep -oE 'name="_form_build_id" value="[^"]+"' | sed 's/.*value="//' | sed 's/"//')
-curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
-  -X POST http://localhost:3000/admin/people/roles/add \
-  --data-urlencode "_token=$CSRF" \
-  --data-urlencode "_form_build_id=$FBID" \
-  --data-urlencode "name=viewer" \
-  -o /dev/null -w "%{http_code}"
-# Expect: 303
-
-# Create editor role
-FORM_PAGE=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt http://localhost:3000/admin/people/roles/add)
-CSRF=$(echo "$FORM_PAGE" | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
-FBID=$(echo "$FORM_PAGE" | grep -oE 'name="_form_build_id" value="[^"]+"' | sed 's/.*value="//' | sed 's/"//')
-curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
-  -X POST http://localhost:3000/admin/people/roles/add \
-  --data-urlencode "_token=$CSRF" \
-  --data-urlencode "_form_build_id=$FBID" \
-  --data-urlencode "name=editor" \
-  -o /dev/null -w "%{http_code}"
-# Expect: 303
-
-# Create publisher role
-FORM_PAGE=$(curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt http://localhost:3000/admin/people/roles/add)
-CSRF=$(echo "$FORM_PAGE" | grep -oE 'csrf-token" content="[a-f0-9]+"' | grep -oE '[a-f0-9]{64}')
-FBID=$(echo "$FORM_PAGE" | grep -oE 'name="_form_build_id" value="[^"]+"' | sed 's/.*value="//' | sed 's/"//')
-curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
-  -X POST http://localhost:3000/admin/people/roles/add \
-  --data-urlencode "_token=$CSRF" \
-  --data-urlencode "_form_build_id=$FBID" \
-  --data-urlencode "name=publisher" \
-  -o /dev/null -w "%{http_code}"
-# Expect: 303
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT id, name FROM roles WHERE name IN ('viewer', 'editor', 'publisher') ORDER BY name;"
 ```
+
+**Verify:** Three rows — `editor`, `publisher`, `viewer` — with the `0193a5a0-0002-…`
+UUIDs listed in `docs/tutorial/config/README.md`.
+
+`roles.name` is unique, so do not also create them at `/admin/people/roles/add`:
+that path is for roles you are adding by hand, and it will reject a name the
+import already took.
 
 ### 2.5 Assign Permissions and Roles via SQL
 
@@ -220,7 +194,7 @@ curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<'SQL'
--- Viewer permissions (from role.viewer.yml — base permissions only;
+-- Viewer permissions (from the viewer role's config file — base permissions only;
 -- ritrovo_access permissions added in Part 5 after plugin install)
 INSERT INTO role_permissions (role_id, permission)
 SELECT r.id, p.perm
@@ -230,7 +204,7 @@ FROM roles r, (VALUES
 WHERE r.name = 'viewer'
 ON CONFLICT (role_id, permission) DO NOTHING;
 
--- Editor permissions (from role.editor.yml — base permissions only;
+-- Editor permissions (from the editor role's config file — base permissions only;
 -- ritrovo_access permissions added in Part 5 after plugin install)
 INSERT INTO role_permissions (role_id, permission)
 SELECT r.id, p.perm
@@ -241,7 +215,7 @@ FROM roles r, (VALUES
 WHERE r.name = 'editor'
 ON CONFLICT (role_id, permission) DO NOTHING;
 
--- Publisher permissions (from role.publisher.yml — base permissions only;
+-- Publisher permissions (from the publisher role's config file — base permissions only;
 -- ritrovo_access permissions added in Part 5 after plugin install)
 INSERT INTO role_permissions (role_id, permission)
 SELECT r.id, p.perm
@@ -341,47 +315,26 @@ Record role testing commands in `TOOLS.md -> Roles & Access`.
 
 ### 3.1 Review Stage Definitions
 
-`[REFERENCE]` Review the stage YAML configs:
+`[REFERENCE]` Review the stage YAML configs. They are named by UUID, so glob them;
+`docs/tutorial/config/README.md` maps each UUID to its machine name:
 
 ```bash
-cat docs/tutorial/config/stage.incoming.yml
-cat docs/tutorial/config/stage.curated.yml
-cat docs/tutorial/config/stage.live.yml
-cat docs/tutorial/config/stage.legal_review.yml
+cat docs/tutorial/config/stage.*.yml
 ```
 
-### 3.2 Create Incoming and Curated Stages
+### 3.2 Confirm Incoming, Curated and Legal Review Exist
 
-`[CLI]` Stage configuration is not importable via `config import`. The YAML files serve as reference documentation. Stages are stored as tags in the `stages` category with corresponding `stage_config` rows. The Live stage already exists (created by the installer). Create Incoming and Curated via SQL:
+`[CLI]` Stages are importable, and Step 1.2's `config import` already created them:
+a stage is a `category_tag` row in the `stages` category plus a `stage_config` row,
+and the config entity carries both halves. Live comes from the installer; importing
+its file updates the existing row rather than adding a second Live.
 
-```bash
-$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<'SQL'
--- Incoming stage (internal, weight=0 so it sorts first)
-INSERT INTO category_tag (id, category_id, label, weight, created, changed)
-VALUES ('0193a5a0-0000-7000-8000-000000000002', 'stages', 'Incoming', 0,
-  EXTRACT(EPOCH FROM NOW())::bigint, EXTRACT(EPOCH FROM NOW())::bigint)
-ON CONFLICT (id) DO NOTHING;
+Only one stage may be the default (`uq_stage_is_default`) and the installer gives
+that to Live, which is why every other stage file has `is_default: false`. A
+production editorial setup would move the default to Incoming so new imports land
+there.
 
-INSERT INTO stage_config (tag_id, machine_name, visibility, is_default)
-VALUES ('0193a5a0-0000-7000-8000-000000000002', 'incoming', 'internal', false)
-ON CONFLICT (tag_id) DO NOTHING;
-
--- Curated stage (internal, weight=5)
-INSERT INTO category_tag (id, category_id, label, weight, created, changed)
-VALUES ('0193a5a0-0000-7000-8000-000000000003', 'stages', 'Curated', 5,
-  EXTRACT(EPOCH FROM NOW())::bigint, EXTRACT(EPOCH FROM NOW())::bigint)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO stage_config (tag_id, machine_name, visibility, is_default)
-VALUES ('0193a5a0-0000-7000-8000-000000000003', 'curated', 'internal', false)
-ON CONFLICT (tag_id) DO NOTHING;
-
--- Update Live stage weight to 10 (sorts last = final stage)
-UPDATE category_tag SET weight = 10 WHERE id = '0193a5a0-0000-7000-8000-000000000001';
-SQL
-```
-
-**Note:** `is_default` has a unique constraint — only one stage can be default. Live is the default. In a production editorial setup, you would set Incoming as default so new imports land there instead of Live.
+Verify them in 3.3.
 
 ### 3.3 Verify Stages Exist
 
@@ -389,10 +342,12 @@ SQL
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
-  -c "SELECT ct.id, ct.label, sc.machine_name, sc.visibility FROM stage_config sc JOIN category_tag ct ON sc.tag_id = ct.id ORDER BY ct.weight;"
+  -c "SELECT ct.id, ct.label, sc.machine_name, sc.visibility, sc.is_default FROM stage_config sc JOIN category_tag ct ON sc.tag_id = ct.id ORDER BY ct.weight;"
 ```
 
-**Verify:** Three rows: Incoming (internal), Curated (internal), Live (public).
+**Verify:** Four rows — Incoming (internal), Curated (internal), Legal Review
+(internal), Live (public, and the default) — under the `0193a5a0-0000-…` UUIDs
+their config files declare.
 
 ### 3.4 Review Workflow Configuration
 
@@ -429,7 +384,7 @@ curl -s 'http://localhost:3000/api/search?q=conference' | jq '.total'
 
 ### 3.7 Extensibility Demo: Legal Review Stage
 
-`[REFERENCE]` The `stage.legal_review.yml` config demonstrates that stages are just configuration — you could add a "Legal Review" stage between Curated and Live by creating the stage and adding `curated → legal_review` and `legal_review → live` transitions to the workflow config. No code changes needed. The current `variable.workflow.editorial.yml` does NOT include these transitions — they are left as an exercise.
+`[REFERENCE]` The Legal Review stage config demonstrates that stages are just configuration — the stage itself already imports, and taking it further means adding `curated → legal_review` and `legal_review → live` transitions to the workflow config. No code changes needed. The current `variable.workflow.editorial.yml` does NOT include these transitions — they are left as an exercise.
 
 Record stage and workflow details in `TOOLS.md -> Stages & Workflows`.
 

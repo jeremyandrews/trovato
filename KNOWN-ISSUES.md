@@ -99,6 +99,29 @@ YAML and running `trovato config import`. There is no form for them. Content
 types, fields, users, categories, content, gather queries, tiles, aliases,
 menus, plugins and AI providers all do have admin screens.
 
+Because import is the only path for those types, it now refuses to apply a set
+containing a file it cannot parse: the run names every offending file, exits
+non-zero, and writes nothing. It used to skip such a file with a warning and
+report success, which for a role or a stage meant an entity that never arrived
+with nothing that said why.
+
+### Role permissions are not carried by config import
+
+The `role` config entity carries a role's UUID and name. It does not carry the
+role's permissions, so `config import` creates roles but cannot grant them
+anything; assign permissions at `/admin/people/permissions` afterwards. The role
+files in `docs/tutorial/config/` list their intended permissions in comments for
+exactly this reason.
+
+### Tiles and menu links ignore the stage a config file declares
+
+`Tile` and `MenuLink` both carry a `stage_id`, and both config files must declare
+one to parse, but the storage layer's insert does not bind it — the row takes the
+column default, which is the Live stage. A tile or menu link cannot currently be
+imported onto a non-Live stage. The same insert also drops a menu link's
+`parent_id`, `hidden` and `plugin`, so menu hierarchy does not survive an import
+round trip.
+
 ### Semantic search has no approximate index
 
 Vector similarity is computed exactly, comparing against every candidate row.

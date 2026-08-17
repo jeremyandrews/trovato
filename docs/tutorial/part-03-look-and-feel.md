@@ -366,7 +366,7 @@ The YAML config files in `docs/tutorial/config/` document the tile configuration
 | `open_cfps_sidebar` | Sidebar | Open CFPs with deadlines |
 | `footer_info` | Footer | Site branding and info |
 
-> **Note:** Tile and menu link configuration can be imported via `config import` using `tile.{machine_name}.yml` and `menu_link.{menu}.{title}.yml` files, or managed through the admin UI.
+> **Note:** Tile and menu link configuration can be imported via `config import` using `tile.{uuid}.yml` and `menu_link.{uuid}.yml` files, or managed through the admin UI. The tutorial's set is in `docs/tutorial/config/`, indexed by machine name in that directory's `README.md`.
 
 ### Tile Visibility Rules
 

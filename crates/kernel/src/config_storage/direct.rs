@@ -872,41 +872,70 @@ impl DirectConfigStorage {
         Ok(row.map(ConfigEntity::Stage))
     }
 
+    /// Upsert a stage across its two tables, under the stage's own UUID.
+    ///
+    /// A stage lives in `category_tag` (label, description, weight) plus
+    /// `stage_config` (machine_name, visibility, is_default), so an update has to
+    /// touch both — updating only `stage_config` silently discarded a relabelled
+    /// or reweighted stage. The create path uses the stage's declared UUID rather
+    /// than a fresh one so that `config import` is idempotent and the file's `id`
+    /// is the identity that actually lands.
     async fn save_stage(&self, stage: &crate::models::Stage) -> Result<()> {
-        // Stages are stored across category_tag + stage_config tables.
-        let input = crate::models::CreateStage {
-            label: stage.label.clone(),
-            machine_name: stage.machine_name.clone(),
-            description: stage.description.clone(),
-            visibility: Some(stage.visibility.to_string()),
-            is_default: Some(stage.is_default),
-            weight: Some(stage.weight),
-        };
-        // Try update first, create if not exists
         if crate::models::Stage::find_by_id(&self.pool, stage.id)
             .await?
             .is_some()
         {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .context("failed to start stage update transaction")?;
+
+            sqlx::query(
+                "UPDATE category_tag SET label = $1, description = $2, weight = $3, changed = $4 \
+                 WHERE id = $5 AND category_id = 'stages'",
+            )
+            .bind(&stage.label)
+            .bind(&stage.description)
+            .bind(stage.weight)
+            .bind(chrono::Utc::now().timestamp())
+            .bind(stage.id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to update stage tag")?;
+
             sqlx::query(
                 "UPDATE stage_config SET machine_name = $1, visibility = $2, is_default = $3 \
-                 WHERE stage_id = $4",
+                 WHERE tag_id = $4",
             )
             .bind(&stage.machine_name)
             .bind(stage.visibility.to_string())
             .bind(stage.is_default)
             .bind(stage.id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
-            .context("failed to update stage")?;
+            .context("failed to update stage config")?;
+
+            tx.commit()
+                .await
+                .context("failed to commit stage update transaction")?;
         } else {
-            crate::models::Stage::create(&self.pool, input).await?;
+            let input = crate::models::CreateStage {
+                label: stage.label.clone(),
+                machine_name: stage.machine_name.clone(),
+                description: stage.description.clone(),
+                visibility: Some(stage.visibility.to_string()),
+                is_default: Some(stage.is_default),
+                weight: Some(stage.weight),
+            };
+            crate::models::Stage::create_with_id(&self.pool, stage.id, input).await?;
         }
         Ok(())
     }
 
     async fn delete_stage(&self, id: &str) -> Result<bool> {
         let uuid = id.parse::<Uuid>().context("invalid stage UUID")?;
-        let r = sqlx::query("DELETE FROM stage_config WHERE stage_id = $1")
+        let r = sqlx::query("DELETE FROM stage_config WHERE tag_id = $1")
             .bind(uuid)
             .execute(&self.pool)
             .await

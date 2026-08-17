@@ -1,0 +1,11 @@
+# Footer menu — About link.
+id: 0193a5a0-0004-7000-8000-000000000005
+menu_name: footer
+path: /about
+title: About
+weight: 0
+hidden: false
+plugin: core
+stage_id: 0193a5a0-0000-7000-8000-000000000001
+created: 1767225600
+changed: 1767225600

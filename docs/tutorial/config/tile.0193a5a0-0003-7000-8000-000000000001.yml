@@ -1,0 +1,15 @@
+# Conferences This Month tile (machine_name: conferences_this_month) — Sidebar.
+id: 0193a5a0-0003-7000-8000-000000000001
+machine_name: conferences_this_month
+label: Conferences This Month
+region: sidebar
+tile_type: gather_query
+config:
+  query_id: ritrovo.upcoming_conferences
+visibility: {}
+weight: 0
+status: 1
+plugin: core
+stage_id: 0193a5a0-0000-7000-8000-000000000001
+created: 1767225600
+changed: 1767225600
