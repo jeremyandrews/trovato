@@ -487,11 +487,27 @@ impl std::fmt::Debug for SecurityAudit {
     }
 }
 
-/// Read the configured retention window, falling back to
-/// [`DEFAULT_RETENTION_DAYS`] when unset or unparseable.
+/// Read the configured retention window from `SECURITY_AUDIT_RETENTION_DAYS`.
+///
+/// A one-line edge over `retention_days_from`, which holds the resolution so
+/// that it can be tested without mutating the process environment.
 pub fn retention_days_from_env() -> i64 {
-    std::env::var("SECURITY_AUDIT_RETENTION_DAYS")
-        .ok()
+    retention_days_from(
+        std::env::var("SECURITY_AUDIT_RETENTION_DAYS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Resolve the retention window from a configured value, falling back to
+/// [`DEFAULT_RETENTION_DAYS`] when it is absent, unparseable, or not positive.
+///
+/// Non-positive is rejected rather than honoured because `prune` deletes
+/// everything older than `now - days`: a zero or negative window would empty the
+/// whole stream on the next cron run, which is the opposite of a retention
+/// policy.
+pub(crate) fn retention_days_from(value: Option<&str>) -> i64 {
+    value
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|d| *d > 0)
         .unwrap_or(DEFAULT_RETENTION_DAYS)
@@ -610,11 +626,23 @@ mod tests {
         assert_eq!(SecurityAudit::sanitize_ip(""), "invalid");
     }
 
+    /// The window is always a positive number of days, whatever it is
+    /// configured with.
+    ///
+    /// Driven through `retention_days_from` rather than the env edge, so
+    /// "nothing configured" is a value this test passes in rather than a
+    /// property of the shell that happens to be running it.
     #[test]
-    fn retention_default_is_bounded() {
+    fn retention_window_is_always_positive() {
         const { assert!(DEFAULT_RETENTION_DAYS > 0) };
-        // No env var set in the unit-test process ⇒ the default applies.
-        unsafe { std::env::remove_var("SECURITY_AUDIT_RETENTION_DAYS") };
-        assert_eq!(retention_days_from_env(), DEFAULT_RETENTION_DAYS);
+        assert_eq!(retention_days_from(None), DEFAULT_RETENTION_DAYS);
+        assert_eq!(retention_days_from(Some("30")), 30);
+        // Non-positive and unparseable both fall back: a zero-day window would
+        // prune the entire stream.
+        assert_eq!(retention_days_from(Some("0")), DEFAULT_RETENTION_DAYS);
+        assert_eq!(retention_days_from(Some("-5")), DEFAULT_RETENTION_DAYS);
+        assert_eq!(retention_days_from(Some("")), DEFAULT_RETENTION_DAYS);
+        assert_eq!(retention_days_from(Some("ninety")), DEFAULT_RETENTION_DAYS);
+        assert_eq!(retention_days_from(Some("30 days")), DEFAULT_RETENTION_DAYS);
     }
 }

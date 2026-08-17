@@ -13,3 +13,10 @@ tokio = { workspace = true }
 sqlx = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+# `env::load_dotenv` wraps `dotenvy::dotenv` so that the `set_var` calls it makes
+# internally take the same lock as every other environment mutation in the tree.
+dotenvy = { workspace = true }
+# `env::ENV_LOCK` needs a REENTRANT mutex — `std::sync::ReentrantLock` is still
+# unstable on the pinned toolchain, and a plain `Mutex` turns a fixture calling
+# `set_env_default` inside an `EnvGuard` scope into a silent hang.
+parking_lot = { workspace = true }

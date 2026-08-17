@@ -4,6 +4,13 @@
 //!
 //! Helpers for integration testing: test fixtures, mock builders,
 //! and assertion utilities for content system testing.
+//!
+//! [`mod@env`] is the workspace's one mechanism for touching the process
+//! environment from a test. Read its module docs before adding a `set_var`
+//! anywhere: the first answer is nearly always to parameterize the code under
+//! test instead.
+
+pub mod env;
 
 use serde_json::Value as JsonValue;
 use uuid::Uuid;

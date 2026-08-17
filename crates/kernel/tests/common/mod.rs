@@ -103,46 +103,75 @@ pub struct TestApp {
     pub state: AppState,
 }
 
+/// The project root, resolved from this crate's manifest directory.
+///
+/// Integration tests run with `crates/kernel/` as the working directory, so any
+/// path a fixture points the kernel at has to be built from here rather than
+/// left relative.
+pub fn project_root() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    std::path::Path::new(&manifest_dir)
+        .parent() // crates/
+        .and_then(|p| p.parent()) // project root
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf()
+}
+
 impl TestApp {
     /// Create a new test application with full kernel initialization.
     pub async fn new() -> Self {
-        // Load test environment
-        dotenvy::dotenv().ok();
+        Self::with_config(|_| {}).await
+    }
 
-        // Set templates directory to project root templates/
-        // Tests run from crates/kernel/, so we need to go up two levels
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        let project_root = std::path::Path::new(&manifest_dir)
-            .parent() // crates/
-            .and_then(|p| p.parent()) // project root
-            .unwrap_or(std::path::Path::new("."));
+    /// Build a test app, adjusting the loaded [`Config`] before the app is made.
+    ///
+    /// Prefer this over setting an environment variable. `Config` is an owned
+    /// value handed to `AppState::new`, so a field override steers this app and
+    /// nothing else — where a `set_var` steers every other test thread in the
+    /// binary too, and cannot be undone once another thread may have read it.
+    pub async fn with_config(customize: impl FnOnce(&mut Config)) -> Self {
+        // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
+        // through the workspace env lock like any other mutation.
+        trovato_test_utils::env::load_dotenv();
 
-        if std::env::var("TEMPLATES_DIR").is_err() {
-            let templates_dir = project_root.join("templates");
-            // SAFETY: We're setting the environment variable before spawning threads
-            unsafe { std::env::set_var("TEMPLATES_DIR", templates_dir) };
-        }
+        let project_root = project_root();
 
-        if std::env::var("STATIC_DIR").is_err() {
-            let static_dir = project_root.join("static");
-            unsafe { std::env::set_var("STATIC_DIR", static_dir) };
-        }
-
-        // Tests run 100 tests concurrently — bump the default pool size so
-        // serialization locks don't starve other tests of connections.
-        if std::env::var("DATABASE_MAX_CONNECTIONS").is_err() {
-            unsafe { std::env::set_var("DATABASE_MAX_CONNECTIONS", "25") };
-        }
-
-        // Trust the mocked loopback peer (see MockConnectInfo below) so that the
-        // per-test X-Forwarded-For isolation used by `login` is honored through
-        // the RATE-1 trusted-proxy gate.
-        if std::env::var("TRUSTED_PROXIES").is_err() {
-            unsafe { std::env::set_var("TRUSTED_PROXIES", "127.0.0.1") };
-        }
+        // TEMPLATES_DIR and STATIC_DIR are not `Config` fields: the theme engine
+        // and the static-file handler read them from the process environment on
+        // each use, so a process-wide default is the only lever a test has. Same
+        // for TRUSTED_PROXIES, which is read per request — it has to name the
+        // mocked loopback peer (see MockConnectInfo below) for the per-test
+        // X-Forwarded-For isolation `login` relies on to pass the RATE-1
+        // trusted-proxy gate.
+        //
+        // These writes are NOT "before spawning threads", which is what the
+        // comment here used to claim: libtest has already spawned every test
+        // thread by the time any fixture runs, and this binary runs on the order
+        // of a hundred tests concurrently. What `set_env_default` does provide is
+        // that the check and the write happen together under the workspace env
+        // lock, and that a variable is written at most once per process — so no
+        // reader ever observes one of these values change, and a value supplied
+        // by the environment is always left alone. The residual `setenv`/`getenv`
+        // race against a concurrent reader cannot be closed from inside a test;
+        // closing it means moving those three reads into `Config`, which is
+        // deliberately not part of this change.
+        trovato_test_utils::env::set_env_default("TEMPLATES_DIR", project_root.join("templates"));
+        trovato_test_utils::env::set_env_default("STATIC_DIR", project_root.join("static"));
+        trovato_test_utils::env::set_env_default("TRUSTED_PROXIES", "127.0.0.1");
 
         // Create config from environment
-        let config = Config::from_env().expect("Failed to load config");
+        let mut config = Config::from_env().expect("Failed to load config");
+
+        // Tests run 100 tests concurrently — bump the default pool size so
+        // serialization locks don't starve other tests of connections. A field
+        // override rather than a `DATABASE_MAX_CONNECTIONS` write, because it is
+        // a `Config` field: an explicit input needs no global state. Still
+        // deferring to the environment when it says something, as before.
+        if std::env::var_os("DATABASE_MAX_CONNECTIONS").is_none() {
+            config.database_max_connections = 25;
+        }
+
+        customize(&mut config);
 
         // Initialize the REAL AppState (database, redis, plugins, templates, etc.)
         let state = AppState::new(&config)

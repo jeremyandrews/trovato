@@ -116,7 +116,7 @@ fn dispatcher() -> Arc<TapDispatcher> {
 
 /// Connect, run kernel migrations, and apply the argus schema (idempotent).
 async fn fresh_pool() -> PgPool {
-    dotenvy::dotenv().ok();
+    trovato_test_utils::env::load_dotenv();
     // The plugin reports through `host::log`, which the kernel emits as a
     // tracing event. Without a subscriber a failing stage is a silent trap, so
     // `RUST_LOG=argus=debug,trovato_kernel=debug` is worth having wired up.

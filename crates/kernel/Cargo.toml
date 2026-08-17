@@ -78,4 +78,9 @@ workspace = true
 [dev-dependencies]
 http-body-util = "0.1"
 uuid = { workspace = true }
+# `trovato_test_utils::env` is the workspace's one mechanism for touching the
+# process environment from a test (guard, restore-on-drop, one shared lock).
+# Used by the lib's own unit tests as well as the integration fixtures, which is
+# why it is a dev-dependency of this crate and not only of the test binaries.
+trovato-test-utils = { path = "../test-utils" }
 webauthn-authenticator-rs = { version = "0.5.5", default-features = false, features = ["softpasskey"] }

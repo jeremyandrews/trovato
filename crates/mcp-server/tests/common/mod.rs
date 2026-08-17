@@ -17,12 +17,11 @@ use trovato_mcp::server::TrovatoMcpServer;
 
 /// Shared Tokio runtime that outlives all test runtimes.
 ///
-/// Environment variables are set here before the runtime is built,
-/// ensuring no data race with concurrent test threads.
+/// The process-wide test defaults are installed from here, which gets them in
+/// place exactly once per binary and before the runtime's worker threads exist.
+/// That is *not* the same as "before any thread exists" — see [`init_test_env`].
 pub static SHARED_RT: std::sync::LazyLock<tokio::runtime::Runtime> =
     std::sync::LazyLock::new(|| {
-        // Set env vars before any threads are spawned by the runtime.
-        // This is the earliest safe point — no test threads are running yet.
         init_test_env();
 
         tokio::runtime::Builder::new_multi_thread()
@@ -49,12 +48,27 @@ pub async fn shared_app() -> &'static TestContext {
     })
 }
 
-/// Set environment variables needed by tests.
+/// Install the process-wide defaults tests need, once per binary.
 ///
-/// Called once during `SHARED_RT` initialization, before any async work
-/// or test threads are spawned.
+/// `TEMPLATES_DIR` and `STATIC_DIR` are not `Config` fields — the theme engine
+/// and the static-file handler read them from the process environment on each
+/// use — so a process-wide default is the only lever a test has. Everything with
+/// a `Config` field is set on the config instead, in [`TestContext::new`].
+///
+/// This used to claim "no other threads exist yet". It does not hold: libtest
+/// spawns a thread per test before any of them runs, and `SHARED_RT` is a
+/// `LazyLock` first touched from inside one of those threads, so the others are
+/// already alive. What is true is narrower and enough to make the writes
+/// order-independent: `set_env_default` performs the check and the write together
+/// under the workspace env lock, and never overwrites, so a variable is written
+/// at most once per process and no reader can observe one of these values
+/// change. The residual `setenv`/`getenv` race with a concurrent reader is not
+/// closable from the test side; closing it means moving those two reads into
+/// `Config`.
 fn init_test_env() {
-    dotenvy::dotenv().ok();
+    // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
+    // through the same lock as everything else.
+    trovato_test_utils::env::load_dotenv();
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let project_root = std::path::Path::new(&manifest_dir)
@@ -62,17 +76,8 @@ fn init_test_env() {
         .and_then(|p| p.parent()) // project root
         .unwrap_or(std::path::Path::new("."));
 
-    // SAFETY: No other threads exist yet — SHARED_RT LazyLock is the first
-    // thing initialized and the runtime hasn't been built at this point.
-    if std::env::var("TEMPLATES_DIR").is_err() {
-        unsafe { std::env::set_var("TEMPLATES_DIR", project_root.join("templates")) };
-    }
-    if std::env::var("STATIC_DIR").is_err() {
-        unsafe { std::env::set_var("STATIC_DIR", project_root.join("static")) };
-    }
-    if std::env::var("DATABASE_MAX_CONNECTIONS").is_err() {
-        unsafe { std::env::set_var("DATABASE_MAX_CONNECTIONS", "10") };
-    }
+    trovato_test_utils::env::set_env_default("TEMPLATES_DIR", project_root.join("templates"));
+    trovato_test_utils::env::set_env_default("STATIC_DIR", project_root.join("static"));
 }
 
 /// Shared test context with AppState and pre-created test users.
@@ -88,7 +93,13 @@ pub struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
-        let config = Config::from_env().expect("Failed to load config");
+        let mut config = Config::from_env().expect("Failed to load config");
+        // A field override rather than a `DATABASE_MAX_CONNECTIONS` write: it is
+        // a `Config` field, so this needs no process-global state. The
+        // environment still wins when it says something, as it did before.
+        if std::env::var_os("DATABASE_MAX_CONNECTIONS").is_none() {
+            config.database_max_connections = 10;
+        }
         let state = AppState::new(&config)
             .await
             .expect("Failed to initialize AppState");

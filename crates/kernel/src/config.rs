@@ -60,16 +60,25 @@ impl CacheConfig {
     }
 }
 
-/// Parse an environment variable via [`std::str::FromStr`], returning `None` if
-/// unset or unparseable (so the caller can fall back to a default).
-fn parse_env<T: std::str::FromStr>(name: &str) -> Option<T> {
-    env::var(name).ok().and_then(|v| v.trim().parse().ok())
+/// How [`PluginConfig::from_lookup`](crate::plugin::PluginConfig::from_lookup)
+/// asks for a setting: by name, `None` when not configured.
+///
+/// A trait object rather than a generic, so the parse helpers below can be
+/// ordinary functions instead of one monomorphized per call site.
+type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// Parse a looked-up setting via [`std::str::FromStr`], falling back to
+/// `default` when it is absent or unparseable.
+fn parse_or<T: std::str::FromStr>(lookup: Lookup<'_>, name: &str, default: T) -> T {
+    lookup(name)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }
 
-/// Parse a boolean-ish environment variable. Truthy: `1`, `true`, `yes`, `on`
-/// (case-insensitive); anything else present is `false`. `None` when unset.
-fn parse_env_bool(name: &str) -> Option<bool> {
-    env::var(name).ok().map(|v| {
+/// Parse a boolean-ish looked-up setting. Truthy: `1`, `true`, `yes`, `on`
+/// (case-insensitive); anything else present is `false`; absent is `default`.
+fn parse_bool_or(lookup: Lookup<'_>, name: &str, default: bool) -> bool {
+    lookup(name).map_or(default, |v| {
         matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
@@ -97,27 +106,52 @@ impl crate::plugin::PluginConfig {
     /// Every variable falls back to its documented default when unset or
     /// unparseable. The pool slab and the limiter memory cap are kept coherent at
     /// engine creation (the slab is raised to never fall below the limiter cap).
+    ///
+    /// This is a one-line edge over `from_lookup`, which holds all of the
+    /// resolution logic and the variable names. The split is what lets the
+    /// resolution be tested without mutating the process environment.
     pub fn from_env() -> Self {
+        Self::from_lookup(|name| env::var(name).ok())
+    }
+
+    /// Resolve the plugin runtime configuration from an arbitrary settings
+    /// lookup, as documented on [`Self::from_env`].
+    ///
+    /// The lookup, not the process environment, is the only source of values, so
+    /// a test can drive every documented variable — and every documented default
+    /// — from an explicit map with nothing global involved.
+    pub(crate) fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
         use crate::plugin::limits::ResourceLimits;
         let cfg_defaults = Self::default();
         let lim_defaults = ResourceLimits::default();
+        let lookup: Lookup<'_> = &lookup;
         Self {
-            max_instances: parse_env("PLUGIN_MAX_INSTANCES").unwrap_or(cfg_defaults.max_instances),
-            max_memory_pages: parse_env("PLUGIN_MAX_MEMORY_PAGES")
-                .unwrap_or(cfg_defaults.max_memory_pages),
+            max_instances: parse_or(lookup, "PLUGIN_MAX_INSTANCES", cfg_defaults.max_instances),
+            max_memory_pages: parse_or(
+                lookup,
+                "PLUGIN_MAX_MEMORY_PAGES",
+                cfg_defaults.max_memory_pages,
+            ),
             limits: ResourceLimits {
-                max_memory_bytes: parse_env("PLUGIN_LIMIT_MEMORY_BYTES")
-                    .unwrap_or(lim_defaults.max_memory_bytes),
-                max_table_elements: parse_env("PLUGIN_LIMIT_TABLE_ELEMENTS")
-                    .unwrap_or(lim_defaults.max_table_elements),
-                max_memories: parse_env("PLUGIN_LIMIT_MEMORIES")
-                    .unwrap_or(lim_defaults.max_memories),
-                max_tables: parse_env("PLUGIN_LIMIT_TABLES").unwrap_or(lim_defaults.max_tables),
-                max_instances: parse_env("PLUGIN_LIMIT_INSTANCES")
-                    .unwrap_or(lim_defaults.max_instances),
-                enable_fuel: parse_env_bool("PLUGIN_ENABLE_FUEL")
-                    .unwrap_or(lim_defaults.enable_fuel),
-                fuel_limit: parse_env("PLUGIN_FUEL_LIMIT").unwrap_or(lim_defaults.fuel_limit),
+                max_memory_bytes: parse_or(
+                    lookup,
+                    "PLUGIN_LIMIT_MEMORY_BYTES",
+                    lim_defaults.max_memory_bytes,
+                ),
+                max_table_elements: parse_or(
+                    lookup,
+                    "PLUGIN_LIMIT_TABLE_ELEMENTS",
+                    lim_defaults.max_table_elements,
+                ),
+                max_memories: parse_or(lookup, "PLUGIN_LIMIT_MEMORIES", lim_defaults.max_memories),
+                max_tables: parse_or(lookup, "PLUGIN_LIMIT_TABLES", lim_defaults.max_tables),
+                max_instances: parse_or(
+                    lookup,
+                    "PLUGIN_LIMIT_INSTANCES",
+                    lim_defaults.max_instances,
+                ),
+                enable_fuel: parse_bool_or(lookup, "PLUGIN_ENABLE_FUEL", lim_defaults.enable_fuel),
+                fuel_limit: parse_or(lookup, "PLUGIN_FUEL_LIMIT", lim_defaults.fuel_limit),
             },
         }
     }
@@ -127,50 +161,103 @@ impl crate::plugin::PluginConfig {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::plugin::PluginConfig;
+    use std::collections::HashMap;
 
-    /// Env vars override the defaults; absent vars yield the documented defaults.
-    /// One test (serialized within its body) so parallel tests never race on the
-    /// process-global environment.
+    /// Drive [`PluginConfig::from_lookup`] from an explicit settings map.
+    ///
+    /// Nothing here touches the process environment: the variable *names* still
+    /// live in `from_lookup`, so a name typo fails these tests, while the
+    /// resolution runs against values this test owns outright.
+    fn from_map(pairs: &[(&str, &str)]) -> PluginConfig {
+        let settings: HashMap<&str, &str> = pairs.iter().copied().collect();
+        PluginConfig::from_lookup(|name| settings.get(name).map(|v| (*v).to_string()))
+    }
+
+    /// Every documented variable steers its field, under its documented name.
     #[test]
-    fn plugin_config_from_env_overrides_then_defaults() {
-        // Absent vars → documented defaults.
-        let defaults = PluginConfig::from_env();
-        assert_eq!(defaults.max_instances, 1000);
-        assert_eq!(defaults.max_memory_pages, 1024);
-        assert_eq!(defaults.limits.max_memory_bytes, 64 * 1024 * 1024);
-        assert_eq!(defaults.limits.max_table_elements, 10_000);
-        assert_eq!(defaults.limits.max_instances, 1);
-        assert!(!defaults.limits.enable_fuel);
+    fn plugin_config_lookup_overrides_every_documented_setting() {
+        let config = from_map(&[
+            ("PLUGIN_MAX_INSTANCES", "42"),
+            ("PLUGIN_MAX_MEMORY_PAGES", "128"),
+            ("PLUGIN_LIMIT_MEMORY_BYTES", "1048576"),
+            ("PLUGIN_LIMIT_TABLE_ELEMENTS", "7"),
+            ("PLUGIN_LIMIT_MEMORIES", "4"),
+            ("PLUGIN_LIMIT_TABLES", "5"),
+            ("PLUGIN_LIMIT_INSTANCES", "3"),
+            ("PLUGIN_ENABLE_FUEL", "true"),
+            ("PLUGIN_FUEL_LIMIT", "555"),
+        ]);
+        assert_eq!(config.max_instances, 42);
+        assert_eq!(config.max_memory_pages, 128);
+        assert_eq!(config.limits.max_memory_bytes, 1_048_576);
+        assert_eq!(config.limits.max_table_elements, 7);
+        assert_eq!(config.limits.max_memories, 4);
+        assert_eq!(config.limits.max_tables, 5);
+        assert_eq!(config.limits.max_instances, 3);
+        assert!(config.limits.enable_fuel);
+        assert_eq!(config.limits.fuel_limit, 555);
+    }
 
-        // Set overrides and re-read. `set_var`/`remove_var` are `unsafe` in the
-        // 2024 edition; this is the only test touching these uniquely-named vars.
-        unsafe {
-            std::env::set_var("PLUGIN_MAX_INSTANCES", "42");
-            std::env::set_var("PLUGIN_MAX_MEMORY_PAGES", "128");
-            std::env::set_var("PLUGIN_LIMIT_MEMORY_BYTES", "1048576");
-            std::env::set_var("PLUGIN_LIMIT_TABLE_ELEMENTS", "7");
-            std::env::set_var("PLUGIN_LIMIT_INSTANCES", "3");
-            std::env::set_var("PLUGIN_ENABLE_FUEL", "true");
-            std::env::set_var("PLUGIN_FUEL_LIMIT", "555");
-        }
-        let overridden = PluginConfig::from_env();
-        assert_eq!(overridden.max_instances, 42);
-        assert_eq!(overridden.max_memory_pages, 128);
-        assert_eq!(overridden.limits.max_memory_bytes, 1_048_576);
-        assert_eq!(overridden.limits.max_table_elements, 7);
-        assert_eq!(overridden.limits.max_instances, 3);
-        assert!(overridden.limits.enable_fuel);
-        assert_eq!(overridden.limits.fuel_limit, 555);
+    /// Nothing configured yields the documented defaults.
+    ///
+    /// "Nothing configured" is asserted, not hoped for: the old shape of this
+    /// test read the real environment, so a CI runner or developer shell that
+    /// exported any `PLUGIN_*` variable failed it spuriously.
+    #[test]
+    fn plugin_config_defaults_when_nothing_is_configured() {
+        let config = from_map(&[]);
+        assert_eq!(config.max_instances, 1000);
+        assert_eq!(config.max_memory_pages, 1024);
+        assert_eq!(config.limits.max_memory_bytes, 64 * 1024 * 1024);
+        assert_eq!(config.limits.max_table_elements, 10_000);
+        assert_eq!(config.limits.max_memories, 1);
+        assert_eq!(config.limits.max_tables, 1);
+        assert_eq!(config.limits.max_instances, 1);
+        assert!(!config.limits.enable_fuel);
+        assert_eq!(config.limits.fuel_limit, 10_000_000_000);
+    }
 
-        unsafe {
-            std::env::remove_var("PLUGIN_MAX_INSTANCES");
-            std::env::remove_var("PLUGIN_MAX_MEMORY_PAGES");
-            std::env::remove_var("PLUGIN_LIMIT_MEMORY_BYTES");
-            std::env::remove_var("PLUGIN_LIMIT_TABLE_ELEMENTS");
-            std::env::remove_var("PLUGIN_LIMIT_INSTANCES");
-            std::env::remove_var("PLUGIN_ENABLE_FUEL");
-            std::env::remove_var("PLUGIN_FUEL_LIMIT");
+    /// The documented "unset *or unparseable*" fallback, which the old
+    /// env-mutating test never covered.
+    #[test]
+    fn plugin_config_unparseable_values_fall_back_to_defaults() {
+        let config = from_map(&[
+            ("PLUGIN_MAX_INSTANCES", "many"),
+            ("PLUGIN_MAX_MEMORY_PAGES", ""),
+            ("PLUGIN_LIMIT_MEMORY_BYTES", "64 MiB"),
+            ("PLUGIN_FUEL_LIMIT", "-1"),
+        ]);
+        assert_eq!(config.max_instances, 1000);
+        assert_eq!(config.max_memory_pages, 1024);
+        assert_eq!(config.limits.max_memory_bytes, 64 * 1024 * 1024);
+        assert_eq!(config.limits.fuel_limit, 10_000_000_000);
+    }
+
+    /// Surrounding whitespace is tolerated, and only the documented spellings
+    /// are truthy — a present-but-unrecognized value is `false`, not the
+    /// default, which is what `parse_bool_or` promises.
+    #[test]
+    fn plugin_config_boolean_spellings() {
+        for truthy in ["1", "true", "TRUE", "yes", "on", " on "] {
+            assert!(
+                from_map(&[("PLUGIN_ENABLE_FUEL", truthy)])
+                    .limits
+                    .enable_fuel,
+                "{truthy:?} should enable fuel"
+            );
         }
+        for falsy in ["0", "false", "off", "no", "maybe", ""] {
+            assert!(
+                !from_map(&[("PLUGIN_ENABLE_FUEL", falsy)])
+                    .limits
+                    .enable_fuel,
+                "{falsy:?} should not enable fuel"
+            );
+        }
+        assert_eq!(
+            from_map(&[("PLUGIN_MAX_INSTANCES", " 42 ")]).max_instances,
+            42
+        );
     }
 }
 
@@ -259,9 +346,21 @@ pub struct Config {
 ///
 /// Falls back to `default` when the variable is unset, or when it is set to
 /// something that contains no usable segment at all.
+///
+/// A one-line edge over [`split_search_path_value`], which holds the parsing so
+/// that it can be tested without touching the process environment.
 pub(crate) fn split_search_path(var: &str, default: &str) -> Vec<PathBuf> {
-    let dirs: Vec<PathBuf> = match env::var_os(var) {
-        Some(value) => env::split_paths(&value)
+    split_search_path_value(env::var_os(var).as_deref(), default)
+}
+
+/// Parse an already-read search-path value, as documented on
+/// [`split_search_path`]. `None` is "the variable is not set".
+pub(crate) fn split_search_path_value(
+    value: Option<&std::ffi::OsStr>,
+    default: &str,
+) -> Vec<PathBuf> {
+    let dirs: Vec<PathBuf> = match value {
+        Some(value) => env::split_paths(value)
             .filter(|p| !p.as_os_str().is_empty())
             .collect(),
         None => Vec::new(),
@@ -382,57 +481,53 @@ impl Config {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod search_path_tests {
-    use super::split_search_path;
+    use super::split_search_path_value;
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
 
     // --- Search-path parsing ---
 
-    /// `split_search_path` is the compatibility hinge for PLUGINS_DIR and
-    /// TEMPLATES_DIR: both used to be single directories, so a plain value must
-    /// still parse to exactly one entry.
+    /// Parse a search-path value the way the env edge would, from an explicit
+    /// string instead of from a variable nobody else in the binary can see
+    /// change.
+    fn parse(value: &str) -> Vec<PathBuf> {
+        split_search_path_value(Some(OsStr::new(value)), "./plugins")
+    }
+
+    /// `split_search_path` is the compatibility hinge for PLUGINS_DIR,
+    /// TEMPLATES_DIR and STATIC_DIR: all three used to be single directories, so
+    /// a plain value must still parse to exactly one entry.
+    ///
+    /// Separators are written literally, matching the unix hosts this project
+    /// builds and ships on.
     #[test]
     fn search_path_parsing() {
-        let var = "TROVATO_TEST_SEARCH_PATH";
-
         // Unset falls back to the documented default.
-        unsafe { std::env::remove_var(var) };
         assert_eq!(
-            split_search_path(var, "./plugins"),
-            vec![std::path::PathBuf::from("./plugins")]
+            split_search_path_value(None, "./plugins"),
+            vec![PathBuf::from("./plugins")]
         );
 
         // A single directory stays a single entry (the pre-existing behaviour).
-        unsafe { std::env::set_var(var, "/srv/plugins") };
-        assert_eq!(
-            split_search_path(var, "./plugins"),
-            vec![std::path::PathBuf::from("/srv/plugins")]
-        );
+        assert_eq!(parse("/srv/plugins"), vec![PathBuf::from("/srv/plugins")]);
 
         // Multiple entries split in order, which is what lets an app append its
         // own directory after the kernel's.
-        unsafe { std::env::set_var(var, "/srv/plugins:/opt/app/plugins") };
         assert_eq!(
-            split_search_path(var, "./plugins"),
+            parse("/srv/plugins:/opt/app/plugins"),
             vec![
-                std::path::PathBuf::from("/srv/plugins"),
-                std::path::PathBuf::from("/opt/app/plugins"),
+                PathBuf::from("/srv/plugins"),
+                PathBuf::from("/opt/app/plugins"),
             ]
         );
 
         // Empty segments are dropped rather than becoming a silent "current
         // directory" entry, so a trailing or doubled separator is harmless.
-        unsafe { std::env::set_var(var, "/srv/plugins::") };
-        assert_eq!(
-            split_search_path(var, "./plugins"),
-            vec![std::path::PathBuf::from("/srv/plugins")]
-        );
+        assert_eq!(parse("/srv/plugins::"), vec![PathBuf::from("/srv/plugins")]);
+        assert_eq!(parse(":/srv/plugins"), vec![PathBuf::from("/srv/plugins")]);
 
         // A value with nothing usable in it falls back to the default.
-        unsafe { std::env::set_var(var, ":") };
-        assert_eq!(
-            split_search_path(var, "./plugins"),
-            vec![std::path::PathBuf::from("./plugins")]
-        );
-
-        unsafe { std::env::remove_var(var) };
+        assert_eq!(parse(":"), vec![PathBuf::from("./plugins")]);
+        assert_eq!(parse(""), vec![PathBuf::from("./plugins")]);
     }
 }

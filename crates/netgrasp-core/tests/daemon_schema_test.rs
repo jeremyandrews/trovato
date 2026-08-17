@@ -181,7 +181,7 @@ async fn daemon_db(test: &str) -> PgConnection {
 }
 
 async fn scratch(test: &str, ddl: &str) -> PgConnection {
-    dotenvy::dotenv().ok();
+    trovato_test_utils::env::load_dotenv();
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:5432/trovato".to_string());
     let mut conn = PgConnection::connect(&url).await.expect("connect test DB");
