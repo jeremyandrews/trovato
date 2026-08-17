@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- Comments are rendered on item pages, and the comment form works.
+
+  `templates/elements/comments.html` existed and was rendered by nothing: the
+  only comment template any route used was `admin/comments.html`. A site could
+  accept comments through the JSON API and had no way to show them. The orphan
+  template could not have worked either — its form posted
+  `application/x-www-form-urlencoded` with no CSRF field, at a route that
+  required a CSRF *header* — so rendering it as it stood would have produced a
+  form that 415ed on submit.
+
+  The item route now renders the thread under the item, through the theme engine
+  so a theme can override it. Comment bodies go through the same
+  `FilterPipeline` the API uses; author names are resolved once per author rather
+  than once per comment; only published comments appear.
+
+  `POST /api/item/{id}/comments` accepts both encodings, the same shape
+  `routes::item::ItemSubmission` uses for the item form:
+
+  - `application/json` with the token in `X-CSRF-Token` — unchanged, including
+    the JSON response an API client already got.
+  - `application/x-www-form-urlencoded` with the token in a `_csrf` field,
+    answered with a redirect back to the item rather than JSON, because the
+    caller is a browser following a form submission.
+
+  So commenting works with JavaScript disabled. `static/js/comment-post.js` is a
+  progressive enhancement on top: it posts JSON with the header, and on any
+  failure hands the submission back to the browser rather than losing it.
+
+  The redirect carries the outcome (`posted`, `pending`, `error`) and the page
+  renders it. That exists because of the review queue: a held comment that simply
+  does not appear looks to its author like a comment that vanished.
+
+  Also added: `AppState::comments_if_enabled`, a non-panicking accessor.
+  `comments()` panics off the plugin gate, which is right for the comment routes
+  and wrong for a page render — an item page must not 500 because comments are
+  switched off.
+
 - Comments can be held for review, marked as spam, and the author notification
   fires when a comment becomes visible rather than when it is written.
 

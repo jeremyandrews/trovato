@@ -1296,6 +1296,20 @@ impl AppState {
             .expect("comments service not initialized — caller must be behind plugin gate")
     }
 
+    /// The comments service, or `None` when comments are unavailable.
+    ///
+    /// [`Self::comments`] panics off the plugin gate, which is right for the
+    /// comment routes but wrong for a page render: an item page must not 500
+    /// because comments are switched off. Checks both conditions — the plugin
+    /// enabled *and* the service initialized — since the service is
+    /// late-initialized when the plugin is enabled after startup.
+    pub fn comments_if_enabled(&self) -> Option<&Arc<services::comment::CommentService>> {
+        if !self.is_plugin_enabled("trovato_comments") {
+            return None;
+        }
+        self.inner.comments.get()
+    }
+
     /// Late-initialize the comments service.
     ///
     /// Called by `set_plugin_enabled("trovato_comments", true)` when the service was
