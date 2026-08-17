@@ -182,8 +182,10 @@ async fn file_details(
 
     let owner = state.users().find_by_id(file.owner_id).await.ok().flatten();
     let public_url = state.files().storage().public_url(&file.uri);
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
+    context.insert("csrf_token", &csrf_token);
     context.insert("file", &file);
     context.insert("owner", &owner);
     context.insert("public_url", &public_url);
@@ -225,6 +227,59 @@ async fn delete_file(
 // =============================================================================
 // Media Library
 // =============================================================================
+
+/// Form data for editing a file's alternative text.
+#[derive(Debug, Deserialize)]
+struct AltTextForm {
+    #[serde(rename = "_token")]
+    token: String,
+    /// The alt text. Empty means "explicitly decorative", which is a real answer
+    /// rather than an absent one.
+    alt_text: String,
+    /// Where to return to, so the media library and the file details page can
+    /// share one endpoint without one of them throwing the user to the other.
+    #[serde(default)]
+    redirect_to: Option<String>,
+}
+
+/// Set a file's alternative text.
+///
+/// POST /admin/content/files/{id}/alt-text
+async fn set_file_alt_text(
+    State(state): State<AppState>,
+    session: Session,
+    Path(file_id): Path<uuid::Uuid>,
+    Form(form): Form<AltTextForm>,
+) -> Response {
+    if let Err(redirect) = require_admin(&state, &session).await {
+        return redirect;
+    }
+
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+
+    match state
+        .files()
+        .set_alt_text(file_id, Some(&form.alt_text))
+        .await
+    {
+        Ok(true) => {
+            // Only a same-site path is honoured, so the return target cannot be
+            // turned into an open redirect by a crafted form post.
+            let target = form
+                .redirect_to
+                .filter(|path| path.starts_with('/') && !path.starts_with("//"))
+                .unwrap_or_else(|| format!("/admin/content/files/{file_id}"));
+            Redirect::to(&target).into_response()
+        }
+        Ok(false) => render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to set file alt text");
+            render_server_error("Failed to save alternative text.")
+        }
+    }
+}
 
 /// Media library page with grid display.
 ///
@@ -645,6 +700,10 @@ pub fn router() -> Router<AppState> {
         .route("/admin/content/files", get(list_files))
         .route("/admin/content/files/{id}", get(file_details))
         .route("/admin/content/files/{id}/delete", post(delete_file))
+        .route(
+            "/admin/content/files/{id}/alt-text",
+            post(set_file_alt_text),
+        )
         // Media library
         .route("/admin/media", get(media_library))
         // Content type and search configuration management

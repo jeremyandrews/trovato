@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Managed files carry alternative text, and no template uses a filename as `alt`
+  any more.
+
+  Media had no alt field, so every template that rendered an uploaded image
+  reached for the nearest string: `templates/form/file-upload.html`,
+  `templates/admin/media-library.html` and `templates/admin/file-details.html`
+  all emitted `alt="{{ file.filename }}"`. A filename is not alternative text —
+  at best it is noise a screen reader reads aloud, at worst it is
+  "IMG_4821.jpg" standing in for the content of the image (WCAG F30). The block
+  editor already did this correctly, including the decorative case; the media
+  entity now can too.
+
+  `file_managed.alt_text` is nullable, and NULL is meaningfully different from
+  the empty string: NULL means nobody has said what the image shows, while `""`
+  means explicitly decorative, which is the correct alt for an image that carries
+  no information (WCAG H67). `FileService::set_alt_text` preserves that
+  distinction, treating a whitespace-only value as decorative. Existing rows are
+  NULL rather than backfilled with filenames, which would have encoded the defect
+  as data.
+
+  The file details page has a field to edit it, the media library shows at a
+  glance which images still need it ("No alt text" / "Decorative" / the text
+  itself), and all three templates now render the recorded value — falling back to
+  `alt=""` rather than to the filename, since in each of those places the filename
+  is already displayed as adjacent text.
+
+  Two details for anyone extending this. The field is skipped when serializing
+  `None`, because Tera has no `is null` test and a serialized `null` would be
+  indistinguishable from `""` in a template; omitted means "never set". And the
+  "Delete file" form on the file details page was posting no CSRF field at all, so
+  it could not deserialize — found while adding a form to the same page, fixed
+  with the token that page now generates.
+
 - The WebAuthn registration tests pass on a database they have already run
   against. `webauthn_registration_test.rs` created its fixture users under fixed
   names, and `create_test_user` upserts on `LOWER(name)`, so every run resolved
