@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- The registration mode in site configuration is the setting the register route
+  reads. It used to be a no-op.
+
+  The register route gated on the boolean `allow_user_registration`, default
+  false. The admin site-config form offered a three-mode `user_registration`
+  selector and saved it, but the only reader of that key was the same form
+  re-rendering itself — so choosing "Open" changed nothing, and the only way to
+  open registration at all was a config import of the boolean.
+
+  `user_registration` is now the one key, read by the route through
+  `RegistrationMode`. The boolean is still honoured as a fallback when no mode is
+  stored, so a site that opened registration the only way it could keeps working
+  across the upgrade; the first save from the admin form deletes it, leaving one
+  setting that cannot contradict another.
+
+  Two modes rather than three: "admin only" and "closed" differed in wording
+  only. Both close the public register route, and neither can stop an
+  administrator creating an account — the one account-creation path that has to
+  keep working. A stored `closed` still reads as closed to the public, so no
+  site's behaviour changes. A genuine third mode would be registration *with
+  approval*, which needs an approval queue rather than a third label.
+
+  An unparseable mode resolves to closed. For registration, the safe direction
+  for a value nobody can parse is "not open".
+
 - The WebAuthn registration tests pass on a database they have already run
   against. `webauthn_registration_test.rs` created its fixture users under fixed
   names, and `create_test_user` upserts on `LOWER(name)`, so every run resolved

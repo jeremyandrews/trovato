@@ -31,7 +31,7 @@ pub use language::{CreateLanguage, Language};
 pub use menu_link::{CreateMenuLink, MenuLink, UpdateMenuLink};
 pub use password_reset::PasswordResetToken;
 pub use role::Role;
-pub use site_config::SiteConfig;
+pub use site_config::{RegistrationMode, SiteConfig};
 pub use stage::{CreateStage, Stage};
 pub use subscription::Subscription;
 pub use tenant::{DEFAULT_TENANT_ID, Tenant, TenantContext};
