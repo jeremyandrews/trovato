@@ -18,8 +18,13 @@ wrong in ways a demo will notice". Content items are already a config entity
 no tests, one line of documentation, and an importer that writes items the
 database will accept but the CMS cannot use properly: no revision, nothing
 promotable to a front page, an anonymous author, a broken group id, and no search
-embedding. The export half of the pair fails outright on any database that has a
-tag.
+embedding.
+
+Three defects found alongside it are recorded with repro detail in section 2A,
+because they bear on any bootstrap story and each needs its own change: `config
+export` exits 1 on any database containing a tag, `config export` has no content
+filter, and `config import` fails to parse eighteen of the seventy six files in the
+tutorial's own config directory while reporting success.
 
 So the work is mostly corrective, not additive. **Recommendation: promote content
 out of the config entity list into its own `content export` / `content import`
@@ -79,8 +84,31 @@ the 0.99.0 squash, so git history offers no rationale.
 
 ## 2. What the Importer Actually Writes
 
-Probe: a fresh database, `config import docs/tutorial/config`, then
-`config import docs/tutorial/config/seed-italian`, then inspection.
+Probe, reproducible from a clean checkout at `main` (e6861d2). Postgres 17 and
+Redis from `docker compose up -d postgres redis`, then a database of its own so
+nothing else is touched:
+
+```
+createdb seed_probe                        # or: psql -c 'CREATE DATABASE seed_probe;'
+export DATABASE_URL=postgres://trovato:trovato@localhost:5432/seed_probe
+export REDIS_URL=redis://localhost:6379
+
+cargo run --bin trovato -- config import docs/tutorial/config
+cargo run --bin trovato -- config import docs/tutorial/config/seed-italian
+```
+
+Then:
+
+```sql
+SELECT count(*)                                    AS items,
+       count(current_revision_id)                  AS with_revision,
+       sum(promote)                                AS promoted,
+       count(DISTINCT author_id)                   AS authors,
+       count(*) FILTER (WHERE id = item_group_id)   AS own_group,
+       count(*) FILTER (WHERE search_vector IS NOT NULL) AS indexed
+  FROM item;
+SELECT count(*) AS revisions FROM item_revision;
+```
 
 ```
  items | with_revision | promoted | authors | own_group | indexed
@@ -103,57 +131,156 @@ Every prediction from reading `save_item` (`direct.rs:725`) holds:
 | `stage_id` | live, hardcoded | Accidentally the right default for a demo, but it means staged content cannot round-trip at all. |
 | re-import | 15 items, still 15 | Idempotency works, on the pinned uuid, through `ON CONFLICT (id) DO UPDATE`. |
 
-### 2.1 The export half is broken
+---
+
+## 2A. Three Adjacent Defects, With Repro
+
+These are not part of the seeding design. They were found while verifying it, and
+they are recorded here so the design decision is made with them known. Each is its
+own piece of work.
+
+### 2A.1 `config export` fails on any database containing a tag
+
+**Repro**, continuing from the probe above (the tutorial config imports 32 tags,
+so the database already qualifies):
 
 ```
-$ trovato config export /tmp/probe
+$ cargo run --bin trovato -- config export /tmp/export-probe
 Error: failed to list tag entities
+
 Caused by:
     0: failed to list all tags
     1: no column found for name: slug
+$ echo $?
+1
 ```
 
-`fetch_all_tags` (`direct.rs:364`) selects seven columns; `Tag`
-(`models/category.rs:34`) has eight fields, including `slug`, added by
-`20260307000001_add_category_tag_slug.sql`. `query_as::<_, Tag>` fails at row
-decode, so `config export` exits non-zero on **any** database that contains a
-tag, which is every real site. One line to fix, listed in Action Items.
+**Root cause.** `DirectConfigStorage::fetch_all_tags`
+(`crates/kernel/src/config_storage/direct.rs:363`) selects seven columns:
 
-### 2.2 Export has no content filter
+```rust
+"SELECT id, category_id, label, description, weight, created, changed FROM category_tag ..."
+```
 
-`export_config` iterates `ENTITY_TYPE_ORDER` and calls `storage.list(entity_type,
-None)`. For `"item"` that is every row in the table. On a site whose importer has
-fetched ten thousand conferences, `config export` writes ten thousand
-`item.<uuid>.yml` files into the config directory, and `config export --clean`
-then treats any config file it did not write as stale. Content volume and config
-volume are not the same problem, and one directory currently holds both.
+`Tag` (`crates/kernel/src/models/category.rs:34`) has eight fields, including
+`slug: Option<String>`, added by
+`crates/kernel/migrations/20260307000001_add_category_tag_slug.sql`. The column
+exists in the database; the query does not ask for it, so
+`query_as::<_, Tag>` fails at row decode. It is the only `FROM category_tag`
+select in that file, so nothing else compensates.
 
-### 2.3 The shipped bootstrap is not green
+**Blast radius.** `config export` is unusable on every site that has a single tag,
+which includes every site using categories, stages (stages are rows in the
+`stages` category) or the tutorial config. `config import` is unaffected: it never
+reads tags back.
 
-Importing the tutorial's own config directory produces eighteen parse failures
-out of seventy four files, and exits 0:
+**Fix.** Add `slug` to the select. The test that belongs with it exports a
+database containing a tag and asserts the export succeeds, because the current
+test suite never exports a populated database, which is why a one word omission
+survived.
+
+### 2A.2 `config export` has no content filter
+
+`export_config` (`config_storage/yaml.rs:291`) iterates `ENTITY_TYPE_ORDER` and
+calls `storage.list(entity_type, None)`. For `"item"`, `list_items`
+(`direct.rs:776`) with a `None` filter is every row in the table.
+
+**Consequence.** On a site whose importer has fetched ten thousand conferences,
+`config export config/` writes ten thousand `item.<uuid>.yml` files next to the
+thirty or so real config files. `config export --clean` then calls
+`clean_stale_yml_files`, which deletes any `.yml` in the directory that this
+export run did not write, so a hand authored seed file that has been edited but
+not re-imported is deleted by an export. Content volume and config volume are not
+the same problem, and one directory currently holds both.
+
+This one is a consequence of the design decision in section 5, so it should be
+resolved by that decision rather than patched ahead of it.
+
+### 2A.3 `config import` reports success while failing to parse a quarter of its input
+
+**Repro**, from a clean checkout:
 
 ```
+$ cargo run --bin trovato -- config import docs/tutorial/config
+Imported 58 config entities (docs/tutorial/config)
+  category: 1
+  gather_query: 6
+  item_type: 2
+  language: 2
+  search_field_config: 6
+  tag: 32
+  url_alias: 6
+  variable: 3
 18 warning(s):
-  warning: failed to parse stage.live.yml: invalid stage YAML
-  warning: failed to parse menu_link.main.conferences.yml: invalid menu_link YAML
-  warning: failed to parse role.editor.yml: invalid role YAML
-  warning: failed to parse tile.topic_cloud.yml: invalid tile YAML
-  ... (all four stages, all six menu links, all three roles, all five tiles)
+  ...
+$ echo $?
+0
 ```
 
-`stage.live.yml` carries `category_id` and no `machine_name`, `created` or
-`changed`; the `Stage` struct requires the latter three. The files were written
-against a shape the structs no longer have. So the reference application's
-stages, menus, roles and tiles do not import, and `print_config_summary`
-(`main.rs:569`) reports the warnings and returns `Ok(())`, so the command
-succeeds. A bootstrap script that checks exit codes learns nothing.
+Fifty eight entities from fifty eight files, eighteen files failing, seventy six
+`.yml` files in the directory: the arithmetic closes, so nothing is being skipped
+silently on top of the parse failures. The full list of the eighteen, grouped by
+type for reading (the command emits them in directory read order):
 
-This lands harder than it looks. KNOWN-ISSUES.md records that roles, stages and
-system configuration have no admin form and are managed by editing YAML and
-running `config import`. Those are three of the four kinds of file that fail to
-parse, so for roles and stages the only management path the CMS offers is the one
-that does not work on the examples the project ships.
+```
+failed to parse stage.live.yml: invalid stage YAML
+failed to parse stage.incoming.yml: invalid stage YAML
+failed to parse stage.curated.yml: invalid stage YAML
+failed to parse stage.legal_review.yml: invalid stage YAML
+failed to parse role.editor.yml: invalid role YAML
+failed to parse role.publisher.yml: invalid role YAML
+failed to parse role.viewer.yml: invalid role YAML
+failed to parse menu_link.main.conferences.yml: invalid menu_link YAML
+failed to parse menu_link.main.speakers.yml: invalid menu_link YAML
+failed to parse menu_link.main.topics.yml: invalid menu_link YAML
+failed to parse menu_link.main.cfps.yml: invalid menu_link YAML
+failed to parse menu_link.footer.about.yml: invalid menu_link YAML
+failed to parse menu_link.footer.contact.yml: invalid menu_link YAML
+failed to parse tile.search_box.yml: invalid tile YAML
+failed to parse tile.topic_cloud.yml: invalid tile YAML
+failed to parse tile.footer_info.yml: invalid tile YAML
+failed to parse tile.open_cfps_sidebar.yml: invalid tile YAML
+failed to parse tile.conferences_this_month.yml: invalid tile YAML
+```
+
+Four stages, three roles, six menu links, five tiles. Nothing else in the
+directory fails.
+
+**Root cause**, one shape in four places. `deserialize_entity`
+(`config_storage/yaml.rs:755`) deserializes these four types straight into the
+full model struct, and each model requires fields that only the database can
+know, which a hand authored file therefore omits:
+
+| Type | File has | Struct additionally requires |
+|---|---|---|
+| `stage` | `id`, `category_id`, `label`, `visibility`, `is_default`, `weight` | `machine_name`, `created`, `changed` (and has no `category_id` field) |
+| `role` | `name`, `label`, `permissions` | `id`, `created` (and has no `label` or `permissions` field, so role permissions cannot round-trip through config at all) |
+| `menu_link` | `menu_name`, `path`, `title`, `weight`, `hidden`, `plugin` | `id`, `stage_id`, `created` |
+| `tile` | `machine_name`, `label`, `region`, `tile_type`, `config`, `visibility`, `weight`, `status`, `plugin` | `id`, `stage_id`, `created`, `changed` |
+
+The types that import cleanly either go through a purpose built export struct
+(`TagExport`, `GatherQueryExport`, `VarYaml`, `ConfigItem`) or have a string key
+with defaults for the rest (`category`, `language`, `item_type`). The `url_alias`
+files import because they were machine generated and carry `id`, `stage_id` and
+`created`. So the failure is not arbitrary drift: it is the four types that lack
+an import shape.
+
+**And it exits 0.** `print_config_summary` (`crates/kernel/src/main.rs:569`)
+prints the warnings; `run_config_command` returns `Ok(())` regardless. A bootstrap
+script that checks exit codes learns nothing, and CI has nothing to fail on.
+
+**This lands harder than it looks.** KNOWN-ISSUES.md records that roles and
+permissions, stages, and system configuration have no admin form and are managed
+by editing YAML and running `config import`. Two of those three are in the failing
+list, so for roles and stages the only management path the CMS offers is the one
+that does not work on the examples the project ships, and the role file shape
+shows permissions were never importable.
+
+**Fix**, two parts that want to stay together: give the four types an import shape
+(or defaults for the database managed fields), and add a test that imports
+`docs/tutorial/config/` and asserts zero warnings, so the drift cannot come back
+silently. Whether `config import` should exit non-zero on warnings is a separate
+behaviour decision, raised as question 2 in section 6.
 
 ---
 
@@ -414,7 +541,7 @@ discover.
    `config`?** This is the decision everything else follows from.
 2. **Should `--strict` (nonzero exit on any warning) be the default for content
    import, opt in, or absent?** A deterministic demo wants a bootstrap that fails
-   loudly. Section 2.3 shows what the current permissive behaviour hides. Changing
+   loudly. Section 2A.3 shows what the current permissive behaviour hides. Changing
    the default for `config import` too would be a behaviour change on a documented
    command.
 3. **Does the tutorial move with it?** Option B means `seed-italian/` becomes a
@@ -426,15 +553,21 @@ discover.
 
 ## 7. Action Items
 
-Independent of the decision, verified defects:
+Independent of the decision, the verified defects from section 2A. Each is its own
+change, deliberately not bundled with the seeding work:
 
-- [ ] `config_storage/direct.rs:365`: add `slug` to the `fetch_all_tags` select.
-      `config export` currently fails on any database with a tag. One line, and it
-      wants a test that exports a database containing a tag.
-- [ ] Regenerate or hand fix the eighteen `docs/tutorial/config/` files that no
-      longer parse (four stages, six menu links, three roles, five tiles), and add
-      a test that imports the tutorial config directory and asserts zero warnings.
-      Without that test they will drift again.
+- [ ] **Section 2A.1.** `config_storage/direct.rs:365`: add `slug` to the
+      `fetch_all_tags` select, with a test that exports a database containing a tag.
+      `config export` currently exits 1 on any such database.
+- [ ] **Section 2A.3.** Give `stage`, `role`, `menu_link` and `tile` an import
+      shape, or defaults for the database managed fields they require, so the
+      eighteen files in `docs/tutorial/config/` parse. Add a test that imports that
+      directory and asserts zero warnings, or they drift again silently. The role
+      shape needs a decision of its own: `label` and `permissions` are in the file
+      and absent from the model, so role permissions have never been importable.
+- [ ] Separately from either fix, decide whether `config import` should exit
+      non-zero when it emits warnings (question 2). Today a quarter of the input
+      can fail and the command still succeeds.
 - [ ] `docs/tutorial/recipes/recipe-part-07.md:180`: `seed-italian/` exists;
       remove the "not yet created" note.
 
