@@ -37,6 +37,12 @@ fn admin() -> UserContext {
 }
 
 async fn ensure_item_type(app: &TestApp) {
+    // The comment routes are behind the `trovato_comments` gate, so on a database
+    // where the plugin was never enabled every request here is a 404. This passed
+    // locally, and in CI only because another file in the same shard had enabled
+    // the plugin first — a shard reshuffle is all it took to break it.
+    app.ensure_plugin_enabled("trovato_comments").await;
+
     let mut tx = app.db.begin().await.expect("begin type seed");
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(TYPE_SEED_LOCK)
