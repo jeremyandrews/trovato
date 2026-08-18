@@ -31,9 +31,17 @@ to `trovato-mcp`.
 
 ### The remaining admin screens
 
-Roles and permissions, stages, and system configuration are configuration-import
-only. Each needs a form. This is the largest block of ordinary work before 1.0
-and the most approachable for a contributor who wants somewhere to start.
+Roles and permissions, stages, menus, and system configuration are
+configuration-import only. Each needs a form. This is the largest block of
+ordinary work before 1.0 and the most approachable for a contributor who wants
+somewhere to start.
+
+Menus are on this list rather than the one below because a site's navigation is
+not an advanced feature: editing it by hand-writing YAML and running a CLI import
+fails the standard 1.0 is held to. `menu_link` rows already carry everything a
+form would edit — menu name, path, title, parent, weight, visibility — and the
+render layer already reads them, so the work is the form and its route, not the
+model.
 
 ### Test isolation
 

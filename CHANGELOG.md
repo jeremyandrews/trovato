@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- `KNOWN-ISSUES.md` no longer claims menus have an admin screen, and the missing
+  form is on the 1.0 list.
+
+  The line listed content types, fields, users, categories, content, gather
+  queries, tiles, aliases, **menus**, plugins and AI providers as all having admin
+  screens. There is no menu admin screen: no route under `/admin` matches `menu`,
+  and `templates/admin/` holds no menu template. Menu links are rows in
+  `menu_link`, read by the render layer and written only by config import — the
+  same position roles, stages and system configuration are in, which that section
+  is about.
+
+  Menus therefore move into the import-only list, and into
+  "The remaining admin screens" in `ROADMAP.md`, before 1.0 rather than after.
+  That follows the project's own criterion for 1.0 — a site can be built,
+  configured and operated through the interface — and a site's navigation is not
+  an advanced feature. The `menu_link` row already carries everything a form would
+  edit, so the work is the form and its route, not the model.
+
+  A documentation defect drifts back unless something pins it, so the correction
+  has a test: it asserts no menu admin path is served, that `KNOWN-ISSUES.md` does
+  not list menus among the types that have screens, and that `ROADMAP.md` places
+  the form before 1.0. It fails in both directions — build the screen and it tells
+  you to update the docs and delete it.
+
 - The WebAuthn registration tests pass on a database they have already run
   against. `webauthn_registration_test.rs` created its fixture users under fixed
   names, and `create_test_user` upserts on `LOWER(name)`, so every run resolved
