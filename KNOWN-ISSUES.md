@@ -86,11 +86,23 @@ discovered automatically.
 ### The committed reference plugin is a binary artifact
 
 `plugins/ritrovo_importer/ritrovo_importer.wasm` is checked in so the tutorial
-works without a second repository. It is reproducible (the header of
-`crates/kernel/tests/ritrovo_paired_consumer_test.rs` records the source commit,
-the pinned SDK commit and the sha256, and two clean checkouts produced it byte
-for byte), but a compiled binary in a source repository is still something to
-resolve rather than keep.
+works without a second repository. A compiled binary in a source repository is
+something to resolve rather than keep, and this one cannot currently be rebuilt
+from published sources at all.
+
+Its provenance is recorded in the header of
+`crates/kernel/tests/ritrovo_paired_consumer_test.rs`, which since the version
+sweep claims only what a reader can check: the sha256 (asserted by a test in
+that file, so the artifact cannot be swapped without the header going stale) and
+the Ritrovo commit it was compiled from, in the public
+[ritrovo](https://github.com/jeremyandrews/ritrovo) repository. What is missing
+is the SDK revision: at that Ritrovo commit the `trovato-sdk` dependency was
+pinned at a commit of the unpublished development repository, so there is no
+public revision to name and no rebuild recipe that would work. The header used
+to assert a byte-for-byte reproducible build and cite that commit as if a reader
+could resolve it; they cannot. Re-pointing Ritrovo's SDK dependency at this
+repository and refreshing the artifact from that build is what makes the
+reproducibility claim true, and is the next step here.
 
 ### Some admin screens are configuration import only
 
