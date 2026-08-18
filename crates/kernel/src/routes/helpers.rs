@@ -189,6 +189,10 @@ pub async fn inject_site_context(
     context.insert("site_name", &site_name);
     context.insert("site_slogan", &site_slogan);
 
+    // RSS autodiscovery. Resolved at startup, so this is a slice read rather
+    // than a scan of the gather registry per render.
+    context.insert("feeds", state.feed_links());
+
     // Language context variables (defaults — route handlers may override active_language)
     context.insert("available_languages", state.known_languages());
     context.insert("default_language", state.default_language());

@@ -269,6 +269,7 @@ fn query_display_custom() {
         footer: None,
         canonical_url: None,
         routes: Vec::new(),
+        feed: None,
     };
 
     assert_eq!(display.format, DisplayFormat::Grid);
@@ -541,6 +542,7 @@ fn gate_test_recent_articles_query_definition() {
             footer: None,
             canonical_url: None,
             routes: Vec::new(),
+            feed: None,
         },
         plugin: "trovato_blog".to_string(),
         created: chrono::Utc::now().timestamp(),

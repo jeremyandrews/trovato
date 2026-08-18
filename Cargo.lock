@@ -5444,15 +5444,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "trovato_feeds"
-version = "0.99.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "trovato_field_access_ref"
 version = "0.99.0"
 dependencies = [
