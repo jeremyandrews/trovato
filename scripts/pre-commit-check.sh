@@ -94,7 +94,7 @@ if [[ "$MODE" == "full" ]]; then
         -p trovato_field_access_ref \
         -p trovato_recovery_ref -p test_recovery_bystander \
         -p trovato_record_ref \
-        -p argus -p netgrasp -p trovato_series -p test_plugin_api \
+        -p argus -p trovato_series -p test_plugin_api \
         --target wasm32-wasip1 --release 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
