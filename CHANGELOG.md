@@ -132,6 +132,36 @@
   and wrong for a page render — an item page must not 500 because comments are
   switched off.
 
+- A trust ladder on comment moderation: an account with approved comments skips
+  the review queue, while the classifier still runs on everything it posts.
+
+  On a moderated site every comment waits for a human or for the classifier,
+  including comments from people who have been read and approved repeatedly. The
+  ladder removes that wait where it has been earned: an author with at least
+  `comment_trust_threshold` published comments — 3 by default — has new comments
+  published immediately.
+
+  Three properties make this safe to have.
+
+  Only *published* comments count. A pending, hidden or spam comment is not
+  evidence of anything, which is what stops an account earning trust by posting
+  into the queue.
+
+  The ladder only ever promotes out of pending. It cannot publish a comment on a
+  site that holds nothing, and it cannot hold one on a site that publishes
+  everything — the site's own default is the ceiling.
+
+  It is not a security boundary, because classification is unchanged: `trovato_spam`
+  still classifies every comment, and a `spam` verdict applies to a published
+  comment as readily as a held one. A trusted account that starts spamming is
+  caught by the same pass that catches everyone else; the ladder only decides
+  whether the comment waits in the meantime.
+
+  `comment_trust_threshold = 0` turns it off, as does a value that cannot be
+  parsed: a ladder nobody can read should not hand out bypasses. The count itself is
+  only queried when it could change the answer — a site that publishes immediately,
+  or a commenter holding `skip comment approval`, needs no count.
+
 - New plugin: `trovato_spam`, AI comment moderation. Classifies each new comment
   in the background and publishes it, leaves it for a human, or marks it as spam.
 
