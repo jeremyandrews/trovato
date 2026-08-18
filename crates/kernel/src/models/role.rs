@@ -212,6 +212,22 @@ impl Role {
         Ok(())
     }
 
+    /// How many users hold this role.
+    ///
+    /// Deleting a role removes its assignments (`user_roles.role_id` is
+    /// `ON DELETE CASCADE`), which is the right behaviour and a surprising one to
+    /// discover afterwards, so the screen that offers the delete says how many
+    /// people it affects first.
+    pub async fn member_count(pool: &PgPool, role_id: Uuid) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_roles WHERE role_id = $1")
+            .bind(role_id)
+            .fetch_one(pool)
+            .await
+            .context("failed to count role members")?;
+
+        Ok(count)
+    }
+
     /// Every permission currently granted to any role.
     ///
     /// The validation set for `config import` alongside [`KERNEL_PERMISSIONS`]:
