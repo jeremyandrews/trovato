@@ -1,0 +1,73 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Editorial stages", add_url="/admin/structure/stages/add", add_label="Add stage") }}
+
+<div class="admin-card">
+    <p>A stage is where content sits in an editorial workflow. <strong>Live</strong>
+    is the published stage: it is the one public stage, it cannot be deleted, and it
+    cannot be made internal, because published content is resolved through it.
+    Exactly one stage is the default, which is where new content lands.</p>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Machine name</th>
+                <th>Label</th>
+                <th>Visibility</th>
+                <th>Default</th>
+                <th>Weight</th>
+                <th>In use by</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for stage in stages %}
+            <tr>
+                <td>
+                    <code>{{ stage.machine_name }}</code>
+                    {% if stage.is_live %}<span class="badge badge--system">Live</span>{% endif %}
+                </td>
+                <td>
+                    <a href="/admin/structure/stages/{{ stage.id }}/edit">{{ stage.label }}</a>
+                    {% if stage.description %}<br><small>{{ stage.description }}</small>{% endif %}
+                </td>
+                <td>{{ stage.visibility }}</td>
+                <td>{% if stage.is_default %}Yes{% else %}No{% endif %}</td>
+                <td>{{ stage.weight }}</td>
+                <td>{{ stage.references_summary }}</td>
+                <td>
+                    <a href="/admin/structure/stages/{{ stage.id }}/edit">Edit</a>
+                    {% if stage.deletable %}
+                    &middot;
+                    {% if stage.references.items > 0 or stage.references.url_aliases > 0 or stage.references.menu_links > 0 or stage.references.tiles > 0 %}
+                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", confirm_text="This stage is still used by " ~ stage.references_summary ~ ". Deleting it will be refused until that content is moved. Try anyway?", csrf_token=csrf_token) }}
+                    {% else %}
+                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", confirm_text="Delete the " ~ stage.label ~ " stage?", csrf_token=csrf_token) }}
+                    {% endif %}
+                    {% else %}
+                    &middot;
+                    <span title="The Live stage, the default stage and the public stage cannot be deleted.">Not deletable</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<style>
+    .badge {
+        display: inline-block;
+        padding: 0.125rem 0.375rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
+        margin-left: 0.5rem;
+    }
+    .badge--system {
+        background: #e2e3e5;
+        color: #383d41;
+    }
+</style>
+{% endblock %}

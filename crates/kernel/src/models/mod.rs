@@ -32,7 +32,7 @@ pub use menu_link::{CreateMenuLink, MenuLink, UpdateMenuLink};
 pub use password_reset::PasswordResetToken;
 pub use role::Role;
 pub use site_config::{RegistrationMode, SiteConfig};
-pub use stage::{CreateStage, Stage};
+pub use stage::{CreateStage, Stage, StageReferences};
 pub use subscription::Subscription;
 pub use tenant::{DEFAULT_TENANT_ID, Tenant, TenantContext};
 pub use url_alias::{CreateUrlAlias, UpdateUrlAlias, UrlAlias};

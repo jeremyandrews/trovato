@@ -106,22 +106,23 @@ reproducibility claim true, and is the next step here.
 
 ### Some admin screens are configuration import only
 
-Stages and system configuration are managed by editing YAML and running
+Languages and most system variables are managed by editing YAML and running
 `trovato config import`. There is no form for them. Content types, fields, users,
-categories, content, gather queries, tiles, aliases, menus, roles, permissions,
-plugins and AI providers all do have admin screens.
+categories, content, gather queries, tiles, aliases, menus, stages, roles,
+permissions, plugins and AI providers all do have admin screens.
 
-Menus were on this list, and are not any more: `/admin/structure/menus` lists a
-site's menus, renders each one as an indented tree, and creates, edits, reorders
-and deletes links. Plugin-registered navigation (`tap_menu`) appears there too,
-attributed to its plugin and read-only, because it is not rows and this form does
-not own it.
+Menus and stages were both on this list and are not any more:
+`/admin/structure/menus` renders each menu as an indented tree and creates, edits,
+reorders and deletes links; `/admin/structure/stages` creates and edits stages,
+with the guard rails the model enforces (one public stage, exactly one default, the
+Live stage neither deletable nor demotable, and a stage holding content refused
+with a count of what holds it).
 
 Because import is the only path for the types that remain, it refuses to apply a
 set containing a file it cannot parse: the run names every offending file, exits
 non-zero, and writes nothing. It used to skip such a file with a warning and
-report success, which for a stage meant an entity that never arrived with nothing
-that said why.
+report success, which meant an entity that never arrived with nothing that said
+why.
 
 ### A plugin's permissions cannot be granted by config import
 

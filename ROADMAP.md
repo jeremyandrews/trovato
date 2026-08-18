@@ -31,9 +31,15 @@ to `trovato-mcp`.
 
 ### The remaining admin screens
 
-Stages and system configuration are configuration-import only. Each needs a form.
-This is the largest block of ordinary work before 1.0 and the most approachable
-for a contributor who wants somewhere to start.
+Languages and most system variables are configuration-import only. Each needs a
+form. What is left of this block is smaller than it was, and still the most
+approachable place for a contributor to start.
+
+**Stages are done.** `/admin/structure/stages` creates and edits stages: machine
+name, label, description, visibility, default and weight, which is what the schema
+models. There is deliberately no workflow-membership field, because there is
+nothing to edit: the tutorial ships a `workflow.editorial` variable describing
+transitions and no kernel code reads it.
 
 **Menus are done.** `/admin/structure/menus` lists a site's menus, renders each as
 an indented tree, and creates, edits, reorders and deletes links, with cycle

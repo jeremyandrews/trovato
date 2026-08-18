@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- Stages have an administration screen. `/admin/structure/stages` lists them and
+  creates and edits machine name, label, description, visibility, default and
+  weight.
+
+  That list is what the schema models, and the form does not widen it. In
+  particular there is **no workflow-membership field**, because there is nothing to
+  edit: the tutorial ships `variable.workflow.editorial.yml` describing stage
+  transitions, and a repository-wide search for `workflow.editorial` finds the file
+  and no consumer. A field for a relationship the kernel does not model would be a
+  field that does nothing.
+
+  The guard rails live on the model rather than in the handlers, so `config import`
+  and any future caller are held to the same ones and the form's contribution is a
+  sentence instead of a constraint violation:
+
+  - **Exactly one default stage.** `Stage::update` clears the flag everywhere else
+    in the same transaction when it sets it, which is what the partial unique index
+    on `is_default = true` requires. Clearing the last one is refused, because new
+    content has to land somewhere.
+  - **The Live stage stays public and stays.** Published content is resolved
+    through the one public stage, so demoting it would take a site's published
+    content off the site. `Stage::update` refuses that, and delete already refused
+    Live.
+  - **Only one public stage**, which the partial unique index on
+    `visibility = 'public'` also says. The form refuses the second rather than
+    letting Postgres do it.
+
+  Three things this needed that the model did not have. `Stage` could update its
+  label and its visibility and nothing else, so machine name, description, weight
+  and the default flag had no write path at all — `Stage::update` is that path, in
+  one transaction, because a stage is two rows and a half-applied edit is a stage
+  whose tables disagree about which stage it is.
+
+  And a defect: `Stage::delete`'s doc comment said it "checks for content
+  referencing this stage (items, aliases, menu links, tiles)" and it counted
+  **items only**. All four columns are `RESTRICT` foreign keys, so a stage holding a
+  menu link, a tile or an alias was refused by Postgres with a message naming a
+  constraint rather than by Trovato with a count. `Stage::reference_counts` now
+  counts all four and the refusal reads "cannot delete stage: 3 items and 1 menu
+  link still reference it", which is what an operator needs in order to go and move
+  them. The listing shows the same count per stage, so the refusal is predictable
+  before the click rather than discovered after it.
+
 - The roles screen says what deleting a role does. `/admin/people/roles` now
   shows, per role, how many people hold it and how many permissions it grants, and
   the delete confirmation names the number of members who will lose it.

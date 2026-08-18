@@ -14,6 +14,7 @@ pub mod admin_menu;
 pub mod admin_pathauto;
 pub mod admin_queue;
 pub mod admin_record_type;
+pub mod admin_stage;
 pub mod admin_taxonomy;
 pub mod admin_translation;
 pub mod admin_user;
