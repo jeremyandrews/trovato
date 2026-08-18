@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- Book-style page trees: `trovato_book`, a standard plugin giving ordered hierarchy
+  with previous/next/up navigation, the Drupal 6 book model.
+
+  Nothing provided it, and menu hierarchy does not: a menu answers "what is under
+  this" and a book answers "what comes next", which needs a total order over the whole
+  tree rather than an ordering among siblings. The docs site wants this immediately —
+  nine tutorial parts and nineteen design documents are two books.
+
+  **Storage** is one plugin-owned table, `book_page`, declared in
+  `[capabilities] db_tables`, with a migration the plugin ships. No kernel table is
+  touched: a `book_id` column on `item` would make every site carry a column for a
+  feature most of them do not use. A **book is identified by its own root page**
+  (`book_id = item_id` for the root) rather than by a separate entity, which keeps the
+  model to one table and makes "which book is this in" a column read.
+
+  **Reading order** is depth-first, siblings by `(weight, title)`. The title tiebreak
+  is not cosmetic: without it two siblings at the same weight have no defined "next",
+  and prev/next is exactly the question a book has to answer. A test walks a ten-page,
+  three-level book by following the rendered `next` link and asserts it visits every
+  page exactly once.
+
+  **Two things this plugin cannot do on the 0.99 contract**, reported rather than
+  worked around, because both are missing kernel seams and not plugin bugs:
+
+  - **A fieldset on the item form.** The item form does not go through `FormService`,
+    so `tap_form_alter`, `tap_form_validate` and `tap_form_submit` are never
+    dispatched for it — `FormService` is constructed and exposed on `AppState`, and no
+    route calls `build` or `process`. Authoring therefore lives on the plugin's own
+    screens under `/admin/structure/books`, which is a complete path and not the one a
+    Drupal user would expect.
+  - **A sidebar tile rendering the tree.** `services/tile.rs` dispatches on
+    `tile_type` in a closed `match` in the kernel, so a plugin cannot register a tile
+    type. The tree renders into the item view instead, which puts it in the content
+    region rather than the sidebar.
+
+  Both would be additive kernel changes rather than contract breaks, and both are
+  larger than this plugin. The module docs name the file and the reason for each, so
+  whoever wants them next does not have to rediscover why they are absent.
+
+  A third limitation, smaller and worth stating because a test asserts it honestly
+  rather than aspirationally: the plugin renders the tree from its own rows and cannot
+  apply the kernel's access filter, so an unpublished page still appears in the tree
+  and 404s when followed. Filtering it would need the plugin to be able to ask "may
+  this viewer see this item", which `tap_item_access` answers in the other direction.
+
+  Cycle rejection, orphan promotion (a removed page's children move to its parent) and
+  the one-book-per-item rule are enforced by the plugin, because a self-referential
+  foreign key permits a cycle and a cyclic book is one that cannot be read.
+
 - Two tests that depended on something outside themselves now carry their own
   preconditions.
 
