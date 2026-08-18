@@ -170,6 +170,15 @@ impl UserService {
     }
 
     /// Delete a user with `tap_user_delete` invocation (before delete).
+    ///
+    /// The tap fires **before** the row goes, which is the only order that works: a
+    /// plugin cleaning up its own user-keyed rows needs the user to still exist while
+    /// it does so, and a plugin table with a foreign key onto `users` could not be
+    /// cleaned afterwards at all.
+    ///
+    /// [`User::delete`] reattributes the account's authored content to the anonymous
+    /// author inside its own transaction; see its documentation for why that is a
+    /// bug fix and not only a policy.
     pub async fn delete(&self, id: Uuid, acting_user: &UserContext) -> Result<bool> {
         // Dispatch tap before deletion
         self.dispatch_tap("tap_user_delete", id, acting_user).await;
@@ -181,6 +190,15 @@ impl UserService {
         }
 
         Ok(deleted)
+    }
+
+    /// How many active administrators the site has, excluding the anonymous
+    /// sentinel.
+    ///
+    /// The guard behind "the last administrator cannot delete their own account": a
+    /// site with no administrator cannot be administered back into having one.
+    pub async fn active_admin_count(&self) -> Result<i64> {
+        User::active_admin_count(&self.inner.pool).await
     }
 
     /// Record a successful login: update timestamps and dispatch `tap_user_login`.

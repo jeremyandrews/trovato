@@ -1,0 +1,59 @@
+{% extends "page.html" %}
+
+{% block title %}Delete my account{% endblock %}
+
+{% block content %}
+<div style="max-width: 560px; margin: 60px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 1rem;">Delete my account</h1>
+
+    <p>Before anything is deleted, prove it is you. A signed-in browser is not enough
+    on its own: someone using your unlocked laptop has that.</p>
+
+    {% if error %}
+    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        {{ error | escape }}
+    </div>
+    {% endif %}
+
+    {% if not has_password and not has_passkey %}
+    <p>This account has neither a password nor a passkey, so there is nothing to
+    verify against. <a href="/user/passkeys">Add a passkey</a> first.</p>
+    <p><a href="/user/profile">Back to my account</a></p>
+    {% endif %}
+
+    {% if has_password %}
+    <form method="post" action="/user/delete/reauth">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <div class="form-item" style="margin-bottom: 1rem;">
+            <label for="password" class="form-item__label">Your password</label>
+            <input type="password" id="password" name="password" class="form-text"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;"
+                   autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="button button--primary"
+                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer;">
+            Continue
+        </button>
+        <a href="/user/profile" style="margin-left: 1rem;">Cancel</a>
+    </form>
+    {% endif %}
+
+    {% if has_passkey %}
+    {% if has_password %}<p style="margin-top: 1.5rem;">Or verify with your passkey
+    instead:</p>{% endif %}
+    <p>
+        <button type="button" id="delete-passkey-verify" class="button button--primary"
+                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer;">
+            Verify with my passkey
+        </button>
+        {% if not has_password %}<a href="/user/profile" style="margin-left: 1rem;">Cancel</a>{% endif %}
+    </p>
+    <p id="delete-passkey-status" role="status"></p>
+    <noscript>
+        <p><strong>The passkey option needs JavaScript</strong>, because a passkey
+        ceremony does.{% if has_password %} The password form above does not.{% endif %}</p>
+    </noscript>
+    <script src="/static/js/account-delete.js" defer></script>
+    {% endif %}
+</div>
+{% endblock %}

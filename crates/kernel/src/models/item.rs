@@ -187,6 +187,17 @@ impl Item {
         Ok(items)
     }
 
+    /// How many items an author has, at any status and on any stage.
+    pub async fn count_by_author(pool: &PgPool, author_id: Uuid) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE author_id = $1")
+            .bind(author_id)
+            .fetch_one(pool)
+            .await
+            .context("failed to count items by author")?;
+
+        Ok(count)
+    }
+
     /// List published items (live stage only).
     pub async fn list_published(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(

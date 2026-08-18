@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+- A person can delete their own account, and **deleting any account that ever
+  wrote anything now works at all**.
+
+  The second half is the bug. `item.author_id`, `item_revision.author_id`,
+  `comment.author_id` and `file_managed.owner_id` are `NOT NULL REFERENCES users(id)`
+  with no `ON DELETE` action, so a delete failed on a foreign key for any account
+  with content. The admin screen offered the button and reported "Failed to delete
+  user"; there was no self-service path to fail. `User::delete` now reattributes in
+  one transaction before deleting, so both paths work.
+
+  **What deletion means**, stated on the confirmation screen in the same terms:
+
+  - The account row is deleted, with its password, passkeys, API tokens and every
+    session on every device.
+  - Authored items and comments are **reattributed to the anonymous author**, not
+    destroyed. Content integrity wins: a thread with holes in it damages every other
+    participant's record of a conversation they took part in. The screen says so, and
+    says that deleting a specific item first is the way to have it gone.
+  - Two nullable references that record *who did an administrative act*
+    (`config_revision.author_id`, `stage_deletion.deleted_by`) are **cleared**, not
+    reattributed. "The anonymous author published this revision" would be a claim,
+    and a false one.
+  - `tap_user_delete` fires before the row goes, so a plugin can clean up its own
+    user-keyed rows while the user still exists. That tap already existed and was
+    already dispatched; nothing was added to the plugin contract for this.
+
+  **The invariant this had to narrow, and why.** `item_revision` rows are immutable
+  by trigger — a revision is a snapshot, and a snapshot that can be edited is not a
+  history. That made the deletion impossible rather than merely awkward. The three
+  ways out were: delete the author's revisions (wrong: they are the history of items
+  that remain visible), refuse deletion to anyone who ever saved an item (wrong: that
+  is most accounts, and a right of erasure that applies only to people who never
+  wrote anything is not one), or narrow the invariant. It is narrowed, deliberately
+  and in a migration that explains itself:
+
+  > Before: a revision never changes.
+  > After: a revision's *content* never changes; its authorship may be anonymized
+  > when the author's account is deleted.
+
+  Enforced by comparing whole rows (`to_jsonb(NEW) - 'author_id'`) rather than a list
+  of columns, so a future column is covered rather than silently exempted, and the
+  new author must be the anonymous sentinel so this cannot reassign a revision from
+  one real person to another.
+
+  **Re-authentication.** There was no re-authentication machinery anywhere to reuse:
+  no admin flow has one, and the WebAuthn routes authenticate from scratch into a
+  session rather than stepping an existing one up. So this adds a step-up scoped to
+  deletion — a password post, or a fresh WebAuthn assertion — good for five minutes,
+  stored under its **own** session key so a login ceremony in flight cannot be
+  completed as a deletion step-up or the reverse. An account with both a password and
+  a passkey is offered both, because making somebody type a password they may not
+  remember when the authenticator is right there is a worse screen, and the reverse
+  when the authenticator is at home. The password path needs no JavaScript; the
+  passkey path does, because a WebAuthn ceremony does.
+
+  **The audit row names no account.** `security_audit_log.user_id` references `users`
+  with `ON DELETE SET NULL`, so a row written after the deletion cannot carry the id
+  — and a row that did would undercut the erasure it records. The event carries the
+  hashed subject and the counts (items and comments reattributed, sessions revoked)
+  and no raw identifier, which is what the audit module's hashing rule is for.
+
+  **The last active administrator cannot leave**, because a site with no
+  administrator cannot be administered back into having one. Refused, audited, and
+  said on the screen before the button rather than after it.
+
 - A person can download their own data. `/user/data-export` serves one JSON
   document holding the profile, the roles held, every authored item with its fields
   and timestamps, every comment, and the metadata of active sessions.

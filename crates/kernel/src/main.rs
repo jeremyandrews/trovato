@@ -269,6 +269,7 @@ async fn run_server() -> Result<()> {
         .merge(routes::front::router())
         .merge(routes::install::router())
         .merge(routes::auth::router())
+        .merge(routes::user_delete::router())
         .merge(routes::admin::router())
         .merge(routes::password_reset::router())
         .merge(routes::webauthn::router())

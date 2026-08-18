@@ -48,6 +48,15 @@ needed no kernel plumbing: the render layer reads `menu_link` per request, so an
 edit shows on the next page load without a restart. Plugin-registered navigation
 is listed read-only beside it, because it is not rows.
 
+### Self-service account management
+
+**Done.** A person can delete their own account (`/user/delete`) and download their
+own data (`/user/data-export`). Both were absent, which for a site operated from the
+EU with open registration made GDPR articles 15 and 17 unanswerable, and which Drupal
+6 had in core. Deleting an account reattributes its content to the anonymous author
+rather than destroying it; KNOWN-ISSUES.md records the one invariant that had to be
+narrowed to make it possible at all.
+
 ### Test isolation
 
 A few tests use fixed usernames and assert exact row counts without cleaning up,

@@ -317,13 +317,109 @@ impl User {
             anyhow::bail!("cannot delete anonymous user");
         }
 
+        let mut tx = pool
+            .begin()
+            .await
+            .context("failed to start the account deletion transaction")?;
+
+        // Everything that points at this account and is not `ON DELETE CASCADE`
+        // has to be dealt with first, or the delete below fails on a foreign key.
+        // One transaction, because a half-reattributed account is worse than
+        // either outcome.
+        Self::reattribute_content(&mut tx, id).await?;
+
         let result = sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .context("failed to delete user")?;
 
+        tx.commit()
+            .await
+            .context("failed to commit the account deletion")?;
+
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Hand an account's authored rows to the anonymous author, so the account can
+    /// be deleted without taking the content with it.
+    ///
+    /// # Why reattribute rather than delete
+    ///
+    /// Content integrity wins. A comment thread with holes in it, or an article
+    /// that vanishes because its author closed their account, damages every other
+    /// participant's record of a conversation they took part in. The account, its
+    /// credentials, its tokens and its sessions go; the writing stays, under the
+    /// anonymous author the kernel already uses for content with no owner.
+    ///
+    /// # Why this is a fix and not only a feature
+    ///
+    /// `item.author_id`, `item_revision.author_id`, `comment.author_id` and
+    /// `file_managed.owner_id` are `NOT NULL REFERENCES users(id)` with **no**
+    /// `ON DELETE` clause, which is `NO ACTION`. So before this, deleting any
+    /// account that had ever written anything failed on a foreign key — including
+    /// through the admin screen, which offered the button and reported "Failed to
+    /// delete user". Two nullable references (`config_revision.author_id`,
+    /// `stage_deletion.deleted_by`) are cleared instead: those record who did an
+    /// administrative act, and attributing that act to the anonymous author would
+    /// be a false statement rather than a neutral one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first write error. The caller's transaction is what makes the
+    /// partial state impossible.
+    pub async fn reattribute_content(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        user_id: Uuid,
+    ) -> Result<()> {
+        // Authored content: reattributed, because it is part of the site's record.
+        for (table, column) in [
+            ("item", "author_id"),
+            ("item_revision", "author_id"),
+            ("comment", "author_id"),
+            ("file_managed", "owner_id"),
+        ] {
+            // Table and column are from this fixed list, never from input.
+            let sql = format!("UPDATE {table} SET {column} = $1 WHERE {column} = $2");
+            sqlx::query(&sql)
+                .bind(ANONYMOUS_USER_ID)
+                .bind(user_id)
+                .execute(&mut **tx)
+                .await
+                .with_context(|| format!("failed to reattribute {table}.{column}"))?;
+        }
+
+        // Administrative provenance: cleared, not reattributed. "The anonymous
+        // author published this revision" would be a claim, and a false one.
+        for (table, column) in [
+            ("config_revision", "author_id"),
+            ("stage_deletion", "deleted_by"),
+        ] {
+            let sql = format!("UPDATE {table} SET {column} = NULL WHERE {column} = $1");
+            sqlx::query(&sql)
+                .bind(user_id)
+                .execute(&mut **tx)
+                .await
+                .with_context(|| format!("failed to clear {table}.{column}"))?;
+        }
+
+        Ok(())
+    }
+
+    /// How many active administrators the site has.
+    ///
+    /// The anonymous account is excluded: it is a sentinel, not a person who could
+    /// log in and undo a mistake.
+    pub async fn active_admin_count(pool: &PgPool) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM users WHERE is_admin = true AND status = 1 AND id <> $1",
+        )
+        .bind(ANONYMOUS_USER_ID)
+        .fetch_one(pool)
+        .await
+        .context("failed to count active administrators")?;
+
+        Ok(count)
     }
 
     /// Verify a password against this user's hash.
