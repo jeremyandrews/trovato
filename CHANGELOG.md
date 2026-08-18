@@ -2,6 +2,209 @@
 
 ## Unreleased
 
+- RSS feeds work, are config-driven, and are advertised in every page's head.
+  `trovato_feeds` shipped two feeds that could not be served and has been
+  removed.
+
+  Two defects in one plugin. Its routes were declared
+  `MenuDefinition::new(...).callback(...)`, which leaves `handler_type` at its
+  default `"page"`, and it exported no `tap_api`, so
+  `routes/plugin_api.rs` skipped both entries: `/rss/insights.xml` and
+  `/rss/planet-drupal.xml` 404ed, and `build_rss_item` / `build_rss_feed` were
+  dead code wearing `#[allow(dead_code)]` comments that claimed a route callback
+  called them at runtime. And those two paths were one specific site's feeds
+  hardcoded into a plugin that presented itself as generic.
+
+  A gather query now declares a feed in its display config, and gets an RSS 2.0
+  document at the path it names:
+
+  ```yaml
+  display:
+    feed:
+      path: /rss/blog.xml
+      title: Blog          # defaults to the query's label
+      description: ...     # defaults to the query's description
+      items: 20            # capped at 200
+  ```
+
+  Feeds are registered at startup from the same query set the gather route
+  aliases come from, and skipped with a warning when unusable (a relative path, a
+  route pattern, a path a second query already claimed) rather than panicking
+  axum on a route conflict. `templates/base.html` emits an autodiscovery
+  `<link rel="alternate" type="application/rss+xml">` per feed, so a reader
+  finds them without being told the URL out of band.
+
+  Entries carry title, absolute link, matching `guid`, description and
+  `pubDate`, and link the item's URL alias when it has one. Descriptions go in a
+  CDATA section with any `]]>` split across two sections, so content cannot
+  close the section and inject markup into the document.
+
+  **Why this is kernel rather than a rebuilt plugin.** A feed is a rendering of a
+  query result, and query execution is kernel infrastructure: it applies the
+  stage filter, the access filter and the D-26 over-fetch bounds for a specific
+  viewer. Plugin space has no seam onto it — `item-api` offers `query-items`,
+  which is an unordered, unfiltered `SELECT ... LIMIT 100` with no viewer, so a
+  plugin-built feed would publish whatever the access filter exists to withhold.
+  Adding that seam is plugin-contract surface, and the contract is frozen before
+  1.0. `routes/sitemap.rs` is the existing precedent for the same reasoning. A
+  feed is therefore an execution of the query as whoever fetched it: an
+  anonymous aggregator gets exactly what an anonymous visitor sees.
+
+  Also added: `UrlAlias::canonical_aliases_for`, which resolves a page of
+  sources in one query rather than one round trip per entry.
+
+- Item pages carry a meta description, a canonical link and Open Graph tags.
+  Nothing could emit them before, and the reason was structural rather than an
+  oversight: `<head>` is not reachable from a plugin. `trovato_seo` implements
+  `tap_item_view`, whose return value the item route appends to the item's body,
+  so the best it could do was a hidden `<div data-description>` and its JSON-LD
+  script blocks. `tap_item_view_alter`, which could have rewritten the
+  surrounding document, is declared in `kernel.wit` but never dispatched. Search
+  engines got the JSON-LD; every link preview on every chat and social platform
+  got a title and nothing else.
+
+  The kernel now derives the metadata (`content::page_meta`) and puts it in the
+  template context, and `templates/base.html` emits it: `description`,
+  `canonical`, `og:title`, `og:type`, `og:url`, `og:site_name`,
+  `og:description`, `og:image`, `article:published_time`,
+  `article:modified_time`, and the one Twitter tag that is not covered by the
+  Open Graph fallbacks, `twitter:card`. Every tag is guarded by its value, since
+  an empty description tag is a worse signal to a crawler than no description
+  tag.
+
+  The description is derived from `field_description`, then `field_body`, then
+  the first paragraph block — the same two field names `trovato_seo` reads, plus
+  a fallback for block-editor content types, which have no `field_body`. Tags
+  are stripped, entities decoded, whitespace collapsed, and the result truncated
+  to 160 bytes on a word boundary. `og:image` comes from the item's first image
+  block, the only image the kernel can identify without a theme naming a lead
+  image field. `og:type` is `article` for the `blog`, `article` and `news` item
+  types, matching the mapping `trovato_seo` uses for its JSON-LD `@type` so the
+  two cannot disagree on one page.
+
+  Two details worth knowing. The canonical URL is the item's URL alias when it
+  has one, so the address a crawler indexes is the address the site links to,
+  and both `/item/{uuid}` and the alias name the alias as canonical. And the URL
+  values are resolved with `url::Url` and emitted with `| safe`: Tera's escaper
+  renders every `/` in a URL as `&#x2F;`, which is legal HTML that naive
+  unfurlers read wrong. `Url` resolution percent-encodes anything that could
+  close the attribute, non-http(s) schemes are dropped rather than emitted, and
+  `&` is written as `&amp;`.
+
+  `SITE_URL` is now on `RuntimeConfig`, since request handling needs it: a
+  canonical link and `og:url` are absolute by definition, resolved by a crawler
+  with no request context to resolve a relative path against.
+
+- Comments are rendered on item pages, and the comment form works.
+
+  `templates/elements/comments.html` existed and was rendered by nothing: the
+  only comment template any route used was `admin/comments.html`. A site could
+  accept comments through the JSON API and had no way to show them. The orphan
+  template could not have worked either — its form posted
+  `application/x-www-form-urlencoded` with no CSRF field, at a route that
+  required a CSRF *header* — so rendering it as it stood would have produced a
+  form that 415ed on submit.
+
+  The item route now renders the thread under the item, through the theme engine
+  so a theme can override it. Comment bodies go through the same
+  `FilterPipeline` the API uses; author names are resolved once per author rather
+  than once per comment; only published comments appear.
+
+  `POST /api/item/{id}/comments` accepts both encodings, the same shape
+  `routes::item::ItemSubmission` uses for the item form:
+
+  - `application/json` with the token in `X-CSRF-Token` — unchanged, including
+    the JSON response an API client already got.
+  - `application/x-www-form-urlencoded` with the token in a `_csrf` field,
+    answered with a redirect back to the item rather than JSON, because the
+    caller is a browser following a form submission.
+
+  So commenting works with JavaScript disabled. `static/js/comment-post.js` is a
+  progressive enhancement on top: it posts JSON with the header, and on any
+  failure hands the submission back to the browser rather than losing it.
+
+  The redirect carries the outcome (`posted`, `pending`, `error`) and the page
+  renders it. That exists because of the review queue: a held comment that simply
+  does not appear looks to its author like a comment that vanished.
+
+  Also added: `AppState::comments_if_enabled`, a non-panicking accessor.
+  `comments()` panics off the plugin gate, which is right for the comment routes
+  and wrong for a page render — an item page must not 500 because comments are
+  switched off.
+
+- Comments can be held for review, marked as spam, and the author notification
+  fires when a comment becomes visible rather than when it is written.
+
+  Comment status was two-valued (0 unpublished, 1 published) and
+  `create_comment` hardcoded `status: Some(1)`, so every comment published the
+  instant it was posted and there was no way to hold one. The `skip comment
+  approval` permission that `trovato_comments` declares was read by nothing. The
+  admin list, meanwhile, labelled status 0 as "Pending" — one `if` for what are
+  really four states — so a comment a moderator had hidden displayed as though it
+  were waiting for them.
+
+  `CommentStatus` now names four values: unpublished (0), published (1), pending
+  (2) and spam (3). Only published is visible, and a stored value this build does
+  not recognise is treated as invisible rather than guessed at. Spam is a status
+  rather than a deletion, so a false positive can be recovered and a classifier
+  has something to learn from. The public read paths bind the published status as
+  a parameter instead of spelling `status = 1` in five queries.
+
+  A new `comment_default_status` site setting chooses what a new comment gets:
+  `published` or `pending`. Unset means published, which is what every comment
+  did before the setting existed — upgrading a site must not silently start
+  holding its comments. A value that is set but *unrecognised* resolves to
+  pending, because that is the recoverable direction: a comment wrongly held is
+  sitting in a queue, while a comment wrongly published is already on the site.
+  The setting is on the moderation screen, where its consequences are, and
+  `skip comment approval` now does what it says: a commenter holding it bypasses
+  the queue.
+
+  The moderation list gained the pending and spam filters, labels that come from
+  `CommentStatus` rather than from a template `if`, a "Spam" action, and
+  per-status actions (nothing offers to approve a comment that is already
+  published). The comment edit form offers all four statuses, and an unknown
+  status submitted to either screen is rejected rather than stored.
+
+  **The notification change.** `send_comment_notification` fired on creation. With
+  a hold-for-review default that would have mailed the content author the full
+  text of every held comment — including the ones the queue exists to catch, which
+  is the worst possible recipient for comment spam. It now fires on the
+  transition into published, wherever that happens: a comment created published
+  still notifies immediately, approving a held comment notifies, re-saving an
+  already published comment does not (so an edit cannot double-notify), and a
+  comment entering any non-visible status never does. The rule is one pure
+  function, `should_notify_on_publish`, so it is unit-tested rather than inferred
+  from two call sites.
+
+  Also fixed, found while moving that call: the email preview sliced
+  `&comment_text[..500]` on a byte index, which panics on a multi-byte character
+  straddling byte 500. It ran in a spawned task, so the panic would have taken
+  the send down silently. It now walks back to a character boundary.
+
+- Comment writes and the three AI search endpoints have their own rate-limit
+  categories instead of sharing the generic `api` bucket.
+
+  `categorize_path` sent every `/api/...` path to `api`, 100 requests a minute
+  per IP and per user. Two things were wrong with that. Comment posting is an
+  `/api/` path, so an account could write a hundred comments a minute — nobody
+  legitimate does, and a spammer with an account does. And
+  `/api/v1/search/expand`, `/api/v1/search/summarize` and
+  `/api/v1/search/followup` each spend LLM provider tokens per call, at three
+  different costs, while getting the same generous allowance; only `/search` and
+  `/api/search` hit the tighter `search` category.
+
+  New categories: `comment` at 4 a minute, and `search_expand` (30),
+  `search_summarize` (10) and `search_followup` (5), the numbers
+  `docs/design/search-architecture.md` recommends. The specific categories are
+  tested before the generic `/api/` arm, which is the ordering that was missing.
+
+  Comment *reads* stay in the `api` bucket: it is the writes that cost moderation
+  attention, and a thread loading on a busy page must not spend a posting budget.
+  The AI search paths are matched whole rather than by prefix, so a future
+  `/api/v1/search/something-else` is not silently handed the cheapest of the
+  three limits.
+
 - Managed files carry alternative text, and no template uses a filename as `alt`
   any more.
 

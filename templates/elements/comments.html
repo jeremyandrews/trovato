@@ -1,6 +1,18 @@
-{# Comment section for displaying on item pages #}
+{# Comment section for displaying on item pages.
+   Rendered by routes::comment::render_thread, which the item route calls. #}
 <section class="comments" id="comments">
     <h2 class="comments__title">Comments{% if total %} ({{ total }}){% endif %}</h2>
+
+    {# What happened to a comment just posted from the form below. Only a form
+       submission produces this: the JS path reports in place without reloading.
+       A held comment has to say so, or it looks like it vanished. #}
+    {% if comment_outcome == "pending" %}
+    <p class="message message--warning comments__notice">Your comment was submitted and is awaiting review.</p>
+    {% elif comment_outcome == "posted" %}
+    <p class="message message--success comments__notice">Your comment was posted.</p>
+    {% elif comment_outcome == "error" %}
+    <p class="message message--error comments__notice">Your comment could not be posted. Please try again.</p>
+    {% endif %}
 
     {% if comments %}
     <div class="comments__list">
@@ -11,7 +23,7 @@
                 <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
             </header>
             <div class="comment__body">
-                {{ comment.body_html | safe }} {# SAFE: stored HTML from sanitized input pipeline — body_html is pre-sanitized on save #}
+                {{ comment.body_html | safe }} {# SAFE: FilterPipeline::for_format_safe output — render_comment_body sanitizes by the comment's text format before it reaches here #}
             </div>
             <footer class="comment__footer">
                 {% if can_reply %}
@@ -28,7 +40,12 @@
     {% if can_comment %}
     <div class="comment-form-wrapper" id="comment-form">
         <h3 class="comment-form__title">Add a Comment</h3>
-        <form class="comment-form" method="post" action="/api/item/{{ item_id }}/comments">
+        {# Posts form-encoded with the token in `_csrf`, which works with no
+           JavaScript at all; comment-post.js upgrades it to a JSON post with the
+           X-CSRF-Token header and updates the page in place. The route accepts
+           both encodings. #}
+        <form class="comment-form" method="post" action="/api/item/{{ item_id }}/comments" data-comment-form>
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
             <input type="hidden" name="parent_id" id="comment-parent-id" value="">
 
             <div class="form-group">
@@ -43,6 +60,7 @@
                     <button type="button" class="cancel-reply" onclick="cancelReply()">Cancel</button>
                 </span>
             </div>
+            <p class="comment-form__status" data-comment-status role="status" aria-live="polite"></p>
         </form>
     </div>
     {% elif not user_logged_in %}
@@ -55,3 +73,4 @@
 {# Comment styles live in static/css/theme.css #}
 
 <script src="/static/js/comment-reply.js"></script>
+<script src="/static/js/comment-post.js"></script>

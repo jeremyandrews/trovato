@@ -11,12 +11,31 @@
                 <label for="status">Status</label>
                 <select id="status" name="status">
                     <option value="">- Any -</option>
-                    <option value="1" {% if status_filter == "1" %}selected{% endif %}>Published</option>
-                    <option value="0" {% if status_filter == "0" %}selected{% endif %}>Pending</option>
+                    {# Options come from CommentStatus, so the filter cannot drift
+                       from the statuses the model actually stores. #}
+                    {% for option in status_options %}
+                    <option value="{{ option.value }}" {% if status_filter == option.value %}selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
                 </select>
             </div>
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">Filter</button>
+            </div>
+        </div>
+    </form>
+
+    <form class="filter-form settings-form" method="post" action="/admin/content/comments/settings">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <div class="filter-row">
+            <div class="filter-item">
+                <label for="default_status">New comments</label>
+                <select id="default_status" name="default_status">
+                    <option value="published" {% if not default_status_pending %}selected{% endif %}>Publish immediately</option>
+                    <option value="pending" {% if default_status_pending %}selected{% endif %}>Hold for review</option>
+                </select>
+            </div>
+            <div class="filter-item">
+                <button type="submit" class="button button--secondary">Save</button>
             </div>
         </div>
     </form>
@@ -53,24 +72,28 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if comment.status == 1 %}
-                    <span class="status status--published">Published</span>
-                    {% else %}
-                    <span class="status status--pending">Pending</span>
-                    {% endif %}
+                    <span class="status status--{{ comment.status_class }}">{{ comment.status_label }}</span>
                 </td>
                 <td>{{ comment.created | date(format="%Y-%m-%d %H:%M") }}</td>
                 <td class="operations">
-                    {% if comment.status == 0 %}
+                    {% if comment.can_approve %}
                     <form method="post" action="/admin/content/comments/{{ comment.id }}/approve" style="display: inline;">
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="link-button">Approve</button>
                     </form>
                     &middot;
-                    {% else %}
+                    {% endif %}
+                    {% if comment.can_unpublish %}
                     <form method="post" action="/admin/content/comments/{{ comment.id }}/unpublish" style="display: inline;">
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="link-button">Unpublish</button>
+                    </form>
+                    &middot;
+                    {% endif %}
+                    {% if comment.can_mark_spam %}
+                    <form method="post" action="/admin/content/comments/{{ comment.id }}/spam" style="display: inline;">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="link-button">Spam</button>
                     </form>
                     &middot;
                     {% endif %}
@@ -148,6 +171,19 @@
     .status--pending {
         background: #fff3cd;
         color: #856404;
+    }
+    .status--unpublished {
+        background: var(--gray-200);
+        color: var(--gray-700);
+    }
+    .status--spam {
+        background: #f8d7da;
+        color: #721c24;
+    }
+    .settings-form {
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--gray-200);
     }
     .operations {
         white-space: nowrap;
