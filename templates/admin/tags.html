@@ -4,10 +4,10 @@
 {% block content %}
 {{ list::header(title=category.label ~ " - Tags", add_url="/admin/structure/categories/" ~ category.id ~ "/tags/add", add_label="Add tag") }}
 
-<nav class="breadcrumb">
+<nav class="breadcrumb" aria-label="Breadcrumb">
     <a href="/admin/structure/categories">Categories</a>
     &raquo;
-    <span>{{ category.label }}</span>
+    <span aria-current="page">{{ category.label }}</span>
 </nav>
 
 <div class="admin-card">

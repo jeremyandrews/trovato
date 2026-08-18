@@ -102,11 +102,6 @@
     "container": "#scolta-search",
     "pagefindPath": "/static/pagefind/pagefind.js",
     "siteName": "{{ site_name | default(value='Trovato') }}",
-    "endpoints": {
-        "expand": "/api/v1/search/expand",
-        "summarize": "/api/v1/search/summarize",
-        "followup": "/api/v1/search/followup"
-    },
     "scoring": {
         "RECENCY_BOOST_MAX": 0.5,
         "RECENCY_HALF_LIFE_DAYS": 365,

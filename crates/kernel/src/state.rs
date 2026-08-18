@@ -119,6 +119,17 @@ struct AppStateInner {
     /// Gather service.
     gather: Arc<GatherService>,
 
+    /// RSS feed autodiscovery links, from the gather queries that declare a
+    /// feed.
+    ///
+    /// Resolved once at startup rather than per render, for two reasons. The
+    /// feed *routes* are registered once from the same query set, so a list
+    /// rebuilt per request could advertise a feed that no route serves until the
+    /// next restart. And the query cache hands out cloned definitions, so
+    /// rebuilding this per request would deep-clone every gather query to read
+    /// two strings out of a few of them.
+    feed_links: Vec<crate::routes::feed::FeedLink>,
+
     /// Search service for full-text search.
     search: Arc<SearchService>,
 
@@ -578,6 +589,10 @@ impl AppState {
             .await
             .context("failed to register default gather queries")?;
 
+        // Feed autodiscovery links, from the same query set `main` builds the
+        // feed router from.
+        let feed_links = crate::routes::feed::feed_links(&gather.list_queries());
+
         // Load languages early so locale service can pre-load translations
         // and the trans filter is available when theme engine is created.
         let languages = crate::models::Language::list_all(&db)
@@ -939,6 +954,7 @@ impl AppState {
                 items,
                 categories,
                 gather,
+                feed_links,
                 search,
                 ai_providers,
                 ai_budgets,
@@ -1087,6 +1103,13 @@ impl AppState {
     /// Get the category service.
     pub fn categories(&self) -> &Arc<CategoryService> {
         &self.inner.categories
+    }
+
+    /// RSS feed autodiscovery links for the site's head.
+    ///
+    /// Frozen at startup, so it always matches the registered feed routes.
+    pub fn feed_links(&self) -> &[crate::routes::feed::FeedLink] {
+        &self.inner.feed_links
     }
 
     /// Get the gather service.
@@ -1294,6 +1317,20 @@ impl AppState {
             .comments
             .get()
             .expect("comments service not initialized — caller must be behind plugin gate")
+    }
+
+    /// The comments service, or `None` when comments are unavailable.
+    ///
+    /// [`Self::comments`] panics off the plugin gate, which is right for the
+    /// comment routes but wrong for a page render: an item page must not 500
+    /// because comments are switched off. Checks both conditions — the plugin
+    /// enabled *and* the service initialized — since the service is
+    /// late-initialized when the plugin is enabled after startup.
+    pub fn comments_if_enabled(&self) -> Option<&Arc<services::comment::CommentService>> {
+        if !self.is_plugin_enabled("trovato_comments") {
+            return None;
+        }
+        self.inner.comments.get()
     }
 
     /// Late-initialize the comments service.

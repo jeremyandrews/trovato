@@ -23,7 +23,7 @@ pub use category::{
     Category, CreateCategory, CreateTag, Tag, TagHierarchy, TagTreeNode, TagWithDepth,
     UpdateCategory, UpdateTag,
 };
-pub use comment::{Comment, CreateComment, UpdateComment};
+pub use comment::{Comment, CommentStatus, CreateComment, UpdateComment};
 pub use email_verification::EmailVerificationToken;
 pub use item::{CreateItem, Item, ItemRevision, UpdateItem};
 pub use item_type::{CreateItemType, ItemType};

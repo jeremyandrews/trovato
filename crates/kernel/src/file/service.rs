@@ -66,6 +66,19 @@ pub struct FileInfo {
     pub status: FileStatus,
     pub created: i64,
     pub changed: i64,
+
+    /// Alternative text for an image.
+    ///
+    /// `None` means nobody has said what the image shows; `Some("")` means it was
+    /// explicitly marked decorative, which is a real answer and the correct alt
+    /// for an image carrying no information. Templates must not fall back to the
+    /// filename — that is the defect this field exists to fix.
+    ///
+    /// Skipped when absent so a template can tell the two apart: Tera has no
+    /// `is null` test, so a serialized `null` and an empty string would both read
+    /// as falsy. Omitted ⇒ `is undefined`; decorative ⇒ `== ""`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alt_text: Option<String>,
 }
 
 /// Database row for file.
@@ -80,6 +93,7 @@ struct FileRow {
     status: i16,
     created: i64,
     changed: i64,
+    alt_text: Option<String>,
 }
 
 impl From<FileRow> for FileInfo {
@@ -94,6 +108,7 @@ impl From<FileRow> for FileInfo {
             status: FileStatus::from(row.status),
             created: row.created,
             changed: row.changed,
+            alt_text: row.alt_text,
         }
     }
 }
@@ -252,7 +267,7 @@ impl FileService {
     /// List all files.
     pub async fn list(&self) -> Result<Vec<FileInfo>> {
         let rows: Vec<FileRow> = sqlx::query_as(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed ORDER BY created DESC"
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed ORDER BY created DESC"
         )
         .fetch_all(&self.pool)
         .await
@@ -264,7 +279,7 @@ impl FileService {
     /// List files with pagination.
     pub async fn list_paginated(&self, limit: i64, offset: i64) -> Result<Vec<FileInfo>> {
         let rows: Vec<FileRow> = sqlx::query_as(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -285,7 +300,7 @@ impl FileService {
         let rows: Vec<FileRow> = match status {
             Some(s) => {
                 sqlx::query_as(
-                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed WHERE status = $1 ORDER BY created DESC LIMIT $2 OFFSET $3"
+                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed WHERE status = $1 ORDER BY created DESC LIMIT $2 OFFSET $3"
                 )
                 .bind(s as i16)
                 .bind(limit)
@@ -296,7 +311,7 @@ impl FileService {
             }
             None => {
                 sqlx::query_as(
-                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
+                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
                 )
                 .bind(limit)
                 .bind(offset)
@@ -348,7 +363,7 @@ impl FileService {
         // Build the query dynamically based on filters.
         // All user-supplied values are bound as parameters (never interpolated).
         let mut sql = String::from(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed WHERE 1=1",
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed WHERE 1=1",
         );
         let mut param_idx: u8 = 1;
 
@@ -449,7 +464,7 @@ impl FileService {
     /// Get file info by ID.
     pub async fn get(&self, id: Uuid) -> Result<Option<FileInfo>> {
         let row = sqlx::query_as::<_, FileRow>(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed FROM file_managed WHERE id = $1"
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -457,6 +472,32 @@ impl FileService {
         .context("failed to fetch file")?;
 
         Ok(row.map(FileInfo::from))
+    }
+
+    /// Set or clear a file's alternative text.
+    ///
+    /// The two ways of having no alt text are kept distinct, because they mean
+    /// different things to a screen reader:
+    ///
+    /// - `Some("")`, or any whitespace-only value, stores the empty string: the
+    ///   image is explicitly decorative, and `alt=""` is the correct markup for
+    ///   one (WCAG H67).
+    /// - `None` stores NULL: nobody has said what the image shows.
+    ///
+    /// Returns whether a row was updated.
+    pub async fn set_alt_text(&self, id: Uuid, alt_text: Option<&str>) -> Result<bool> {
+        let stored = alt_text.map(|text| text.trim().to_string());
+
+        let result =
+            sqlx::query("UPDATE file_managed SET alt_text = $1, changed = $2 WHERE id = $3")
+                .bind(stored)
+                .bind(chrono::Utc::now().timestamp())
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .context("failed to update file alt text")?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     /// Mark a file as permanent (attached to content).
@@ -528,7 +569,7 @@ impl FileService {
         // Get files to delete
         let files: Vec<FileRow> = sqlx::query_as(
             r#"
-            SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed
+            SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text
             FROM file_managed
             WHERE status = $1 AND created < $2
             "#,

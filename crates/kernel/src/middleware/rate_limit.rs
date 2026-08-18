@@ -63,6 +63,29 @@ pub struct RateLimitConfig {
     /// recovery is the weakest link in the whole auth story, and unlike a login
     /// attempt each initiation can send mail to a third party's inbox.
     pub recovery: (u32, Duration),
+
+    /// Comment writes: posting, editing and deleting a comment.
+    ///
+    /// Comment endpoints live under `/api/`, so before this category existed they
+    /// were bounded by the generic `api` limit of 100 a minute — per IP *and* per
+    /// user. Nobody writes a hundred comments a minute; a spammer with an account
+    /// does.
+    pub comment: (u32, Duration),
+
+    /// AI search query expansion.
+    ///
+    /// The three AI search endpoints each spend provider tokens per call, and each
+    /// costs a different amount, so they are bounded separately rather than
+    /// sharing the generic `api` bucket. Defaults follow
+    /// `docs/design/search-architecture.md`.
+    pub search_expand: (u32, Duration),
+
+    /// AI search result summarization. More expensive than expansion.
+    pub search_summarize: (u32, Duration),
+
+    /// AI search follow-up questions. The most expensive of the three: every call
+    /// carries the conversation context.
+    pub search_followup: (u32, Duration),
 }
 
 impl Default for RateLimitConfig {
@@ -78,6 +101,11 @@ impl Default for RateLimitConfig {
             profile: (10, Duration::from_secs(60)),      // 10 per minute
             password: (5, Duration::from_secs(60)),      // 5 per minute
             recovery: (5, Duration::from_secs(900)),     // 5 per 15 minutes
+            comment: (4, Duration::from_secs(60)),       // 4 per minute
+            // Per docs/design/search-architecture.md §Rate Limiting.
+            search_expand: (30, Duration::from_secs(60)), // 30 per minute
+            search_summarize: (10, Duration::from_secs(60)), // 10 per minute
+            search_followup: (5, Duration::from_secs(60)), // 5 per minute
         }
     }
 }
@@ -151,6 +179,10 @@ impl RateLimiter {
             "profile" => self.config.profile,
             "password" => self.config.password,
             "recovery" => self.config.recovery,
+            "comment" => self.config.comment,
+            "search_expand" => self.config.search_expand,
+            "search_summarize" => self.config.search_summarize,
+            "search_followup" => self.config.search_followup,
             _ => self.config.api, // Default to API limits
         }
     }
@@ -201,6 +233,11 @@ impl RateLimiter {
 }
 
 /// Categorize a request path for rate limiting.
+///
+/// Order matters: the specific categories are tested before the generic `/api/`
+/// one, since every path they name is also an `/api/` path. That is how the AI
+/// search endpoints and the comment writes used to land in the `api` bucket at
+/// 100 a minute.
 pub fn categorize_path(path: &str, method: &str) -> &'static str {
     if path.starts_with("/user/login") && method == "POST" {
         "login"
@@ -208,6 +245,11 @@ pub fn categorize_path(path: &str, method: &str) -> &'static str {
         "register"
     } else if path.starts_with("/file/upload") {
         "uploads"
+    } else if let Some(category) = ai_search_category(path) {
+        // Each of the three spends provider tokens, at three different costs.
+        category
+    } else if is_comment_write(path, method) {
+        "comment"
     } else if path.starts_with("/search") || path.starts_with("/api/search") {
         "search"
     } else if path.starts_with("/api/") {
@@ -217,6 +259,37 @@ pub fn categorize_path(path: &str, method: &str) -> &'static str {
     } else {
         "api" // Default category for GET requests
     }
+}
+
+/// The rate-limit category for an AI search endpoint, or `None` for any other
+/// path.
+///
+/// Matched on the whole path rather than a prefix so that a future
+/// `/api/v1/search/something-else` is not silently given the cheapest of the
+/// three limits.
+fn ai_search_category(path: &str) -> Option<&'static str> {
+    match path.trim_end_matches('/') {
+        "/api/v1/search/expand" => Some("search_expand"),
+        "/api/v1/search/summarize" => Some("search_summarize"),
+        "/api/v1/search/followup" => Some("search_followup"),
+        _ => None,
+    }
+}
+
+/// Whether this request writes a comment.
+///
+/// Covers both shapes the comment routes take: `POST /api/item/{id}/comments`
+/// and a write to `/api/comment/{id}`. Reads are left in the `api` bucket — it
+/// is the writes that cost moderation attention.
+fn is_comment_write(path: &str, method: &str) -> bool {
+    let writes = matches!(method, "POST" | "PUT" | "PATCH" | "DELETE");
+    if !writes {
+        return false;
+    }
+
+    let path = path.trim_end_matches('/');
+    (path.starts_with("/api/item/") && path.ends_with("/comments"))
+        || path.starts_with("/api/comment/")
 }
 
 /// Resolve the client identifier (IP address) for rate limiting.
@@ -412,6 +485,125 @@ mod tests {
     fn categorize_api_paths() {
         assert_eq!(categorize_path("/api/items", "GET"), "api");
         assert_eq!(categorize_path("/api/v1/chat", "POST"), "api");
+    }
+
+    /// The three AI search endpoints each get their own bucket. Before this they
+    /// were `/api/` paths, so they shared the generic 100-a-minute limit while
+    /// spending provider tokens on every call.
+    #[test]
+    fn categorize_ai_search_endpoints_separately() {
+        assert_eq!(
+            categorize_path("/api/v1/search/expand", "POST"),
+            "search_expand"
+        );
+        assert_eq!(
+            categorize_path("/api/v1/search/summarize", "POST"),
+            "search_summarize"
+        );
+        assert_eq!(
+            categorize_path("/api/v1/search/followup", "POST"),
+            "search_followup"
+        );
+    }
+
+    /// The limits are ordered by what each endpoint costs, which is the reason
+    /// they are separate categories at all.
+    #[test]
+    fn the_ai_search_limits_descend_with_cost() {
+        let config = RateLimitConfig::default();
+        assert!(
+            config.search_expand.0 > config.search_summarize.0,
+            "expansion is the cheapest of the three"
+        );
+        assert!(
+            config.search_summarize.0 > config.search_followup.0,
+            "follow-up is the most expensive"
+        );
+        assert!(
+            config.search_expand.0 < config.api.0,
+            "even the cheapest AI endpoint must be tighter than the generic api bucket"
+        );
+    }
+
+    /// A path under the AI search prefix that is not one of the three is not
+    /// given the cheapest limit by accident.
+    #[test]
+    fn an_unknown_ai_search_path_is_not_an_ai_search_category() {
+        assert_eq!(
+            categorize_path("/api/v1/search/something-else", "POST"),
+            "api"
+        );
+    }
+
+    #[test]
+    fn categorize_comment_writes() {
+        assert_eq!(
+            categorize_path(
+                "/api/item/01234567-89ab-7def-8123-456789abcdef/comments",
+                "POST"
+            ),
+            "comment"
+        );
+        assert_eq!(
+            categorize_path("/api/comment/01234567-89ab-7def-8123-456789abcdef", "PUT"),
+            "comment"
+        );
+        assert_eq!(
+            categorize_path(
+                "/api/comment/01234567-89ab-7def-8123-456789abcdef",
+                "DELETE"
+            ),
+            "comment"
+        );
+    }
+
+    /// Reading comments is not writing them, and a thread of replies loading on a
+    /// busy page must not exhaust a posting budget.
+    #[test]
+    fn reading_comments_is_not_a_comment_write() {
+        assert_eq!(
+            categorize_path(
+                "/api/item/01234567-89ab-7def-8123-456789abcdef/comments",
+                "GET"
+            ),
+            "api"
+        );
+        assert_eq!(
+            categorize_path("/api/comment/01234567-89ab-7def-8123-456789abcdef", "GET"),
+            "api"
+        );
+    }
+
+    /// The defect in one assertion: a comment post must not be bounded by the
+    /// generic api limit.
+    #[test]
+    fn comment_writes_are_far_tighter_than_the_api_bucket() {
+        let config = RateLimitConfig::default();
+        assert!(
+            config.comment.0 < config.api.0 / 10,
+            "a hundred comments a minute is not a limit; got {:?} against api {:?}",
+            config.comment,
+            config.api
+        );
+    }
+
+    /// Every category `categorize_path` can return has to resolve to its own
+    /// limit, or a new category silently inherits the api bucket.
+    #[test]
+    fn every_category_resolves_to_its_own_limit() {
+        let limiter_config = RateLimitConfig::default();
+        let expected = [
+            ("comment", limiter_config.comment),
+            ("search_expand", limiter_config.search_expand),
+            ("search_summarize", limiter_config.search_summarize),
+            ("search_followup", limiter_config.search_followup),
+        ];
+        for (category, limit) in expected {
+            assert_ne!(
+                limit, limiter_config.api,
+                "{category} must not be configured as the api limit"
+            );
+        }
     }
 
     #[test]

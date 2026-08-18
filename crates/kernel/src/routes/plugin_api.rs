@@ -86,6 +86,42 @@ pub const MAX_REQUEST_BODY: usize = 256 * 1024;
 /// The `handler_type` value that marks a menu entry as plugin-served.
 const API_HANDLER_TYPE: &str = "api";
 
+/// Menu entries that name a callback the kernel will never dispatch to.
+///
+/// A `callback` is only ever called when `handler_type` is `"api"`
+/// ([`build_plugin_api_router`]). A page-style entry with a callback is therefore
+/// a declaration with no consumer: the path 404s, and the plugin's handler
+/// function becomes dead code — usually wearing an `#[allow(dead_code)]` comment
+/// claiming a route callback calls it at runtime.
+///
+/// Two shipped plugins were dead exactly this way, `trovato_feeds` and
+/// `trovato_scolta`, and nothing said so at any point: not at build time, not at
+/// plugin load, not at the first request. This is what says so, logged once at
+/// startup.
+///
+/// Returned as pairs rather than logged here so the rule can be tested directly.
+pub fn unreachable_callbacks(menus: &[MenuDefinition]) -> Vec<(String, String)> {
+    menus
+        .iter()
+        .filter(|menu| menu.handler_type != API_HANDLER_TYPE && !menu.callback.trim().is_empty())
+        .map(|menu| (menu.plugin.clone(), menu.path.clone()))
+        .collect()
+}
+
+/// Log every menu entry whose callback the kernel will never reach.
+///
+/// Called once at startup, next to router construction.
+pub fn warn_unreachable_callbacks(menus: &[MenuDefinition]) {
+    for (plugin, path) in unreachable_callbacks(menus) {
+        tracing::warn!(
+            plugin = %plugin,
+            path = %path,
+            "menu entry declares a callback but handler_type is not \"api\"; \
+             the kernel will never dispatch it and this path will 404"
+        );
+    }
+}
+
 /// Build a router serving every `handler_type = "api"` menu entry.
 ///
 /// Called once at startup, after `tap_menu` has populated the registry — the
@@ -401,6 +437,82 @@ mod tests {
             menu("/ok", "GET", "handler", "api"),      // same path, other method
         ];
         let _router = build_plugin_api_router(&menus);
+    }
+
+    /// The defect two shipped plugins had: a callback on a page-style entry. The
+    /// path 404s and the handler function is dead code, and nothing said so.
+    #[test]
+    fn a_page_entry_with_a_callback_is_reported_as_unreachable() {
+        let menus = vec![
+            MenuDefinition {
+                path: "/rss/insights.xml".to_string(),
+                title: "RSS".to_string(),
+                plugin: "trovato_feeds".to_string(),
+                permission: String::new(),
+                callback: "feed_insights".to_string(),
+                parent: None,
+                weight: 0,
+                visible: true,
+                method: "GET".to_string(),
+                handler_type: "page".to_string(),
+                local_task: false,
+            },
+            MenuDefinition {
+                path: "/tpa/notes".to_string(),
+                title: "Notes".to_string(),
+                plugin: "test_plugin_api".to_string(),
+                permission: String::new(),
+                callback: "list_notes".to_string(),
+                parent: None,
+                weight: 0,
+                visible: true,
+                method: "GET".to_string(),
+                handler_type: "api".to_string(),
+                local_task: false,
+            },
+            MenuDefinition {
+                path: "/admin/config/seo".to_string(),
+                title: "SEO".to_string(),
+                plugin: "trovato_seo".to_string(),
+                permission: "administer seo".to_string(),
+                callback: String::new(),
+                parent: None,
+                weight: 0,
+                visible: true,
+                method: "GET".to_string(),
+                handler_type: "page".to_string(),
+                local_task: false,
+            },
+        ];
+
+        let reported = unreachable_callbacks(&menus);
+
+        assert_eq!(
+            reported,
+            vec![("trovato_feeds".to_string(), "/rss/insights.xml".to_string())],
+            "only the page entry that names a callback is unreachable"
+        );
+    }
+
+    /// A whitespace-only callback is not a declaration, and must not be reported:
+    /// the router skips it for the same reason.
+    #[test]
+    fn a_blank_callback_is_not_reported() {
+        let menus = vec![MenuDefinition {
+            path: "/blank".to_string(),
+            title: "Blank".to_string(),
+            plugin: "p".to_string(),
+            permission: String::new(),
+            callback: "   ".to_string(),
+            parent: None,
+            weight: 0,
+            visible: true,
+            method: "GET".to_string(),
+            handler_type: "page".to_string(),
+            local_task: false,
+        }];
+
+        assert!(unreachable_callbacks(&menus).is_empty());
     }
 
     #[test]
