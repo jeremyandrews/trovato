@@ -292,6 +292,8 @@ async fn run_server() -> Result<()> {
         .merge(routes::gather_routes::build_gather_route_router(
             &state.gather().list_queries(),
         ))
+        // RSS feeds declared by gather query display configs.
+        .merge(routes::feed::build_feed_router(&state.gather().list_queries()))
         // Plugin-served API routes from `tap_menu` entries whose handler_type
         // is `api` (G-NO-PLUGIN-HTTP).
         .merge(routes::plugin_api::build_plugin_api_router(

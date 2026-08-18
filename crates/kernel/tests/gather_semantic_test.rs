@@ -40,6 +40,7 @@ fn test_display() -> QueryDisplay {
         footer: None,
         canonical_url: None,
         routes: Vec::new(),
+        feed: None,
     }
 }
 
