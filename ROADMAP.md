@@ -31,9 +31,22 @@ to `trovato-mcp`.
 
 ### The remaining admin screens
 
-Languages and most system variables are configuration-import only. Each needs a
-form. What is left of this block is smaller than it was, and still the most
-approachable place for a contributor to start.
+**This block is done, and the sentence above is now checkable line by line.**
+
+Twelve of the thirteen config entity types have an admin screen. The thirteenth,
+`language`, is import-only by a decision recorded in KNOWN-ISSUES.md rather than by
+omission: a site's language set belongs in its config set, and a form that adds a
+language row would not do the interface strings or the content translations that
+actually make a language work.
+
+The `variable` type is a key/value store rather than one thing, and the settings that
+warrant a screen have one. There is deliberately no generic variable editor.
+
+`crates/kernel/tests/config_admin_coverage_test.rs` is the audit: every type either
+names a path that must serve for an administrator and must not serve for a visitor,
+or names the sentence that records the decision. Adding a config entity type fails
+that test until somebody chooses which it is, so this cannot drift back — which it
+did before, with menus listed as having a screen they did not have.
 
 **Stages are done.** `/admin/structure/stages` creates and edits stages: machine
 name, label, description, visibility, default and weight, which is what the schema
