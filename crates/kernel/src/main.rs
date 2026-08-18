@@ -259,6 +259,11 @@ async fn run_server() -> Result<()> {
 
     // Build the inner router with all routes (no path alias — that's handled
     // by the fallback below so it runs BEFORE Axum route matching).
+    // Say so, once, when a plugin declares a callback the kernel cannot reach.
+    routes::plugin_api::warn_unreachable_callbacks(
+        &state.menu_registry().all().cloned().collect::<Vec<_>>(),
+    );
+
     let inner_router: Router<AppState> = Router::new()
         .merge(routes::front::router())
         .merge(routes::install::router())
@@ -292,8 +297,11 @@ async fn run_server() -> Result<()> {
         .merge(routes::gather_routes::build_gather_route_router(
             &state.gather().list_queries(),
         ))
+        // RSS feeds declared by gather query display configs.
+        .merge(routes::feed::build_feed_router(&state.gather().list_queries()))
         // Plugin-served API routes from `tap_menu` entries whose handler_type
-        // is `api` (G-NO-PLUGIN-HTTP).
+        // is `api` (G-NO-PLUGIN-HTTP). Entries that name a callback without
+        // asking for `api` are logged: that combination registers nothing.
         .merge(routes::plugin_api::build_plugin_api_router(
             &state.menu_registry().all().cloned().collect::<Vec<_>>(),
         ));

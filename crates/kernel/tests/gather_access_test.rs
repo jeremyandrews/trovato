@@ -43,6 +43,7 @@ fn display(items_per_page: u32) -> QueryDisplay {
         footer: None,
         canonical_url: None,
         routes: Vec::new(),
+        feed: None,
     }
 }
 

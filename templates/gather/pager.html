@@ -9,7 +9,7 @@
         {% for page in pager.pages %}
         <li class="pager__item{% if page == pager.current_page %} pager__item--active{% endif %}">
             {% if page == pager.current_page %}
-            <span>{{ page }}</span>
+            <span aria-current="page">{{ page }}</span>
             {% elif page == "..." %}
             <span class="pager__ellipsis">...</span>
             {% else %}

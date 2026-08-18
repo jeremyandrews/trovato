@@ -30,9 +30,7 @@ members = [
     "plugins/goose",
 "plugins/trovato_seo",
     "plugins/trovato_page_builder",
-    "plugins/trovato_scolta",
     "plugins/trovato_captcha",
-    "plugins/trovato_feeds",
     "plugins/test_plugin_api",
     "plugins/trovato_series",
     # Epic 2 (Story 2.4) plugin-to-plugin invocation e2e test fixtures. Built with

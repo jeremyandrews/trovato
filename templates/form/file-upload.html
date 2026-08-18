@@ -52,7 +52,10 @@
         <div class="file-upload__file" data-file-id="{{ file.id }}">
             <input type="hidden" name="{{ name }}_files[]" value="{{ file.id }}">
             {% if file.filemime is starting_with("image/") %}
-            <img src="{{ file.url }}" alt="{{ file.filename }}" class="file-upload__preview">
+            {# Alt text comes from the file, never the filename. The file's name is
+               shown as text beside this thumbnail, so an image with none recorded
+               is decorative in this widget. #}
+            <img src="{{ file.url }}" alt="{{ file.alt_text | default(value='') }}" class="file-upload__preview">
             {% else %}
             <div class="file-upload__file-icon">
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
