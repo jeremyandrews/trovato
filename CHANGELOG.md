@@ -181,6 +181,29 @@
   `&comment_text[..500]` on a byte index, which panics on a multi-byte character
   straddling byte 500. It ran in a spawned task, so the panic would have taken
   the send down silently. It now walks back to a character boundary.
+
+- Comment writes and the three AI search endpoints have their own rate-limit
+  categories instead of sharing the generic `api` bucket.
+
+  `categorize_path` sent every `/api/...` path to `api`, 100 requests a minute
+  per IP and per user. Two things were wrong with that. Comment posting is an
+  `/api/` path, so an account could write a hundred comments a minute — nobody
+  legitimate does, and a spammer with an account does. And
+  `/api/v1/search/expand`, `/api/v1/search/summarize` and
+  `/api/v1/search/followup` each spend LLM provider tokens per call, at three
+  different costs, while getting the same generous allowance; only `/search` and
+  `/api/search` hit the tighter `search` category.
+
+  New categories: `comment` at 4 a minute, and `search_expand` (30),
+  `search_summarize` (10) and `search_followup` (5), the numbers
+  `docs/design/search-architecture.md` recommends. The specific categories are
+  tested before the generic `/api/` arm, which is the ordering that was missing.
+
+  Comment *reads* stay in the `api` bucket: it is the writes that cost moderation
+  attention, and a thread loading on a busy page must not spend a posting budget.
+  The AI search paths are matched whole rather than by prefix, so a future
+  `/api/v1/search/something-else` is not silently handed the cheapest of the
+  three limits.
 - Netgrasp is gone from this tree. It now lives in its own repository,
   `jeremyandrews/netgrasp-trovato`, where it builds against `trovato-sdk` as a
   pinned git dependency and installs by appending its own directories to
