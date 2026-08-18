@@ -7,7 +7,6 @@ members = [
     "crates/plugin-sdk-macros",
     "crates/test-utils",
     "crates/argus-core",
-    "crates/netgrasp-core",
     "benchmarks/phase0",
     "benchmarks/load-test",
     "plugins/trovato_blog",
@@ -28,7 +27,6 @@ members = [
     "plugins/trovato_search",
     "plugins/trovato_ai",
     "plugins/argus",
-    "plugins/netgrasp",
     "plugins/goose",
 "plugins/trovato_seo",
     "plugins/trovato_page_builder",
@@ -66,7 +64,7 @@ members = [
     "plugins/trovato_record_ref",
 ]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
-# Plugin cdylibs (argus, netgrasp, goose) excluded — build with --target wasm32-wasip1
+# Plugin cdylibs (argus, goose) excluded — build with --target wasm32-wasip1
 default-members = [
     "crates/kernel",
     "crates/mcp-server",
@@ -74,7 +72,6 @@ default-members = [
     "crates/plugin-sdk-macros",
     "crates/test-utils",
     "crates/argus-core",
-    "crates/netgrasp-core",
     "benchmarks/phase0",
     "benchmarks/load-test",
     "plugins/trovato_blog",
