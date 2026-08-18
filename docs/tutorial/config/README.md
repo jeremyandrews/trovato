@@ -49,10 +49,17 @@ are stable across installs and legible in a database dump.
 | `editor` | `…-000000000002` |
 | `publisher` | `…-000000000003` |
 
-Import applies the roles themselves. It does not apply permissions: the `role`
-config entity does not carry them. Each role file lists the permissions it is
-meant to hold; assign them at `/admin/people/permissions` or with the SQL in
-`../recipes/recipe-part-04.md`.
+Import applies the roles **and their permissions**: each role file declares a
+`permissions` list and the import grants exactly that set, revoking anything the
+file no longer names.
+
+One thing the files cannot declare is a permission belonging to a plugin, such as
+`ritrovo_access`'s `view incoming conferences`. The kernel cannot enumerate a
+plugin's permissions (`tap_perm` is declared but not dispatched), so import
+refuses a permission string it has no evidence exists rather than granting one
+that matches nothing. Each role file names the ones in that position and says
+where they come from; grant them at `/admin/people/permissions` once the plugin
+is enabled, after which they can be added to the file like any other.
 
 ### Tiles (`0193a5a0-0003-…`)
 

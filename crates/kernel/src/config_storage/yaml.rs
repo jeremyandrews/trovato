@@ -66,6 +66,31 @@ const MAX_CONFIG_FILE_SIZE: u64 = 10 * 1024 * 1024;
 /// Rejected by [`validate_entity_id_for_filename`] for cross-platform portability.
 const WINDOWS_INVALID_CHARS: &[char] = &[':', '*', '?', '"', '<', '>', '|'];
 
+/// Role with its permissions, for export/import.
+///
+/// The `role` config entity is the `Role` row, which does not carry permissions:
+/// they are `role_permissions` rows. That made `config import` able to create a
+/// role and unable to grant it anything, so a role arrived able to do nothing and
+/// the tutorial's role files listed their intended permissions in comments.
+///
+/// `permissions` is an `Option` on purpose, and the distinction matters:
+///
+/// - **absent** — the file says nothing about permissions, so the role's existing
+///   grants are left alone. Every role file written before this existed is in this
+///   case, and treating it as "revoke everything" would mean an import silently
+///   stripping a site's permissions.
+/// - **present, including `[]`** — the file is authoritative and the role ends up
+///   holding exactly that set.
+///
+/// Export always writes the key, so an exported role round-trips authoritatively.
+#[derive(Serialize, Deserialize)]
+struct RoleExport {
+    #[serde(flatten)]
+    role: Role,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    permissions: Option<Vec<String>>,
+}
+
 /// Tag with hierarchy parents for export/import.
 #[derive(Serialize, Deserialize)]
 struct TagExport {
@@ -256,7 +281,14 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
         }
         ConfigEntity::UrlAlias(a) => serde_yml::to_string(a),
         ConfigEntity::Item(i) => serde_yml::to_string(i),
-        ConfigEntity::Role(r) => serde_yml::to_string(r),
+        // Roles need their permissions — callers must use serialize_role_entity.
+        ConfigEntity::Role(role) => {
+            warnings.push(format!(
+                "serialize_entity called for role {} — use serialize_role_entity instead",
+                role.id
+            ));
+            return None;
+        }
         ConfigEntity::Stage(s) => serde_yml::to_string(s),
         ConfigEntity::Tile(t) => serde_yml::to_string(t),
         ConfigEntity::MenuLink(m) => serde_yml::to_string(m),
@@ -276,6 +308,29 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
                 "failed to serialize {} {id}: {e}",
                 entity.entity_type()
             ));
+            None
+        }
+    }
+}
+
+/// Serialize a role with its permissions to YAML.
+///
+/// The permissions are always written, including as an empty list: an exported
+/// role is meant to be authoritative on re-import, and an omitted key means
+/// "leave the grants alone" (see [`RoleExport`]).
+fn serialize_role_entity(
+    role: &Role,
+    permissions: Vec<String>,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let export = RoleExport {
+        role: role.clone(),
+        permissions: Some(permissions),
+    };
+    match serde_yml::to_string(&export) {
+        Ok(yaml) => Some(yaml),
+        Err(e) => {
+            warnings.push(format!("failed to serialize role {}: {e}", role.id));
             None
         }
     }
@@ -393,6 +448,21 @@ pub async fn export_config(
                         None => continue,
                     }
                 }
+                ConfigEntity::Role(role) => {
+                    let permissions = match Role::get_permissions(pool, role.id).await {
+                        Ok(permissions) => permissions,
+                        Err(e) => {
+                            result
+                                .warnings
+                                .push(format!("failed to get permissions for role {id}: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    match serialize_role_entity(role, permissions, &mut result.warnings) {
+                        Some(yaml) => yaml,
+                        None => continue,
+                    }
+                }
                 other => match serialize_entity(other, &mut result.warnings) {
                     Some(yaml) => yaml,
                     None => continue,
@@ -480,7 +550,7 @@ pub async fn import_config(
     );
 
     // Phase 2: resolve every reference the set makes, before writing anything.
-    validate_references(storage, &parsed, &mut failures).await;
+    validate_references(storage, pool, &parsed, &mut failures).await;
 
     if !failures.is_empty() {
         return Err(ConfigImportFailed {
@@ -503,6 +573,7 @@ pub async fn import_config(
     // Phase 3: save in dependency order. Everything here has already been
     // validated, so a failure means the storage layer rejected a valid entity.
     let mut tag_parents: Vec<(String, Uuid, Vec<Uuid>)> = Vec::new();
+    let mut role_grants: Vec<(String, Uuid, Vec<String>)> = Vec::new();
 
     for &entity_type in ENTITY_TYPE_ORDER {
         let Some(entities) = parsed.get(entity_type) else {
@@ -530,6 +601,20 @@ pub async fn import_config(
             }
             count += 1;
 
+            if let Some(permissions) = pe.role_permissions.as_ref() {
+                match pe.entity.id().parse::<Uuid>() {
+                    Ok(role_id) => {
+                        role_grants.push((pe.filename.clone(), role_id, permissions.clone()));
+                    }
+                    Err(e) => {
+                        failures.push(ConfigImportFailure {
+                            filename: pe.filename.clone(),
+                            error: format!("role ID is not a valid UUID: {e}"),
+                        });
+                    }
+                }
+            }
+
             if !pe.tag_parents.is_empty() {
                 match pe.entity.id().parse::<Uuid>() {
                     Ok(tag_id) => {
@@ -548,6 +633,18 @@ pub async fn import_config(
         if count > 0 {
             debug!(entity_type, count, "Imported entity type");
             result.counts.insert(entity_type.to_string(), count);
+        }
+    }
+
+    // Apply role permissions. Replace semantics, so the file is authoritative:
+    // a permission it does not name is revoked. A file that omits the key entirely
+    // is not in this list at all and leaves the role's grants untouched.
+    for (filename, role_id, permissions) in &role_grants {
+        if let Err(e) = Role::set_permissions(pool, *role_id, permissions).await {
+            failures.push(ConfigImportFailure {
+                filename: filename.clone(),
+                error: format!("failed to set permissions for role {role_id}: {e:#}"),
+            });
         }
     }
 
@@ -581,6 +678,7 @@ pub async fn import_config(
 /// one entity.
 async fn validate_references(
     storage: &dyn ConfigStorage,
+    pool: &PgPool,
     parsed: &BTreeMap<String, Vec<ParsedEntity>>,
     failures: &mut Vec<ConfigImportFailure>,
 ) {
@@ -689,6 +787,85 @@ async fn validate_references(
     }
 
     validate_menu_link_parents(storage, parsed, failures).await;
+    validate_role_permissions(pool, parsed, failures).await;
+}
+
+/// Reject a role file that names a permission the kernel cannot account for.
+///
+/// A permission is a bare string in `role_permissions`, so a typo is not a
+/// constraint violation: it is a grant that silently never matches anything the
+/// code checks. Since `config import` is now how a role gets its permissions, that
+/// typo has to be caught here or not at all.
+///
+/// Valid means one of two things:
+///
+/// - a permission the kernel defines ([`crate::models::role::KERNEL_PERMISSIONS`]);
+/// - a permission some role in this database already holds. A plugin declares its
+///   permissions through `tap_perm`, which the kernel does not yet dispatch, so a
+///   plugin's permissions are in no list the kernel can consult. Accepting what is
+///   already granted is what lets an export of such a site re-import, and it is
+///   also why the seeded `authenticated user` role, which holds `view own
+///   profile`, does not trip this.
+///
+/// The message says which of the two likely causes it is, because "unknown
+/// permission" on its own does not tell an operator whether to fix a typo or
+/// enable a plugin.
+async fn validate_role_permissions(
+    pool: &PgPool,
+    parsed: &BTreeMap<String, Vec<ParsedEntity>>,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
+    let Some(roles) = parsed.get(entity_types::ROLE) else {
+        return;
+    };
+    if roles.iter().all(|pe| pe.role_permissions.is_none()) {
+        return;
+    }
+
+    let mut known: HashSet<String> = crate::models::role::KERNEL_PERMISSIONS
+        .iter()
+        .map(|p| (*p).to_string())
+        .collect();
+    match Role::all_granted_permissions(pool).await {
+        Ok(granted) => known.extend(granted),
+        Err(e) => {
+            // Without the granted set, a plugin's permission would be rejected as
+            // unknown. Failing the import is the safe answer: silently narrowing
+            // what counts as valid would revoke grants the file meant to keep.
+            failures.push(ConfigImportFailure {
+                filename: "(role permissions)".to_string(),
+                error: format!("failed to read the existing permission grants: {e:#}"),
+            });
+            return;
+        }
+    }
+
+    for pe in roles {
+        let Some(permissions) = pe.role_permissions.as_ref() else {
+            continue;
+        };
+        for permission in permissions {
+            if permission.trim().is_empty() {
+                failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: "permission name must not be empty".to_string(),
+                });
+                continue;
+            }
+            if known.contains(permission) {
+                continue;
+            }
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: format!(
+                    "unknown permission '{permission}': it is not one the kernel defines and no \
+                     role in this database holds it. The likely cause is a plugin that declares \
+                     it not being enabled yet, since the kernel cannot enumerate a plugin's \
+                     permissions; otherwise it is a typo."
+                ),
+            });
+        }
+    }
 }
 
 /// A menu link's `parent_id` for a link in this import set.
@@ -844,6 +1021,9 @@ struct ParsedEntity {
     filename: String,
     entity: ConfigEntity,
     tag_parents: Vec<Uuid>,
+    /// A role's declared permissions. `None` when the file omits the key, which
+    /// means "leave this role's grants alone" rather than "revoke them all".
+    role_permissions: Option<Vec<String>>,
 }
 
 /// Read all `.yml` files from a directory and validate/parse them.
@@ -932,7 +1112,7 @@ async fn read_and_validate_files(
             }
         };
 
-        let (entity, tag_parents) = match deserialize_entity(&entity_type, &content) {
+        let parsed = match deserialize_entity(&entity_type, &content) {
             Ok(result) => result,
             Err(e) => {
                 failures.push(ConfigImportFailure {
@@ -944,7 +1124,7 @@ async fn read_and_validate_files(
         };
 
         // Validate filename-content ID consistency
-        let content_id = entity.id();
+        let content_id = parsed.entity.id();
         if content_id != filename_id {
             warnings.push(format!(
                 "{filename}: filename ID '{filename_id}' does not match content ID '{content_id}'"
@@ -953,8 +1133,9 @@ async fn read_and_validate_files(
 
         grouped.entry(entity_type).or_default().push(ParsedEntity {
             filename,
-            entity,
-            tag_parents,
+            entity: parsed.entity,
+            tag_parents: parsed.tag_parents,
+            role_permissions: parsed.role_permissions,
         });
     }
 
@@ -984,43 +1165,69 @@ async fn read_and_validate_files(
 /// Deserialize YAML content into a ConfigEntity based on entity type.
 ///
 /// Returns the parsed entity and any tag parent UUIDs (empty for non-tag types).
-fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity, Vec<Uuid>)> {
+/// One config file's contents: the entity, plus what its file carries that the
+/// entity struct does not.
+///
+/// A tuple was fine while the only such thing was a tag's parents. A role's
+/// permissions are a second, so it is a struct with a name on each field.
+#[derive(Debug)]
+struct ParsedFile {
+    entity: ConfigEntity,
+    /// A tag's `parents`.
+    tag_parents: Vec<Uuid>,
+    /// A role's `permissions`; `None` when the file omits the key.
+    role_permissions: Option<Vec<String>>,
+}
+
+impl ParsedFile {
+    /// An entity whose file carries nothing beyond the entity itself.
+    fn plain(entity: ConfigEntity) -> Self {
+        Self {
+            entity,
+            tag_parents: Vec::new(),
+            role_permissions: None,
+        }
+    }
+}
+
+fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
     match entity_type {
         entity_types::VARIABLE => {
             let var: VarYaml = serde_yml::from_str(content).context("invalid variable YAML")?;
             if var.key.is_empty() {
                 anyhow::bail!("variable key must not be empty");
             }
-            Ok((
-                ConfigEntity::Variable {
-                    key: var.key,
-                    value: var.value,
-                },
-                Vec::new(),
-            ))
+            Ok(ParsedFile::plain(ConfigEntity::Variable {
+                key: var.key,
+                value: var.value,
+            }))
         }
         entity_types::ITEM_TYPE => {
             let item_type: ItemType =
                 serde_yml::from_str(content).context("invalid item_type YAML")?;
-            Ok((ConfigEntity::ItemType(item_type), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::ItemType(item_type)))
         }
         entity_types::CATEGORY => {
             let category: Category =
                 serde_yml::from_str(content).context("invalid category YAML")?;
-            Ok((ConfigEntity::Category(category), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::Category(category)))
         }
         entity_types::TAG => {
             let export: TagExport = serde_yml::from_str(content).context("invalid tag YAML")?;
-            Ok((ConfigEntity::Tag(export.tag), export.parents))
+            Ok(ParsedFile {
+                entity: ConfigEntity::Tag(export.tag),
+                tag_parents: export.parents,
+                role_permissions: None,
+            })
         }
         entity_types::SEARCH_FIELD_CONFIG => {
             let sfc: SearchFieldConfig =
                 serde_yml::from_str(content).context("invalid search_field_config YAML")?;
-            Ok((ConfigEntity::SearchFieldConfig(sfc), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::SearchFieldConfig(sfc)))
         }
         entity_types::LANGUAGE => {
             let lang: Language = serde_yml::from_str(content).context("invalid language YAML")?;
-            Ok((ConfigEntity::Language(lang), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::Language(lang)))
         }
         entity_types::GATHER_QUERY => {
             let export: GatherQueryExport =
@@ -1051,32 +1258,38 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<(ConfigEntity,
                     );
                 }
             }
-            Ok((ConfigEntity::GatherQuery(Box::new(query)), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::GatherQuery(Box::new(
+                query,
+            ))))
         }
         entity_types::URL_ALIAS => {
             let alias: UrlAlias = serde_yml::from_str(content).context("invalid url_alias YAML")?;
-            Ok((ConfigEntity::UrlAlias(alias), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::UrlAlias(alias)))
         }
         entity_types::ITEM => {
             let item: super::ConfigItem =
                 serde_yml::from_str(content).context("invalid item YAML")?;
-            Ok((ConfigEntity::Item(item), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::Item(item)))
         }
         entity_types::ROLE => {
-            let role: Role = serde_yml::from_str(content).context("invalid role YAML")?;
-            Ok((ConfigEntity::Role(role), Vec::new()))
+            let export: RoleExport = serde_yml::from_str(content).context("invalid role YAML")?;
+            Ok(ParsedFile {
+                entity: ConfigEntity::Role(export.role),
+                tag_parents: Vec::new(),
+                role_permissions: export.permissions,
+            })
         }
         entity_types::STAGE => {
             let stage: Stage = serde_yml::from_str(content).context("invalid stage YAML")?;
-            Ok((ConfigEntity::Stage(stage), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::Stage(stage)))
         }
         entity_types::TILE => {
             let tile: Tile = serde_yml::from_str(content).context("invalid tile YAML")?;
-            Ok((ConfigEntity::Tile(tile), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::Tile(tile)))
         }
         entity_types::MENU_LINK => {
             let link: MenuLink = serde_yml::from_str(content).context("invalid menu_link YAML")?;
-            Ok((ConfigEntity::MenuLink(link), Vec::new()))
+            Ok(ParsedFile::plain(ConfigEntity::MenuLink(link)))
         }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
     }
@@ -1475,7 +1688,8 @@ mod tests {
     #[test]
     fn deserialize_entity_variable() {
         let yaml = "key: site_name\nvalue: My Site\n";
-        let (entity, tag_parents) = deserialize_entity("variable", yaml).unwrap();
+        let parsed = deserialize_entity("variable", yaml).unwrap();
+        let (entity, tag_parents) = (parsed.entity, parsed.tag_parents);
         assert_eq!(entity.entity_type(), "variable");
         assert_eq!(entity.id(), "site_name");
         assert!(tag_parents.is_empty());
@@ -1492,7 +1706,8 @@ title_label: Title
 plugin: trovato_blog
 settings: {}
 "#;
-        let (entity, tag_parents) = deserialize_entity("item_type", yaml).unwrap();
+        let parsed = deserialize_entity("item_type", yaml).unwrap();
+        let (entity, tag_parents) = (parsed.entity, parsed.tag_parents);
         assert_eq!(entity.entity_type(), "item_type");
         assert_eq!(entity.id(), "blog");
         assert!(tag_parents.is_empty());
@@ -1511,7 +1726,8 @@ changed: 1708000000
 parents:
   - "019483a7-b1c2-7def-8012-aaa111111111"
 "#;
-        let (entity, tag_parents) = deserialize_entity("tag", yaml).unwrap();
+        let parsed = deserialize_entity("tag", yaml).unwrap();
+        let (entity, tag_parents) = (parsed.entity, parsed.tag_parents);
         assert_eq!(entity.entity_type(), "tag");
 
         assert_eq!(tag_parents.len(), 1);
@@ -1524,7 +1740,8 @@ parents:
     #[test]
     fn deserialize_entity_language() {
         let yaml = "id: fr\nlabel: French\nweight: 1\nis_default: false\ndirection: ltr\n";
-        let (entity, tag_parents) = deserialize_entity("language", yaml).unwrap();
+        let parsed = deserialize_entity("language", yaml).unwrap();
+        let (entity, tag_parents) = (parsed.entity, parsed.tag_parents);
         assert_eq!(entity.entity_type(), "language");
         assert_eq!(entity.id(), "fr");
         assert!(tag_parents.is_empty());
@@ -1551,7 +1768,8 @@ parents:
     #[test]
     fn tutorial_conference_yaml_deserializes() {
         let yaml = include_str!("../../../../docs/tutorial/config/item_type.conference.yml");
-        let (entity, tag_parents) = deserialize_entity("item_type", yaml).unwrap();
+        let parsed = deserialize_entity("item_type", yaml).unwrap();
+        let (entity, tag_parents) = (parsed.entity, parsed.tag_parents);
         assert_eq!(entity.entity_type(), "item_type");
         assert_eq!(entity.id(), "conference");
         assert!(tag_parents.is_empty());

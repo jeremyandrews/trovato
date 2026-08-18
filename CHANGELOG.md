@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+- A role config file carries its permissions, and `config import` grants them.
+
+  Root cause: the `role` config entity was the `roles` row, which has three
+  columns — id, name, created. Permissions are `role_permissions` rows, and nothing
+  in the config layer knew about them, so `config import` created roles that could
+  do nothing. The workaround had spread into the documentation: the tutorial's
+  three role files listed their intended permissions **in comments**, and
+  `docs/tutorial/recipes/recipe-part-04.md` had the reader paste SQL to apply what
+  those comments said. A config set that describes a site and cannot configure its
+  roles is not a config set.
+
+  A role file now declares `permissions:` and the import applies exactly that set.
+  Three decisions worth stating, because each has a wrong answer that looks right:
+
+  - **Replace, not merge.** A permission the file no longer names is revoked. The
+    file is the description of the role; a merge would make it impossible to take
+    a permission away through the file that granted it.
+  - **An absent key means "leave the grants alone", not "revoke everything".**
+    Every role file written before this omits the key, and reading omission as an
+    empty list would mean an import silently stripping a site's permissions. An
+    explicitly empty list (`permissions: []`) does revoke everything, so the
+    intent is still expressible. Export always writes the key, so an exported role
+    is authoritative on re-import.
+  - **An unknown permission fails validation, naming the file and the string.** A
+    permission is a bare string, so a typo is not a constraint violation: it is a
+    grant that never matches anything the code checks. Validation happens with the
+    rest of phase 2, so nothing is written.
+
+  "Unknown" needs care, because the kernel does not know every valid permission. A
+  plugin declares its own through `tap_perm`, which is declared in the WIT and not
+  dispatched, so plugin permissions are in no list the kernel can consult. Valid
+  therefore means *either* a permission the kernel defines *or* one some role in
+  this database already holds — and the second half is not a convenience, it is
+  what lets an export of a site that uses plugin permissions re-import at all. The
+  seeded `authenticated user` role proves the two sets differ: it holds `view own
+  profile`, which the kernel's own list does not contain. The error message says
+  which of the two likely causes applies, because "unknown permission" alone does
+  not tell an operator whether to fix a typo or enable a plugin.
+
+  The tutorial's role files now declare real lists. The `ritrovo_access`
+  permissions they also want (`view incoming conferences` and three more) stay in
+  comments, because listing a permission the kernel has no evidence for would make
+  the tutorial's own config set fail to import; each file says so and says where
+  they come from. `KNOWN-ISSUES.md` carries what remains of the limitation, which
+  is now about plugin permissions specifically rather than about roles.
+
+  Two pieces of tidying that fell out, both in service of one implementation
+  rather than two:
+
+  - The list of kernel permissions moved from `routes/admin_user.rs`, where it was
+    private to the permission grid, to `models::role::KERNEL_PERMISSIONS`. Two
+    consumers reading two lists is how they drift.
+  - The set arithmetic behind "make this role hold exactly this set" moved to
+    `Role::set_permissions`, and `RoleService::save_permissions` now wraps it to
+    invalidate the permission cache. The two unit tests that covered that
+    arithmetic reimplemented it in their own bodies, so they asserted that two
+    `HashSet` differences agree with each other and would have passed with the real
+    function deleted; they now call it.
+
 - Menus have an administration screen. `/admin/structure/menus` lists a site's
   menus, renders each as an indented tree, and creates, edits, reorders and
   deletes links (title, path, parent, weight, hidden).

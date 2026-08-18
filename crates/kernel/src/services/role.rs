@@ -105,27 +105,11 @@ impl RoleService {
     /// Computes the diff between current and desired permissions, applies
     /// adds/removes, and invalidates the permission cache once.
     pub async fn save_permissions(&self, role_id: Uuid, desired: &[String]) -> Result<()> {
-        let current = Role::get_permissions(&self.inner.pool, role_id).await?;
-        let current_set: std::collections::HashSet<&str> =
-            current.iter().map(|s| s.as_str()).collect();
-        let desired_set: std::collections::HashSet<&str> =
-            desired.iter().map(|s| s.as_str()).collect();
-
-        // Add new permissions
-        for perm in &desired_set {
-            if !current_set.contains(perm) {
-                Role::add_permission(&self.inner.pool, role_id, perm).await?;
-            }
-        }
-
-        // Remove revoked permissions
-        for perm in &current_set {
-            if !desired_set.contains(perm) {
-                Role::remove_permission(&self.inner.pool, role_id, perm).await?;
-            }
-        }
-
-        // Single invalidation for the batch
+        // The set arithmetic lives on the model, because `config import` needs the
+        // same replace semantics and two implementations of it would drift. What
+        // this wrapper adds is the cache invalidation, which is a service concern:
+        // the import CLI runs in its own process and has no cache to invalidate.
+        Role::set_permissions(&self.inner.pool, role_id, desired).await?;
         self.inner.permissions.invalidate_all();
         Ok(())
     }
@@ -168,66 +152,48 @@ mod tests {
         );
     }
 
+    /// The set arithmetic `save_permissions` performs, tested against the real
+    /// function.
+    ///
+    /// Both of these tests used to reimplement the diff in their own bodies, which
+    /// meant they asserted that two `HashSet` differences agree with each other
+    /// and would have passed with `save_permissions` deleted.
     #[test]
-    fn save_permissions_diff_logic() {
-        // Test the set-diff logic used by save_permissions
-        let current = ["read", "write", "delete"];
-        let desired = ["read", "execute"];
+    fn permission_diff_adds_and_revokes() {
+        let current = strings(&["read", "write", "delete"]);
+        let desired = strings(&["read", "execute"]);
 
-        let current_set: std::collections::HashSet<&str> = current.into_iter().collect();
-        let desired_set: std::collections::HashSet<&str> = desired.into_iter().collect();
+        let (to_add, to_remove) = crate::models::role::permission_diff(&current, &desired);
 
-        let to_add: Vec<&str> = desired_set
-            .iter()
-            .filter(|p| !current_set.contains(**p))
-            .copied()
-            .collect();
-        let to_remove: Vec<&str> = current_set
-            .iter()
-            .filter(|p| !desired_set.contains(**p))
-            .copied()
-            .collect();
-
-        assert_eq!(to_add, ["execute"]);
-        assert!(to_remove.contains(&"write"));
-        assert!(to_remove.contains(&"delete"));
-        assert!(!to_remove.contains(&"read"));
+        assert_eq!(to_add, strings(&["execute"]));
+        assert_eq!(
+            to_remove,
+            strings(&["delete", "write"]),
+            "both dropped permissions are revoked, and the order is deterministic"
+        );
     }
 
     #[test]
-    fn save_permissions_no_change() {
-        let current = ["read", "write"];
-        let desired = ["read", "write"];
+    fn permission_diff_of_an_unchanged_set_is_empty() {
+        let current = strings(&["read", "write"]);
+        let desired = strings(&["write", "read"]);
 
-        let current_set: std::collections::HashSet<&str> = current.into_iter().collect();
-        let desired_set: std::collections::HashSet<&str> = desired.into_iter().collect();
-
-        let to_add: Vec<&&str> = desired_set
-            .iter()
-            .filter(|p| !current_set.contains(**p))
-            .collect();
-        let to_remove: Vec<&&str> = current_set
-            .iter()
-            .filter(|p| !desired_set.contains(**p))
-            .collect();
+        let (to_add, to_remove) = crate::models::role::permission_diff(&current, &desired);
 
         assert!(to_add.is_empty(), "no permissions should be added");
         assert!(to_remove.is_empty(), "no permissions should be removed");
     }
 
+    /// Replace semantics: an empty desired set revokes everything.
     #[test]
-    fn invalidation_call_sites_documented() {
-        // Verify the contract: these are the operations that must invalidate.
-        // This test serves as documentation that any new mutation method
-        // must also call invalidate_all() or invalidate_user().
-        let mutation_methods_with_invalidation = [
-            "add_permission -> invalidate_all",
-            "remove_permission -> invalidate_all",
-            "save_permissions -> invalidate_all",
-            "delete -> invalidate_all",
-            "assign_to_user -> invalidate_user",
-            "remove_from_user -> invalidate_user",
-        ];
-        assert_eq!(mutation_methods_with_invalidation.len(), 6);
+    fn permission_diff_to_an_empty_set_revokes_all() {
+        let current = strings(&["read", "write"]);
+        let (to_add, to_remove) = crate::models::role::permission_diff(&current, &[]);
+        assert!(to_add.is_empty());
+        assert_eq!(to_remove, strings(&["read", "write"]));
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_string()).collect()
     }
 }

@@ -17,6 +17,67 @@ pub mod well_known {
     pub const AUTHENTICATED_ROLE_ID: Uuid = Uuid::from_u128(2);
 }
 
+/// Permissions the kernel itself defines.
+///
+/// The single list both the permission grid at `/admin/people/permissions` and
+/// `config import` validate against. It lives here rather than in the admin route
+/// module because it is not a property of that screen: a role's permissions are
+/// now also writable from a config file, and two consumers reading two lists is
+/// how they drift.
+///
+/// **This is not every valid permission.** A plugin declares its own through
+/// `tap_perm`, which the kernel does not yet dispatch (see `crates/wit/kernel.wit`),
+/// so plugin permissions appear in neither this list nor the grid. What is already
+/// granted in `role_permissions` is treated as valid by config-import validation
+/// for exactly that reason, and the seeded `authenticated user` role is the proof
+/// that the two sets differ: it holds `view own profile`, which is not here.
+pub const KERNEL_PERMISSIONS: &[&str] = &[
+    "administer site",
+    "access content",
+    "create content",
+    "edit own content",
+    "edit any content",
+    "delete own content",
+    "delete any content",
+    "access user profiles",
+    "administer users",
+    "administer categories",
+    "access files",
+    "administer files",
+    "use filtered_html",
+    "use full_html",
+    "use ai",
+    "use ai chat",
+    "use ai embeddings",
+    "use ai image generation",
+    "configure ai",
+    "view ai usage",
+];
+
+/// The permissions to add and to remove to make `current` equal `desired`.
+///
+/// Pulled out as a pure function so the set arithmetic is testable without a
+/// database. The two tests that used to cover it reimplemented it in their own
+/// bodies, which meant they passed whatever the real code did.
+pub fn permission_diff(current: &[String], desired: &[String]) -> (Vec<String>, Vec<String>) {
+    let current_set: std::collections::HashSet<&str> = current.iter().map(String::as_str).collect();
+    let desired_set: std::collections::HashSet<&str> = desired.iter().map(String::as_str).collect();
+
+    // Sorted so the work, and any log of it, is deterministic.
+    let mut to_add: Vec<String> = desired_set
+        .difference(&current_set)
+        .map(|p| (*p).to_string())
+        .collect();
+    let mut to_remove: Vec<String> = current_set
+        .difference(&desired_set)
+        .map(|p| (*p).to_string())
+        .collect();
+    to_add.sort();
+    to_remove.sort();
+
+    (to_add, to_remove)
+}
+
 /// Role record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Role {
@@ -127,6 +188,45 @@ impl Role {
         .context("failed to add permission to role")?;
 
         Ok(())
+    }
+
+    /// Make this role hold exactly `desired` and nothing else.
+    ///
+    /// Replace semantics: a permission not in `desired` is revoked. Both the
+    /// permission grid and `config import` need that, and both need the same one,
+    /// so it lives on the model. [`crate::services::role::RoleService::save_permissions`]
+    /// wraps it to invalidate the permission cache; a caller with no cache to
+    /// invalidate (the `config import` CLI runs in its own process) uses this
+    /// directly.
+    pub async fn set_permissions(pool: &PgPool, role_id: Uuid, desired: &[String]) -> Result<()> {
+        let current = Self::get_permissions(pool, role_id).await?;
+        let (to_add, to_remove) = permission_diff(&current, desired);
+
+        for permission in &to_add {
+            Self::add_permission(pool, role_id, permission).await?;
+        }
+        for permission in &to_remove {
+            Self::remove_permission(pool, role_id, permission).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Every permission currently granted to any role.
+    ///
+    /// The validation set for `config import` alongside [`KERNEL_PERMISSIONS`]:
+    /// a permission a plugin declared and a site already granted is valid, and the
+    /// kernel has no other way to know it exists while `tap_perm` goes
+    /// undispatched.
+    pub async fn all_granted_permissions(pool: &PgPool) -> Result<Vec<String>> {
+        let permissions = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT permission FROM role_permissions ORDER BY permission",
+        )
+        .fetch_all(pool)
+        .await
+        .context("failed to list granted permissions")?;
+
+        Ok(permissions)
     }
 
     /// Remove a permission from this role.

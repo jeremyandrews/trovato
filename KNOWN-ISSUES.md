@@ -123,13 +123,26 @@ non-zero, and writes nothing. It used to skip such a file with a warning and
 report success, which for a stage meant an entity that never arrived with nothing
 that said why.
 
-### Role permissions are not carried by config import
+### A plugin's permissions cannot be granted by config import
 
-The `role` config entity carries a role's UUID and name. It does not carry the
-role's permissions, so `config import` creates roles but cannot grant them
-anything; assign permissions at `/admin/people/permissions` afterwards. The role
-files in `docs/tutorial/config/` list their intended permissions in comments for
-exactly this reason.
+A role config file declares a `permissions` list and `config import` grants
+exactly that set, so a role now arrives able to do something. What it cannot
+declare is a permission belonging to a plugin.
+
+A plugin declares its permissions through `tap_perm`, which is declared in the WIT
+and **not dispatched** by the kernel (`crates/wit/kernel.wit` says so). So the
+kernel has no list of a plugin's permissions to validate against, and it refuses a
+permission string it has no evidence exists rather than granting one that matches
+nothing a permission check will ever ask for. The evidence it does accept is a
+permission some role in the database already holds, which is what lets an export
+of a site that uses plugin permissions re-import.
+
+The practical consequence: grant a plugin's permissions once at
+`/admin/people/permissions` (or by SQL), after which they can go in the config file
+like any other. The permission grid has the same limitation from the other side —
+it renders the kernel's list, so a plugin's permissions do not appear there either.
+Dispatching `tap_perm` is what fixes both, and it is additive to the plugin
+contract rather than a break of it.
 
 ### Semantic search has no approximate index
 
