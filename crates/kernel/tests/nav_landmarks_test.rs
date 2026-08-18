@@ -32,6 +32,12 @@ fn admin_ctx() -> UserContext {
 }
 
 async fn ensure_item_type(app: &TestApp) {
+    // `/admin/structure/categories` is behind the `trovato_categories` gate, so on
+    // a database where that plugin was never enabled it 404s and the sweep below
+    // fails on it rather than on an unlabelled nav. This passed until a shard
+    // reshuffle put this file in a shard where nothing else had enabled it.
+    app.ensure_plugin_enabled("trovato_categories").await;
+
     let mut tx = app.db.begin().await.expect("begin type seed");
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(TYPE_SEED_LOCK)
