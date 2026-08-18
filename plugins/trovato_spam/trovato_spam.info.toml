@@ -1,0 +1,30 @@
+name = "trovato_spam"
+description = "AI comment moderation: classify a new comment and publish, hold, or mark it as spam"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = ["trovato_comments"]
+
+[taps]
+implements = [
+    "tap_comment_insert",
+    "tap_queue_info",
+    "tap_queue_worker",
+]
+weight = 0
+
+# `queue` for the classification job (push from tap_comment_insert, drained into
+# tap_queue_worker); `ai-api` plus `ai_background = true` because the classify
+# call happens under the background principal, not a web request; `db` to write
+# the verdict back; `logging` for the decision trail, and because the
+# #[plugin_tap] macro references the logging import on its error paths.
+#
+# `db_tables` extends the WASM-2 effective allowlist (migration-owned ∪ db_tables)
+# with the one kernel table this plugin writes. It owns no migrations, so this
+# list is its entire database reach: `comment`, and nothing else. Raw SQL is NOT
+# declared — the structured `update` is enough for one column and keeps the table
+# guarantee that `raw_sql = true` would weaken.
+[capabilities]
+host_interfaces = ["logging", "queue", "ai-api", "db"]
+ai_background = true
+db_tables = ["comment"]
