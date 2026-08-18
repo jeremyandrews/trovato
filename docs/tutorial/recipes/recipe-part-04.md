@@ -188,46 +188,31 @@ UUIDs listed in `docs/tutorial/config/README.md`.
 that path is for roles you are adding by hand, and it will reject a name the
 import already took.
 
-### 2.5 Assign Permissions and Roles via SQL
+### 2.5 Assign Roles to Users via SQL
 
-`[CLI]` Assign permissions from the YAML reference configs, and assign roles to users. There is no admin UI for user-role assignment, so SQL is required:
+`[CLI]` Permissions arrived with `config import`: each role file in
+`docs/tutorial/config/` declares a `permissions` list and the import granted it.
+Confirm that rather than repeating it:
+
+```bash
+$(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato \
+  -c "SELECT r.name, count(*) AS permissions
+      FROM roles r JOIN role_permissions rp ON rp.role_id = r.id
+      WHERE r.name IN ('viewer','editor','publisher')
+      GROUP BY r.name ORDER BY r.name;"
+```
+
+**Verify:** `editor` 6, `publisher` 9, `viewer` 1. Those are the kernel
+permissions the role files declare. The `ritrovo_access` permissions
+(`view incoming conferences` and friends) are not among them and cannot be: they
+belong to a plugin, and the kernel cannot enumerate a plugin's permissions, so
+`config import` refuses a permission string it has no evidence exists. Grant those
+at `/admin/people/permissions` in Part 5, once the plugin is enabled.
+
+What still needs SQL is user-role assignment, because there is no admin UI for it:
 
 ```bash
 $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovato <<'SQL'
--- Viewer permissions (from the viewer role's config file — base permissions only;
--- ritrovo_access permissions added in Part 5 after plugin install)
-INSERT INTO role_permissions (role_id, permission)
-SELECT r.id, p.perm
-FROM roles r, (VALUES
-  ('access content')
-) AS p(perm)
-WHERE r.name = 'viewer'
-ON CONFLICT (role_id, permission) DO NOTHING;
-
--- Editor permissions (from the editor role's config file — base permissions only;
--- ritrovo_access permissions added in Part 5 after plugin install)
-INSERT INTO role_permissions (role_id, permission)
-SELECT r.id, p.perm
-FROM roles r, (VALUES
-  ('access content'), ('create content'), ('edit own content'),
-  ('edit any content'), ('access files'), ('use filtered_html')
-) AS p(perm)
-WHERE r.name = 'editor'
-ON CONFLICT (role_id, permission) DO NOTHING;
-
--- Publisher permissions (from the publisher role's config file — base permissions only;
--- ritrovo_access permissions added in Part 5 after plugin install)
-INSERT INTO role_permissions (role_id, permission)
-SELECT r.id, p.perm
-FROM roles r, (VALUES
-  ('access content'), ('create content'), ('edit own content'),
-  ('edit any content'), ('delete any content'),
-  ('access files'), ('administer files'),
-  ('use filtered_html'), ('use full_html')
-) AS p(perm)
-WHERE r.name = 'publisher'
-ON CONFLICT (role_id, permission) DO NOTHING;
-
 -- Assign viewer role to viewer_carol
 INSERT INTO user_roles (user_id, role_id)
 SELECT u.id, r.id FROM users u, roles r

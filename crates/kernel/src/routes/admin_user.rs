@@ -8,6 +8,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
+use crate::models::role::KERNEL_PERMISSIONS;
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{CreateUser, UpdateUser};
@@ -17,32 +18,6 @@ use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
     render_not_found, render_server_error, require_admin, require_csrf, validate_password,
 };
-
-/// Permissions available for assignment to roles.
-///
-/// Used by both `permissions_matrix` (display) and `save_permissions` (processing).
-const AVAILABLE_PERMISSIONS: &[&str] = &[
-    "administer site",
-    "access content",
-    "create content",
-    "edit own content",
-    "edit any content",
-    "delete own content",
-    "delete any content",
-    "access user profiles",
-    "administer users",
-    "administer categories",
-    "access files",
-    "administer files",
-    "use filtered_html",
-    "use full_html",
-    "use ai",
-    "use ai chat",
-    "use ai embeddings",
-    "use ai image generation",
-    "configure ai",
-    "view ai usage",
-];
 
 /// User form data.
 #[derive(Debug, Deserialize)]
@@ -762,7 +737,7 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
     let mut context = tera::Context::new();
     context.insert("roles", &roles);
     context.insert("role_permissions", &role_permissions);
-    context.insert("available_permissions", &AVAILABLE_PERMISSIONS);
+    context.insert("available_permissions", &KERNEL_PERMISSIONS);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("path", "/admin/people/permissions");
@@ -797,7 +772,7 @@ async fn save_permissions(
 
     // Process form data - permissions are submitted as "perm_{role_id}_{permission}"
     for role in &roles {
-        let desired: Vec<String> = AVAILABLE_PERMISSIONS
+        let desired: Vec<String> = KERNEL_PERMISSIONS
             .iter()
             .filter(|permission| {
                 let key = format!("perm_{}_{}", role.id, permission.replace(' ', "_"));

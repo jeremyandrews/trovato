@@ -988,3 +988,367 @@ async fn a_stage_refuses_an_id_that_belongs_to_another_category() {
 
     db.cleanup().await;
 }
+
+// =============================================================================
+// Role permissions
+// =============================================================================
+//
+// The `role` config entity carried a role's UUID and name and nothing else, so
+// `config import` created roles that could do nothing and the tutorial's role
+// files listed their intended permissions in comments. A role file now declares
+// its permissions and the import grants exactly that set.
+
+/// Write a role config file.
+fn role_yaml(id: &str, name: &str, permissions: Option<&[&str]>) -> String {
+    let mut yaml = format!("id: {id}\nname: {name}\ncreated: \"2026-01-01T00:00:00Z\"\n");
+    match permissions {
+        Some([]) => yaml.push_str("permissions: []\n"),
+        Some(list) => {
+            yaml.push_str("permissions:\n");
+            for permission in list {
+                yaml.push_str(&format!("- {permission}\n"));
+            }
+        }
+        None => {}
+    }
+    yaml
+}
+
+async fn permissions_of(db: &ScratchDb, role_id: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT permission FROM role_permissions WHERE role_id = $1 ORDER BY permission",
+    )
+    .bind(role_id.parse::<uuid::Uuid>().unwrap())
+    .fetch_all(db.pool())
+    .await
+    .expect("failed to read role permissions")
+}
+
+/// A role file's permissions are granted, and a re-import with one removed
+/// revokes it: the file is authoritative.
+#[tokio::test]
+async fn a_role_file_grants_exactly_the_permissions_it_declares() {
+    let db = ScratchDb::new("roleperms").await;
+    let storage = db.storage();
+    let role_id = "0193a5a0-0002-7000-8000-0000000000a1";
+
+    let dir = TempConfigDir::new("roleperms");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(
+            role_id,
+            "roundtrip_editor",
+            Some(&["access content", "create content", "edit any content"]),
+        ),
+    );
+
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("a role file with permissions must import clean: {e:#}");
+    }
+
+    assert_eq!(
+        permissions_of(&db, role_id).await,
+        vec![
+            "access content".to_string(),
+            "create content".to_string(),
+            "edit any content".to_string()
+        ],
+        "import must grant exactly the declared set"
+    );
+
+    // Re-import with one permission removed: it must be revoked, not merged.
+    let dir = TempConfigDir::new("roleperms2");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(
+            role_id,
+            "roundtrip_editor",
+            Some(&["access content", "create content"]),
+        ),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the second import must succeed: {e:#}");
+    }
+
+    assert_eq!(
+        permissions_of(&db, role_id).await,
+        vec!["access content".to_string(), "create content".to_string()],
+        "a permission the file no longer names must be revoked"
+    );
+
+    // And an explicitly empty list revokes everything.
+    let dir = TempConfigDir::new("roleperms3");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(role_id, "roundtrip_editor", Some(&[])),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the third import must succeed: {e:#}");
+    }
+    assert!(
+        permissions_of(&db, role_id).await.is_empty(),
+        "an empty list must revoke every permission"
+    );
+
+    db.cleanup().await;
+}
+
+/// A role file with no `permissions` key leaves the role's grants alone.
+///
+/// This is the compatibility case, and it is not cosmetic: every role file
+/// written before this existed omits the key, and reading that as "revoke
+/// everything" would mean an import silently stripping a site's permissions.
+#[tokio::test]
+async fn a_role_file_without_the_key_leaves_existing_grants_alone() {
+    let db = ScratchDb::new("rolekeep").await;
+    let storage = db.storage();
+    let role_id = "0193a5a0-0002-7000-8000-0000000000b1";
+
+    let with_permissions = TempConfigDir::new("rolekeep1");
+    with_permissions.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(role_id, "keeper", Some(&["access content", "access files"])),
+    );
+    import_config(&storage, db.pool(), with_permissions.path(), false)
+        .await
+        .expect("first import");
+
+    let without = TempConfigDir::new("rolekeep2");
+    without.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(role_id, "keeper", None),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), without.path(), false).await {
+        db.cleanup().await;
+        panic!("a role file without the key must still import: {e:#}");
+    }
+
+    assert_eq!(
+        permissions_of(&db, role_id).await,
+        vec!["access content".to_string(), "access files".to_string()],
+        "an omitted key must not revoke anything"
+    );
+
+    db.cleanup().await;
+}
+
+/// An export carries the permissions, and re-importing it reproduces them.
+#[tokio::test]
+async fn a_role_export_round_trips_its_permissions() {
+    let first = ScratchDb::new("rolexp1").await;
+    let second = ScratchDb::new("rolexp2").await;
+    let role_id = "0193a5a0-0002-7000-8000-0000000000c1";
+
+    let source = TempConfigDir::new("rolexpsrc");
+    source.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(
+            role_id,
+            "exported_role",
+            Some(&["access content", "use filtered_html"]),
+        ),
+    );
+    if let Err(e) = import_config(&first.storage(), first.pool(), source.path(), false).await {
+        first.cleanup().await;
+        second.cleanup().await;
+        panic!("import must succeed: {e:#}");
+    }
+
+    let exported = TempConfigDir::new("rolexpout");
+    if let Err(e) = export_config(&first.storage(), first.pool(), exported.path(), false).await {
+        first.cleanup().await;
+        second.cleanup().await;
+        panic!("export must succeed: {e:#}");
+    }
+
+    let document = std::fs::read_to_string(exported.path().join(format!("role.{role_id}.yml")))
+        .expect("the role must be exported");
+    assert!(
+        document.contains("permissions:"),
+        "the export must carry the permissions key, got:\n{document}"
+    );
+    assert!(
+        document.contains("access content") && document.contains("use filtered_html"),
+        "the export must carry both permissions, got:\n{document}"
+    );
+
+    if let Err(e) = import_config(&second.storage(), second.pool(), exported.path(), false).await {
+        first.cleanup().await;
+        second.cleanup().await;
+        panic!("re-importing the export must succeed: {e:#}");
+    }
+
+    assert_eq!(
+        permissions_of(&second, role_id).await,
+        vec![
+            "access content".to_string(),
+            "use filtered_html".to_string()
+        ],
+        "the permissions must survive the round trip"
+    );
+
+    first.cleanup().await;
+    second.cleanup().await;
+}
+
+/// An unknown permission fails validation, names the file and the string, says
+/// what the likely cause is, and writes nothing.
+#[tokio::test]
+async fn an_unknown_permission_fails_validation_loudly() {
+    let db = ScratchDb::new("rolebogus").await;
+    let storage = db.storage();
+    let role_id = "0193a5a0-0002-7000-8000-0000000000d1";
+
+    let dir = TempConfigDir::new("rolebogus");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(
+            role_id,
+            "bogus_role",
+            Some(&["access content", "administer widgets"]),
+        ),
+    );
+
+    let Err(err) = import_config(&storage, db.pool(), dir.path(), false).await else {
+        db.cleanup().await;
+        panic!("import must fail when a role names an unknown permission");
+    };
+
+    let failed = err
+        .downcast_ref::<ConfigImportFailed>()
+        .expect("the error must be a ConfigImportFailed");
+    assert_eq!(failed.imported_total(), 0, "nothing should be written");
+    assert_eq!(failed.failures.len(), 1, "expected one failure: {failed}");
+    assert_eq!(failed.failures[0].filename, format!("role.{role_id}.yml"));
+    assert!(
+        failed.failures[0].error.contains("administer widgets"),
+        "the report must name the offending permission, got: {}",
+        failed.failures[0].error
+    );
+    assert!(
+        failed.failures[0].error.contains("not being enabled"),
+        "the report must name a disabled plugin as the likely cause, got: {}",
+        failed.failures[0].error
+    );
+
+    let landed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM roles WHERE name = 'bogus_role'")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(landed, 0, "a failed validation must write nothing");
+
+    db.cleanup().await;
+}
+
+/// A permission the kernel does not define but a role already holds is valid.
+///
+/// This is the plugin case. `tap_perm` is declared and not dispatched, so a
+/// plugin's permissions appear in no list the kernel can consult; what a site has
+/// already granted is the only evidence they exist. Without this, exporting a
+/// site that uses any plugin permission would produce a set that cannot be
+/// re-imported. The seeded `authenticated user` role proves the two sets differ:
+/// it holds `view own profile`, which the kernel's own list does not contain.
+#[tokio::test]
+async fn a_permission_some_role_already_holds_is_accepted() {
+    let db = ScratchDb::new("roleplugin").await;
+    let storage = db.storage();
+    let role_id = "0193a5a0-0002-7000-8000-0000000000e1";
+
+    // Not in KERNEL_PERMISSIONS, but seeded onto the authenticated role by a
+    // migration — so the kernel has evidence it exists.
+    let seeded: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM role_permissions WHERE permission = 'view own profile'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        seeded > 0,
+        "this test depends on 'view own profile' being seeded"
+    );
+
+    let dir = TempConfigDir::new("roleplugin");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(role_id, "profile_role", Some(&["view own profile"])),
+    );
+
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("a permission an existing role holds must be accepted: {e:#}");
+    }
+
+    assert_eq!(
+        permissions_of(&db, role_id).await,
+        vec!["view own profile".to_string()],
+        "the grant must have been applied"
+    );
+
+    db.cleanup().await;
+}
+
+/// The tutorial's role files declare real permissions, and importing the set
+/// grants them.
+///
+/// The point of the change: the tutorial used to tell a reader to run SQL, or
+/// click through the permission grid, for something its own config set should
+/// have applied.
+#[tokio::test]
+async fn the_tutorial_roles_arrive_with_their_permissions() {
+    let db = ScratchDb::new("tutorialperms").await;
+    let storage = db.storage();
+
+    if let Err(e) = import_config(&storage, db.pool(), &tutorial_config_dir(), false).await {
+        db.cleanup().await;
+        panic!("the tutorial config set must import clean: {e:#}");
+    }
+
+    for (role, expected) in [
+        ("viewer", vec!["access content"]),
+        (
+            "editor",
+            vec![
+                "access content",
+                "access files",
+                "create content",
+                "edit any content",
+                "edit own content",
+                "use filtered_html",
+            ],
+        ),
+        (
+            "publisher",
+            vec![
+                "access content",
+                "access files",
+                "administer files",
+                "create content",
+                "delete any content",
+                "edit any content",
+                "edit own content",
+                "use filtered_html",
+                "use full_html",
+            ],
+        ),
+    ] {
+        let granted: Vec<String> = sqlx::query_scalar(
+            "SELECT permission FROM role_permissions rp \
+             JOIN roles r ON r.id = rp.role_id WHERE r.name = $1 ORDER BY permission",
+        )
+        .bind(role)
+        .fetch_all(db.pool())
+        .await
+        .expect("failed to read role permissions");
+
+        let expected: Vec<String> = expected.into_iter().map(String::from).collect();
+        assert_eq!(
+            granted, expected,
+            "the {role} role should arrive with its permissions"
+        );
+    }
+
+    db.cleanup().await;
+}

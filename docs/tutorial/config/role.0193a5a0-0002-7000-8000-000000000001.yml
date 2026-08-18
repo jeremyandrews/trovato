@@ -1,13 +1,19 @@
 # Viewer role — can view content on all editorial stages.
 #
-# `config import` applies the role itself. It does not apply permissions: the
-# `role` config entity carries id, name and created, and nothing else. The
-# permissions this role is meant to hold are:
-#   - access content
+# `config import` applies these permissions, replacing whatever the role holds:
+# the file is authoritative, so removing a line here revokes that permission on
+# the next import.
+#
+# Two permissions this role is meant to hold are NOT listed, and cannot be:
 #   - view incoming conferences   (declared by ritrovo_access, Part 5)
 #   - view curated conferences    (declared by ritrovo_access, Part 5)
-# Assign them at /admin/people/permissions, or with the SQL in
-# docs/tutorial/recipes/recipe-part-04.md.
+# They belong to a plugin, and the kernel cannot enumerate a plugin's
+# permissions (`tap_perm` is declared but not dispatched), so import rejects a
+# permission it has never seen rather than granting a string that matches
+# nothing. Add them to this file once ritrovo_access is enabled and has granted
+# them once, or grant them at /admin/people/permissions.
 id: 0193a5a0-0002-7000-8000-000000000001
 name: viewer
 created: "2026-01-01T00:00:00Z"
+permissions:
+- access content

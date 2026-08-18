@@ -164,7 +164,7 @@ For the editorial workflow, Ritrovo needs three additional roles:
 | **editor** | Reviews and curates content | Viewer permissions + `create content`, `edit own content`, `edit any content`, `access files`, `use filtered_html`, `edit conferences` |
 | **publisher** | Publishes content to Live | Editor permissions + `delete any content`, `administer files`, `use full_html`, `publish conferences` |
 
-The role definitions live in `docs/tutorial/config/`, one `role.{uuid}.yml` file each; `docs/tutorial/config/README.md` maps the UUIDs to `viewer`, `editor` and `publisher`. `config import` creates the roles themselves. It does not assign permissions, because the `role` config entity does not carry them — each file lists the permissions the role is meant to hold, and you assign them through the admin UI at `/admin/people/permissions` or with the SQL in the recipe.
+The role definitions live in `docs/tutorial/config/`, one `role.{uuid}.yml` file each; `docs/tutorial/config/README.md` maps the UUIDs to `viewer`, `editor` and `publisher`. `config import` creates the roles **and grants their permissions**: each file declares a `permissions` list, and the import applies exactly that set. The one exception is a permission a plugin declares, such as `ritrovo_access`'s `view incoming conferences` in Part 5: the kernel cannot enumerate a plugin's permissions, so those are granted at `/admin/people/permissions` once the plugin is enabled. Each role file names which of its permissions are in that position.
 
 [<img src="images/part-04/roles-admin.png" width="600" alt="The roles administration page showing the list of defined roles">](images/part-04/roles-admin.png)
 
