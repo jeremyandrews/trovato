@@ -4,12 +4,13 @@
  * All site-specific references removed. Configuration is read from
  * window.scolta, which the host page must set before loading this script.
  *
- * Required window.scolta properties:
+ * Optional window.scolta properties (each falls back to the default shown):
  *   scoring: { ... }        — Scoring parameters (see CONFIG below for keys)
- *   endpoints: {             — API endpoint paths
- *     expand: '/api/scolta/v1/expand-query',
- *     summarize: '/api/scolta/v1/summarize',
- *     followup: '/api/scolta/v1/followup',
+ *   endpoints: {             — API endpoint paths. The defaults are the routes
+ *                              the kernel serves, so a site needs no config here.
+ *     expand: '/api/v1/search/expand',
+ *     summarize: '/api/v1/search/summarize',
+ *     followup: '/api/v1/search/followup',
  *   }
  *   pagefindPath: '/pagefind/pagefind.js'  — Path to Pagefind JS
  *   siteName: 'My Site'                    — Display name for the site
@@ -66,12 +67,16 @@
     };
   }
 
+  // The kernel serves these three (crates/kernel/src/routes/api_search.rs). The
+  // defaults used to name the retired trovato_scolta plugin's own namespace, whose
+  // routes never registered, so anything relying on the defaults got a 404 and
+  // only pages overriding all three worked.
   function getEndpoints() {
     const e = (global.scolta && global.scolta.endpoints) || {};
     return {
-      expand: e.expand || '/api/scolta/v1/expand-query',
-      summarize: e.summarize || '/api/scolta/v1/summarize',
-      followup: e.followup || '/api/scolta/v1/followup',
+      expand: e.expand || '/api/v1/search/expand',
+      summarize: e.summarize || '/api/v1/search/summarize',
+      followup: e.followup || '/api/v1/search/followup',
     };
   }
 

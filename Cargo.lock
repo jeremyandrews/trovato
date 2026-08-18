@@ -5536,15 +5536,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "trovato_scolta"
-version = "0.99.0"
-dependencies = [
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
 name = "trovato_search"
 version = "0.99.0"
 dependencies = [

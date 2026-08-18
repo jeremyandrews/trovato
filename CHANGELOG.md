@@ -263,6 +263,36 @@
   renders nine pages, extracts every `<nav>` opening tag, and fails on any that
   carries neither `aria-label` nor `aria-labelledby`. A new template cannot
   quietly reintroduce the defect.
+
+- `trovato_scolta` is removed, and the AI search endpoint namespace is settled on
+  the routes the kernel actually serves.
+
+  The plugin could not function as shipped, in three independent ways. Its routes
+  were declared page-style with callbacks and no `tap_api` export, so
+  `routes/plugin_api.rs` never registered them. Its three worker functions carried
+  `#[allow(dead_code)]` comments claiming route callbacks called them at runtime,
+  which was not true. And it declared `host_interfaces = []` while calling
+  `ai-api`, so the WASM-1 linker would have refused it even if the routes had
+  registered.
+
+  Deleted rather than rebuilt: `crates/kernel/src/routes/api_search.rs` already
+  serves query expansion, summarization and follow-up at `/api/v1/search/*`, so a
+  rebuild would have been a second implementation of a working feature. 1.0 should
+  not ship a plugin that cannot serve a request.
+
+  The namespace question is settled the same way. `static/js/scolta.js` defaulted
+  to the plugin's `/api/scolta/v1/*` paths, so any page relying on the defaults got
+  a 404; the search page worked only because it overrode all three endpoints. The
+  client now defaults to the kernel's paths, and the search page no longer restates
+  them — which is what keeps the defaults honest, since a drift can no longer hide
+  behind an override.
+
+  Root cause, addressed: nothing failed loudly when a declaration had no consumer.
+  A `callback` is only dispatched when `handler_type` is `"api"`, so a page-style
+  entry naming one registers nothing, and both `trovato_feeds` and
+  `trovato_scolta` were dead in exactly that way without a single warning at build
+  time, plugin load or first request. `plugin_api::unreachable_callbacks` now finds
+  those entries and startup logs each one.
 - Netgrasp is gone from this tree. It now lives in its own repository,
   `jeremyandrews/netgrasp-trovato`, where it builds against `trovato-sdk` as a
   pinned git dependency and installs by appending its own directories to
