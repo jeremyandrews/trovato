@@ -321,17 +321,33 @@ async fn create_comment(
         ));
     }
 
-    // The status a new comment gets: the site's default, unless this commenter
-    // is trusted enough to bypass the queue. `skip comment approval` is declared
-    // by `trovato_comments` and, before this, was read by nothing.
+    // The status a new comment gets: the site's default, unless this commenter is
+    // excused from the queue. Two ways to be excused. `skip comment approval` is
+    // the explicit grant — declared by `trovato_comments` and, before this, read by
+    // nothing. The trust ladder is the earned one: an author with enough approved
+    // comments skips the wait, while the classifier still runs and can take the
+    // comment down afterwards.
     let default_status = CommentStatus::default_for_new_comments(state.db()).await;
-    let status = if default_status.awaits_review()
-        && (user_ctx.is_admin() || user_ctx.has_permission("skip comment approval"))
-    {
-        CommentStatus::Published
+    let may_skip_approval = user_ctx.is_admin() || user_ctx.has_permission("skip comment approval");
+
+    // Only asked when it can change the answer: a site that publishes immediately,
+    // or a commenter already excused, needs no count.
+    let (approved, threshold) = if default_status.awaits_review() && !may_skip_approval {
+        let threshold = CommentStatus::trust_threshold(state.db()).await;
+        let approved = if threshold.is_some() {
+            Comment::approved_count_for_author(state.db(), user_id)
+                .await
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        (approved, threshold)
     } else {
-        default_status
+        (0, None)
     };
+
+    let status =
+        CommentStatus::for_new_comment(default_status, may_skip_approval, approved, threshold);
 
     // Create comment
     let input = CreateComment {

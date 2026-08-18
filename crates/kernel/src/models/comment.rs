@@ -118,10 +118,81 @@ impl CommentStatus {
             }
         }
     }
+
+    /// The status a new comment gets, given everything that can excuse it from the
+    /// review queue.
+    ///
+    /// Pure, so the precedence is testable without a database:
+    ///
+    /// 1. If the site publishes immediately, nothing else matters.
+    /// 2. `skip comment approval` (or admin) bypasses the queue.
+    /// 3. Otherwise an author with at least `threshold` approved comments bypasses
+    ///    it too — the trust ladder. `None` means the ladder is off.
+    ///
+    /// The ladder only ever *promotes* out of pending. It cannot publish a comment
+    /// on a site that holds nothing, and it cannot hold one on a site that
+    /// publishes everything.
+    pub fn for_new_comment(
+        site_default: Self,
+        may_skip_approval: bool,
+        approved_comments: i64,
+        threshold: Option<i64>,
+    ) -> Self {
+        if !site_default.awaits_review() {
+            return site_default;
+        }
+
+        if may_skip_approval {
+            return Self::Published;
+        }
+
+        match threshold {
+            Some(threshold) if approved_comments >= threshold => Self::Published,
+            _ => site_default,
+        }
+    }
+
+    /// How many approved comments an author needs to skip the queue.
+    ///
+    /// `None` when the ladder is disabled: an explicit `0`, or a value that is not
+    /// a positive number. A ladder nobody can parse should not hand out bypasses.
+    pub async fn trust_threshold(pool: &PgPool) -> Option<i64> {
+        let configured = crate::models::SiteConfig::get(pool, TRUST_THRESHOLD_KEY)
+            .await
+            .ok()
+            .flatten();
+
+        let threshold = match configured {
+            None => DEFAULT_TRUST_THRESHOLD,
+            Some(value) => match value.as_i64().or_else(|| value.as_str()?.parse().ok()) {
+                Some(parsed) => parsed,
+                None => {
+                    tracing::warn!(
+                        value = %value,
+                        "unrecognised {TRUST_THRESHOLD_KEY}; disabling the trust ladder"
+                    );
+                    return None;
+                }
+            },
+        };
+
+        (threshold > 0).then_some(threshold)
+    }
 }
 
 /// Site setting naming the status new comments are created with.
 pub const DEFAULT_STATUS_KEY: &str = "comment_default_status";
+
+/// Site setting naming how many approved comments earn an author the queue
+/// bypass. `0` disables the ladder.
+pub const TRUST_THRESHOLD_KEY: &str = "comment_trust_threshold";
+
+/// Default trust threshold: three approved comments.
+///
+/// Low on purpose. The ladder is not a security boundary — the classifier still
+/// runs on every comment and can take a published one down — it is a latency
+/// exemption for people who have already been read by a human three times.
+pub const DEFAULT_TRUST_THRESHOLD: i64 = 3;
 
 /// Comment record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -319,6 +390,23 @@ impl Comment {
         Ok(comments)
     }
 
+    /// How many published comments an author has.
+    ///
+    /// The trust ladder's input. Counts published only: a pending, hidden or spam
+    /// comment is not evidence of anything, which is what stops a spammer from
+    /// earning trust by posting into the queue.
+    pub async fn approved_count_for_author(pool: &PgPool, author_id: Uuid) -> Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM comment WHERE author_id = $1 AND status = $2")
+                .bind(author_id)
+                .bind(CommentStatus::Published.as_i16())
+                .fetch_one(pool)
+                .await
+                .context("failed to count approved comments for author")?;
+
+        Ok(count)
+    }
+
     /// List comments by status (for moderation).
     pub async fn list_by_status(
         pool: &PgPool,
@@ -477,6 +565,87 @@ mod tests {
             CommentStatus::Spam,
         ] {
             assert!(!decided.awaits_review(), "{decided:?}");
+        }
+    }
+
+    /// A site that publishes immediately is unaffected by the ladder: it cannot
+    /// hold a comment that the site would have published.
+    #[test]
+    fn the_ladder_cannot_hold_a_comment_on_an_open_site() {
+        for approved in [0, 100] {
+            assert_eq!(
+                CommentStatus::for_new_comment(CommentStatus::Published, false, approved, Some(3)),
+                CommentStatus::Published
+            );
+        }
+    }
+
+    /// A new account waits for classification. This is the case the ladder exists
+    /// to distinguish.
+    #[test]
+    fn a_new_account_waits_in_the_queue() {
+        assert_eq!(
+            CommentStatus::for_new_comment(CommentStatus::Pending, false, 0, Some(3)),
+            CommentStatus::Pending
+        );
+        assert_eq!(
+            CommentStatus::for_new_comment(CommentStatus::Pending, false, 2, Some(3)),
+            CommentStatus::Pending,
+            "one short of the threshold is still short"
+        );
+    }
+
+    /// An account that has been read by a human enough times skips the wait.
+    #[test]
+    fn an_established_account_skips_the_queue() {
+        assert_eq!(
+            CommentStatus::for_new_comment(CommentStatus::Pending, false, 3, Some(3)),
+            CommentStatus::Published,
+            "the threshold is inclusive"
+        );
+        assert_eq!(
+            CommentStatus::for_new_comment(CommentStatus::Pending, false, 50, Some(3)),
+            CommentStatus::Published
+        );
+    }
+
+    /// With the ladder off, only the explicit permission excuses anyone.
+    #[test]
+    fn a_disabled_ladder_grants_nothing() {
+        assert_eq!(
+            CommentStatus::for_new_comment(CommentStatus::Pending, false, 1000, None),
+            CommentStatus::Pending
+        );
+        assert_eq!(
+            CommentStatus::for_new_comment(CommentStatus::Pending, true, 0, None),
+            CommentStatus::Published,
+            "the permission still works with the ladder off"
+        );
+    }
+
+    /// The explicit grant does not depend on any history.
+    #[test]
+    fn the_skip_permission_does_not_need_a_history() {
+        assert_eq!(
+            CommentStatus::for_new_comment(CommentStatus::Pending, true, 0, Some(3)),
+            CommentStatus::Published
+        );
+    }
+
+    /// The ladder only promotes out of pending; it never moves a comment into a
+    /// non-visible status.
+    #[test]
+    fn the_ladder_only_ever_promotes() {
+        for site_default in [
+            CommentStatus::Published,
+            CommentStatus::Unpublished,
+            CommentStatus::Spam,
+        ] {
+            assert_eq!(
+                CommentStatus::for_new_comment(site_default, false, 100, Some(3)),
+                site_default,
+                "{site_default:?} is not a review queue, so the ladder must not touch it"
+            );
         }
     }
 
