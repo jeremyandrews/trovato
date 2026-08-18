@@ -6,12 +6,12 @@
     <h2>{% if editing %}Edit tag{% else %}Add tag to {{ category.label }}{% endif %}</h2>
 </div>
 
-<nav class="breadcrumb">
+<nav class="breadcrumb" aria-label="Breadcrumb">
     <a href="/admin/structure/categories">Categories</a>
     &raquo;
     <a href="/admin/structure/categories/{{ category.id }}/tags">{{ category.label }}</a>
     &raquo;
-    <span>{% if editing %}Edit{% else %}Add{% endif %}</span>
+    <span aria-current="page">{% if editing %}Edit{% else %}Add{% endif %}</span>
 </nav>
 
 <div class="admin-card">
