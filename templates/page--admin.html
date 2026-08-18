@@ -191,6 +191,7 @@
                 <li><a href="/admin/structure/aliases" {% if path is starting_with("/admin/structure/aliases") %}class="active" aria-current="page"{% endif %}>URL aliases</a></li>
                 <li><a href="/admin/gather" {% if path is starting_with("/admin/gather") %}class="active" aria-current="page"{% endif %}>Gather queries</a></li>
                 <li><a href="/admin/structure/tiles" {% if path is starting_with("/admin/structure/tiles") %}class="active" aria-current="page"{% endif %}>Tiles</a></li>
+                <li><a href="/admin/structure/menus" {% if path is starting_with("/admin/structure/menus") %}class="active" aria-current="page"{% endif %}>Menus</a></li>
 
                 <div class="admin-nav-section">People</div>
                 <li><a href="/admin/people" {% if path == "/admin/people" or path is starting_with("/admin/people/add") or (path is starting_with("/admin/people/") and not path is starting_with("/admin/people/roles") and not path is starting_with("/admin/people/permissions")) %}class="active" aria-current="page"{% endif %}>Users</a></li>

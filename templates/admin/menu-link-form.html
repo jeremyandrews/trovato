@@ -1,0 +1,69 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>{% if editing %}Edit link{% else %}Add link{% endif %} in menu &ldquo;{{ menu_name }}&rdquo;</h2>
+</div>
+
+<div class="admin-card">
+    <form id="menu-link-form" method="post" action="{{ action }}">
+        {{ form::csrf(csrf_token=csrf_token) }}
+
+        {{ form::errors(errors=errors) }}
+
+        <div class="form-item">
+            <label for="title" class="form-item__label form-item__label--required">Title</label>
+            <input type="text" id="title" name="title" class="form-text"
+                   value="{{ values.title | default(value='') }}" required>
+            <p class="form-item__description">The text the link shows.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="path" class="form-item__label form-item__label--required">Path</label>
+            <input type="text" id="path" name="path" class="form-text"
+                   value="{{ values.path | default(value='') }}"
+                   placeholder="/about" required>
+            <p class="form-item__description">A local absolute path, beginning with
+            <code>/</code>. External URLs are not accepted. A path that does not
+            resolve is saved and returns 404 when followed, so check it.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="parent_id" class="form-item__label">Parent link</label>
+            <select id="parent_id" name="parent_id" class="form-select">
+                <option value="">&lt;Top level&gt;</option>
+                {% for parent in parents %}
+                <option value="{{ parent.id }}"{% if values.parent_id | default(value='') == parent.id %} selected{% endif %}>{{ parent.label }}</option>
+                {% endfor %}
+            </select>
+            <p class="form-item__description">The link this one nests under. A link
+            cannot be placed below itself, so its own descendants are not offered.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="weight" class="form-item__label">Weight</label>
+            <input type="number" id="weight" name="weight" class="form-text"
+                   value="{{ values.weight | default(value=0) }}" step="1">
+            <p class="form-item__description">Lower sorts first among siblings. Ties
+            break on title.</p>
+        </div>
+
+        <div class="form-item">
+            <label for="hidden" class="form-item__label">
+                <input type="checkbox" id="hidden" name="hidden" value="1"
+                       {% if values.hidden | default(value=false) %}checked{% endif %}>
+                Hidden
+            </label>
+            <p class="form-item__description">A hidden link stays in the menu and is
+            not rendered. Its children are still rendered.</p>
+        </div>
+
+        {% if editing %}
+        {{ form::actions(submit_label="Save changes", cancel_url="/admin/structure/menus/" ~ menu_name) }}
+        {% else %}
+        {{ form::actions(submit_label="Create link", cancel_url="/admin/structure/menus/" ~ menu_name) }}
+        {% endif %}
+    </form>
+</div>
+{% endblock %}

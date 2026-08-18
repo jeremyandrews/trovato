@@ -31,17 +31,16 @@ to `trovato-mcp`.
 
 ### The remaining admin screens
 
-Roles and permissions, stages, menus, and system configuration are
-configuration-import only. Each needs a form. This is the largest block of
-ordinary work before 1.0 and the most approachable for a contributor who wants
-somewhere to start.
+Stages and system configuration are configuration-import only. Each needs a form.
+This is the largest block of ordinary work before 1.0 and the most approachable
+for a contributor who wants somewhere to start.
 
-Menus are on this list rather than the one below because a site's navigation is
-not an advanced feature: editing it by hand-writing YAML and running a CLI import
-fails the standard 1.0 is held to. `menu_link` rows already carry everything a
-form would edit — menu name, path, title, parent, weight, visibility — and the
-render layer already reads them, so the work is the form and its route, not the
-model.
+**Menus are done.** `/admin/structure/menus` lists a site's menus, renders each as
+an indented tree, and creates, edits, reorders and deletes links, with cycle
+rejection and a stated answer for what happens to a deleted link's children. It
+needed no kernel plumbing: the render layer reads `menu_link` per request, so an
+edit shows on the next page load without a restart. Plugin-registered navigation
+is listed read-only beside it, because it is not rows.
 
 ### Test isolation
 
@@ -53,10 +52,11 @@ a good first contribution.
 ### The committed plugin binary
 
 `plugins/ritrovo_importer/ritrovo_importer.wasm` is a compiled artifact checked
-into a source repository. It exists so the tutorial works out of the box, and it
-is reproducible, but the right answer is either a build-from-source step in the
-tutorial or publishing the reference application so the artifact can be fetched
-rather than committed. Before 1.0, one of those.
+into a source repository, and it cannot currently be rebuilt from published
+sources: the SDK revision it was compiled against is in no public repository. See
+KNOWN-ISSUES.md, which carries the detail. The right answer is either a
+build-from-source step in the tutorial or publishing the reference application so
+the artifact can be fetched rather than committed. Before 1.0, one of those.
 
 ## After 1.0
 
