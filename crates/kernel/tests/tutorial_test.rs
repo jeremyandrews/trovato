@@ -119,6 +119,7 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                             footer: None,
                             canonical_url: None,
                             routes: Vec::new(),
+                            feed: None,
                         },
                         plugin: "core".to_string(),
                         created: now,

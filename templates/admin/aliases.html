@@ -38,10 +38,10 @@
     </table>
 
     {% if total_pages > 1 %}
-    <nav class="pagination">
+    <nav class="pagination" aria-label="Pagination">
         {% for p in range(start=1, end=total_pages + 1) %}
             {% if p == page %}
-            <span class="pagination__current">{{ p }}</span>
+            <span class="pagination__current" aria-current="page">{{ p }}</span>
             {% else %}
             <a href="/admin/structure/aliases?page={{ p }}" class="pagination__link">{{ p }}</a>
             {% endif %}

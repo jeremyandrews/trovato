@@ -55,18 +55,19 @@
         <fieldset class="fieldset">
             <legend>User registration</legend>
             <div class="fieldset__content">
+                {# Two modes, not three: "admin only" and "closed" differed in
+                   wording only. Both close the public register route, and neither
+                   can stop an administrator creating an account. A site that
+                   previously stored "closed" shows as admin only, and its register
+                   route behaves exactly as before. #}
                 <div class="form-item">
                     <div class="form-checkbox-wrapper">
                         <input type="radio" id="reg_open" name="registration_mode" value="open" {% if registration_mode == "open" %}checked{% endif %}>
                         <label for="reg_open">Open — anyone can register</label>
                     </div>
                     <div class="form-checkbox-wrapper">
-                        <input type="radio" id="reg_admin" name="registration_mode" value="admin_only" {% if registration_mode == "admin_only" or not registration_mode %}checked{% endif %}>
-                        <label for="reg_admin">Admin only — administrators create accounts</label>
-                    </div>
-                    <div class="form-checkbox-wrapper">
-                        <input type="radio" id="reg_closed" name="registration_mode" value="closed" {% if registration_mode == "closed" %}checked{% endif %}>
-                        <label for="reg_closed">Closed — no new registrations</label>
+                        <input type="radio" id="reg_admin" name="registration_mode" value="admin_only" {% if registration_mode != "open" %}checked{% endif %}>
+                        <label for="reg_admin">Admin only — administrators create accounts, and /user/register is closed</label>
                     </div>
                 </div>
             </div>

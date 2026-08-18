@@ -173,6 +173,11 @@ rebuild_on_save = true           # or false for cron-only rebuild
 [search.ai]
 enabled = true                   # enables Stages 2-4
 expansion_cache_ttl = 3600       # seconds; 0 = no cache
+                                 # Implemented as the CACHE_TTL_SEARCH_EXPAND
+                                 # environment variable, default 30 days: an
+                                 # expansion costs provider tokens and does not
+                                 # go stale the way content does. 0 still
+                                 # disables the cache.
 expansion_max_terms = 6
 summary_max_tokens = 300
 summary_model = "default"        # or specific provider/model override

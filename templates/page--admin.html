@@ -172,35 +172,37 @@
                 <span class="visually-hidden">Admin</span>
             </a>
         </h1>
+        {# Each active link carries aria-current="page" alongside the class:
+           the class is styling, which assistive technology cannot see. #}
         <nav aria-label="Admin navigation">
             <ul class="admin-nav">
-                <li><a href="/admin" {% if path == "/admin" %}class="active"{% endif %}>Dashboard</a></li>
+                <li><a href="/admin" {% if path == "/admin" %}class="active" aria-current="page"{% endif %}>Dashboard</a></li>
 
                 <div class="admin-nav-section">Content</div>
-                <li><a href="/admin/content" {% if path is starting_with("/admin/content") and not path is starting_with("/admin/content/files") and not path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Content</a></li>
+                <li><a href="/admin/content" {% if path is starting_with("/admin/content") and not path is starting_with("/admin/content/files") and not path is starting_with("/admin/content/comments") %}class="active" aria-current="page"{% endif %}>Content</a></li>
                 <li><a href="/admin/content/add">Add content</a></li>
-                {% if "comments" in enabled_plugins %}<li><a href="/admin/content/comments" {% if path is starting_with("/admin/content/comments") %}class="active"{% endif %}>Comments</a></li>{% endif %}
-                <li><a href="/admin/content/files" {% if path is starting_with("/admin/content/files") %}class="active"{% endif %}>Files</a></li>
-                <li><a href="/admin/media" {% if path is starting_with("/admin/media") %}class="active"{% endif %}>Media</a></li>
+                {% if "comments" in enabled_plugins %}<li><a href="/admin/content/comments" {% if path is starting_with("/admin/content/comments") %}class="active" aria-current="page"{% endif %}>Comments</a></li>{% endif %}
+                <li><a href="/admin/content/files" {% if path is starting_with("/admin/content/files") %}class="active" aria-current="page"{% endif %}>Files</a></li>
+                <li><a href="/admin/media" {% if path is starting_with("/admin/media") %}class="active" aria-current="page"{% endif %}>Media</a></li>
 
                 <div class="admin-nav-section">Structure</div>
-                <li><a href="/admin/structure/types" {% if path is starting_with("/admin/structure/types") %}class="active"{% endif %}>Content types</a></li>
-                {% if "categories" in enabled_plugins %}<li><a href="/admin/structure/categories" {% if path is starting_with("/admin/structure/categories") or path is starting_with("/admin/structure/tags") %}class="active"{% endif %}>Categories</a></li>{% endif %}
-                <li><a href="/admin/structure/aliases" {% if path is starting_with("/admin/structure/aliases") %}class="active"{% endif %}>URL aliases</a></li>
-                <li><a href="/admin/gather" {% if path is starting_with("/admin/gather") %}class="active"{% endif %}>Gather queries</a></li>
-                <li><a href="/admin/structure/tiles" {% if path is starting_with("/admin/structure/tiles") %}class="active"{% endif %}>Tiles</a></li>
+                <li><a href="/admin/structure/types" {% if path is starting_with("/admin/structure/types") %}class="active" aria-current="page"{% endif %}>Content types</a></li>
+                {% if "categories" in enabled_plugins %}<li><a href="/admin/structure/categories" {% if path is starting_with("/admin/structure/categories") or path is starting_with("/admin/structure/tags") %}class="active" aria-current="page"{% endif %}>Categories</a></li>{% endif %}
+                <li><a href="/admin/structure/aliases" {% if path is starting_with("/admin/structure/aliases") %}class="active" aria-current="page"{% endif %}>URL aliases</a></li>
+                <li><a href="/admin/gather" {% if path is starting_with("/admin/gather") %}class="active" aria-current="page"{% endif %}>Gather queries</a></li>
+                <li><a href="/admin/structure/tiles" {% if path is starting_with("/admin/structure/tiles") %}class="active" aria-current="page"{% endif %}>Tiles</a></li>
 
                 <div class="admin-nav-section">People</div>
-                <li><a href="/admin/people" {% if path == "/admin/people" or path is starting_with("/admin/people/add") or (path is starting_with("/admin/people/") and not path is starting_with("/admin/people/roles") and not path is starting_with("/admin/people/permissions")) %}class="active"{% endif %}>Users</a></li>
-                <li><a href="/admin/people/roles" {% if path is starting_with("/admin/people/roles") %}class="active"{% endif %}>Roles</a></li>
-                <li><a href="/admin/people/permissions" {% if path is starting_with("/admin/people/permissions") %}class="active"{% endif %}>Permissions</a></li>
+                <li><a href="/admin/people" {% if path == "/admin/people" or path is starting_with("/admin/people/add") or (path is starting_with("/admin/people/") and not path is starting_with("/admin/people/roles") and not path is starting_with("/admin/people/permissions")) %}class="active" aria-current="page"{% endif %}>Users</a></li>
+                <li><a href="/admin/people/roles" {% if path is starting_with("/admin/people/roles") %}class="active" aria-current="page"{% endif %}>Roles</a></li>
+                <li><a href="/admin/people/permissions" {% if path is starting_with("/admin/people/permissions") %}class="active" aria-current="page"{% endif %}>Permissions</a></li>
 
                 <div class="admin-nav-section">System</div>
-                <li><a href="/admin/config/site" {% if path is starting_with("/admin/config/site") %}class="active"{% endif %}>Site settings</a></li>
-                <li><a href="/admin/plugins" {% if path is starting_with("/admin/plugins") %}class="active"{% endif %}>Plugins</a></li>
-                <li><a href="/admin/system/ai-providers" {% if path is starting_with("/admin/system/ai-providers") %}class="active"{% endif %}>AI Providers</a></li>
-                <li><a href="/admin/system/ai-budgets" {% if path is starting_with("/admin/system/ai-budgets") %}class="active"{% endif %}>AI Budgets</a></li>
-                <li><a href="/admin/system/ai-chat" {% if path is starting_with("/admin/system/ai-chat") %}class="active"{% endif %}>AI Chat</a></li>
+                <li><a href="/admin/config/site" {% if path is starting_with("/admin/config/site") %}class="active" aria-current="page"{% endif %}>Site settings</a></li>
+                <li><a href="/admin/plugins" {% if path is starting_with("/admin/plugins") %}class="active" aria-current="page"{% endif %}>Plugins</a></li>
+                <li><a href="/admin/system/ai-providers" {% if path is starting_with("/admin/system/ai-providers") %}class="active" aria-current="page"{% endif %}>AI Providers</a></li>
+                <li><a href="/admin/system/ai-budgets" {% if path is starting_with("/admin/system/ai-budgets") %}class="active" aria-current="page"{% endif %}>AI Budgets</a></li>
+                <li><a href="/admin/system/ai-chat" {% if path is starting_with("/admin/system/ai-chat") %}class="active" aria-current="page"{% endif %}>AI Chat</a></li>
             </ul>
         </nav>
     </aside>
