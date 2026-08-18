@@ -6,6 +6,15 @@
 </div>
 
 <div class="admin-card">
+    <p>Every role against every permission. To add, rename or delete a role, go to
+    <a href="/admin/people/roles">Roles</a>.</p>
+    <p>This grid lists the permissions the kernel defines. A plugin declares its own
+    through <code>tap_perm</code>, which the kernel does not yet dispatch, so a
+    plugin's permissions do not appear here and cannot be granted from this screen.
+    See KNOWN-ISSUES.md.</p>
+</div>
+
+<div class="admin-card">
     <form id="permissions-form" method="post" action="/admin/people/permissions">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">

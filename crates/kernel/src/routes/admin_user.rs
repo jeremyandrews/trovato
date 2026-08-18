@@ -33,6 +33,22 @@ struct UserFormData {
     status: Option<String>,
 }
 
+/// One role in the listing.
+///
+/// Not the `Role` row: the counts are what the screen is for, and a template that
+/// has to ask for them one at a time is a template doing queries.
+#[derive(Debug, serde::Serialize)]
+struct RoleRow {
+    id: uuid::Uuid,
+    name: String,
+    /// How many users hold the role. Deleting it removes these assignments.
+    members: i64,
+    /// How many permissions it grants.
+    permissions: usize,
+    /// Whether this is one of the two roles the kernel depends on by id.
+    built_in: bool,
+}
+
 /// Role form data.
 #[derive(Debug, Deserialize)]
 struct RoleFormData {
@@ -453,10 +469,32 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
         }
     };
 
+    // Members and permissions per role. Deleting a role removes its assignments
+    // (`user_roles.role_id` is ON DELETE CASCADE), so the count belongs on the
+    // screen that offers the delete rather than in the surprise afterwards.
+    let mut rows = Vec::with_capacity(roles.len());
+    for role in roles {
+        let members = state.roles().member_count(role.id).await.unwrap_or(0);
+        let permissions = state
+            .roles()
+            .get_permissions(role.id)
+            .await
+            .map(|p| p.len())
+            .unwrap_or(0);
+        let built_in = role.id == ANONYMOUS_ROLE_ID || role.id == AUTHENTICATED_ROLE_ID;
+        rows.push(RoleRow {
+            id: role.id,
+            name: role.name,
+            members,
+            permissions,
+            built_in,
+        });
+    }
+
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
-    context.insert("roles", &roles);
+    context.insert("roles", &rows);
     context.insert("anonymous_role_id", &ANONYMOUS_ROLE_ID.to_string());
     context.insert("authenticated_role_id", &AUTHENTICATED_ROLE_ID.to_string());
     context.insert("csrf_token", &csrf_token);
@@ -690,9 +728,17 @@ async fn delete_role(
         return render_error("Cannot delete built-in roles.");
     }
 
+    // Recorded before the delete, because the cascade takes the rows with it and
+    // afterwards there is nothing left to count.
+    let members = state.roles().member_count(role_id).await.unwrap_or(0);
+
     match state.roles().delete(role_id).await {
         Ok(true) => {
-            tracing::info!(role_id = %role_id, "role deleted");
+            tracing::info!(
+                role_id = %role_id,
+                members_unassigned = members,
+                "role deleted; its assignments went with it"
+            );
             Redirect::to("/admin/people/roles").into_response()
         }
         Ok(false) => render_not_found(),

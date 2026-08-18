@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- The roles screen says what deleting a role does. `/admin/people/roles` now
+  shows, per role, how many people hold it and how many permissions it grants, and
+  the delete confirmation names the number of members who will lose it.
+
+  The roles CRUD already existed — list, create, rename, delete, with the
+  anonymous and authenticated roles refused — so this is not a new screen. What was
+  missing was the consequence. `user_roles.role_id` is `ON DELETE CASCADE`, so
+  deleting a role silently takes it away from everyone who holds it. That is the
+  right behaviour; discovering it afterwards is not. The confirmation now reads
+  "3 user(s) hold it and will lose it. Their accounts are not deleted, and no other
+  role is affected", and the page states the same thing outside the dialog for
+  anyone who has JavaScript off and never sees a confirm.
+
+  The two screens also now link to each other. Roles linked to permissions and
+  permissions linked nowhere, which made the grid a dead end from a screen that
+  cannot grant anything itself.
+
+  And the grid says what it cannot do. It renders the kernel's permission list, so
+  a plugin's permissions are absent from it — the same `tap_perm`-is-not-dispatched
+  limitation `config import` hits from the other side. A grid that silently omits
+  half the permissions on a site with plugins is worse than one that says it does.
+
 - A role config file carries its permissions, and `config import` grants them.
 
   Root cause: the `role` config entity was the `roles` row, which has three

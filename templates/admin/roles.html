@@ -5,11 +5,18 @@
 {{ list::header(title="Roles", add_url="/admin/people/roles/add", add_label="Add role") }}
 
 <div class="admin-card">
+    <p>A role is a named set of permissions. Assign the permissions themselves on
+    the <a href="/admin/people/permissions">permissions</a> screen, which is a grid
+    of every role against every permission. Assigning a role to a person is done on
+    that person's account.</p>
+
     {% if roles %}
     <table class="table">
         <thead>
             <tr>
                 <th>Role name</th>
+                <th>Permissions</th>
+                <th>Members</th>
                 <th>Operations</th>
             </tr>
         </thead>
@@ -18,29 +25,39 @@
             <tr>
                 <td>
                     <a href="/admin/people/roles/{{ role.id }}/edit">{{ role.name }}</a>
-                    {% if role.id == anonymous_role_id or role.id == authenticated_role_id %}
+                    {% if role.built_in %}
                     <span class="badge badge--system">Built-in</span>
                     {% endif %}
                 </td>
+                <td><a href="/admin/people/permissions">{{ role.permissions }}</a></td>
+                <td>{{ role.members }}</td>
                 <td>
                     <a href="/admin/people/roles/{{ role.id }}/edit">Edit</a>
-                    {% if role.id != anonymous_role_id and role.id != authenticated_role_id %}
+                    {% if not role.built_in %}
                     &middot;
-                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", confirm_text="Are you sure you want to delete this role?", csrf_token=csrf_token) }}
+                    {% if role.members > 0 %}
+                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", confirm_text="Delete the " ~ role.name ~ " role? " ~ role.members ~ " user(s) hold it and will lose it. Their accounts are not deleted, and no other role is affected.", csrf_token=csrf_token) }}
+                    {% else %}
+                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", confirm_text="Delete the " ~ role.name ~ " role? Nobody holds it.", csrf_token=csrf_token) }}
+                    {% endif %}
+                    {% else %}
+                    &middot;
+                    <span title="The anonymous and authenticated roles are referenced by the kernel by id.">Not deletable</span>
                     {% endif %}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+
+    <p><strong>Deleting a role removes it from everyone who holds it.</strong> The
+    accounts are untouched and no other role changes; only that role's assignments
+    and its permission grants go.</p>
+
     {% else %}
     {{ list::empty(message="No roles found.", add_url="/admin/people/roles/add") }}
     {% endif %}
 </div>
-
-<p style="margin-top: 1rem;">
-    <a href="/admin/people/permissions">Manage permissions</a>
-</p>
 
 <style>
     .badge {

@@ -81,6 +81,11 @@ impl RoleService {
         Ok(deleted)
     }
 
+    /// How many users hold a role.
+    pub async fn member_count(&self, role_id: Uuid) -> Result<i64> {
+        Role::member_count(&self.inner.pool, role_id).await
+    }
+
     /// Get all permissions for a role.
     pub async fn get_permissions(&self, role_id: Uuid) -> Result<Vec<String>> {
         Role::get_permissions(&self.inner.pool, role_id).await
