@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- New plugin: `trovato_spam`, AI comment moderation. Classifies each new comment
+  in the background and publishes it, leaves it for a human, or marks it as spam.
+
+  Every piece this needs already existed and none of them were connected. The AI
+  provider registry has a `Moderation` operation type that nothing invoked, and the
+  admin AI-features screen already lets an operator point a provider at it. The
+  `ai_background` capability authorizes an AI call made outside a web request. The
+  queue host interface has retries and a dead-letter tier. `tap_comment_insert`
+  and `tap_queue_worker` are both dispatched. What was missing was a comment status
+  to classify *into*, which is why this arrives with the pending and spam statuses
+  rather than before them.
+
+  `tap_comment_insert` pushes a classification job, so nothing slow happens on the
+  request that posted the comment. `tap_queue_worker` drains it under the
+  background principal, asks the provider for a verdict, and writes the result
+  back.
+
+  **The failure posture is closed, into the review queue.** A provider that cannot
+  be reached, or an answer that cannot be read as a verdict, traps — which is how
+  the queue is told an attempt failed, so the job is retried with backoff and
+  dead-lettered if the outage persists. The comment does not move. A `hold`
+  verdict changes nothing, for the same reason. Only `publish` publishes, and only
+  from pending, so a moderator's decision is never re-decided; `spam` applies to a
+  pending or a published comment, because taking spam down after the fact is the
+  point of classifying asynchronously. Each write carries the status it expects in
+  its `WHERE` clause, making it a compare-and-set: if a human got there first, the
+  update matches nothing.
+
+  Every decision is logged, so a false positive can be found rather than inferred.
+
+  Two notes on how it reaches the database. It declares `db_tables = ["comment"]`
+  and calls the structured `update`, rather than taking `raw_sql = true` — for one
+  column of one table, the checked narrow call beats the unchecked wide one. The
+  SDK binds only the raw SQL pair from the `db` interface, so the structured call
+  is hand-declared plugin-side in the same way `plugins/argus/src/item_host.rs`
+  hand-declares `item-api`; the proper fix is an SDK binding for the structured
+  four.
+
+  `default_enabled = false`: a plugin that spends provider tokens is opt-in.
+
 - Comments can be held for review, marked as spam, and the author notification
   fires when a comment becomes visible rather than when it is written.
 

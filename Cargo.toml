@@ -26,6 +26,7 @@ members = [
     "plugins/trovato_config_translation",
     "plugins/trovato_block_editor",
     "plugins/trovato_search",
+    "plugins/trovato_spam",
     "plugins/trovato_ai",
     "plugins/argus",
     "plugins/netgrasp",
