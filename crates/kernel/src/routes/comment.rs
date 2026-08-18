@@ -13,7 +13,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::FilterPipeline;
-use crate::models::{Comment, CreateComment, UpdateComment};
+use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::{JsonError, require_csrf_header, user_context_for};
 use crate::state::AppState;
@@ -321,6 +321,18 @@ async fn create_comment(
         ));
     }
 
+    // The status a new comment gets: the site's default, unless this commenter
+    // is trusted enough to bypass the queue. `skip comment approval` is declared
+    // by `trovato_comments` and, before this, was read by nothing.
+    let default_status = CommentStatus::default_for_new_comments(state.db()).await;
+    let status = if default_status.awaits_review()
+        && (user_ctx.is_admin() || user_ctx.has_permission("skip comment approval"))
+    {
+        CommentStatus::Published
+    } else {
+        default_status
+    };
+
     // Create comment
     let input = CreateComment {
         item_id,
@@ -328,7 +340,7 @@ async fn create_comment(
         author_id: user_id,
         body: request.body.clone(),
         body_format: Some("filtered_html".to_string()),
-        status: Some(1), // Published by default
+        status: Some(status.as_i16()),
     };
     let comment = state
         .comments()
@@ -356,34 +368,17 @@ async fn create_comment(
             name: u.name,
         });
 
-    // Send comment notification to content author (non-blocking)
-    if let Some(email_service) = state.email() {
-        // Only notify when commenter is not the content author
-        if comment.author_id != item.author_id {
-            let notification_state = state.clone();
-            let email = email_service.clone();
-            let comment_body = comment.body.clone();
-            let item_title = item.title.clone();
-            let item_author_id = item.author_id;
-            let commenter_name = commenter
-                .as_ref()
-                .map(|a| a.name.clone())
-                .unwrap_or_else(|| "Someone".to_string());
-
-            tokio::spawn(async move {
-                send_comment_notification(
-                    &notification_state,
-                    &email,
-                    item_author_id,
-                    &commenter_name,
-                    &item_title,
-                    &comment_body,
-                    item_id,
-                )
-                .await;
-            });
-        }
-    }
+    // Notify the content author, but only if this comment is visible. A comment
+    // created into the review queue must not mail its full text to the author:
+    // that would deliver every held comment, including the ones moderation
+    // exists to catch.
+    notify_if_published(
+        &state,
+        &comment,
+        None,
+        &item,
+        commenter.as_ref().map(|a| a.name.as_str()),
+    );
 
     let body_html = render_comment_body(&comment);
 
@@ -763,6 +758,72 @@ async fn delete_comment(
 // Notification helpers
 // =============================================================================
 
+/// Whether a status change should mail the content author.
+///
+/// The rule is "on becoming visible", not "on being created". A comment created
+/// straight to published notifies (`previous` is `None`); a comment approved out
+/// of the review queue notifies; re-saving an already published comment does
+/// not, so an edit or a re-approval cannot mail the author twice; and a comment
+/// entering any non-visible status — held, hidden, marked spam — never notifies.
+///
+/// The author commenting on their own content never notifies either, which is
+/// the one part of this rule that predates moderation.
+pub(crate) fn should_notify_on_publish(
+    previous: Option<i16>,
+    new: i16,
+    comment_author: uuid::Uuid,
+    item_author: uuid::Uuid,
+) -> bool {
+    let becomes_visible = CommentStatus::from_i16(new).is_some_and(CommentStatus::is_visible);
+    let was_visible = previous
+        .and_then(CommentStatus::from_i16)
+        .is_some_and(CommentStatus::is_visible);
+
+    becomes_visible && !was_visible && comment_author != item_author
+}
+
+/// Mail the content author if this comment has just become visible.
+///
+/// `previous` is the status before the change, or `None` for a comment that has
+/// just been created. Spawns the send, so a slow or dead SMTP server cannot hold
+/// up the response.
+pub(crate) fn notify_if_published(
+    state: &AppState,
+    comment: &Comment,
+    previous: Option<i16>,
+    item: &crate::models::Item,
+    commenter_name: Option<&str>,
+) {
+    if !should_notify_on_publish(previous, comment.status, comment.author_id, item.author_id) {
+        return;
+    }
+
+    let Some(email_service) = state.email() else {
+        return;
+    };
+
+    let notification_state = state.clone();
+    let email = email_service.clone();
+    let comment_body = comment.body.clone();
+    let item_title = item.title.clone();
+    let item_author_id = item.author_id;
+    let item_id = item.id;
+    let commenter_name = commenter_name.unwrap_or("Someone").to_string();
+
+    tokio::spawn(async move {
+        send_comment_notification(
+            &notification_state,
+            &email,
+            item_author_id,
+            &commenter_name,
+            &item_title,
+            &comment_body,
+            item_id,
+        )
+        .await;
+    });
+}
+
 /// Send a comment notification email to the content author.
 ///
 /// This is called in a background task and must not panic. All errors
@@ -800,9 +861,15 @@ async fn send_comment_notification(
     let action_url = format!("{site_url}/item/{item_id}");
     let subject = format!("New comment on \"{item_title}\" at {site_name}");
 
-    // Truncate comment preview for email
+    // Truncate comment preview for email. Walks back to a char boundary: a
+    // multi-byte character straddling byte 500 would panic a bare slice, and
+    // this runs in a spawned task where that takes the task down silently.
     let preview: &str = if comment_text.len() > 500 {
-        &comment_text[..500]
+        let mut end = 500;
+        while end > 0 && !comment_text.is_char_boundary(end) {
+            end -= 1;
+        }
+        &comment_text[..end]
     } else {
         comment_text
     };
@@ -844,4 +911,127 @@ pub fn router() -> Router<AppState> {
         .route("/api/comment/{id}", get(get_comment))
         .route("/api/comment/{id}", put(update_comment))
         .route("/api/comment/{id}", delete(delete_comment))
+}
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    const UNPUBLISHED: i16 = 0;
+    const PUBLISHED: i16 = 1;
+    const PENDING: i16 = 2;
+    const SPAM: i16 = 3;
+
+    fn commenter() -> Uuid {
+        Uuid::from_u128(1)
+    }
+
+    fn item_author() -> Uuid {
+        Uuid::from_u128(2)
+    }
+
+    /// The behaviour the defect was about: a comment created into the review
+    /// queue must not mail the content author. Under a hold-for-review default
+    /// the old code mailed the full text of every held comment, including the
+    /// ones moderation exists to catch.
+    #[test]
+    fn a_comment_created_into_the_queue_does_not_notify() {
+        for status in [PENDING, SPAM, UNPUBLISHED] {
+            assert!(
+                !should_notify_on_publish(None, status, commenter(), item_author()),
+                "status {status} must not notify on create"
+            );
+        }
+    }
+
+    /// A site that publishes immediately still notifies on create, which is what
+    /// it did before.
+    #[test]
+    fn a_comment_created_published_notifies() {
+        assert!(should_notify_on_publish(
+            None,
+            PUBLISHED,
+            commenter(),
+            item_author()
+        ));
+    }
+
+    /// Approving out of the queue is where the mail belongs.
+    #[test]
+    fn approving_a_held_comment_notifies() {
+        for previous in [PENDING, SPAM, UNPUBLISHED] {
+            assert!(
+                should_notify_on_publish(Some(previous), PUBLISHED, commenter(), item_author()),
+                "{previous} -> published must notify"
+            );
+        }
+    }
+
+    /// Re-saving an already published comment must not mail again, so an edit or
+    /// a second approval cannot double-notify.
+    #[test]
+    fn re_publishing_an_already_published_comment_does_not_notify() {
+        assert!(!should_notify_on_publish(
+            Some(PUBLISHED),
+            PUBLISHED,
+            commenter(),
+            item_author()
+        ));
+    }
+
+    /// Leaving published never notifies either.
+    #[test]
+    fn hiding_a_comment_does_not_notify() {
+        for status in [UNPUBLISHED, PENDING, SPAM] {
+            assert!(
+                !should_notify_on_publish(Some(PUBLISHED), status, commenter(), item_author()),
+                "published -> {status} must not notify"
+            );
+        }
+    }
+
+    /// Predates moderation and still holds: nobody is told about their own
+    /// comment on their own content.
+    #[test]
+    fn the_content_author_commenting_on_their_own_item_does_not_notify() {
+        assert!(!should_notify_on_publish(
+            None,
+            PUBLISHED,
+            item_author(),
+            item_author()
+        ));
+        assert!(!should_notify_on_publish(
+            Some(PENDING),
+            PUBLISHED,
+            item_author(),
+            item_author()
+        ));
+    }
+
+    /// A status this build does not know is not visible, so it cannot notify —
+    /// the same fail-closed reading the read paths use.
+    #[test]
+    fn an_unknown_status_does_not_notify() {
+        assert!(!should_notify_on_publish(
+            None,
+            99,
+            commenter(),
+            item_author()
+        ));
+        assert!(!should_notify_on_publish(
+            Some(99),
+            99,
+            commenter(),
+            item_author()
+        ));
+        // Unknown -> published is a transition into visible, and does notify.
+        assert!(should_notify_on_publish(
+            Some(99),
+            PUBLISHED,
+            commenter(),
+            item_author()
+        ));
+    }
 }

@@ -16,8 +16,12 @@
         <div class="form-group">
             <label for="status">Status</label>
             <select id="status" name="status" class="form-control">
-                <option value="1" {% if comment.status == 1 %}selected{% endif %}>Published</option>
-                <option value="0" {% if comment.status == 0 %}selected{% endif %}>Pending</option>
+                {# Options come from CommentStatus (see status_options), so this
+                   form offers every status the model stores and labels each one
+                   the way the moderation list does. #}
+                {% for option in status_options %}
+                <option value="{{ option.value }}" {% if comment.status == option.value | int %}selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
             </select>
         </div>
 

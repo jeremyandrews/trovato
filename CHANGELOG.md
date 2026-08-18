@@ -95,6 +95,55 @@
   canonical link and `og:url` are absolute by definition, resolved by a crawler
   with no request context to resolve a relative path against.
 
+- Comments can be held for review, marked as spam, and the author notification
+  fires when a comment becomes visible rather than when it is written.
+
+  Comment status was two-valued (0 unpublished, 1 published) and
+  `create_comment` hardcoded `status: Some(1)`, so every comment published the
+  instant it was posted and there was no way to hold one. The `skip comment
+  approval` permission that `trovato_comments` declares was read by nothing. The
+  admin list, meanwhile, labelled status 0 as "Pending" — one `if` for what are
+  really four states — so a comment a moderator had hidden displayed as though it
+  were waiting for them.
+
+  `CommentStatus` now names four values: unpublished (0), published (1), pending
+  (2) and spam (3). Only published is visible, and a stored value this build does
+  not recognise is treated as invisible rather than guessed at. Spam is a status
+  rather than a deletion, so a false positive can be recovered and a classifier
+  has something to learn from. The public read paths bind the published status as
+  a parameter instead of spelling `status = 1` in five queries.
+
+  A new `comment_default_status` site setting chooses what a new comment gets:
+  `published` or `pending`. Unset means published, which is what every comment
+  did before the setting existed — upgrading a site must not silently start
+  holding its comments. A value that is set but *unrecognised* resolves to
+  pending, because that is the recoverable direction: a comment wrongly held is
+  sitting in a queue, while a comment wrongly published is already on the site.
+  The setting is on the moderation screen, where its consequences are, and
+  `skip comment approval` now does what it says: a commenter holding it bypasses
+  the queue.
+
+  The moderation list gained the pending and spam filters, labels that come from
+  `CommentStatus` rather than from a template `if`, a "Spam" action, and
+  per-status actions (nothing offers to approve a comment that is already
+  published). The comment edit form offers all four statuses, and an unknown
+  status submitted to either screen is rejected rather than stored.
+
+  **The notification change.** `send_comment_notification` fired on creation. With
+  a hold-for-review default that would have mailed the content author the full
+  text of every held comment — including the ones the queue exists to catch, which
+  is the worst possible recipient for comment spam. It now fires on the
+  transition into published, wherever that happens: a comment created published
+  still notifies immediately, approving a held comment notifies, re-saving an
+  already published comment does not (so an edit cannot double-notify), and a
+  comment entering any non-visible status never does. The rule is one pure
+  function, `should_notify_on_publish`, so it is unit-tested rather than inferred
+  from two call sites.
+
+  Also fixed, found while moving that call: the email preview sliced
+  `&comment_text[..500]` on a byte index, which panics on a multi-byte character
+  straddling byte 500. It ran in a spawned task, so the panic would have taken
+  the send down silently. It now walks back to a character boundary.
 - Netgrasp is gone from this tree. It now lives in its own repository,
   `jeremyandrews/netgrasp-trovato`, where it builds against `trovato-sdk` as a
   pinned git dependency and installs by appending its own directories to
