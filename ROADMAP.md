@@ -79,12 +79,18 @@ a good first contribution.
 
 ### The committed plugin binary
 
-`plugins/ritrovo_importer/ritrovo_importer.wasm` is a compiled artifact checked
-into a source repository, and it cannot currently be rebuilt from published
-sources: the SDK revision it was compiled against is in no public repository. See
-KNOWN-ISSUES.md, which carries the detail. The right answer is either a
-build-from-source step in the tutorial or publishing the reference application so
-the artifact can be fetched rather than committed. Before 1.0, one of those.
+`plugins/ritrovo_importer/ritrovo_importer.wasm` is a compiled artifact checked into a
+source repository. It is now reproducible from public sources — Ritrovo builds against
+this repository's SDK, and the test header records the commit, the SDK revision and the
+sha256, verified from a fresh clone — so what remains is the binary itself, not its
+provenance. The right answer is either a build-from-source step in the tutorial or
+publishing the reference application so the artifact can be fetched rather than
+committed. Before 1.0, one of those.
+
+Two smaller things KNOWN-ISSUES.md now records alongside it: the committed directory has
+no manifest, so the loader skips it, and `docs/tutorial/part-02-ritrovo-importer.md` has
+been stale since Ritrovo moved out — it tells the reader to build a package that is not
+a workspace member and to read source that is not here. That tutorial part needs a pass.
 
 ## After 1.0
 

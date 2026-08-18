@@ -8,26 +8,37 @@
 //!
 //! ## Provenance of the committed artifact
 //!
-//! What is checkable from this repository alone: the artifact's sha256 is
-//! `cd3952058e620dc7887080e8b2ef158951e2da94629d30c200b54f64ce1ef70e`.
+//! **Reproducible from public sources**, which it was not before. Every fact below
+//! is checkable by a stranger holding this repository and a network connection:
 //!
-//! What is checkable from this repository plus the public Ritrovo repository
-//! (<https://github.com/jeremyandrews/ritrovo>): the sources it was compiled
-//! from are commit `288cd52` of that repository.
+//! | | |
+//! |---|---|
+//! | sha256 | `e3361482bca48cbc99f398fae6ef07af582541c89f28fa4b05ac8f41bf96e37e` |
+//! | sources | commit `8e72d37` of <https://github.com/jeremyandrews/ritrovo> |
+//! | SDK | this repository at `50c46ee`, which that commit pins by `rev` |
 //!
-//! What is **not** checkable yet, and is stated as a limitation rather than a
-//! claim: the SDK revision this artifact was compiled against is not reachable
-//! from any published repository, because at `288cd52` Ritrovo pinned its
-//! `trovato-sdk` dependency at a commit of the unpublished development
-//! repository. So the artifact cannot be reproduced from public sources as it
-//! stands, and no rebuild recipe here would work. Re-pointing Ritrovo's SDK
-//! dependency at this repository and refreshing this artifact from that build
-//! is what makes a byte-for-byte rebuild claim possible; until that lands, this
-//! header claims only the two facts above.
+//! ```text
+//! git clone https://github.com/jeremyandrews/ritrovo.git && cd ritrovo
+//! git checkout 8e72d37
+//! cargo build --target wasm32-wasip1 --release
+//! shasum -a 256 target/wasm32-wasip1/release/ritrovo_importer.wasm
+//! ```
 //!
-//! Being built against an older SDK and loaded on a kernel that has moved on
-//! since is the point: this test is the freeze guarantee in executable form. It
-//! verifies the compatibility that matters:
+//! That recipe was run from a fresh clone and produced this artifact byte for byte.
+//! The sha256 is asserted by a test below, so replacing the artifact without
+//! refreshing this header fails the suite.
+//!
+//! The previous header asserted reproducibility and cited "the contract-freeze commit
+//! `9791c24`" as the pinned SDK revision — a commit that exists in no published
+//! repository, because Ritrovo pinned its SDK at the unpublished development repo. The
+//! version sweep replaced that claim with a statement of the gap; this is the gap
+//! closed.
+//!
+//! ## What this test still guarantees, and what it no longer does
+//!
+//! It is a **paired-consumer check**: a real external plugin, built from public
+//! sources against the published SDK, loads on this kernel and runs through the v2
+//! drain. That is what it verifies:
 //!
 //! 1. **ABI unchanged** — the importer instantiates on the new kernel, i.e. all
 //!    of its declared host imports (`db`, `http`, `logging`, `queue`) still
@@ -42,6 +53,15 @@
 //! `ritrovo_state`-based self-scheduling runs in `tap_cron`, whose dispatch path
 //! in the cron cycle is unchanged by P11d (the drain runs after it, as before),
 //! so it is unaffected.
+//!
+//! **What it no longer guarantees**, said plainly because the previous artifact did
+//! guarantee it by accident: this artifact is built against the *current* SDK, so it
+//! no longer demonstrates that a plugin compiled against an *older* SDK still loads.
+//! The old artifact did, and could not be rebuilt or audited by anyone — a freeze
+//! guarantee whose subject is a black box is weak evidence. This one becomes the older
+//! artifact naturally as the kernel moves on, with provenance a reader can check, which
+//! is the better trade. The version-compatibility rule itself (`major ==`, `minor <=`)
+//! is covered by `plugin/info_parser.rs`'s own tests.
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
@@ -59,7 +79,7 @@ const IMPORTER: &str = "ritrovo_importer";
 /// written down, so an artifact swapped without updating it would leave the
 /// header quietly wrong; this constant makes that a test failure instead.
 const IMPORTER_WASM_SHA256: &str =
-    "cd3952058e620dc7887080e8b2ef158951e2da94629d30c200b54f64ce1ef70e";
+    "e3361482bca48cbc99f398fae6ef07af582541c89f28fa4b05ac8f41bf96e37e";
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
@@ -110,7 +130,7 @@ default_enabled = false
 dependencies = []
 
 [taps]
-implements = ["tap_cron", "tap_queue_info", "tap_queue_worker"]
+implements = ["tap_api", "tap_cron", "tap_queue_info", "tap_queue_worker"]
 weight = 0
 
 [capabilities]
