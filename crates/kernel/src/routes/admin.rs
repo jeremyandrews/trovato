@@ -11,7 +11,7 @@ use tower_sessions::Session;
 
 use crate::file::service::FileStatus;
 use crate::form::AjaxRequest;
-use crate::models::UpdateComment;
+use crate::models::{Comment, CommentStatus, SiteConfig, UpdateComment};
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
 
@@ -182,8 +182,10 @@ async fn file_details(
 
     let owner = state.users().find_by_id(file.owner_id).await.ok().flatten();
     let public_url = state.files().storage().public_url(&file.uri);
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
+    context.insert("csrf_token", &csrf_token);
     context.insert("file", &file);
     context.insert("owner", &owner);
     context.insert("public_url", &public_url);
@@ -225,6 +227,59 @@ async fn delete_file(
 // =============================================================================
 // Media Library
 // =============================================================================
+
+/// Form data for editing a file's alternative text.
+#[derive(Debug, Deserialize)]
+struct AltTextForm {
+    #[serde(rename = "_token")]
+    token: String,
+    /// The alt text. Empty means "explicitly decorative", which is a real answer
+    /// rather than an absent one.
+    alt_text: String,
+    /// Where to return to, so the media library and the file details page can
+    /// share one endpoint without one of them throwing the user to the other.
+    #[serde(default)]
+    redirect_to: Option<String>,
+}
+
+/// Set a file's alternative text.
+///
+/// POST /admin/content/files/{id}/alt-text
+async fn set_file_alt_text(
+    State(state): State<AppState>,
+    session: Session,
+    Path(file_id): Path<uuid::Uuid>,
+    Form(form): Form<AltTextForm>,
+) -> Response {
+    if let Err(redirect) = require_admin(&state, &session).await {
+        return redirect;
+    }
+
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+
+    match state
+        .files()
+        .set_alt_text(file_id, Some(&form.alt_text))
+        .await
+    {
+        Ok(true) => {
+            // Only a same-site path is honoured, so the return target cannot be
+            // turned into an open redirect by a crafted form post.
+            let target = form
+                .redirect_to
+                .filter(|path| path.starts_with('/') && !path.starts_with("//"))
+                .unwrap_or_else(|| format!("/admin/content/files/{file_id}"));
+            Redirect::to(&target).into_response()
+        }
+        Ok(false) => render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to set file alt text");
+            render_server_error("Failed to save alternative text.")
+        }
+    }
+}
 
 /// Media library page with grid display.
 ///
@@ -384,6 +439,74 @@ struct EditCommentForm {
     status: i16,
 }
 
+/// Form data for the moderation default setting.
+#[derive(Debug, Deserialize)]
+struct CommentSettingsForm {
+    #[serde(rename = "_token")]
+    token: String,
+    /// `published` or `pending`.
+    default_status: String,
+}
+
+/// A comment as the moderation list renders it.
+///
+/// The list used to decide the label in the template with
+/// `{% if comment.status == 1 %}`, which is why an unpublished comment displayed
+/// as "Pending" — one branch for four states. The status name now comes from
+/// [`CommentStatus`], so the screen and the model cannot disagree.
+#[derive(Debug, Serialize)]
+struct CommentRow<'a> {
+    #[serde(flatten)]
+    comment: &'a Comment,
+    /// Human-readable status.
+    status_label: &'static str,
+    /// CSS class suffix for the status badge.
+    status_class: &'static str,
+    /// Whether the approve action applies.
+    can_approve: bool,
+    /// Whether the unpublish action applies.
+    can_unpublish: bool,
+    /// Whether the mark-as-spam action applies.
+    can_mark_spam: bool,
+}
+
+impl<'a> CommentRow<'a> {
+    fn new(comment: &'a Comment) -> Self {
+        // An unrecognised stored value is shown as unpublished, matching how the
+        // read paths treat it: not visible.
+        let status = CommentStatus::from_i16(comment.status).unwrap_or(CommentStatus::Unpublished);
+        Self {
+            comment,
+            status_label: status.label(),
+            status_class: status.css_suffix(),
+            can_approve: !status.is_visible(),
+            can_unpublish: status.is_visible(),
+            can_mark_spam: status != CommentStatus::Spam,
+        }
+    }
+}
+
+/// The status options both comment screens render, as `{value, label}` pairs.
+fn comment_status_options() -> Vec<serde_json::Value> {
+    COMMENT_STATUS_FILTERS
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "value": s.as_i16().to_string(),
+                "label": s.label(),
+            })
+        })
+        .collect()
+}
+
+/// The statuses the moderation screens offer, in display order.
+const COMMENT_STATUS_FILTERS: [CommentStatus; 4] = [
+    CommentStatus::Pending,
+    CommentStatus::Published,
+    CommentStatus::Unpublished,
+    CommentStatus::Spam,
+];
+
 /// List all comments for moderation.
 ///
 /// GET /admin/content/comments
@@ -439,8 +562,17 @@ async fn list_comments(
 
     let csrf_token = generate_csrf_token(&session).await;
 
+    let rows: Vec<CommentRow<'_>> = comments.iter().map(CommentRow::new).collect();
+
+    // The status filter options, and the current default for new comments, so
+    // the screen that moderates comments is also where the queue is turned on.
+    let filters = comment_status_options();
+    let default_status = CommentStatus::default_for_new_comments(state.db()).await;
+
     let mut context = tera::Context::new();
-    context.insert("comments", &comments);
+    context.insert("comments", &rows);
+    context.insert("status_options", &filters);
+    context.insert("default_status_pending", &default_status.awaits_review());
     context.insert("authors", &authors);
     context.insert("items", &items);
     context.insert("total", &total);
@@ -497,6 +629,7 @@ async fn edit_comment_form(
 
     let mut context = tera::Context::new();
     context.insert("comment", &comment);
+    context.insert("status_options", &comment_status_options());
     context.insert("author_name", &author_name);
     context.insert("item_title", &item_title);
     context.insert("csrf_token", &csrf_token);
@@ -523,6 +656,12 @@ async fn edit_comment_submit(
         return resp;
     }
 
+    // A status the model does not recognise is a malformed submission, not a new
+    // state to store.
+    if CommentStatus::from_i16(form.status).is_none() {
+        return render_server_error("Unknown comment status");
+    }
+
     let user_ctx = admin_user_context(&state, &user).await;
     let input = UpdateComment {
         body: Some(form.body),
@@ -530,14 +669,59 @@ async fn edit_comment_submit(
         status: Some(form.status),
     };
 
+    // The status before the edit, so approving out of the queue notifies the
+    // content author and re-saving an already published comment does not.
+    let previous = state
+        .comments()
+        .load(id)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.status);
+
     match state.comments().update(id, input, &user_ctx).await {
-        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(Some(comment)) => {
+            notify_author_if_published(&state, &comment, previous).await;
+            Redirect::to("/admin/content/comments").into_response()
+        }
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update comment");
             render_server_error("Failed to update comment")
         }
     }
+}
+
+/// Mail the content author when a moderation action has just made a comment
+/// visible.
+///
+/// The notification used to fire when a comment was created, which under a
+/// hold-for-review default would have mailed the author the full text of every
+/// comment the queue exists to catch. It belongs on the transition into
+/// published, which is here and in the create route.
+async fn notify_author_if_published(state: &AppState, comment: &Comment, previous: Option<i16>) {
+    // One rule, in one place: `notify_if_published` decides. This loads the item
+    // unconditionally rather than pre-filtering on a placeholder author id,
+    // which would wrongly suppress the mail whenever the comment author happened
+    // to equal the placeholder. A moderation action can afford one query.
+    let Ok(Some(item)) = state.items().load(comment.item_id).await else {
+        return;
+    };
+    let commenter = state
+        .users()
+        .find_by_id(comment.author_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.name);
+
+    crate::routes::comment::notify_if_published(
+        state,
+        comment,
+        previous,
+        &item,
+        commenter.as_deref(),
+    );
 }
 
 /// Set a comment's publication status (shared by approve/unpublish).
@@ -565,8 +749,19 @@ async fn set_comment_status(
         status: Some(status),
     };
 
+    let previous = state
+        .comments()
+        .load(id)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.status);
+
     match state.comments().update(id, input, &user_ctx).await {
-        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(Some(comment)) => {
+            notify_author_if_published(state, &comment, previous).await;
+            Redirect::to("/admin/content/comments").into_response()
+        }
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to {} comment", action);
@@ -584,7 +779,15 @@ async fn approve_comment(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    set_comment_status(&state, &session, id, &form.token, 1, "approve").await
+    set_comment_status(
+        &state,
+        &session,
+        id,
+        &form.token,
+        CommentStatus::Published.as_i16(),
+        "approve",
+    )
+    .await
 }
 
 /// Unpublish a comment.
@@ -596,7 +799,82 @@ async fn unpublish_comment(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    set_comment_status(&state, &session, id, &form.token, 0, "unpublish").await
+    set_comment_status(
+        &state,
+        &session,
+        id,
+        &form.token,
+        CommentStatus::Unpublished.as_i16(),
+        "unpublish",
+    )
+    .await
+}
+
+/// Mark a comment as spam.
+///
+/// Kept rather than deleted, so a false positive can be recovered and a
+/// classifier has something to learn from.
+///
+/// POST /admin/content/comments/{id}/spam
+async fn mark_comment_spam(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    set_comment_status(
+        &state,
+        &session,
+        id,
+        &form.token,
+        CommentStatus::Spam.as_i16(),
+        "mark as spam",
+    )
+    .await
+}
+
+/// Set whether new comments are published immediately or held for review.
+///
+/// The setting lives on the moderation screen because that is where its
+/// consequences are: turning the queue on fills the list below it.
+///
+/// POST /admin/content/comments/settings
+async fn save_comment_settings(
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<CommentSettingsForm>,
+) -> Response {
+    if let Err(redirect) = require_admin(&state, &session).await {
+        return redirect;
+    }
+
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+
+    // Only the two statuses a new comment can meaningfully take.
+    let value = match form.default_status.as_str() {
+        "published" => "published",
+        "pending" => "pending",
+        other => {
+            tracing::warn!(value = %other, "rejected unknown comment default status");
+            return render_server_error("Unknown comment status");
+        }
+    };
+
+    match SiteConfig::set(
+        state.db(),
+        crate::models::comment::DEFAULT_STATUS_KEY,
+        serde_json::Value::String(value.to_string()),
+    )
+    .await
+    {
+        Ok(_) => Redirect::to("/admin/content/comments").into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to save comment default status");
+            render_server_error("Failed to save setting")
+        }
+    }
 }
 
 /// Delete a comment.
@@ -645,6 +923,10 @@ pub fn router() -> Router<AppState> {
         .route("/admin/content/files", get(list_files))
         .route("/admin/content/files/{id}", get(file_details))
         .route("/admin/content/files/{id}/delete", post(delete_file))
+        .route(
+            "/admin/content/files/{id}/alt-text",
+            post(set_file_alt_text),
+        )
         // Media library
         .route("/admin/media", get(media_library))
         // Content type and search configuration management
@@ -691,6 +973,11 @@ pub fn comment_admin_router() -> Router<AppState> {
         .route(
             "/admin/content/comments/{id}/unpublish",
             post(unpublish_comment),
+        )
+        .route("/admin/content/comments/{id}/spam", post(mark_comment_spam))
+        .route(
+            "/admin/content/comments/settings",
+            post(save_comment_settings),
         )
         .route(
             "/admin/content/comments/{id}/delete",

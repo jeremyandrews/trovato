@@ -325,6 +325,14 @@ pub struct RuntimeConfig {
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
+    /// The site's public base URL, the same value email links are built from.
+    ///
+    /// Request handling needs it for the absolute URLs that only make sense
+    /// off-site: `<link rel="canonical">` and the Open Graph tags, which a
+    /// crawler or a link unfurler resolves with no request context to resolve a
+    /// relative path against.
+    pub site_url: String,
+
     /// D-26 over-fetch and backfill bounds for access-filtered gather pages.
     pub gather_access: crate::gather::GatherAccessConfig,
 
@@ -621,6 +629,7 @@ impl Config {
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
+            site_url: site_url.clone(),
             gather_access: crate::gather::GatherAccessConfig::from_lookup(get),
             // 30 days.
             search_expand_cache_ttl: parse_or(get, "CACHE_TTL_SEARCH_EXPAND", 2_592_000),

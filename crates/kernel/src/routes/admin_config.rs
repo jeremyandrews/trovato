@@ -115,12 +115,13 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
         .flatten()
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| DEFAULT_ITEMS_PER_PAGE.to_string());
-    let registration_mode = SiteConfig::get(pool, "user_registration")
+    // The effective mode, so a site that opened registration through the legacy
+    // boolean sees "open" here rather than a form that disagrees with its own
+    // register route.
+    let registration_mode = crate::models::RegistrationMode::load(pool)
         .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_else(|| "admin_only".to_string());
+        .as_str()
+        .to_string();
 
     // SMTP settings
     let smtp_host = load_config_string(pool, "smtp_host").await;
@@ -334,13 +335,17 @@ async fn site_config_submit(
         return render_server_error("Failed to save site settings.");
     }
 
-    if let Err(e) = SiteConfig::set(
-        pool,
-        "user_registration",
-        serde_json::json!(registration_mode),
-    )
-    .await
-    {
+    // Saving also clears the boolean this setting supersedes, so a site cannot end
+    // up with two registration settings that disagree.
+    let mode = match registration_mode {
+        "open" => crate::models::RegistrationMode::Open,
+        "admin_only" | "closed" => crate::models::RegistrationMode::AdminOnly,
+        other => {
+            tracing::warn!(value = %other, "rejected unknown registration mode");
+            return render_server_error("Unknown registration mode.");
+        }
+    };
+    if let Err(e) = mode.save(pool).await {
         tracing::error!(error = %e, "failed to save user_registration");
         return render_server_error("Failed to save site settings.");
     }
