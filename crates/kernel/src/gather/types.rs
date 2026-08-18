@@ -1042,10 +1042,10 @@ mod tests {
     }
 
     #[test]
-    fn ng_device_list_definition_deserializes() {
+    fn a_record_listing_definition_deserializes() {
         let json = r#"{
             "base_table": "item",
-            "item_type": "ng_device",
+            "item_type": "sample_device",
             "fields": [],
             "filters": [
                 {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null},
@@ -1060,7 +1060,7 @@ mod tests {
             "includes": {}
         }"#;
         let def: QueryDefinition = serde_json::from_str(json).unwrap();
-        assert_eq!(def.item_type, Some("ng_device".into()));
+        assert_eq!(def.item_type, Some("sample_device".into()));
         assert_eq!(def.filters.len(), 4);
         // owner_id uses Contains (not Equals) so empty default = LIKE '%%' = match all.
         // Equals with empty string would match only literal empty, breaking the listing.
@@ -1074,10 +1074,10 @@ mod tests {
     // JSONB values but is not covered by unit tests — it requires an integration
     // test with a real database.
     #[test]
-    fn ng_event_log_definition_deserializes() {
+    fn a_timestamped_log_definition_deserializes() {
         let json = r#"{
             "base_table": "item",
-            "item_type": "ng_event",
+            "item_type": "sample_event",
             "fields": [],
             "filters": [
                 {"field": "status", "operator": "equals", "value": 1, "exposed": false, "exposed_label": null},
@@ -1091,7 +1091,7 @@ mod tests {
             "includes": {}
         }"#;
         let def: QueryDefinition = serde_json::from_str(json).unwrap();
-        assert_eq!(def.item_type, Some("ng_event".into()));
+        assert_eq!(def.item_type, Some("sample_event".into()));
         assert_eq!(def.filters[1].operator, FilterOperator::GreaterOrEqual);
         assert_eq!(def.filters[2].operator, FilterOperator::LessOrEqual);
     }
@@ -1150,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn ng_device_list_display_deserializes() {
+    fn a_record_listing_display_deserializes() {
         let json = r#"{
             "format": "table",
             "items_per_page": 50,
@@ -1165,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn ng_event_log_display_deserializes() {
+    fn a_timestamped_log_display_deserializes() {
         let json = r#"{
             "format": "table",
             "items_per_page": 100,
