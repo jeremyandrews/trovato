@@ -34,6 +34,11 @@
     {# Twitter reads og:title and og:description; only the card type is its own. #}
     <meta name="twitter:card" content="{% if page_meta.og_image %}summary_large_image{% else %}summary{% endif %}">
     {% endif %}
+    {# RSS autodiscovery: one link per gather query that declares a feed. Without
+       these, a reader has to be told the feed URL out of band. #}
+    {% if feeds is defined %}{% for feed in feeds %}
+    <link rel="alternate" type="application/rss+xml" title="{{ feed.title }}" href="{{ feed.path }}">
+    {% endfor %}{% endif %}
     {# Favicon. The PNGs are the tiled mark (clay tile, white t, peach dot), not
        the bare glyph: at 16px a bare glyph turns to mush and the tile survives.
        See assets/brand/BRAND.md. #}

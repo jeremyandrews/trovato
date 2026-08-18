@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- RSS feeds work, are config-driven, and are advertised in every page's head.
+  `trovato_feeds` shipped two feeds that could not be served and has been
+  removed.
+
+  Two defects in one plugin. Its routes were declared
+  `MenuDefinition::new(...).callback(...)`, which leaves `handler_type` at its
+  default `"page"`, and it exported no `tap_api`, so
+  `routes/plugin_api.rs` skipped both entries: `/rss/insights.xml` and
+  `/rss/planet-drupal.xml` 404ed, and `build_rss_item` / `build_rss_feed` were
+  dead code wearing `#[allow(dead_code)]` comments that claimed a route callback
+  called them at runtime. And those two paths were one specific site's feeds
+  hardcoded into a plugin that presented itself as generic.
+
+  A gather query now declares a feed in its display config, and gets an RSS 2.0
+  document at the path it names:
+
+  ```yaml
+  display:
+    feed:
+      path: /rss/blog.xml
+      title: Blog          # defaults to the query's label
+      description: ...     # defaults to the query's description
+      items: 20            # capped at 200
+  ```
+
+  Feeds are registered at startup from the same query set the gather route
+  aliases come from, and skipped with a warning when unusable (a relative path, a
+  route pattern, a path a second query already claimed) rather than panicking
+  axum on a route conflict. `templates/base.html` emits an autodiscovery
+  `<link rel="alternate" type="application/rss+xml">` per feed, so a reader
+  finds them without being told the URL out of band.
+
+  Entries carry title, absolute link, matching `guid`, description and
+  `pubDate`, and link the item's URL alias when it has one. Descriptions go in a
+  CDATA section with any `]]>` split across two sections, so content cannot
+  close the section and inject markup into the document.
+
+  **Why this is kernel rather than a rebuilt plugin.** A feed is a rendering of a
+  query result, and query execution is kernel infrastructure: it applies the
+  stage filter, the access filter and the D-26 over-fetch bounds for a specific
+  viewer. Plugin space has no seam onto it — `item-api` offers `query-items`,
+  which is an unordered, unfiltered `SELECT ... LIMIT 100` with no viewer, so a
+  plugin-built feed would publish whatever the access filter exists to withhold.
+  Adding that seam is plugin-contract surface, and the contract is frozen before
+  1.0. `routes/sitemap.rs` is the existing precedent for the same reasoning. A
+  feed is therefore an execution of the query as whoever fetched it: an
+  anonymous aggregator gets exactly what an anonymous visitor sees.
+
+  Also added: `UrlAlias::canonical_aliases_for`, which resolves a page of
+  sources in one query rather than one round trip per entry.
+
 - Item pages carry a meta description, a canonical link and Open Graph tags.
   Nothing could emit them before, and the reason was structural rather than an
   oversight: `<head>` is not reachable from a plugin. `trovato_seo` implements
