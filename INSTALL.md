@@ -148,7 +148,6 @@ additional infrastructure (e.g., external APIs or dedicated databases).
 These are not loaded by default:
 
 - `argus` &mdash; Drupal 6 site monitoring
-- `netgrasp` &mdash; Network device tracking
 - `goose` &mdash; Load testing integration
 
 ## 5. Start the Server
