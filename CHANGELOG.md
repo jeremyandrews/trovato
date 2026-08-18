@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The Dockerfile builds the plugins that exist. Deleting `trovato_feeds` and
+  `trovato_scolta` left both named in its `cargo build -p ...` list, so the image
+  build failed with "package ID specification `trovato_feeds` did not match any
+  packages" — after ten minutes of dependency compilation, since that step is
+  near the end. `trovato_spam` is added for the same reason: it is a shipped
+  plugin, so the image should carry it.
+
+  Note for anyone reading the Docker Publish job: it was already failing before
+  this, on `failed to push ghcr.io/jeremyandrews/trovato: denied:
+  permission_denied: write_package`. That is a registry credential problem, not a
+  build one, and it is untouched here.
+
 - RSS feeds work, are config-driven, and are advertised in every page's head.
   `trovato_feeds` shipped two feeds that could not be served and has been
   removed.
