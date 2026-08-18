@@ -88,6 +88,16 @@ pub struct ListItemsQuery {
     pub include: Option<String>,
 }
 
+/// Query parameters for an item page.
+#[derive(Debug, Default, Deserialize)]
+pub struct ViewItemQuery {
+    /// Outcome of a comment just posted from the page's own form: `posted`,
+    /// `pending` or `error`. Set by the redirect the comment route issues for a
+    /// form submission, so a reader without JavaScript is told what happened —
+    /// a held comment would otherwise appear to have vanished.
+    pub comment: Option<String>,
+}
+
 /// Query parameters for getting a single item.
 #[derive(Debug, Deserialize)]
 pub struct GetItemQuery {
@@ -313,6 +323,7 @@ async fn view_item(
     Extension(lang): Extension<ResolvedLanguage>,
     session: Session,
     Path(id): Path<Uuid>,
+    Query(query): Query<ViewItemQuery>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let user = get_user_context(&session, &state).await;
 
@@ -733,6 +744,18 @@ async fn view_item(
         &content_type_fields,
     );
     context.insert("page_meta", &page_meta);
+
+    // The comment thread, under the item. Empty when comments are disabled.
+    let comments_html = super::comment::render_thread(
+        &state,
+        &session,
+        &item,
+        &user,
+        &canonical_path,
+        query.comment.as_deref(),
+    )
+    .await;
+    let item_html = format!("{item_html}{comments_html}");
 
     let page_html = state
         .theme()
