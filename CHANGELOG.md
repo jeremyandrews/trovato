@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Everything in the tree speaks 0.99. Three places still spoke the private
+  development repository's numbering, which was never released and which a reader
+  of this repository cannot resolve:
+
+  - `crates/wit/kernel.wit` said `tap-api` was "added in KERNEL_API_VERSION
+    (1,1)". There is no such API version and never was; `tap-api` shipped in
+    0.99.0.
+  - `crates/argus-core/src/pipeline.rs` explained an assertion in terms of "the
+    pre-(1,1) host", meaning the host before the embedding-routing fix, which
+    also shipped in 0.99.0.
+  - The inline fixture manifest in
+    `crates/kernel/tests/ritrovo_paired_consumer_test.rs` declared
+    `api_version = "0.2"` and `version = "1.1.0"`.
+
+  The root cause is that the public repository was cut from a private one whose
+  version line was different, and comments are not compiled: nothing checks the
+  numbers written in prose, so the pre-cut ones survived the cut. The manifests
+  and constants that *are* read by code were already consistent (34 plugin
+  manifests at `api_version = "0.99"`, `KERNEL_API_VERSION (0, 99)`).
+
+  Also corrected in the same file, and the more serious of the two problems
+  there: the provenance header for the committed `ritrovo_importer.wasm` asserted
+  a byte-for-byte reproducible build and cited "the contract-freeze commit
+  `9791c24`" as the pinned SDK revision. That commit does not exist in this
+  repository, so the claim was unverifiable by the only audience the header has.
+  It now claims exactly two things a reader can check, and says plainly that the
+  third is missing: the artifact's sha256 (now asserted by a test, so replacing
+  the artifact without refreshing the header fails the suite) and the public
+  Ritrovo commit it was compiled from. The SDK revision it was built against is
+  in no published repository, so there is no rebuild recipe to give yet; saying
+  so is more useful than a recipe that cannot be run. KNOWN-ISSUES.md carries the
+  same correction.
+
 - The Dockerfile builds the plugins that exist. Deleting `trovato_feeds` and
   `trovato_scolta` left both named in its `cargo build -p ...` list, so the image
   build failed with "package ID specification `trovato_feeds` did not match any

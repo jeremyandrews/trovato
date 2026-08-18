@@ -3110,8 +3110,8 @@ mod tests {
         assert_eq!(queue.count(Stage::Cluster), 1);
 
         // The model asked for is the one configured, and it was given the
-        // article's text — not an empty string, which is what the pre-(1,1)
-        // host's chat route handed back.
+        // article's text — not an empty string, which is what the host's chat
+        // route handed back before the embedding-routing fix shipped in 0.99.0.
         let seen = provider.seen.borrow();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].1.as_deref(), Some("text-embedding-3-small"));

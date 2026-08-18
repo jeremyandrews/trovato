@@ -306,8 +306,8 @@ world plugin {
     export tap-perm: func() -> string;                     // (dispatch pending)
 
     // Serves one HTTP request for a `tap-menu` entry whose handler-type is
-    // "api" and which names a callback (G-NO-PLUGIN-HTTP; added in
-    // KERNEL_API_VERSION (1,1)). Input is an ApiRequest JSON object
+    // "api" and which names a callback (G-NO-PLUGIN-HTTP; added in the 0.99
+    // series). Input is an ApiRequest JSON object
     // {callback, method, path, params, query, body, user_id, authenticated};
     // output is an ApiResponse {status, body, content_type}. Dispatched by
     // routes/plugin_api.rs with services attached and the menu entry's
