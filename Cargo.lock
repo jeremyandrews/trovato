@@ -2684,29 +2684,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "netgrasp"
-version = "0.99.0"
-dependencies = [
- "netgrasp-core",
- "serde",
- "serde_json",
- "trovato-sdk",
-]
-
-[[package]]
-name = "netgrasp-core"
-version = "0.99.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
- "trovato-test-utils",
- "uuid",
-]
-
-[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
