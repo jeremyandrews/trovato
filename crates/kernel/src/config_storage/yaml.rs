@@ -24,7 +24,7 @@
 //! as a failure (so the caller exits non-zero), but earlier writes stand; the
 //! fix is to re-run the import, which converges because save is an upsert.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -509,9 +509,18 @@ pub async fn import_config(
             continue;
         };
 
+        // `menu_link.parent_id` is a foreign key onto the same table, so a child
+        // saved before its parent is rejected by the database. The group arrives
+        // sorted by filename, which says nothing about tree order.
+        let ordered: Vec<&ParsedEntity> = if entity_type == entity_types::MENU_LINK {
+            order_menu_links_parents_first(entities)
+        } else {
+            entities.iter().collect()
+        };
+
         let mut count = 0usize;
 
-        for pe in entities {
+        for pe in ordered {
             if let Err(e) = storage.save(&pe.entity).await {
                 failures.push(ConfigImportFailure {
                     filename: pe.filename.clone(),
@@ -678,6 +687,156 @@ async fn validate_references(
             }
         }
     }
+
+    validate_menu_link_parents(storage, parsed, failures).await;
+}
+
+/// A menu link's `parent_id` for a link in this import set.
+fn menu_link_of(pe: &ParsedEntity) -> Option<&MenuLink> {
+    match &pe.entity {
+        ConfigEntity::MenuLink(link) => Some(link),
+        _ => None,
+    }
+}
+
+/// Resolve every menu link's declared parent, and reject a parent chain that
+/// loops.
+///
+/// Without this, a missing parent surfaces as a foreign-key rejection partway
+/// through the save pass, reported against whichever file happened to be saved
+/// first, and a cycle has no natural error at all: the foreign key permits one,
+/// so the tree would import and then be unrenderable.
+///
+/// The walk stops when the chain leaves the import set. A link whose parent is
+/// already a row is rooted in the database's own tree, which every path that
+/// writes it keeps acyclic, so following it further would not tell us anything
+/// this pass could act on.
+async fn validate_menu_link_parents(
+    storage: &dyn ConfigStorage,
+    parsed: &BTreeMap<String, Vec<ParsedEntity>>,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
+    let Some(links) = parsed.get(entity_types::MENU_LINK) else {
+        return;
+    };
+
+    let by_id: HashMap<Uuid, &MenuLink> = links
+        .iter()
+        .filter_map(menu_link_of)
+        .map(|link| (link.id, link))
+        .collect();
+
+    for pe in links {
+        let Some(link) = menu_link_of(pe) else {
+            continue;
+        };
+        let Some(parent_id) = link.parent_id else {
+            continue;
+        };
+
+        if parent_id == link.id {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: "menu link references itself as parent".to_string(),
+            });
+            continue;
+        }
+
+        if !by_id.contains_key(&parent_id) {
+            match storage
+                .load(entity_types::MENU_LINK, &parent_id.to_string())
+                .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!(
+                        "parent menu link {parent_id} not found in import set or database"
+                    ),
+                }),
+                Err(e) => failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!("failed to verify parent menu link {parent_id}: {e:#}"),
+                }),
+            }
+            continue;
+        }
+
+        // Walk up within the set. Revisiting an id means the chain loops.
+        let mut seen: HashSet<Uuid> = HashSet::from([link.id]);
+        let mut cursor = parent_id;
+        loop {
+            if !seen.insert(cursor) {
+                failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!(
+                        "menu link {} is its own ancestor: the parent chain forms a cycle",
+                        link.id
+                    ),
+                });
+                break;
+            }
+            match by_id.get(&cursor).and_then(|parent| parent.parent_id) {
+                Some(next) => cursor = next,
+                None => break,
+            }
+        }
+    }
+}
+
+/// Order a menu-link import group so that a link's parent is always saved first.
+///
+/// A link whose parent is not in the set is ready immediately: validation has
+/// already established that such a parent is an existing row.
+///
+/// Cycles are rejected during validation, so this always makes progress. It
+/// still emits whatever is left if it ever does not: an ordering helper that can
+/// spin is worse than one that hands the database an order it rejects with a
+/// message.
+fn order_menu_links_parents_first(entities: &[ParsedEntity]) -> Vec<&ParsedEntity> {
+    let in_set: HashSet<Uuid> = entities
+        .iter()
+        .filter_map(menu_link_of)
+        .map(|link| link.id)
+        .collect();
+
+    let mut ordered: Vec<&ParsedEntity> = Vec::with_capacity(entities.len());
+    let mut saved: HashSet<Uuid> = HashSet::new();
+    let mut pending: Vec<&ParsedEntity> = entities.iter().collect();
+
+    while !pending.is_empty() {
+        let mut progressed = false;
+        let mut still_pending: Vec<&ParsedEntity> = Vec::with_capacity(pending.len());
+
+        for pe in pending {
+            let ready = match menu_link_of(pe) {
+                Some(link) => match link.parent_id {
+                    Some(parent) => !in_set.contains(&parent) || saved.contains(&parent),
+                    None => true,
+                },
+                // Not a menu link: nothing to order it against.
+                None => true,
+            };
+
+            if ready {
+                if let Some(link) = menu_link_of(pe) {
+                    saved.insert(link.id);
+                }
+                ordered.push(pe);
+                progressed = true;
+            } else {
+                still_pending.push(pe);
+            }
+        }
+
+        if !progressed {
+            ordered.extend(still_pending);
+            break;
+        }
+        pending = still_pending;
+    }
+
+    ordered
 }
 
 /// A parsed entity with metadata from its source file.

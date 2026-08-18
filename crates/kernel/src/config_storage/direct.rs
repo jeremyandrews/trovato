@@ -880,56 +880,90 @@ impl DirectConfigStorage {
     /// or reweighted stage. The create path uses the stage's declared UUID rather
     /// than a fresh one so that `config import` is idempotent and the file's `id`
     /// is the identity that actually lands.
+    ///
+    /// There are **three** states to handle, not two, and the middle one is what
+    /// an export/import round trip produces. A stage's `category_tag` row is
+    /// exported as a `tag` entity as well as inside the `stage` entity, and tags
+    /// import before stages, so by the time the stage file is applied its tag row
+    /// already exists while its `stage_config` row does not. Branching on
+    /// "does the stage exist" alone read that as absent and took the create path,
+    /// whose `category_tag` insert then collided on the primary key: exporting a
+    /// site's configuration and importing it into an empty database failed on
+    /// every stage the site had added.
     async fn save_stage(&self, stage: &crate::models::Stage) -> Result<()> {
-        if crate::models::Stage::find_by_id(&self.pool, stage.id)
-            .await?
-            .is_some()
-        {
-            let mut tx = self
-                .pool
-                .begin()
+        let existing_tag_category: Option<String> =
+            sqlx::query_scalar("SELECT category_id FROM category_tag WHERE id = $1")
+                .bind(stage.id)
+                .fetch_optional(&self.pool)
                 .await
-                .context("failed to start stage update transaction")?;
+                .context("failed to check for an existing stage tag")?;
 
-            sqlx::query(
-                "UPDATE category_tag SET label = $1, description = $2, weight = $3, changed = $4 \
-                 WHERE id = $5 AND category_id = 'stages'",
-            )
-            .bind(&stage.label)
-            .bind(&stage.description)
-            .bind(stage.weight)
-            .bind(chrono::Utc::now().timestamp())
-            .bind(stage.id)
-            .execute(&mut *tx)
-            .await
-            .context("failed to update stage tag")?;
+        match existing_tag_category.as_deref() {
+            // Neither row exists: an ordinary create, which validates the
+            // machine name and visibility on the way in.
+            None => {
+                let input = crate::models::CreateStage {
+                    label: stage.label.clone(),
+                    machine_name: stage.machine_name.clone(),
+                    description: stage.description.clone(),
+                    visibility: Some(stage.visibility.to_string()),
+                    is_default: Some(stage.is_default),
+                    weight: Some(stage.weight),
+                };
+                crate::models::Stage::create_with_id(&self.pool, stage.id, input).await?;
+            }
 
-            sqlx::query(
-                "UPDATE stage_config SET machine_name = $1, visibility = $2, is_default = $3 \
-                 WHERE tag_id = $4",
-            )
-            .bind(&stage.machine_name)
-            .bind(stage.visibility.to_string())
-            .bind(stage.is_default)
-            .bind(stage.id)
-            .execute(&mut *tx)
-            .await
-            .context("failed to update stage config")?;
+            // The tag is a stage tag. Its `stage_config` row may or may not be
+            // there, so both are written as upserts and the two cases collapse.
+            Some("stages") => {
+                let mut tx = self
+                    .pool
+                    .begin()
+                    .await
+                    .context("failed to start stage save transaction")?;
 
-            tx.commit()
+                sqlx::query(
+                    "UPDATE category_tag SET label = $1, description = $2, weight = $3, \
+                     changed = $4 WHERE id = $5 AND category_id = 'stages'",
+                )
+                .bind(&stage.label)
+                .bind(&stage.description)
+                .bind(stage.weight)
+                .bind(chrono::Utc::now().timestamp())
+                .bind(stage.id)
+                .execute(&mut *tx)
                 .await
-                .context("failed to commit stage update transaction")?;
-        } else {
-            let input = crate::models::CreateStage {
-                label: stage.label.clone(),
-                machine_name: stage.machine_name.clone(),
-                description: stage.description.clone(),
-                visibility: Some(stage.visibility.to_string()),
-                is_default: Some(stage.is_default),
-                weight: Some(stage.weight),
-            };
-            crate::models::Stage::create_with_id(&self.pool, stage.id, input).await?;
+                .context("failed to update stage tag")?;
+
+                sqlx::query(
+                    "INSERT INTO stage_config (tag_id, machine_name, visibility, is_default) \
+                     VALUES ($1, $2, $3, $4) \
+                     ON CONFLICT (tag_id) DO UPDATE SET \
+                     machine_name = EXCLUDED.machine_name, \
+                     visibility = EXCLUDED.visibility, \
+                     is_default = EXCLUDED.is_default",
+                )
+                .bind(stage.id)
+                .bind(&stage.machine_name)
+                .bind(stage.visibility.to_string())
+                .bind(stage.is_default)
+                .execute(&mut *tx)
+                .await
+                .context("failed to save stage config")?;
+
+                tx.commit()
+                    .await
+                    .context("failed to commit stage save transaction")?;
+            }
+
+            // The UUID is already a tag in some other category. Adopting it would
+            // make a stage out of somebody's topic term, so refuse and say so.
+            Some(other) => anyhow::bail!(
+                "stage {} cannot be saved: that id already belongs to a tag in category '{other}'",
+                stage.id
+            ),
         }
+
         Ok(())
     }
 
@@ -962,14 +996,18 @@ impl DirectConfigStorage {
     }
 
     async fn save_tile(&self, tile: &crate::models::tile::Tile) -> Result<()> {
+        // `stage_id` is bound rather than left to the column default: a tile
+        // config file must declare one to parse, and a default would silently
+        // put every imported tile on Live regardless of what it declared.
         sqlx::query(
             "INSERT INTO tile (id, machine_name, label, region, tile_type, config, visibility, \
-             weight, status, plugin, created, changed) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+             weight, status, plugin, stage_id, created, changed) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
              ON CONFLICT (id) DO UPDATE SET \
              label = EXCLUDED.label, region = EXCLUDED.region, config = EXCLUDED.config, \
              visibility = EXCLUDED.visibility, weight = EXCLUDED.weight, \
-             status = EXCLUDED.status, changed = EXCLUDED.changed",
+             status = EXCLUDED.status, plugin = EXCLUDED.plugin, \
+             stage_id = EXCLUDED.stage_id, changed = EXCLUDED.changed",
         )
         .bind(tile.id)
         .bind(&tile.machine_name)
@@ -981,6 +1019,7 @@ impl DirectConfigStorage {
         .bind(tile.weight)
         .bind(tile.status)
         .bind(&tile.plugin)
+        .bind(tile.stage_id)
         .bind(tile.created)
         .bind(tile.changed)
         .execute(&self.pool)
@@ -1022,18 +1061,35 @@ impl DirectConfigStorage {
     }
 
     async fn save_menu_link(&self, link: &crate::models::MenuLink) -> Result<()> {
+        // Every column the config file declares is bound. The four that used to
+        // be left to their defaults — `parent_id`, `hidden`, `plugin` and
+        // `stage_id` — are what a menu is made of: without `parent_id` a tree
+        // imports as a flat list, and without `stage_id` every link lands on
+        // Live whatever it declared.
+        //
+        // `parent_id` is a foreign key onto this same table, so the caller has
+        // to save ancestors first; `config_storage::yaml` orders the menu-link
+        // group for exactly that reason.
         sqlx::query(
-            "INSERT INTO menu_link (id, menu_name, path, title, weight, created, changed) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+            "INSERT INTO menu_link (id, menu_name, path, title, parent_id, weight, hidden, \
+             plugin, stage_id, created, changed) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
              ON CONFLICT (id) DO UPDATE SET \
              menu_name = EXCLUDED.menu_name, path = EXCLUDED.path, \
-             title = EXCLUDED.title, weight = EXCLUDED.weight, changed = EXCLUDED.changed",
+             title = EXCLUDED.title, parent_id = EXCLUDED.parent_id, \
+             weight = EXCLUDED.weight, hidden = EXCLUDED.hidden, \
+             plugin = EXCLUDED.plugin, stage_id = EXCLUDED.stage_id, \
+             changed = EXCLUDED.changed",
         )
         .bind(link.id)
         .bind(&link.menu_name)
         .bind(&link.path)
         .bind(&link.title)
+        .bind(link.parent_id)
         .bind(link.weight)
+        .bind(link.hidden)
+        .bind(&link.plugin)
+        .bind(link.stage_id)
         .bind(link.created)
         .bind(link.changed)
         .execute(&self.pool)
