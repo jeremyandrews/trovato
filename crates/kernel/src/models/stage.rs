@@ -164,6 +164,75 @@ pub struct CreateStage {
     pub weight: Option<i16>,
 }
 
+/// What still references a stage, table by table.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct StageReferences {
+    /// Content items.
+    pub items: i64,
+    /// URL aliases.
+    pub url_aliases: i64,
+    /// Menu links.
+    pub menu_links: i64,
+    /// Tiles.
+    pub tiles: i64,
+}
+
+impl StageReferences {
+    /// Total across every table.
+    pub fn total(&self) -> i64 {
+        self.items + self.url_aliases + self.menu_links + self.tiles
+    }
+
+    /// A human-readable list of the non-zero counts.
+    ///
+    /// "3 items and 1 menu link" rather than "4 things", because the operator has
+    /// to go and find them.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        for (count, singular, plural) in [
+            (self.items, "item", "items"),
+            (self.url_aliases, "URL alias", "URL aliases"),
+            (self.menu_links, "menu link", "menu links"),
+            (self.tiles, "tile", "tiles"),
+        ] {
+            if count > 0 {
+                let noun = if count == 1 { singular } else { plural };
+                parts.push(format!("{count} {noun}"));
+            }
+        }
+        match parts.len() {
+            0 => "nothing".to_string(),
+            1 => parts.remove(0),
+            _ => {
+                let last = parts.pop().unwrap_or_default();
+                format!("{} and {last}", parts.join(", "))
+            }
+        }
+    }
+}
+
+/// Fields an update may change. `None` leaves a field as it is.
+///
+/// `machine_name` is included because a stage's machine name is what config files
+/// and workflow definitions refer to it by, so an editable label with a frozen
+/// machine name would be a form that cannot fix a typo made at creation.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateStage {
+    /// Human-readable label.
+    pub label: Option<String>,
+    /// Machine name.
+    pub machine_name: Option<String>,
+    /// Description. `Some(None)` clears it.
+    pub description: Option<Option<String>>,
+    /// Visibility level.
+    pub visibility: Option<String>,
+    /// Whether this becomes the default stage. `Some(false)` is refused when this
+    /// is the only default, because content has to land somewhere.
+    pub is_default: Option<bool>,
+    /// Sort weight.
+    pub weight: Option<i16>,
+}
+
 impl Stage {
     /// Create a new stage (inserts into both `category_tag` and `stage_config`).
     ///
@@ -340,6 +409,138 @@ impl Stage {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Apply an update across both of a stage's tables.
+    ///
+    /// One transaction, because a stage is two rows and a half-applied edit is a
+    /// stage whose label and visibility disagree about which stage it is.
+    ///
+    /// Three rules the form does not get to bypass, enforced here so the CLI and
+    /// any future caller get them too:
+    ///
+    /// - **The Live stage stays public.** `stage_config` has a partial unique index
+    ///   on `visibility = 'public'`, so exactly one stage can be public, and the
+    ///   render layer resolves published content through it. Demoting it would take
+    ///   the site's published content off the site.
+    /// - **Exactly one default.** Setting `is_default` clears it everywhere else in
+    ///   the same transaction, which is also what the partial unique index on
+    ///   `is_default = true` requires. Clearing the last one is refused: new
+    ///   content has to land somewhere.
+    /// - **A machine name is a machine name.** Same rule as creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a rule above is broken or the write fails. Returns
+    /// `Ok(None)` when no such stage exists.
+    pub async fn update(pool: &PgPool, id: Uuid, input: UpdateStage) -> Result<Option<Self>> {
+        let Some(existing) = Self::find_by_id(pool, id).await? else {
+            return Ok(None);
+        };
+
+        if let Some(machine_name) = input.machine_name.as_deref()
+            && !is_valid_machine_name(machine_name)
+        {
+            anyhow::bail!(
+                "invalid machine_name {machine_name:?}: must be lowercase alphanumeric with \
+                 underscores, starting with a letter"
+            );
+        }
+
+        let visibility = match input.visibility.as_deref() {
+            Some(raw) => {
+                let parsed: StageVisibility =
+                    raw.parse().context("invalid visibility for stage update")?;
+                if id == LIVE_STAGE_ID && parsed != StageVisibility::Public {
+                    anyhow::bail!(
+                        "the live stage must stay public: published content is resolved through it"
+                    );
+                }
+                parsed
+            }
+            None => existing.visibility,
+        };
+
+        let is_default = input.is_default.unwrap_or(existing.is_default);
+        if existing.is_default && !is_default {
+            anyhow::bail!(
+                "cannot clear the default stage: new content has to land somewhere, so make \
+                 another stage the default instead"
+            );
+        }
+
+        let label = input.label.unwrap_or(existing.label);
+        let machine_name = input.machine_name.unwrap_or(existing.machine_name);
+        let description = input.description.unwrap_or(existing.description);
+        let weight = input.weight.unwrap_or(existing.weight);
+        let now = chrono::Utc::now().timestamp();
+
+        let mut tx = pool.begin().await.context("failed to start transaction")?;
+
+        // Clear any other default first: the partial unique index would otherwise
+        // reject the write, and "there is exactly one default" is the invariant
+        // this is maintaining rather than a side effect.
+        if is_default {
+            sqlx::query("UPDATE stage_config SET is_default = false WHERE tag_id <> $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to clear the previous default stage")?;
+        }
+
+        sqlx::query(
+            "UPDATE category_tag SET label = $1, description = $2, weight = $3, changed = $4 \
+             WHERE id = $5 AND category_id = 'stages'",
+        )
+        .bind(&label)
+        .bind(&description)
+        .bind(weight)
+        .bind(now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to update stage tag")?;
+
+        sqlx::query(
+            "UPDATE stage_config SET machine_name = $1, visibility = $2, is_default = $3 \
+             WHERE tag_id = $4",
+        )
+        .bind(&machine_name)
+        .bind(visibility.as_str())
+        .bind(is_default)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to update stage config")?;
+
+        tx.commit().await.context("failed to commit transaction")?;
+
+        Self::find_by_id(pool, id).await
+    }
+
+    /// How much content references this stage, table by table.
+    ///
+    /// Returned rather than summed so a refusal can say where the content is. Every
+    /// one of these columns is a `RESTRICT` foreign key, so without this the
+    /// refusal is a raw constraint error naming a constraint instead of a count.
+    pub async fn reference_counts(pool: &PgPool, id: Uuid) -> Result<StageReferences> {
+        let counts: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM item WHERE stage_id = $1), \
+                    (SELECT COUNT(*) FROM url_alias WHERE stage_id = $1), \
+                    (SELECT COUNT(*) FROM menu_link WHERE stage_id = $1), \
+                    (SELECT COUNT(*) FROM tile WHERE stage_id = $1)",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .context("failed to count what references a stage")?;
+
+        Ok(StageReferences {
+            items: counts.0,
+            url_aliases: counts.1,
+            menu_links: counts.2,
+            tiles: counts.3,
+        })
+    }
+
     /// Delete a stage. The public, default, and live stages cannot be deleted.
     ///
     /// Also checks for content referencing this stage (items, aliases, menu links,
@@ -363,17 +564,15 @@ impl Stage {
             anyhow::bail!("cannot delete the public or default stage");
         }
 
-        // Check for content referencing this stage (descriptive error before FK blocks it)
-        let item_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item WHERE stage_id = $1")
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .context("failed to count items in stage")?;
-
-        if item_count > 0 {
+        // Check for content referencing this stage, before the foreign key does it
+        // with a message naming a constraint. Every one of these four columns is a
+        // RESTRICT reference; counting only items, as this used to, meant a stage
+        // holding a menu link or a tile was refused by Postgres instead.
+        let references = Self::reference_counts(pool, id).await?;
+        if references.total() > 0 {
             anyhow::bail!(
-                "cannot delete stage: {item_count} item(s) still reference it; \
-                 migrate or delete them first"
+                "cannot delete stage: {} still reference it; move or delete them first",
+                references.describe()
             );
         }
 
@@ -386,5 +585,63 @@ impl Stage {
                 .context("failed to delete stage")?;
 
         Ok(result.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn refs(items: i64, url_aliases: i64, menu_links: i64, tiles: i64) -> StageReferences {
+        StageReferences {
+            items,
+            url_aliases,
+            menu_links,
+            tiles,
+        }
+    }
+
+    /// The refusal message an operator reads names where the content is, and
+    /// pluralizes, because "1 items" reads as a bug in the thing refusing.
+    #[test]
+    fn references_describe_only_the_non_zero_counts() {
+        assert_eq!(refs(0, 0, 0, 0).describe(), "nothing");
+        assert_eq!(refs(1, 0, 0, 0).describe(), "1 item");
+        assert_eq!(refs(3, 0, 0, 0).describe(), "3 items");
+        assert_eq!(refs(0, 0, 1, 0).describe(), "1 menu link");
+        assert_eq!(refs(3, 0, 1, 0).describe(), "3 items and 1 menu link");
+        assert_eq!(
+            refs(2, 1, 1, 4).describe(),
+            "2 items, 1 URL alias, 1 menu link and 4 tiles"
+        );
+    }
+
+    /// The total is what decides whether a delete is refused at all, so it counts
+    /// every table rather than the one `Stage::delete` used to look at.
+    #[test]
+    fn references_total_covers_every_table() {
+        assert_eq!(refs(0, 0, 0, 0).total(), 0);
+        assert_eq!(refs(1, 2, 3, 4).total(), 10);
+        assert_eq!(
+            refs(0, 0, 1, 0).total(),
+            1,
+            "a menu link alone must block a delete: it is a RESTRICT reference too"
+        );
+    }
+
+    #[test]
+    fn visibility_round_trips_through_its_string_form() {
+        for visibility in [
+            StageVisibility::Internal,
+            StageVisibility::Public,
+            StageVisibility::Accessible,
+        ] {
+            assert_eq!(
+                visibility.as_str().parse::<StageVisibility>().unwrap(),
+                visibility
+            );
+        }
+        assert!("nonsense".parse::<StageVisibility>().is_err());
     }
 }
