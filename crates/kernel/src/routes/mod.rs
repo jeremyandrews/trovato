@@ -26,6 +26,7 @@ pub mod batch;
 pub mod category;
 pub mod comment;
 pub mod cron;
+pub mod feed;
 pub mod file;
 pub mod front;
 pub mod gather;

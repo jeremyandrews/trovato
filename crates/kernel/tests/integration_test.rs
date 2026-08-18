@@ -3763,7 +3763,18 @@ fn e2e_api_comment_crud() {
         .fetch_one(&app.db)
         .await
         .expect("create comment role");
-        for perm in &["post comments", "edit own comments", "delete own comments"] {
+        // `skip comment approval` because this test asserts the created comment
+        // is published. Whether a new comment is published or held now depends on
+        // `comment_default_status`, one row in a database every test binary
+        // shares, so without the bypass this assertion would depend on whichever
+        // other binary happened to be mid-test. The queue itself is covered in
+        // `comment_moderation_test`.
+        for perm in &[
+            "post comments",
+            "edit own comments",
+            "delete own comments",
+            "skip comment approval",
+        ] {
             sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING")
                 .bind(comment_role_id)
                 .bind(perm)
