@@ -408,6 +408,21 @@ impl Comment {
         Ok(comments)
     }
 
+    /// How many comments an author has, at any status.
+    ///
+    /// Distinct from [`Self::approved_count_for_author`], which counts published only
+    /// because it feeds the trust ladder. This one answers "how much of my writing is
+    /// here", which includes what a moderator hid.
+    pub async fn count_by_author(pool: &PgPool, author_id: Uuid) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM comment WHERE author_id = $1")
+            .bind(author_id)
+            .fetch_one(pool)
+            .await
+            .context("failed to count comments by author")?;
+
+        Ok(count)
+    }
+
     /// How many published comments an author has.
     ///
     /// The trust ladder's input. Counts published only: a pending, hidden or spam

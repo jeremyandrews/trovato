@@ -129,6 +129,17 @@ pub enum SecurityEventKind {
     /// The owning plugin answered a recovery op with the wrong result shape, or
     /// with output the kernel could not parse. Casts no vote (fail-closed).
     RecoveryFoldWrongShape,
+
+    // ── Account lifecycle ───────────────────────────────────────────────────
+    /// An account was deleted. `details.by` says whether the account holder did it
+    /// or an administrator did, and the counts say what became of the content.
+    ///
+    /// Emitted after the deletion succeeds, so a failed attempt leaves no record
+    /// claiming an account is gone.
+    AccountDeleted,
+    /// A deletion was refused because it would have left the site with no active
+    /// administrator.
+    AccountDeletionBlocked,
 }
 
 impl SecurityEventKind {
@@ -157,6 +168,8 @@ impl SecurityEventKind {
             Self::RecoveryRateLimited => "recovery.rate_limited",
             Self::RecoveryFoldEscalationAttempt => "recovery.fold_escalation_attempt",
             Self::RecoveryFoldWrongShape => "recovery.fold_wrong_shape",
+            Self::AccountDeleted => "account.deleted",
+            Self::AccountDeletionBlocked => "account.deletion_blocked",
         }
     }
 }

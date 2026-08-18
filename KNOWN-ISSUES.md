@@ -162,6 +162,27 @@ site.
 The filesystem watch that reloads templates is a development convenience. In
 production, templates are read at startup and a change needs a restart.
 
+### A revision's authorship can change, and nothing else about it can
+
+`item_revision` rows are immutable by database trigger: a revision is a snapshot,
+and a snapshot that can be edited is not a history. That invariant is now narrowed
+by one case. When an account is deleted, its revisions' `author_id` is set to the
+anonymous author; every other column must be byte-identical or the trigger still
+refuses.
+
+The narrowing is not a convenience. `item_revision.author_id` is
+`NOT NULL REFERENCES users(id)` with no `ON DELETE` action, so the trigger and the
+foreign key together made an account that had ever saved an item **undeletable** —
+which is what self-service account deletion ran into, and which the admin delete
+screen had been quietly failing on all along. The alternatives were deleting other
+people's content history or refusing erasure to anyone who ever wrote anything.
+
+The enforcement compares whole rows (`to_jsonb(NEW) - 'author_id'` against the same
+of `OLD`) rather than listing columns, so a column added to that table in future is
+covered rather than silently exempted. See
+`crates/kernel/migrations/20260819000001_allow_revision_author_anonymization.sql`,
+which carries the reasoning.
+
 ## Contract and versioning
 
 ### The frozen plugin contract is enforced by policy, not by tooling

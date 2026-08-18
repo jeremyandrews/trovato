@@ -1,0 +1,55 @@
+{% extends "page.html" %}
+
+{% block title %}Delete my account{% endblock %}
+
+{% block content %}
+<div style="max-width: 560px; margin: 60px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 1rem;">Delete {{ username | escape }}?</h1>
+
+    {% if last_admin %}
+    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        <strong>This cannot be done.</strong> You are the only active administrator.
+        Make somebody else an administrator first, or the site would be left with
+        nobody who can administer it.
+    </div>
+    <p><a href="/user/profile">Back to my account</a></p>
+    {% else %}
+
+    <p>This is not reversible. Here is exactly what happens.</p>
+
+    <h2 style="margin-top: 1.5rem; font-size: 1.1rem;">Deleted</h2>
+    <ul>
+        <li>Your account, including your username and the email address
+        <code>{{ email | escape }}</code>.</li>
+        <li>Your password and any passkeys.</li>
+        <li>Your API tokens.</li>
+        <li>Every signed-in session, on every device, including this one.</li>
+    </ul>
+
+    <h2 style="margin-top: 1.5rem; font-size: 1.1rem;">Kept, but no longer yours</h2>
+    <ul>
+        <li>{{ items }} item(s) you wrote and {{ comments }} comment(s), which stay on
+        the site attributed to <strong>Anonymous</strong>.</li>
+    </ul>
+    <p style="color: #555;">They are not deleted because other people took part in
+    those conversations, and removing one side of a discussion damages everyone
+    else's record of it. If you want a specific item or comment gone, delete it
+    before deleting your account.</p>
+
+    <h2 style="margin-top: 1.5rem; font-size: 1.1rem;">Before you go</h2>
+    <p><a href="/user/data-export">Download a copy of your data</a> first, if you
+    want one. After this you cannot.</p>
+    <p>A confirmation goes to <code>{{ email | escape }}</code>.</p>
+
+    <form method="post" action="/user/delete/confirm" style="margin-top: 2rem;">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <button type="submit" class="button"
+                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer; background: #c00; color: #fff; border: none; border-radius: 4px;"
+                data-confirm="Delete your account? This cannot be undone.">
+            Delete my account permanently
+        </button>
+        <a href="/user/profile" style="margin-left: 1rem;">Cancel</a>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "email/base.html" %}
+
+{% block content %}
+<h1>Your account on {{ site_name }} has been deleted</h1>
+
+<p>You asked for this, from a signed-in session that verified your identity first.
+If it was not you, contact the site immediately: the account is gone, but somebody
+had access to it.</p>
+
+<p><strong>Deleted:</strong> your account, your password and passkeys, your API
+tokens, and every signed-in session.</p>
+
+<p><strong>Kept:</strong> anything you wrote stays on the site, attributed to
+Anonymous rather than to you. Other people took part in those conversations.</p>
+{% endblock %}
