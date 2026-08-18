@@ -342,6 +342,33 @@
   not list menus among the types that have screens, and that `ROADMAP.md` places
   the form before 1.0. It fails in both directions — build the screen and it tells
   you to update the docs and delete it.
+
+- AI search query expansion is cached, so the same query stops re-billing the
+  provider.
+
+  Every call to `/api/v1/search/expand` went to the configured LLM provider.
+  `docs/design/search-architecture.md` specified an expansion cache ("the same
+  query always produces similar expansions") and none was built, so two people
+  searching the same phrase paid twice, as did one person searching it twice.
+
+  Expansions now go through the kernel's two-tier cache, with the TTL in
+  `CACHE_TTL_SEARCH_EXPAND` — 30 days by default, because an expansion is a set
+  of related terms that costs tokens to produce and does not go stale the way
+  content does. `0` disables the cache, which is the switch to reach for while
+  tuning the prompt. The design doc's older `3600` suggestion is annotated with
+  what shipped, so the two do not disagree.
+
+  The key is a hash of the *normalized* query plus the site name and slogan.
+  Normalizing (trim, collapse whitespace, lowercase) means "  Rust   Async " and
+  "rust async" are one entry. Including the site name and slogan matters because
+  the prompt is built from them: a renamed site must not be served expansions
+  produced under its old name. The parts are length-prefixed before hashing so no
+  two different triples can produce the same key, and the query is hashed rather
+  than interpolated because a query is arbitrary user text and a cache key is a
+  Redis key.
+
+  An empty term list is not cached: that is a parse failure, not an answer worth
+  remembering for a month.
 - Netgrasp is gone from this tree. It now lives in its own repository,
   `jeremyandrews/netgrasp-trovato`, where it builds against `trovato-sdk` as a
   pinned git dependency and installs by appending its own directories to
