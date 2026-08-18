@@ -917,8 +917,8 @@ version = ""
     #[test]
     fn parse_migration_config() {
         let toml = r#"
-name = "netgrasp"
-description = "Network monitoring"
+name = "sample_plugin"
+description = "A plugin that ships migrations"
 version = "1.0.0"
 
 [migrations]
