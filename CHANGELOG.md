@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- `config import` writes a menu completely. Hierarchy, visibility, plugin
+  ownership and stage placement now survive an import, and an export of what
+  landed re-imports to the same thing.
+
+  Root cause: `DirectConfigStorage::save_menu_link` bound seven of the eleven
+  columns a menu link has, and `save_tile` bound twelve of thirteen. The omitted
+  ones — a link's `parent_id`, `hidden` and `plugin`, and `stage_id` on both
+  types — all have column defaults, so every insert succeeded and every row was
+  quietly wrong: a tree imported as a flat list of siblings, a hidden link came
+  back visible, a plugin's link came back owned by `core`, and anything declaring
+  a non-Live stage landed on Live. The config files had to declare these fields to
+  parse at all, which is what made it look like they were being applied. Since
+  `config import` is the only supported way to edit a site's navigation, composed
+  menus were unbuildable by any supported means.
+
+  Binding `parent_id` exposed two things the old insert could not hit:
+
+  - **Save order.** `menu_link.parent_id` is a foreign key onto the same table,
+    and the import set arrives sorted by filename, which says nothing about tree
+    order. The menu-link group is now ordered so a link's parent is always saved
+    first; a link whose parent is an existing row is ready immediately.
+  - **Cycles and missing parents.** A parent that is in neither the import set nor
+    the database is now a validation failure naming the file and the missing id,
+    like every other unresolvable reference, rather than a foreign-key error
+    reported against whichever file was saved first. A parent chain that loops is
+    also a validation failure: the foreign key permits a cycle, so without this
+    check a cyclic menu imported successfully and then could not be rendered.
+
+- A stage that already has its `category_tag` row gains its `stage_config` row
+  instead of colliding, so `config export` followed by `config import` into an
+  empty database works.
+
+  Found by the round-trip test above rather than looked for. `save_stage` branched
+  on "does this stage exist", which has three answers and not two: a stage's tag
+  row is exported as a `tag` entity as well as inside the `stage` entity, and tags
+  import before stages, so by the time the stage file is applied its tag row
+  exists and its `stage_config` row does not. That half-present state read as
+  absent, took the create path, and failed on `duplicate key value violates
+  unique constraint "category_tag_pkey"` — for every stage a site had added beyond
+  the seeded Live one. The three states are now handled as three, and a UUID that
+  belongs to a tag in some other category is refused with that category named,
+  rather than having a `stage_config` row attached to somebody's topic term.
+
 - Everything in the tree speaks 0.99. Three places still spoke the private
   development repository's numbering, which was never released and which a reader
   of this repository cannot resolve:

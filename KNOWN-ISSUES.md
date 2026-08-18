@@ -118,6 +118,10 @@ rows in `menu_link`, read by the render layer
 1.0 means a site can be configured through the interface, the form belongs before
 it — see [ROADMAP.md](ROADMAP.md).
 
+Config import at least now writes a menu completely: hierarchy, visibility,
+plugin ownership and stage placement all survive an import and an export, so the
+one supported path is no longer also a lossy one.
+
 Because import is the only path for those types, it now refuses to apply a set
 containing a file it cannot parse: the run names every offending file, exits
 non-zero, and writes nothing. It used to skip such a file with a warning and
@@ -131,15 +135,6 @@ role's permissions, so `config import` creates roles but cannot grant them
 anything; assign permissions at `/admin/people/permissions` afterwards. The role
 files in `docs/tutorial/config/` list their intended permissions in comments for
 exactly this reason.
-
-### Tiles and menu links ignore the stage a config file declares
-
-`Tile` and `MenuLink` both carry a `stage_id`, and both config files must declare
-one to parse, but the storage layer's insert does not bind it — the row takes the
-column default, which is the Live stage. A tile or menu link cannot currently be
-imported onto a non-Live stage. The same insert also drops a menu link's
-`parent_id`, `hidden` and `plugin`, so menu hierarchy does not survive an import
-round trip.
 
 ### Semantic search has no approximate index
 

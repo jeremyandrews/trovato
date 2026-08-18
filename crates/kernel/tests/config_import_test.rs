@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use sqlx::{Connection, Executor, PgConnection, PgPool};
-use trovato_kernel::config_storage::yaml::{ConfigImportFailed, import_config};
+use trovato_kernel::config_storage::yaml::{ConfigImportFailed, export_config, import_config};
 use trovato_kernel::config_storage::{ConfigStorage, DirectConfigStorage, entity_types};
 
 /// A database created for one test and dropped when the test ends.
@@ -425,6 +425,566 @@ async fn config_import_cli_exits_non_zero_and_names_the_bad_file() {
         combined.contains("variable.cli_broken.yml"),
         "the output must name the offending file.\n{combined}"
     );
+
+    db.cleanup().await;
+}
+
+// =============================================================================
+// Menu link and tile round trip (hierarchy, visibility, ownership, stage)
+// =============================================================================
+//
+// `menu_link` and `tile` both carry columns their config files must declare to
+// parse, and the storage layer's insert used to bind only some of them: a menu
+// link's `parent_id`, `hidden` and `plugin` and both types' `stage_id` were
+// dropped, so the row took the column default. Composed navigation was therefore
+// unbuildable by the only supported path, and a tile or link could not be
+// imported onto a non-Live stage at all.
+
+/// The non-Live stage these tests import onto. Declared as a config file rather
+/// than inserted by hand so the fixture exercises the same path a site would.
+const OTHER_STAGE_ID: &str = "0193a5a0-0000-7000-8000-0000000000aa";
+
+/// A stage config file for [`OTHER_STAGE_ID`].
+fn other_stage_yaml() -> String {
+    format!(
+        "id: {OTHER_STAGE_ID}\nmachine_name: roundtrip_review\nlabel: Roundtrip Review\n\
+         visibility: internal\nis_default: false\nweight: 0\n\
+         created: 1767225600\nchanged: 1767225600\n"
+    )
+}
+
+/// One menu link config file.
+#[allow(clippy::too_many_arguments)]
+fn menu_link_yaml(
+    id: &str,
+    menu_name: &str,
+    path: &str,
+    title: &str,
+    parent_id: Option<&str>,
+    weight: i32,
+    hidden: bool,
+    plugin: &str,
+    stage_id: &str,
+) -> String {
+    let parent = match parent_id {
+        Some(p) => format!("parent_id: {p}\n"),
+        None => "parent_id: null\n".to_string(),
+    };
+    format!(
+        "id: {id}\nmenu_name: {menu_name}\npath: {path}\ntitle: {title}\n{parent}\
+         weight: {weight}\nhidden: {hidden}\nplugin: {plugin}\nstage_id: {stage_id}\n\
+         created: 1767225600\nchanged: 1767225600\n"
+    )
+}
+
+/// Write the three-level fixture tree into `dir` and return the ids, root first.
+///
+/// Deliberately written so that filename order does *not* match tree order: the
+/// grandchild sorts before the root, so an import that saves in filename order
+/// hits the `parent_id` foreign key before the parent row exists.
+fn write_menu_tree(dir: &TempConfigDir) -> (String, String, String) {
+    let root = "0193a5a0-0004-7000-8000-0000000000c1".to_string();
+    let child = "0193a5a0-0004-7000-8000-0000000000b1".to_string();
+    let grandchild = "0193a5a0-0004-7000-8000-0000000000a1".to_string();
+
+    dir.write(&format!("stage.{OTHER_STAGE_ID}.yml"), &other_stage_yaml());
+    dir.write(
+        &format!("menu_link.{root}.yml"),
+        &menu_link_yaml(
+            &root,
+            "roundtrip",
+            "/rt/docs",
+            "Docs",
+            None,
+            0,
+            false,
+            "core",
+            LIVE_STAGE_ID_STR,
+        ),
+    );
+    dir.write(
+        &format!("menu_link.{child}.yml"),
+        &menu_link_yaml(
+            &child,
+            "roundtrip",
+            "/rt/docs/guide",
+            "Guide",
+            Some(&root),
+            5,
+            true,
+            "trovato_blog",
+            LIVE_STAGE_ID_STR,
+        ),
+    );
+    dir.write(
+        &format!("menu_link.{grandchild}.yml"),
+        &menu_link_yaml(
+            &grandchild,
+            "roundtrip",
+            "/rt/docs/guide/install",
+            "Install",
+            Some(&child),
+            10,
+            false,
+            "core",
+            OTHER_STAGE_ID,
+        ),
+    );
+
+    (root, child, grandchild)
+}
+
+/// The Live stage UUID, as the seeded row carries it.
+const LIVE_STAGE_ID_STR: &str = "0193a5a0-0000-7000-8000-000000000001";
+
+/// A menu link's hierarchy, visibility, ownership and stage survive an import.
+///
+/// Before the fix the insert bound only `id`, `menu_name`, `path`, `title`,
+/// `weight`, `created` and `changed`, so all four of the assertions below read
+/// the column default instead of the file's value.
+#[tokio::test]
+async fn menu_link_import_binds_parent_hidden_plugin_and_stage() {
+    let db = ScratchDb::new("menutree").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("menutree");
+    let (root, child, grandchild) = write_menu_tree(&dir);
+
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the menu tree must import clean: {e:#}");
+    }
+
+    let rows: Vec<(uuid::Uuid, Option<uuid::Uuid>, bool, String, uuid::Uuid)> = sqlx::query_as(
+        "SELECT id, parent_id, hidden, plugin, stage_id FROM menu_link \
+         WHERE menu_name = 'roundtrip' ORDER BY weight",
+    )
+    .fetch_all(db.pool())
+    .await
+    .expect("failed to read imported menu links");
+
+    let root_id: uuid::Uuid = root.parse().unwrap();
+    let child_id: uuid::Uuid = child.parse().unwrap();
+    let grandchild_id: uuid::Uuid = grandchild.parse().unwrap();
+    let live: uuid::Uuid = LIVE_STAGE_ID_STR.parse().unwrap();
+    let other: uuid::Uuid = OTHER_STAGE_ID.parse().unwrap();
+
+    let expected = vec![
+        (root_id, None, false, "core".to_string(), live),
+        (
+            child_id,
+            Some(root_id),
+            true,
+            "trovato_blog".to_string(),
+            live,
+        ),
+        (
+            grandchild_id,
+            Some(child_id),
+            false,
+            "core".to_string(),
+            other,
+        ),
+    ];
+
+    assert_eq!(
+        rows, expected,
+        "parent_id, hidden, plugin and stage_id must all come from the config file"
+    );
+
+    db.cleanup().await;
+}
+
+/// A tile lands on the stage its file declares, not on Live.
+#[tokio::test]
+async fn tile_import_lands_on_the_declared_stage() {
+    let db = ScratchDb::new("tilestage").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("tilestage");
+    dir.write(&format!("stage.{OTHER_STAGE_ID}.yml"), &other_stage_yaml());
+    let tile_id = "0193a5a0-0003-7000-8000-0000000000a1";
+    dir.write(
+        &format!("tile.{tile_id}.yml"),
+        &format!(
+            "id: {tile_id}\nmachine_name: roundtrip_tile\nlabel: Roundtrip Tile\nregion: sidebar\n\
+             tile_type: custom\nconfig: {{}}\nvisibility: {{}}\nweight: 0\nstatus: 1\n\
+             plugin: core\nstage_id: {OTHER_STAGE_ID}\ncreated: 1767225600\nchanged: 1767225600\n"
+        ),
+    );
+
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the tile must import clean: {e:#}");
+    }
+
+    let stage_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT stage_id FROM tile WHERE machine_name = 'roundtrip_tile'")
+            .fetch_one(db.pool())
+            .await
+            .expect("failed to read the imported tile");
+
+    assert_eq!(
+        stage_id,
+        OTHER_STAGE_ID.parse::<uuid::Uuid>().unwrap(),
+        "a tile must land on the stage its config file declares"
+    );
+
+    db.cleanup().await;
+}
+
+/// Whether an exported YAML document declares `field` with `value`.
+///
+/// serde_yml quotes a scalar that would otherwise be ambiguous, so a UUID comes
+/// back as `parent_id: '0193...'` and a bare `contains` on the unquoted form
+/// misses it. Both forms mean the same thing to the parser, so both count.
+fn yaml_declares(document: &str, field: &str, value: &str) -> bool {
+    document.lines().any(|line| {
+        let line = line.trim();
+        line == format!("{field}: {value}")
+            || line == format!("{field}: '{value}'")
+            || line == format!("{field}: \"{value}\"")
+    })
+}
+
+/// Export reproduces what was imported, and re-importing the export reproduces
+/// the same database: the full round trip, asserted on the exported bytes.
+///
+/// Comparing exports rather than rows is deliberate. A row comparison would pass
+/// if export dropped a field that import also dropped; comparing the two
+/// exported documents catches a field that survives neither direction only if it
+/// is also absent from the file, which the assertion on the first export's
+/// content covers.
+#[tokio::test]
+async fn the_menu_tree_survives_export_and_re_import() {
+    let first = ScratchDb::new("rtfirst").await;
+    let second = ScratchDb::new("rtsecond").await;
+
+    let source = TempConfigDir::new("rtsource");
+    let (root, child, grandchild) = write_menu_tree(&source);
+
+    if let Err(e) = import_config(&first.storage(), first.pool(), source.path(), false).await {
+        first.cleanup().await;
+        second.cleanup().await;
+        panic!("the menu tree must import clean: {e:#}");
+    }
+
+    // Export everything the first database holds.
+    let export_one = TempConfigDir::new("rtexport1");
+    if let Err(e) = export_config(&first.storage(), first.pool(), export_one.path(), false).await {
+        first.cleanup().await;
+        second.cleanup().await;
+        panic!("export must succeed: {e:#}");
+    }
+
+    // The export must carry the hierarchy, not just the flat fields.
+    let exported_child =
+        std::fs::read_to_string(export_one.path().join(format!("menu_link.{child}.yml")))
+            .expect("the child link must be exported");
+    assert!(
+        yaml_declares(&exported_child, "parent_id", &root),
+        "the export must name the parent link, got:\n{exported_child}"
+    );
+    assert!(
+        yaml_declares(&exported_child, "hidden", "true"),
+        "the export must carry the hidden flag, got:\n{exported_child}"
+    );
+    assert!(
+        yaml_declares(&exported_child, "plugin", "trovato_blog"),
+        "the export must carry plugin ownership, got:\n{exported_child}"
+    );
+    let exported_grandchild = std::fs::read_to_string(
+        export_one
+            .path()
+            .join(format!("menu_link.{grandchild}.yml")),
+    )
+    .expect("the grandchild link must be exported");
+    assert!(
+        yaml_declares(&exported_grandchild, "stage_id", OTHER_STAGE_ID),
+        "the export must carry the non-Live stage, got:\n{exported_grandchild}"
+    );
+
+    // Re-import that export into a second, independent database.
+    if let Err(e) = import_config(&second.storage(), second.pool(), export_one.path(), false).await
+    {
+        first.cleanup().await;
+        second.cleanup().await;
+        panic!("re-importing an export must succeed: {e:#}");
+    }
+
+    let export_two = TempConfigDir::new("rtexport2");
+    if let Err(e) = export_config(&second.storage(), second.pool(), export_two.path(), false).await
+    {
+        first.cleanup().await;
+        second.cleanup().await;
+        panic!("the second export must succeed: {e:#}");
+    }
+
+    // Byte-for-byte on every menu link and tile file in the set.
+    let mut compared = 0usize;
+    for id in [&root, &child, &grandchild] {
+        let name = format!("menu_link.{id}.yml");
+        let a = std::fs::read(export_one.path().join(&name)).expect("first export missing a link");
+        let b = std::fs::read(export_two.path().join(&name)).expect("second export missing a link");
+        assert_eq!(
+            String::from_utf8_lossy(&a),
+            String::from_utf8_lossy(&b),
+            "{name} did not survive the round trip"
+        );
+        compared += 1;
+    }
+    assert_eq!(compared, 3, "all three links must have been compared");
+
+    first.cleanup().await;
+    second.cleanup().await;
+}
+
+/// A menu link whose declared parent is in neither the import set nor the
+/// database is a validation failure, named by file, with nothing written.
+///
+/// Without this the foreign key rejects the row mid-save-pass, which reports as
+/// a storage failure on whichever file happened to be saved first.
+#[tokio::test]
+async fn menu_link_import_fails_when_the_parent_does_not_exist() {
+    let db = ScratchDb::new("menuorphan").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("menuorphan");
+    let orphan = "0193a5a0-0004-7000-8000-0000000000d1";
+    let missing = "0193a5a0-0004-7000-8000-0000000000d2";
+    dir.write(
+        &format!("menu_link.{orphan}.yml"),
+        &menu_link_yaml(
+            orphan,
+            "roundtrip",
+            "/rt/orphan",
+            "Orphan",
+            Some(missing),
+            0,
+            false,
+            "core",
+            LIVE_STAGE_ID_STR,
+        ),
+    );
+
+    let Err(err) = import_config(&storage, db.pool(), dir.path(), false).await else {
+        db.cleanup().await;
+        panic!("import must fail when a menu link's parent does not exist");
+    };
+
+    let failed = err
+        .downcast_ref::<ConfigImportFailed>()
+        .expect("the error must be a ConfigImportFailed");
+    assert_eq!(failed.imported_total(), 0, "nothing should be written");
+    assert_eq!(failed.failures.len(), 1, "expected one failure: {failed}");
+    assert_eq!(
+        failed.failures[0].filename,
+        format!("menu_link.{orphan}.yml")
+    );
+    assert!(
+        failed.failures[0].error.contains(missing),
+        "the report must name the missing parent, got: {}",
+        failed.failures[0].error
+    );
+
+    let landed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM menu_link")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(landed, 0, "a failed validation must write nothing");
+
+    db.cleanup().await;
+}
+
+/// A parent cycle is a validation failure rather than an import that hangs or
+/// half-applies. Two links naming each other is the smallest case.
+#[tokio::test]
+async fn menu_link_import_fails_on_a_parent_cycle() {
+    let db = ScratchDb::new("menucycle").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("menucycle");
+    let a = "0193a5a0-0004-7000-8000-0000000000e1";
+    let b = "0193a5a0-0004-7000-8000-0000000000e2";
+    dir.write(
+        &format!("menu_link.{a}.yml"),
+        &menu_link_yaml(
+            a,
+            "roundtrip",
+            "/rt/a",
+            "A",
+            Some(b),
+            0,
+            false,
+            "core",
+            LIVE_STAGE_ID_STR,
+        ),
+    );
+    dir.write(
+        &format!("menu_link.{b}.yml"),
+        &menu_link_yaml(
+            b,
+            "roundtrip",
+            "/rt/b",
+            "B",
+            Some(a),
+            0,
+            false,
+            "core",
+            LIVE_STAGE_ID_STR,
+        ),
+    );
+
+    let Err(err) = import_config(&storage, db.pool(), dir.path(), false).await else {
+        db.cleanup().await;
+        panic!("import must fail on a menu link parent cycle");
+    };
+
+    let failed = err.downcast_ref::<ConfigImportFailed>().unwrap();
+    assert_eq!(failed.imported_total(), 0, "nothing should be written");
+    assert!(
+        failed
+            .failures
+            .iter()
+            .any(|f| f.error.contains("cycle") || f.error.contains("ancestor")),
+        "the report must say the tree contains a cycle, got: {failed}"
+    );
+
+    db.cleanup().await;
+}
+
+/// A link that names itself as parent is the degenerate cycle.
+#[tokio::test]
+async fn menu_link_import_fails_when_a_link_is_its_own_parent() {
+    let db = ScratchDb::new("menuself").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("menuself");
+    let id = "0193a5a0-0004-7000-8000-0000000000f1";
+    dir.write(
+        &format!("menu_link.{id}.yml"),
+        &menu_link_yaml(
+            id,
+            "roundtrip",
+            "/rt/self",
+            "Self",
+            Some(id),
+            0,
+            false,
+            "core",
+            LIVE_STAGE_ID_STR,
+        ),
+    );
+
+    let Err(err) = import_config(&storage, db.pool(), dir.path(), false).await else {
+        db.cleanup().await;
+        panic!("import must fail when a menu link is its own parent");
+    };
+
+    let failed = err.downcast_ref::<ConfigImportFailed>().unwrap();
+    assert_eq!(failed.imported_total(), 0, "nothing should be written");
+    assert!(
+        failed.failures[0].error.contains("itself"),
+        "the report must say the link references itself, got: {}",
+        failed.failures[0].error
+    );
+
+    db.cleanup().await;
+}
+
+/// A stage whose `category_tag` row is already present gains its `stage_config`
+/// row rather than colliding on the primary key.
+///
+/// This is the state an export/import round trip produces: a stage's tag is
+/// exported as a `tag` entity as well as inside the `stage` entity, and tags
+/// import first. `save_stage` used to branch on "does the stage exist", read the
+/// half-present state as absent, and take a create path whose `category_tag`
+/// insert then failed. The two-step import below is that state in isolation.
+#[tokio::test]
+async fn a_stage_lands_when_its_tag_row_already_exists() {
+    let db = ScratchDb::new("stagehalf").await;
+    let storage = db.storage();
+
+    // Step one: the stage's tag row arrives on its own, as a `tag` entity.
+    let tags_only = TempConfigDir::new("stagehalf_tag");
+    tags_only.write(
+        &format!("tag.{OTHER_STAGE_ID}.yml"),
+        &format!(
+            "id: '{OTHER_STAGE_ID}'\ncategory_id: stages\nlabel: Roundtrip Review\n\
+             description: null\nslug: roundtrip-review\nweight: 0\n\
+             created: 1767225600\nchanged: 1767225600\n"
+        ),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), tags_only.path(), false).await {
+        db.cleanup().await;
+        panic!("the stage's tag must import on its own: {e:#}");
+    }
+
+    // Step two: the stage entity for that same id.
+    let stage_only = TempConfigDir::new("stagehalf_stage");
+    stage_only.write(&format!("stage.{OTHER_STAGE_ID}.yml"), &other_stage_yaml());
+    if let Err(e) = import_config(&storage, db.pool(), stage_only.path(), false).await {
+        db.cleanup().await;
+        panic!("a stage whose tag row already exists must still land: {e:#}");
+    }
+
+    let landed: Option<String> =
+        sqlx::query_scalar("SELECT machine_name FROM stage_config WHERE tag_id = $1")
+            .bind(OTHER_STAGE_ID.parse::<uuid::Uuid>().unwrap())
+            .fetch_optional(db.pool())
+            .await
+            .expect("failed to read stage_config");
+
+    assert_eq!(
+        landed.as_deref(),
+        Some("roundtrip_review"),
+        "the stage config row must have been written for the existing tag"
+    );
+
+    db.cleanup().await;
+}
+
+/// A stage cannot adopt a tag that belongs to some other category.
+///
+/// The fix above makes an existing tag row acceptable, which is only safe while
+/// "existing" means "a stage tag". Without this guard the same code would attach
+/// a `stage_config` row to somebody's topic term and call it a stage.
+#[tokio::test]
+async fn a_stage_refuses_an_id_that_belongs_to_another_category() {
+    let db = ScratchDb::new("stageclash").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("stageclash");
+    dir.write(
+        "category.stageclash_topics.yml",
+        "id: stageclash_topics\nlabel: Topics\ndescription: null\nhierarchy: 0\nweight: 0\n",
+    );
+    dir.write(
+        &format!("tag.{OTHER_STAGE_ID}.yml"),
+        &format!(
+            "id: '{OTHER_STAGE_ID}'\ncategory_id: stageclash_topics\nlabel: Not A Stage\n\
+             description: null\nslug: not-a-stage\nweight: 0\n\
+             created: 1767225600\nchanged: 1767225600\n"
+        ),
+    );
+    dir.write(&format!("stage.{OTHER_STAGE_ID}.yml"), &other_stage_yaml());
+
+    let Err(err) = import_config(&storage, db.pool(), dir.path(), false).await else {
+        db.cleanup().await;
+        panic!("a stage must not adopt a tag from another category");
+    };
+
+    assert!(
+        err.to_string().contains("stageclash_topics"),
+        "the failure must name the category the id already belongs to, got: {err:#}"
+    );
+
+    let stages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stage_config WHERE tag_id = $1")
+        .bind(OTHER_STAGE_ID.parse::<uuid::Uuid>().unwrap())
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(stages, 0, "no stage config row may have been written");
 
     db.cleanup().await;
 }
