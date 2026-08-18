@@ -104,25 +104,58 @@ could resolve it; they cannot. Re-pointing Ritrovo's SDK dependency at this
 repository and refreshing the artifact from that build is what makes the
 reproducibility claim true, and is the next step here.
 
-### Some admin screens are configuration import only
+### Languages are configuration import only, on purpose
 
-Languages and most system variables are managed by editing YAML and running
-`trovato config import`. There is no form for them. Content types, fields, users,
-categories, content, gather queries, tiles, aliases, menus, stages, roles,
-permissions, plugins and AI providers all do have admin screens.
+A site's language set is part of its definition rather than something an operator
+changes while running it: it is decided once, it belongs in the config set that a
+deployment applies, and `language.{code}.yml` is that. So there is no admin screen
+for it, and this is a decision rather than a gap.
 
-Menus and stages were both on this list and are not any more:
-`/admin/structure/menus` renders each menu as an indented tree and creates, edits,
-reorders and deletes links; `/admin/structure/stages` creates and edits stages,
-with the guard rails the model enforces (one public stage, exactly one default, the
-Live stage neither deletable nor demotable, and a stage holding content refused
-with a count of what holds it).
+The other half of the reasoning is that a language screen on its own would not help
+much. Adding a language row is the small part of adding a language; the work is the
+interface strings, which `trovato_locale` handles at `/admin/config/locale` by
+importing `.po` files, and the content translations, which
+`trovato_content_translation` handles per item. A form that adds a row and leaves an
+operator to do both of those anyway would look like the feature without being it.
 
-Because import is the only path for the types that remain, it refuses to apply a
-set containing a file it cannot parse: the run names every offending file, exits
-non-zero, and writes nothing. It used to skip such a file with a warning and
-report success, which meant an entity that never arrived with nothing that said
-why.
+`crates/kernel/tests/config_admin_coverage_test.rs` holds this decision as a table:
+every config entity type there either names a screen that must serve or names the
+sentence above, and a new config entity type fails that test until somebody decides
+which it is.
+
+### What is configuration import only, in full
+
+**Twelve of the thirteen config entity types have an admin screen**, and the
+thirteenth (`language`) is import-only by the decision above. That leaves the
+`variable` type, which is a key/value store rather than one thing, and so is
+partly covered:
+
+| Setting | Screen |
+|---|---|
+| `site_name`, `site_slogan`, `site_mail`, `front_page`, `items_per_page`, registration mode, the SMTP settings, `notify_admin_on_register`, `update_check` | `/admin/config/site` |
+| `pathauto_patterns` | `/admin/config/pathauto` |
+| `robots_txt_custom` | **none** |
+| Anything a plugin defines | **none** |
+
+There is deliberately **no generic variable editor**, and there should not be one.
+A form that writes arbitrary JSON into arbitrary `site_config` keys is a form that
+can break a site in ways the kernel parses at startup, with no validation possible
+because the schema is per key. What a specific variable needs is a specific field on
+a specific screen, which is how the covered ones got there.
+
+This list is no longer only prose. `crates/kernel/tests/config_admin_coverage_test.rs`
+holds the audit as a table: every config entity type either names an admin path that
+must serve for an administrator, and must not serve for an anonymous visitor, or
+names the sentence in `KNOWN-ISSUES.md` that records it as a deliberate decision. A
+new config entity type fails that test until somebody chooses.
+
+The prose version of this list drifted before, which is why: menus were listed among
+the types *with* screens for a while and did not have one.
+
+Because import is the only path for what remains, it refuses to apply a set
+containing a file it cannot parse: the run names every offending file, exits
+non-zero, and writes nothing. It used to skip such a file with a warning and report
+success, which meant an entity that never arrived with nothing that said why.
 
 ### A plugin's permissions cannot be granted by config import
 

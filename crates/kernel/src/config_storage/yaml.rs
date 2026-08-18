@@ -42,7 +42,13 @@ use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, Ur
 ///
 /// A single source of truth: earlier entries are imported first.
 /// Categories before tags (FK), item_types before search_field_configs (bundle ref).
-const ENTITY_TYPE_ORDER: &[&str] = &[
+///
+/// Public because it is also **the** list of config entity types, which
+/// `config_admin_coverage_test.rs` walks to assert that every one of them either has
+/// an admin screen or is recorded in `KNOWN-ISSUES.md` as deliberately
+/// import-only. Adding a type here without deciding which it is fails that test,
+/// which is the point.
+pub const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::VARIABLE,
     entity_types::LANGUAGE,
     entity_types::ROLE,

@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- The "what is configuration-import only" list is a test, not prose.
+
+  `ROADMAP.md` sets the 1.0 bar as "a site can be built, configured and operated
+  through the interface", and the list of what fell short of that lived in a
+  paragraph. Paragraphs drift: menus were listed among the types *with* admin screens
+  for a while and did not have one, which is how that defect was found.
+
+  `crates/kernel/tests/config_admin_coverage_test.rs` holds the audit as a table with
+  one row per config entity type, and each row is one of two things:
+
+  - a path that must **actually serve** for an administrator — a real request, since a
+    route that 500s is not a screen — and must **not** serve for an anonymous visitor;
+  - a sentence that must appear in `KNOWN-ISSUES.md`, so an import-only type is a
+    written decision rather than an omission.
+
+  The table is asserted against `ENTITY_TYPE_ORDER`, in both directions, so adding a
+  config entity type fails this test until somebody decides which it is, and removing
+  one fails it until the row goes. That is the whole mechanism and the only part of
+  the file that will still be earning its keep in a year.
+
+  The audit found the outcome, so here it is: **twelve of the thirteen types have a
+  screen.** The thirteenth is `language`, now import-only by a decision with a reason
+  written down — a site's language set belongs in its config set, and a form that adds
+  a language row would not do the interface strings (`trovato_locale`, by `.po`
+  import) or the content translations (`trovato_content_translation`, per item) that
+  are what actually make a language work.
+
+  `variable` is a key/value store rather than one thing, so KNOWN-ISSUES.md now lists
+  it setting by setting: which have a screen, which do not (`robots_txt_custom`, and
+  anything a plugin defines), and why there is deliberately **no generic variable
+  editor** — a form writing arbitrary JSON into arbitrary `site_config` keys can break
+  a site in ways the kernel parses at startup, with no validation possible because the
+  schema is per key.
+
+  Two smaller corrections the audit forced. Tags are managed per category
+  (`/admin/structure/categories/{id}/tags`), not at `/admin/structure/tags`, which is
+  only the edit and delete path — so the audit names the real screen. And
+  `ENTITY_TYPE_ORDER` is now public, because it is not only an import ordering: it is
+  the list of config entity types, and the audit walks it.
+
 - A person can delete their own account, and **deleting any account that ever
   wrote anything now works at all**.
 
