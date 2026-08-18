@@ -27,6 +27,36 @@ pub struct CronTasks {
     /// builds tasks without a `Config` still prunes to a bounded window;
     /// `AppState` overwrites it from [`crate::config::RuntimeConfig`].
     security_audit_retention_days: i64,
+    /// How the update check reaches the release endpoint, and whether it may.
+    ///
+    /// `None` disables the check outright, which is what `UPDATE_CHECK=0` produces
+    /// and what a harness that never wants an outbound request gets by default.
+    update_check: Option<UpdateCheckConfig>,
+}
+
+/// What the update check needs: where to ask, how to ask, and how often.
+///
+/// Carried on the tasks rather than read from the environment, so a test drives
+/// the same code path against a local endpoint and the production path is not a
+/// second implementation. `AppState` builds this from
+/// [`crate::config::RuntimeConfig`].
+#[derive(Clone)]
+pub struct UpdateCheckConfig {
+    /// The latest-release endpoint.
+    pub endpoint: String,
+    /// The client to use. Production passes the SSRF-hardened outbound client.
+    pub client: reqwest::Client,
+    /// Minimum seconds between checks.
+    pub interval_secs: u64,
+}
+
+impl std::fmt::Debug for UpdateCheckConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateCheckConfig")
+            .field("endpoint", &self.endpoint)
+            .field("interval_secs", &self.interval_secs)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CronTasks {
@@ -40,6 +70,7 @@ impl CronTasks {
             audit: None,
             email: None,
             security_audit_retention_days: crate::audit::DEFAULT_RETENTION_DAYS,
+            update_check: None,
         }
     }
 
@@ -57,6 +88,7 @@ impl CronTasks {
             audit: None,
             email: None,
             security_audit_retention_days: crate::audit::DEFAULT_RETENTION_DAYS,
+            update_check: None,
         }
     }
 
@@ -80,6 +112,61 @@ impl CronTasks {
     /// Non-positive values are ignored rather than honoured, for the reason given
     /// on `audit::retention_days_from`: a zero-day window prunes the
     /// whole stream.
+    /// Configure the update check, or disable it with `None`.
+    pub fn set_update_check(&mut self, update_check: Option<UpdateCheckConfig>) {
+        self.update_check = update_check;
+    }
+
+    /// Ask GitHub whether a newer release exists, at most once per interval.
+    ///
+    /// Returns `Ok(None)` when nothing was asked: the check is disabled, the site
+    /// setting turns it off, or the interval has not elapsed. Every failure past
+    /// that point is the caller's to log at debug and ignore. A site whose update
+    /// check cannot reach GitHub has a site that works and an administrator who is
+    /// not told about releases, and the second is not worth making the first worse.
+    ///
+    /// # Errors
+    ///
+    /// Returns the request or storage error, for the caller to log. Nothing
+    /// upstream of a page render ever sees it.
+    pub async fn check_for_updates(&self) -> Result<Option<crate::update_status::UpdateStatus>> {
+        let Some(config) = self.update_check.as_ref() else {
+            return Ok(None);
+        };
+
+        if !crate::update_status::setting_allows_check(&self.pool).await {
+            debug!("update check is turned off for this site");
+            return Ok(None);
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let last = crate::update_status::stored_status(&self.pool)
+            .await
+            .map(|status| status.checked_at);
+        if !crate::update_status::is_due(last, now, config.interval_secs) {
+            return Ok(None);
+        }
+
+        let status = crate::update_status::fetch_and_store(
+            &self.pool,
+            &config.client,
+            &config.endpoint,
+            now,
+        )
+        .await?;
+
+        if let Some(status) = status.as_ref() {
+            debug!(
+                latest = %status.latest_version,
+                is_security = status.is_security,
+                behind = status.is_behind(),
+                "checked for updates"
+            );
+        }
+
+        Ok(status)
+    }
+
     pub fn set_security_audit_retention_days(&mut self, days: i64) {
         if days > 0 {
             self.security_audit_retention_days = days;

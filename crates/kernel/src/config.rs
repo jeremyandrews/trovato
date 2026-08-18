@@ -325,6 +325,23 @@ pub struct RuntimeConfig {
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
+    /// Whether the kernel may ask GitHub whether a newer release exists.
+    ///
+    /// `UPDATE_CHECK=0` (or `false`/`off`/`no`) turns it off for the process, which
+    /// is the switch an air-gapped deployment needs: it must not depend on a
+    /// database row being right. There is also an `update_check` site setting, and
+    /// the check runs only when both allow it.
+    pub update_check_enabled: bool,
+
+    /// The latest-release endpoint the check asks.
+    ///
+    /// Configurable so a test can point it at a local server, which is also how the
+    /// integration test drives the real cron path without touching the network.
+    pub update_check_endpoint: String,
+
+    /// Minimum seconds between update checks. Default one day.
+    pub update_check_interval_secs: u64,
+
     /// The site's public base URL, the same value email links are built from.
     ///
     /// Request handling needs it for the absolute URLs that only make sense
@@ -633,6 +650,16 @@ impl Config {
             gather_access: crate::gather::GatherAccessConfig::from_lookup(get),
             // 30 days.
             search_expand_cache_ttl: parse_or(get, "CACHE_TTL_SEARCH_EXPAND", 2_592_000),
+            update_check_enabled: !crate::update_status::env_disables_check(
+                get("UPDATE_CHECK").as_deref(),
+            ),
+            update_check_endpoint: get("UPDATE_CHECK_ENDPOINT")
+                .unwrap_or_else(|| crate::update_status::DEFAULT_RELEASE_ENDPOINT.to_string()),
+            update_check_interval_secs: parse_or(
+                get,
+                "UPDATE_CHECK_INTERVAL_SECS",
+                crate::update_status::DEFAULT_CHECK_INTERVAL_SECS,
+            ),
         };
 
         Ok(Self {

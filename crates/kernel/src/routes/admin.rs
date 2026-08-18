@@ -109,6 +109,17 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
     context.insert("user", &user);
     context.insert("csrf_token", &csrf_token);
 
+    // The update banner, read from what the last cron check stored. Only here, and
+    // only past `require_admin`: a visitor has no use for the site's version and no
+    // business being told it. Nothing is fetched on this path — a page render never
+    // makes an outbound request.
+    if let Some(status) = crate::update_status::stored_status(state.db()).await
+        && status.is_behind()
+    {
+        context.insert("update_status", &status);
+    }
+    context.insert("running_version", crate::update_status::running_version());
+
     render_admin_template(&state, "admin/dashboard.html", context).await
 }
 

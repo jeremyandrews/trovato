@@ -7,6 +7,8 @@ mod pagefind;
 mod queue;
 mod tasks;
 
+pub use tasks::UpdateCheckConfig;
+
 pub use queue::{Queue, RedisQueue};
 pub use tasks::CronTasks;
 
@@ -506,6 +508,25 @@ impl CronService {
         }
     }
 
+    /// Configure the update check, or disable it with `None`.
+    ///
+    /// `apply_runtime_config` sets this from the process configuration. It is public
+    /// so a test can point the check at a local endpoint and drive the same code
+    /// the cron cycle drives, rather than a mock of it.
+    pub fn set_update_check(&mut self, update_check: Option<UpdateCheckConfig>) {
+        self.tasks.set_update_check(update_check);
+    }
+
+    /// Run the update check now, subject to the setting and the interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns the request or storage error. The cron cycle logs it at debug and
+    /// carries on.
+    pub async fn check_for_updates(&self) -> Result<Option<crate::update_status::UpdateStatus>> {
+        self.tasks.check_for_updates().await
+    }
+
     /// Set the tap dispatcher for plugin cron hooks.
     pub fn set_tap_dispatcher(&mut self, dispatcher: Arc<TapDispatcher>) {
         self.tap_dispatcher = Some(dispatcher);
@@ -541,6 +562,18 @@ impl CronService {
     pub fn apply_runtime_config(&mut self, runtime: &crate::config::RuntimeConfig) {
         self.tasks
             .set_security_audit_retention_days(runtime.security_audit_retention_days);
+        // The update check is off unless the process allows it. The client is the
+        // same SSRF-hardened outbound client the plugin fetchers use: this request
+        // goes to a name resolved at runtime, so it gets the same rebinding-safe
+        // resolver and per-hop redirect revalidation as any other.
+        self.tasks
+            .set_update_check(runtime.update_check_enabled.then(|| {
+                crate::cron::tasks::UpdateCheckConfig {
+                    endpoint: runtime.update_check_endpoint.clone(),
+                    client: build_http_client(),
+                    interval_secs: runtime.update_check_interval_secs,
+                }
+            }));
         if let Some(base) = runtime.static_dirs.first() {
             self.pagefind_static_dir = base.clone();
         }
@@ -630,6 +663,22 @@ impl CronService {
                 tasks_run.push(format!("process_queues: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to process queues"),
+        }
+
+        // Ask whether a newer release exists. Failures are logged at debug and
+        // change nothing: an unreachable GitHub is not a site problem, and this is
+        // the one task whose output is advisory.
+        match self.tasks.check_for_updates().await {
+            Ok(Some(status)) => {
+                info!(
+                    latest = %status.latest_version,
+                    is_security = status.is_security,
+                    "checked for updates"
+                );
+                tasks_run.push(format!("check_for_updates: {}", status.latest_version));
+            }
+            Ok(None) => {}
+            Err(e) => debug!(error = %e, "update check failed; nothing changed"),
         }
 
         // Cleanup expired verification tokens

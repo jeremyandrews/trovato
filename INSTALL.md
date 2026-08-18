@@ -76,6 +76,9 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |
 | `JWT_SECRET` | *(none)* | Required for OAuth2 plugin (min 32 bytes) |
 | `WEBHOOK_ENCRYPTION_KEY` | *(none)* | Encrypts webhook secrets (min 32 bytes, recommended) |
+| `UPDATE_CHECK` | `1` | Whether the kernel may check for Trovato releases. Set to `0` (or `false`/`off`/`no`) for a deployment that must make no outbound requests at all. See "Update checks" below. |
+| `UPDATE_CHECK_INTERVAL_SECS` | `86400` | Minimum seconds between update checks |
+| `UPDATE_CHECK_ENDPOINT` | GitHub's latest-release API | The endpoint the check asks. Configurable so a test can point it at a local server. |
 
 `.env.example` is the fuller reference, including the `POSTGRES_*` and
 `REDIS_PORT` settings that only `docker compose` reads.
@@ -123,6 +126,37 @@ cargo run --release -- plugin enable some_plugin
 ```
 
 ### Included Plugins
+
+## Update checks
+
+Trovato asks GitHub, at most once a day from cron, whether a newer release exists.
+
+**Exactly what that is:** one outbound HTTPS GET to
+`https://api.github.com/repos/jeremyandrews/trovato/releases/latest`, carrying no
+site data — no URL, no version, no site identifier, nothing but the request and a
+`Trovato/<version>` User-Agent. GitHub learns that an IP address asked about a
+public repository. Nothing is sent about the site, and no page render ever makes the
+request: the check runs in cron and stores its answer, and the dashboard reads what
+was stored.
+
+When the running version is behind, **an administrator** sees a banner on
+`/admin`, styled as an alarm when the release announces itself as a security
+release (see the release convention in CONTRIBUTING.md). Nobody else sees it: a
+visitor and a logged-in non-administrator are never told the site's version, which
+is a fingerprinting detail with no upside for them.
+
+**Turning it off.** There are two switches and the environment wins:
+
+- `UPDATE_CHECK=0` in the environment, for a deployment where "no outbound
+  requests" is an operational requirement. An air-gapped install should not depend
+  on a database row being right.
+- A **Check for Trovato releases** checkbox at `/admin/config/site`, for a site that
+  simply does not want it.
+
+On by default, which is a deliberate choice rather than an oversight: a site with no
+way to learn that a security fix exists is a site that does not get it. Drupal core
+has shipped update status on by default for two decades. The data flow is small
+enough to write down in full, which is what the paragraph above is.
 
 | Plugin | Description |
 |--------|-------------|
