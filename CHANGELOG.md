@@ -2,6 +2,99 @@
 
 ## Unreleased
 
+- RSS feeds work, are config-driven, and are advertised in every page's head.
+  `trovato_feeds` shipped two feeds that could not be served and has been
+  removed.
+
+  Two defects in one plugin. Its routes were declared
+  `MenuDefinition::new(...).callback(...)`, which leaves `handler_type` at its
+  default `"page"`, and it exported no `tap_api`, so
+  `routes/plugin_api.rs` skipped both entries: `/rss/insights.xml` and
+  `/rss/planet-drupal.xml` 404ed, and `build_rss_item` / `build_rss_feed` were
+  dead code wearing `#[allow(dead_code)]` comments that claimed a route callback
+  called them at runtime. And those two paths were one specific site's feeds
+  hardcoded into a plugin that presented itself as generic.
+
+  A gather query now declares a feed in its display config, and gets an RSS 2.0
+  document at the path it names:
+
+  ```yaml
+  display:
+    feed:
+      path: /rss/blog.xml
+      title: Blog          # defaults to the query's label
+      description: ...     # defaults to the query's description
+      items: 20            # capped at 200
+  ```
+
+  Feeds are registered at startup from the same query set the gather route
+  aliases come from, and skipped with a warning when unusable (a relative path, a
+  route pattern, a path a second query already claimed) rather than panicking
+  axum on a route conflict. `templates/base.html` emits an autodiscovery
+  `<link rel="alternate" type="application/rss+xml">` per feed, so a reader
+  finds them without being told the URL out of band.
+
+  Entries carry title, absolute link, matching `guid`, description and
+  `pubDate`, and link the item's URL alias when it has one. Descriptions go in a
+  CDATA section with any `]]>` split across two sections, so content cannot
+  close the section and inject markup into the document.
+
+  **Why this is kernel rather than a rebuilt plugin.** A feed is a rendering of a
+  query result, and query execution is kernel infrastructure: it applies the
+  stage filter, the access filter and the D-26 over-fetch bounds for a specific
+  viewer. Plugin space has no seam onto it — `item-api` offers `query-items`,
+  which is an unordered, unfiltered `SELECT ... LIMIT 100` with no viewer, so a
+  plugin-built feed would publish whatever the access filter exists to withhold.
+  Adding that seam is plugin-contract surface, and the contract is frozen before
+  1.0. `routes/sitemap.rs` is the existing precedent for the same reasoning. A
+  feed is therefore an execution of the query as whoever fetched it: an
+  anonymous aggregator gets exactly what an anonymous visitor sees.
+
+  Also added: `UrlAlias::canonical_aliases_for`, which resolves a page of
+  sources in one query rather than one round trip per entry.
+
+- Item pages carry a meta description, a canonical link and Open Graph tags.
+  Nothing could emit them before, and the reason was structural rather than an
+  oversight: `<head>` is not reachable from a plugin. `trovato_seo` implements
+  `tap_item_view`, whose return value the item route appends to the item's body,
+  so the best it could do was a hidden `<div data-description>` and its JSON-LD
+  script blocks. `tap_item_view_alter`, which could have rewritten the
+  surrounding document, is declared in `kernel.wit` but never dispatched. Search
+  engines got the JSON-LD; every link preview on every chat and social platform
+  got a title and nothing else.
+
+  The kernel now derives the metadata (`content::page_meta`) and puts it in the
+  template context, and `templates/base.html` emits it: `description`,
+  `canonical`, `og:title`, `og:type`, `og:url`, `og:site_name`,
+  `og:description`, `og:image`, `article:published_time`,
+  `article:modified_time`, and the one Twitter tag that is not covered by the
+  Open Graph fallbacks, `twitter:card`. Every tag is guarded by its value, since
+  an empty description tag is a worse signal to a crawler than no description
+  tag.
+
+  The description is derived from `field_description`, then `field_body`, then
+  the first paragraph block — the same two field names `trovato_seo` reads, plus
+  a fallback for block-editor content types, which have no `field_body`. Tags
+  are stripped, entities decoded, whitespace collapsed, and the result truncated
+  to 160 bytes on a word boundary. `og:image` comes from the item's first image
+  block, the only image the kernel can identify without a theme naming a lead
+  image field. `og:type` is `article` for the `blog`, `article` and `news` item
+  types, matching the mapping `trovato_seo` uses for its JSON-LD `@type` so the
+  two cannot disagree on one page.
+
+  Two details worth knowing. The canonical URL is the item's URL alias when it
+  has one, so the address a crawler indexes is the address the site links to,
+  and both `/item/{uuid}` and the alias name the alias as canonical. And the URL
+  values are resolved with `url::Url` and emitted with `| safe`: Tera's escaper
+  renders every `/` in a URL as `&#x2F;`, which is legal HTML that naive
+  unfurlers read wrong. `Url` resolution percent-encodes anything that could
+  close the attribute, non-http(s) schemes are dropped rather than emitted, and
+  `&` is written as `&amp;`.
+
+  `SITE_URL` is now on `RuntimeConfig`, since request handling needs it: a
+  canonical link and `og:url` are absolute by definition, resolved by a crawler
+  with no request context to resolve a relative path against.
+
 - Comments can be held for review, marked as spam, and the author notification
   fires when a comment becomes visible rather than when it is written.
 

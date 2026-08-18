@@ -705,6 +705,35 @@ async fn view_item(
     ];
     context.insert("breadcrumbs", &breadcrumbs);
 
+    // Head metadata: meta description, canonical link, Open Graph tags. Built
+    // here rather than in a plugin because `<head>` is not reachable from one —
+    // `tap_item_view` output is appended to the item's body. The canonical URL
+    // is the item's alias when it has one, so the address a crawler indexes is
+    // the address the site links to.
+    let canonical_path = UrlAlias::get_canonical_alias_with_context(
+        state.db(),
+        &item_path,
+        item.stage_id,
+        &active_language,
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| item_path.clone());
+    let site_name = context
+        .get("site_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Trovato")
+        .to_string();
+    let page_meta = crate::content::PageMeta::for_item(
+        &item,
+        &canonical_path,
+        &state.runtime().site_url,
+        &site_name,
+        &content_type_fields,
+    );
+    context.insert("page_meta", &page_meta);
+
     let page_html = state
         .theme()
         .render_page(&item_path, &item.title, &item_html, &mut context)
