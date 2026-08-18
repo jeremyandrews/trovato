@@ -1,0 +1,74 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Menus") }}
+
+<div class="admin-card">
+    <p>A menu is a set of links. <strong>main</strong> and <strong>footer</strong> are
+    the two this theme renders; a menu under any other name is stored and listed
+    here, but nothing displays it until a template asks for it.</p>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Menu</th>
+                <th>Links</th>
+                <th>Editable here</th>
+                <th>Rendered by the theme</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for menu in menus %}
+            <tr>
+                <td><a href="/admin/structure/menus/{{ menu.name }}">{{ menu.name }}</a></td>
+                <td>{{ menu.links }}</td>
+                <td>{{ menu.editable }}</td>
+                <td>{% if menu.rendered %}Yes{% else %}No{% endif %}</td>
+                <td>
+                    <a href="/admin/structure/menus/{{ menu.name }}">Edit links</a>
+                    &middot;
+                    <a href="/admin/structure/menus/{{ menu.name }}/add">Add link</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="admin-card">
+    <h3>Plugin-registered navigation</h3>
+    <p>These entries come from plugins, through <code>tap_menu</code>, and are not
+    rows in the menu table. They are listed so you can see the whole navigation in
+    one place; they are not editable here. To change one, change the plugin that
+    registers it.</p>
+
+    {% if plugin_entries %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Path</th>
+                <th>Title</th>
+                <th>Parent</th>
+                <th>Weight</th>
+                <th>Owned by</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for entry in plugin_entries %}
+            <tr>
+                <td><code>{{ entry.path }}</code></td>
+                <td>{{ entry.title }}</td>
+                <td>{% if entry.parent %}<code>{{ entry.parent }}</code>{% else %}&mdash;{% endif %}</td>
+                <td>{{ entry.weight }}</td>
+                <td><code>{{ entry.plugin }}</code> (read-only)</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No plugin has registered a navigation entry.</p>
+    {% endif %}
+</div>
+{% endblock %}

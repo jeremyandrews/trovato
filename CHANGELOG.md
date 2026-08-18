@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- Menus have an administration screen. `/admin/structure/menus` lists a site's
+  menus, renders each as an indented tree, and creates, edits, reorders and
+  deletes links (title, path, parent, weight, hidden).
+
+  This was the largest parity hole in the tree. Drupal 6 shipped a menu admin UI
+  in core; here a site's navigation was editable by exactly one path, hand-writing
+  YAML and running `trovato config import`, which is not a thing you ask someone
+  to do to rename a link in a navigation bar. `ROADMAP.md` put the form before 1.0
+  for that reason, and `menu_admin_absent_test.rs` existed to pin the absence
+  until it was built. That test is removed, as its own doc comment said to.
+
+  **It needed no kernel plumbing.** The obvious worry was a menu registry built at
+  startup, which would have meant an invalidation hook. There is no such cache for
+  this: `routes/helpers::inject_site_context` queries `menu_link` on every render,
+  so an edit shows on the next request. A test pins that property from the outside
+  (create a link through the form, fetch the front page, see it; hide it, fetch
+  again, it is gone) so a future move to a cached registry cannot break it
+  quietly. The startup-built `MenuRegistry` holds the *plugin-registered* half,
+  which this screen does not write.
+
+  What the screen decides, since a form has to answer questions the model does
+  not:
+
+  - **A path must be a local absolute path.** One leading slash, no scheme, no
+    protocol-relative `//host`, no `..`, no whitespace or control characters. It is
+    not checked for resolving to anything: the router is an axum `Router`, which
+    cannot be enumerated, and half the paths a site wants in a menu are aliases
+    created after the link. A path that resolves to nothing 404s when clicked,
+    which a form cannot know at save time and should not pretend to.
+  - **A link cannot be its own ancestor.** Rejected on save by walking the parent
+    chain, and unreachable through the interface as well: the parent select omits
+    the link's own subtree.
+  - **Deleting a link promotes its children to its own parent**, and the listing
+    says so before you click. The foreign key's `ON DELETE SET NULL` would instead
+    turn a nested branch into a row of top-level links, which is a different
+    answer and a worse one.
+  - **A parent must be a link in the same menu.** A cross-menu parent would render
+    as a root anyway, so accepting it would be a lie about the tree.
+  - **Plugin-owned navigation is read-only.** `tap_menu` entries are not rows at
+    all; they live in the in-memory registry. They are listed on the index,
+    attributed to their plugin, with no edit affordance. A `menu_link` row a plugin
+    stamped with its own name is treated the same way, and the routes refuse an
+    edit or delete for one even when the URL is typed by hand rather than only
+    hiding the button.
+
+  `main` and `footer` are always offered because those are the two the theme
+  renders; a menu under any other name is stored and listed, and nothing displays
+  it until a template asks for it, which the screen says.
+
 - `config import` writes a menu completely. Hierarchy, visibility, plugin
   ownership and stage placement now survive an import, and an export of what
   landed re-imports to the same thing.

@@ -106,27 +106,22 @@ reproducibility claim true, and is the next step here.
 
 ### Some admin screens are configuration import only
 
-Roles and permissions, stages, menus, and system configuration are managed by
-editing YAML and running `trovato config import`. There is no form for them.
-Content types, fields, users, categories, content, gather queries, tiles,
-aliases, plugins and AI providers all do have admin screens.
+Stages and system configuration are managed by editing YAML and running
+`trovato config import`. There is no form for them. Content types, fields, users,
+categories, content, gather queries, tiles, aliases, menus, roles, permissions,
+plugins and AI providers all do have admin screens.
 
-Menus were listed here as having a screen, and do not: no route under `/admin`
-matches `menu`, and `templates/admin/` holds no menu template. Menu links are
-rows in `menu_link`, read by the render layer
-(`crates/kernel/src/routes/helpers.rs`) and written only by config import. Since
-1.0 means a site can be configured through the interface, the form belongs before
-it — see [ROADMAP.md](ROADMAP.md).
+Menus were on this list, and are not any more: `/admin/structure/menus` lists a
+site's menus, renders each one as an indented tree, and creates, edits, reorders
+and deletes links. Plugin-registered navigation (`tap_menu`) appears there too,
+attributed to its plugin and read-only, because it is not rows and this form does
+not own it.
 
-Config import at least now writes a menu completely: hierarchy, visibility,
-plugin ownership and stage placement all survive an import and an export, so the
-one supported path is no longer also a lossy one.
-
-Because import is the only path for those types, it now refuses to apply a set
-containing a file it cannot parse: the run names every offending file, exits
+Because import is the only path for the types that remain, it refuses to apply a
+set containing a file it cannot parse: the run names every offending file, exits
 non-zero, and writes nothing. It used to skip such a file with a warning and
-report success, which for a role or a stage meant an entity that never arrived
-with nothing that said why.
+report success, which for a stage meant an entity that never arrived with nothing
+that said why.
 
 ### Role permissions are not carried by config import
 

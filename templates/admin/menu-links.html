@@ -1,0 +1,66 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Menu: " ~ menu_name, add_url="/admin/structure/menus/" ~ menu_name ~ "/add", add_label="Add link") }}
+
+<div class="admin-card">
+    <p><a href="/admin/structure/menus">All menus</a></p>
+
+    {% if rows %}
+    <p>Links are shown in the order they render: depth first, by weight then title.
+    Change a link's weight to reorder it among its siblings. Deleting a link with
+    children <strong>promotes those children to its own parent</strong>; it does not
+    delete them.</p>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Path</th>
+                <th>Weight</th>
+                <th>Visibility</th>
+                <th>Owner</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td>
+                    {%- for i in range(end=row.depth) %}<span class="menu-tree__indent" aria-hidden="true">&nbsp;&nbsp;&nbsp;&nbsp;</span>{% endfor -%}
+                    {%- if row.depth > 0 %}<span aria-hidden="true">&#8735;</span> {% endif -%}
+                    {{ row.title }}
+                </td>
+                <td><code>{{ row.path }}</code></td>
+                <td>{{ row.weight }}</td>
+                <td>{% if row.hidden %}Hidden{% else %}Shown{% endif %}</td>
+                <td>
+                    {%- if row.editable -%}
+                    core
+                    {%- else -%}
+                    <code>{{ row.plugin }}</code> (read-only)
+                    {%- endif -%}
+                </td>
+                <td>
+                    {% if row.editable %}
+                    <a href="/admin/structure/menus/{{ menu_name }}/{{ row.id }}/edit">Edit</a>
+                    &middot;
+                    {% if row.children > 0 %}
+                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", confirm_text="Delete this link? Its " ~ row.children ~ " child link(s) will be promoted to its parent.", csrf_token=csrf_token) }}
+                    {% else %}
+                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", confirm_text="Delete this link?", csrf_token=csrf_token) }}
+                    {% endif %}
+                    {% else %}
+                    Not editable here
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    {{ list::empty(message="This menu has no links.", add_url="/admin/structure/menus/" ~ menu_name ~ "/add", add_label="Add the first one") }}
+    {% endif %}
+</div>
+{% endblock %}
