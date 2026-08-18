@@ -325,8 +325,27 @@ pub struct RuntimeConfig {
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
+    /// The site's public base URL, the same value email links are built from.
+    ///
+    /// Request handling needs it for the absolute URLs that only make sense
+    /// off-site: `<link rel="canonical">` and the Open Graph tags, which a
+    /// crawler or a link unfurler resolves with no request context to resolve a
+    /// relative path against.
+    pub site_url: String,
+
     /// D-26 over-fetch and backfill bounds for access-filtered gather pages.
     pub gather_access: crate::gather::GatherAccessConfig,
+
+    /// How long an AI search query expansion is cached, in seconds.
+    ///
+    /// `CACHE_TTL_SEARCH_EXPAND`, default 30 days. Long on purpose: an expansion
+    /// is a set of related terms for a query, it costs provider tokens to
+    /// produce, and it does not go stale the way content does. Zero disables the
+    /// cache, which is the switch to reach for when tuning the prompt.
+    ///
+    /// Lives here rather than in [`CacheConfig`] because request handling reads it
+    /// per call; the TTLs there are held by long-lived services instead.
+    pub search_expand_cache_ttl: u64,
 }
 
 /// Application configuration.
@@ -610,7 +629,10 @@ impl Config {
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
+            site_url: site_url.clone(),
             gather_access: crate::gather::GatherAccessConfig::from_lookup(get),
+            // 30 days.
+            search_expand_cache_ttl: parse_or(get, "CACHE_TTL_SEARCH_EXPAND", 2_592_000),
         };
 
         Ok(Self {

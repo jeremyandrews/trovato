@@ -94,10 +94,17 @@ resolve rather than keep.
 
 ### Some admin screens are configuration import only
 
-Roles and permissions, stages, and system configuration are managed by editing
-YAML and running `trovato config import`. There is no form for them. Content
-types, fields, users, categories, content, gather queries, tiles, aliases,
-menus, plugins and AI providers all do have admin screens.
+Roles and permissions, stages, menus, and system configuration are managed by
+editing YAML and running `trovato config import`. There is no form for them.
+Content types, fields, users, categories, content, gather queries, tiles,
+aliases, plugins and AI providers all do have admin screens.
+
+Menus were listed here as having a screen, and do not: no route under `/admin`
+matches `menu`, and `templates/admin/` holds no menu template. Menu links are
+rows in `menu_link`, read by the render layer
+(`crates/kernel/src/routes/helpers.rs`) and written only by config import. Since
+1.0 means a site can be configured through the interface, the form belongs before
+it — see [ROADMAP.md](ROADMAP.md).
 
 Because import is the only path for those types, it now refuses to apply a set
 containing a file it cannot parse: the run names every offending file, exits

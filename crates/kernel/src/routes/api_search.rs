@@ -98,9 +98,33 @@ struct Message {
 ///
 /// No CSRF required — this is a read-only search enhancement, not a
 /// state-changing operation. scolta.js calls this from the client.
+///
+/// Expansions are cached. `docs/design/search-architecture.md` specified a cache
+/// and none was built, so every call — including the same query typed twice —
+/// spent provider tokens.
 async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequest>) -> Response {
     if body.query.trim().is_empty() {
         return AppError::bad_request("Query cannot be empty").into_response();
+    }
+
+    // Everything the prompt is built from, so a site rename or a provider change
+    // cannot serve an expansion produced under the old one.
+    let site_name = SiteConfig::site_name(state.db())
+        .await
+        .unwrap_or_else(|_| "Trovato".to_string());
+    let site_slogan = SiteConfig::site_slogan(state.db())
+        .await
+        .unwrap_or_default();
+
+    let ttl = state.runtime().search_expand_cache_ttl;
+    let cache_key = expansion_cache_key(&body.query, &site_name, &site_slogan);
+
+    if ttl > 0
+        && let Some(cached) = state.cache().get(&cache_key).await
+        && let Ok(terms) = serde_json::from_str::<Vec<String>>(&cached)
+    {
+        tracing::debug!(query = %body.query, "search expansion served from cache");
+        return Json(ExpandResponse { terms }).into_response();
     }
 
     // Resolve AI provider
@@ -112,13 +136,7 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
         return AppError::service_unavailable("AI", "AI provider not configured").into_response();
     };
 
-    // Build the expand prompt
-    let site_name = SiteConfig::site_name(state.db())
-        .await
-        .unwrap_or_else(|_| "Trovato".to_string());
-    let site_slogan = SiteConfig::site_slogan(state.db())
-        .await
-        .unwrap_or_default();
+    // Build the expand prompt from the same values the cache key covers.
     let system_prompt = prompts::resolve(prompts::EXPAND_QUERY, &site_name, &site_slogan);
 
     // Make the AI request
@@ -166,7 +184,60 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
         })
         .unwrap_or_default();
 
+    // An empty list is a parse failure, not an answer worth remembering for a
+    // month: cache only a real expansion.
+    if ttl > 0 && !terms.is_empty() {
+        match serde_json::to_string(&terms) {
+            Ok(payload) => {
+                state
+                    .cache()
+                    .set(&cache_key, &payload, ttl, &[EXPANSION_CACHE_TAG])
+                    .await;
+            }
+            Err(e) => tracing::warn!(error = %e, "failed to serialize expansion for cache"),
+        }
+    }
+
     Json(ExpandResponse { terms }).into_response()
+}
+
+/// Cache tag for every stored query expansion, so the set can be dropped at once
+/// when the prompt changes.
+pub const EXPANSION_CACHE_TAG: &str = "search_expand";
+
+/// Cache key for one query's expansion.
+///
+/// The query is normalized — trimmed, lowercased, internal whitespace collapsed —
+/// so "  Rust   Async " and "rust async" are one entry rather than two. The site
+/// name and slogan are part of the key because the prompt is built from them: a
+/// renamed site must not be served expansions produced under its old name.
+///
+/// Hashed rather than interpolated: a query is arbitrary user text, and a cache
+/// key is a Redis key.
+///
+/// Public because the key shape is the cache's contract: it is what an operator
+/// inspecting or evicting entries needs, and what a test seeds.
+pub fn expansion_cache_key(query: &str, site_name: &str, site_slogan: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let normalized = normalize_query(query);
+    let mut hasher = Sha256::new();
+    // Length-prefixed so no two different triples can hash the same bytes.
+    for part in [normalized.as_str(), site_name, site_slogan] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+
+    format!("{EXPANSION_CACHE_TAG}:{:x}", hasher.finalize())
+}
+
+/// Reduce a query to the form the cache keys on.
+pub fn normalize_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Summarize search results via AI with SSE streaming.
@@ -447,5 +518,74 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
             self = self.header(key.as_str(), value.as_str());
         }
         self
+    }
+}
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalization_folds_case_and_whitespace() {
+        assert_eq!(normalize_query("  Rust   Async "), "rust async");
+        assert_eq!(normalize_query("rust async"), "rust async");
+        assert_eq!(normalize_query("RUST\tASYNC\n"), "rust async");
+    }
+
+    /// The point of normalizing: the same question asked two ways is one cache
+    /// entry, so the second asker does not pay for another provider call.
+    #[test]
+    fn queries_that_differ_only_in_spacing_and_case_share_a_key() {
+        let a = expansion_cache_key("  Rust   Async ", "Site", "Slogan");
+        let b = expansion_cache_key("rust async", "Site", "Slogan");
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_queries_get_different_keys() {
+        let a = expansion_cache_key("rust async", "Site", "Slogan");
+        let b = expansion_cache_key("rust threads", "Site", "Slogan");
+
+        assert_ne!(a, b);
+    }
+
+    /// The prompt is built from the site name and slogan, so they belong in the
+    /// key: a renamed site must not be served expansions produced under its old
+    /// name.
+    #[test]
+    fn the_prompt_inputs_are_part_of_the_key() {
+        let base = expansion_cache_key("rust async", "Site", "Slogan");
+
+        assert_ne!(base, expansion_cache_key("rust async", "Other", "Slogan"));
+        assert_ne!(base, expansion_cache_key("rust async", "Site", "Other"));
+    }
+
+    /// Length-prefixing the parts stops one triple from colliding with another
+    /// that merely concatenates the same way.
+    #[test]
+    fn adjacent_parts_cannot_run_together_into_the_same_key() {
+        assert_ne!(
+            expansion_cache_key("ab", "c", "d"),
+            expansion_cache_key("a", "bc", "d")
+        );
+        assert_ne!(
+            expansion_cache_key("a", "b", "cd"),
+            expansion_cache_key("a", "bc", "d")
+        );
+    }
+
+    /// A key goes into Redis, so it must be a key: fixed length, tagged prefix,
+    /// no user text.
+    #[test]
+    fn a_key_is_a_hash_and_not_the_query() {
+        let key = expansion_cache_key("a query with spaces and 'quotes'", "Site", "");
+
+        assert!(key.starts_with("search_expand:"));
+        assert!(!key.contains(' '));
+        assert!(!key.contains("query"));
+        assert_eq!(key.len(), "search_expand:".len() + 64);
     }
 }

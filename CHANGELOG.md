@@ -2,6 +2,136 @@
 
 ## Unreleased
 
+- RSS feeds work, are config-driven, and are advertised in every page's head.
+  `trovato_feeds` shipped two feeds that could not be served and has been
+  removed.
+
+  Two defects in one plugin. Its routes were declared
+  `MenuDefinition::new(...).callback(...)`, which leaves `handler_type` at its
+  default `"page"`, and it exported no `tap_api`, so
+  `routes/plugin_api.rs` skipped both entries: `/rss/insights.xml` and
+  `/rss/planet-drupal.xml` 404ed, and `build_rss_item` / `build_rss_feed` were
+  dead code wearing `#[allow(dead_code)]` comments that claimed a route callback
+  called them at runtime. And those two paths were one specific site's feeds
+  hardcoded into a plugin that presented itself as generic.
+
+  A gather query now declares a feed in its display config, and gets an RSS 2.0
+  document at the path it names:
+
+  ```yaml
+  display:
+    feed:
+      path: /rss/blog.xml
+      title: Blog          # defaults to the query's label
+      description: ...     # defaults to the query's description
+      items: 20            # capped at 200
+  ```
+
+  Feeds are registered at startup from the same query set the gather route
+  aliases come from, and skipped with a warning when unusable (a relative path, a
+  route pattern, a path a second query already claimed) rather than panicking
+  axum on a route conflict. `templates/base.html` emits an autodiscovery
+  `<link rel="alternate" type="application/rss+xml">` per feed, so a reader
+  finds them without being told the URL out of band.
+
+  Entries carry title, absolute link, matching `guid`, description and
+  `pubDate`, and link the item's URL alias when it has one. Descriptions go in a
+  CDATA section with any `]]>` split across two sections, so content cannot
+  close the section and inject markup into the document.
+
+  **Why this is kernel rather than a rebuilt plugin.** A feed is a rendering of a
+  query result, and query execution is kernel infrastructure: it applies the
+  stage filter, the access filter and the D-26 over-fetch bounds for a specific
+  viewer. Plugin space has no seam onto it — `item-api` offers `query-items`,
+  which is an unordered, unfiltered `SELECT ... LIMIT 100` with no viewer, so a
+  plugin-built feed would publish whatever the access filter exists to withhold.
+  Adding that seam is plugin-contract surface, and the contract is frozen before
+  1.0. `routes/sitemap.rs` is the existing precedent for the same reasoning. A
+  feed is therefore an execution of the query as whoever fetched it: an
+  anonymous aggregator gets exactly what an anonymous visitor sees.
+
+  Also added: `UrlAlias::canonical_aliases_for`, which resolves a page of
+  sources in one query rather than one round trip per entry.
+
+- Item pages carry a meta description, a canonical link and Open Graph tags.
+  Nothing could emit them before, and the reason was structural rather than an
+  oversight: `<head>` is not reachable from a plugin. `trovato_seo` implements
+  `tap_item_view`, whose return value the item route appends to the item's body,
+  so the best it could do was a hidden `<div data-description>` and its JSON-LD
+  script blocks. `tap_item_view_alter`, which could have rewritten the
+  surrounding document, is declared in `kernel.wit` but never dispatched. Search
+  engines got the JSON-LD; every link preview on every chat and social platform
+  got a title and nothing else.
+
+  The kernel now derives the metadata (`content::page_meta`) and puts it in the
+  template context, and `templates/base.html` emits it: `description`,
+  `canonical`, `og:title`, `og:type`, `og:url`, `og:site_name`,
+  `og:description`, `og:image`, `article:published_time`,
+  `article:modified_time`, and the one Twitter tag that is not covered by the
+  Open Graph fallbacks, `twitter:card`. Every tag is guarded by its value, since
+  an empty description tag is a worse signal to a crawler than no description
+  tag.
+
+  The description is derived from `field_description`, then `field_body`, then
+  the first paragraph block — the same two field names `trovato_seo` reads, plus
+  a fallback for block-editor content types, which have no `field_body`. Tags
+  are stripped, entities decoded, whitespace collapsed, and the result truncated
+  to 160 bytes on a word boundary. `og:image` comes from the item's first image
+  block, the only image the kernel can identify without a theme naming a lead
+  image field. `og:type` is `article` for the `blog`, `article` and `news` item
+  types, matching the mapping `trovato_seo` uses for its JSON-LD `@type` so the
+  two cannot disagree on one page.
+
+  Two details worth knowing. The canonical URL is the item's URL alias when it
+  has one, so the address a crawler indexes is the address the site links to,
+  and both `/item/{uuid}` and the alias name the alias as canonical. And the URL
+  values are resolved with `url::Url` and emitted with `| safe`: Tera's escaper
+  renders every `/` in a URL as `&#x2F;`, which is legal HTML that naive
+  unfurlers read wrong. `Url` resolution percent-encodes anything that could
+  close the attribute, non-http(s) schemes are dropped rather than emitted, and
+  `&` is written as `&amp;`.
+
+  `SITE_URL` is now on `RuntimeConfig`, since request handling needs it: a
+  canonical link and `og:url` are absolute by definition, resolved by a crawler
+  with no request context to resolve a relative path against.
+
+- Comments are rendered on item pages, and the comment form works.
+
+  `templates/elements/comments.html` existed and was rendered by nothing: the
+  only comment template any route used was `admin/comments.html`. A site could
+  accept comments through the JSON API and had no way to show them. The orphan
+  template could not have worked either — its form posted
+  `application/x-www-form-urlencoded` with no CSRF field, at a route that
+  required a CSRF *header* — so rendering it as it stood would have produced a
+  form that 415ed on submit.
+
+  The item route now renders the thread under the item, through the theme engine
+  so a theme can override it. Comment bodies go through the same
+  `FilterPipeline` the API uses; author names are resolved once per author rather
+  than once per comment; only published comments appear.
+
+  `POST /api/item/{id}/comments` accepts both encodings, the same shape
+  `routes::item::ItemSubmission` uses for the item form:
+
+  - `application/json` with the token in `X-CSRF-Token` — unchanged, including
+    the JSON response an API client already got.
+  - `application/x-www-form-urlencoded` with the token in a `_csrf` field,
+    answered with a redirect back to the item rather than JSON, because the
+    caller is a browser following a form submission.
+
+  So commenting works with JavaScript disabled. `static/js/comment-post.js` is a
+  progressive enhancement on top: it posts JSON with the header, and on any
+  failure hands the submission back to the browser rather than losing it.
+
+  The redirect carries the outcome (`posted`, `pending`, `error`) and the page
+  renders it. That exists because of the review queue: a held comment that simply
+  does not appear looks to its author like a comment that vanished.
+
+  Also added: `AppState::comments_if_enabled`, a non-panicking accessor.
+  `comments()` panics off the plugin gate, which is right for the comment routes
+  and wrong for a page render — an item page must not 500 because comments are
+  switched off.
+
 - A trust ladder on comment moderation: an account with approved comments skips
   the review queue, while the classifier still runs on everything it posts.
 
@@ -121,6 +251,194 @@
   `&comment_text[..500]` on a byte index, which panics on a multi-byte character
   straddling byte 500. It ran in a spawned task, so the panic would have taken
   the send down silently. It now walks back to a character boundary.
+
+- Comment writes and the three AI search endpoints have their own rate-limit
+  categories instead of sharing the generic `api` bucket.
+
+  `categorize_path` sent every `/api/...` path to `api`, 100 requests a minute
+  per IP and per user. Two things were wrong with that. Comment posting is an
+  `/api/` path, so an account could write a hundred comments a minute — nobody
+  legitimate does, and a spammer with an account does. And
+  `/api/v1/search/expand`, `/api/v1/search/summarize` and
+  `/api/v1/search/followup` each spend LLM provider tokens per call, at three
+  different costs, while getting the same generous allowance; only `/search` and
+  `/api/search` hit the tighter `search` category.
+
+  New categories: `comment` at 4 a minute, and `search_expand` (30),
+  `search_summarize` (10) and `search_followup` (5), the numbers
+  `docs/design/search-architecture.md` recommends. The specific categories are
+  tested before the generic `/api/` arm, which is the ordering that was missing.
+
+  Comment *reads* stay in the `api` bucket: it is the writes that cost moderation
+  attention, and a thread loading on a busy page must not spend a posting budget.
+  The AI search paths are matched whole rather than by prefix, so a future
+  `/api/v1/search/something-else` is not silently handed the cheapest of the
+  three limits.
+
+- Managed files carry alternative text, and no template uses a filename as `alt`
+  any more.
+
+  Media had no alt field, so every template that rendered an uploaded image
+  reached for the nearest string: `templates/form/file-upload.html`,
+  `templates/admin/media-library.html` and `templates/admin/file-details.html`
+  all emitted `alt="{{ file.filename }}"`. A filename is not alternative text —
+  at best it is noise a screen reader reads aloud, at worst it is
+  "IMG_4821.jpg" standing in for the content of the image (WCAG F30). The block
+  editor already did this correctly, including the decorative case; the media
+  entity now can too.
+
+  `file_managed.alt_text` is nullable, and NULL is meaningfully different from
+  the empty string: NULL means nobody has said what the image shows, while `""`
+  means explicitly decorative, which is the correct alt for an image that carries
+  no information (WCAG H67). `FileService::set_alt_text` preserves that
+  distinction, treating a whitespace-only value as decorative. Existing rows are
+  NULL rather than backfilled with filenames, which would have encoded the defect
+  as data.
+
+  The file details page has a field to edit it, the media library shows at a
+  glance which images still need it ("No alt text" / "Decorative" / the text
+  itself), and all three templates now render the recorded value — falling back to
+  `alt=""` rather than to the filename, since in each of those places the filename
+  is already displayed as adjacent text.
+
+  Two details for anyone extending this. The field is skipped when serializing
+  `None`, because Tera has no `is null` test and a serialized `null` would be
+  indistinguishable from `""` in a template; omitted means "never set". And the
+  "Delete file" form on the file details page was posting no CSRF field at all, so
+  it could not deserialize — found while adding a form to the same page, fixed
+  with the token that page now generates.
+
+- Every navigation landmark is labelled, and every active link says it is the
+  current page.
+
+  `templates/page.html` had four `<nav>` elements and not one `aria-label`: the
+  site nav, two breadcrumbs and the footer nav. A screen reader lists landmarks by
+  label, so several unlabelled navigations on one page mean entering each one to
+  work out which is which. The active main-menu link was marked only by the CSS
+  class `site-nav__link--active`, and assistive technology cannot see a class.
+
+  Labelled: the site nav ("Main"), both breadcrumb trails ("Breadcrumb"), the
+  footer nav ("Footer"), the pagination nav in `admin/aliases.html`, and the
+  breadcrumbs in `admin/file-details.html`, `admin/tag-form.html` and
+  `admin/tags.html`. The already-labelled pagers under `templates/macros/` and
+  `templates/gather/` were the pattern.
+
+  `aria-current="page"` now accompanies every active-link marker: the main menu
+  (both the database-menu and plugin-menu branches), the trailing breadcrumb in
+  the public theme and in the three admin trails, the current page in the gather
+  and alias pagers, and all 18 links in the admin sidebar, where it sits inside
+  the same condition that already emitted `class="active"`.
+
+  The regression test is the general one rather than a list of expected labels: it
+  renders nine pages, extracts every `<nav>` opening tag, and fails on any that
+  carries neither `aria-label` nor `aria-labelledby`. A new template cannot
+  quietly reintroduce the defect.
+
+- `trovato_scolta` is removed, and the AI search endpoint namespace is settled on
+  the routes the kernel actually serves.
+
+  The plugin could not function as shipped, in three independent ways. Its routes
+  were declared page-style with callbacks and no `tap_api` export, so
+  `routes/plugin_api.rs` never registered them. Its three worker functions carried
+  `#[allow(dead_code)]` comments claiming route callbacks called them at runtime,
+  which was not true. And it declared `host_interfaces = []` while calling
+  `ai-api`, so the WASM-1 linker would have refused it even if the routes had
+  registered.
+
+  Deleted rather than rebuilt: `crates/kernel/src/routes/api_search.rs` already
+  serves query expansion, summarization and follow-up at `/api/v1/search/*`, so a
+  rebuild would have been a second implementation of a working feature. 1.0 should
+  not ship a plugin that cannot serve a request.
+
+  The namespace question is settled the same way. `static/js/scolta.js` defaulted
+  to the plugin's `/api/scolta/v1/*` paths, so any page relying on the defaults got
+  a 404; the search page worked only because it overrode all three endpoints. The
+  client now defaults to the kernel's paths, and the search page no longer restates
+  them — which is what keeps the defaults honest, since a drift can no longer hide
+  behind an override.
+
+  Root cause, addressed: nothing failed loudly when a declaration had no consumer.
+  A `callback` is only dispatched when `handler_type` is `"api"`, so a page-style
+  entry naming one registers nothing, and both `trovato_feeds` and
+  `trovato_scolta` were dead in exactly that way without a single warning at build
+  time, plugin load or first request. `plugin_api::unreachable_callbacks` now finds
+  those entries and startup logs each one.
+
+- The registration mode in site configuration is the setting the register route
+  reads. It used to be a no-op.
+
+  The register route gated on the boolean `allow_user_registration`, default
+  false. The admin site-config form offered a three-mode `user_registration`
+  selector and saved it, but the only reader of that key was the same form
+  re-rendering itself — so choosing "Open" changed nothing, and the only way to
+  open registration at all was a config import of the boolean.
+
+  `user_registration` is now the one key, read by the route through
+  `RegistrationMode`. The boolean is still honoured as a fallback when no mode is
+  stored, so a site that opened registration the only way it could keeps working
+  across the upgrade; the first save from the admin form deletes it, leaving one
+  setting that cannot contradict another.
+
+  Two modes rather than three: "admin only" and "closed" differed in wording
+  only. Both close the public register route, and neither can stop an
+  administrator creating an account — the one account-creation path that has to
+  keep working. A stored `closed` still reads as closed to the public, so no
+  site's behaviour changes. A genuine third mode would be registration *with
+  approval*, which needs an approval queue rather than a third label.
+
+  An unparseable mode resolves to closed. For registration, the safe direction
+  for a value nobody can parse is "not open".
+
+- `KNOWN-ISSUES.md` no longer claims menus have an admin screen, and the missing
+  form is on the 1.0 list.
+
+  The line listed content types, fields, users, categories, content, gather
+  queries, tiles, aliases, **menus**, plugins and AI providers as all having admin
+  screens. There is no menu admin screen: no route under `/admin` matches `menu`,
+  and `templates/admin/` holds no menu template. Menu links are rows in
+  `menu_link`, read by the render layer and written only by config import — the
+  same position roles, stages and system configuration are in, which that section
+  is about.
+
+  Menus therefore move into the import-only list, and into
+  "The remaining admin screens" in `ROADMAP.md`, before 1.0 rather than after.
+  That follows the project's own criterion for 1.0 — a site can be built,
+  configured and operated through the interface — and a site's navigation is not
+  an advanced feature. The `menu_link` row already carries everything a form would
+  edit, so the work is the form and its route, not the model.
+
+  A documentation defect drifts back unless something pins it, so the correction
+  has a test: it asserts no menu admin path is served, that `KNOWN-ISSUES.md` does
+  not list menus among the types that have screens, and that `ROADMAP.md` places
+  the form before 1.0. It fails in both directions — build the screen and it tells
+  you to update the docs and delete it.
+
+- AI search query expansion is cached, so the same query stops re-billing the
+  provider.
+
+  Every call to `/api/v1/search/expand` went to the configured LLM provider.
+  `docs/design/search-architecture.md` specified an expansion cache ("the same
+  query always produces similar expansions") and none was built, so two people
+  searching the same phrase paid twice, as did one person searching it twice.
+
+  Expansions now go through the kernel's two-tier cache, with the TTL in
+  `CACHE_TTL_SEARCH_EXPAND` — 30 days by default, because an expansion is a set
+  of related terms that costs tokens to produce and does not go stale the way
+  content does. `0` disables the cache, which is the switch to reach for while
+  tuning the prompt. The design doc's older `3600` suggestion is annotated with
+  what shipped, so the two do not disagree.
+
+  The key is a hash of the *normalized* query plus the site name and slogan.
+  Normalizing (trim, collapse whitespace, lowercase) means "  Rust   Async " and
+  "rust async" are one entry. Including the site name and slogan matters because
+  the prompt is built from them: a renamed site must not be served expansions
+  produced under its old name. The parts are length-prefixed before hashing so no
+  two different triples can produce the same key, and the query is hashed rather
+  than interpolated because a query is arbitrary user text and a cache key is a
+  Redis key.
+
+  An empty term list is not cached: that is a parse failure, not an answer worth
+  remembering for a month.
 - Netgrasp is gone from this tree. It now lives in its own repository,
   `jeremyandrews/netgrasp-trovato`, where it builds against `trovato-sdk` as a
   pinned git dependency and installs by appending its own directories to
