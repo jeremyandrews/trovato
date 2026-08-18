@@ -68,6 +68,21 @@
         </button>
     </form>
 
+    <h2 style="margin-top: 2.5rem;">My data</h2>
+    <p>Download everything this site holds that is yours: your profile, your roles,
+    every item you wrote with its fields and dates, every comment, and the devices
+    currently signed in.</p>
+    <p><strong>Not included:</strong> anything you only looked at — this site keeps no
+    reading history — and no session tokens or passwords, because a file containing
+    those would let whoever reads it sign in as you.</p>
+    <p>
+        <a href="/user/data-export" class="button button--secondary"
+           style="display: inline-block; padding: 0.75rem 1.5rem; font-size: 1rem;">
+            Download my data (JSON)
+        </a>
+    </p>
+    <p style="color: #666; font-size: 0.875rem;">One download per hour.</p>
+
     <h2 style="margin-top: 2.5rem;">Change password</h2>
     <form method="post" action="/user/password">
         <input type="hidden" name="_token" value="{{ password_csrf_token }}">

@@ -390,6 +390,24 @@ impl Comment {
         Ok(comments)
     }
 
+    /// Every comment an author wrote, newest first.
+    ///
+    /// Every status, including unpublished and spam: this is the author's own
+    /// writing, and a data export that quietly omitted what a moderator hid would
+    /// not be a copy of their data.
+    pub async fn list_by_author(pool: &PgPool, author_id: Uuid) -> Result<Vec<Self>> {
+        let comments = sqlx::query_as::<_, Comment>(
+            "SELECT id, item_id, parent_id, author_id, body, body_format, status, \
+             created, changed, depth FROM comment WHERE author_id = $1 ORDER BY created DESC",
+        )
+        .bind(author_id)
+        .fetch_all(pool)
+        .await
+        .context("failed to list comments by author")?;
+
+        Ok(comments)
+    }
+
     /// How many published comments an author has.
     ///
     /// The trust ladder's input. Counts published only: a pending, hidden or spam
