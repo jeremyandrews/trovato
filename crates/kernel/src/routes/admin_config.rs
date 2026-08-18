@@ -52,6 +52,8 @@ struct SiteConfigFormData {
     smtp_from: String,
     #[serde(default)]
     notify_admin_on_register: Option<String>,
+    #[serde(default)]
+    update_check: Option<String>,
 }
 
 /// Test email form data (CSRF token only).
@@ -147,6 +149,8 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     };
 
     // Notification preferences
+    let update_check = crate::update_status::setting_allows_check(pool).await;
+    let update_status = crate::update_status::stored_status(pool).await;
     let notify_admin_on_register = SiteConfig::get(pool, "notify_admin_on_register")
         .await
         .ok()
@@ -180,6 +184,9 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     context.insert("smtp_encryption", &smtp_encryption);
     context.insert("smtp_from", &smtp_from);
     context.insert("notify_admin_on_register", &notify_admin_on_register);
+    context.insert("update_check", &update_check);
+    context.insert("update_status", &update_status);
+    context.insert("running_version", crate::update_status::running_version());
     context.insert("flash", &flash);
     context.insert("path", "/admin/config/site");
 
@@ -298,6 +305,12 @@ async fn site_config_submit(
         context.insert("smtp_encryption", &form.smtp_encryption);
         context.insert("smtp_from", &form.smtp_from);
         context.insert("notify_admin_on_register", &notify_admin_on_register);
+        context.insert("update_check", &form.update_check.is_some());
+        context.insert(
+            "update_status",
+            &crate::update_status::stored_status(pool).await,
+        );
+        context.insert("running_version", crate::update_status::running_version());
         context.insert("errors", &errors);
         context.insert("path", "/admin/config/site");
 
@@ -403,6 +416,18 @@ async fn site_config_submit(
         SiteConfig::set(pool, "notify_admin_on_register", serde_json::json!(notify)).await
     {
         tracing::error!(error = %e, "failed to save notify_admin_on_register");
+    }
+
+    // Update check — checkbox: present means on, absent means off. Stored as a
+    // boolean rather than absent-means-on, so turning it off survives.
+    if let Err(e) = SiteConfig::set(
+        pool,
+        crate::update_status::UPDATE_CHECK_KEY,
+        serde_json::json!(form.update_check.is_some()),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to save update_check");
     }
 
     let _ = session

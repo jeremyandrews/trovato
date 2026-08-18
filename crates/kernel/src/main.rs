@@ -37,6 +37,7 @@ mod stage;
 mod state;
 mod tap;
 mod theme;
+mod update_status;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

@@ -119,6 +119,28 @@
                         <input type="checkbox" id="notify_admin_on_register" name="notify_admin_on_register" value="1" {% if notify_admin_on_register %}checked{% endif %}>
                         <label for="notify_admin_on_register">Notify admin when new users register</label>
                     </div>
+
+                    <div class="form-item">
+                        <input type="checkbox" id="update_check" name="update_check" value="1" {% if update_check %}checked{% endif %}>
+                        <label for="update_check">Check for Trovato releases</label>
+                        <p class="form-item__description">One outbound HTTPS request
+                        to <code>api.github.com</code>, at most once a day, carrying
+                        no site data: no URL, no version, no identifier. GitHub
+                        learns that an IP address asked about a public repository.
+                        When a newer release exists an administrator sees a banner on
+                        the dashboard, styled as an alarm if the release announces
+                        itself as a security release. Nobody but an administrator
+                        sees it, and no page render ever makes the request.
+                        {% if update_status %}
+                        Last checked: latest release {{ update_status.latest_version }},
+                        this site runs {{ running_version }}.
+                        {% else %}
+                        No check has completed yet; it runs from cron.
+                        {% endif %}
+                        A deployment that must make no outbound requests at all
+                        should set <code>UPDATE_CHECK=0</code> in the environment
+                        rather than rely on this checkbox.</p>
+                    </div>
                 </div>
             </div>
         </fieldset>

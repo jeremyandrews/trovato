@@ -1,6 +1,23 @@
 {% extends "page--admin.html" %}
 
 {% block content %}
+{% if update_status %}
+{# Two levels on purpose: "a newer release exists" and "act now" are different
+   messages, and the release title is what distinguishes them. #}
+<div class="update-banner{% if update_status.is_security %} update-banner--security{% endif %}" role="{% if update_status.is_security %}alert{% else %}status{% endif %}">
+    {% if update_status.is_security %}
+    <strong>Security release available.</strong>
+    Trovato {{ update_status.latest_version }} is a security release and this site
+    runs {{ running_version }}.
+    {% else %}
+    <strong>Update available.</strong>
+    Trovato {{ update_status.latest_version }} is out and this site runs
+    {{ running_version }}.
+    {% endif %}
+    <a href="https://github.com/jeremyandrews/trovato/releases/latest" rel="noopener noreferrer">Release notes</a>
+</div>
+{% endif %}
+
 <div class="admin-header">
     <h2>Administration</h2>
 </div>
@@ -53,4 +70,20 @@
     <p style="margin: 0;">Logged in as <strong>{{ user.name }}</strong></p>
 </div>
 {% endif %}
+<style>
+    .update-banner {
+        margin-bottom: 1rem;
+        padding: 0.75rem 1rem;
+        border-radius: 0.25rem;
+        border: 1px solid #b8daff;
+        background: #cce5ff;
+        color: #004085;
+    }
+    .update-banner--security {
+        border-color: #f5c6cb;
+        background: #f8d7da;
+        color: #721c24;
+    }
+</style>
+
 {% endblock %}

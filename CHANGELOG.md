@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- A site can learn that a release exists, including a security release, and no
+  server was built to make that true.
+
+  Sites had no update channel at all: a security fix could ship and nobody running
+  Trovato would hear about it. The usual answer is an update server, which is a
+  service to operate for the life of the project. GitHub already is one. Tagging a
+  release produces `https://api.github.com/repos/jeremyandrews/trovato/releases/latest`
+  and `https://github.com/jeremyandrews/trovato/releases.atom`, both free and both
+  stable, so the work is a client and a convention rather than infrastructure.
+
+  **The convention, now in CONTRIBUTING.md's release section: a security release's
+  title starts with `[security]`.** The latest-release JSON says what the newest
+  version is and has no field for urgency, and "a newer version exists" and "act
+  now" are different things to put in front of an administrator. The signal
+  therefore lives in the one field a human writes deliberately. The prefix has to
+  lead: a title merely mentioning security is not a security release, or every
+  release note that says the word becomes an emergency.
+
+  **The client** is a cron task, not a plugin. It concerns the kernel's own version,
+  which a plugin cannot know, and it needs an outbound request, which a plugin would
+  need a network capability for — making every site grant a plugin network access to
+  learn its own version is the worse trade. It compares the release tag against the
+  compiled-in workspace version and stores the answer in `site_config`
+  (`update_status`: latest version, title, is_security, checked-at). Failures are
+  logged at debug and change nothing, on a five-second timeout, at most once per
+  interval (default daily). **No page render ever makes the request**; the banner
+  reads what was stored.
+
+  The comparison is deliberately not semver. Trovato's versions are dotted integers
+  and nothing else, so it parses components and **refuses what it cannot read**
+  rather than guessing — `0.99.0-rc1` is not `0.99.0`, and `nightly` is not a
+  version. A tag it cannot read produces no banner, which is the safe direction: a
+  false "you are behind" is worse than a missing one, because an administrator who
+  cannot find the release it means stops trusting the banner. String comparison
+  would also have got `1.0.0` versus `0.99.0` backwards, which is precisely the
+  comparison this project is about to need.
+
+  **The banner** appears on `/admin`, past `require_admin`, with ordinary styling
+  for an ordinary release and alarm styling (plus `role="alert"`) for a security
+  one. A visitor and a logged-in non-administrator are never told the site's
+  version, which is a fingerprinting detail with no upside for them, and there are
+  tests for exactly that rather than a comment claiming it.
+
+  **Privacy and control**, stated the same way in INSTALL.md: one HTTPS GET carrying
+  no site data — no URL, no version, no identifier, nothing but the request and a
+  `Trovato/<version>` User-Agent. GitHub learns that an IP address asked about a
+  public repository. Two switches, environment wins: `UPDATE_CHECK=0` for a
+  deployment that must make no outbound requests, and a **Check for Trovato
+  releases** checkbox at `/admin/config/site` for a site that simply does not want
+  it. On by default, deliberately: a site with no way to learn a security fix exists
+  is a site that does not get it, which is the posture Drupal core has shipped for
+  two decades.
+
+  `UPDATE_CHECK_ENDPOINT` is configurable, and that is what makes this testable: the
+  integration tests serve a release payload from an axum app on `127.0.0.1:0` and
+  drive the real `CronService` against it. **No test touches the network.** They use
+  a plain HTTP client rather than the kernel's SSRF-hardened one, because the
+  hardened resolver refuses loopback — which is correct, and is what production
+  gets.
+
 - Stages have an administration screen. `/admin/structure/stages` lists them and
   creates and edits machine name, label, description, visibility, default and
   weight.

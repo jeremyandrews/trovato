@@ -36,6 +36,7 @@ pub mod stage;
 pub mod state;
 pub mod tap;
 pub mod theme;
+pub mod update_status;
 
 // Re-export key types for testing
 pub use config::Config;

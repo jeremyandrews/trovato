@@ -127,6 +127,30 @@ every plugin, every manifest, and the plugin API tuple. Do not bump one of them
 on its own. [docs/design/version-map.md](docs/design/version-map.md) lists every
 place that moves together.
 
+## Releases
+
+Every tag gets a GitHub Release, with that version's `CHANGELOG.md` section pasted
+into the notes. This is not decoration: it is the update channel. GitHub serves
+`https://api.github.com/repos/jeremyandrews/trovato/releases/latest` and
+`https://github.com/jeremyandrews/trovato/releases.atom` for free, and the kernel's
+update check reads the first of them. A tag with no Release is a release no site
+learns about.
+
+**A security release's title starts with `[security]`.** For example:
+
+```
+[security] 0.99.2 — session fixation in the recovery flow
+```
+
+That single convention is the whole difference between "a newer version exists" and
+"act now": the latest-release JSON says what the newest version is and has no field
+for urgency, so the signal lives in the one field a human writes deliberately. The
+kernel reads it (`crates/kernel/src/update_status.rs`, `is_security_title`) and the
+admin dashboard styles the banner as an alarm rather than a notice.
+
+The prefix has to lead. A title merely *mentioning* security is not a security
+release, or every release note that says the word becomes an emergency.
+
 ## Licensing your contribution
 
 Trovato is dual licensed under MIT and Apache-2.0.
