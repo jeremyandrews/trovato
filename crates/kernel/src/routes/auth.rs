@@ -457,14 +457,17 @@ struct RegisterJsonRequest {
     confirm_password: Option<String>,
 }
 
-/// Check whether user registration is enabled via site config.
+/// Check whether public registration is open.
+///
+/// Reads [`RegistrationMode`](crate::models::RegistrationMode), which is the
+/// setting the admin form controls. This
+/// used to read the unrelated boolean `allow_user_registration`, so the form's
+/// three-mode selector changed nothing and config import of the boolean was the
+/// only way to open registration.
 async fn is_registration_enabled(state: &AppState) -> bool {
-    SiteConfig::get(state.db(), "allow_user_registration")
+    crate::models::RegistrationMode::load(state.db())
         .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+        .is_open()
 }
 
 /// Registration form handler.
