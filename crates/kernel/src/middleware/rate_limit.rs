@@ -72,6 +72,14 @@ pub struct RateLimitConfig {
     /// does.
     pub comment: (u32, Duration),
 
+    /// Personal-data export downloads.
+    ///
+    /// The one authenticated read whose cost scales with what the caller wrote: the
+    /// document holds every item and comment on the account. Once an hour is
+    /// generous for the purpose (GDPR article 15 is not a thing anyone needs twice a
+    /// minute) and bounds the cost.
+    pub data_export: (u32, Duration),
+
     /// AI search query expansion.
     ///
     /// The three AI search endpoints each spend provider tokens per call, and each
@@ -102,6 +110,7 @@ impl Default for RateLimitConfig {
             password: (5, Duration::from_secs(60)),      // 5 per minute
             recovery: (5, Duration::from_secs(900)),     // 5 per 15 minutes
             comment: (4, Duration::from_secs(60)),       // 4 per minute
+            data_export: (1, Duration::from_secs(3600)), // 1 per hour
             // Per docs/design/search-architecture.md §Rate Limiting.
             search_expand: (30, Duration::from_secs(60)), // 30 per minute
             search_summarize: (10, Duration::from_secs(60)), // 10 per minute
@@ -180,6 +189,7 @@ impl RateLimiter {
             "password" => self.config.password,
             "recovery" => self.config.recovery,
             "comment" => self.config.comment,
+            "data_export" => self.config.data_export,
             "search_expand" => self.config.search_expand,
             "search_summarize" => self.config.search_summarize,
             "search_followup" => self.config.search_followup,

@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- A person can download their own data. `/user/data-export` serves one JSON
+  document holding the profile, the roles held, every authored item with its fields
+  and timestamps, every comment, and the metadata of active sessions.
+
+  Trovato had no way to produce a copy of someone's own data. For a site operated
+  from the EU with open registration that is GDPR article 15, and the practical
+  reading is the same: a person who cannot get their own writing back out of a site
+  does not really have it.
+
+  What is deliberately **not** in it, said on the page and again inside the file:
+
+  - **Anything the person only looked at.** Trovato keeps no reading history, so
+    there is nothing to export. Saying so is better than leaving an absence to be
+    guessed at.
+  - **Session tokens and credential material.** A session's metadata answers "which
+    of my devices are signed in"; the token would let whoever holds the file *be*
+    those devices, which is the opposite of a privacy feature. The IP address is
+    excluded too: it is the rate limiter's business, not the export's. There are
+    tests for each of those absences rather than a comment claiming them.
+
+  A comment is exported at every status, including unpublished and spam. It is the
+  author's own writing, and an export that quietly omitted what a moderator hid
+  would not be a copy of their data.
+
+  Once an hour per account, through a new `data_export` rate-limit category, keyed
+  on the account rather than the IP: this is a per-account cost, and two people
+  behind one address should not be able to starve each other of their own data. It
+  is also the one authenticated read on the site whose cost scales with what the
+  caller wrote, since the document is built in memory. An account with hundreds of
+  thousands of items would want a queued export written to a file; that is not this,
+  and the limit is named in the module docs rather than left to be discovered.
+
+  `Comment::list_by_author` is new — the model could count an author's approved
+  comments and not list their comments — and the download filename is derived from
+  the username rather than trusting it, since a username is user input and this one
+  ends up in a header.
+
 - A site can learn that a release exists, including a security release, and no
   server was built to make that true.
 

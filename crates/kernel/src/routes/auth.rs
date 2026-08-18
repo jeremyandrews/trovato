@@ -1632,4 +1632,8 @@ pub fn router() -> Router<AppState> {
         .route("/user/verify-email/{token}", get(verify_email_change))
         .route("/user/profile", get(profile_form).post(profile_update))
         .route("/user/password", post(password_change))
+        .route(
+            "/user/data-export",
+            get(super::user_data_export::export_my_data),
+        )
 }
