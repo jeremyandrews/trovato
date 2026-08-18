@@ -26,6 +26,31 @@
 
   An unparseable mode resolves to closed. For registration, the safe direction
   for a value nobody can parse is "not open".
+- Netgrasp is gone from this tree. It now lives in its own repository,
+  `jeremyandrews/netgrasp-trovato`, where it builds against `trovato-sdk` as a
+  pinned git dependency and installs by appending its own directories to
+  `PLUGINS_DIR`, `TEMPLATES_DIR` and `STATIC_DIR`. Nothing about Trovato had to
+  change for that to work, which is the point: an application built on Trovato
+  should need no space inside it.
+
+  Removed: `plugins/netgrasp`, `crates/netgrasp-core`,
+  `crates/kernel/tests/netgrasp_sync_test.rs`, `docs/netgrasp-validation.md`,
+  and the two `templates/gather/query--ng_*.html` theme templates. The workspace
+  members, the Dockerfile's plugin build list, `scripts/pre-commit-check.sh`,
+  CI's wasm build and copy steps, and the plugin list in `INSTALL.md` lose their
+  netgrasp entries with them.
+
+  The integration test was the one piece that was not a straight deletion: it
+  drove the real netgrasp module through the real `TapDispatcher`, `ItemService`
+  and `GatherService`, so deleting it would have dropped the only coverage
+  anywhere that exercised a compiled plugin against a live host. It moved to the
+  netgrasp repository rather than being discarded, where it consumes
+  `trovato-kernel` as a dev-dependency pinned to the same revision as the SDK.
+
+  Also renamed four `QueryDefinition`/`QueryDisplay` deserialization tests and
+  one `info_parser` fixture that used netgrasp's names for their sample data.
+  They test the kernel and always did; borrowing a downstream application's type
+  names to do it made this repository look like it knew about that application.
 
 - The WebAuthn registration tests pass on a database they have already run
   against. `webauthn_registration_test.rs` created its fixture users under fixed
