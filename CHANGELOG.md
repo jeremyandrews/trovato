@@ -154,6 +154,42 @@
     one says false). Recorded rather than fixed — rewriting that part is its own piece
     of work, and guessing at it in a provenance change would be worse than naming it.
 
+- Three surfaces a plugin does not have are written down and pinned by tests.
+
+  There is still no contact form, and this entry is why. Kernel minimality puts a
+  contact form in a plugin ("if it is a feature, it is a plugin"), and the attempt
+  stopped on three missing surfaces. Each is a **missing seam, not a broken one**, and
+  each would be additive to the frozen contract rather than a break of it:
+
+  - **A plugin cannot send email.** The WIT declares twelve host interfaces and none is
+    mail. The kernel has SMTP, a circuit breaker and a template system in
+    `services/email.rs`, with no seam onto it. A plugin that needs to notify somebody
+    posts to a webhook over `http`, which is what `argus` does and which is not email.
+  - **A plugin cannot serve a form that works without JavaScript.** A state-changing
+    plugin-served request needs the CSRF token in an `X-CSRF-Token` header
+    (`require_csrf_header`), and a plain HTML `<form>` cannot set a header. Every
+    kernel form takes a `_token` field instead.
+  - **A plugin cannot render into the site theme.** `tap_api` returns a body served
+    as-is, and `tap_theme` / `tap_preprocess_item` are declared and not dispatched. Fine
+    for an admin screen; wrong for a public page, which would arrive unstyled and
+    without the site's navigation.
+
+  `plugins/trovato_book` hits the second and third and works around both — admin-only
+  screens, and page decoration through `tap_item_view`, which the theme does render. A
+  public-facing form has neither escape.
+
+  `crates/kernel/tests/plugin_surface_gaps_test.rs` pins all three against the source
+  and the contract, and **each test fails when its gap closes**, the way
+  `menu_admin_absent_test.rs` did before the menu screen existed: a failure means the
+  surface now exists, so update the documentation and delete the test. ROADMAP.md says
+  which order to unblock them in, and why the CSRF one is the cheap one to do first.
+
+  Writing that test taught me something worth repeating: my first version scanned
+  `require_csrf_header`'s body for `_token` and matched `verify_csrf_token`. It now
+  checks the function's *signature* — a session and a `HeaderMap`, no body — which is a
+  fact the function cannot contradict however it is written inside. A substring search
+  is not a check.
+
 - A person can delete their own account, and **deleting any account that ever
   wrote anything now works at all**.
 

@@ -92,6 +92,20 @@ no manifest, so the loader skips it, and `docs/tutorial/part-02-ritrovo-importer
 been stale since Ritrovo moved out — it tells the reader to build a package that is not
 a workspace member and to read source that is not here. That tutorial part needs a pass.
 
+### A contact form, and the three plugin surfaces it needs
+
+There is still no contact form: a visitor cannot reach a site owner except by a
+`mailto:` link. Drupal 6 shipped contact in core, and kernel minimality puts it in a
+plugin — but a plugin cannot currently send email, cannot serve a form that works
+without JavaScript, and cannot render into the site theme. KNOWN-ISSUES.md describes
+all three with the file and the reason.
+
+The order that makes sense: accept a `_token` form field for plugin-served posts
+(small, and the same check reading from where every kernel form reads it), then decide
+the shape of a mail interface narrow enough not to be a spam relay, then decide whether
+a plugin-served page can ask for the site template. Contact is then a plugin, in one
+afternoon, and so is anything else public-facing that a plugin should own.
+
 ## After 1.0
 
 These are not 1.0 blockers. A site can be built and run without them.

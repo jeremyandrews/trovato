@@ -226,6 +226,49 @@ covered rather than silently exempted. See
 `crates/kernel/migrations/20260819000001_allow_revision_author_anonymization.sql`,
 which carries the reasoning.
 
+### Three things a plugin cannot do, which a public-facing feature needs
+
+Found while attempting a contact form as a standard plugin, which is where the
+kernel-minimality rule puts it ("if it is a feature, it is a plugin"). The attempt
+stopped, and these are why. Each is a **missing surface, not a broken one**, and each
+would be additive to the frozen contract rather than a break of it.
+
+**1. A plugin cannot send email.** `crates/wit/kernel.wit` declares twelve host
+interfaces — `item-api`, `db`, `variables`, `request-context`, `user-api`,
+`cache-api`, `plugin-api`, `logging`, `ai-api`, `crypto-api`, `http`, `queue` — and
+none of them is mail. The kernel has `services/email.rs` with SMTP, a circuit breaker
+and a template system, and there is no seam onto it. A plugin that needs to notify
+somebody has one option, which is what `argus` does: post to a webhook over `http`.
+That is not email.
+
+Adding a mail interface is not a one-line addition, which is why this is written down
+rather than done. A plugin that can send to an arbitrary address is a spam relay, so
+the useful shape is probably narrow — send to the site's configured recipients, or
+send to the authenticated caller — and choosing between those is a design decision.
+
+**2. A plugin cannot serve a form that works without JavaScript.** A state-changing
+plugin-served request requires the CSRF token in an `X-CSRF-Token` **header**
+(`routes/plugin_api.rs`, via `require_csrf_header`). A plain HTML `<form>` cannot set
+a header, so a plugin's own `<form method="post">` is refused with 403 unless
+JavaScript posts it. Every kernel form takes its token in a `_token` field instead
+(`require_csrf`).
+
+This one *is* close to a one-line addition: accepting a `_token` field from a
+form-urlencoded body, in addition to the header, is the same check reading from the
+place every kernel form already reads it. It is not done here because it belongs with
+the feature that needs it rather than in a documentation change.
+
+**3. A plugin cannot render into the site theme.** `tap_api` returns a body the
+kernel serves as-is, so a plugin-served page is whatever HTML the plugin writes.
+There is no way to ask for the site's `page.html` around it: `tap_theme` and
+`tap_preprocess_item` are declared in the WIT and not dispatched. That is fine for an
+admin screen and wrong for a public page, which would arrive unstyled and without the
+site's navigation.
+
+`plugins/trovato_book` runs into (2) and (3) and works around both — its screens are
+admin-only, and its page decoration goes through `tap_item_view`, which the theme does
+render. A public-facing form has neither escape.
+
 ## Contract and versioning
 
 ### The frozen plugin contract is enforced by policy, not by tooling
