@@ -102,7 +102,12 @@ pub(crate) fn item_embedding_text(item: &Item) -> String {
 /// Strip all HTML tags from a string, keeping only text content. Uses
 /// `ammonia` with an empty allowed-tag set so unclosed tags, comments, and
 /// self-closing tags are handled correctly.
-fn strip_html(s: &str) -> String {
+///
+/// `pub(crate)` so [`crate::content::page_meta`] derives its meta description
+/// from the same text extraction the embedding text uses. Note that the output
+/// is HTML-escaped, as it comes back through a serializer: a caller putting it
+/// somewhere that escapes again has to decode first.
+pub(crate) fn strip_html(s: &str) -> String {
     ammonia::Builder::default()
         .tags(std::collections::HashSet::new())
         .clean(s)

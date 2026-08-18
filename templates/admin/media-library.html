@@ -35,7 +35,10 @@
             {% if file.filemime is starting_with("image/") %}
             <div class="media-card__preview">
                 {# SAFE: file_urls values are generated server-side by FileStorage::public_url — no user content #}
-                <img src="{{ file_urls[file.id] }}" alt="{{ file.filename }}" loading="lazy">
+                {# The card's own link text is the filename, so a preview with no
+                   recorded alt text is decorative here and takes an empty alt
+                   rather than repeating the filename. #}
+                <img src="{{ file_urls[file.id] }}" alt="{{ file.alt_text | default(value='') }}" loading="lazy">
             </div>
             {% else %}
             <div class="media-card__preview media-card__preview--icon">
@@ -45,6 +48,17 @@
             <div class="media-card__info">
                 <div class="media-card__name">{{ file.filename | truncate(length=24) }}</div>
                 <div class="media-card__meta">{{ (file.filesize / 1024) | round(precision=1) }} KB</div>
+                {# Which images still need alt text is the thing a library view can
+                   tell you at a glance; the card links to where it is edited. #}
+                {% if file.filemime is starting_with("image/") %}
+                {% if file.alt_text is undefined %}
+                <div class="media-card__alt media-card__alt--missing">No alt text</div>
+                {% elif file.alt_text == "" %}
+                <div class="media-card__alt">Decorative</div>
+                {% else %}
+                <div class="media-card__alt" title="{{ file.alt_text }}">{{ file.alt_text | truncate(length=24) }}</div>
+                {% endif %}
+                {% endif %}
             </div>
         </a>
         {% endfor %}
@@ -147,6 +161,20 @@
         font-size: 0.7rem;
         color: #999;
         margin-top: 0.125rem;
+    }
+
+    .media-card__alt {
+        margin-top: 0.25rem;
+        font-size: 0.6875rem;
+        color: var(--gray-500);
+    }
+
+    .media-card__alt--missing {
+        color: #856404;
+        background: #fff3cd;
+        border-radius: 0.25rem;
+        padding: 0.0625rem 0.25rem;
+        display: inline-block;
     }
     .media-pagination {
         margin-top: 1.5rem;

@@ -5,6 +5,124 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Publication status of a comment.
+///
+/// Stored as the `smallint` `comment.status`. Two values existed before
+/// moderation did — 0 unpublished, 1 published — and every new comment was
+/// created as 1, so there was no way to hold one for review. The admin list
+/// even labelled 0 as "Pending", which is what a moderator would call a comment
+/// awaiting review rather than one they had already hidden.
+///
+/// Only [`Self::Published`] is publicly visible. Anything this enum does not
+/// recognise is treated as invisible by [`Self::from_i16`], so an unknown value
+/// in the column fails closed rather than being shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentStatus {
+    /// Hidden by a moderator after the fact. Value 0.
+    Unpublished,
+    /// Visible on the site. Value 1.
+    Published,
+    /// Awaiting moderation, never shown. Value 2.
+    Pending,
+    /// Classified as spam. Never shown, kept rather than deleted so a false
+    /// positive can be recovered and so a classifier has something to learn
+    /// from. Value 3.
+    Spam,
+}
+
+impl CommentStatus {
+    /// The stored column value.
+    pub fn as_i16(self) -> i16 {
+        match self {
+            Self::Unpublished => 0,
+            Self::Published => 1,
+            Self::Pending => 2,
+            Self::Spam => 3,
+        }
+    }
+
+    /// Read a stored column value.
+    ///
+    /// `None` for a value this build does not know, which callers must treat as
+    /// not visible: a column written by a newer version must not become
+    /// published by accident.
+    pub fn from_i16(value: i16) -> Option<Self> {
+        match value {
+            0 => Some(Self::Unpublished),
+            1 => Some(Self::Published),
+            2 => Some(Self::Pending),
+            3 => Some(Self::Spam),
+            _ => None,
+        }
+    }
+
+    /// Whether a comment with this status is shown to the public.
+    pub fn is_visible(self) -> bool {
+        matches!(self, Self::Published)
+    }
+
+    /// Whether this status is one a moderation queue should surface.
+    pub fn awaits_review(self) -> bool {
+        matches!(self, Self::Pending)
+    }
+
+    /// Human-readable label, used by the admin screens.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unpublished => "Unpublished",
+            Self::Published => "Published",
+            Self::Pending => "Pending review",
+            Self::Spam => "Spam",
+        }
+    }
+
+    /// CSS class suffix for the admin status badge.
+    pub fn css_suffix(self) -> &'static str {
+        match self {
+            Self::Unpublished => "unpublished",
+            Self::Published => "published",
+            Self::Pending => "pending",
+            Self::Spam => "spam",
+        }
+    }
+
+    /// The status a newly posted comment gets, from the `comment_default_status`
+    /// site setting.
+    ///
+    /// Only `published` and `pending` are meaningful answers, so those are the
+    /// only two accepted. Unset means [`Self::Published`], which is what every
+    /// comment did before this setting existed — upgrading a site must not
+    /// silently start holding its comments.
+    ///
+    /// A value that is set but unrecognised resolves to [`Self::Pending`], which
+    /// is the recoverable direction: a comment wrongly held is sitting in a
+    /// queue, while a comment wrongly published is already on the site.
+    pub async fn default_for_new_comments(pool: &PgPool) -> Self {
+        let configured = crate::models::SiteConfig::get(pool, DEFAULT_STATUS_KEY)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_str().map(str::to_string));
+
+        match configured.as_deref() {
+            None => Self::Published,
+            Some("published") => Self::Published,
+            Some("pending") => Self::Pending,
+            Some(other) => {
+                tracing::warn!(
+                    value = %other,
+                    "unrecognised {DEFAULT_STATUS_KEY}; holding new comments for review"
+                );
+                Self::Pending
+            }
+        }
+    }
+}
+
+/// Site setting naming the status new comments are created with.
+pub const DEFAULT_STATUS_KEY: &str = "comment_default_status";
+
 /// Comment record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Comment {
@@ -26,7 +144,8 @@ pub struct Comment {
     /// Text format for the body.
     pub body_format: String,
 
-    /// Publication status (0 = unpublished, 1 = published).
+    /// Publication status. See [`CommentStatus`], which this is the stored
+    /// form of.
     pub status: i16,
 
     /// Unix timestamp when created.
@@ -66,7 +185,9 @@ impl Comment {
         let body_format = input
             .body_format
             .unwrap_or_else(|| "filtered_html".to_string());
-        let status = input.status.unwrap_or(1);
+        let status = input
+            .status
+            .unwrap_or_else(|| CommentStatus::Published.as_i16());
 
         let comment = sqlx::query_as::<_, Comment>(
             r#"
@@ -114,7 +235,7 @@ impl Comment {
                 SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth,
                        ARRAY[created, EXTRACT(EPOCH FROM NOW())::BIGINT - created] AS sort_path
                 FROM comment
-                WHERE item_id = $1 AND parent_id IS NULL AND status = 1
+                WHERE item_id = $1 AND parent_id IS NULL AND status = $2
 
                 UNION ALL
 
@@ -123,7 +244,7 @@ impl Comment {
                        ct.sort_path || c.created
                 FROM comment c
                 JOIN comment_tree ct ON c.parent_id = ct.id
-                WHERE c.status = 1
+                WHERE c.status = $2
             )
             SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
             FROM comment_tree
@@ -131,6 +252,7 @@ impl Comment {
             "#,
         )
         .bind(item_id)
+        .bind(CommentStatus::Published.as_i16())
         .fetch_all(pool)
         .await
         .context("failed to list comments for item")?;
@@ -149,7 +271,7 @@ impl Comment {
             r#"
             SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
             FROM comment
-            WHERE item_id = $1 AND status = 1
+            WHERE item_id = $1 AND status = $4
             ORDER BY created DESC
             LIMIT $2 OFFSET $3
             "#,
@@ -157,6 +279,7 @@ impl Comment {
         .bind(item_id)
         .bind(limit)
         .bind(offset)
+        .bind(CommentStatus::Published.as_i16())
         .fetch_all(pool)
         .await
         .context("failed to list comments for item")?;
@@ -167,8 +290,9 @@ impl Comment {
     /// Count comments for an item.
     pub async fn count_for_item(pool: &PgPool, item_id: Uuid) -> Result<i64> {
         let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM comment WHERE item_id = $1 AND status = 1")
+            sqlx::query_scalar("SELECT COUNT(*) FROM comment WHERE item_id = $1 AND status = $2")
                 .bind(item_id)
+                .bind(CommentStatus::Published.as_i16())
                 .fetch_one(pool)
                 .await
                 .context("failed to count comments for item")?;
@@ -279,15 +403,92 @@ impl Comment {
             r#"
             SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
             FROM comment
-            WHERE parent_id = $1 AND status = 1
+            WHERE parent_id = $1 AND status = $2
             ORDER BY created ASC
             "#,
         )
         .bind(comment_id)
+        .bind(CommentStatus::Published.as_i16())
         .fetch_all(pool)
         .await
         .context("failed to get replies")?;
 
         Ok(comments)
+    }
+}
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// The stored values are a wire format: existing rows must keep meaning what
+    /// they meant, so 0 and 1 are pinned rather than left to declaration order.
+    #[test]
+    fn the_stored_values_are_stable() {
+        assert_eq!(CommentStatus::Unpublished.as_i16(), 0);
+        assert_eq!(CommentStatus::Published.as_i16(), 1);
+        assert_eq!(CommentStatus::Pending.as_i16(), 2);
+        assert_eq!(CommentStatus::Spam.as_i16(), 3);
+    }
+
+    #[test]
+    fn every_status_round_trips_through_its_stored_value() {
+        for status in [
+            CommentStatus::Unpublished,
+            CommentStatus::Published,
+            CommentStatus::Pending,
+            CommentStatus::Spam,
+        ] {
+            assert_eq!(CommentStatus::from_i16(status.as_i16()), Some(status));
+        }
+    }
+
+    /// A value from a newer version must not be guessed at, and callers treat
+    /// `None` as not visible.
+    #[test]
+    fn an_unknown_stored_value_is_not_a_status() {
+        for value in [-1, 4, 99] {
+            assert_eq!(CommentStatus::from_i16(value), None, "value {value}");
+        }
+    }
+
+    #[test]
+    fn only_published_is_visible() {
+        assert!(CommentStatus::Published.is_visible());
+        for hidden in [
+            CommentStatus::Unpublished,
+            CommentStatus::Pending,
+            CommentStatus::Spam,
+        ] {
+            assert!(!hidden.is_visible(), "{hidden:?} must not be visible");
+        }
+    }
+
+    /// Only pending is a queue: an unpublished comment was decided on, and spam
+    /// was too.
+    #[test]
+    fn only_pending_awaits_review() {
+        assert!(CommentStatus::Pending.awaits_review());
+        for decided in [
+            CommentStatus::Unpublished,
+            CommentStatus::Published,
+            CommentStatus::Spam,
+        ] {
+            assert!(!decided.awaits_review(), "{decided:?}");
+        }
+    }
+
+    /// The admin list used to label status 0 "Pending", which is what a
+    /// moderator calls a comment awaiting review rather than one they hid.
+    #[test]
+    fn unpublished_and_pending_have_distinct_labels() {
+        assert_eq!(CommentStatus::Unpublished.label(), "Unpublished");
+        assert_eq!(CommentStatus::Pending.label(), "Pending review");
+        assert_ne!(
+            CommentStatus::Unpublished.css_suffix(),
+            CommentStatus::Pending.css_suffix()
+        );
     }
 }
