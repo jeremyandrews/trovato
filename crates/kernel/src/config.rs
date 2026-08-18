@@ -327,6 +327,17 @@ pub struct RuntimeConfig {
 
     /// D-26 over-fetch and backfill bounds for access-filtered gather pages.
     pub gather_access: crate::gather::GatherAccessConfig,
+
+    /// How long an AI search query expansion is cached, in seconds.
+    ///
+    /// `CACHE_TTL_SEARCH_EXPAND`, default 30 days. Long on purpose: an expansion
+    /// is a set of related terms for a query, it costs provider tokens to
+    /// produce, and it does not go stale the way content does. Zero disables the
+    /// cache, which is the switch to reach for when tuning the prompt.
+    ///
+    /// Lives here rather than in [`CacheConfig`] because request handling reads it
+    /// per call; the TTLs there are held by long-lived services instead.
+    pub search_expand_cache_ttl: u64,
 }
 
 /// Application configuration.
@@ -611,6 +622,8 @@ impl Config {
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
             gather_access: crate::gather::GatherAccessConfig::from_lookup(get),
+            // 30 days.
+            search_expand_cache_ttl: parse_or(get, "CACHE_TTL_SEARCH_EXPAND", 2_592_000),
         };
 
         Ok(Self {
