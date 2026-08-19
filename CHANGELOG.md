@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- A contact form: `trovato_contact`, a standard plugin serving `/contact`.
+
+  A visitor could not reach a site owner except by a `mailto:` link. Drupal 6
+  shipped contact in core, and kernel minimality puts it in a plugin — which could
+  not be written until this release, because the three things it needs were all
+  missing kernel seams. This is the feature the other three entries were for, and it
+  uses all three at once.
+
+  `GET /contact` serves a form with no JavaScript in it, carrying the kernel-minted
+  token in a hidden `_token`, rendered into the site's page template. `POST /contact`
+  validates, sends through the `mail` interface to the site's configured address, and
+  renders a themed confirmation.
+
+  **It stores nothing**, which is why it declares no `db` capability and ships no
+  migration. A contact message is delivered, not kept: keeping it would mean a
+  moderation queue, a retention policy and a data-export obligation, and a contact
+  form should not have opinions about any of those.
+
+  Two details that are decisions rather than details. The plugin **collapses a
+  subject containing a newline** instead of letting the kernel refuse it: the kernel
+  is right to refuse control characters in a header, and a visitor who pastes a
+  subject with a line break has done nothing wrong and should get their message
+  delivered. And an invalid submission comes back as **422 with the values still in
+  the fields and a fresh token**, because a token is single-use and the one that
+  arrived was spent verifying the request that failed validation; without the fresh
+  one, a typo would be a dead end.
+
+  It cannot set `Reply-To` — the `mail` interface takes no headers, which is how a
+  relay would be smuggled back in — so the visitor's address goes in the body where
+  the owner can read it. And a visitor is told a message could not be sent without
+  being told why: "SMTP is not configured on this site" is the owner's problem and
+  goes to the log.
+
+  `contact_form_test.rs` drives the real wasm end to end: an anonymous visitor loads
+  the form, posts it with no header anywhere, and the message arrives at the site's
+  address over a real SMTP conversation. A post with no token and a post with a
+  forged one are both refused and send nothing. An invalid submission is corrected
+  and resubmitted with the fresh token, and lands. Markup a visitor types comes back
+  escaped.
+
+  `plugin_surfaces_test.rs` replaces the pinned-gap test from the write-up that
+  described these three absences. The assertions are inverted rather than deleted:
+  each surface is asserted to exist, and the two theme taps that are **still** not
+  dispatched keep a test of their own, so that claim in KNOWN-ISSUES.md cannot go
+  stale either.
+
 - A plugin-served page can ask to be rendered into the site's theme.
 
   The third of the three plugin surfaces KNOWN-ISSUES.md described. `tap_api`

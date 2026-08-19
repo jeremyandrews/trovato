@@ -13,10 +13,24 @@ use axum::http::{Request, StatusCode};
 use common::{run_test, shared_app};
 
 /// Helper: extract CSRF token from a session by making a GET to a form page.
-async fn get_csrf_token(app: &common::TestApp, cookies: &str) -> String {
+///
+/// `user` names the rate-limit bucket this request lands in, the way
+/// `TestApp::login` already does for the `login` bucket. Without it the request
+/// falls into the shared `127.0.0.1` bucket, which is 100 requests a minute for
+/// the whole suite — a full `cargo test --all` exhausts it, `/admin` answers 429,
+/// a 429 carries no token, and the caller then fails its own assertion with a 403
+/// and no indication why. This file lost twenty minutes to exactly that.
+async fn get_csrf_token(app: &common::TestApp, cookies: &str, user: &str) -> String {
     let response = app
-        .request_with_cookies(Request::get("/admin").body(Body::empty()).unwrap(), cookies)
+        .request_with_cookies(
+            Request::get("/admin")
+                .header("x-forwarded-for", common::test_ip_for(user))
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
         .await;
+    let status = response.status();
 
     let body = axum::body::to_bytes(response.into_body(), 1_000_000)
         .await
@@ -41,7 +55,12 @@ async fn get_csrf_token(app: &common::TestApp, cookies: &str) -> String {
         }
     }
 
-    String::new()
+    // Loudly, rather than as an empty string. A token that is silently empty
+    // makes every caller fail with a 403 somewhere else.
+    panic!(
+        "no CSRF token on /admin for {user} (status {status}): {}",
+        &html[..html.len().min(400)]
+    )
 }
 
 #[test]
@@ -84,13 +103,14 @@ fn ai_assist_validates_empty_text() {
             .create_and_login_admin("ai_assist_empty", "TestPassword123!", "ai_empty@test.com")
             .await;
 
-        let csrf = get_csrf_token(app, &cookies).await;
+        let csrf = get_csrf_token(app, &cookies, "ai_assist_empty").await;
 
         let response = app
             .request_with_cookies(
                 Request::post("/api/v1/ai/assist")
                     .header("content-type", "application/json")
                     .header("x-csrf-token", &csrf)
+                    .header("x-forwarded-for", common::test_ip_for("ai_assist_empty"))
                     .body(Body::from(
                         serde_json::json!({
                             "text": "",
@@ -122,13 +142,14 @@ fn ai_assist_validates_invalid_operation() {
             .create_and_login_admin("ai_assist_badop", "TestPassword123!", "ai_badop@test.com")
             .await;
 
-        let csrf = get_csrf_token(app, &cookies).await;
+        let csrf = get_csrf_token(app, &cookies, "ai_assist_badop").await;
 
         let response = app
             .request_with_cookies(
                 Request::post("/api/v1/ai/assist")
                     .header("content-type", "application/json")
                     .header("x-csrf-token", &csrf)
+                    .header("x-forwarded-for", common::test_ip_for("ai_assist_badop"))
                     .body(Body::from(
                         serde_json::json!({
                             "text": "Hello world",
@@ -165,7 +186,7 @@ fn ai_assist_validates_text_too_long() {
             .create_and_login_admin("ai_assist_long", "TestPassword123!", "ai_long@test.com")
             .await;
 
-        let csrf = get_csrf_token(app, &cookies).await;
+        let csrf = get_csrf_token(app, &cookies, "ai_assist_long").await;
 
         // Text over 10,000 characters
         let long_text = "x".repeat(10_001);
@@ -175,6 +196,7 @@ fn ai_assist_validates_text_too_long() {
                 Request::post("/api/v1/ai/assist")
                     .header("content-type", "application/json")
                     .header("x-csrf-token", &csrf)
+                    .header("x-forwarded-for", common::test_ip_for("ai_assist_long"))
                     .body(Body::from(
                         serde_json::json!({
                             "text": long_text,
@@ -206,7 +228,7 @@ fn ai_assist_returns_503_without_provider() {
             .create_and_login_admin("ai_assist_noprov", "TestPassword123!", "ai_noprov@test.com")
             .await;
 
-        let csrf = get_csrf_token(app, &cookies).await;
+        let csrf = get_csrf_token(app, &cookies, "ai_assist_noprov").await;
 
         // Valid request but no AI provider configured in test environment
         let response = app
@@ -214,6 +236,7 @@ fn ai_assist_returns_503_without_provider() {
                 Request::post("/api/v1/ai/assist")
                     .header("content-type", "application/json")
                     .header("x-csrf-token", &csrf)
+                    .header("x-forwarded-for", common::test_ip_for("ai_assist_noprov"))
                     .body(Body::from(
                         serde_json::json!({
                             "text": "Hello world",

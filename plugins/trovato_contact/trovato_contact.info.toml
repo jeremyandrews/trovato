@@ -1,0 +1,28 @@
+name = "trovato_contact"
+description = "A contact form: a visitor reaches the site owner without an account"
+version = "0.100.0"
+api_version = "0.100"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_menu",
+    "tap_api",
+]
+weight = 0
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel builds
+# this plugin's WASM linker from host_interfaces — it receives exactly the host
+# interfaces named here (plus baseline WASI). Derived from the compiled .wasm
+# import section.
+[capabilities]
+# `mail` to reach the site's contact address, which is the whole feature.
+# `logging` so a delivery failure is visible in the site's logs rather than only
+# in the visitor's browser.
+#
+# No `db`: this plugin owns no table and needs none. A contact message is
+# delivered, not stored — storing it would mean a moderation queue, a retention
+# policy and a data-export obligation, none of which a contact form needs to
+# have an opinion about.
+host_interfaces = ["mail", "logging"]
