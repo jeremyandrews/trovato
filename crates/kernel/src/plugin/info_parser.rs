@@ -370,6 +370,7 @@ pub const KNOWN_HOST_INTERFACES: &[&str] = &[
     "crypto-api",
     "http",
     "queue",
+    "mail",
 ];
 
 fn default_true() -> bool {

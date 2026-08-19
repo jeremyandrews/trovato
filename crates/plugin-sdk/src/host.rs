@@ -100,6 +100,13 @@ unsafe extern "C" {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/mail")]
+unsafe extern "C" {
+    #[link_name = "send-to-site-contacts"]
+    fn __mail_send_to_site_contacts(req_ptr: i32, req_len: i32) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "trovato:kernel/crypto-api")]
 unsafe extern "C" {
     #[link_name = "sha256"]
@@ -438,6 +445,121 @@ pub fn queue_enqueue(
     _opts: &crate::types::QueueOptions,
 ) -> Result<(), i32> {
     Ok(())
+}
+
+/// The mail request as it crosses the boundary: JSON, with attachment bytes
+/// base64-encoded because JSON has no byte string.
+#[derive(serde::Serialize)]
+struct MailRequestWire<'a> {
+    subject: &'a str,
+    body: &'a str,
+    attachments: Vec<MailAttachmentWire<'a>>,
+}
+
+/// One attachment on the wire.
+#[derive(serde::Serialize)]
+struct MailAttachmentWire<'a> {
+    filename: &'a str,
+    content_type: &'a str,
+    bytes_base64: String,
+}
+
+/// Build the wire form of a mail request. Separated from the send so it can be
+/// tested off-wasm, where the host function does not exist.
+fn mail_request_json(
+    subject: &str,
+    body: &str,
+    attachments: &[crate::types::MailAttachment],
+) -> Result<String, i32> {
+    let wire = MailRequestWire {
+        subject,
+        body,
+        attachments: attachments
+            .iter()
+            .map(|a| MailAttachmentWire {
+                filename: &a.filename,
+                content_type: &a.content_type,
+                bytes_base64: base64_encode(&a.bytes),
+            })
+            .collect(),
+    };
+    serde_json::to_string(&wire).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)
+}
+
+/// Send a message to the site's configured contact address.
+///
+/// **The recipient is not a parameter, deliberately.** The kernel sends to the
+/// site's own `site_mail` address and nowhere else, so this cannot be used to
+/// reach an arbitrary address. It covers the case a CMS needs a plugin to cover,
+/// a visitor reaching the site owner, and it is useless as a relay.
+///
+/// Delivery uses the site's own SMTP transport, `from` address and circuit
+/// breaker. A plugin cannot configure its own.
+///
+/// Requires `"mail"` in the plugin's `[capabilities] host_interfaces`.
+///
+/// # Errors
+///
+/// Returns a negative host error code (see [`crate::host_errors`]): the
+/// `ERR_MAIL_*` family covers an unconfigured SMTP host, an unconfigured site
+/// contact address, a malformed request (an empty subject or body, a control
+/// character in the subject, an unusable attachment) and a delivery failure.
+#[cfg(target_arch = "wasm32")]
+pub fn mail_send_to_site_contacts(
+    subject: &str,
+    body: &str,
+    attachments: &[crate::types::MailAttachment],
+) -> Result<(), i32> {
+    let request_json = mail_request_json(subject, body, attachments)?;
+    let result = unsafe {
+        __mail_send_to_site_contacts(request_json.as_ptr() as i32, request_json.len() as i32)
+    };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Send to the site contact address (stub for native testing, always succeeds).
+///
+/// Still builds the request, so a plugin's own tests exercise the encoding path
+/// rather than skipping it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mail_send_to_site_contacts(
+    subject: &str,
+    body: &str,
+    attachments: &[crate::types::MailAttachment],
+) -> Result<(), i32> {
+    mail_request_json(subject, body, attachments).map(|_| ())
+}
+
+/// Base64-encode bytes with the standard alphabet and padding (RFC 4648 §4).
+///
+/// Hand-written rather than pulled in as a dependency: the SDK is compiled into
+/// every plugin's wasm and carries four dependencies on purpose, and this is the
+/// only place any plugin needs base64. The encoder is 20 lines and pinned to the
+/// RFC's own test vectors below.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+
+        out.push(ALPHABET[(triple >> 18 & 0x3F) as usize] as char);
+        out.push(ALPHABET[(triple >> 12 & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(triple >> 6 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(triple & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Compute the hex-encoded SHA-256 hash of `data` through the kernel.
@@ -943,6 +1065,60 @@ mod tests {
     #[test]
     fn plugin_exists_stub_returns_false() {
         assert!(!plugin_exists("other_plugin"));
+    }
+
+    /// RFC 4648 §10's own vectors, which is the point of hand-writing the encoder
+    /// rather than trusting it.
+    #[test]
+    fn base64_encode_matches_the_rfc_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_encode_covers_the_whole_alphabet_and_high_bytes() {
+        // 0x00..=0xFF exercises every 6-bit group, including the `+` and `/`
+        // characters an incomplete alphabet would get wrong.
+        let all: Vec<u8> = (0u8..=255).collect();
+        let encoded = base64_encode(&all);
+        assert_eq!(encoded.len(), 344);
+        assert!(encoded.contains('+'), "{encoded}");
+        assert!(encoded.contains('/'), "{encoded}");
+        assert!(encoded.starts_with("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g"));
+        // Padding: 256 is not a multiple of 3, so the last group is short.
+        assert!(encoded.ends_with("=="), "{encoded}");
+    }
+
+    #[test]
+    fn a_mail_request_carries_its_attachments_base64_encoded() {
+        let attachments = vec![crate::types::MailAttachment::text("notes.txt", "hi")];
+
+        let json = mail_request_json("Subject", "Body", &attachments).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["subject"], "Subject");
+        assert_eq!(parsed["body"], "Body");
+        assert_eq!(parsed["attachments"][0]["filename"], "notes.txt");
+        assert_eq!(parsed["attachments"][0]["content_type"], "text/plain");
+        assert_eq!(parsed["attachments"][0]["bytes_base64"], "aGk=");
+    }
+
+    #[test]
+    fn a_mail_request_with_no_attachments_still_carries_the_field() {
+        let json = mail_request_json("Subject", "Body", &[]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["attachments"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn the_native_mail_stub_builds_the_request_rather_than_skipping_it() {
+        assert!(mail_send_to_site_contacts("Subject", "Body", &[]).is_ok());
     }
 
     #[test]

@@ -1006,6 +1006,45 @@ pub struct QueueOptions {
     pub delay: i64,
 }
 
+/// One file attached to a message sent with
+/// [`crate::host::mail_send_to_site_contacts`].
+///
+/// Added at `KERNEL_API_VERSION (0,101)`. The kernel caps a message at 5
+/// attachments and 1 MB of bytes in total, and refuses a filename carrying a
+/// control character, a quote, or a path separator — a filename is offered to
+/// somebody's mail client, so it is a name and not a path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailAttachment {
+    /// Filename offered to the recipient.
+    pub filename: String,
+    /// MIME type, e.g. `text/plain`. Refused if it does not parse as one, rather
+    /// than guessed at.
+    pub content_type: String,
+    /// File contents. Base64-encoded by the SDK on the way across the boundary,
+    /// because the payload is JSON; a plugin passes plain bytes.
+    pub bytes: Vec<u8>,
+}
+
+impl MailAttachment {
+    /// An attachment from a filename, MIME type and contents.
+    pub fn new(
+        filename: impl Into<String>,
+        content_type: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            filename: filename.into(),
+            content_type: content_type.into(),
+            bytes: bytes.into(),
+        }
+    }
+
+    /// A `text/plain` attachment from a string.
+    pub fn text(filename: impl Into<String>, contents: impl Into<String>) -> Self {
+        Self::new(filename, "text/plain", contents.into().into_bytes())
+    }
+}
+
 /// An outbound HTTP request made through the kernel's HTTP host function.
 ///
 /// Plugins cannot make direct network calls from WASM. Instead, they build

@@ -5,6 +5,22 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
+/// One file attached to an outgoing message.
+///
+/// `bytes` are the file's contents, already decoded: whatever encoding carried
+/// them to the kernel is the caller's business, and lettre applies the transfer
+/// encoding the message needs.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    /// Filename offered to the recipient.
+    pub filename: String,
+    /// MIME type, e.g. `text/plain` or `application/pdf`. Rejected if it does
+    /// not parse, rather than guessed at.
+    pub content_type: String,
+    /// File contents.
+    pub bytes: Vec<u8>,
+}
+
 /// Email delivery service.
 pub struct EmailService {
     transport: AsyncSmtpTransport<Tokio1Executor>,
@@ -81,6 +97,73 @@ impl EmailService {
             .header(ContentType::TEXT_PLAIN)
             .body(body.to_string())
             .context("failed to build email message")?;
+
+        self.circuit_breaker
+            .call(|| async {
+                self.transport
+                    .send(email)
+                    .await
+                    .context("failed to send email")?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            .map_err(|e| e.into_anyhow("Email"))
+    }
+
+    /// Send a plain-text email with files attached.
+    ///
+    /// The message is `multipart/mixed`: the text body first, then one part per
+    /// attachment. With no attachments it delegates to [`Self::send`], so a
+    /// caller does not have to branch on whether it has any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an address does not parse, when an attachment's
+    /// content type is not a valid MIME type, when the message cannot be built,
+    /// or when the transport (or its circuit breaker) refuses the send.
+    pub async fn send_with_attachments(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+        attachments: &[Attachment],
+    ) -> Result<()> {
+        if attachments.is_empty() {
+            return self.send(to, subject, body).await;
+        }
+
+        let mut multipart = lettre::message::MultiPart::mixed().singlepart(
+            lettre::message::SinglePart::builder()
+                .header(ContentType::TEXT_PLAIN)
+                .body(body.to_string()),
+        );
+
+        for attachment in attachments {
+            let content_type = attachment
+                .content_type
+                .parse::<ContentType>()
+                .with_context(|| {
+                    format!(
+                        "attachment '{}' declares an invalid content type '{}'",
+                        attachment.filename, attachment.content_type
+                    )
+                })?;
+            multipart = multipart.singlepart(
+                lettre::message::Attachment::new(attachment.filename.clone())
+                    .body(attachment.bytes.clone(), content_type),
+            );
+        }
+
+        let email = Message::builder()
+            .from(
+                self.from_email
+                    .parse()
+                    .context("invalid from email address")?,
+            )
+            .to(to.parse().context("invalid recipient email address")?)
+            .subject(subject)
+            .multipart(multipart)
+            .context("failed to build email message with attachments")?;
 
         self.circuit_breaker
             .call(|| async {

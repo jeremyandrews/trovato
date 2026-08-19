@@ -151,6 +151,18 @@ pub struct RequestServices {
     /// fresh cache; production overrides it with the one shared instance via
     /// [`RequestServices::with_field_access_cache`] on the `AppState` template.
     pub field_access_cache: Arc<Cache<String, bool>>,
+    /// Email delivery, for the `mail` host interface.
+    ///
+    /// `None` when the site has no `SMTP_HOST` configured, which is the same
+    /// condition that makes `AppState::email` `None` — it is the *same*
+    /// `EmailService`, so a plugin's mail goes through the SMTP transport, the
+    /// circuit breaker and the `from` address the kernel's own mail uses. A
+    /// plugin cannot configure its own delivery.
+    ///
+    /// Populated via [`RequestServices::with_email`] on production dispatch
+    /// paths; `None` in serviceless and test contexts, where the host function
+    /// reports it rather than pretending to send.
+    pub email: Option<Arc<crate::services::email::EmailService>>,
 }
 
 impl RequestServices {
@@ -173,6 +185,7 @@ impl RequestServices {
             http,
             plugin_runtime: None,
             field_access_cache: Arc::new(new_field_access_cache()),
+            email: None,
         }
     }
 
@@ -192,6 +205,7 @@ impl RequestServices {
             http,
             plugin_runtime: None,
             field_access_cache: Arc::new(new_field_access_cache()),
+            email: None,
         }
     }
 
@@ -211,6 +225,19 @@ impl RequestServices {
     #[must_use]
     pub fn with_field_access_cache(mut self, cache: Arc<Cache<String, bool>>) -> Self {
         self.field_access_cache = cache;
+        self
+    }
+
+    /// Attach the site's email service, enabling the `mail` host interface.
+    ///
+    /// Builder-style, applied on the `AppState` template so every production tap
+    /// dispatch shares the one `EmailService` — and therefore its circuit
+    /// breaker, whose whole purpose is to stop hammering an SMTP host that is
+    /// failing. A per-call service would give each plugin its own breaker and
+    /// defeat that.
+    #[must_use]
+    pub fn with_email(mut self, email: Arc<crate::services::email::EmailService>) -> Self {
+        self.email = Some(email);
         self
     }
 
@@ -240,6 +267,7 @@ impl std::fmt::Debug for RequestServices {
                 &self.plugin_runtime.as_ref().map(|_| "PluginRuntime"),
             )
             .field("field_access_cache", &"Cache<String, bool>")
+            .field("email", &self.email.as_ref().map(|_| "EmailService"))
             .finish()
     }
 }

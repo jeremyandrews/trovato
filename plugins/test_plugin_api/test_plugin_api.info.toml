@@ -9,11 +9,12 @@ dependencies = []
 implements = ["tap_menu", "tap_perm", "tap_api"]
 weight = 0
 
+# `mail` so the send_mail callback can reach the site contact address (0.101).
 # `db` + `raw_sql` so the tap can write its own table — the whole point of the
 # finding this fixture exercises. `user-api` is not needed: the authenticated
 # user's id arrives in the ApiRequest payload.
 [capabilities]
-host_interfaces = ["logging", "db"]
+host_interfaces = ["logging", "db", "mail"]
 db_tables = ["tpa_notes"]
 raw_sql = true
 

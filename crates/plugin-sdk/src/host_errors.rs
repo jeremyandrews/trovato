@@ -340,6 +340,40 @@ pub const ERR_QUEUE_INVALID_OPTS: i32 = -35;
 pub const ERR_QUEUE_INSERT_FAILED: i32 = -36;
 
 // =============================================================================
+// Mail API errors (`trovato:kernel/mail`) — added at KERNEL_API_VERSION (0,101)
+// =============================================================================
+
+/// The site has no SMTP host configured, so nothing can be sent.
+///
+/// Not a defect in the call: a site that has not configured mail cannot send
+/// any, and the kernel's own mail is skipped under the same condition. Report it
+/// to the person rather than retrying.
+pub const ERR_MAIL_NOT_CONFIGURED: i32 = -50;
+
+/// The site has no contact address configured (`site_mail` is empty).
+///
+/// `send-to-site-contacts` sends to the site's own address and takes no
+/// recipient from the caller, so with no address configured there is nowhere for
+/// the message to go.
+pub const ERR_MAIL_NO_RECIPIENT: i32 = -51;
+
+/// The request was not a well-formed mail request.
+///
+/// Covers an unparseable payload, an empty subject or body, a subject carrying a
+/// carriage return or newline (which would be header injection), an attachment
+/// whose filename or declared content type is unusable, and attachment bytes
+/// that are not valid base64.
+pub const ERR_MAIL_INVALID_REQUEST: i32 = -52;
+
+/// The attachments exceeded the per-message limits: too many of them, or too
+/// many bytes in total. See the `mail` interface documentation for the ceilings.
+pub const ERR_MAIL_ATTACHMENT_TOO_LARGE: i32 = -53;
+
+/// The message was well-formed and delivery failed: the transport refused it, or
+/// the shared SMTP circuit breaker is open. The kernel logs the reason.
+pub const ERR_MAIL_SEND_FAILED: i32 = -54;
+
+// =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)
 // =============================================================================
 

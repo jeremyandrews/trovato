@@ -189,6 +189,41 @@ interface queue {
     enqueue: func(queue-name: string, payload-json: string, opts-json: string) -> result<_, string>;
 }
 
+/// Outgoing mail, narrow by construction (added at 0.101).
+///
+/// **The caller does not name the recipient.** A host function that sends to an
+/// address the plugin supplies is a spam relay, and the blast radius is the
+/// site's mail reputation and its SMTP credentials rather than the plugin's own
+/// data. `send-to-site-contacts` sends to the address the site configured
+/// (`site_mail`) and nowhere else: enough for a visitor to reach the site owner,
+/// which is the case a CMS needs a plugin to cover, and useless for reaching
+/// strangers.
+///
+/// Delivery goes through the site's own email service, so a plugin's mail shares
+/// the kernel's SMTP transport, `from` address and circuit breaker. A plugin
+/// cannot configure its own delivery, and cannot keep hammering a host the
+/// kernel has already given up on.
+///
+/// Refused, each with its own error code: no SMTP host configured, no
+/// `site_mail` configured, an empty subject or body, a subject or content type
+/// carrying a control character (header injection), an unusable attachment
+/// filename, more than 5 attachments, and more than 1 MB of attachment bytes in
+/// total.
+interface mail {
+    /// A file attached to the message. `bytes` are the contents; the kernel
+    /// applies the transfer encoding. Over the JSON boundary this record travels
+    /// as `{filename, content_type, bytes_base64}`.
+    record attachment {
+        filename: string,
+        content-type: string,
+        bytes: list<u8>,
+    }
+
+    /// Send to the site's configured contact address only. No caller recipient.
+    send-to-site-contacts: func(subject: string, body: string,
+                                attachments: list<attachment>) -> result<_, string>;
+}
+
 /// The plugin world — all imports and exports for a Trovato plugin.
 /// All tap functions use full-serialization (JSON in, JSON out).
 ///
@@ -232,6 +267,7 @@ world plugin {
     import crypto-api;
     import http;
     import queue;
+    import mail;
 
     // --- Tap export naming convention (PF-3 / D-1, sub-decision 1) ----------
     // Host *import* fields above are kebab-case and match these WIT identifiers
