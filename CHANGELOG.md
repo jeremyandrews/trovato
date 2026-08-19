@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Two tests that depended on something outside themselves now carry their own
+  preconditions.
+
+  `db_probe_state` in `crates/kernel/tests/plugin_test.rs` derived its fixture path
+  from the plugin name, and both WASM-2 probes pass the same name, so the two shared
+  one directory: each writes a migration file, has `DbPolicy::derive` read it, and
+  then removes the directory. When the removal landed between the other probe's write
+  and its read the allowlist came back empty, and
+  `db_select_inside_allowlist_passes_gate` failed with `left: -16, right: -16`, for a
+  reason with nothing to do with the gate under test. Each call now gets a directory
+  named for the process and a counter, so no two probes can collide however many are
+  added.
+
+  `plugin_view_render_test` seeded items of type `blog` while loading only
+  `trovato_series` into its dispatcher. `blog` is declared by `trovato_blog`'s
+  `tap_item_info`, and the content-type registry syncs rows only for the types the
+  loaded plugins declare, so that type existed only when some other test binary had
+  already run against the same database. On a virgin database three of its four tests
+  fail with `item_type_fkey`, `Key (type)=(blog) is not present in table "item_type"`.
+  The file now loads the plugin that declares the type and asserts the row arrived, so
+  a failure names the cause instead of surfacing as a foreign-key violation three
+  functions away. `trovato_blog` contributes no `tap_item_view`, so nothing this file
+  asserts on changes.
+
+  Both were caught by CI and not by the local gate, which is the interesting part.
+  Sharding changes which test binaries share a database, so it exposes a test that
+  quietly depends on another one while the single-database local run hides it.
+  CONTRIBUTING.md calls the local run the stronger gate; it is stronger against
+  cross-file interference and weaker against cross-file dependence.
+
 - The "what is configuration-import only" list is a test, not prose.
 
   `ROADMAP.md` sets the 1.0 bar as "a site can be built, configured and operated

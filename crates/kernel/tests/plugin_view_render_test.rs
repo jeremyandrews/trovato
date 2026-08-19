@@ -32,6 +32,16 @@ use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
 use trovato_kernel::tap::{RequestServices, TapDispatcher, TapRegistry, UserContext};
 
 const PLUGIN: &str = "trovato_series";
+
+/// The plugin that *declares* the content type the plugin under test decorates.
+///
+/// `trovato_series` only decorates items of type `blog`, and `blog` is declared by
+/// `trovato_blog`'s `tap_item_info`. The registry sync below creates rows only for
+/// the types the loaded plugins declare, so a dispatcher holding the series plugin
+/// alone syncs no `blog` row and every seeded item fails `item_type_fkey`. It has to
+/// be loaded here rather than assumed: `trovato_blog` contributes no `tap_item_view`,
+/// so it changes nothing this file asserts on.
+const TYPE_PLUGIN: &str = "trovato_blog";
 const LIVE_STAGE: &str = "0193a5a0-0000-7000-8000-000000000001";
 const SERIES: &str = "Rust in \"anger\" & <production>";
 
@@ -64,15 +74,17 @@ fn dispatcher() -> Arc<TapDispatcher> {
     DISPATCHER
         .get_or_init(|| {
             let mut runtime = PluginRuntime::new(&PluginConfig::default()).expect("create runtime");
-            runtime
-                .load_plugin(&plugins_dir().join(PLUGIN))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "failed to load '{PLUGIN}': {e:#}\n\
-                         build it: cargo build -p {PLUGIN} --target wasm32-wasip1 --release \
-                         && cp target/wasm32-wasip1/release/{PLUGIN}.wasm plugins/{PLUGIN}/"
-                    )
-                });
+            for name in [PLUGIN, TYPE_PLUGIN] {
+                runtime
+                    .load_plugin(&plugins_dir().join(name))
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to load '{name}': {e:#}\n\
+                             build it: cargo build -p {name} --target wasm32-wasip1 --release \
+                             && cp target/wasm32-wasip1/release/{name}.wasm plugins/{name}/"
+                        )
+                    });
+            }
             let runtime = Arc::new(runtime);
             let registry = Arc::new(TapRegistry::from_plugins(&runtime));
             Arc::new(TapDispatcher::new(runtime, registry))
@@ -92,6 +104,22 @@ async fn fresh_pool() -> PgPool {
         .sync_from_plugins(&dispatcher())
         .await
         .expect("sync content types");
+
+    // The precondition this file used to inherit from whichever other test binary
+    // happened to run first against a shared database. Assert it here so a failure
+    // names the cause rather than surfacing as a foreign-key violation three
+    // functions away.
+    let declared: Option<String> =
+        sqlx::query_scalar("SELECT type FROM item_type WHERE type = 'blog'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(
+        declared.is_some(),
+        "loading '{TYPE_PLUGIN}' must have declared the 'blog' content type; \
+         without that row every seeded item fails item_type_fkey"
+    );
+
     pool
 }
 
