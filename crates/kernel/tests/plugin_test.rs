@@ -1245,7 +1245,26 @@ const DB_SELECT_ALLOWED_WAT: &str = r#"
 fn db_probe_state(plugin: &str) -> PluginState {
     use trovato_kernel::plugin::{MigrationConfig, PluginCapabilities, TapConfig};
 
-    let dir = std::env::temp_dir().join(format!("trovato_wasm2_probe_{plugin}"));
+    // A directory of this call's own. The path used to be derived from the plugin name
+    // alone, and both callers pass the same name, so the two probes shared one
+    // directory — and each one *deletes* it after `DbPolicy::derive` has read it. The
+    // losing interleaving is:
+    //
+    //   1. probe A writes the migration
+    //   2. probe B writes the migration
+    //   3. probe A derives its policy (sees `allowed_t`)
+    //   4. probe A removes the directory
+    //   5. probe B derives its policy — the file is gone, so the allowlist is empty
+    //      and its in-allowlist select is rejected with ERR_TABLE_NOT_DECLARED
+    //
+    // which fails `db_select_inside_allowlist_passes_gate` intermittently, and always
+    // for a reason that has nothing to do with the gate it is testing.
+    static PROBE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "trovato_wasm2_probe_{plugin}_{}_{seq}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(dir.join("migrations")).expect("create fixture migrations dir");
     std::fs::write(
         dir.join("migrations/001_init.sql"),
