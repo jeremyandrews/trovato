@@ -889,6 +889,32 @@ pub struct ApiResponse {
     /// `Content-Type`. Defaults to `application/json`.
     #[serde(default = "default_api_content_type")]
     pub content_type: String,
+    /// Wrap [`Self::body`] in the site's page template instead of serving it
+    /// as-is.
+    ///
+    /// **Off by default, and deliberately opt-in.** A plugin-served body is
+    /// served verbatim, which is right for an admin screen or a JSON endpoint and
+    /// wrong for a public page: unthemed HTML arrives with no site navigation, no
+    /// header and no styling. Setting this asks the kernel to treat the body as
+    /// page content and render it through the same path an item page uses, so the
+    /// page comes back inside `page.html` with the site's navigation, tiles and
+    /// language context.
+    ///
+    /// The body is still the plugin's own HTML and is still not sanitized by the
+    /// kernel — the contract every view tap has. Theming changes what surrounds
+    /// it, not what it is.
+    ///
+    /// [`Self::content_type`] is ignored when this is set: a themed page is
+    /// HTML. Use [`ApiResponse::themed`] rather than setting the field directly.
+    ///
+    /// Added at `KERNEL_API_VERSION (0,101)`.
+    #[serde(default)]
+    pub theme: bool,
+    /// Page title for a themed response: the `<title>` and the page heading.
+    ///
+    /// Ignored unless [`Self::theme`] is set.
+    #[serde(default)]
+    pub title: String,
 }
 
 fn default_api_content_type() -> String {
@@ -905,6 +931,8 @@ impl ApiResponse {
             status: 200,
             body: serde_json::to_string(value)?,
             content_type: default_api_content_type(),
+            theme: false,
+            title: String::new(),
         })
     }
 
@@ -914,6 +942,8 @@ impl ApiResponse {
             status,
             body: body.into(),
             content_type: default_api_content_type(),
+            theme: false,
+            title: String::new(),
         }
     }
 
@@ -923,6 +953,40 @@ impl ApiResponse {
             status,
             body: serde_json::json!({ "error": message }).to_string(),
             content_type: default_api_content_type(),
+            theme: false,
+            title: String::new(),
+        }
+    }
+
+    /// A `200` HTML page rendered into the site's theme.
+    ///
+    /// The body is page content: the kernel wraps it in `page.html` with the
+    /// site's navigation, header and tiles, the same way an item page is
+    /// rendered. This is what a public-facing plugin page wants; an admin screen
+    /// or a JSON endpoint does not, which is why it is opt-in.
+    ///
+    /// The kernel does not sanitize the body. Escape anything that came from a
+    /// visitor.
+    pub fn themed(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            status: 200,
+            body: body.into(),
+            content_type: "text/html; charset=utf-8".to_string(),
+            theme: true,
+            title: title.into(),
+        }
+    }
+
+    /// A themed page under an explicit status, for a themed error or a redirect
+    /// landing page.
+    pub fn themed_with_status(
+        status: u16,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            status,
+            ..Self::themed(title, body)
         }
     }
 

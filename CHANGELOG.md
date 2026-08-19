@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- A plugin-served page can ask to be rendered into the site's theme.
+
+  The third of the three plugin surfaces KNOWN-ISSUES.md described. `tap_api`
+  output was served verbatim, which is right for an admin screen or a JSON
+  endpoint and wrong for a page a visitor reaches: it arrived with no site header,
+  no navigation and no styling, and a plugin could not supply them. `page.html`
+  belongs to the theme, a site may override it, and a plugin cannot know what it
+  says.
+
+  An `ApiResponse` now carries `theme` and `title`. With `theme` set the kernel
+  treats the body as page *content* and renders it the way an item page is
+  rendered: `inject_site_context` for the site context, then
+  `ThemeEngine::render_page` for template resolution, so a site that overrides
+  `page--contact.html` gets its override on a plugin page too. `ApiResponse::themed`
+  and `themed_with_status` are the constructors.
+
+  **Off by default**, which is the whole design: every existing plugin response is
+  byte identical, and a test pins that a JSON endpoint keeps its content type and
+  its unwrapped body. The kernel still does not sanitize a plugin's HTML, the
+  contract every view tap has — theming changes what surrounds a plugin's markup,
+  not what it is. A template failure serves the body in a minimal document rather
+  than a 500, the same fallback `routes::item` takes: the page is the plugin's work
+  and it is better served plain than not at all.
+
+  **The two theme taps are still not dispatched, deliberately.** `tap_theme` and
+  `tap_preprocess_item` are a different feature from this one and neither is what a
+  plugin page needs to reach the theme. `tap_theme` is `() -> string` with nothing
+  consuming what it would return: the Drupal equivalent registers templates, which
+  needs template discovery and override resolution the kernel does not have.
+  `tap_preprocess_item` would let a plugin alter an item's render context, which
+  first needs a decision about which keys it may overwrite — `csrf_token` and
+  `user_is_admin` are in that context. Both are recorded in KNOWN-ISSUES.md with
+  the reason rather than dispatched with invented semantics.
+
 - A plugin can send email, to the site's own address and nowhere else.
 
   The first of the three plugin surfaces KNOWN-ISSUES.md described. The kernel has

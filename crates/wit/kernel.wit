@@ -345,10 +345,10 @@ world plugin {
     // "api" and which names a callback (G-NO-PLUGIN-HTTP; added in the 0.99
     // series). Input is an ApiRequest JSON object
     // {callback, method, path, params, query, body, user_id, authenticated,
-    // csrf_token}; output is an ApiResponse {status, body, content_type}.
-    // Dispatched by routes/plugin_api.rs with services attached and the menu
-    // entry's `permission` already checked, so the tap may write a plugin-owned
-    // table.
+    // csrf_token}; output is an ApiResponse
+    // {status, body, content_type, theme, title}. Dispatched by
+    // routes/plugin_api.rs with services attached and the menu entry's
+    // `permission` already checked, so the tap may write a plugin-owned table.
     //
     // `csrf_token` (added at 0.101) is a single-use token for this caller's
     // session, minted so a tap can serve a working `<form>`: write it into a
@@ -356,10 +356,29 @@ world plugin {
     // a state-changing plugin-served request takes its token from that field or
     // from an X-CSRF-Token header. Empty for a bearer-authenticated caller,
     // which is exempt from CSRF and is not being served a form.
+    //
+    // `theme` and `title` (added at 0.101) ask the kernel to treat the body as
+    // page content and render it through the site's page template, with the site
+    // header, navigation and tiles around it — the same path an item page takes,
+    // template overrides included. Default false, so a response that does not ask
+    // is served verbatim exactly as before: an admin screen or a JSON endpoint
+    // does not want a theme. `content_type` is ignored when `theme` is true,
+    // because a themed page is HTML. The body is still never sanitized by the
+    // kernel; theming changes what surrounds a plugin's HTML, not what it is.
     export tap-api: func(request-json: string) -> string;
 
-    // Theme (dispatch pending) — `tap-theme` no-input shape has nothing to guess;
-    // `tap-preprocess-item` context+item payload grounded by `tap-item-view`.
+    // Theme (dispatch pending). Neither is dispatched, and neither is what a
+    // plugin-served page uses to reach the theme — that is the `theme` field on
+    // the `tap-api` response above, added at 0.101.
+    //
+    // `tap-theme`'s no-input `() -> string` shape has nothing to guess, and
+    // nothing consumes what it would return: in Drupal the equivalent registers
+    // templates, which needs template discovery and override resolution the
+    // kernel does not have. `tap-preprocess-item`'s context+item payload is
+    // grounded by `tap-item-view`, and dispatching it means first deciding which
+    // render-context keys a plugin may overwrite (`csrf_token` and
+    // `user_is_admin` are in there). Both are recorded in KNOWN-ISSUES.md rather
+    // than dispatched with invented semantics.
     export tap-theme: func() -> string;
     export tap-preprocess-item: func(context-json: string, item-json: string) -> string;
 

@@ -51,6 +51,10 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         // Public, because the shape being exercised is a contact form: a visitor
         // with no account reaching the site owner.
         MenuRoute::api("POST", "/tpa/mail", "send_mail").title("Send mail"),
+        // Asks to be rendered into the site's page template (0.101). Paired with
+        // `/tpa/form`, which does not ask: the two together are what proves
+        // theming is opt-in rather than the new default.
+        MenuRoute::api("GET", "/tpa/themed", "show_themed").title("A themed page"),
         // A page entry, to prove the kernel routes only `api` entries here.
         MenuRoute::page("/tpa/page", "Not an API"),
     ]
@@ -65,6 +69,7 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "show_form" => show_form(&request),
         "submit_form" => submit_form(&request),
         "send_mail" => send_mail(&request),
+        "show_themed" => show_themed(),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
 }
@@ -101,6 +106,18 @@ fn submit_form(request: &ApiRequest) -> ApiResponse {
         message = escape_html(&message),
     );
     ApiResponse::with_status(200, body).content_type("text/html; charset=utf-8")
+}
+
+/// A page that asks to be wrapped in the site's theme.
+///
+/// The body is page *content*: no `<html>`, no `<head>`, nothing the theme
+/// already provides. What comes back should carry the site's header and
+/// navigation around this paragraph.
+fn show_themed() -> ApiResponse {
+    ApiResponse::themed(
+        "A Themed Plugin Page",
+        "<p id=\"plugin-content\">content from the plugin</p>",
+    )
 }
 
 /// Send the submitted message to the site's contact address.
@@ -236,10 +253,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_five_api_routes_with_callbacks() {
+    fn the_menu_declares_six_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 5);
+        assert_eq!(api.len(), 6);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()
@@ -327,6 +344,24 @@ mod tests {
 
         assert!(!body.contains("<img"), "unescaped markup: {body}");
         assert!(body.contains("&lt;img onerror=x&gt;"), "{body}");
+    }
+
+    #[test]
+    fn the_themed_page_asks_for_the_theme_and_names_itself() {
+        let response = __inner_tap_api(ApiRequest::new(
+            "show_themed",
+            "GET",
+            "/tpa/themed",
+            "",
+            false,
+        ));
+
+        assert_eq!(response.status, 200);
+        assert!(response.theme, "the page must ask for the site theme");
+        assert_eq!(response.title, "A Themed Plugin Page");
+        assert!(response.body.contains("plugin-content"));
+        // Page content, not a document: the theme supplies the rest.
+        assert!(!response.body.contains("<html"), "{}", response.body);
     }
 
     #[test]
