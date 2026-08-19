@@ -795,6 +795,128 @@ fn a_json_body_carrying_a_token_field_is_not_accepted() {
     });
 }
 
+/// Markup only the site's page template produces.
+///
+/// Asserted on the theme's own structure rather than on the site name, which a
+/// plugin could coincidentally contain: `site-header` and the labelled `Main` nav
+/// come from `page.html` and nowhere else.
+const THEME_CHROME: [&str; 3] = [
+    r#"class="site-header""#,
+    r#"aria-label="Main""#,
+    r#"class="site-branding__name""#,
+];
+
+/// **A plugin page renders into the site theme.** `tap_api` output is served
+/// verbatim by default, so a public plugin page arrived unstyled and with no
+/// navigation, and a plugin could not reproduce either — `page.html` is the
+/// theme's, and a site may override it.
+#[test]
+fn a_plugin_page_that_asks_for_the_theme_is_wrapped_in_it() {
+    common::run_test(async {
+        let app = app();
+
+        let response = app
+            .request(Request::get("/tpa/themed").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+            "a themed page is HTML whatever the plugin put in content_type"
+        );
+        let html = text_body(response).await;
+
+        // The plugin's own content survived.
+        assert!(
+            html.contains(r#"id="plugin-content""#),
+            "the plugin's content must be in the page: {html}"
+        );
+        // Wrapped in the site's document and navigation.
+        assert!(
+            html.contains("<!DOCTYPE html>"),
+            "a themed page is a whole document: {html}"
+        );
+        for marker in THEME_CHROME {
+            assert!(
+                html.contains(marker),
+                "the site theme must surround it, missing {marker}: {html}"
+            );
+        }
+        // And the title the plugin named reached the document.
+        assert!(
+            html.contains("A Themed Plugin Page"),
+            "the plugin's title must reach the page: {html}"
+        );
+
+        disable_plugin(app).await;
+    });
+}
+
+/// **Theming is opt-in.** The form route does not ask for it and does not get it,
+/// which is what keeps every admin screen and JSON endpoint byte identical.
+#[test]
+fn a_plugin_page_that_does_not_ask_for_the_theme_is_served_raw() {
+    common::run_test(async {
+        let app = app();
+
+        let response = app
+            .request(Request::get("/tpa/form").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = text_body(response).await;
+
+        assert!(html.contains(r#"name="_token""#), "the plugin's own body");
+        for marker in THEME_CHROME {
+            assert!(
+                !html.contains(marker),
+                "an unthemed response must not be wrapped, found {marker}: {html}"
+            );
+        }
+
+        disable_plugin(app).await;
+    });
+}
+
+/// A JSON endpoint is untouched by any of this: same content type, same body.
+#[test]
+fn a_json_plugin_endpoint_is_unchanged_by_the_theme_seam() {
+    common::run_test(async {
+        let app = app();
+
+        let cookies = app
+            .create_and_login_user(
+                "k1apitheme",
+                "correct-horse-battery-staple",
+                "k1t@test.local",
+            )
+            .await;
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/tpa/notes").body(Body::empty()).unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
+        let body = text_body(response).await;
+        for marker in THEME_CHROME {
+            assert!(!body.contains(marker), "a JSON body must not be themed");
+        }
+
+        disable_plugin(app).await;
+    });
+}
+
 /// The token the plugin receives is bound to the caller's session, so one
 /// visitor's form cannot be submitted from another visitor's session.
 #[test]

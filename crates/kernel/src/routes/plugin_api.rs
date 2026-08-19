@@ -358,8 +358,11 @@ async fn serve(
         .await;
 
     match result {
-        Some(result) => match parse_plugin_response(&result.output) {
-            Some(response) => response,
+        Some(result) => match parse_api_response(&result.output) {
+            Some(parsed) if parsed.theme => {
+                themed_response(&state, &session, uri.path(), parsed).await
+            }
+            Some(parsed) => raw_response(parsed),
             None => {
                 tracing::warn!(
                     plugin = %menu.plugin,
@@ -383,13 +386,13 @@ async fn serve(
     }
 }
 
-/// Turn a plugin's `tap_api` output into an HTTP response.
+/// Decode a plugin's `tap_api` output.
 ///
 /// `#[plugin_tap]` serializes a tap's return with `serde_json::to_string`, so an
 /// `ApiResponse` arrives as a JSON object — but a `String`-returning tap would
 /// arrive as a JSON *string*, so the same decode the view path needs applies
 /// here (G-VIEW-OUTPUT-JSON-ENCODED). Both are accepted.
-fn parse_plugin_response(raw: &str) -> Option<Response> {
+fn parse_api_response(raw: &str) -> Option<ApiResponse> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     // A JSON string envelope wrapping the real object.
     let value = match value {
@@ -398,12 +401,15 @@ fn parse_plugin_response(raw: &str) -> Option<Response> {
         }
         other => other,
     };
-    let parsed: ApiResponse = serde_json::from_value(value).ok()?;
+    serde_json::from_value(value).ok()
+}
 
+/// Serve a plugin's body verbatim. The default, and unchanged behaviour.
+fn raw_response(parsed: ApiResponse) -> Response {
     // A status outside the valid range is a plugin saying something
     // meaningless; serve 500 rather than silently clamping it to a code the
     // plugin never chose.
-    let status = StatusCode::from_u16(parsed.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = status_or_500(parsed.status);
     let content_type = HeaderValue::from_str(&parsed.content_type)
         .unwrap_or_else(|_| HeaderValue::from_static("application/json"));
 
@@ -411,7 +417,69 @@ fn parse_plugin_response(raw: &str) -> Option<Response> {
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
-    Some(response)
+    response
+}
+
+/// Serve a plugin's body as page content inside the site's page template.
+///
+/// This is the seam a public-facing plugin page needs. `tap_api` output is served
+/// as-is by default, which is right for an admin screen and wrong for a page a
+/// visitor reaches: it arrives with no navigation, no header and no styling, and a
+/// plugin has no way to reproduce those (`page.html` is the theme's, and the
+/// site's may not be `page.html` at all).
+///
+/// The rendering is the same path an item page takes:
+/// [`crate::routes::helpers::inject_site_context`] for the site context, then
+/// [`crate::theme::ThemeEngine::render_page`] for template resolution, so a site
+/// that overrides `page--contact.html` gets its override here too.
+///
+/// The body is **not** sanitized, exactly as it is not on the raw path — the
+/// contract every view tap has. Theming changes what surrounds a plugin's HTML,
+/// not what it is.
+///
+/// A template failure degrades to the plugin's body in a minimal document rather
+/// than to a 500: the page is the plugin's work and it is better served plain than
+/// not at all, which is the same fallback `routes::item` takes.
+async fn themed_response(
+    state: &AppState,
+    session: &Session,
+    path: &str,
+    parsed: ApiResponse,
+) -> Response {
+    let mut context = tera::Context::new();
+    crate::routes::helpers::inject_site_context(state, session, &mut context, path).await;
+
+    let html = match state
+        .theme()
+        .render_page(path, &parsed.title, &parsed.body, &mut context)
+    {
+        Ok(html) => html,
+        Err(e) => {
+            tracing::warn!(
+                path = %path,
+                error = %e,
+                "failed to render a plugin page into the site theme; serving it unwrapped"
+            );
+            format!(
+                "<!DOCTYPE html><html><head><title>{}</title></head><body>{}</body></html>",
+                crate::routes::helpers::html_escape(&parsed.title),
+                parsed.body
+            )
+        }
+    };
+
+    let mut response = (status_or_500(parsed.status), html).into_response();
+    // A themed page is HTML whatever the plugin put in `content_type`.
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response
+}
+
+/// A plugin's status code, or 500 when it named something that is not one.
+fn status_or_500(status: u16) -> StatusCode {
+    StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// A kernel-authored JSON error, distinct in shape from a plugin's own body.
@@ -556,32 +624,79 @@ mod tests {
     #[test]
     fn a_plugin_response_is_parsed_from_either_envelope() {
         let object = r#"{"status":201,"body":"{\"ok\":true}","content_type":"application/json"}"#;
-        let response = parse_plugin_response(object).expect("object envelope");
+        let response = raw_response(parse_api_response(object).expect("object envelope"));
         assert_eq!(response.status(), StatusCode::CREATED);
 
         // What a `String`-returning tap would produce.
         let wrapped = serde_json::to_string(object).unwrap();
-        let response = parse_plugin_response(&wrapped).expect("string envelope");
+        let response = raw_response(parse_api_response(&wrapped).expect("string envelope"));
         assert_eq!(response.status(), StatusCode::CREATED);
 
-        assert!(parse_plugin_response("not json").is_none());
-        assert!(parse_plugin_response(r#"{"nope":1}"#).is_none());
+        assert!(parse_api_response("not json").is_none());
+        assert!(parse_api_response(r#"{"nope":1}"#).is_none());
     }
 
     #[test]
     fn an_out_of_range_status_does_not_panic() {
         let raw = r#"{"status":9999,"body":"","content_type":"application/json"}"#;
-        let response = parse_plugin_response(raw).expect("parses");
+        let response = raw_response(parse_api_response(raw).expect("parses"));
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
     fn a_missing_content_type_defaults_to_json() {
         let raw = r#"{"status":200,"body":"{}"}"#;
-        let response = parse_plugin_response(raw).expect("parses");
+        let response = raw_response(parse_api_response(raw).expect("parses"));
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE).unwrap(),
             "application/json"
         );
+    }
+
+    /// Theming is opt-in, so a response that does not ask for it is not themed —
+    /// which is what keeps every existing admin screen and JSON endpoint byte
+    /// identical.
+    #[test]
+    fn a_response_that_does_not_ask_for_the_theme_does_not_get_it() {
+        let raw = r#"{"status":200,"body":"<p>hi</p>","content_type":"text/html"}"#;
+        let parsed = parse_api_response(raw).expect("parses");
+        assert!(!parsed.theme, "theme must default to false");
+
+        // And the whole existing corpus of plugin responses predates the field.
+        let older = r#"{"status":200,"body":"{}"}"#;
+        assert!(!parse_api_response(older).expect("parses").theme);
+    }
+
+    #[test]
+    fn a_response_can_ask_for_the_theme_and_carry_a_title() {
+        let raw = r#"{"status":200,"body":"<p>hi</p>","content_type":"text/html","theme":true,"title":"Contact"}"#;
+        let parsed = parse_api_response(raw).expect("parses");
+        assert!(parsed.theme);
+        assert_eq!(parsed.title, "Contact");
+    }
+
+    /// The SDK constructor and the wire format have to agree, or a plugin asks for
+    /// theming and the kernel does not hear it.
+    #[test]
+    fn the_sdk_themed_constructor_serializes_to_what_the_kernel_reads() {
+        let response = ApiResponse::themed("Contact", "<p>hi</p>");
+        let json = serde_json::to_string(&response).expect("serialize");
+
+        let parsed = parse_api_response(&json).expect("parses");
+        assert!(parsed.theme);
+        assert_eq!(parsed.title, "Contact");
+        assert_eq!(parsed.body, "<p>hi</p>");
+        assert_eq!(parsed.status, 200);
+    }
+
+    #[test]
+    fn a_themed_response_can_carry_a_status_of_its_own() {
+        let response = ApiResponse::themed_with_status(422, "Try again", "<p>bad input</p>");
+        let json = serde_json::to_string(&response).expect("serialize");
+
+        let parsed = parse_api_response(&json).expect("parses");
+        assert!(parsed.theme);
+        assert_eq!(parsed.status, 422);
+        assert_eq!(parsed.title, "Try again");
     }
 }
