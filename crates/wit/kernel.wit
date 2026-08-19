@@ -308,10 +308,18 @@ world plugin {
     // Serves one HTTP request for a `tap-menu` entry whose handler-type is
     // "api" and which names a callback (G-NO-PLUGIN-HTTP; added in the 0.99
     // series). Input is an ApiRequest JSON object
-    // {callback, method, path, params, query, body, user_id, authenticated};
-    // output is an ApiResponse {status, body, content_type}. Dispatched by
-    // routes/plugin_api.rs with services attached and the menu entry's
-    // `permission` already checked, so the tap may write a plugin-owned table.
+    // {callback, method, path, params, query, body, user_id, authenticated,
+    // csrf_token}; output is an ApiResponse {status, body, content_type}.
+    // Dispatched by routes/plugin_api.rs with services attached and the menu
+    // entry's `permission` already checked, so the tap may write a plugin-owned
+    // table.
+    //
+    // `csrf_token` (added at 0.101) is a single-use token for this caller's
+    // session, minted so a tap can serve a working `<form>`: write it into a
+    // hidden `_token` input and the POST is accepted with no JavaScript, because
+    // a state-changing plugin-served request takes its token from that field or
+    // from an X-CSRF-Token header. Empty for a bearer-authenticated caller,
+    // which is exempt from CSRF and is not being served a form.
     export tap-api: func(request-json: string) -> string;
 
     // Theme (dispatch pending) — `tap-theme` no-input shape has nothing to guess;

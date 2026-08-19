@@ -581,3 +581,252 @@ fn a_page_menu_entry_is_not_served_as_an_api() {
         disable_plugin(app).await;
     });
 }
+
+/// Read the response body as text.
+async fn text_body(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), 2_000_000)
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Pull `value="…"` out of the hidden `_token` input a plugin rendered.
+fn token_from_form(html: &str) -> String {
+    let needle = r#"name="_token" value=""#;
+    let start = html
+        .find(needle)
+        .unwrap_or_else(|| panic!("no _token input in the plugin's form: {html}"))
+        + needle.len();
+    let end = html[start..]
+        .find('"')
+        .map(|p| start + p)
+        .unwrap_or_else(|| panic!("unterminated _token value: {html}"));
+    assert!(end > start, "the plugin rendered an empty token: {html}");
+    html[start..end].to_string()
+}
+
+/// **The no-JavaScript form, end to end, anonymously.**
+///
+/// A plain `<form method="post">` cannot set a header, so before this a
+/// plugin-served form was refused with 403 whatever it rendered. Two things had
+/// to be true, and this drives both through the real wasm: the kernel hands the
+/// plugin a token to embed (`ApiRequest::csrf_token`), and it accepts that token
+/// back from a `_token` field in a form-urlencoded body.
+///
+/// Anonymous on purpose. A contact form's caller has no account, so the session
+/// the token is bound to is one the visitor acquired by asking for the form.
+#[test]
+fn an_anonymous_visitor_posts_a_plugin_served_form_without_javascript() {
+    common::run_test(async {
+        let app = app();
+
+        // GET the form with no session at all, the way a visitor arrives.
+        let response = app
+            .request(Request::get("/tpa/form").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the form is public and must render for an anonymous visitor"
+        );
+        let cookies = common::extract_cookies(&response);
+        assert!(
+            !cookies.is_empty(),
+            "rendering a token has to establish the session it is bound to"
+        );
+        let html = text_body(response).await;
+        let token = token_from_form(&html);
+
+        // POST it back exactly as a browser with scripting disabled would: form
+        // encoding, the token in the body, and no X-CSRF-Token header anywhere.
+        let response = app
+            .request_with_cookies(
+                Request::post("/tpa/form")
+                    .header(
+                        header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded; charset=UTF-8",
+                    )
+                    .body(Body::from(format!(
+                        "_token={token}&message=hello+from+a+plain+form"
+                    )))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let status = response.status();
+        let body = text_body(response).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a _token field must be accepted in place of the header: {body}"
+        );
+        assert!(
+            body.contains("received: hello from a plain form"),
+            "the plugin must have been dispatched with the body: {body}"
+        );
+
+        disable_plugin(app).await;
+    });
+}
+
+/// The field is not a way around the check. A forged or absent `_token` is
+/// refused exactly as a forged or absent header is.
+#[test]
+fn a_form_post_with_a_bad_or_missing_token_is_refused() {
+    common::run_test(async {
+        let app = app();
+
+        let response = app
+            .request(Request::get("/tpa/form").body(Body::empty()).unwrap())
+            .await;
+        let cookies = common::extract_cookies(&response);
+        let real_token = token_from_form(&text_body(response).await);
+
+        for body in [
+            String::new(),
+            "message=x".to_string(),
+            "_token=&message=x".to_string(),
+            "_token=not-a-real-token&message=x".to_string(),
+            // A token from somebody else's session is somebody else's token.
+            format!("_token={}&message=x", "0".repeat(64)),
+            // Two tokens in one body is malformed, not a coin flip, even when
+            // one of them is the honest one.
+            format!("_token={real_token}&_token=forged&message=x"),
+        ] {
+            let response = app
+                .request_with_cookies(
+                    Request::post("/tpa/form")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(body.clone()))
+                        .unwrap(),
+                    &cookies,
+                )
+                .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "this body must not be accepted: {body:?}"
+            );
+        }
+
+        disable_plugin(app).await;
+    });
+}
+
+/// A token is single-use, and the fallback does not change that. The same body
+/// replayed is refused the second time.
+#[test]
+fn a_form_token_cannot_be_replayed() {
+    common::run_test(async {
+        let app = app();
+
+        let response = app
+            .request(Request::get("/tpa/form").body(Body::empty()).unwrap())
+            .await;
+        let cookies = common::extract_cookies(&response);
+        let token = token_from_form(&text_body(response).await);
+
+        let post = || {
+            app.request_with_cookies(
+                Request::post("/tpa/form")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("_token={token}&message=x")))
+                    .unwrap(),
+                &cookies,
+            )
+        };
+
+        assert_eq!(post().await.status(), StatusCode::OK);
+        assert_eq!(
+            post().await.status(),
+            StatusCode::FORBIDDEN,
+            "a spent token must not verify a second time"
+        );
+
+        disable_plugin(app).await;
+    });
+}
+
+/// The body is only read when the content type says it is a form. A JSON caller
+/// that puts a token in its body still needs the header, so the fallback did not
+/// quietly widen the check to every request shape.
+#[test]
+fn a_json_body_carrying_a_token_field_is_not_accepted() {
+    common::run_test(async {
+        let app = app();
+
+        let response = app
+            .request(Request::get("/tpa/form").body(Body::empty()).unwrap())
+            .await;
+        let cookies = common::extract_cookies(&response);
+        let token = token_from_form(&text_body(response).await);
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/tpa/form")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"_token":"{token}"}}"#)))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a JSON body is not a form and must not be scanned for a token"
+        );
+
+        // And the same token still works through the header, which proves the
+        // refusal above was about the content type rather than about the token
+        // having been spent.
+        let response = app
+            .request_with_cookies(
+                Request::post("/tpa/form")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("X-CSRF-Token", &token)
+                    .body(Body::from("{}"))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        disable_plugin(app).await;
+    });
+}
+
+/// The token the plugin receives is bound to the caller's session, so one
+/// visitor's form cannot be submitted from another visitor's session.
+#[test]
+fn a_token_minted_for_one_session_does_not_verify_in_another() {
+    common::run_test(async {
+        let app = app();
+
+        let first = app
+            .request(Request::get("/tpa/form").body(Body::empty()).unwrap())
+            .await;
+        let token = token_from_form(&text_body(first).await);
+
+        let second = app
+            .request(Request::get("/tpa/form").body(Body::empty()).unwrap())
+            .await;
+        let other_cookies = common::extract_cookies(&second);
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/tpa/form")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("_token={token}&message=x")))
+                    .unwrap(),
+                &other_cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a token is bound to the session it was minted for"
+        );
+
+        disable_plugin(app).await;
+    });
+}

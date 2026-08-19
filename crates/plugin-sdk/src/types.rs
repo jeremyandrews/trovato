@@ -806,6 +806,37 @@ pub struct ApiRequest {
     /// Whether the caller is authenticated. Distinguishes a real user from the
     /// anonymous account, which also holds the nil uuid.
     pub authenticated: bool,
+    /// A single-use CSRF token for this caller's session, to render into a form
+    /// the plugin serves.
+    ///
+    /// A plugin serving an HTML form has to put a valid token in it, and
+    /// `tap_api` is one call with no way to ask the kernel for one. The kernel
+    /// mints a token per request and hands it over here. Write it into a hidden
+    /// `_token` input and the POST is accepted without any JavaScript:
+    ///
+    /// ```ignore
+    /// format!(
+    ///     r#"<form method="post" action="/contact">
+    ///   <input type="hidden" name="_token" value="{token}">
+    ///   <textarea name="message"></textarea>
+    ///   <button type="submit">Send</button>
+    /// </form>"#,
+    ///     token = escape_html(&request.csrf_token),
+    /// )
+    /// ```
+    ///
+    /// Present on a POST as well as a GET: a token is single-use, so a submission
+    /// that fails the plugin's own validation has already spent the one it
+    /// arrived with, and re-rendering the form needs this one.
+    ///
+    /// **Empty when the caller authenticated with an `Authorization: Bearer`
+    /// token**, which needs no CSRF token and is not being served a form. Treat
+    /// empty as "nothing to render a token into" rather than as an error.
+    ///
+    /// Added at `KERNEL_API_VERSION (0,101)`; `#[serde(default)]`, so a payload
+    /// from a kernel that does not send it deserializes with it empty.
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 impl ApiRequest {
@@ -826,6 +857,7 @@ impl ApiRequest {
             body: String::new(),
             user_id: user_id.into(),
             authenticated,
+            csrf_token: String::new(),
         }
     }
 

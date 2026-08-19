@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+- A plugin can serve a form that works with JavaScript switched off.
+
+  This was the second of the three plugin surfaces KNOWN-ISSUES.md described, and
+  it needed two halves rather than the one the write-up predicted.
+
+  **Accepting the token.** A state-changing plugin-served request took its CSRF
+  token from an `X-CSRF-Token` header only, and a plain HTML `<form>` cannot set a
+  header, so a plugin's own form was refused with 403 whatever it rendered.
+  `routes/plugin_api.rs` now calls `require_csrf_header_or_field`, which tries the
+  header and then a `_token` field from a form-urlencoded body. It is the same
+  check either way: both paths end in `form::csrf::verify_csrf_token`, so the token
+  stays single-use, session-bound and an hour long. `_token` is the field forty
+  templates and every hand-written kernel form already use.
+
+  Two deliberate narrownesses. The body is read **only** when the content type is
+  `application/x-www-form-urlencoded`, so a JSON caller that omits the header gets
+  the 403 it always got rather than having its body scanned. And a body carrying
+  the field **twice** is refused rather than resolved: a `HashMap` of the pairs
+  keeps the last, this parser could keep either, and a security check should not
+  turn on that choice.
+
+  **Handing over a token to embed.** Accepting the field is useless on its own,
+  which the write-up missed: a plugin serving a GET form had no valid token to put
+  in it. `tap_api` is one call with no way to ask for one, and `request-context` is
+  a plugin-namespaced key/value store. The kernel now mints a token per request and
+  passes it in a new `ApiRequest::csrf_token`, additive on a `#[non_exhaustive]`
+  struct. Minted for a POST too, because a token is single-use and a submission
+  that fails the plugin's own validation needs a fresh one to re-render with. Not
+  minted for a bearer-authenticated caller: CSRF does not apply to it, it is not
+  being served a form, and minting writes the session store on every request.
+
+  **A form posts back to its own URL, and the registry could not hold that.** Found
+  by the test, not by reading: `GET /contact` and `POST /contact` are one path and
+  two methods, `MenuRegistry` was a `HashMap` keyed by path, and the second
+  registration overwrote the first. A plugin declaring both silently lost one,
+  which one depending on declaration order, and the surviving 405 looked like a
+  routing bug rather than a lost registration. The registry now keeps every
+  registration for the routers to build from (`all`) alongside the path-keyed index
+  navigation and page lookup need (`by_path`), and the path-keyed one prefers
+  `GET`, so a submit handler cannot displace the page it submits to.
+
+  `plugins/test_plugin_api` grew a public no-JS form, and `plugin_api_test.rs`
+  drives the real wasm the way a browser with scripting disabled would: an
+  anonymous visitor GETs the form, posts it back with the token in the body and no
+  header anywhere, and lands. The refusals are pinned too — a forged token, an
+  absent one, an empty one, a spent one, two of them, one minted for another
+  session, and a JSON body carrying the field.
+
 ## v0.100.0 — 2026-08-19
 
 Thirty-eight pull requests since the first public release. New in this one:

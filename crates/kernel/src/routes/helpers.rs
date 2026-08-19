@@ -341,6 +341,102 @@ pub async fn require_csrf_header(
     }
 }
 
+/// The field every Trovato form carries its CSRF token in.
+///
+/// `form/service.rs` reads it, forty templates write it, and every hand-written
+/// form struct renames a field to it. A plugin serving its own HTML form has to
+/// be able to use the same name, which is what [`require_csrf_header_or_field`]
+/// is for.
+pub const CSRF_FORM_FIELD: &str = "_token";
+
+/// Verify a CSRF token from the `X-CSRF-Token` header, or from a `_token` field
+/// in a form-urlencoded body.
+///
+/// This exists because **a plain HTML `<form>` cannot set a header.** A caller
+/// posting `application/x-www-form-urlencoded` without JavaScript has exactly
+/// one place to put a token, and it is the body;
+/// [`require_csrf_header`] cannot read it, so a plugin serving its own form was
+/// refused with 403 no matter what it rendered. The check itself is unchanged:
+/// both paths end in `form::csrf::verify_csrf_token`, the same single-use,
+/// session-bound, hour-limited verification every kernel form uses.
+///
+/// The header is tried first, so a JavaScript client's behaviour is exactly what
+/// it was. Trying it costs nothing when it is absent: `verify_csrf_token`
+/// refuses an empty token before touching the session, and a token that does not
+/// match is not consumed, so the fallback still has a live token to check.
+///
+/// The body is only read when the content type says it is a form. A JSON caller
+/// that omits the header gets the same 403 it always got, rather than having its
+/// body scanned for a field that would not be there.
+pub async fn require_csrf_header_or_field(
+    session: &Session,
+    headers: &axum::http::HeaderMap,
+    body: &str,
+) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+    if require_csrf_header(session, headers).await.is_ok() {
+        return Ok(());
+    }
+
+    if is_form_urlencoded(headers)
+        && let Some(token) = single_form_field(body, CSRF_FORM_FIELD)
+        && crate::form::csrf::verify_csrf_token(session, &token)
+            .await
+            .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    Err((
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({
+            "error": format!(
+                "Invalid or missing CSRF token. Include an X-CSRF-Token header, \
+                 or a {CSRF_FORM_FIELD} field in a form-urlencoded body."
+            )
+        })),
+    ))
+}
+
+/// Whether the request body is a URL-encoded form.
+///
+/// Matches on the media type alone, so a `charset` parameter does not change the
+/// answer.
+fn is_form_urlencoded(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        })
+        .unwrap_or(false)
+}
+
+/// Read one field out of a URL-encoded body, requiring it to appear exactly once.
+///
+/// A repeated name is refused rather than resolved. There is no agreed answer to
+/// which duplicate wins — a `HashMap` built from the pairs keeps the last, this
+/// function would otherwise keep whichever it was written to keep — and a
+/// security check should not depend on that choice. Two tokens in one body is a
+/// malformed request, so it is treated as one.
+fn single_form_field(body: &str, field: &str) -> Option<String> {
+    let mut found = None;
+    for (key, value) in url::form_urlencoded::parse(body.as_bytes()) {
+        if key != field {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(value.into_owned());
+    }
+    found
+}
+
 /// Maximum length for a tag slug (matches `category_tag.slug` `VARCHAR(128)`).
 pub const MAX_SLUG_LENGTH: usize = 128;
 
@@ -770,6 +866,73 @@ mod tests {
         assert_eq!(
             html_escape("<script>alert('xss')</script>"),
             "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;"
+        );
+    }
+
+    fn headers_with_content_type(value: &str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_str(value).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn a_form_content_type_is_recognized_with_or_without_parameters() {
+        assert!(is_form_urlencoded(&headers_with_content_type(
+            "application/x-www-form-urlencoded"
+        )));
+        // A browser is entitled to add a charset, and does.
+        assert!(is_form_urlencoded(&headers_with_content_type(
+            "application/x-www-form-urlencoded; charset=UTF-8"
+        )));
+        // Case is not significant in a media type.
+        assert!(is_form_urlencoded(&headers_with_content_type(
+            "Application/X-WWW-Form-Urlencoded"
+        )));
+    }
+
+    #[test]
+    fn anything_else_is_not_a_form() {
+        assert!(!is_form_urlencoded(&headers_with_content_type(
+            "application/json"
+        )));
+        assert!(!is_form_urlencoded(&headers_with_content_type(
+            "multipart/form-data; boundary=x"
+        )));
+        // No content type at all: a body of unknown shape is not scanned.
+        assert!(!is_form_urlencoded(&axum::http::HeaderMap::new()));
+    }
+
+    #[test]
+    fn a_form_field_is_read_and_percent_decoded() {
+        assert_eq!(
+            single_form_field("_token=abc123&message=hi", "_token").as_deref(),
+            Some("abc123")
+        );
+        // Order does not matter, and `+` and `%xx` decode as a form encodes them.
+        assert_eq!(
+            single_form_field("message=hello+world&_token=a%2Fb", "_token").as_deref(),
+            Some("a/b")
+        );
+    }
+
+    #[test]
+    fn a_missing_or_empty_field_is_none_or_empty_and_never_a_pass() {
+        assert_eq!(single_form_field("message=hi", "_token"), None);
+        assert_eq!(single_form_field("", "_token"), None);
+        // Present but empty is Some(""), which `verify_csrf_token` refuses. The
+        // distinction is kept here so the caller does the refusing.
+        assert_eq!(single_form_field("_token=", "_token").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_repeated_field_is_refused_rather_than_resolved() {
+        assert_eq!(single_form_field("_token=a&_token=b", "_token"), None);
+        assert_eq!(
+            single_form_field("_token=a&message=hi&_token=a", "_token"),
+            None
         );
     }
 

@@ -48,6 +48,14 @@
 //!   user, the bearer header was ignored and CSRF still applies. This is what
 //!   lets a token client (the Argus iOS series) write without a
 //!   session-establishing round-trip.
+//! - **Forms without JavaScript.** The token is read from the `X-CSRF-Token`
+//!   header or from a `_token` field in a form-urlencoded body, and the plugin
+//!   is handed a freshly minted token in [`ApiRequest::csrf_token`] to render
+//!   into a hidden input. A plain HTML `<form>` cannot set a header, so before
+//!   both halves existed a plugin-served form was refused with 403 whatever it
+//!   rendered, and a public-facing plugin needed JavaScript to post anything.
+//!   The verification is the same one every kernel form uses: single-use,
+//!   session-bound, and an hour long.
 //! - **Response.** A plugin's `status`, `body` and `content_type` are served as
 //!   given, with an out-of-range status served as 500 and the content type
 //!   validated as a header value. The kernel does **not** sanitize a plugin's
@@ -276,17 +284,26 @@ async fn serve(
     }
 
     // CSRF, with the bearer exemption argued in the module docs.
-    if is_state_changing(&method)
-        && bearer.is_none()
-        && crate::routes::helpers::require_csrf_header(&session, &headers)
+    //
+    // The token is accepted from the `X-CSRF-Token` header or from a `_token`
+    // field in a form-urlencoded body, because a plain HTML `<form>` can only
+    // do the second. The body is borrowed here rather than decoded: a
+    // non-UTF-8 body yields no field, so it is refused by this gate with 403
+    // exactly as it was before, and the 400 below still names the real problem
+    // for a caller that got the token right.
+    if is_state_changing(&method) && bearer.is_none() {
+        let body_str = std::str::from_utf8(&body).unwrap_or("");
+        if crate::routes::helpers::require_csrf_header_or_field(&session, &headers, body_str)
             .await
             .is_err()
-    {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "Invalid or missing CSRF token. Include an X-CSRF-Token header, \
-             or authenticate with an Authorization: Bearer token.",
-        );
+        {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "Invalid or missing CSRF token. Include an X-CSRF-Token header, a _token \
+                 field in a form-urlencoded body, or authenticate with an \
+                 Authorization: Bearer token.",
+            );
+        }
     }
 
     if body.len() > MAX_REQUEST_BODY {
@@ -294,6 +311,26 @@ async fn serve(
     }
     let Ok(body) = String::from_utf8(body.to_vec()) else {
         return error_response(StatusCode::BAD_REQUEST, "Request body is not valid UTF-8");
+    };
+
+    // A token for the plugin to embed in a form it serves.
+    //
+    // Accepting `_token` is only half of a no-JS form: the plugin also has to be
+    // able to *render* a valid token, and `tap_api` is a one-shot call with no
+    // way to ask for one. So the kernel mints it here, before dispatch, and the
+    // plugin writes it into a hidden input.
+    //
+    // Minted for a POST as well as a GET. Tokens are single-use, so a submission
+    // that fails the plugin's own validation has already spent the one it
+    // arrived with, and re-rendering the form needs a fresh one.
+    //
+    // Not minted for a bearer-authenticated caller: CSRF does not apply to it
+    // (see the module docs), it is an API client rather than a browser, and
+    // minting writes the session store on every request.
+    let csrf_token = if bearer.is_none() {
+        crate::form::csrf::generate_csrf_token(&session).await
+    } else {
+        String::new()
     };
 
     let mut request = ApiRequest::new(
@@ -306,6 +343,7 @@ async fn serve(
     request.params = params;
     request.query = query;
     request.body = body;
+    request.csrf_token = csrf_token;
 
     let Ok(payload) = serde_json::to_string(&request) else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
