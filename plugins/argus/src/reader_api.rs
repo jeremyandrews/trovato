@@ -83,9 +83,8 @@ fn react(request: &ApiRequest) -> ApiResponse {
         return ApiResponse::error(400, &format!("unknown reaction: {raw}"));
     };
 
-    let now = match crate::host_ports::host_now() {
-        Ok(now) => now,
-        Err(_) => return ApiResponse::error(500, "clock unavailable"),
+    let Ok(now) = crate::host_ports::host_now() else {
+        return ApiResponse::error(500, "clock unavailable");
     };
 
     match reader_ports::apply_reaction(&request.user_id, story, reaction, now) {
@@ -126,9 +125,8 @@ fn mark_read(request: &ApiRequest) -> ApiResponse {
         Ok(id) => id,
         Err(response) => return response,
     };
-    let now = match crate::host_ports::host_now() {
-        Ok(now) => now,
-        Err(_) => return ApiResponse::error(500, "clock unavailable"),
+    let Ok(now) = crate::host_ports::host_now() else {
+        return ApiResponse::error(500, "clock unavailable");
     };
 
     match reader_ports::record_view(&request.user_id, story, now) {
@@ -152,9 +150,8 @@ fn subscribe(request: &ApiRequest) -> ApiResponse {
         .and_then(|body| body.get("subscribed").and_then(serde_json::Value::as_bool))
         .unwrap_or(true);
 
-    let now = match crate::host_ports::host_now() {
-        Ok(now) => now,
-        Err(_) => return ApiResponse::error(500, "clock unavailable"),
+    let Ok(now) = crate::host_ports::host_now() else {
+        return ApiResponse::error(500, "clock unavailable");
     };
 
     match reader_ports::set_subscription(&request.user_id, topic, subscribed, now) {

@@ -50,7 +50,7 @@ Run the local check script, which mirrors CI:
 Or the steps by hand:
 
 1. `cargo fmt --all -- --check`
-2. `cargo clippy --all-targets -- -D warnings`
+2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --all --lib` (unit tests; no database or Redis needed)
 
 ### The local gate is stronger than CI

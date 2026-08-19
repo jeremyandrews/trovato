@@ -76,7 +76,11 @@ jobs:
       # top of this file address.
       - uses: Swatinem/rust-cache@v2
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        # --workspace, not the default members: every `plugins/*` crate is a
+        # workspace member and none of them was in default-members, so plugin
+        # code was unlinted by this job until 2026-08-19. Contributors write
+        # plugins; the lint has to reach them.
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   # THE LOCAL GATE IS STRICTLY STRONGER THAN THIS JOB. Read this before trusting
   # a green CI run as equivalent to a green local run.

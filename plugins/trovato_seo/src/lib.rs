@@ -105,7 +105,7 @@ pub fn tap_item_view(item: Item) -> String {
     html.push_str("\"speakable\":{");
     html.push_str("\"@type\":\"SpeakableSpecification\",");
     html.push_str("\"cssSelector\":[\".item-title\",\".item-description\"]");
-    html.push_str("}");
+    html.push('}');
     html.push_str("}</script>");
 
     // WebSite schema for landing pages (sitelinks search box support)
@@ -119,7 +119,7 @@ pub fn tap_item_view(item: Item) -> String {
         html.push_str("\"@type\":\"SearchAction\",");
         html.push_str("\"target\":\"/search?q={search_term_string}\",");
         html.push_str("\"query-input\":\"required name=search_term_string\"");
-        html.push_str("}");
+        html.push('}');
         html.push_str("}</script>");
     }
 

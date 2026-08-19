@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Clippy lints the plugin crates, which it had never done.
+
+  `cargo clippy --all-targets` runs over the workspace's *default* members, and no
+  `plugins/*` crate is one: the CI Clippy job, `scripts/pre-commit-check.sh`,
+  CONTRIBUTING.md and docs/coding-standards.md all named that command, so every line
+  of plugin code was unlinted while the documentation said the toolchain had been run
+  over it. Contributors write plugins, which makes that the wrong half of the tree to
+  skip. All five invocations now pass `--workspace`.
+
+  Turning it on found five errors, all mechanical: three `manual_let_else` in
+  `plugins/argus/src/reader_api.rs` and two `single_char_add_str` in
+  `plugins/trovato_seo/src/lib.rs`. Fixed here, so the gate goes green the first time
+  rather than landing a job that fails on arrival.
+
+  Found while gating the 0.99 parity work: a local `cargo clippy --workspace` failed
+  on crates CI had reported clean, which is the kind of disagreement between two gates
+  that is worth chasing rather than working around.
+
 - Book-style page trees: `trovato_book`, a standard plugin giving ordered hierarchy
   with previous/next/up navigation, the Drupal 6 book model.
 
