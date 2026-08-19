@@ -201,6 +201,7 @@ jobs:
             -p trovato_record_ref \
             -p trovato_spam \
             -p argus -p trovato_series -p test_plugin_api \
+            -p trovato_book \
             --target wasm32-wasip1 --release
           mkdir -p plugins/trovato_blog plugins/trovato_search \
             plugins/test_e2e_caller plugins/test_e2e_callee \
@@ -208,7 +209,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/trovato_record_ref plugins/trovato_spam plugins/argus plugins/trovato_series plugins/test_plugin_api
+            plugins/test_queue_worker plugins/trovato_record_ref plugins/trovato_spam plugins/argus plugins/trovato_series plugins/test_plugin_api plugins/trovato_book
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
           cp target/wasm32-wasip1/release/test_e2e_caller.wasm plugins/test_e2e_caller/
@@ -223,6 +224,7 @@ jobs:
           cp target/wasm32-wasip1/release/trovato_record_ref.wasm plugins/trovato_record_ref/
           cp target/wasm32-wasip1/release/trovato_spam.wasm plugins/trovato_spam/
           cp target/wasm32-wasip1/release/argus.wasm plugins/argus/
+          cp target/wasm32-wasip1/release/trovato_book.wasm plugins/trovato_book/
           cp target/wasm32-wasip1/release/trovato_series.wasm plugins/trovato_series/
           cp target/wasm32-wasip1/release/test_plugin_api.wasm plugins/test_plugin_api/
 
@@ -431,6 +433,7 @@ jobs:
             -p trovato_record_ref \
             -p trovato_spam \
             -p argus -p trovato_series -p test_plugin_api \
+            -p trovato_book \
             --target wasm32-wasip1 --release
           mkdir -p plugins/trovato_blog plugins/trovato_search \
             plugins/test_e2e_caller plugins/test_e2e_callee \
@@ -438,7 +441,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/trovato_record_ref plugins/trovato_spam plugins/argus plugins/trovato_series plugins/test_plugin_api
+            plugins/test_queue_worker plugins/trovato_record_ref plugins/trovato_spam plugins/argus plugins/trovato_series plugins/test_plugin_api plugins/trovato_book
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
           cp target/wasm32-wasip1/release/test_e2e_caller.wasm plugins/test_e2e_caller/
@@ -453,6 +456,7 @@ jobs:
           cp target/wasm32-wasip1/release/trovato_record_ref.wasm plugins/trovato_record_ref/
           cp target/wasm32-wasip1/release/trovato_spam.wasm plugins/trovato_spam/
           cp target/wasm32-wasip1/release/argus.wasm plugins/argus/
+          cp target/wasm32-wasip1/release/trovato_book.wasm plugins/trovato_book/
           cp target/wasm32-wasip1/release/trovato_series.wasm plugins/trovato_series/
           cp target/wasm32-wasip1/release/test_plugin_api.wasm plugins/test_plugin_api/
 

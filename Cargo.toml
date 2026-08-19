@@ -34,6 +34,9 @@ members = [
     "plugins/trovato_captcha",
     "plugins/test_plugin_api",
     "plugins/trovato_series",
+    # Book-style page trees: ordered hierarchy with prev/next/up navigation.
+    # Built with --target wasm32-wasip1 like the other plugin cdylibs.
+    "plugins/trovato_book",
     # Epic 2 (Story 2.4) plugin-to-plugin invocation e2e test fixtures. Built with
     # --target wasm32-wasip1 (like the other plugin cdylibs); not default-members.
     "plugins/test_e2e_caller",

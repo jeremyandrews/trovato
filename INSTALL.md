@@ -174,6 +174,7 @@ enough to write down in full, which is what the paragraph above is.
 | `trovato_locale` | Interface translation |
 | `trovato_content_translation` | Translatable content fields |
 | `trovato_config_translation` | Translatable configuration |
+| `trovato_book` | Ordered page trees with previous/next/up navigation |
 
 ### Specialized Plugins (separate install)
 

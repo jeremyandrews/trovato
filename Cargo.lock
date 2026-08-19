@@ -5390,6 +5390,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_book"
+version = "0.99.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_captcha"
 version = "0.99.0"
 dependencies = [

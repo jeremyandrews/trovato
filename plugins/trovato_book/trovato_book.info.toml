@@ -1,0 +1,33 @@
+name = "trovato_book"
+description = "Ordered hierarchical page trees with previous/next/up navigation"
+version = "0.99.0"
+api_version = "0.99"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_perm",
+    "tap_menu",
+    "tap_api",
+    "tap_item_view",
+]
+weight = 0
+
+[migrations]
+files = [
+    "migrations/001_create_book_page.sql",
+]
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel builds
+# this plugin's WASM linker from host_interfaces — it receives exactly the host
+# interfaces named here (plus baseline WASI). Derived from the compiled .wasm
+# import section.
+[capabilities]
+host_interfaces = ["db", "logging"]
+# Reads and writes `book_page`, and reads `item` to resolve titles and to check
+# that a page it is asked to place actually exists.
+db_tables = ["book_page", "item"]
+# Uses the raw-SQL host functions: the tree reads are recursive joins that the
+# structured item API cannot express.
+raw_sql = true
