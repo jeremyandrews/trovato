@@ -513,10 +513,10 @@ jobs:
     #
     # PRE-1.0 CAVEAT, READ THIS. While the project version is 0.x, Cargo's semver
     # rules treat a MINOR bump as sufficient for a breaking change, so this gate
-    # will NOT stop an SDK break that bumps 0.99 to 0.100. The plugin contract is
-    # frozen regardless; in the 0.99 series that freeze is policy, enforced by
-    # review rather than by this job. Do not break the SDK. The tooling starts
-    # backing the policy again at 1.0.0.
+    # will NOT stop an SDK break that bumps 0.100 to 0.101. The plugin contract is
+    # frozen regardless; before 1.0 that freeze is policy, enforced by review
+    # rather than by this job. Do not break the SDK. The tooling starts backing
+    # the policy again at 1.0.0.
     steps:
       - uses: actions/checkout@v5
         with:

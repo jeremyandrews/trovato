@@ -1,7 +1,7 @@
 name = "trovato_image_styles"
 description = "On-demand image derivative generation with configurable effects"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 dependencies = []
 
 [taps]

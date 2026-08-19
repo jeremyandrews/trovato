@@ -1,7 +1,7 @@
 name = "argus"
 description = "News intelligence: RSS/Atom ingest, relevance scoring, and story clustering"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 default_enabled = false
 dependencies = []
 

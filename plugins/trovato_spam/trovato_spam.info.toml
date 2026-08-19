@@ -1,7 +1,7 @@
 name = "trovato_spam"
 description = "AI comment moderation: classify a new comment and publish, hold, or mark it as spam"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 default_enabled = false
 dependencies = ["trovato_comments"]
 

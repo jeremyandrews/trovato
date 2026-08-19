@@ -40,15 +40,15 @@ pub use runtime::{CompiledPlugin, PluginConfig, PluginLoadError, PluginRuntime, 
 /// Increment MAJOR when host functions are removed or signatures change (breaking).
 ///
 /// **This tuple is not independent.** It is the project version with the patch
-/// component dropped: kernel `0.99.0` means API `(0, 99)`, and at `1.0.0` it
+/// component dropped: kernel `0.100.0` means API `(0, 100)`, and at `1.0.0` it
 /// becomes `(1, 0)`. There is one version for the whole project and everything
 /// moves together; see `docs/design/Versioning.md`.
 ///
 /// **The contract is frozen even though the number is pre-1.0.** The plugin
 /// boundary (the WIT surface, the SDK crate, the manifest semantics, the error
-/// vocabularies) was frozen before this release and does not change in the 0.99
-/// series. `cargo-semver-checks` guards the SDK crate in CI and the WIT is kept
-/// truthful by audit. Under Cargo's 0.x rules a break would be permitted by a
+/// vocabularies) was frozen before the first public release and does not change
+/// before 1.0. `cargo-semver-checks` guards the SDK crate in CI and the WIT is
+/// kept truthful by audit. Under Cargo's 0.x rules a break would be permitted by a
 /// MINOR bump, so the discipline is a policy rather than something the tooling
 /// can enforce on its own: do not break it. At `1.0.0` the tooling and the
 /// policy agree again, and a break requires a MAJOR bump.
@@ -60,4 +60,4 @@ pub use runtime::{CompiledPlugin, PluginConfig, PluginLoadError, PluginRuntime, 
 /// provenance check: nothing built against the pre-freeze API was ever
 /// released, so no such plugin exists in the wild. Build against the current
 /// SDK and declare the current `api_version`.
-pub const KERNEL_API_VERSION: (u32, u32) = (0, 99);
+pub const KERNEL_API_VERSION: (u32, u32) = (0, 100);

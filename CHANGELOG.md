@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## v0.100.0 — 2026-08-19
+
+Thirty-eight pull requests since the first public release. New in this one:
+two plugins (`trovato_book` for book-style page trees, `trovato_spam` for AI
+comment moderation), administration screens for menus and editorial stages,
+account self-deletion, self-service data export, RSS feeds served from gather
+queries, comments rendered on item pages, and a notice when a release or a
+security release exists.
+
+The plugin API moves to `(0, 100)` because this release adds features rather
+than only fixing things. The contract itself is unchanged, so a manifest still
+declaring `api_version = "0.99"` installs and runs: the compatibility rule is
+same major, minor at or below the kernel's.
+
+- The project version is 0.100.0 and the plugin API is `(0, 100)`, and
+  `docs/design/version-map.md` lists three more places that move with it.
+
+  Two of the three are prose: the "Trovato is at" opening line in `README.md`,
+  `ROADMAP.md`, `CONTRIBUTING.md` and `KNOWN-ISSUES.md`, and the doc comments that
+  use the current API tuple as their worked example. The third is not prose and
+  would have failed the suite. `api_compat_same_version_ok` and
+  `api_compat_newer_minor_rejected` in `info_parser.rs` name minors relative to the
+  kernel, so `"0.100"` had to move from the rejected case to the accepted one, with
+  `"0.101"` taking its place. Bumping the tuple without touching them would have
+  left a test asserting that the kernel's own API version requires a newer kernel.
+
+  The freeze language that was keyed to "the 0.99 series" now says "before 1.0",
+  which is what it always meant: the plugin boundary does not move before 1.0.
 
 - Clippy lints the plugin crates, which it had never done.
 
@@ -41,7 +68,7 @@
   three-level book by following the rendered `next` link and asserts it visits every
   page exactly once.
 
-  **Two things this plugin cannot do on the 0.99 contract**, reported rather than
+  **Two things this plugin cannot do on the 0.100 contract**, reported rather than
   worked around, because both are missing kernel seams and not plugin bugs:
 
   - **A fieldset on the item form.** The item form does not go through `FormService`,

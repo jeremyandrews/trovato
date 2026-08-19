@@ -1,7 +1,7 @@
 name = "trovato_recovery_ref"
 description = "FR-7c reference plugin: canonical tap_account_recovery (describe/initiate/verify) over the namespaced method_id trovato_recovery_ref:code"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 default_enabled = false
 dependencies = []
 

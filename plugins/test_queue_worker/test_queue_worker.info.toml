@@ -1,7 +1,7 @@
 name = "test_queue_worker"
 description = "P11d e2e fixture: plugin queue v2 (D-45..D-48)"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 default_enabled = false
 dependencies = []
 

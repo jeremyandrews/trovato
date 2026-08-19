@@ -1,7 +1,7 @@
 name = "trovato_media"
 description = "Media entity wrapping file_managed with revision tracking"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 dependencies = []
 
 [taps]

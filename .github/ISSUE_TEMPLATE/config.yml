@@ -5,4 +5,4 @@ contact_links:
     about: Report a vulnerability privately rather than opening a public issue.
   - name: Known issues and roadmap
     url: https://github.com/jeremyandrews/trovato/blob/main/KNOWN-ISSUES.md
-    about: What is already known to be outstanding in 0.99.0, before you file it.
+    about: What is already known to be outstanding in 0.100.0, before you file it.

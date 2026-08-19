@@ -1,6 +1,6 @@
 # Known issues
 
-What is outstanding in 0.99.0. This is the list that would otherwise be a
+What is outstanding in 0.100.0. This is the list that would otherwise be a
 surprise, so it is written down rather than discovered.
 
 Trovato was developed privately and is published as a pre-1.0 release for
@@ -230,16 +230,16 @@ which carries the reasoning.
 
 ### The frozen plugin contract is enforced by policy, not by tooling
 
-The plugin boundary is frozen and does not change through the 0.99 series. The
-`SDK Semver Gate` CI job runs `cargo-semver-checks` against it, but under
-SemVer's 0.x rules a breaking change is permitted by a minor bump, so the gate
-cannot fail one. Until 1.0.0 the freeze is held by review. See
+The plugin boundary is frozen and does not change before 1.0. The `SDK Semver
+Gate` CI job runs `cargo-semver-checks` against it, but under SemVer's 0.x rules
+a breaking change is permitted by a minor bump, so the gate cannot fail one.
+Until 1.0.0 the freeze is held by review. See
 [docs/design/Versioning.md](docs/design/Versioning.md).
 
 ### An old pre-freeze manifest passes the version check
 
 The compatibility rule is `major ==` and `minor <=`, so a manifest declaring an
-early `api_version` such as `"0.2"` is accepted by a kernel at `(0, 99)`.
+early `api_version` such as `"0.2"` is accepted by a kernel at `(0, 100)`.
 Nothing was ever released against the pre-freeze API, so no such plugin exists
 outside this repository's own history, but the check is a compatibility gate and
 not a provenance check, and it is worth knowing which of the two it is.

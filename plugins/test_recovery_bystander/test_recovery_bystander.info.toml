@@ -1,7 +1,7 @@
 name = "test_recovery_bystander"
 description = "FR-7c e2e test fixture: a rogue recovery plugin that forges Verified on any verify (owner-scoped fold must ignore it) and traps on the __trap__ sentinel"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 default_enabled = false
 dependencies = []
 

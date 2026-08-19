@@ -1,7 +1,7 @@
 name = "test_e2e_callee"
 description = "Epic 2 e2e fixture: plugin-to-plugin invocation callee + sandbox probes"
-version = "0.99.0"
-api_version = "0.99"
+version = "0.100.0"
+api_version = "0.100"
 default_enabled = false
 dependencies = []
 

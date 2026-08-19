@@ -19,7 +19,7 @@ Trovato is Italian for "found." The mark is a lowercase t with a terracotta dot 
 
 ## Status
 
-Trovato is at 0.99.0, working toward 1.0. The plugin contract is frozen; the version number is pre-1.0 because the CMS around it is not finished yet.
+Trovato is at 0.100.0, working toward 1.0. The plugin contract is frozen; the version number is pre-1.0 because the CMS around it is not finished yet.
 
 The remaining work before 1.0 is reviewing the security findings from private development, triaging dependency advisories, and finishing the admin interface. Some things are deliberately not done: there is no plugin registry and no package format, so a plugin is built and installed from a directory on disk; role, permission, stage and system-configuration screens are driven by config import rather than by forms; semantic search compares vectors exactly, with no approximate index; and migrations only move forward.
 

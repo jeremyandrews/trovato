@@ -26,7 +26,7 @@
 //! traverses the whole book exactly once. Ties break on title so the order is total:
 //! two siblings at the same weight must still have a defined "next".
 //!
-//! # What this plugin cannot do on the 0.99 contract
+//! # What this plugin cannot do on the 0.100 contract
 //!
 //! Two things the design would want, both blocked on kernel seams that do not exist.
 //! Recorded here rather than worked around, because a reader of this file is the
