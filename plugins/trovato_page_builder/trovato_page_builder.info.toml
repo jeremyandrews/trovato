@@ -1,7 +1,7 @@
 name = "trovato_page_builder"
 description = "Visual page composition with drag-and-drop editor (Puck) and server-side Tera rendering"
-version = "0.100.0"
-api_version = "0.100"
+version = "0.101.0"
+api_version = "0.101"
 default_enabled = false
 dependencies = []
 

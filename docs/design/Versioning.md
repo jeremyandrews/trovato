@@ -4,15 +4,15 @@ Trovato has **one version number**. The kernel, the SDK crates, every plugin,
 every plugin manifest, the plugin API tuple and the Docker tags all carry it,
 and they all move together.
 
-At 0.100.0 the plugin API is `(0, 100)` and every manifest declares
-`api_version = "0.100"`. At 1.0.0 the API becomes `(1, 0)` and every manifest
+At 0.101.0 the plugin API is `(0, 101)` and every manifest declares
+`api_version = "0.101"`. At 1.0.0 the API becomes `(1, 0)` and every manifest
 declares `"1.0"`. There is no case where one of these numbers moves and the
 others do not.
 
 This is a deliberate simplification. Earlier in development there were four
 independent tracks (a kernel version, a plugin API version, an SDK crate version
 and a plugin version) and keeping them straight cost more than the flexibility
-was worth. A reader who knows a site runs Trovato 0.100.0 now knows exactly which
+was worth. A reader who knows a site runs Trovato 0.101.0 now knows exactly which
 plugin API it serves and which SDK its plugins were built against.
 
 ## Where the number lives
@@ -21,7 +21,7 @@ The single source is `[workspace.package]` in the root `Cargo.toml`:
 
 ```toml
 [workspace.package]
-version = "0.100.0"
+version = "0.101.0"
 ```
 
 Every in-tree crate inherits it with `version.workspace = true`. No crate in the
@@ -39,7 +39,7 @@ The project version follows [Semantic Versioning 2.0.0](https://semver.org/):
 - **PATCH**: bug fixes, security fixes, performance improvements
 
 The plugin API tuple is the same version with the patch component dropped:
-`0.100.0` gives `(0, 100)`, declared as `KERNEL_API_VERSION` in
+`0.101.0` gives `(0, 101)`, declared as `KERNEL_API_VERSION` in
 `crates/kernel/src/plugin/mod.rs`.
 
 ## Compatibility rule
@@ -51,13 +51,13 @@ Plugin API MAJOR == Kernel API MAJOR
 Plugin API MINOR <= Kernel API MINOR
 ```
 
-With a kernel at API 0.100:
+With a kernel at API 0.101:
 
 | Plugin API | Compatible? | Reason |
 |------------|-------------|--------|
-| 0.100 | Yes | Exact match |
+| 0.101 | Yes | Exact match |
 | 0.42 | Yes | Same major, older minor: the kernel provides everything it asks for |
-| 0.101 | No | Needs host functions this kernel may not export |
+| 0.102 | No | Needs host functions this kernel may not export |
 | 1.0 | No | Major version mismatch |
 
 The check runs before any expensive work (WASM compilation, migrations) and
@@ -75,7 +75,7 @@ and does not change before 1.0.
 Read that alongside how SemVer treats 0.x versions, because the two do not line
 up. Under the 0.x rules a breaking change is permitted by a MINOR bump, so
 `cargo-semver-checks` in the `SDK Semver Gate` CI job **cannot** fail a break
-that moves 0.100 to 0.101. Before 1.0 the freeze is therefore policy, held by
+that moves 0.101 to 0.102. Before 1.0 the freeze is therefore policy, held by
 review, not by the tool. At 1.0.0 the tooling and the policy agree again, and a
 break requires a MAJOR bump plus a written justification.
 
@@ -89,8 +89,8 @@ Plugins declare both numbers in `.info.toml`:
 ```toml
 name = "my_plugin"
 description = "Example plugin"
-version = "0.100.0"
-api_version = "0.100"
+version = "0.101.0"
+api_version = "0.101"
 ```
 
 - `version` is the plugin's own version. In-tree plugins carry the project
@@ -115,7 +115,7 @@ Deprecation lasts at least one MINOR before removal.
 
 ## Docker images
 
-- **Release tags** (`v0.100.0`): multi-platform (amd64 + arm64), tagged with the
+- **Release tags** (`v0.101.0`): multi-platform (amd64 + arm64), tagged with the
   full version, with major.minor, and with `latest`
 - **Nightly builds** (every push to `main`): amd64 only, tagged `nightly`,
   `nightly-<sha>`, and an auto-incrementing version

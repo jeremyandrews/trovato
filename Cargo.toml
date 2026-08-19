@@ -87,7 +87,7 @@ default-members = [
 # it with `version.workspace = true`, and the plugin manifests, the plugin API
 # tuple (KERNEL_API_VERSION) and the Docker tags all move with it in lock-step.
 # See docs/design/Versioning.md and docs/design/version-map.md.
-version = "0.100.0"
+version = "0.101.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Jeremiah Andrews"]

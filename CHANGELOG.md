@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## v0.101.0 — 2026-08-19
+
+Three plugin surfaces, and the feature they were for. A visitor can reach a site
+owner through `/contact`, which is a plugin because kernel minimality puts a
+feature in one, and which could not have been written before this release.
+
+The plugin API moves to `(0, 101)`. A plugin declaring `api_version = "0.100"`
+still installs and runs, because the rule is same major and minor at or below the
+kernel's; a plugin that wants the `mail` interface must declare `"0.101"`, since a
+0.100 kernel does not export it.
+
+- The project version is 0.101.0 and the plugin API is `(0, 101)`.
+
+  `docs/design/version-map.md` item 10 earned its place a second time. A bulk
+  substitution of `0.100` to `0.101` set **both** API-compat tests to `"0.101"`,
+  which turns "a future minor is rejected" into a test asserting that the kernel's
+  own API version requires a newer kernel. The rejected case has to name one minor
+  *above* the current one, so it is `"0.102"`. That item exists because this is the
+  one place a version bump fails the suite rather than merely reading wrong, and it
+  caught the mistake as designed.
+
+  The manifest count in the table moves from 35 to 36 with `trovato_contact`.
 
 - A contact form: `trovato_contact`, a standard plugin serving `/contact`.
 
