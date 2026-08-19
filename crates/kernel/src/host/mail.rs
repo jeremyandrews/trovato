@@ -28,7 +28,8 @@
 //!
 //! # Delivery
 //!
-//! The send goes through the site's one [`EmailService`], so it uses the SMTP
+//! The send goes through the site's one
+//! [`EmailService`](crate::services::email::EmailService), so it uses the SMTP
 //! transport, the `from` address and — importantly — the **shared circuit
 //! breaker** the kernel's own mail uses. A plugin cannot configure its own
 //! delivery, and cannot keep hammering an SMTP host the kernel has already given
