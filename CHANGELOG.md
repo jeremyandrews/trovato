@@ -121,6 +121,39 @@
   `ENTITY_TYPE_ORDER` is now public, because it is not only an import ordering: it is
   the list of config entity types, and the audit walks it.
 
+- The committed `ritrovo_importer.wasm` is reproducible from public sources, and its
+  provenance header says so with a recipe that works.
+
+  This closes the gap the version sweep opened honestly. That sweep found the header
+  asserting a byte-for-byte reproducible build and citing "the contract-freeze commit
+  `9791c24`" as the pinned SDK revision — a commit in no published repository — and
+  replaced the claim with a statement of the gap. Ritrovo now builds against this
+  repository's SDK, so the artifact is rebuilt from that: Ritrovo `8e72d37`, SDK pinned
+  at this repository's `50c46ee`, sha256 `e3361482…`. The recipe in the header was run
+  from a fresh clone and produced the artifact byte for byte.
+
+  **What the refreshed artifact no longer demonstrates**, said plainly because the old
+  one demonstrated it by accident: it is built against the *current* SDK, so it is no
+  longer evidence that a plugin compiled against an *older* SDK still loads. The old
+  artifact was, and could not be rebuilt or audited by anyone — a freeze guarantee whose
+  subject is a black box is weak evidence, and this one becomes the older artifact
+  naturally as the kernel moves on, with provenance a reader can check. The
+  version-compatibility rule itself is covered by `info_parser.rs`'s own tests.
+
+  Two corrections to KNOWN-ISSUES.md while there, both found by running the real
+  install rather than by reading:
+
+  - It said the artifact "is checked in so the tutorial works without a second
+    repository". The directory holds the `.wasm` and **no manifest and no migrations**,
+    so the plugin loader skips it with `no .info.toml file found, skipping`. It cannot
+    make the tutorial work; it is the paired-consumer test's fixture.
+  - `docs/tutorial/part-02-ritrovo-importer.md` has been stale since Ritrovo moved to
+    its own repository: it tells the reader to read the plugin's source (not here), to
+    run `cargo build -p ritrovo_importer` (not a workspace member), and that its
+    manifest declares `default_enabled = true` (there is no manifest here, and the real
+    one says false). Recorded rather than fixed — rewriting that part is its own piece
+    of work, and guessing at it in a provenance change would be worse than naming it.
+
 - A person can delete their own account, and **deleting any account that ever
   wrote anything now works at all**.
 

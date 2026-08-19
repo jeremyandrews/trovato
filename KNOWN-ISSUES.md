@@ -85,24 +85,34 @@ discovered automatically.
 
 ### The committed reference plugin is a binary artifact
 
-`plugins/ritrovo_importer/ritrovo_importer.wasm` is checked in so the tutorial
-works without a second repository. A compiled binary in a source repository is
-something to resolve rather than keep, and this one cannot currently be rebuilt
-from published sources at all.
+`plugins/ritrovo_importer/ritrovo_importer.wasm` is a compiled binary in a source
+repository, which is something to resolve rather than keep. It is now at least
+**reproducible from public sources**, which it was not: the header of
+`crates/kernel/tests/ritrovo_paired_consumer_test.rs` records the sha256 (asserted by
+a test in that file), the Ritrovo commit it was built from, and the revision of *this*
+repository that commit pins its SDK at. The recipe there was run from a fresh clone
+and produced the artifact byte for byte.
 
-Its provenance is recorded in the header of
-`crates/kernel/tests/ritrovo_paired_consumer_test.rs`, which since the version
-sweep claims only what a reader can check: the sha256 (asserted by a test in
-that file, so the artifact cannot be swapped without the header going stale) and
-the Ritrovo commit it was compiled from, in the public
-[ritrovo](https://github.com/jeremyandrews/ritrovo) repository. What is missing
-is the SDK revision: at that Ritrovo commit the `trovato-sdk` dependency was
-pinned at a commit of the unpublished development repository, so there is no
-public revision to name and no rebuild recipe that would work. The header used
-to assert a byte-for-byte reproducible build and cite that commit as if a reader
-could resolve it; they cannot. Re-pointing Ritrovo's SDK dependency at this
-repository and refreshing the artifact from that build is what makes the
-reproducibility claim true, and is the next step here.
+Two corrections to what this entry used to say. It claimed the artifact "is checked in
+so the tutorial works without a second repository", and that is not true in either
+half: the directory holds the `.wasm` and **no `.info.toml` and no migrations**, so the
+plugin loader skips it —
+
+```
+WARN trovato::plugin::runtime: no .info.toml file found, skipping
+     dir=…/trovato/plugins/ritrovo_importer
+```
+
+— and `docs/tutorial/part-02-ritrovo-importer.md` has been stale since Ritrovo moved to
+its own repository. It tells the reader to read the plugin's source (not here), to run
+`cargo build -p ritrovo_importer` (not a workspace member), and that the manifest
+declares `default_enabled = true` (there is no manifest here, and the real one says
+false). Rewriting that tutorial part is its own piece of work.
+
+What the artifact is actually for is the paired-consumer test: a real external plugin,
+built from public sources against the published SDK, loading on this kernel and running
+through the plugin-queue drain. That is worth having. Whether it is worth having as a
+committed binary, rather than fetched from a Ritrovo release, is the open question.
 
 ### Languages are configuration import only, on purpose
 
