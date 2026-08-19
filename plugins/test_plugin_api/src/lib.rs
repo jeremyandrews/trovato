@@ -7,11 +7,12 @@
 //! routes, gates them on a permission, and **writes a plugin-owned table** from
 //! an authenticated reader's request, which is the thing that was impossible.
 //!
-//! Deliberately minimal: no business logic, one table, three callbacks.
+//! Deliberately minimal: no business logic, one table, and one callback per
+//! surface it exercises.
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
-use trovato_sdk::types::{ApiRequest, ApiResponse, MenuRoute};
+use trovato_sdk::types::{ApiRequest, ApiResponse, MailAttachment, MenuRoute};
 
 /// Permission required to write a note. Anonymous callers do not hold it.
 const PERM_WRITE: &str = "write test notes";
@@ -46,6 +47,10 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         // and anonymous on purpose — that is the case a contact form is.
         MenuRoute::api("GET", "/tpa/form", "show_form").title("A form"),
         MenuRoute::api("POST", "/tpa/form", "submit_form").title("Submit the form"),
+        // Sends to the site's contact address through the `mail` host interface.
+        // Public, because the shape being exercised is a contact form: a visitor
+        // with no account reaching the site owner.
+        MenuRoute::api("POST", "/tpa/mail", "send_mail").title("Send mail"),
         // A page entry, to prove the kernel routes only `api` entries here.
         MenuRoute::page("/tpa/page", "Not an API"),
     ]
@@ -59,6 +64,7 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "list_notes" => list_notes(&request),
         "show_form" => show_form(&request),
         "submit_form" => submit_form(&request),
+        "send_mail" => send_mail(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
 }
@@ -95,6 +101,28 @@ fn submit_form(request: &ApiRequest) -> ApiResponse {
         message = escape_html(&message),
     );
     ApiResponse::with_status(200, body).content_type("text/html; charset=utf-8")
+}
+
+/// Send the submitted message to the site's contact address.
+///
+/// The plugin names no recipient: `mail_send_to_site_contacts` sends to the
+/// address the site configured, which is what stops this being a relay. On
+/// refusal the host error code is reported rather than swallowed, so the test can
+/// tell "not configured" from "sent".
+fn send_mail(request: &ApiRequest) -> ApiResponse {
+    let subject = form_field(&request.body, "subject").unwrap_or_default();
+    let body = form_field(&request.body, "body").unwrap_or_default();
+    let attachments = if form_field(&request.body, "attach").as_deref() == Some("1") {
+        vec![MailAttachment::text("message.txt", body.clone())]
+    } else {
+        Vec::new()
+    };
+
+    match host::mail_send_to_site_contacts(&subject, &body, &attachments) {
+        Ok(()) => ApiResponse::with_status(200, r#"{"sent":true}"#),
+        Err(code) => ApiResponse::json(&serde_json::json!({"sent": false, "code": code}))
+            .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed")),
+    }
 }
 
 /// Read one field out of a URL-encoded body.
@@ -208,10 +236,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_four_api_routes_with_callbacks() {
+    fn the_menu_declares_five_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 4);
+        assert_eq!(api.len(), 5);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()

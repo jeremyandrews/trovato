@@ -670,7 +670,35 @@ impl AppState {
         // production tap dispatch — including the `variables::set` flush — operate
         // on the same instance.
         let field_access_cache = std::sync::Arc::new(crate::tap::new_field_access_cache());
-        let tap_services = RequestServices::for_request(
+
+        // Initialize email service (conditionally, when SMTP_HOST is set).
+        //
+        // Built here, before the tap services template, because the `mail` host
+        // interface is served from that template: a plugin sending mail uses this
+        // same service, and therefore the same SMTP transport, `from` address and
+        // circuit breaker the kernel's own mail uses.
+        let email = config.smtp_host.as_ref().and_then(|host| {
+            match services::email::EmailService::new(
+                host,
+                config.smtp_port,
+                config.smtp_username.as_deref(),
+                config.smtp_password.as_deref(),
+                &config.smtp_encryption,
+                config.smtp_from_email.clone(),
+                config.site_url.clone(),
+            ) {
+                Ok(svc) => {
+                    info!(host = %host, port = config.smtp_port, "SMTP email service configured");
+                    Some(Arc::new(svc))
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to initialize email service");
+                    None
+                }
+            }
+        });
+
+        let mut tap_services = RequestServices::for_request(
             db.clone(),
             Some(cache.clone()),
             Some(ai_providers.clone()),
@@ -681,6 +709,10 @@ impl AppState {
         // (FR-4a). Cloned into item/user/comment services below, so they inherit it.
         .with_plugin_runtime(plugin_runtime.clone())
         .with_field_access_cache(field_access_cache);
+        if let Some(ref email) = email {
+            tap_services = tap_services.with_email(email.clone());
+        }
+        let tap_services = tap_services;
 
         // Create item service (needs tap_services for presave/insert/update taps;
         // ai_providers + vector_store drive kernel embedding regeneration on
@@ -758,28 +790,6 @@ impl AppState {
             Arc::new(AcceptLanguageNegotiator::new(known_languages.clone())),
         ];
         language_negotiators.sort_by_key(|n| std::cmp::Reverse(n.priority()));
-
-        // Initialize email service (conditionally, when SMTP_HOST is set)
-        let email = config.smtp_host.as_ref().and_then(|host| {
-            match services::email::EmailService::new(
-                host,
-                config.smtp_port,
-                config.smtp_username.as_deref(),
-                config.smtp_password.as_deref(),
-                &config.smtp_encryption,
-                config.smtp_from_email.clone(),
-                config.site_url.clone(),
-            ) {
-                Ok(svc) => {
-                    info!(host = %host, port = config.smtp_port, "SMTP email service configured");
-                    Some(Arc::new(svc))
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to initialize email service");
-                    None
-                }
-            }
-        });
 
         // The kernel-internal security audit stream. Always present: an audit
         // trail that is only sometimes written is not an audit trail.

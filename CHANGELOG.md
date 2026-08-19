@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+- A plugin can send email, to the site's own address and nowhere else.
+
+  The first of the three plugin surfaces KNOWN-ISSUES.md described. The kernel has
+  had SMTP, templates and a circuit breaker in `services/email.rs` since before the
+  freeze, with no seam onto it: a plugin that needed to notify somebody posted to a
+  webhook over `http`, which is not email.
+
+  **The recipient is not a parameter.** A host function that sends to an address
+  the caller supplies is a spam relay wearing a CMS, and what it puts at risk is
+  the site's mail reputation and its SMTP credentials rather than the plugin's own
+  data. `send-to-site-contacts(subject, body, attachments)` sends to the address
+  the site configured (`site_mail`) and nowhere else: enough for a visitor to reach
+  the site owner, which is the case a CMS needs a plugin to cover, and useless for
+  reaching strangers. That is also why the interface is not called `send`.
+
+  Delivery goes through the site's own `EmailService`, so a plugin's mail shares
+  the kernel's SMTP transport, `from` address and — the part that matters
+  operationally — its **circuit breaker**. A plugin cannot configure its own
+  delivery and cannot keep hammering a host the kernel has already given up on.
+  `RequestServices` gained an `email` handle for this, attached to the one
+  `AppState` template, so every plugin shares that breaker rather than getting one
+  each.
+
+  Refused, each with its own error code so a plugin can tell the cases apart: no
+  SMTP host configured (`ERR_MAIL_NOT_CONFIGURED`), no `site_mail` configured
+  (`ERR_MAIL_NO_RECIPIENT` — the `from` address is a transport identity, not a
+  contact address, so it is not a fallback), an empty subject or body, **a control
+  character in the subject or an attachment's content type**, which is header
+  injection and would be the way to smuggle a `Bcc` past the missing recipient
+  parameter, an attachment filename carrying a quote or a path separator, more than
+  5 attachments, and more than 1 MB of attachment bytes totalled across them rather
+  than checked one at a time. An oversized attachment is refused on its encoded
+  length, before the kernel allocates its decoded size.
+
+  `EmailService::send_with_attachments` builds a `multipart/mixed` around the text
+  part, and delegates to the existing `send` when there are none, so a caller does
+  not branch on whether it has any. Attachment bytes cross the WASM boundary
+  base64-encoded, because the payload is JSON; the SDK encodes them from plain
+  `Vec<u8>` with a hand-written encoder pinned to RFC 4648's own test vectors,
+  rather than adding a fifth dependency to the crate compiled into every plugin.
+
+  **The test sends real mail over a real socket.** `plugin_mail_test.rs` runs a
+  throwaway SMTP server on a loopback port and reads the conversation: the
+  recipient the kernel chose, the `From` header, the body, and the MIME parts
+  lettre built. The alternative was a capture mode on `EmailService`, which means
+  test-only behaviour inside production code on the path that sends mail to real
+  people. Nothing changed shape to be testable.
+
+  What this does **not** do: bound how often a plugin calls it. A plugin-served
+  POST already falls into the `forms` rate-limit bucket per IP, which covers the
+  web-facing case; a plugin calling from a cron tap is unbounded, and is recorded
+  in KNOWN-ISSUES.md rather than half-gated.
+
 - A plugin can serve a form that works with JavaScript switched off.
 
   This was the second of the three plugin surfaces KNOWN-ISSUES.md described, and

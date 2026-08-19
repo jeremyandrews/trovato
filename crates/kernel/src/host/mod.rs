@@ -10,6 +10,7 @@ mod db;
 pub(crate) mod http;
 mod item;
 mod logging;
+mod mail;
 mod plugin_api;
 mod queue;
 mod request_context;
@@ -28,6 +29,7 @@ pub use db::register_db_functions;
 pub use http::register_http_functions;
 pub use item::register_item_functions;
 pub use logging::register_logging_functions;
+pub use mail::register_mail_functions;
 pub use plugin_api::register_plugin_api_functions;
 /// Kernel-internal queue producer (P11f / D-52): enqueue a job the kernel owns
 /// under a reserved `plugin_name`, reusing the P11d insert path. Not a
@@ -66,13 +68,14 @@ pub const HOST_INTERFACE_REGISTRARS: &[(&str, HostInterfaceRegistrar)] = &[
     ("http", register_http_functions),
     ("crypto-api", register_crypto_functions),
     ("plugin-api", register_plugin_api_functions),
+    ("mail", register_mail_functions),
 ];
 
 /// Register every known host interface with the linker.
 ///
 /// Iterates [`HOST_INTERFACE_REGISTRARS`] so the map remains the single source
 /// of truth. Behaviour is unchanged from the previous straight-line call list:
-/// all 12 interfaces are registered. The per-plugin linker uses
+/// all 13 interfaces are registered. The per-plugin linker uses
 /// [`register_declared`] instead to expose only a declared subset (WASM-1).
 pub fn register_all(linker: &mut Linker<PluginState>) -> Result<()> {
     for (_iface, register) in HOST_INTERFACE_REGISTRARS {
