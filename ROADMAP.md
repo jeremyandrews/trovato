@@ -70,6 +70,27 @@ EU with open registration made GDPR articles 15 and 17 unanswerable, and which D
 rather than destroying it; KNOWN-ISSUES.md records the one invariant that had to be
 narrowed to make it possible at all.
 
+### A contact form, and the three plugin surfaces it needed
+
+**Done.** A visitor can reach the site owner: `plugins/trovato_contact` serves
+`/contact`, and it is a plugin because kernel minimality puts a feature in one.
+
+It could not be written before, and the three reasons were all missing kernel
+seams rather than plugin problems. A plugin could not send email, so the `mail`
+host interface was added — narrow by construction, sending only to the site's own
+configured address, because a host function that takes a recipient from its caller
+is a spam relay. A plugin could not serve a form that worked without JavaScript, so
+plugin-served posts now accept a `_token` field alongside the `X-CSRF-Token` header
+and the kernel hands the plugin a token to embed; a form also posts back to its own
+URL, which the menu registry could not represent until it stopped being keyed by
+path alone. And a plugin could not render into the site theme, so a response can
+now ask to be wrapped in the site's page template.
+
+Two narrower things stayed undone and are in KNOWN-ISSUES.md rather than pretended
+away: `tap_theme` and `tap_preprocess_item` are still declared and not dispatched,
+each for a stated reason, and a plugin's outgoing mail is rate-limited only on the
+web-facing path.
+
 ### Test isolation
 
 A few tests use fixed usernames and assert exact row counts without cleaning up,

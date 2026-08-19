@@ -5435,6 +5435,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_contact"
+version = "0.100.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_content_locking"
 version = "0.100.0"
 dependencies = [

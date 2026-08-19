@@ -226,6 +226,38 @@ covered rather than silently exempted. See
 `crates/kernel/migrations/20260819000001_allow_revision_author_anonymization.sql`,
 which carries the reasoning.
 
+### The two theme taps are declared and not dispatched
+
+`tap_theme` and `tap_preprocess_item` are in the WIT and nothing dispatches them.
+Each needs a decision first, and neither is what a plugin-served page uses to reach
+the theme — that is the `theme` field on the `tap_api` response, added at 0.101 and
+used by `plugins/trovato_contact`.
+
+`tap_theme` is `() -> string` and nothing consumes what it would return. In Drupal
+the equivalent registers templates, which needs template discovery and override
+resolution the kernel does not have.
+
+`tap_preprocess_item` would let a plugin alter an item's render context, and the
+open question is which keys it may overwrite. `csrf_token`, `user_is_admin` and
+`content` are in that context, so "anything" is wrong; `breadcrumbs` is exactly
+what a plugin would legitimately want to change, so a blanket deny-list is wrong
+too. `crates/kernel/tests/plugin_surfaces_test.rs` pins the current state, so this
+entry cannot drift out of date without a test failing.
+
+### A plugin's outgoing mail is not rate-limited
+
+The `mail` host interface refuses to send anywhere except the site's own contact
+address, so it cannot be used to reach strangers. It does not bound how *often* a
+plugin sends.
+
+The web-facing case is covered: a plugin-served POST falls into the `forms`
+rate-limit bucket per client IP like any other form post, so a contact form cannot
+flood the site owner faster than that bucket allows. A plugin sending from a cron
+tap or a queue worker is bounded by nothing, and could fill the owner's mailbox. A
+plugin is code the site owner installed, and one that declared `http` can already
+post anywhere, so this is a trust boundary rather than a hole — but it is worth
+knowing which of the two it is.
+
 ## Contract and versioning
 
 ### The frozen plugin contract is enforced by policy, not by tooling

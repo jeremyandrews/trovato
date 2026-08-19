@@ -17,6 +17,8 @@
 
 #![allow(dead_code)]
 
+pub mod smtp_sink;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, header};
@@ -722,11 +724,14 @@ pub fn extract_cookies(response: &Response) -> String {
         .join("; ")
 }
 
-/// Derive a deterministic fake IP from a username.
+/// Derive a deterministic fake IP from a username, or from any other key.
 ///
-/// Each test user gets a unique IP in the 10.x.x.x range so that parallel
-/// tests never share a rate-limit bucket.
-fn test_ip_for(username: &str) -> String {
+/// Each test user gets a unique IP in the 10.x.x.x range so that parallel tests
+/// never share a rate-limit bucket. `TestApp::login` uses it for the `login`
+/// bucket; a test that makes several requests of its own should use it for those
+/// too, or they all land in the shared `127.0.0.1` bucket, which is 100 requests
+/// a minute for the whole suite.
+pub fn test_ip_for(username: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     username.hash(&mut hasher);
