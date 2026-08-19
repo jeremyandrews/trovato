@@ -382,10 +382,15 @@ async fn menu_links(state: &AppState, menu_name: &str) -> Result<Vec<MenuLink>, 
 }
 
 /// Plugin-registered navigation, sorted for a deterministic listing.
+///
+/// One row per path (`by_path`) rather than one per registration (`all`): a path
+/// a plugin serves for both `GET` and `POST` is one page in a listing that has no
+/// method column, and showing it twice would read as a duplicate rather than as
+/// a form.
 fn plugin_entries(state: &AppState) -> Vec<PluginEntry> {
     let mut entries: Vec<PluginEntry> = state
         .menu_registry()
-        .all()
+        .by_path()
         .map(|menu| PluginEntry {
             path: menu.path.clone(),
             title: menu.title.clone(),

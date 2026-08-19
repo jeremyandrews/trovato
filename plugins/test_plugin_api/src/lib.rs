@@ -40,6 +40,12 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         // Public on purpose: the kernel must gate on what the entry says, not
         // on whether an entry exists.
         MenuRoute::api("GET", "/tpa/notes", "list_notes").title("List notes"),
+        // A form that works with JavaScript switched off, which needs both
+        // halves of the 0.101 surface: a token the plugin can render, and a
+        // `_token` field the kernel will accept in place of a header. Public
+        // and anonymous on purpose — that is the case a contact form is.
+        MenuRoute::api("GET", "/tpa/form", "show_form").title("A form"),
+        MenuRoute::api("POST", "/tpa/form", "submit_form").title("Submit the form"),
         // A page entry, to prove the kernel routes only `api` entries here.
         MenuRoute::page("/tpa/page", "Not an API"),
     ]
@@ -51,8 +57,87 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
     match request.callback.as_str() {
         "write_note" => write_note(&request),
         "list_notes" => list_notes(&request),
+        "show_form" => show_form(&request),
+        "submit_form" => submit_form(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
+}
+
+/// Serve an HTML form carrying the kernel-minted token in a hidden `_token`.
+///
+/// No JavaScript, no header: a `<form method="post">` cannot set one, which is
+/// the reason [`ApiRequest::csrf_token`] exists.
+fn show_form(request: &ApiRequest) -> ApiResponse {
+    let body = format!(
+        r#"<!DOCTYPE html>
+<html><body>
+<form method="post" action="/tpa/form">
+<input type="hidden" name="_token" value="{token}">
+<textarea name="message"></textarea>
+<button type="submit">Send</button>
+</form>
+</body></html>"#,
+        token = escape_html(&request.csrf_token),
+    );
+    ApiResponse::with_status(200, body).content_type("text/html; charset=utf-8")
+}
+
+/// Accept the form, having been let through by the kernel's CSRF check.
+///
+/// Reaching this function at all is the assertion: a state-changing
+/// plugin-served request with no `X-CSRF-Token` header is refused with 403
+/// unless the `_token` field verified.
+fn submit_form(request: &ApiRequest) -> ApiResponse {
+    let message = form_field(&request.body, "message").unwrap_or_default();
+    let body = format!(
+        r#"<!DOCTYPE html>
+<html><body><p>received: {message}</p></body></html>"#,
+        message = escape_html(&message),
+    );
+    ApiResponse::with_status(200, body).content_type("text/html; charset=utf-8")
+}
+
+/// Read one field out of a URL-encoded body.
+///
+/// Hand-rolled because a plugin is a `no_std`-adjacent wasm crate with a
+/// deliberately thin dependency list, and this fixture needs one field.
+fn form_field(body: &str, field: &str) -> Option<String> {
+    body.split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == field)
+        .map(|(_, value)| percent_decode(&value.replace('+', " ")))
+}
+
+/// Percent-decode a form value, leaving an invalid escape as written.
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Escape text for an HTML body or a double-quoted attribute.
+///
+/// The kernel does not sanitize a plugin's response body, which is the contract
+/// every view tap has, so the plugin does it.
+fn escape_html(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }
 
 /// Write a note owned by the authenticated caller — the write that had no
@@ -123,10 +208,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_two_api_routes_with_callbacks() {
+    fn the_menu_declares_four_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 2);
+        assert_eq!(api.len(), 4);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()
@@ -159,5 +244,68 @@ mod tests {
             true,
         );
         assert_eq!(__inner_tap_api(request).status, 400);
+    }
+
+    #[test]
+    fn the_form_carries_the_kernel_minted_token_in_a_token_field() {
+        let mut request = ApiRequest::new("show_form", "GET", "/tpa/form", "", false);
+        request.csrf_token = "deadbeef".to_string();
+
+        let response = __inner_tap_api(request);
+
+        assert_eq!(response.status, 200);
+        assert!(response.content_type.starts_with("text/html"));
+        assert!(
+            response
+                .body
+                .contains(r#"<input type="hidden" name="_token" value="deadbeef">"#),
+            "the form must carry the token the kernel minted: {}",
+            response.body
+        );
+    }
+
+    #[test]
+    fn a_token_carrying_markup_is_escaped_into_the_attribute() {
+        let mut request = ApiRequest::new("show_form", "GET", "/tpa/form", "", false);
+        request.csrf_token = r#"a"><script>"#.to_string();
+
+        let body = __inner_tap_api(request).body;
+
+        assert!(!body.contains("<script>"), "unescaped markup: {body}");
+        assert!(body.contains("&quot;&gt;&lt;script&gt;"), "{body}");
+    }
+
+    #[test]
+    fn the_submission_reads_its_field_out_of_a_form_encoded_body() {
+        let mut request = ApiRequest::new("submit_form", "POST", "/tpa/form", "", false);
+        request.body = "_token=abc&message=hello+there%21".to_string();
+
+        let response = __inner_tap_api(request);
+
+        assert_eq!(response.status, 200);
+        assert!(
+            response.body.contains("received: hello there!"),
+            "the body must decode `+` and `%xx`: {}",
+            response.body
+        );
+    }
+
+    #[test]
+    fn a_submitted_message_carrying_markup_is_escaped() {
+        let mut request = ApiRequest::new("submit_form", "POST", "/tpa/form", "", false);
+        request.body = "message=%3Cimg+onerror%3Dx%3E".to_string();
+
+        let body = __inner_tap_api(request).body;
+
+        assert!(!body.contains("<img"), "unescaped markup: {body}");
+        assert!(body.contains("&lt;img onerror=x&gt;"), "{body}");
+    }
+
+    #[test]
+    fn a_missing_field_is_none_rather_than_a_panic() {
+        assert_eq!(form_field("message=hi", "_token"), None);
+        assert_eq!(form_field("", "message"), None);
+        // A pair with no `=` is skipped rather than read as an empty value.
+        assert_eq!(form_field("message", "message"), None);
     }
 }

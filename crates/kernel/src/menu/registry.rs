@@ -72,7 +72,16 @@ pub struct RouteMatch {
 /// Registry of all menu definitions from plugins.
 #[derive(Debug)]
 pub struct MenuRegistry {
-    /// All menu definitions, indexed by path
+    /// Every registration, in the order the plugins declared them.
+    ///
+    /// Routing needs all of them, and [`MenuRegistry::menus`] cannot hold them:
+    /// it is keyed by path, so `GET /contact` and `POST /contact` are one key
+    /// and the second registration used to overwrite the first. That pair is
+    /// exactly what a form posting back to its own URL is, so a plugin serving
+    /// one silently lost either the page or the submit handler, whichever it
+    /// declared first.
+    registrations: Vec<MenuDefinition>,
+    /// One menu definition per path, for navigation and page lookup
     menus: HashMap<String, MenuDefinition>,
     /// Menus organized by parent for tree building
     children: HashMap<String, Vec<String>>,
@@ -84,6 +93,7 @@ impl MenuRegistry {
     /// Create an empty menu registry.
     pub fn new() -> Self {
         Self {
+            registrations: Vec::new(),
             menus: HashMap::new(),
             children: HashMap::new(),
             routes: Vec::new(),
@@ -119,18 +129,32 @@ impl MenuRegistry {
     }
 
     /// Register a menu definition.
+    ///
+    /// Every registration is kept for routing. The path-keyed index keeps one
+    /// per path, preferring `GET`: navigation, the menu tree and page lookup are
+    /// all asking a `GET` question, so a `POST` entry must not displace the
+    /// page it submits to.
     pub fn register(&mut self, menu: MenuDefinition) {
         let path = menu.path.clone();
 
-        // Track parent-child relationships
+        // Track parent-child relationships, once per path however many methods
+        // that path serves.
         if let Some(ref parent) = menu.parent {
-            self.children
-                .entry(parent.clone())
-                .or_default()
-                .push(path.clone());
+            let siblings = self.children.entry(parent.clone()).or_default();
+            if !siblings.contains(&path) {
+                siblings.push(path.clone());
+            }
         }
 
-        self.menus.insert(path, menu);
+        let displaced = match self.menus.get(&path) {
+            None => true,
+            Some(existing) => is_get(&menu) || !is_get(existing),
+        };
+        if displaced {
+            self.menus.insert(path, menu.clone());
+        }
+
+        self.registrations.push(menu);
     }
 
     /// Build route patterns for path matching.
@@ -176,8 +200,19 @@ impl MenuRegistry {
         self.menus.get(path)
     }
 
-    /// Get all menus.
+    /// Get every registration, including two methods on one path.
+    ///
+    /// This is what the routers are built from, so it has to be every one: a
+    /// path served by both `GET` and `POST` is two routes.
     pub fn all(&self) -> impl Iterator<Item = &MenuDefinition> {
+        self.registrations.iter()
+    }
+
+    /// Get one menu per path, which is what navigation and listings want.
+    ///
+    /// Where a path is registered for several methods this yields the `GET`
+    /// entry, so a listing shows the page rather than its submit handler.
+    pub fn by_path(&self) -> impl Iterator<Item = &MenuDefinition> {
         self.menus.values()
     }
 
@@ -243,15 +278,21 @@ impl MenuRegistry {
         tasks
     }
 
-    /// Get menu count.
+    /// Get the number of registrations, counting each method on a path.
     pub fn len(&self) -> usize {
-        self.menus.len()
+        self.registrations.len()
     }
 
     /// Check if registry is empty.
     pub fn is_empty(&self) -> bool {
-        self.menus.is_empty()
+        self.registrations.is_empty()
     }
+}
+
+/// Whether an entry serves `GET`, which is the method navigation and page
+/// lookup are asking about. An entry that declares no method defaults to `GET`.
+fn is_get(menu: &MenuDefinition) -> bool {
+    menu.method.eq_ignore_ascii_case("GET")
 }
 
 impl Default for MenuRegistry {
@@ -344,6 +385,92 @@ mod tests {
 
         assert_eq!(registry.len(), 2);
         assert!(registry.get("/admin/blog").is_some());
+    }
+
+    /// A form posts back to the URL it was served from, so one path carries two
+    /// methods. Keying only by path lost one of them, which is what this pins.
+    #[test]
+    fn one_path_can_be_registered_for_two_methods() {
+        let json = r#"[
+            {"path": "/contact", "title": "Contact", "method": "GET",
+             "handler_type": "api", "callback": "show"},
+            {"path": "/contact", "title": "Contact", "method": "POST",
+             "handler_type": "api", "callback": "submit"}
+        ]"#;
+
+        let registry =
+            MenuRegistry::from_tap_results(vec![("contact".to_string(), json.to_string())]);
+
+        // Both survive, which is what the routers are built from.
+        let callbacks: Vec<&str> = registry.all().map(|m| m.callback.as_str()).collect();
+        assert!(callbacks.contains(&"show"), "{callbacks:?}");
+        assert!(callbacks.contains(&"submit"), "{callbacks:?}");
+        assert_eq!(registry.len(), 2);
+
+        // And the path-keyed view keeps the GET one, so navigation and listings
+        // show the page rather than its submit handler.
+        assert_eq!(registry.by_path().count(), 1);
+        assert_eq!(
+            registry.get("/contact").map(|m| m.method.as_str()),
+            Some("GET")
+        );
+    }
+
+    /// Declaration order must not decide which method the page-facing index
+    /// keeps, so the same pair the other way round gives the same answer.
+    #[test]
+    fn a_post_declared_first_does_not_displace_the_get() {
+        let json = r#"[
+            {"path": "/contact", "title": "Contact", "method": "POST",
+             "handler_type": "api", "callback": "submit"},
+            {"path": "/contact", "title": "Contact", "method": "GET",
+             "handler_type": "api", "callback": "show"}
+        ]"#;
+
+        let registry =
+            MenuRegistry::from_tap_results(vec![("contact".to_string(), json.to_string())]);
+
+        assert_eq!(registry.len(), 2);
+        assert_eq!(
+            registry.get("/contact").map(|m| m.callback.as_str()),
+            Some("show")
+        );
+    }
+
+    /// A path registered twice for the same method is still last-wins in the
+    /// path-keyed index, which is what it was before any of this.
+    #[test]
+    fn a_repeated_method_on_one_path_is_still_last_wins_per_path() {
+        let json = r#"[
+            {"path": "/x", "title": "First", "handler_type": "api", "callback": "first"},
+            {"path": "/x", "title": "Second", "handler_type": "api", "callback": "second"}
+        ]"#;
+
+        let registry = MenuRegistry::from_tap_results(vec![("x".to_string(), json.to_string())]);
+
+        assert_eq!(
+            registry.get("/x").map(|m| m.callback.as_str()),
+            Some("second")
+        );
+        // Both are still handed to the router, which refuses the duplicate
+        // itself with a warning rather than letting axum panic on it.
+        assert_eq!(registry.all().count(), 2);
+    }
+
+    /// A parent lists a child path once however many methods that path serves.
+    #[test]
+    fn a_child_path_is_listed_once_per_path_not_once_per_method() {
+        let json = r#"[
+            {"path": "/parent", "title": "Parent"},
+            {"path": "/parent/form", "title": "Form", "parent": "/parent", "method": "GET",
+             "handler_type": "api", "callback": "show"},
+            {"path": "/parent/form", "title": "Form", "parent": "/parent", "method": "POST",
+             "handler_type": "api", "callback": "submit"}
+        ]"#;
+
+        let registry = MenuRegistry::from_tap_results(vec![("p".to_string(), json.to_string())]);
+
+        assert_eq!(registry.children_of("/parent").len(), 1);
     }
 
     #[test]
