@@ -39,7 +39,9 @@ run_check() {
 
 # --- Always run: format + clippy (matches CI: Format + Clippy jobs) ---
 run_check "Format check" cargo fmt --all -- --check
-run_check "Clippy" cargo clippy --all-features --all-targets -- -D warnings
+# --workspace so the plugin crates are linted too; they are workspace members
+# that were not in default-members, so a plain `cargo clippy` skipped them.
+run_check "Clippy" cargo clippy --workspace --all-features --all-targets -- -D warnings
 
 if [[ "$MODE" == "quick" ]]; then
     if [[ "$FAILED" -eq 0 ]]; then

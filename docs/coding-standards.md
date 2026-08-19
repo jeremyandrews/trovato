@@ -4,7 +4,7 @@
 
 New to the codebase? Follow these five rules and you'll be fine:
 
-1. **Run the toolchain before committing:** `cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --all`
+1. **Run the toolchain before committing:** `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --all`
 2. **Use Trovato terminology:** "category" not "taxonomy", "item" not "node", "tap" not "hook", "plugin" not "module", "gather" not "views", "tile" not "block"
 3. **Never `.unwrap()` in production code.** Use `.expect("reason")` or propagate errors with `?`.
 4. **Reuse shared helpers.** Check `crate::routes::helpers` before writing HTML escaping, CSRF verification, error rendering, or login checks.
@@ -97,8 +97,8 @@ fn messy_function() { ... }
 ### Running Clippy
 
 ```sh
-cargo clippy --all-targets                # Development (warnings)
-cargo clippy --all-targets -- -D warnings # CI (deny all warnings)
+cargo clippy --workspace --all-targets                # Development (warnings)
+cargo clippy --workspace --all-targets -- -D warnings # CI (deny all warnings)
 ```
 
 ---

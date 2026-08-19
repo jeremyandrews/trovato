@@ -48,7 +48,7 @@ docker compose exec dev bash
 # Inside the container — full Rust toolchain available:
 cargo build --release --bin trovato
 cargo test --all
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Run the server (accessible at http://localhost:3000 from your host)
 cargo run --release --bin trovato
