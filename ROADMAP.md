@@ -1,6 +1,6 @@
 # Roadmap
 
-Trovato is at 0.100.0. This page says what stands between that and 1.0, and what
+Trovato is at 0.101.0. This page says what stands between that and 1.0, and what
 comes after. [KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more
 detail; this one is about order and intent.
 

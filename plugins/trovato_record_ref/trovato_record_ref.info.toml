@@ -1,7 +1,7 @@
 name = "trovato_record_ref"
 description = "P11g reference plugin: a lightweight-record type (event_record) exercised through real gather + the real FR-8 tap_field_access seam"
-version = "0.100.0"
-api_version = "0.100"
+version = "0.101.0"
+api_version = "0.101"
 default_enabled = false
 dependencies = []
 

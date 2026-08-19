@@ -1,6 +1,6 @@
 # Known issues
 
-What is outstanding in 0.100.0. This is the list that would otherwise be a
+What is outstanding in 0.101.0. This is the list that would otherwise be a
 surprise, so it is written down rather than discovered.
 
 Trovato was developed privately and is published as a pre-1.0 release for
@@ -271,7 +271,7 @@ Until 1.0.0 the freeze is held by review. See
 ### An old pre-freeze manifest passes the version check
 
 The compatibility rule is `major ==` and `minor <=`, so a manifest declaring an
-early `api_version` such as `"0.2"` is accepted by a kernel at `(0, 100)`.
+early `api_version` such as `"0.2"` is accepted by a kernel at `(0, 101)`.
 Nothing was ever released against the pre-freeze API, so no such plugin exists
 outside this repository's own history, but the check is a compatibility gate and
 not a provenance check, and it is worth knowing which of the two it is.

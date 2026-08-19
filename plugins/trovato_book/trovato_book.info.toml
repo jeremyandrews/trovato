@@ -1,7 +1,7 @@
 name = "trovato_book"
 description = "Ordered hierarchical page trees with previous/next/up navigation"
-version = "0.100.0"
-api_version = "0.100"
+version = "0.101.0"
+api_version = "0.101"
 default_enabled = false
 dependencies = []
 

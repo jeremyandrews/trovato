@@ -4,7 +4,7 @@ Every place the project version appears, and what it has to say. Trovato has one
 version number (see [Versioning.md](Versioning.md)); this is the list of things
 that have to move when it changes.
 
-Current version: **0.100.0**, plugin API **(0, 100)**.
+Current version: **0.101.0**, plugin API **(0, 101)**.
 
 ## Derived automatically (nothing to do)
 
@@ -21,20 +21,20 @@ listed so nobody "fixes" them by hardcoding a number.
 
 ## Changed by hand on every version bump
 
-| # | Location | Field | At 0.100.0 |
+| # | Location | Field | At 0.101.0 |
 |---|---|---|---|
-| 1 | `Cargo.toml` | `[workspace.package] version` | `"0.100.0"` |
-| 2 | `crates/kernel/src/plugin/mod.rs` | `KERNEL_API_VERSION` | `(0, 100)` |
-| 3 | `crates/kernel/src/plugin/info_parser.rs` | `default_api_version()` | `"0.100"` |
-| 4 | `plugins/**/*.info.toml` (35 files) | `version` | `"0.100.0"` |
-| 5 | `plugins/**/*.info.toml` (35 files) | `api_version` | `"0.100"` |
-| 6 | `.github/workflows/docker-publish.yml` | `BASE_VERSION` | `"0.100"` |
-| 7 | `CHANGELOG.md` | new release section | `## v0.100.0` |
-| 8 | `docs/design/Versioning.md` | worked examples | `0.100.0` / `(0, 100)` |
-| 9 | this file | the "current version" line and the table | `0.100.0` |
-| 10 | `crates/kernel/src/plugin/info_parser.rs` | the two API-compat tests | `"0.100"` accepted, `"0.101"` rejected |
-| 11 | `README.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `KNOWN-ISSUES.md`, `.github/ISSUE_TEMPLATE/config.yml` | prose naming the current release | `0.100.0` |
-| 12 | `crates/kernel/src/plugin/mod.rs`, `crates/kernel/src/plugin/info_parser.rs`, `.github/workflows/ci.yml`, `plugins/trovato_book/src/lib.rs` | comments naming the current API or contract | `0.100` / `(0, 100)` |
+| 1 | `Cargo.toml` | `[workspace.package] version` | `"0.101.0"` |
+| 2 | `crates/kernel/src/plugin/mod.rs` | `KERNEL_API_VERSION` | `(0, 101)` |
+| 3 | `crates/kernel/src/plugin/info_parser.rs` | `default_api_version()` | `"0.101"` |
+| 4 | `plugins/**/*.info.toml` (36 files) | `version` | `"0.101.0"` |
+| 5 | `plugins/**/*.info.toml` (36 files) | `api_version` | `"0.101"` |
+| 6 | `.github/workflows/docker-publish.yml` | `BASE_VERSION` | `"0.101"` |
+| 7 | `CHANGELOG.md` | new release section | `## v0.101.0` |
+| 8 | `docs/design/Versioning.md` | worked examples | `0.101.0` / `(0, 101)` |
+| 9 | this file | the "current version" line and the table | `0.101.0` |
+| 10 | `crates/kernel/src/plugin/info_parser.rs` | the two API-compat tests | `"0.101"` accepted, `"0.102"` rejected |
+| 11 | `README.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `KNOWN-ISSUES.md`, `.github/ISSUE_TEMPLATE/config.yml` | prose naming the current release | `0.101.0` |
+| 12 | `crates/kernel/src/plugin/mod.rs`, `crates/kernel/src/plugin/info_parser.rs`, `.github/workflows/ci.yml`, `plugins/trovato_book/src/lib.rs` | comments naming the current API or contract | `0.101` / `(0, 101)` |
 
 Items 2 and 3 must agree with item 1: the API tuple is the project version with
 the patch component dropped. Items 4 and 5 are mechanical across every manifest.
@@ -58,10 +58,10 @@ leaving them stale is how a reader ends up believing the wrong number.
 ## Checking the work
 
 The useful grep after a bump looks for the version that was left behind, not the
-new one. Substitute the previous version; at 0.100.0 that was 0.99:
+new one. Substitute the previous version; at 0.101.0 that was 0.100:
 
 ```sh
-grep -rn '0\.99\|(0, 99)' --include='*.rs' --include='*.toml' --include='*.md' \
+grep -rn '0\.100\|(0, 100)' --include='*.rs' --include='*.toml' --include='*.md' \
   --include='*.yml' --include='*.wit' . | grep -v Cargo.lock | grep -v './target/'
 ```
 
@@ -74,8 +74,8 @@ The direct check is to build and ask:
 
 ```sh
 cargo build --release
-./target/release/trovato --version          # 0.100.0
-grep '^version' Cargo.toml                  # 0.100.0
+./target/release/trovato --version          # 0.101.0
+grep '^version' Cargo.toml                  # 0.101.0
 grep -rh '^api_version' plugins --include='*.info.toml' | sort -u   # one line
 grep -rh '^version' plugins --include='*.info.toml' | sort -u       # one line
 ```

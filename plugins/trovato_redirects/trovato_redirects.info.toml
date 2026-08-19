@@ -1,7 +1,7 @@
 name = "trovato_redirects"
 description = "URL redirect management with automatic alias-change tracking"
-version = "0.100.0"
-api_version = "0.100"
+version = "0.101.0"
+api_version = "0.101"
 dependencies = []
 
 [taps]
