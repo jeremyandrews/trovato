@@ -4683,6 +4683,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_assistant_scope"
+version = "0.101.0"
+dependencies = [
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_e2e_bystander"
 version = "0.101.0"
 dependencies = [

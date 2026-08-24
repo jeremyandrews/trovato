@@ -1,0 +1,16 @@
+[package]
+name = "test_assistant_scope"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "0.102 e2e fixture: a plugin configurable by conversation through the three tap_assistant_* taps"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde_json = { workspace = true }

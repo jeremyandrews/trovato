@@ -338,7 +338,16 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_account_recovery",
     // AI governance
     "tap_ai_request",
+    // Superseded by the three assistant taps below, which are dispatched.
+    // `tap_chat_actions` never was; it stays declared so no manifest that names
+    // it stops loading.
     "tap_chat_actions",
+    // AI Assistant (added in KERNEL_API_VERSION (0,102)): a plugin declares what
+    // can be configured by conversation, describes the thing being configured,
+    // and answers the model's tool calls.
+    "tap_assistant_scopes",
+    "tap_assistant_context",
+    "tap_assistant_tool",
     // NOTE: tap_csp_alter removed pre-1.0 (PF-4.1) — zero dispatch + an
     // inferred signature; re-add post-1.0 from a real CSP call site.
     // Comments
