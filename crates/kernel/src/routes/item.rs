@@ -745,6 +745,15 @@ async fn view_item(
     );
     context.insert("page_meta", &page_meta);
 
+    // The AI Assistant's launcher, for every scope that names this item's type.
+    //
+    // The kernel adds it rather than the plugin, because a plugin's `tap_item_view`
+    // output is appended to the body and a plugin cannot know whether the viewer
+    // may open the conversation. The partial renders nothing when the assistant
+    // is off; `inject_site_context` above already put that flag in the context.
+    let launchers = render_item_launchers(&state, &context, &item.item_type, id);
+    let item_html = format!("{launchers}{item_html}");
+
     // The comment thread, under the item. Empty when comments are disabled.
     let comments_html = super::comment::render_thread(
         &state,
@@ -763,6 +772,58 @@ async fn view_item(
         .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{item_html}</body></html>"));
 
     Ok(Html(page_html))
+}
+
+/// Render the assistant launcher for every scope that applies to this item type.
+///
+/// Returns an empty string when no scope claims the type, which is the common
+/// case: the launcher is opt-in per content type, declared by the plugin that
+/// owns the scope.
+fn render_item_launchers(
+    state: &AppState,
+    page_context: &tera::Context,
+    item_type: &str,
+    item_id: Uuid,
+) -> String {
+    let scopes = state.assistant_scopes().scopes_for_item_type(item_type);
+    if scopes.is_empty() {
+        return String::new();
+    }
+
+    let mut html = String::new();
+    for registered in scopes {
+        let mut context = tera::Context::new();
+        context.insert(
+            "assistant_enabled",
+            &page_context
+                .get("assistant_enabled")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+        );
+        // Only what the viewer may open: `assistant_scopes` is already filtered
+        // to this viewer's permissions.
+        let permitted = page_context
+            .get("assistant_scopes")
+            .and_then(|value| value.as_object())
+            .is_some_and(|scopes| scopes.contains_key(&registered.scope.name));
+        if !permitted {
+            continue;
+        }
+        context.insert("scope", &registered.scope.name);
+        context.insert("scope_id", &item_id.to_string());
+        context.insert(
+            "assistant_label",
+            &format!("Configure with AI: {}", registered.scope.label),
+        );
+        if let Ok(rendered) = state
+            .theme()
+            .tera()
+            .render("assistant/launcher.html", &context)
+        {
+            html.push_str(rendered.trim());
+        }
+    }
+    html
 }
 
 /// Display add item form.

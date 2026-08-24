@@ -957,6 +957,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_ai_budget::router())
         // AI Chat configuration
         .merge(super::admin_ai_chat::router())
+        // The assistant, beside the other AI screens it shares a provider with.
+        .merge(super::admin_ai_assistant::router())
         // Site configuration
         .merge(super::admin_config::router())
         // Plugin-queue dead-letter admin (P11d / D-46)

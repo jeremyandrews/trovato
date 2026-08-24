@@ -1,0 +1,12 @@
+{# The launcher: one link into a conversation about the thing on this page.
+
+   Included by the kernel on an item whose type a scope names, and by a plugin's
+   own template with a literal scope. Renders nothing at all unless the assistant
+   is enabled, so a site that has not turned it on never advertises it.
+
+   Set `scope` and, when the scope takes one, `scope_id` before including. #}
+{% if assistant_enabled %}
+<a class="assistant-launch" href="/ai/assistant/{{ scope }}{% if scope_id %}/{{ scope_id }}{% endif %}">
+    {% if assistant_label %}{{ assistant_label }}{% else %}Configure with AI{% endif %}
+</a>
+{% endif %}

@@ -6,6 +6,7 @@
 //! corresponding plugin is enabled.
 
 pub mod account_access;
+pub mod ai_assistant;
 pub mod ai_chat;
 pub mod ai_provider;
 pub mod ai_token_budget;

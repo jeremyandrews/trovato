@@ -1,0 +1,126 @@
+{# The assistant conversation, rendered server side.
+   This is the inner template: the route renders it to a string and hands the
+   result to the theme's page template, so a site can override the surrounding
+   page as page--ai--assistant.html without touching this.
+
+   Everything here except Send works with JavaScript switched off. The proposal
+   cards and Start over are plain forms carrying a _token field; static/js/
+   assistant.js upgrades them to fetch calls and streams a turn as it happens. #}
+<link rel="stylesheet" href="/static/css/assistant.css">
+
+<div class="assistant" data-conversation-id="{{ conversation_id }}" data-csrf-token="{{ csrf_token }}">
+
+    <header class="assistant__header">
+        <h1 class="assistant__title">{{ title }}</h1>
+        {% if scope_description %}
+        <p class="assistant__description">{{ scope_description }}</p>
+        {% endif %}
+        {% if links %}
+        <nav class="assistant__links" aria-label="Related">
+            {% for link in links %}
+            <a class="assistant__link" href="{{ link.url }}">{{ link.label }}</a>
+            {% endfor %}
+        </nav>
+        {% endif %}
+    </header>
+
+    {% if read_only %}
+    <p class="assistant__notice" role="status">{{ read_only_reason }} Start over to keep going.</p>
+    {% endif %}
+
+    <ol class="assistant__transcript" id="assistant-transcript">
+        {% for entry in entries %}
+
+        {% if entry.kind == "user" %}
+        <li class="assistant-entry assistant-entry--user">
+            <span class="assistant-entry__who">You</span>
+            <div class="assistant-entry__text">{{ entry.text }}</div>
+        </li>
+
+        {% elif entry.kind == "assistant" %}
+        <li class="assistant-entry assistant-entry--assistant">
+            <span class="assistant-entry__who">Assistant</span>
+            <div class="assistant-entry__text">{{ entry.text }}</div>
+        </li>
+
+        {% elif entry.kind == "tool_call" %}
+        {# The call itself is not shown: the result one-liner below names the
+           tool, and showing both says the same thing twice. #}
+
+        {% elif entry.kind == "tool_result" %}
+        <li class="assistant-entry assistant-entry--tool{% if not entry.ok %} assistant-entry--tool-failed{% endif %}">
+            <code class="assistant-entry__tool">{{ entry.tool }}</code>
+            <span class="assistant-entry__summary">{% if entry.summary %}{{ entry.summary }}{% else %}{{ entry.content | truncate(length=160) }}{% endif %}</span>
+        </li>
+
+        {% elif entry.kind == "proposal" %}
+        <li class="assistant-entry assistant-entry--proposal">
+            <div class="assistant-proposal assistant-proposal--{{ entry.risk }} assistant-proposal--{{ entry.status | default(value='proposed') }}"
+                 id="proposal-{{ entry.proposal_id }}">
+                <p class="assistant-proposal__description">{{ entry.description }}</p>
+                <p class="assistant-proposal__meta">
+                    <code>{{ entry.tool }}</code>
+                    <span class="assistant-proposal__risk">{{ entry.risk }} risk</span>
+                    <span class="assistant-proposal__status">{{ entry.status | default(value="proposed") }}</span>
+                </p>
+                {% if entry.result %}
+                <p class="assistant-proposal__result">{{ entry.result }}</p>
+                {% endif %}
+                {% if entry.status is not defined or entry.status == "proposed" %}
+                <div class="assistant-proposal__actions">
+                    <form method="post"
+                          action="/api/v1/assistant/{{ conversation_id }}/proposals/{{ entry.proposal_id }}/apply">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="button button--primary">Apply</button>
+                    </form>
+                    <form method="post"
+                          action="/api/v1/assistant/{{ conversation_id }}/proposals/{{ entry.proposal_id }}/discard">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="button">Discard</button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+        </li>
+
+        {% elif entry.kind == "note" %}
+        <li class="assistant-entry assistant-entry--note">{{ entry.text }}</li>
+        {% endif %}
+
+        {% endfor %}
+    </ol>
+
+    {% if suggestions and message_count == 0 %}
+    <div class="assistant__suggestions">
+        {% for suggestion in suggestions %}
+        <button type="button" class="assistant__suggestion" data-suggestion="{{ suggestion }}">{{ suggestion }}</button>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not read_only %}
+    <form class="assistant__composer" id="assistant-composer"
+          method="post" action="/api/v1/assistant/{{ conversation_id }}/message">
+        <label class="assistant__composer-label" for="assistant-message">Message</label>
+        <textarea id="assistant-message" name="message" rows="3"
+                  maxlength="{{ max_message_chars }}"
+                  placeholder="Ask a question, or say what you want changed."></textarea>
+        <button type="submit" class="button button--primary">Send</button>
+        <p class="assistant__composer-help">
+            Sending needs JavaScript. Everything else on this page works without it.
+        </p>
+    </form>
+    {% endif %}
+
+    <footer class="assistant__footer">
+        <p class="assistant__usage">
+            {{ message_count }} of {{ max_messages }} messages, {{ tokens_used }} of {{ max_tokens }} tokens.
+        </p>
+        <form method="post" action="/api/v1/assistant/{{ conversation_id }}/reset">
+            <input type="hidden" name="_token" value="{{ csrf_token }}">
+            <button type="submit" class="button assistant__reset">Start over</button>
+        </form>
+    </footer>
+</div>
+
+<script src="/static/js/assistant.js"></script>

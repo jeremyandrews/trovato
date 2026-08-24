@@ -1758,6 +1758,60 @@ pub fn no_parameters() -> serde_json::Value {
     serde_json::json!({"type": "object", "properties": {}})
 }
 
+impl AssistantContextRequest {
+    /// Build a context request. The kernel constructs these; a plugin receives
+    /// them.
+    pub fn new(
+        scope: impl Into<String>,
+        scope_id: Option<String>,
+        user_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            scope: scope.into(),
+            scope_id,
+            user_id: user_id.into(),
+        }
+    }
+}
+
+impl AssistantToolCall {
+    /// Build a tool call. The kernel constructs these; a plugin receives them.
+    pub fn new(
+        scope: impl Into<String>,
+        scope_id: Option<String>,
+        tool: impl Into<String>,
+        arguments: serde_json::Value,
+        mode: AssistantToolMode,
+        user_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            scope: scope.into(),
+            scope_id,
+            tool: tool.into(),
+            arguments,
+            mode,
+            user_id: user_id.into(),
+            proposal_id: None,
+        }
+    }
+
+    /// Attach the proposal this call belongs to.
+    pub fn proposal(mut self, proposal_id: impl Into<String>) -> Self {
+        self.proposal_id = Some(proposal_id.into());
+        self
+    }
+}
+
+impl AssistantLink {
+    /// Build a link for the conversation header.
+    pub fn new(label: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            url: url.into(),
+        }
+    }
+}
+
 impl AssistantContext {
     /// A context with a title and a snapshot and no links.
     pub fn new(title: impl Into<String>, snapshot: impl Into<String>) -> Self {
@@ -1770,10 +1824,7 @@ impl AssistantContext {
 
     /// Add a link to the conversation header.
     pub fn link(mut self, label: impl Into<String>, url: impl Into<String>) -> Self {
-        self.links.push(AssistantLink {
-            label: label.into(),
-            url: url.into(),
-        });
+        self.links.push(AssistantLink::new(label, url));
         self
     }
 }

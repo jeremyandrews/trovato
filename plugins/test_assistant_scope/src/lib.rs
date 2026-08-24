@@ -61,6 +61,22 @@ pub fn tap_assistant_scopes() -> Vec<AssistantScope> {
                 "fail_loudly",
                 "Always fails, on purpose.",
             )),
+        // An item scope, so the kernel's automatic launcher on an item page has
+        // something to attach to. `conference` is a content type the kernel's
+        // own test fixture seeds, so this needs no other plugin enabled.
+        AssistantScope::new(
+            "test_conference",
+            "Test conference",
+            PERM,
+            AssistantIdKind::Item,
+        )
+        .description("Configure a conference")
+        .item_types(["conference"])
+        .prompt("You configure a conference.")
+        .tool(AssistantTool::read(
+            "read_widget",
+            "Read the widget's current colour.",
+        )),
         // Invalid on purpose: a tool name with a space in it. The registry must
         // drop this scope, keep the one above, and record why.
         AssistantScope::new(
@@ -79,6 +95,13 @@ pub fn tap_assistant_scopes() -> Vec<AssistantScope> {
 pub fn tap_assistant_context(request: AssistantContextRequest) -> AssistantContext {
     let id = request.scope_id.unwrap_or_default();
     let color = current_color();
+    if request.scope == "test_conference" {
+        return AssistantContext::new(
+            format!("Conference {id}"),
+            format!("Conference {id} exists. The widget colour is {color}."),
+        )
+        .link("View conference", format!("/item/{id}"));
+    }
     AssistantContext::new(
         format!("Widget {id}"),
         format!("Widget {id} has color {color}."),
