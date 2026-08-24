@@ -817,6 +817,10 @@ fn a_text_only_turn_lands_in_the_transcript_and_the_usage_log() {
         let app = app();
         let _guard = SITE_LOCK.lock().await;
         set_config(app, base_config()).await;
+        // The widget colour is one site-wide variable every test in this file
+        // shares, and the snapshot asserted below names it. Clearing it here is
+        // what makes this test say the same thing whatever ran before it.
+        clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
         recorder.push(says("The widget is unset."));
 
