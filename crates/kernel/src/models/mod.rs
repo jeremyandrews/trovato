@@ -1,6 +1,7 @@
 //! Database models.
 
 pub mod api_token;
+pub mod assistant;
 pub mod category;
 pub mod comment;
 pub mod email_verification;
@@ -19,6 +20,10 @@ pub mod url_alias;
 pub mod user;
 pub mod webauthn_credential;
 
+pub use assistant::{
+    Conversation, PROPOSAL_APPLIED, PROPOSAL_DISCARDED, PROPOSAL_FAILED, PROPOSAL_PROPOSED,
+    Proposal, STATUS_CLOSED, STATUS_OPEN, TranscriptEntry,
+};
 pub use category::{
     Category, CreateCategory, CreateTag, Tag, TagHierarchy, TagTreeNode, TagWithDepth,
     UpdateCategory, UpdateTag,

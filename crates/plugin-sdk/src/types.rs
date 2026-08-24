@@ -1445,6 +1445,369 @@ pub enum AiRequestDecision {
     Deny(String),
 }
 
+// =============================================================================
+// AI Assistant (`tap_assistant_*`) — added in KERNEL_API_VERSION (0,102)
+// =============================================================================
+
+/// One thing a person can configure by conversation.
+///
+/// A plugin returns its scopes from `tap_assistant_scopes`, which the kernel
+/// dispatches once at boot into its assistant registry. A scope names the
+/// permission that opens it, the domain prompt the model is given, and the tools
+/// the model may call; everything the assistant can see or change in that domain
+/// is what the scope declares, and nothing else.
+///
+/// The registry validates every scope and **drops an invalid one with a warning
+/// rather than failing boot**: `name` and every tool name must match
+/// `[a-z0-9_]+`, `name` must be unique across all plugins, a scope carries at
+/// most 32 tools and 6 suggestions, and `prompt` is at most 8 KiB.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AssistantScope {
+    /// Machine name, `[a-z0-9_]+`, unique across every plugin. Appears in the
+    /// conversation URL, so it is part of the plugin's public surface.
+    pub name: String,
+    /// Human-readable label, shown in the admin listing and the launcher.
+    pub label: String,
+    /// One sentence saying what this scope configures.
+    pub description: String,
+    /// Permission required to open a conversation. An administrator passes
+    /// regardless; everyone else needs this **and** `use ai` **and**
+    /// `use ai assistant`.
+    pub permission: String,
+    /// What the `{scope_id}` path segment means for this scope.
+    pub id_kind: AssistantIdKind,
+    /// For [`AssistantIdKind::Item`] scopes, the content types this scope
+    /// applies to. The kernel renders the launcher on an item of one of these
+    /// types, and refuses a `scope_id` naming an item of any other type.
+    #[serde(default)]
+    pub item_types: Vec<String>,
+    /// The stock domain prompt, plain text. A site may override it per scope
+    /// from the assistant admin page; this is what it starts as.
+    pub prompt: String,
+    /// Starter questions offered as chips on an empty conversation. At most 6.
+    #[serde(default)]
+    pub suggestions: Vec<String>,
+    /// The tools the model may call inside this scope.
+    #[serde(default)]
+    pub tools: Vec<AssistantTool>,
+}
+
+/// What the `{scope_id}` path segment of a conversation URL means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantIdKind {
+    /// A Trovato item id. The kernel checks the item exists and that its type is
+    /// in [`AssistantScope::item_types`] before opening a conversation, and adds
+    /// the launcher to that item's page.
+    Item,
+    /// Any non-empty opaque string, at most 128 bytes. The plugin decides what
+    /// it means.
+    String,
+    /// The scope is site-wide and takes no id. A `scope_id` in the path is a 404.
+    None,
+}
+
+/// One tool the model may call inside a scope.
+///
+/// A [`AssistantToolKind::Read`] tool is executed as soon as the model calls it.
+/// A [`AssistantToolKind::Write`] tool is **never** executed by the model: the
+/// kernel calls it in [`AssistantToolMode::Describe`] to get a description,
+/// records a proposal, and only executes it when the person applies it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AssistantTool {
+    /// Tool name, `[a-z0-9_]+`, unique within the scope. This is the name the
+    /// model calls.
+    pub name: String,
+    /// What the tool does, written for the model to read.
+    pub description: String,
+    /// A JSON Schema object describing the arguments. Use
+    /// `{"type":"object","properties":{}}` for a tool that takes none. The
+    /// kernel checks required keys are present and that declared property types
+    /// match before dispatching; it does not validate more deeply than that.
+    pub parameters: serde_json::Value,
+    /// Whether calling this tool changes anything.
+    pub kind: AssistantToolKind,
+    /// How much a person should think before applying this. Ignored for
+    /// [`AssistantToolKind::Read`].
+    pub risk: AssistantRisk,
+}
+
+/// Whether a tool reads or writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolKind {
+    /// Executed immediately when the model calls it; changes nothing.
+    Read,
+    /// Never executed by the model. Becomes a proposal the person applies.
+    Write,
+}
+
+/// How much care applying a write deserves. Rendered on the proposal card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantRisk {
+    /// Trivially reversible: a label, a note, a flag.
+    Low,
+    /// The ordinary case.
+    Normal,
+    /// Destructive or hard to undo. Rendered distinctly.
+    High,
+}
+
+/// Input to `tap_assistant_context`: the kernel asking a plugin to describe the
+/// thing being configured, when a conversation opens or is reset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AssistantContextRequest {
+    /// The scope name.
+    pub scope: String,
+    /// The scope id, when the scope takes one.
+    #[serde(default)]
+    pub scope_id: Option<String>,
+    /// The person the conversation belongs to.
+    pub user_id: String,
+}
+
+/// A link shown in the conversation header, so a person can reach the thing
+/// they are talking about.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AssistantLink {
+    /// Link text.
+    pub label: String,
+    /// Destination, usually a site-relative path.
+    pub url: String,
+}
+
+/// What a plugin says about the thing being configured.
+///
+/// The `snapshot` is the model's whole view of the domain at the time the
+/// conversation opened: write it as plain labelled text, current and complete
+/// enough that most questions need no tool call. The kernel truncates it at a
+/// line boundary to the site's configured cap and appends `[snapshot truncated]`,
+/// which is the second fence; the first is the 64 KiB tap output buffer, which
+/// the plugin must stay under itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AssistantContext {
+    /// Page title for the conversation.
+    pub title: String,
+    /// Plain-text description of the current state, for the model.
+    pub snapshot: String,
+    /// Links shown to the person in the header.
+    #[serde(default)]
+    pub links: Vec<AssistantLink>,
+}
+
+/// Whether the kernel wants a description of a write or wants it carried out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolMode {
+    /// Describe what this call would do, and **change nothing**. The kernel
+    /// sends this when the model proposes a write; the summary becomes the text
+    /// on the proposal card the person reads.
+    Describe,
+    /// Carry the call out. Sent for a read tool the model called, and for a
+    /// write tool only after the person applied its proposal.
+    Execute,
+}
+
+/// Input to `tap_assistant_tool`: one tool call to describe or to carry out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AssistantToolCall {
+    /// The scope the conversation is in.
+    pub scope: String,
+    /// The scope id, when the scope takes one.
+    #[serde(default)]
+    pub scope_id: Option<String>,
+    /// The tool name. Always one the scope declared: the kernel never dispatches
+    /// a name it does not know.
+    pub tool: String,
+    /// The arguments, already checked against the tool's schema for required
+    /// keys and declared property types.
+    pub arguments: serde_json::Value,
+    /// Describe or execute.
+    pub mode: AssistantToolMode,
+    /// The person the conversation belongs to. The tap also runs with that
+    /// person's real permissions, so `current_user_has_permission` is the check
+    /// to make.
+    pub user_id: String,
+    /// The proposal this call belongs to, set on both the `Describe` that
+    /// creates a proposal and the `Execute` that applies it.
+    #[serde(default)]
+    pub proposal_id: Option<String>,
+}
+
+/// What a tool call produced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AssistantToolResult {
+    /// Whether the call succeeded. `false` puts `content` in front of the model
+    /// as an error and leaves everything unchanged.
+    pub ok: bool,
+    /// What the model reads. The kernel truncates it to the site's configured
+    /// cap and appends `[result truncated]`.
+    pub content: String,
+    /// One sentence the **person** reads in the transcript. A `Describe` must
+    /// set it: it is the proposal card's description.
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+impl AssistantScope {
+    /// A scope with no tools and no suggestions, to be filled in with the
+    /// builders below.
+    pub fn new(
+        name: impl Into<String>,
+        label: impl Into<String>,
+        permission: impl Into<String>,
+        id_kind: AssistantIdKind,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            label: label.into(),
+            description: String::new(),
+            permission: permission.into(),
+            id_kind,
+            item_types: Vec::new(),
+            prompt: String::new(),
+            suggestions: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    /// Set the one-sentence description.
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set the content types an [`AssistantIdKind::Item`] scope applies to.
+    pub fn item_types<S: Into<String>>(mut self, types: impl IntoIterator<Item = S>) -> Self {
+        self.item_types = types.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Set the stock domain prompt.
+    pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+
+    /// Set the starter questions. At most 6 survive registration.
+    pub fn suggestions<S: Into<String>>(
+        mut self,
+        suggestions: impl IntoIterator<Item = S>,
+    ) -> Self {
+        self.suggestions = suggestions.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Add one tool.
+    pub fn tool(mut self, tool: AssistantTool) -> Self {
+        self.tools.push(tool);
+        self
+    }
+
+    /// Set every tool at once.
+    pub fn tools(mut self, tools: impl IntoIterator<Item = AssistantTool>) -> Self {
+        self.tools = tools.into_iter().collect();
+        self
+    }
+}
+
+impl AssistantTool {
+    /// A read tool: executed as soon as the model calls it, changes nothing.
+    pub fn read(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters: no_parameters(),
+            kind: AssistantToolKind::Read,
+            risk: AssistantRisk::Low,
+        }
+    }
+
+    /// A write tool: becomes a proposal the person has to apply.
+    pub fn write(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        risk: AssistantRisk,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters: no_parameters(),
+            kind: AssistantToolKind::Write,
+            risk,
+        }
+    }
+
+    /// Set the JSON Schema object describing the arguments.
+    pub fn parameters(mut self, parameters: serde_json::Value) -> Self {
+        self.parameters = parameters;
+        self
+    }
+}
+
+/// The JSON Schema for a tool that takes no arguments.
+pub fn no_parameters() -> serde_json::Value {
+    serde_json::json!({"type": "object", "properties": {}})
+}
+
+impl AssistantContext {
+    /// A context with a title and a snapshot and no links.
+    pub fn new(title: impl Into<String>, snapshot: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            snapshot: snapshot.into(),
+            links: Vec::new(),
+        }
+    }
+
+    /// Add a link to the conversation header.
+    pub fn link(mut self, label: impl Into<String>, url: impl Into<String>) -> Self {
+        self.links.push(AssistantLink {
+            label: label.into(),
+            url: url.into(),
+        });
+        self
+    }
+}
+
+impl AssistantToolResult {
+    /// A successful result: `content` for the model, `summary` for the person.
+    pub fn ok(content: impl Into<String>, summary: impl Into<String>) -> Self {
+        Self {
+            ok: true,
+            content: content.into(),
+            summary: Some(summary.into()),
+        }
+    }
+
+    /// A successful read whose content is its own summary.
+    pub fn data(content: impl Into<String>) -> Self {
+        Self {
+            ok: true,
+            content: content.into(),
+            summary: None,
+        }
+    }
+
+    /// A failed call. The message reaches the model and the transcript.
+    pub fn failed(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            ok: false,
+            content: message.clone(),
+            summary: Some(message),
+        }
+    }
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1859,5 +2222,143 @@ mod tests {
         let user: FieldAccessUser = serde_json::from_str(json).unwrap();
         assert!(!user.authenticated);
         assert!(user.permissions.is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // AI Assistant contract (0.102)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn assistant_scope_round_trips_with_its_frozen_field_names() {
+        let scope = AssistantScope::new(
+            "test_widget",
+            "Test widget",
+            "configure test widget",
+            AssistantIdKind::String,
+        )
+        .description("Configure a widget")
+        .prompt("You configure a test widget.")
+        .suggestions(["What colour is it?"])
+        .tool(AssistantTool::read("read_widget", "Read the widget"))
+        .tool(
+            AssistantTool::write("set_widget_color", "Set the colour", AssistantRisk::Normal)
+                .parameters(serde_json::json!({
+                    "type": "object",
+                    "required": ["color"],
+                    "properties": {"color": {"type": "string"}}
+                })),
+        );
+
+        let json = serde_json::to_string(&scope).unwrap();
+        assert!(json.contains(r#""id_kind":"string""#), "{json}");
+        assert!(json.contains(r#""kind":"read""#), "{json}");
+        assert!(json.contains(r#""kind":"write""#), "{json}");
+        assert!(json.contains(r#""risk":"normal""#), "{json}");
+
+        let back: AssistantScope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "test_widget");
+        assert_eq!(back.tools.len(), 2);
+        assert_eq!(back.tools[1].kind, AssistantToolKind::Write);
+    }
+
+    #[test]
+    fn assistant_scope_omitted_collections_default_to_empty() {
+        // A plugin that declares only the required fields must deserialize: the
+        // kernel parses whatever the tap returned, and a scope with no tools is
+        // a legitimate read-only scope.
+        let json = r#"{"name":"s","label":"S","description":"","permission":"p",
+                       "id_kind":"none","prompt":"x"}"#;
+        let scope: AssistantScope = serde_json::from_str(json).unwrap();
+        assert!(scope.tools.is_empty());
+        assert!(scope.suggestions.is_empty());
+        assert!(scope.item_types.is_empty());
+    }
+
+    #[test]
+    fn assistant_id_kind_and_mode_use_snake_case_on_the_wire() {
+        assert_eq!(
+            serde_json::to_string(&AssistantIdKind::Item).unwrap(),
+            r#""item""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AssistantIdKind::None).unwrap(),
+            r#""none""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AssistantToolMode::Describe).unwrap(),
+            r#""describe""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AssistantToolMode::Execute).unwrap(),
+            r#""execute""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AssistantRisk::High).unwrap(),
+            r#""high""#
+        );
+    }
+
+    #[test]
+    fn assistant_tool_call_round_trips_including_the_proposal_id() {
+        let json = r#"{"scope":"s","scope_id":"7","tool":"t","arguments":{"a":1},
+                       "mode":"execute","user_id":"u","proposal_id":"p"}"#;
+        let call: AssistantToolCall = serde_json::from_str(json).unwrap();
+        assert_eq!(call.mode, AssistantToolMode::Execute);
+        assert_eq!(call.proposal_id.as_deref(), Some("p"));
+        assert_eq!(call.arguments["a"], 1);
+
+        // scope_id and proposal_id are optional on the wire.
+        let bare = r#"{"scope":"s","tool":"t","arguments":{},"mode":"describe","user_id":"u"}"#;
+        let call: AssistantToolCall = serde_json::from_str(bare).unwrap();
+        assert!(call.scope_id.is_none());
+        assert!(call.proposal_id.is_none());
+    }
+
+    #[test]
+    fn assistant_tool_result_constructors_say_what_they_mean() {
+        let ok = AssistantToolResult::ok("full detail", "one sentence");
+        assert!(ok.ok);
+        assert_eq!(ok.summary.as_deref(), Some("one sentence"));
+
+        let data = AssistantToolResult::data("rows");
+        assert!(data.ok);
+        assert!(data.summary.is_none());
+
+        let failed = AssistantToolResult::failed("nope");
+        assert!(!failed.ok);
+        assert_eq!(failed.content, "nope");
+        assert_eq!(failed.summary.as_deref(), Some("nope"));
+
+        // `summary` is optional on the wire, so a plugin that omits it parses.
+        let parsed: AssistantToolResult =
+            serde_json::from_str(r#"{"ok":true,"content":"c"}"#).unwrap();
+        assert!(parsed.summary.is_none());
+    }
+
+    #[test]
+    fn assistant_context_builds_its_links() {
+        let ctx = AssistantContext::new("Widget 7", "Widget 7 has color teal.")
+            .link("View widget", "/widget/7");
+        let json = serde_json::to_string(&ctx).unwrap();
+        let back: AssistantContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.links.len(), 1);
+        assert_eq!(back.links[0].url, "/widget/7");
+
+        // Links are optional on the wire.
+        let bare: AssistantContext =
+            serde_json::from_str(r#"{"title":"t","snapshot":"s"}"#).unwrap();
+        assert!(bare.links.is_empty());
+    }
+
+    #[test]
+    fn a_tool_with_no_arguments_declares_an_empty_object_schema() {
+        let tool = AssistantTool::read("read_widget", "Read it");
+        assert_eq!(tool.parameters["type"], "object");
+        assert!(
+            tool.parameters["properties"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

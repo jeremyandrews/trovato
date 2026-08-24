@@ -6,6 +6,7 @@
 // Items exposed for integration tests and plugin use; not all are consumed by the binary.
 #![allow(dead_code)]
 
+pub mod assistant;
 pub mod audit;
 pub mod batch;
 pub mod cache;

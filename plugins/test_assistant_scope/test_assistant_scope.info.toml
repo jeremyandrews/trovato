@@ -1,0 +1,16 @@
+name = "test_assistant_scope"
+description = "0.102 e2e fixture: configuring a widget by conversation"
+version = "0.101.0"
+api_version = "0.101"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_assistant_scopes", "tap_assistant_context", "tap_assistant_tool"]
+weight = 0
+
+# `variables` is the widget's whole state, so a write tool has somewhere real to
+# write and a read tool has something real to read. `user-api` is the belt every
+# tool wears over the kernel's scope-permission check. `logging` for the tap.
+[capabilities]
+host_interfaces = ["variables", "user-api", "logging"]

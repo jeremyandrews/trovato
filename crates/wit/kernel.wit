@@ -436,8 +436,46 @@ world plugin {
     // AI governance (dispatch pending) — `tap-ai-request` decides allow/modify/
     // deny for an outbound AI request (AiRequestContext in, AiRequestDecision
     // out); `tap-chat-actions` returns the plugin's chat action definitions.
+    //
+    // `tap-chat-actions` is SUPERSEDED by the three assistant taps below and is
+    // not going to be dispatched. It was the sketch of a plugin telling the
+    // visitor chatbot what it could do; what a plugin actually needed was a
+    // conversation of its own, scoped to one thing being configured, with the
+    // person applying every write. That is `tap-assistant-*`. The declaration
+    // stays so no manifest naming it stops loading.
     export tap-ai-request: func(context-json: string) -> string;
     export tap-chat-actions: func() -> string;
+
+    // AI Assistant (added at 0.102) — configure one thing by conversation.
+    //
+    // `tap-assistant-scopes` is dispatched once at boot, without services, into
+    // the kernel's assistant registry: it returns a JSON array of AssistantScope
+    // {name, label, description, permission, id_kind, item_types, prompt,
+    // suggestions, tools[]}, where each tool is {name, description, parameters
+    // (a JSON Schema object), kind ("read"|"write"), risk}. The registry
+    // validates names against [a-z0-9_]+, rejects a scope name a another plugin
+    // already claimed, and caps tools at 32, suggestions at 6 and the prompt at
+    // 8 KiB. An invalid scope is dropped with a warning; boot is never failed.
+    //
+    // `tap-assistant-context` is dispatched with services and the caller's real
+    // user when a conversation opens or is reset. Input is an
+    // AssistantContextRequest {scope, scope_id, user_id}; output is an
+    // AssistantContext {title, snapshot, links[]}. The snapshot is the model's
+    // whole view of the domain, in plain text; the kernel truncates it at a line
+    // boundary to the site's cap and appends "[snapshot truncated]".
+    //
+    // `tap-assistant-tool` is dispatched with services and the caller's real
+    // user. Input is an AssistantToolCall {scope, scope_id, tool, arguments,
+    // mode ("describe"|"execute"), user_id, proposal_id}; output is an
+    // AssistantToolResult {ok, content, summary}. A read tool is dispatched with
+    // mode "execute" as soon as the model calls it. A write tool is dispatched
+    // with "describe" first, changes nothing, and must set `summary`: that
+    // becomes the proposal the person reads and applies. Only an applied
+    // proposal is dispatched with "execute". A tool the scope did not declare is
+    // never dispatched.
+    export tap-assistant-scopes: func() -> string;
+    export tap-assistant-context: func(request-json: string) -> string;
+    export tap-assistant-tool: func(call-json: string) -> string;
 
     // NOTE: a CSP-alteration tap was removed pre-1.0 (PF-4.1). It had zero
     // implementation and zero dispatch, and its `(csp-json) -> string`

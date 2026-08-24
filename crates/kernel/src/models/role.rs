@@ -48,6 +48,7 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "use full_html",
     "use ai",
     "use ai chat",
+    "use ai assistant",
     "use ai embeddings",
     "use ai image generation",
     "configure ai",

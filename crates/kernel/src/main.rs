@@ -7,6 +7,7 @@
 // for the binary target; the lib target (lib.rs) maintains stricter checking.
 #![allow(dead_code, unused_imports)]
 
+mod assistant;
 mod audit;
 mod batch;
 mod cache;

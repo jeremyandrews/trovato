@@ -13,6 +13,7 @@ use crate::middleware::language::{
     AcceptLanguageNegotiator, LanguageNegotiator, UrlPrefixNegotiator,
 };
 
+use crate::assistant::AssistantRegistry;
 use crate::batch::BatchService;
 use crate::cache::CacheLayer;
 use crate::config::{CacheConfig, Config};
@@ -102,6 +103,9 @@ struct AppStateInner {
 
     /// Menu registry.
     menu_registry: Arc<MenuRegistry>,
+
+    /// Assistant scope registry, built once at boot from `tap_assistant_scopes`.
+    assistant_scopes: Arc<AssistantRegistry>,
 
     /// Content type registry.
     content_types: Arc<ContentTypeRegistry>,
@@ -470,6 +474,28 @@ impl AppState {
         });
 
         let menu_registry = Arc::new(menu_registry);
+
+        // Assistant scopes, collected the same way and for the same reason: a
+        // scope names a route the kernel has to serve and a permission it has to
+        // check, so it must be known before the first request. Dispatched
+        // without services, like `tap_menu` — a scope declaration is a constant,
+        // not a query.
+        let assistant_scopes = {
+            let scope_state = RequestState::without_services(UserContext::anonymous());
+            let results = tap_dispatcher
+                .dispatch("tap_assistant_scopes", "{}", scope_state)
+                .await;
+            let registry = AssistantRegistry::from_tap_results(
+                results
+                    .into_iter()
+                    .map(|r| (r.plugin_name, r.output))
+                    .collect(),
+            );
+            if !registry.is_empty() {
+                info!(count = registry.len(), "registered assistant scopes");
+            }
+            Arc::new(registry)
+        };
 
         // Create content type registry
         let content_types = Arc::new(ContentTypeRegistry::new(
@@ -959,6 +985,7 @@ impl AppState {
                 tap_dispatcher,
                 tap_services,
                 menu_registry,
+                assistant_scopes,
                 content_types,
                 record_types,
                 items,
@@ -1093,6 +1120,11 @@ impl AppState {
     /// Get the menu registry.
     pub fn menu_registry(&self) -> &Arc<MenuRegistry> {
         &self.inner.menu_registry
+    }
+
+    /// Get the assistant scope registry.
+    pub fn assistant_scopes(&self) -> &Arc<AssistantRegistry> {
+        &self.inner.assistant_scopes
     }
 
     /// Get the content type registry.

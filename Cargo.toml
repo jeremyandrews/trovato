@@ -33,6 +33,11 @@ members = [
     "plugins/trovato_page_builder",
     "plugins/trovato_captcha",
     "plugins/test_plugin_api",
+    # 0.102 AI Assistant e2e fixture: declares an assistant scope with a read
+    # tool, a write tool and a failing tool, plus a deliberately invalid scope
+    # so the registry's drop-and-warn path is exercised by a real plugin.
+    # Built with --target wasm32-wasip1 like the other plugin cdylibs.
+    "plugins/test_assistant_scope",
     "plugins/trovato_series",
     # Book-style page trees: ordered hierarchy with prev/next/up navigation.
     # Built with --target wasm32-wasip1 like the other plugin cdylibs.
