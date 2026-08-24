@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.102.0 — 2026-08-25
+
+An assistant a plugin can be configured through, and the tool calling the kernel
+needed before one was possible.
+
+Trovato could talk to a model and could never let one *do* anything. The visitor
+chatbot streams text; a plugin's `ai_request` returns text; neither built a
+`tools` array and neither parsed a tool call back out of a response.
+`tap_chat_actions` was declared for exactly this and was never dispatched. So a
+plugin that owned real configuration — a network monitor, a mail server, a
+firewall — had no way to offer it to a person in words.
+
+The plugin API moves to `(0, 102)`. Everything here is additive: no existing type,
+tap, route or host function changes shape, and a plugin declaring
+`api_version = "0.101"` still installs and runs. A plugin that wants the assistant
+taps must declare `"0.102"`, since a 0.101 kernel does not dispatch them.
+
+- The project version is 0.102.0 and the plugin API is `(0, 102)`.
+
+  The manifest count in `docs/design/version-map.md` moves from 36 to 37 with
+  `test_assistant_scope`.
+
+- The AI Assistant: configuring one thing by conversation.
+
+  A person opens `/ai/assistant/{scope}/{scope_id}`, and talks to a model that can
+  read the plugin's domain through tools the plugin declared. **Every change the
+  model wants to make is a proposal a person has to apply.** That is structural
+  rather than a matter of prompting: a write tool is dispatched in `Describe` mode,
+  which changes nothing, and the single `Execute` dispatch in the whole kernel is in
+  the apply route, reached by somebody clicking Apply on a card they have read.
+
+  A conversation belongs to one person. Every route answers 404 to anyone else,
+  administrators included, because a conversation is working notes rather than site
+  content.
+
+- Three taps, and a registry that drops rather than fails.
+
+  `tap_assistant_scopes` declares what can be configured, dispatched once at boot
+  without services. `tap_assistant_context` describes the thing being configured,
+  with services and the caller's real permissions. `tap_assistant_tool` answers one
+  call, in `Describe` or `Execute` mode.
+
+  `AssistantRegistry` validates every scope: names match `[a-z0-9_]+`, a scope name
+  is unique across all plugins, `parameters` is a JSON Schema object, and there are
+  caps on tools, suggestions and prompt size. An invalid scope is dropped with a
+  warning and listed on the admin page. One plugin's malformed declaration must not
+  stop a site booting.
+
+  `tap_chat_actions` stays declared and is marked superseded in the WIT. It was the
+  sketch of a plugin telling the visitor chatbot what it could do; what a plugin
+  actually needed was a conversation of its own.
+
+- Tool calling in the provider layer: `services/ai_tools.rs`.
+
+  A third provider path beside the two text-only ones, so neither the chatbot nor
+  `ai_request` changes shape. It speaks OpenAI's `tools`/`tool_calls` and
+  Anthropic's `tools`/`tool_use`, carries a prior call and its result into a
+  follow-up request, and honours the Anthropic rule that every `tool_use` in an
+  assistant turn is answered in the very next user turn. Auth, rate-limit, other
+  statuses and timeouts map to distinct errors, so a caller can say something honest
+  without repeating the provider's body to a person.
+
+- The permission `use ai assistant`, the config key `ai_assistant_config`, and two
+  tables.
+
+  `ai_conversation` holds the transcript, with a partial unique index that makes
+  "open the assistant for this thing" idempotent. `ai_proposal` holds a write the
+  model asked for and nobody has applied, because a proposal has a lifecycle a
+  transcript entry does not.
+
+- Four API routes and a page that works without JavaScript.
+
+  `GET /api/v1/assistant/{id}`, `POST .../message` (SSE), `POST
+  .../proposals/{id}/apply` and `/discard`, `POST .../reset`. The proposal cards and
+  Start over are plain forms carrying a `_token` field, which is what the 0.101 form
+  surface was for; `static/js/assistant.js` adds the one thing a form cannot do,
+  which is consume the stream a turn produces.
+
+- An admin screen at `/admin/system/ai-assistant`, and a launcher.
+
+  The screen carries the model settings, the limits that bound what a conversation
+  can cost, a switch and a prompt override per scope, and the scopes that were
+  **dropped at startup and why** — otherwise visible only in a log nobody reads. The
+  launcher appears automatically on an item whose type a scope names, and a plugin
+  includes the same partial with a literal scope of its own.
+
 ## v0.101.0 — 2026-08-19
 
 Three plugin surfaces, and the feature they were for. A visitor can reach a site

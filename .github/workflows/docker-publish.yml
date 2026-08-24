@@ -20,7 +20,7 @@ env:
   # Major.minor of the project version in the workspace Cargo.toml. Nightly tags
   # are derived from it, so it moves with every release. See
   # docs/design/version-map.md.
-  BASE_VERSION: "0.101"
+  BASE_VERSION: "0.102"
 
 jobs:
   # Compute version once, share across jobs

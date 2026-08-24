@@ -1,7 +1,7 @@
 name = "trovato_field_access_ref"
 description = "FR-8 reference plugin: canonical tap_field_access (Cairn encryption-tier + Ritrovo role patterns), rules read from variables config"
-version = "0.101.0"
-api_version = "0.101"
+version = "0.102.0"
+api_version = "0.102"
 default_enabled = false
 dependencies = []
 

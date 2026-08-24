@@ -1,7 +1,7 @@
 name = "trovato_locale"
 description = "Interface string translation with .po file import"
-version = "0.101.0"
-api_version = "0.101"
+version = "0.102.0"
+api_version = "0.102"
 dependencies = []
 
 [taps]

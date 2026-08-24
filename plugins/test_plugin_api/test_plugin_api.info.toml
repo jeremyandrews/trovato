@@ -1,7 +1,7 @@
 name = "test_plugin_api"
 description = "K1 e2e fixture: plugin-served HTTP requests (G-NO-PLUGIN-HTTP)"
-version = "0.101.0"
-api_version = "0.101"
+version = "0.102.0"
+api_version = "0.102"
 default_enabled = false
 dependencies = []
 

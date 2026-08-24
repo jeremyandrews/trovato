@@ -1,7 +1,7 @@
 name = "test_e2e_nocaps"
 description = "Epic 2 e2e fixture: no [capabilities] table (invoke deny-by-default)"
-version = "0.101.0"
-api_version = "0.101"
+version = "0.102.0"
+api_version = "0.102"
 default_enabled = false
 dependencies = []
 
