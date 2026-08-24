@@ -244,6 +244,39 @@ pub async fn inject_site_context(
     }
     context.insert("user_is_admin", &viewer.is_admin());
 
+    // The AI Assistant's launcher context, read out of the site config already
+    // loaded above rather than with a query of its own — a launcher that costs a
+    // round trip on every page render is not a launcher worth having.
+    //
+    // `assistant_enabled` gates the partial: a site that has not turned the
+    // assistant on never advertises it. `assistant_scopes` is name-to-label for
+    // the scopes *this viewer* may open, so a template can offer one without
+    // asking whether the person is allowed.
+    let assistant_config: crate::services::ai_assistant::AssistantConfig = all_config
+        .get(crate::services::ai_assistant::CONFIG_KEY)
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    context.insert("assistant_enabled", &assistant_config.enabled);
+    let mut assistant_scopes: std::collections::BTreeMap<String, String> = Default::default();
+    if assistant_config.enabled
+        && (viewer.is_admin()
+            || (viewer.has_permission("use ai") && viewer.has_permission("use ai assistant")))
+    {
+        for registered in state.assistant_scopes().scopes() {
+            let scope = &registered.scope;
+            if !assistant_config.scope_enabled(&scope.name) {
+                continue;
+            }
+            if viewer.is_admin()
+                || scope.permission.is_empty()
+                || viewer.has_permission(&scope.permission)
+            {
+                assistant_scopes.insert(scope.name.clone(), scope.label.clone());
+            }
+        }
+    }
+    context.insert("assistant_scopes", &assistant_scopes);
+
     // Load tiles for all regions filtered by request path and user roles
     for region in &["header", "navigation", "sidebar", "footer"] {
         let region_html = state

@@ -131,6 +131,9 @@ New permissions declared via `tap_perm`:
 
 - `use ai` -- Base permission to trigger any AI operation
 - `use ai chat` -- Use chat/completion operations
+- `use ai assistant` -- Open an AI Assistant conversation (0.102). Composes with
+  `use ai` and with the scope's own permission: all three are required, and an
+  administrator passes without any of them
 - `use ai embeddings` -- Use embedding operations
 - `use ai image generation` -- Use image generation
 - `configure ai` -- Admin: manage providers, keys, defaults
@@ -235,6 +238,14 @@ A chatbot Tile that can be placed in any Slot:
   - Conversation history (stored in session, configurable depth)
 - Rate limited per-role via existing Tower middleware
 - Requires `use ai chat` permission
+
+> **Superseded (0.102).** The chatbot's "actions" below were never built:
+> `tap_chat_actions` is declared and has never been dispatched. What a plugin
+> actually needed was a conversation of its own, scoped to one thing being
+> configured, where every write is a proposal a person applies. That is the AI
+> Assistant (`tap_assistant_scopes`, `tap_assistant_context`,
+> `tap_assistant_tool`); see the plugin development guide. The sketch below is
+> kept as design history.
 
 **Actions (Tool Calling):**
 

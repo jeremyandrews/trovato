@@ -15,9 +15,10 @@ This guide covers everything you need to know to develop plugins for Trovato CMS
 9. [Database Operations](#database-operations)
 10. [Caching](#caching)
 11. [Inter-Plugin Communication](#inter-plugin-communication)
-12. [Testing](#testing)
-13. [Deployment](#deployment)
-14. [Best Practices](#best-practices)
+12. [Letting an assistant configure your plugin](#letting-an-assistant-configure-your-plugin)
+13. [Testing](#testing)
+14. [Deployment](#deployment)
+15. [Best Practices](#best-practices)
 
 ---
 
@@ -687,6 +688,176 @@ if host::plugin::exists("other_plugin") {
     )?;
 }
 ```
+
+---
+
+## Letting an assistant configure your plugin
+
+A person can configure your plugin by talking to it. You declare what is
+configurable, describe the thing being configured, and answer the model's tool
+calls; the kernel runs the conversation, and **every change the model wants to
+make becomes a proposal a person has to apply**.
+
+That last part is the whole design. A write tool is never executed because a
+model asked for it. The kernel calls it in `Describe` mode to find out what it
+would do, records a proposal, and only calls it in `Execute` mode when somebody
+clicks Apply on a card they have read. Your write tool has to honour that: in
+`Describe` mode it must change nothing.
+
+Three taps, all optional, all declared in your manifest:
+
+```toml
+[taps]
+implements = ["tap_assistant_scopes", "tap_assistant_context", "tap_assistant_tool"]
+
+[capabilities]
+# `user-api` so a tool can check the caller's permission at the moment of the
+# change, which is where the change happens.
+host_interfaces = ["variables", "user-api", "logging"]
+```
+
+A tap the manifest does not list is never dispatched, so an exported tap missing
+from `implements` is silently dead. The whole example below is
+`plugins/test_assistant_scope`.
+
+### 1. Declare what can be configured
+
+`tap_assistant_scopes` runs once at startup, without services. Return a scope per
+configurable thing:
+
+```rust
+#[plugin_tap]
+pub fn tap_assistant_scopes() -> Vec<AssistantScope> {
+    vec![
+        AssistantScope::new(
+            "test_widget",                 // machine name, [a-z0-9_]+, unique site-wide
+            "Test widget",
+            "configure test widget",       // the permission that opens it
+            AssistantIdKind::String,       // Item, String or None
+        )
+        .description("Configure a test widget")
+        .prompt("You configure a test widget.")
+        .suggestions(["What colour is the widget?", "Make it teal"])
+        .tool(AssistantTool::read("read_widget", "Read the widget's current colour."))
+        .tool(
+            AssistantTool::write(
+                "set_widget_color",
+                "Set the widget's colour.",
+                AssistantRisk::Normal,
+            )
+            .parameters(serde_json::json!({
+                "type": "object",
+                "required": ["color"],
+                "properties": {"color": {"type": "string"}}
+            })),
+        ),
+    ]
+}
+```
+
+`id_kind` decides what the `{scope_id}` in `/ai/assistant/{scope}/{scope_id}`
+means. `Item` takes a Trovato item id and the kernel checks it exists and is one
+of the types in `item_types` — and puts a launcher link on that item's page for
+you. `String` takes any opaque string of at most 128 bytes. `None` is a site-wide
+scope with no id.
+
+The registry validates each scope and **drops an invalid one with a warning
+rather than failing startup**: names must match `[a-z0-9_]+`, a scope name must
+be unique across every plugin, `parameters` must be a JSON Schema object with
+`"type": "object"`, and there are caps (32 tools, 6 suggestions, an 8 KiB
+prompt). Dropped scopes are listed at `/admin/system/ai-assistant`, so check
+there first if a scope does not appear.
+
+### 2. Describe what is being configured
+
+`tap_assistant_context` runs when a conversation opens or is reset, with services
+and the caller's real permissions. The `snapshot` is the model's whole view of
+your domain: write plain labelled lines, current and complete enough that most
+questions need no tool call at all.
+
+```rust
+#[plugin_tap]
+pub fn tap_assistant_context(request: AssistantContextRequest) -> AssistantContext {
+    let id = request.scope_id.unwrap_or_default();
+    AssistantContext::new(
+        format!("Widget {id}"),
+        format!("Widget {id} has color {}.", current_color()),
+    )
+    .link("View widget", format!("/widget/{id}"))
+}
+```
+
+Keep the whole tap result under the 64 KiB tap output buffer — a larger one is
+replaced with an error, not truncated. The kernel then truncates the snapshot
+again to the site's configured cap, at a line boundary, and appends
+`[snapshot truncated]`.
+
+### 3. Answer tool calls
+
+`tap_assistant_tool` runs with services and the caller's real permissions. It is
+called for a read tool as soon as the model asks, and for a write tool twice:
+once to describe, once to apply.
+
+```rust
+#[plugin_tap]
+pub fn tap_assistant_tool(call: AssistantToolCall) -> AssistantToolResult {
+    // The kernel checked the scope's permission before opening the
+    // conversation. Check again here, because this is where the change happens.
+    if !host::current_user_has_permission(PERM) {
+        return AssistantToolResult::failed("You do not have permission to configure the widget.");
+    }
+
+    match call.tool.as_str() {
+        "read_widget" => AssistantToolResult::data(
+            serde_json::json!({"color": current_color()}).to_string(),
+        ),
+        "set_widget_color" => {
+            let color = call.arguments["color"].as_str().unwrap_or_default();
+            match call.mode {
+                // Describe changes NOTHING. The summary is the proposal card.
+                AssistantToolMode::Describe => AssistantToolResult::ok(
+                    format!("Would set the widget colour to {color}."),
+                    format!("Set widget color to {color}"),
+                ),
+                AssistantToolMode::Execute => {
+                    host::variables_set("color", color).ok();
+                    AssistantToolResult::ok(
+                        format!("The widget colour is now {color}."),
+                        format!("Widget color is now {color}"),
+                    )
+                }
+            }
+        }
+        other => AssistantToolResult::failed(format!("no such tool: {other}")),
+    }
+}
+```
+
+`content` is what the model reads; `summary` is the one sentence a person reads
+in the transcript, and a `Describe` **must** set it. The kernel truncates
+`content` to the site's cap and appends `[result truncated]`.
+
+A tool the scope did not declare is never dispatched. Arguments are checked
+against your schema for required keys and declared scalar types before you see
+them; anything deeper is yours to validate. A trap, a timeout or an unreadable
+result becomes `ok: false` with a generic message to the model and the detail in
+the log, so one broken tool does not end a conversation.
+
+### Writing a good scope
+
+- **Name a permission that means something.** It is the gate; an administrator
+  passes it, and everybody else needs it plus `use ai` and `use ai assistant`.
+- **Prefer reads that answer one question.** A model given one broad tool will
+  call it repeatedly; a model given `device_history(days)` will ask for what it
+  needs.
+- **Make every Describe string name the thing and the change**, including the
+  value it replaces: "Assign Amazon tablet (02:00:5e:00:00:04) to Jamie
+  (currently Arlo)". That sentence is the entire basis on which a person decides.
+- **Refuse in Execute, not only in Describe.** Time passes between the two.
+- **Put your launcher where the thing is.** Include the kernel's partial with a
+  literal scope from your own template:
+  `{% include "assistant/launcher.html" %}` with `scope` (and `scope_id`) set.
+  It renders nothing when the assistant is off.
 
 ---
 

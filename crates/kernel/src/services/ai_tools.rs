@@ -538,6 +538,8 @@ pub(crate) fn build_anthropic_body(
         wire.push(json!({"role": "user", "content": Value::Array(pending_results)}));
     }
 
+    let wire = merge_same_role(wire);
+
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -564,6 +566,49 @@ pub(crate) fn build_anthropic_body(
     }
 
     body
+}
+
+/// Merge adjacent Anthropic messages that share a role.
+///
+/// The API takes alternating turns, and the assistant's conversation can produce
+/// two in a row honestly: a `[Trovato]` note followed by the person's message is
+/// two user turns, and a tool result followed by a note is another. Rather than
+/// teach every caller the protocol's alternation rule, normalize here — this is
+/// the one place that knows it is Anthropic.
+fn merge_same_role(messages: Vec<Value>) -> Vec<Value> {
+    let mut merged: Vec<Value> = Vec::with_capacity(messages.len());
+    for message in messages {
+        let same_role = merged
+            .last()
+            .is_some_and(|last| last.get("role") == message.get("role"));
+        if !same_role {
+            merged.push(message);
+            continue;
+        }
+        // Infallible: `same_role` is only true when there is a last element.
+        let Some(last) = merged.last_mut() else {
+            continue;
+        };
+        let previous = last["content"].take();
+        let next = message["content"].clone();
+        last["content"] = match (previous, next) {
+            (Value::String(a), Value::String(b)) => Value::String(format!("{a}\n\n{b}")),
+            (Value::Array(mut a), Value::Array(b)) => {
+                a.extend(b);
+                Value::Array(a)
+            }
+            (Value::String(a), Value::Array(mut b)) => {
+                b.insert(0, json!({"type": "text", "text": a}));
+                Value::Array(b)
+            }
+            (Value::Array(mut a), Value::String(b)) => {
+                a.push(json!({"type": "text", "text": b}));
+                Value::Array(a)
+            }
+            (a, _) => a,
+        };
+    }
+    merged
 }
 
 /// Parse an Anthropic `/messages` response.
@@ -1268,6 +1313,50 @@ mod tests {
         assert_eq!(messages[2]["content"][0]["tool_use_id"], "t1");
         assert_eq!(messages[2]["content"][1]["tool_use_id"], "t2");
         assert_eq!(messages[2]["content"][1]["is_error"], true);
+    }
+
+    #[test]
+    fn anthropic_merges_adjacent_same_role_messages() {
+        // A [Trovato] note followed by the person's message is two user turns,
+        // which the API will not take. One turn is what it becomes.
+        let body = build_anthropic_body(
+            "m",
+            &[
+                ChatMessage::User("[Trovato] Applied: x".into()),
+                ChatMessage::User("thanks, now do y".into()),
+            ],
+            &[],
+            0.2,
+            64,
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "{body}");
+        assert_eq!(
+            messages[0]["content"],
+            "[Trovato] Applied: x\n\nthanks, now do y"
+        );
+
+        // A tool result (a user turn, as blocks) followed by a note merges into
+        // the same turn, keeping the blocks and appending the text.
+        let body = build_anthropic_body(
+            "m",
+            &[
+                ChatMessage::ToolResult {
+                    call_id: "t1".into(),
+                    name: "read".into(),
+                    content: "teal".into(),
+                    is_error: false,
+                },
+                ChatMessage::User("[Trovato] Applied: x".into()),
+            ],
+            &[],
+            0.2,
+            64,
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "{body}");
+        assert_eq!(messages[0]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[0]["content"][1]["type"], "text");
     }
 
     #[test]

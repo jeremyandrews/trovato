@@ -1,0 +1,208 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+
+<div class="admin-header">
+    <h2>AI Assistant</h2>
+</div>
+
+{% if flash %}
+<div class="message message--info" role="status">{{ flash }}</div>
+{% endif %}
+
+<p class="admin-intro">
+    The assistant lets a person configure one thing by conversation. A plugin
+    declares what can be configured; the model may read freely, and every change
+    it wants to make becomes a proposal somebody has to apply.
+</p>
+
+<div class="admin-card">
+    <form method="post" action="/admin/system/ai-assistant">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="enabled" value="1" {% if config.enabled %}checked{% endif %}>
+                Enable the assistant
+            </label>
+            <small class="form-help">Off by default. While off, every assistant page is a 404.</small>
+        </div>
+
+        <h3>Model</h3>
+
+        <div class="form-group">
+            <label for="provider_id">Provider</label>
+            <select id="provider_id" name="provider_id" class="form-control">
+                <option value="">Site default for {{ chat_operation }}</option>
+                {% for provider in providers %}
+                <option value="{{ provider.id }}" {% if config.provider_id == provider.id %}selected{% endif %}>
+                    {{ provider.label }} ({{ provider.protocol }})
+                </option>
+                {% endfor %}
+            </select>
+            <small class="form-help">
+                Only enabled providers are listed. <a href="/admin/system/ai-providers">Manage providers</a>.
+            </small>
+        </div>
+
+        <div class="form-group">
+            <label for="model">Model</label>
+            <input type="text" id="model" name="model" class="form-control"
+                   value="{{ config.model | default(value='') }}"
+                   placeholder="the provider's chat model">
+            <small class="form-help">Leave blank to use whatever the provider is configured to use for chat.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="temperature">Temperature</label>
+            <input type="number" id="temperature" name="temperature" class="form-control"
+                   style="width: 100px" value="{{ config.temperature }}" min="0" max="2" step="0.1">
+            <small class="form-help">Low is right for configuration work. Clamped to 0.0–2.0.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="max_response_tokens">Max response tokens</label>
+            <input type="number" id="max_response_tokens" name="max_response_tokens" class="form-control"
+                   style="width: 120px" value="{{ config.max_response_tokens }}" min="64" max="16384">
+        </div>
+
+        <h3>Limits</h3>
+
+        <div class="form-group">
+            <label for="turn_timeout_secs">Model call timeout (seconds)</label>
+            <input type="number" id="turn_timeout_secs" name="turn_timeout_secs" class="form-control"
+                   style="width: 100px" value="{{ config.turn_timeout_secs }}" min="5" max="150">
+            <small class="form-help">One message gets three times this in total, however many calls it takes.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="max_tool_calls_per_message">Tool calls per message</label>
+            <input type="number" id="max_tool_calls_per_message" name="max_tool_calls_per_message"
+                   class="form-control" style="width: 100px"
+                   value="{{ config.max_tool_calls_per_message }}" min="1" max="32">
+        </div>
+
+        <div class="form-group">
+            <label for="max_messages">Messages per conversation</label>
+            <input type="number" id="max_messages" name="max_messages" class="form-control"
+                   style="width: 100px" value="{{ config.max_messages }}" min="4" max="400">
+            <small class="form-help">At the limit the conversation goes read-only. Start over opens a fresh one.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="max_tokens_per_conversation">Tokens per conversation</label>
+            <input type="number" id="max_tokens_per_conversation" name="max_tokens_per_conversation"
+                   class="form-control" style="width: 140px"
+                   value="{{ config.max_tokens_per_conversation }}" min="1000" max="2000000">
+        </div>
+
+        <div class="form-group">
+            <label for="max_history_exchanges">History exchanges per request</label>
+            <input type="number" id="max_history_exchanges" name="max_history_exchanges"
+                   class="form-control" style="width: 100px"
+                   value="{{ config.max_history_exchanges }}" min="1" max="100">
+            <small class="form-help">Older exchanges are dropped from the request; the transcript keeps them.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="snapshot_max_bytes">Snapshot size (bytes)</label>
+            <input type="number" id="snapshot_max_bytes" name="snapshot_max_bytes" class="form-control"
+                   style="width: 120px" value="{{ config.snapshot_max_bytes }}" min="1024" max="32768">
+        </div>
+
+        <div class="form-group">
+            <label for="tool_result_max_bytes">Tool result size (bytes)</label>
+            <input type="number" id="tool_result_max_bytes" name="tool_result_max_bytes"
+                   class="form-control" style="width: 120px"
+                   value="{{ config.tool_result_max_bytes }}" min="1024" max="32768">
+        </div>
+
+        <div class="form-group">
+            <label for="rate_limit_per_hour">Messages per person per hour</label>
+            <input type="number" id="rate_limit_per_hour" name="rate_limit_per_hour" class="form-control"
+                   style="width: 100px" value="{{ config.rate_limit_per_hour }}" min="0" max="1000">
+            <small class="form-help">0 is unlimited.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="conversation_ttl_hours">Conversation lifetime (hours)</label>
+            <input type="number" id="conversation_ttl_hours" name="conversation_ttl_hours"
+                   class="form-control" style="width: 100px"
+                   value="{{ config.conversation_ttl_hours }}" min="0" max="8760">
+            <small class="form-help">After this a conversation is read-only. 0 never expires one.</small>
+        </div>
+
+        <h3>Core prompt</h3>
+
+        <div class="form-group">
+            <label for="core_prompt">Sent before every scope's own prompt</label>
+            <textarea id="core_prompt" name="core_prompt" rows="14" class="form-control">{{ config.core_prompt }}</textarea>
+            <small class="form-help">
+                This is what tells the model it must propose rather than act. Change the wording freely;
+                changing the intent will let a model claim it made changes it did not make.
+            </small>
+        </div>
+
+        <h3>Scopes</h3>
+
+        {% if scopes %}
+        {% for scope in scopes %}
+        <div class="admin-card admin-card--nested">
+            <h4>{{ scope.label }} <code>{{ scope.name }}</code></h4>
+            <p class="form-help">
+                From <strong>{{ scope.plugin }}</strong>.
+                {% if scope.description %}{{ scope.description }}{% endif %}
+                Requires <code>{{ scope.permission }}</code>.
+                {{ scope.tool_count }} tools, {{ scope.write_tool_count }} of them writes.
+            </p>
+
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="scope_enabled[{{ scope.name }}]" value="1"
+                           {% if scope.enabled %}checked{% endif %}>
+                    Enabled
+                </label>
+            </div>
+
+            <details>
+                <summary>Tools and stock prompt</summary>
+                <ul class="assistant-admin-tools">
+                    {% for tool in scope.tools %}
+                    <li><code>{{ tool.name }}</code> — {{ tool.kind }}{% if tool.kind == "write" %}, {{ tool.risk }} risk{% endif %}</li>
+                    {% endfor %}
+                </ul>
+                <pre class="assistant-admin-prompt">{{ scope.stock_prompt }}</pre>
+            </details>
+
+            <div class="form-group">
+                <label for="scope_prompt_{{ scope.name }}">Prompt override</label>
+                <textarea id="scope_prompt_{{ scope.name }}" name="scope_prompt[{{ scope.name }}]"
+                          rows="4" class="form-control"
+                          placeholder="Leave blank to use the plugin's prompt above.">{{ scope.prompt_override }}</textarea>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p>No plugin declares an assistant scope. Enable a plugin that does, and it appears here.</p>
+        {% endif %}
+
+        {% if rejections %}
+        <h3>Dropped scopes</h3>
+        <p class="form-help">
+            These were declared and refused at startup. They do nothing until the plugin is fixed.
+        </p>
+        <ul class="assistant-admin-rejections">
+            {% for rejection in rejections %}
+            <li><strong>{{ rejection.plugin }}</strong> / <code>{{ rejection.scope }}</code>: {{ rejection.reason }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save configuration</button>
+            <button type="submit" name="reset_core_prompt" value="1" class="btn">Reset core prompt</button>
+        </div>
+    </form>
+</div>
+
+{% endblock %}

@@ -540,6 +540,62 @@ DELETE /api/tokens/{id}
 
 ---
 
+## AI Assistant
+
+Configuring one thing by conversation. Every route belongs to the conversation's
+owner and answers 404 to anybody else, administrators included. All four require
+authentication and the assistant to be enabled at
+`/admin/system/ai-assistant`.
+
+### Get a conversation
+
+```
+GET /api/v1/assistant/{conversation_id}
+```
+
+Returns the transcript, the proposals, the conversation's limits, and whether it
+is read-only. 404 unless the caller owns it.
+
+### Send a message
+
+```
+POST /api/v1/assistant/{conversation_id}/message
+X-CSRF-Token: <token>
+Content-Type: application/json
+
+{"message": "which devices have no owner?"}
+```
+
+Returns `text/event-stream`. Each event is a JSON object with a `type`:
+`turn_start`, `tool_call`, `tool_result`, `proposal`, `assistant`, `note`,
+`done`, `error`. The message is 1 to 4096 characters; the body is capped at
+16 KiB. 409 when the conversation is read-only, 429 for the per-person rate
+limit or an exhausted token budget (`"category": "token_budget"`).
+
+### Apply or discard a proposal
+
+```
+POST /api/v1/assistant/{conversation_id}/proposals/{proposal_id}/apply
+POST /api/v1/assistant/{conversation_id}/proposals/{proposal_id}/discard
+```
+
+Takes either an `X-CSRF-Token` header with an empty body, or a
+`application/x-www-form-urlencoded` body with a `_token` field — the second is
+the no-JavaScript path, and it answers 303 back to the conversation page rather
+than JSON. Applying is the only thing anywhere that executes a write tool.
+409 if the proposal was already resolved, 404 if it is somebody else's.
+
+### Start over
+
+```
+POST /api/v1/assistant/{conversation_id}/reset
+```
+
+Closes the conversation, discards its outstanding proposals, and opens a fresh
+one with a new snapshot. Same two token paths, same two response shapes.
+
+---
+
 ## Health
 
 ```

@@ -1,0 +1,259 @@
+/* AI Assistant conversation page.
+ *
+ * Same visual register as the chat widget (static/css/chat-widget.css): the
+ * site's own variables where they exist, restrained neutrals where they do not.
+ * The one place this deliberately shouts is a high-risk proposal, which has to
+ * look different from a routine one before somebody clicks Apply. */
+
+.assistant {
+    max-width: 46rem;
+    margin: 0 auto;
+}
+
+.assistant__title {
+    margin: 0 0 0.25rem;
+}
+
+.assistant__description {
+    margin: 0 0 0.75rem;
+    color: var(--gray-600, #4b5563);
+}
+
+.assistant__links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.assistant__link {
+    font-size: 0.9rem;
+}
+
+.assistant__notice {
+    padding: 0.6rem 0.8rem;
+    margin: 0 0 1rem;
+    border-left: 3px solid var(--warning, #d97706);
+    background: var(--gray-50, #f9fafb);
+}
+
+/* ── Transcript ─────────────────────────────────────────────────────────── */
+
+.assistant__transcript {
+    list-style: none;
+    margin: 0 0 1rem;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.assistant-entry__who {
+    display: block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--gray-500, #6b7280);
+    margin-bottom: 0.15rem;
+}
+
+.assistant-entry__text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.assistant-entry--user .assistant-entry__text {
+    padding: 0.6rem 0.8rem;
+    background: var(--gray-100, #f3f4f6);
+    border-radius: 0.5rem;
+}
+
+.assistant-entry--assistant .assistant-entry__text {
+    padding: 0.6rem 0.8rem;
+    background: #fff;
+    border: 1px solid var(--gray-200, #e5e7eb);
+    border-radius: 0.5rem;
+}
+
+/* A tool call is a quiet one-liner: it is evidence, not conversation. */
+.assistant-entry--tool {
+    font-size: 0.85rem;
+    color: var(--gray-600, #4b5563);
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+}
+
+.assistant-entry--tool-failed {
+    color: var(--danger, #dc2626);
+}
+
+.assistant-entry__tool {
+    font-size: 0.8rem;
+    background: var(--gray-100, #f3f4f6);
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.25rem;
+}
+
+.assistant-entry__summary {
+    overflow-wrap: anywhere;
+}
+
+.assistant-entry--note {
+    font-size: 0.85rem;
+    font-style: italic;
+    color: var(--gray-600, #4b5563);
+}
+
+/* ── Proposals ──────────────────────────────────────────────────────────── */
+
+.assistant-proposal {
+    border: 1px solid var(--gray-300, #d1d5db);
+    border-left-width: 4px;
+    border-radius: 0.5rem;
+    padding: 0.75rem 0.9rem;
+    background: #fff;
+}
+
+.assistant-proposal--low {
+    border-left-color: var(--gray-400, #9ca3af);
+}
+
+.assistant-proposal--normal {
+    border-left-color: var(--primary, #2563eb);
+}
+
+/* A high-risk proposal must not look like the others. */
+.assistant-proposal--high {
+    border-left-color: var(--danger, #dc2626);
+    background: #fef2f2;
+}
+
+.assistant-proposal--applied {
+    opacity: 0.85;
+    border-left-color: var(--success, #16a34a);
+}
+
+.assistant-proposal--discarded,
+.assistant-proposal--failed {
+    opacity: 0.7;
+}
+
+.assistant-proposal__description {
+    margin: 0 0 0.4rem;
+    font-weight: 600;
+}
+
+.assistant-proposal__meta {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--gray-500, #6b7280);
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+}
+
+.assistant-proposal__result {
+    margin: 0.4rem 0 0;
+    font-size: 0.85rem;
+}
+
+.assistant-proposal__actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+
+/* ── Suggestions and composer ───────────────────────────────────────────── */
+
+.assistant__suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.assistant__suggestion {
+    border: 1px solid var(--gray-300, #d1d5db);
+    background: var(--gray-50, #f9fafb);
+    border-radius: 999px;
+    padding: 0.35rem 0.8rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.assistant__suggestion:hover {
+    background: var(--gray-100, #f3f4f6);
+}
+
+.assistant__composer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.assistant__composer-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.assistant__composer textarea {
+    width: 100%;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--gray-300, #d1d5db);
+    border-radius: 0.5rem;
+    font: inherit;
+    resize: vertical;
+}
+
+.assistant__composer button {
+    align-self: flex-start;
+}
+
+.assistant__composer-help {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--gray-500, #6b7280);
+}
+
+/* The composer is disabled while a turn runs, and has to look it. */
+.assistant--busy .assistant__composer textarea,
+.assistant--busy .assistant__composer button {
+    opacity: 0.55;
+}
+
+.assistant__footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1.5rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--gray-200, #e5e7eb);
+    font-size: 0.85rem;
+    color: var(--gray-500, #6b7280);
+}
+
+.assistant__usage {
+    margin: 0;
+}
+
+/* ── The launcher, wherever it appears ──────────────────────────────────── */
+
+.assistant-launch {
+    display: inline-block;
+    font-size: 0.85rem;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--gray-300, #d1d5db);
+    border-radius: 999px;
+    text-decoration: none;
+}
+
+.assistant-launch:hover {
+    background: var(--gray-100, #f3f4f6);
+}

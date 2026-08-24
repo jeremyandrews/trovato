@@ -146,6 +146,9 @@ struct AppStateInner {
     /// AI chat service for streaming chatbot.
     ai_chat: Arc<services::ai_chat::ChatService>,
 
+    /// AI Assistant configuration service.
+    ai_assistant: Arc<services::ai_assistant::AssistantService>,
+
     /// Theme engine for template rendering.
     theme: Arc<ThemeEngine>,
 
@@ -688,6 +691,11 @@ impl AppState {
             search.clone(),
         ));
 
+        // The AI Assistant's configuration. The turn loop itself takes
+        // `&AppState`, because it needs the tap dispatcher, the scope registry,
+        // the provider service and the budget service all at once.
+        let ai_assistant = Arc::new(services::ai_assistant::AssistantService::new(db.clone()));
+
         // Build shared RequestServices for tap dispatch.
         // This gives plugins access to DB, cache, AI, and HTTP from host functions.
         let tap_http = crate::host::http::build_outbound_client();
@@ -996,6 +1004,7 @@ impl AppState {
                 ai_providers,
                 ai_budgets,
                 ai_chat,
+                ai_assistant,
                 theme,
                 forms,
                 files,
@@ -1220,6 +1229,11 @@ impl AppState {
     /// Get the AI chat service.
     pub fn ai_chat(&self) -> &Arc<services::ai_chat::ChatService> {
         &self.inner.ai_chat
+    }
+
+    /// Get the AI Assistant configuration service.
+    pub fn ai_assistant(&self) -> &Arc<services::ai_assistant::AssistantService> {
+        &self.inner.ai_assistant
     }
 
     /// Get the file service.

@@ -1,6 +1,7 @@
 //! HTTP route handlers.
 
 pub mod admin;
+pub mod admin_ai_assistant;
 pub mod admin_ai_budget;
 pub mod admin_ai_chat;
 pub mod admin_ai_features;
@@ -23,6 +24,7 @@ pub mod api_chat;
 pub mod api_search;
 pub mod api_token;
 pub mod api_v1;
+pub mod assistant;
 pub mod auth;
 pub mod batch;
 pub mod category;
