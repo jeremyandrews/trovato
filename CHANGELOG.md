@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- Language-aware navigation, and the metadata a translated page needs.
+
+  A site serving `/it/why` rendered its menus with default-language addresses,
+  offered nothing a language switcher could be built from, and emitted no
+  `hreflang` alternates. Every fact needed for all three was already in the
+  kernel; nothing assembled them, so sites worked around the gap with a metadata
+  field and a hardcoded path map in their templates.
+
+  **`requested_path`** joins `current_path` in the render context: the address as
+  asked for, before a language prefix was stripped and before an alias was
+  resolved. `current_path` is what the request was rewritten *to* — on an aliased
+  item that is `/item/{uuid}`, which no menu link can ever equal, so the active
+  trail was dead on every aliased page. `current_path` is unchanged; the stock
+  navigation now matches on `requested_path`, which falls back to it.
+
+  **`available_translations`** on an item page: `{language, path}` for every
+  language the page exists in, default included, the default language's canonical
+  alias verbatim and every other language that same address behind a `/{lang}`
+  prefix. One query for existence.
+
+  **Menus follow the language.** When the active language is not the default, a
+  menu link whose target has a translation gets a `/{lang}` prefix on its path,
+  and its title replaced by the translated title when the link's title is the
+  target's default-language title — a label somebody wrote by hand is left as
+  written. A link whose target has no translation is untouched: a translated label
+  on an untranslated page is a promise the click breaks. Two queries for a whole
+  menu, not two per link.
+
+  **`hreflang_links`** is populated at last. `build_hreflang_links` existed and
+  was reachable only from its own tests; it now takes the languages a page
+  actually exists in rather than every language the site knows, because an
+  `hreflang` naming an address that 404s is worse than no tag. `base.html` already
+  emitted the tags.
+
+  Nothing here touches the plugin SDK.
+
 - Fix: the language a page is served in reaches the page.
 
   `inject_site_context` inserted `active_language` and `text_direction`

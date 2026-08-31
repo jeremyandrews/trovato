@@ -321,6 +321,7 @@ fn permitted_text_formats(user: &UserContext) -> Vec<String> {
 async fn view_item(
     State(state): State<AppState>,
     Extension(lang): Extension<ResolvedLanguage>,
+    requested: Option<Extension<crate::middleware::RequestedPath>>,
     session: Session,
     Path(id): Path<Uuid>,
     Query(query): Query<ViewItemQuery>,
@@ -699,8 +700,15 @@ async fn view_item(
             format!("<h1>{}</h1>{}", html_escape(&item.title), children_html)
         });
 
-    // Wrap in page layout with site context
+    // Wrap in page layout with site context.
+    //
+    // `requested_path` goes in first: this route is the common case for reaching
+    // a page through an alias, so `current_path` here is `/item/{uuid}` and the
+    // address the visitor typed is the only thing a menu can be matched against.
     let item_path = format!("/item/{id}");
+    if let Some(Extension(crate::middleware::RequestedPath(ref requested_path))) = requested {
+        context.insert("requested_path", requested_path);
+    }
     super::helpers::inject_site_context(&state, &session, &mut context, &item_path).await;
 
     // Build breadcrumbs: Home > Content Type Label > Item Title
@@ -744,6 +752,19 @@ async fn view_item(
         &content_type_fields,
     );
     context.insert("page_meta", &page_meta);
+
+    // Every language this item can be read in, and where. A theme builds a
+    // language switcher out of `available_translations`; `hreflang_links` is the
+    // same facts for a crawler, and is left out entirely when there is only one
+    // language to name, since a lone self-referential alternate says nothing.
+    let translations = super::helpers::available_translations(&state, id, &canonical_path).await;
+    if translations.len() > 1 {
+        context.insert(
+            "hreflang_links",
+            &super::helpers::build_hreflang_links(&translations, state.default_language()),
+        );
+    }
+    context.insert("available_translations", &translations);
 
     // The AI Assistant's launcher, for every scope that names this item's type.
     //

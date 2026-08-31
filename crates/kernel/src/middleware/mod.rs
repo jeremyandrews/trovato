@@ -11,6 +11,7 @@ pub mod path_alias;
 pub mod query_profiler;
 pub mod rate_limit;
 pub mod redirect;
+pub mod requested_path;
 pub mod security_headers;
 pub mod session_tracking;
 pub mod tenant;
@@ -26,6 +27,7 @@ pub use rate_limit::{
     check_rate_limit, get_client_id, parse_trusted_proxies, rate_limit_response, resolve_client_ip,
 };
 pub use redirect::check_redirect;
+pub use requested_path::RequestedPath;
 pub use security_headers::{SecurityHeaders, inject_security_headers};
 pub use session_tracking::track_session;
 pub use tenant::{TenantResolution, resolve_tenant};

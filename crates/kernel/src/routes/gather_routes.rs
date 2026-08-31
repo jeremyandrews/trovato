@@ -89,6 +89,7 @@ pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
                     move |state: State<AppState>,
                           session: Session,
                           Extension(resolved_lang): Extension<ResolvedLanguage>,
+                          requested: Option<Extension<crate::middleware::RequestedPath>>,
                           uri: OriginalUri,
                           path: Path<HashMap<String, String>>,
                           query_params: Query<HashMap<String, String>>| {
@@ -98,6 +99,7 @@ pub fn build_gather_route_router(queries: &[GatherQuery]) -> Router<AppState> {
                                 state,
                                 session,
                                 resolved_lang,
+                                requested.map(|Extension(r)| r.0),
                                 uri,
                                 path,
                                 query_params,
@@ -122,6 +124,7 @@ async fn handle_gather_route(
     State(state): State<AppState>,
     session: Session,
     resolved_lang: ResolvedLanguage,
+    requested_path: Option<String>,
     OriginalUri(uri): OriginalUri,
     Path(segments): Path<HashMap<String, String>>,
     Query(extra_params): Query<HashMap<String, String>>,
@@ -227,6 +230,7 @@ async fn handle_gather_route(
             params,
             &base_path,
             language,
+            requested_path.as_deref(),
         )
         .await
         {

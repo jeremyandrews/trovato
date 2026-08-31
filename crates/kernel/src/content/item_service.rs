@@ -497,6 +497,58 @@ impl ItemService {
         Ok(rows)
     }
 
+    /// List the languages an item has a translation in, ordered.
+    ///
+    /// Existence only: the caller wants to know which languages to offer, not
+    /// what they say.
+    pub async fn translated_languages(&self, item_id: Uuid) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT language FROM item_translation WHERE item_id = $1 ORDER BY language",
+        )
+        .bind(item_id)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("failed to list translated languages")?;
+        Ok(rows.into_iter().map(|(lang,)| lang).collect())
+    }
+
+    /// Titles for many items at once: the translated one, and the default-language
+    /// one it replaces.
+    ///
+    /// Both halves in one query because both are needed together. A menu label is
+    /// only worth translating when it currently mirrors the target's own title,
+    /// and answering "does it?" needs the default title beside the translated one.
+    /// Menus render on every page, so this is one query for a whole menu rather
+    /// than two per link.
+    ///
+    /// Holds only the items that have a translation in `language`.
+    pub async fn translated_titles_for(
+        &self,
+        item_ids: &[Uuid],
+        language: &str,
+    ) -> Result<HashMap<Uuid, (String, String)>> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT t.item_id, t.title, i.title \
+             FROM item_translation t \
+             JOIN item i ON i.id = t.item_id \
+             WHERE t.item_id = ANY($1) AND t.language = $2",
+        )
+        .bind(item_ids)
+        .bind(language)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("failed to load translated titles")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, translated, original)| (id, (translated, original)))
+            .collect())
+    }
+
     /// Load an item and invoke tap_item_view for rendering.
     ///
     /// Enforces item-level access, then **drops the fields this viewer may not
