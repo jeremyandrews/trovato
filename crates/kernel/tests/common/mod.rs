@@ -119,6 +119,48 @@ pub fn project_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// Languages every test app knows about, beyond the `en` the kernel migration
+/// seeds as the default.
+///
+/// A one-language fixture cannot exercise anything multilingual: language
+/// prefixes are only stripped for *known* non-default languages, so `/it/x` on a
+/// monolingual site is just a 404 and no test could tell a working translation
+/// from a broken one. `he` is here for its direction rather than its content —
+/// it is the only way to see `text_direction` take a value that is not the
+/// default.
+const EXTRA_TEST_LANGUAGES: &[(&str, &str, &str)] =
+    &[("it", "Italian", "ltr"), ("he", "Hebrew", "rtl")];
+
+/// Insert [`EXTRA_TEST_LANGUAGES`], idempotently, on a short-lived pool.
+///
+/// Its own connection rather than the app's: this has to run before
+/// `AppState::new`, which is what builds the app's pool.
+async fn seed_test_languages(database_url: &str) {
+    let pool = match sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(database_url)
+        .await
+    {
+        Ok(pool) => pool,
+        Err(e) => panic!("connect to seed test languages: {e}"),
+    };
+
+    for (id, label, direction) in EXTRA_TEST_LANGUAGES {
+        sqlx::query(
+            "INSERT INTO language (id, label, weight, is_default, direction) \
+             VALUES ($1, $2, 10, false, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(id)
+        .bind(label)
+        .bind(direction)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("seed language '{id}': {e}"));
+    }
+
+    pool.close().await;
+}
+
 impl TestApp {
     /// Create a new test application with full kernel initialization.
     pub async fn new() -> Self {
@@ -173,6 +215,12 @@ impl TestApp {
         }
 
         customize(&mut config);
+
+        // Seed the extra languages before the app reads them. `AppState` snapshots
+        // `known_languages` and `default_language` once at construction, so a
+        // language inserted afterwards is invisible to negotiation for the life of
+        // the app — it has to be in the table first.
+        seed_test_languages(&config.database_url).await;
 
         // Initialize the REAL AppState (database, redis, plugins, templates, etc.)
         let state = AppState::new(&config)

@@ -156,6 +156,11 @@ pub async fn require_permission_json(
 /// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`, `current_path`,
 /// `header_tiles`, `navigation_tiles`, `sidebar_tiles`, `footer_tiles`
 ///
+/// `active_language` and `text_direction` are a *fallback*, not a value: they
+/// are filled in only when the context does not already carry them, so a route
+/// that knows the language the response was negotiated in may insert it on
+/// either side of this call and it will stand.
+///
 /// The `path` parameter is the current request path, used for sidebar tile
 /// visibility filtering.
 ///
@@ -193,14 +198,27 @@ pub async fn inject_site_context(
     // than a scan of the gather registry per render.
     context.insert("feeds", state.feed_links());
 
-    // Language context variables (defaults — route handlers may override active_language)
+    // Language context variables.
+    //
+    // The contract: `active_language` and `text_direction` belong to the route,
+    // which knows the language the response was actually negotiated in. What is
+    // set here is only a fallback for a route that does not set them, so a value
+    // already in the context wins and is never overwritten. Inserting them
+    // unconditionally made the order of the route's own inserts decide the
+    // outcome: a route that set the language before calling this helper had it
+    // silently replaced by the site default, and every translated page it served
+    // rendered with the wrong `<html lang>`.
     context.insert("available_languages", state.known_languages());
     context.insert("default_language", state.default_language());
-    context.insert("active_language", state.default_language());
-    context.insert(
-        "text_direction",
-        crate::middleware::language::text_direction_for_language(state.default_language()),
-    );
+    if !context.contains_key("active_language") {
+        context.insert("active_language", state.default_language());
+    }
+    if !context.contains_key("text_direction") {
+        context.insert(
+            "text_direction",
+            crate::middleware::language::text_direction_for_language(state.default_language()),
+        );
+    }
 
     // Load main navigation menu links from database (not plugin registry)
     let main_menu_links =
