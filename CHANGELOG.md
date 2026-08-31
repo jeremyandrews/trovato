@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Fix: Gather sorted numeric JSONB fields as text.
+
+  Root cause: `add_sorts` routed a `fields.*` sort through `jsonb_extract_expr`,
+  which builds `fields->>'path'`. `->>` extracts **text**, so `ORDER BY` compared
+  strings whatever the JSON type actually was. A documentation index sorted by a
+  numeric `fields.weight` (0, 10, 20 ... 350) rendered as 0, 10, 100, 110 ... 20,
+  200 ...: the tutorial's Part 7 led the list and Parts 1 to 6 sat at the bottom.
+
+  `ORDER BY` now extracts with `->` (jsonb) through a new `jsonb_sort_expr`
+  beside the existing helper, which is left alone: filters and selects read text
+  on purpose. jsonb comparison is typed, so numbers compare numerically and
+  strings lexically without the query author declaring anything, and a nested
+  path stays jsonb at every hop. Mixed types under one key now sort by jsonb's
+  type ordering, which is a data problem surfaced rather than created.
+
 - Security: update wasmtime to 47.0.4, closing two advisories in the plugin
   runtime.
 

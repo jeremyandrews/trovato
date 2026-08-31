@@ -745,6 +745,64 @@ impl GatherQueryBuilder {
         }
     }
 
+    /// Build a JSONB extraction expression for use in `ORDER BY`.
+    ///
+    /// The same path as [`Self::jsonb_extract_expr`], extracted with `->`
+    /// (jsonb) rather than `->>` (text). The operator is the whole fix: `->>`
+    /// hands PostgreSQL a string, so `ORDER BY` compares strings, and a numeric
+    /// field sorted ascending comes back 0, 10, 100, 110, ... 20, 200 — the
+    /// order a documentation index sorted by `fields.weight` actually rendered
+    /// in. jsonb comparison is typed: numbers compare numerically and strings
+    /// compare lexically, so one operator is right for both and the query author
+    /// declares nothing.
+    ///
+    /// A separate expression rather than a change to the shared helper: filters
+    /// and selects read text on purpose, and `->>` is correct for them.
+    ///
+    /// Mixed types under one key sort by jsonb's own type ordering
+    /// (`Object > Array > Boolean > Number > String > Null`), which groups by
+    /// type before it orders within one. That is a data problem surfaced, not
+    /// created: under `->>` the same rows sorted by their text spelling, which
+    /// only looked orderly.
+    fn jsonb_sort_expr(&self, table: &str, path: &str) -> SimpleExpr {
+        // Defense-in-depth: validate table name before interpolation
+        if !is_safe_identifier(table) {
+            tracing::error!(
+                table = &table[..table.len().min(64)],
+                "unsafe table name in JSONB sort expression; returning NULL"
+            );
+            return Expr::cust("NULL");
+        }
+
+        if path.contains('.') {
+            // Nested path: fields->'nested'->'field'
+            let parts: Vec<&str> = path.split('.').collect();
+            for part in &parts {
+                if !is_safe_identifier(part) {
+                    tracing::error!(
+                        path = &path[..path.len().min(64)],
+                        "unsafe JSONB sort path component; returning NULL"
+                    );
+                    return Expr::cust("NULL");
+                }
+            }
+            let mut expr = format!("{table}.fields");
+            for part in &parts {
+                expr = format!("({expr}->'{part}')");
+            }
+            Expr::cust(expr)
+        } else {
+            if !is_safe_identifier(path) {
+                tracing::error!(
+                    path = &path[..path.len().min(64)],
+                    "unsafe JSONB sort path; returning NULL"
+                );
+                return Expr::cust("NULL");
+            }
+            Expr::cust(format!("{table}.fields->'{path}'"))
+        }
+    }
+
     /// Build a category filter condition.
     ///
     /// Category tag IDs are stored as a JSONB **array of UUID strings**:
@@ -902,7 +960,7 @@ impl GatherQueryBuilder {
 
             if sort.field.starts_with("fields.") {
                 let jsonb_path = &sort.field[7..];
-                let expr = self.jsonb_extract_expr(&self.definition.base_table, jsonb_path);
+                let expr = self.jsonb_sort_expr(&self.definition.base_table, jsonb_path);
                 if let Some(nulls) = null_order {
                     query.order_by_expr_with_nulls(expr, order, nulls);
                 } else {
@@ -1791,6 +1849,99 @@ mod tests {
         );
     }
 
+    /// ORDER BY extracts jsonb, not text. The operator is the whole bug: `->>`
+    /// hands PostgreSQL a string and a numeric field sorts 0, 10, 100, ... 20.
+    #[test]
+    fn a_fields_sort_orders_by_jsonb_not_text() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            sorts: vec![QuerySort {
+                field: "fields.weight".to_string(),
+                direction: SortDirection::Asc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID).build(1, 10);
+
+        assert!(
+            sql.contains("item.fields->'weight'"),
+            "ORDER BY must extract jsonb: {sql}"
+        );
+        assert!(
+            !sql.contains("item.fields->>'weight'"),
+            "text extraction in ORDER BY is what sorted numbers as strings: {sql}"
+        );
+    }
+
+    /// A nested path is jsonb all the way down, where the text version turned
+    /// only the last hop into text.
+    #[test]
+    fn a_nested_fields_sort_is_jsonb_at_every_hop() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            sorts: vec![QuerySort {
+                field: "fields.meta.order".to_string(),
+                direction: SortDirection::Asc,
+                nulls: None,
+            }],
+            ..Default::default()
+        };
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID).build(1, 10);
+
+        assert!(
+            sql.contains("((item.fields->'meta')->'order')"),
+            "nested ORDER BY must stay jsonb throughout: {sql}"
+        );
+        assert!(!sql.contains("->>'order'"), "{sql}");
+    }
+
+    /// Filters still read text. Only ORDER BY changed, because only ORDER BY
+    /// compares — a `LIKE` or an equality against a string wants the text form.
+    #[test]
+    fn a_fields_filter_still_extracts_text() {
+        let def = QueryDefinition {
+            base_table: "item".to_string(),
+            filters: vec![QueryFilter {
+                field: "fields.city".to_string(),
+                operator: FilterOperator::Equals,
+                value: FilterValue::String("Milano".to_string()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID).build(1, 10);
+
+        assert!(
+            sql.contains("item.fields->>'city'"),
+            "a filter must keep reading text: {sql}"
+        );
+    }
+
+    /// The nulls branch is unchanged, and still names where a missing value goes.
+    #[test]
+    fn nulls_ordering_survives_the_jsonb_sort() {
+        for (nulls, expected) in [
+            (NullsOrder::First, "NULLS FIRST"),
+            (NullsOrder::Last, "NULLS LAST"),
+        ] {
+            let def = QueryDefinition {
+                base_table: "item".to_string(),
+                sorts: vec![QuerySort {
+                    field: "fields.weight".to_string(),
+                    direction: SortDirection::Asc,
+                    nulls: Some(nulls),
+                }],
+                ..Default::default()
+            };
+            let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID).build(1, 10);
+            assert!(sql.contains(expected), "expected {expected} in: {sql}");
+            assert!(sql.contains("item.fields->'weight'"), "{sql}");
+        }
+    }
+
     // SECURITY REGRESSION TEST — Story 27.2: sort field injection neutralized to NULL
     #[test]
     fn sort_field_injection_returns_null() {
@@ -1808,7 +1959,7 @@ mod tests {
 
         // Sort expression should be neutralized to NULL ORDER BY, not raw injection.
         assert!(
-            !sql.contains("->>"),
+            !sql.contains("->"),
             "should not generate JSONB extraction for unsafe sort field: {sql}"
         );
         assert!(
