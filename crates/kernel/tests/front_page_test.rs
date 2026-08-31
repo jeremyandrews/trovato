@@ -261,6 +261,82 @@ fn configured_item_still_renders_inline() {
     });
 }
 
+/// A translation of the front-page item is content, not decoration.
+///
+/// The front handler rendered the configured item without ever applying the
+/// translation overlay, so a translation aimed at the front page was
+/// configuration nothing read: `/it` served the default-language text. The
+/// language reaches the page too — same context-ordering contract as everywhere
+/// else.
+#[test]
+fn a_front_page_translation_is_served_in_that_language() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let title = format!("Front Page {marker}");
+        let id = create_item(app, &title, 0, chrono::Utc::now().timestamp()).await;
+
+        let translated = format!("Prima Pagina {marker}");
+        sqlx::query(
+            "INSERT INTO item_translation (item_id, language, title, fields) \
+             VALUES ($1, 'it', $2, '{}'::jsonb) \
+             ON CONFLICT (item_id, language) DO UPDATE SET title = EXCLUDED.title",
+        )
+        .bind(id)
+        .bind(&translated)
+        .execute(&app.db)
+        .await
+        .expect("record front page translation");
+
+        set_front_page(app, &format!("/item/{id}")).await;
+
+        // Through `Accept-Language`: a `/it/` prefix is stripped by the alias
+        // fallback, which never sees `/`. The header is the negotiator that
+        // reaches this route.
+        let italian = app
+            .request(
+                Request::get("/")
+                    .header("Accept-Language", "it")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(
+            italian.status(),
+            StatusCode::OK,
+            "the front page renders in Italian"
+        );
+        let body = body_text(italian).await;
+        assert!(
+            body.contains(&translated),
+            "the Italian front page must show the translated title, body was:\n{body}"
+        );
+        assert!(
+            body.contains(r#"lang="it""#),
+            "the Italian front page must declare lang=\"it\""
+        );
+
+        // The default language is untouched: the overlay is applied only when
+        // the request asked for another language.
+        let english = get_front_page(app).await;
+        let body = body_text(english).await;
+        assert!(
+            body.contains(&title),
+            "the default front page must still show the default title"
+        );
+        assert!(
+            !body.contains(&translated),
+            "the default front page must not show the translation"
+        );
+
+        clear_front_page(app).await;
+        delete_items(app, &[id]).await;
+    });
+}
+
 /// A front page aimed off-site is refused, and `/` falls back to its default.
 #[test]
 fn external_front_page_is_rejected() {

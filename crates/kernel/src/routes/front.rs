@@ -1,7 +1,7 @@
 //! Front page route handler.
 
 use axum::{
-    Router,
+    Extension, Router,
     extract::{RawQuery, State},
     http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
@@ -11,6 +11,7 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::FilterPipeline;
+use crate::middleware::language::{ResolvedLanguage, text_direction_for_language};
 use crate::models::{Item, SiteConfig};
 use crate::state::AppState;
 
@@ -36,13 +37,22 @@ pub fn router() -> Router<AppState> {
 /// promoted items listing is shown.
 async fn front_page(
     State(state): State<AppState>,
+    Extension(lang): Extension<ResolvedLanguage>,
     session: Session,
     RawQuery(query): RawQuery,
 ) -> Response {
+    let active_language = lang.0;
+
     // Check for a configured front page
     if let Ok(Some(front_path)) = SiteConfig::front_page(state.db()).await
-        && let Some(response) =
-            render_configured_front_page(&state, &session, &front_path, query.as_deref()).await
+        && let Some(response) = render_configured_front_page(
+            &state,
+            &session,
+            &front_path,
+            query.as_deref(),
+            &active_language,
+        )
+        .await
     {
         return response;
     }
@@ -51,6 +61,7 @@ async fn front_page(
     let content = render_promoted_listing(&state).await;
 
     let mut context = tera::Context::new();
+    insert_language_context(&mut context, &active_language);
     inject_site_context(&state, &session, &mut context, "/").await;
 
     let html = state
@@ -69,6 +80,7 @@ async fn render_configured_front_page(
     session: &Session,
     front_path: &str,
     query: Option<&str>,
+    active_language: &str,
 ) -> Option<Response> {
     let path = local_front_path(front_path)?;
 
@@ -76,7 +88,7 @@ async fn render_configured_front_page(
         .strip_prefix("/item/")
         .and_then(|id_str| Uuid::parse_str(id_str).ok())
     {
-        return render_front_page_item(state, session, item_id)
+        return render_front_page_item(state, session, item_id, active_language)
             .await
             .map(|html| Html(html).into_response());
     }
@@ -157,6 +169,7 @@ async fn render_front_page_item(
     state: &AppState,
     session: &Session,
     item_id: Uuid,
+    active_language: &str,
 ) -> Option<String> {
     // Use load_for_view to invoke tap hooks and check access.
     //
@@ -167,10 +180,38 @@ async fn render_front_page_item(
     // all, so a default install (whose anonymous role does have "access
     // content") silently fell through to the promoted listing.
     let user = super::item::get_user_context(session, state).await;
-    let (item, render_outputs) = state.items().load_for_view(item_id, &user).await.ok()??;
+    let (mut item, render_outputs) = state.items().load_for_view(item_id, &user).await.ok()??;
 
     if !item.is_published() {
         return None;
+    }
+
+    // Overlay the translation, the same way the item route does. An item shown
+    // at `/` is still that item: a translation configured for it is content,
+    // not decoration, and skipping the overlay here made it a setting nothing
+    // ever read.
+    if active_language != state.default_language() {
+        super::helpers::apply_translation_overlay(state.items(), &mut item, active_language).await;
+
+        // The overlay may re-materialize a field `load_for_view` dropped (a
+        // translation can carry a restricted field's value). Re-apply the
+        // field-access filter so the SSR output never leaks it.
+        let names: Vec<String> = item
+            .fields
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        if !names.is_empty() {
+            let allowed: std::collections::HashSet<String> = state
+                .items()
+                .accessible_fields(&user, &item.item_type, &names, "view")
+                .await
+                .into_iter()
+                .collect();
+            if let Some(obj) = item.fields.as_object_mut() {
+                obj.retain(|k, _| allowed.contains(k));
+            }
+        }
     }
 
     // Render item fields and plugin outputs
@@ -194,6 +235,7 @@ async fn render_front_page_item(
     let mut context = tera::Context::new();
     context.insert("item", &item);
     context.insert("children", &children_html);
+    insert_language_context(&mut context, active_language);
 
     let item_html = state.theme().tera().render(&template, &context).ok()?;
 
@@ -204,6 +246,19 @@ async fn render_front_page_item(
         .theme()
         .render_page("/front", &item.title, &item_html, &mut context)
         .ok()
+}
+
+/// Record the language this response was negotiated in.
+///
+/// Set before `inject_site_context`, which only supplies the site default when
+/// the context does not already carry a language. The route knows the answer;
+/// the helper only has a fallback.
+fn insert_language_context(context: &mut tera::Context, active_language: &str) {
+    context.insert("active_language", active_language);
+    context.insert(
+        "text_direction",
+        text_direction_for_language(active_language),
+    );
 }
 
 /// Render promoted items listing HTML.

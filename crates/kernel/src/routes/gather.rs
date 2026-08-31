@@ -393,7 +393,10 @@ pub async fn execute_and_render(
     let mut context = tera::Context::new();
     super::helpers::inject_site_context(state, session, &mut context, base_path).await;
 
-    // Override active_language and text_direction when translation overlay is active
+    // Set active_language and text_direction when a translation overlay is
+    // active. `inject_site_context` only fills these in when the context does
+    // not already carry them, so this may run on either side of that call;
+    // it stays after it as the one place the post-call order is exercised.
     if let Some(ref lang) = query_context.language {
         context.insert("active_language", lang);
         context.insert(

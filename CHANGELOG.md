@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- Fix: the language a page is served in reaches the page.
+
+  `inject_site_context` inserted `active_language` and `text_direction`
+  unconditionally, while its own comment said route handlers could override them.
+  That made the *order* of a route's inserts decide the outcome, which is not a
+  contract: `routes/gather.rs` inserted after the call and was right,
+  `routes/item.rs` inserted before it and was silently overwritten with the site
+  default. Every translated item page therefore rendered `<html lang="en">`
+  whatever language it was actually served in, so a screen reader read Italian
+  prose in an English voice (WCAG 3.1.1) and no template could branch on the
+  language.
+
+  The helper now fills these in only when the context does not already carry
+  them, and its doc comment states the contract: the route's value is
+  authoritative, the site default is a fallback. Both insert orders are correct
+  from here, and both are exercised by tests.
+
+  The front page had the same symptom from a different cause: `routes/front.rs`
+  rendered the configured front-page item without ever calling
+  `apply_translation_overlay`, so a translation aimed at the front page was
+  configuration nothing read. It applies the overlay now, with the same
+  field-access re-filter the item route does after one, and records the
+  negotiated language on the page.
+
 ## v0.102.0 — 2026-08-25
 
 An assistant a plugin can be configured through, and the tool calling the kernel
