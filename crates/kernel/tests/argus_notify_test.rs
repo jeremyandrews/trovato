@@ -591,6 +591,33 @@ fn the_pipeline_turns_a_summarized_story_into_a_dispatched_notification() {
         let ntfy = seed_ntfy_channel(&pool).await;
         let hook = seed_webhook_channel(&pool).await;
 
+        let cron = cron_with_ai(pool.clone(), dispatcher());
+
+        // The two articles are seeded and drained **one at a time**, and that
+        // staging is load-bearing rather than tidiness.
+        //
+        // This test asserts the founding notification carries the story as it
+        // stood when the reader was told about it — one article — and then that
+        // the second article's re-summarize is an update the debounce suppresses.
+        // That is a sequence: cluster(a) → summarize(a) → cluster(b) →
+        // summarize(b). The queue promises no such thing. `claim_batch` claims up
+        // to the plugin's honored width (D-47: one width per *plugin*, the max
+        // over its declared queues, so 4 for argus) ordered by `created_at`
+        // across every stage at once, and dispatches the claimed batch in
+        // parallel. Two articles seeded together produce two cluster jobs a
+        // microsecond apart, which land in one batch and run concurrently — so
+        // whether the first summarize saw one member or two was decided by task
+        // scheduling, not by the code under test.
+        //
+        // Seeded together, this failed twice and passed once on one unchanged
+        // commit in CI (run 33372351076, shard 1/3), reporting `article_count` 2
+        // where it asserts 1. Draining to idle between the two arrivals
+        // establishes the ordering the assertions are about, so they now hold
+        // because the pipeline behaves, not because the scheduler was kind.
+        //
+        // Arrivals that genuinely coincide are a different scenario with a
+        // different, equally correct outcome: one synthesis carrying both
+        // articles. Nothing here asserts anything about that case.
         seed_decided_article(
             &pool,
             feed_a,
@@ -600,6 +627,26 @@ fn the_pipeline_turns_a_summarized_story_into_a_dispatched_notification() {
             85,
         )
         .await;
+        drain_until_idle(&cron, 20).await;
+
+        // The founding synthesis has happened and its notification has been
+        // dispatched. Pinned before the second article exists, so a regression
+        // that let the two overlap again fails here, naming the cause, instead of
+        // surfacing as a confusing `article_count` mismatch further down.
+        let founded: i32 = sqlx::query_scalar("SELECT article_count FROM argus_stories")
+            .fetch_one(&pool)
+            .await
+            .expect("the first article founded exactly one story");
+        assert_eq!(
+            founded, 1,
+            "the story must be founded and summarized by the first article alone"
+        );
+        assert_eq!(
+            events(&pool).await.len(),
+            1,
+            "the founding synthesis recorded exactly one event"
+        );
+
         seed_decided_article(
             &pool,
             feed_b,
@@ -609,8 +656,6 @@ fn the_pipeline_turns_a_summarized_story_into_a_dispatched_notification() {
             85,
         )
         .await;
-
-        let cron = cron_with_ai(pool.clone(), dispatcher());
         drain_until_idle(&cron, 20).await;
 
         // ---- the story formed and was summarized -------------------------
