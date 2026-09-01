@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Security: update wasmtime to 47.0.4, closing two advisories in the plugin
+  runtime.
+
+  RUSTSEC-2026-0269 (8.8 high) is a filesystem sandbox escape when paths or
+  symlinks carry trailing slashes. RUSTSEC-2026-0268 (6.9 medium) lets a guest
+  drive a host heap allocation of its own choosing through WASIp3 streams. Both
+  land squarely in the threat model: the kernel runs plugin code it does not
+  trust, and the sandbox is what stands between a plugin and the host filesystem.
+
+  A patch bump inside the existing `wasmtime = "47"` range, so only `Cargo.lock`
+  moves. `cargo audit` reports no vulnerabilities afterwards, and the whole
+  plugin and runtime suite — 116 tests across the invocation, API, mail, queue,
+  recovery, contact and assistant paths — passes against the new runtime.
+
 - Language-aware navigation, and the metadata a translated page needs.
 
   A site serving `/it/why` rendered its menus with default-language addresses,
