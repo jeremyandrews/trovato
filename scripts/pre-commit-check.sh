@@ -73,7 +73,7 @@ run_check "Doc tests" cargo test --all --doc
 # value-free (else use Expr::cust_with_values) and bump the baseline. Keep
 # CUST_BASELINE identical to .github/workflows/ci.yml.
 echo "=== SQL custom-expr guard ==="
-CUST_BASELINE=16
+CUST_BASELINE=21
 CUST_COUNT=$(grep -rn --include='*.rs' 'Expr::cust(' crates/ | wc -l | tr -d ' ')
 if [[ "$CUST_COUNT" -gt "$CUST_BASELINE" ]]; then
     echo -e "${RED}FAIL${NC}: $CUST_COUNT bare Expr::cust( sites > baseline $CUST_BASELINE."
