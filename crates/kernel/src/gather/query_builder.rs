@@ -764,6 +764,16 @@ impl GatherQueryBuilder {
     /// type before it orders within one. That is a data problem surfaced, not
     /// created: under `->>` the same rows sorted by their text spelling, which
     /// only looked orderly.
+    ///
+    /// # Safety (SQL)
+    ///
+    /// Every `Expr::cust` below is value-free, which is what the SQL Custom-Expr
+    /// Guard's baseline bump records: three are the constant `"NULL"`, and the
+    /// two that interpolate build an identifier fragment whose every component
+    /// has passed `is_safe_identifier` first. No caller value is ever inlined —
+    /// a sort path is a config-supplied field name, not a bound value — so
+    /// `Expr::cust_with_values` has nothing to bind. Same discipline as
+    /// [`Self::jsonb_extract_expr`].
     fn jsonb_sort_expr(&self, table: &str, path: &str) -> SimpleExpr {
         // Defense-in-depth: validate table name before interpolation
         if !is_safe_identifier(table) {
