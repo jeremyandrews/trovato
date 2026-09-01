@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Fix: `argus_notify_test` no longer passes or fails on scheduling (#66).
+
+  `the_pipeline_turns_a_summarized_story_into_a_dispatched_notification`
+  asserted that the founding notification carries `article_count` 1. That value
+  is snapshotted when summarize runs (`argus-core/src/pipeline.rs`), so it is 1
+  only if the second article has not clustered yet — an ordering the test never
+  established and the queue never promised. `claim_batch` claims per *plugin*,
+  ordered by `created_at` across every stage at once, and runs the batch in
+  parallel, so two articles seeded together produce two cluster jobs that may or
+  may not coincide. On one unchanged commit in CI this failed twice and passed
+  once.
+
+  The test now seeds and drains the two arrivals one at a time, so the sequence
+  it asserts is one it arranged. No assertion was loosened; two were added,
+  pinning the founding state before the second article exists so a regression
+  names its own cause. The pipeline is unchanged — it was behaving correctly
+  under the documented per-plugin concurrency model.
+
 - Fix: Gather sorted numeric JSONB fields as text.
 
   Root cause: `add_sorts` routed a `fields.*` sort through `jsonb_extract_expr`,
