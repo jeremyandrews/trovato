@@ -263,6 +263,7 @@ async fn render_query_html(
     State(state): State<AppState>,
     session: Session,
     Extension(resolved_lang): Extension<ResolvedLanguage>,
+    requested: Option<Extension<crate::middleware::RequestedPath>>,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
@@ -275,7 +276,17 @@ async fn render_query_html(
         .and_then(|q| q.display.canonical_url);
     let base_path = canonical.unwrap_or_else(|| format!("/gather/{query_id}"));
     let language = language_for_context(&resolved_lang, state.default_language());
-    execute_and_render(&state, &session, &query_id, params, &base_path, language).await
+    let requested_path = requested.map(|Extension(r)| r.0);
+    execute_and_render(
+        &state,
+        &session,
+        &query_id,
+        params,
+        &base_path,
+        language,
+        requested_path.as_deref(),
+    )
+    .await
 }
 
 /// Execute a gather query and render it as an HTML page.
@@ -323,6 +334,7 @@ pub async fn execute_and_render(
     params: ExecuteParams,
     base_path: &str,
     language: Option<String>,
+    requested_path: Option<&str>,
 ) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
     let viewer = crate::routes::item::get_user_context(session, state).await;
     let user_id = viewer.authenticated.then_some(viewer.id);
@@ -389,8 +401,14 @@ pub async fn execute_and_render(
         render_gather_content_html(&gather_query, &result, &filter_values, base_path, &preload)
     });
 
-    // Wrap in page layout with site context
+    // Wrap in page layout with site context.
+    //
+    // `requested_path` first: a gather alias is reached at a path that still
+    // carries its language prefix, and `base_path` has had it stripped.
     let mut context = tera::Context::new();
+    if let Some(requested_path) = requested_path {
+        context.insert("requested_path", requested_path);
+    }
     super::helpers::inject_site_context(state, session, &mut context, base_path).await;
 
     // Set active_language and text_direction when a translation overlay is

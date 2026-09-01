@@ -220,11 +220,29 @@ pub async fn inject_site_context(
         );
     }
 
+    // The language the menus below are built for. Read back out of the context
+    // rather than taken from `state`, because the line above has just settled
+    // whose value wins.
+    let active_language = context
+        .get("active_language")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| state.default_language())
+        .to_string();
+
+    // The address as asked for, kept beside `current_path` rather than instead
+    // of it. A route that knows the original sets it before calling this; the
+    // fallback is `current_path`, which is right for every route that is never
+    // reached through an alias or a language prefix.
+    if !context.contains_key("requested_path") {
+        context.insert("requested_path", &path);
+    }
+
     // Load main navigation menu links from database (not plugin registry)
     let main_menu_links =
         crate::models::MenuLink::find_by_menu_and_stage(state.db(), "main", LIVE_STAGE_ID)
             .await
             .unwrap_or_default();
+    let main_menu_links = localize_menu_links(state, main_menu_links, &active_language).await;
     context.insert("main_menu", &main_menu_links);
 
     // Load footer menu links from database
@@ -232,6 +250,7 @@ pub async fn inject_site_context(
         crate::models::MenuLink::find_by_menu_and_stage(state.db(), "footer", LIVE_STAGE_ID)
             .await
             .unwrap_or_default();
+    let footer_menu_links = localize_menu_links(state, footer_menu_links, &active_language).await;
     context.insert("footer_menu", &footer_menu_links);
 
     // The viewer, with real permissions, loaded once and used for everything
@@ -591,6 +610,90 @@ pub fn render_not_found() -> Response {
     (StatusCode::NOT_FOUND, Html(html)).into_response()
 }
 
+/// Point a menu at the translated pages it has, and leave the rest alone.
+///
+/// A site serving `/it/why` rendered its navigation with default-language
+/// addresses, so every click out of the menu left the translation. This rewrites
+/// a link when, and only when, the page behind it exists in `language`:
+///
+/// - the path gains a `/{language}` prefix, so the click stays in the language;
+/// - the title is replaced by the translated item's title **when the link's own
+///   title is the target's default-language title**, which is the common case of
+///   a menu label mirroring a page title. A label somebody wrote by hand is
+///   theirs, and is left as they wrote it.
+///
+/// A link whose target has no translation is untouched, address and label both. A
+/// translated label on an untranslated page is a promise the click breaks.
+///
+/// Two queries for a whole menu, not two per link: menus render on every page.
+/// Nothing is cached here because nothing else in menu building is — the links
+/// themselves are read per render.
+async fn localize_menu_links(
+    state: &crate::state::AppState,
+    links: Vec<crate::models::MenuLink>,
+    language: &str,
+) -> Vec<crate::models::MenuLink> {
+    if language == state.default_language() || links.is_empty() {
+        return links;
+    }
+
+    // What each link points at. A path is either an item source path already or
+    // an alias standing in for one; anything else is not content and cannot be
+    // translated.
+    let aliases: Vec<String> = links
+        .iter()
+        .filter(|link| item_id_from_source(&link.path).is_none())
+        .map(|link| link.path.clone())
+        .collect();
+    let sources = crate::models::UrlAlias::sources_for_aliases(
+        state.db(),
+        &aliases,
+        LIVE_STAGE_ID,
+        state.default_language(),
+    )
+    .await
+    .unwrap_or_default();
+
+    let targets: Vec<Option<uuid::Uuid>> = links
+        .iter()
+        .map(|link| {
+            item_id_from_source(&link.path)
+                .or_else(|| sources.get(&link.path).and_then(|s| item_id_from_source(s)))
+        })
+        .collect();
+
+    let ids: Vec<uuid::Uuid> = targets.iter().flatten().copied().collect();
+    let translations = state
+        .items()
+        .translated_titles_for(&ids, language)
+        .await
+        .unwrap_or_default();
+
+    links
+        .into_iter()
+        .zip(targets)
+        .map(|(mut link, target)| {
+            let Some((translated_title, default_title)) =
+                target.and_then(|id| translations.get(&id))
+            else {
+                return link;
+            };
+
+            link.path = format!("/{language}{}", link.path);
+            if link.title == *default_title && !translated_title.is_empty() {
+                link.title = translated_title.clone();
+            }
+            link
+        })
+        .collect()
+}
+
+/// The item a source path names, or `None` if it names something else.
+fn item_id_from_source(path: &str) -> Option<uuid::Uuid> {
+    path.strip_prefix("/item/")
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+}
+
 /// Build local task tab data from the menu registry, merged with hardcoded tabs.
 ///
 /// Looks up plugin-registered local tasks for the given `parent_path` and
@@ -844,28 +947,85 @@ pub fn is_valid_timezone(tz: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '+' || c == '-')
 }
 
+/// One language a page can be read in, and the address it is read at.
+///
+/// Goes into the render context as `available_translations`, which is what a
+/// theme builds a language switcher out of, and is the input to
+/// [`build_hreflang_links`]. The two must not disagree: a switcher offering an
+/// address that the `hreflang` tags do not name is a page telling a person and a
+/// crawler different things.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TranslationLink {
+    /// The language code.
+    pub language: String,
+    /// The address this page is served at in that language.
+    pub path: String,
+}
+
 /// Build `<link rel="alternate" hreflang="...">` data for template rendering.
 ///
-/// The default language uses the unprefixed path; non-default languages get a
-/// `/{lang}` prefix. An `x-default` entry always points to the unprefixed URL.
+/// Takes the languages a page actually exists in, rather than every language the
+/// site knows: `hreflang` naming an address that 404s is worse than no tag,
+/// because a crawler acts on it. `x-default` points at the default language's
+/// address, falling back to the first entry when the page has no default-language
+/// version.
 pub fn build_hreflang_links(
-    path: &str,
-    languages: &[String],
+    translations: &[TranslationLink],
     default_language: &str,
 ) -> Vec<serde_json::Value> {
-    let mut links = Vec::with_capacity(languages.len() + 1);
-
-    for lang in languages {
-        let href = if lang == default_language {
-            path.to_string()
-        } else {
-            format!("/{lang}{path}")
-        };
-        links.push(serde_json::json!({ "lang": lang, "href": href }));
+    if translations.is_empty() {
+        return Vec::new();
     }
 
-    // x-default always points to the unprefixed URL
-    links.push(serde_json::json!({ "lang": "x-default", "href": path }));
+    let mut links = Vec::with_capacity(translations.len() + 1);
+
+    for alternate in translations {
+        links.push(serde_json::json!({ "lang": alternate.language, "href": alternate.path }));
+    }
+
+    let x_default = translations
+        .iter()
+        .find(|t| t.language == default_language)
+        .unwrap_or(&translations[0]);
+    links.push(serde_json::json!({ "lang": "x-default", "href": x_default.path }));
+
+    links
+}
+
+/// Every language a page can be read in, with the address for each.
+///
+/// The default language's address is the canonical alias verbatim; every other
+/// language is that same address behind a `/{lang}` prefix, which is how the
+/// language prefix negotiator reads it back. Existence comes from
+/// `item_translation` in one query, and a translation in a language the site no
+/// longer configures is dropped rather than offered.
+pub async fn available_translations(
+    state: &crate::state::AppState,
+    item_id: uuid::Uuid,
+    canonical_path: &str,
+) -> Vec<TranslationLink> {
+    let default_language = state.default_language();
+
+    let mut links = vec![TranslationLink {
+        language: default_language.to_string(),
+        path: canonical_path.to_string(),
+    }];
+
+    let translated = state
+        .items()
+        .translated_languages(item_id)
+        .await
+        .unwrap_or_default();
+
+    for language in translated {
+        if language == default_language || !state.known_languages().contains(&language) {
+            continue;
+        }
+        links.push(TranslationLink {
+            path: format!("/{language}{canonical_path}"),
+            language,
+        });
+    }
 
     links
 }
@@ -1139,25 +1299,33 @@ mod tests {
 
     // --- build_hreflang_links tests ---
 
+    fn translation(language: &str, path: &str) -> TranslationLink {
+        TranslationLink {
+            language: language.to_string(),
+            path: path.to_string(),
+        }
+    }
+
     #[test]
     fn hreflang_links_default_language_unprefixed() {
-        let languages = vec!["en".to_string(), "fr".to_string()];
-        let links = build_hreflang_links("/about", &languages, "en");
-        // en (default) should be unprefixed
+        let links = build_hreflang_links(
+            &[translation("en", "/about"), translation("fr", "/fr/about")],
+            "en",
+        );
+        // en (default) is the unprefixed address
         assert_eq!(links[0]["lang"], "en");
         assert_eq!(links[0]["href"], "/about");
-        // fr (non-default) should be prefixed
+        // fr carries its prefix
         assert_eq!(links[1]["lang"], "fr");
         assert_eq!(links[1]["href"], "/fr/about");
-        // x-default always unprefixed
+        // x-default points at the default language
         assert_eq!(links[2]["lang"], "x-default");
         assert_eq!(links[2]["href"], "/about");
     }
 
     #[test]
     fn hreflang_links_single_language() {
-        let languages = vec!["en".to_string()];
-        let links = build_hreflang_links("/", &languages, "en");
+        let links = build_hreflang_links(&[translation("en", "/")], "en");
         assert_eq!(links.len(), 2); // en + x-default
         assert_eq!(links[0]["lang"], "en");
         assert_eq!(links[0]["href"], "/");
@@ -1166,13 +1334,32 @@ mod tests {
     }
 
     #[test]
-    fn hreflang_links_non_default_all_prefixed() {
-        let languages = vec!["en".to_string(), "fr".to_string(), "de".to_string()];
-        let links = build_hreflang_links("/contact", &languages, "en");
+    fn hreflang_links_name_only_the_languages_the_page_exists_in() {
+        // The site may know four languages; this page is written in three, and a
+        // tag for the fourth would point a crawler at a 404.
+        let links = build_hreflang_links(
+            &[
+                translation("en", "/contact"),
+                translation("fr", "/fr/contact"),
+                translation("de", "/de/contact"),
+            ],
+            "en",
+        );
         assert_eq!(links.len(), 4); // 3 languages + x-default
-        // fr and de should be prefixed
         assert_eq!(links[1]["href"], "/fr/contact");
         assert_eq!(links[2]["href"], "/de/contact");
+    }
+
+    #[test]
+    fn a_page_with_nothing_to_offer_gets_no_tags() {
+        assert!(build_hreflang_links(&[], "en").is_empty());
+    }
+
+    #[test]
+    fn x_default_falls_back_when_there_is_no_default_language_version() {
+        let links = build_hreflang_links(&[translation("fr", "/fr/about")], "en");
+        assert_eq!(links.last().unwrap()["lang"], "x-default");
+        assert_eq!(links.last().unwrap()["href"], "/fr/about");
     }
 
     // --- permissions_or_deny_all: the chosen failure policy ---

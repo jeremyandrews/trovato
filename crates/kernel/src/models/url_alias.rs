@@ -227,6 +227,43 @@ impl UrlAlias {
         Ok(rows.into_iter().collect())
     }
 
+    /// Resolve many aliases back to their source paths in one query.
+    ///
+    /// The reverse of [`Self::canonical_aliases_for`], and it exists for the same
+    /// reason: menu building holds a page of link paths at once, and asking what
+    /// each one points at cannot be a query per link on every page render.
+    ///
+    /// Returns a map from alias to source, holding only the aliases that resolve.
+    /// `DISTINCT ON (alias)` with the same most-recent ordering the forward
+    /// lookup uses, so the two cannot disagree about which row is canonical.
+    pub async fn sources_for_aliases(
+        pool: &PgPool,
+        aliases: &[String],
+        stage_id: Uuid,
+        language: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        if aliases.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT ON (alias) alias, source
+            FROM url_alias
+            WHERE alias = ANY($1) AND stage_id = $2 AND language = $3
+            ORDER BY alias, created DESC, id DESC
+            "#,
+        )
+        .bind(aliases)
+        .bind(stage_id)
+        .bind(language)
+        .fetch_all(pool)
+        .await
+        .context("failed to resolve aliases to sources")?;
+
+        Ok(rows.into_iter().collect())
+    }
+
     /// Get the canonical URL for an item.
     /// Returns the alias path if found, otherwise `/item/{id}`.
     pub async fn get_canonical_url(pool: &PgPool, item_id: Uuid) -> Result<String> {

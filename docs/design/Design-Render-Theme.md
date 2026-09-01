@@ -108,6 +108,70 @@ templates/
         elements.html
 ```
 
+### Language in the Render Context
+
+The kernel resolves a language per request and hands the render context enough to
+keep a reader inside it. Six variables, and one rule about who owns two of them.
+
+| Variable | What it holds |
+|---|---|
+| `active_language` | The language this response was negotiated in. |
+| `text_direction` | `ltr` or `rtl`, for the same language. |
+| `default_language` | The site's default language code. |
+| `available_languages` | Every language the site is configured for. |
+| `available_translations` | On an item page: `{language, path}` for every language this page exists in, default included. What a language switcher is built from. |
+| `hreflang_links` | The same facts as `<link rel="alternate">` data. Absent when the page exists in only one language. |
+
+`active_language` and `text_direction` belong to the **route**, which is the only
+thing that knows the language the response was actually negotiated in.
+`inject_site_context` supplies the site default only when the context does not
+already carry one, so a route may set them before or after calling it. Inserting
+them unconditionally used to mean the order of two lines decided whether a
+translated page announced itself correctly.
+
+`available_translations` gives the default language's canonical alias verbatim and
+every other language that same address behind a `/{lang}` prefix, which is how the
+prefix negotiator reads it back. Only languages the page actually exists in are
+listed: an `hreflang` naming an address that 404s is worse than no tag at all,
+because a crawler acts on it.
+
+### Paths in the Render Context
+
+Two paths, and they are not the same path.
+
+- `current_path` is what the request was rewritten *to*. On an item reached
+  through an alias it is `/item/{uuid}`. Routes need it; it is the address the
+  handler is serving.
+- `requested_path` is the address as asked for, before a language prefix was
+  stripped and before an alias was resolved. `/it/why` stays `/it/why`.
+
+Match a menu link against `requested_path`. A menu links to `/why`, and by the
+time the page renders `current_path` is `/item/{uuid}`, so the two can never be
+equal and the active trail is dead on every aliased page. `requested_path` falls
+back to `current_path` where a route does not know better, so a template can read
+it unconditionally.
+
+### Language-Aware Menus
+
+When the active language is not the default, `main_menu` and `footer_menu` are
+rewritten before they reach the template. A link whose target has a translation in
+that language gets:
+
+- its path prefixed with `/{lang}`, so the click stays in the language; and
+- its title replaced by the translated item's title **when the link's title is the
+  target's default-language title** — the common case of a menu label mirroring a
+  page title. A label somebody wrote by hand is theirs, and is left alone.
+
+A link whose target has no translation is untouched, address and label both. A
+translated label on an untranslated page is a promise the click breaks, and a
+prefixed address for a page that does not exist in that language is a 404 offered
+as navigation.
+
+The rewrite costs two queries for a whole menu, not two per link: one resolves
+link paths back to the items behind them, one reads the translated and
+default-language titles together. Nothing is cached, which is the same discipline
+as the rest of menu building — the links themselves are read per render.
+
 ### What This Doesn't Cover
 
 Deliberately simpler than Drupal 6's theme layer. Omitted: render arrays with `#weight` ordering (elements are sorted by `#weight` in the Render Tree, but the ordering algorithm is not specified), theme registry caching (Tera compiles at load time), theme inheritance chains (use Tera's `extends` directly), CSS/JS aggregation.

@@ -21,13 +21,21 @@
             {% for link in main_menu %}
             {% if not link.hidden %}
             {# aria-current, not just the active class: the class is styling, and
-               assistive technology cannot see it. #}
-            <a href="{{ link.path }}" class="site-nav__link{% if current_path is defined and current_path == link.path %} site-nav__link--active{% endif %}"{% if current_path is defined and current_path == link.path %} aria-current="page"{% endif %}>{{ link.title }}</a>
+               assistive technology cannot see it.
+
+               Matched against requested_path, the address as asked for, rather
+               than current_path, which is what the request was rewritten to. A
+               menu links to /why; by the time this renders, current_path is
+               /item/{uuid} and the two can never be equal, so the active trail
+               was dead on every aliased page. #}
+            {% set active_path = requested_path | default(value=current_path | default(value="")) %}
+            <a href="{{ link.path }}" class="site-nav__link{% if active_path == link.path %} site-nav__link--active{% endif %}"{% if active_path == link.path %} aria-current="page"{% endif %}>{{ link.title }}</a>
             {% endif %}
             {% endfor %}
             {% elif menus is defined %}
             {% for menu in menus %}
-            <a href="{{ menu.path }}" class="site-nav__link{% if current_path is defined and current_path == menu.path %} site-nav__link--active{% endif %}"{% if current_path is defined and current_path == menu.path %} aria-current="page"{% endif %}>{{ menu.title }}</a>
+            {% set active_path = requested_path | default(value=current_path | default(value="")) %}
+            <a href="{{ menu.path }}" class="site-nav__link{% if active_path == menu.path %} site-nav__link--active{% endif %}"{% if active_path == menu.path %} aria-current="page"{% endif %}>{{ menu.title }}</a>
             {% endfor %}
             {% endif %}
             <div class="site-nav__divider"></div>

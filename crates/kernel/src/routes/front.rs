@@ -38,10 +38,12 @@ pub fn router() -> Router<AppState> {
 async fn front_page(
     State(state): State<AppState>,
     Extension(lang): Extension<ResolvedLanguage>,
+    requested: Option<Extension<crate::middleware::RequestedPath>>,
     session: Session,
     RawQuery(query): RawQuery,
 ) -> Response {
     let active_language = lang.0;
+    let requested_path = requested.map(|Extension(r)| r.0);
 
     // Check for a configured front page
     if let Ok(Some(front_path)) = SiteConfig::front_page(state.db()).await
@@ -51,6 +53,7 @@ async fn front_page(
             &front_path,
             query.as_deref(),
             &active_language,
+            requested_path.as_deref(),
         )
         .await
     {
@@ -62,6 +65,9 @@ async fn front_page(
 
     let mut context = tera::Context::new();
     insert_language_context(&mut context, &active_language);
+    if let Some(ref requested_path) = requested_path {
+        context.insert("requested_path", requested_path);
+    }
     inject_site_context(&state, &session, &mut context, "/").await;
 
     let html = state
@@ -81,6 +87,7 @@ async fn render_configured_front_page(
     front_path: &str,
     query: Option<&str>,
     active_language: &str,
+    requested_path: Option<&str>,
 ) -> Option<Response> {
     let path = local_front_path(front_path)?;
 
@@ -88,7 +95,7 @@ async fn render_configured_front_page(
         .strip_prefix("/item/")
         .and_then(|id_str| Uuid::parse_str(id_str).ok())
     {
-        return render_front_page_item(state, session, item_id, active_language)
+        return render_front_page_item(state, session, item_id, active_language, requested_path)
             .await
             .map(|html| Html(html).into_response());
     }
@@ -170,6 +177,7 @@ async fn render_front_page_item(
     session: &Session,
     item_id: Uuid,
     active_language: &str,
+    requested_path: Option<&str>,
 ) -> Option<String> {
     // Use load_for_view to invoke tap hooks and check access.
     //
@@ -240,6 +248,9 @@ async fn render_front_page_item(
     let item_html = state.theme().tera().render(&template, &context).ok()?;
 
     // Wrap in page layout
+    if let Some(requested_path) = requested_path {
+        context.insert("requested_path", requested_path);
+    }
     inject_site_context(state, session, &mut context, "/").await;
 
     state
