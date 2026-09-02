@@ -158,8 +158,16 @@ pub async fn require_permission_json(
 ///
 /// `active_language` and `text_direction` are a *fallback*, not a value: they
 /// are filled in only when the context does not already carry them, so a route
-/// that knows the language the response was negotiated in may insert it on
-/// either side of this call and it will stand.
+/// that knows the language the response was negotiated in keeps its own value.
+///
+/// **A route that knows the language must insert it before calling this.** The
+/// fallback rule alone made the value order-independent, which is not the same
+/// as making the call order-independent: this function *reads* the language back
+/// out of the context and builds the localized menus from it. A language
+/// inserted afterwards still reaches `<html lang>` and reaches nothing derived
+/// from it, which renders a page that announces one language over navigation
+/// built for another. Anything added here that reads `active_language` inherits
+/// that requirement.
 ///
 /// The `path` parameter is the current request path, used for sidebar tile
 /// visibility filtering.

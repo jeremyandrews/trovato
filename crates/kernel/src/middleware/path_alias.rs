@@ -242,10 +242,28 @@ pub async fn path_alias_fallback(
         }
     }
 
-    // No alias found — but if a language prefix was stripped, try forwarding
-    // the stripped path to the inner router (e.g., /it/admin → /admin).
-    if had_lang_prefix
-        && path != raw_path
+    // No alias found. The stripped path may still name a real route, so forward
+    // it to the inner router rather than 404 here: `/it/search` is `/search`
+    // read in Italian, not a missing page.
+    //
+    // Whether a prefix was there cannot be answered from this URI.
+    // `negotiate_language` strips one off every request it handles, which is too
+    // late to affect route matching (axum 0.8 runs `Router::layer` middleware
+    // *after* the route is chosen) but early enough that `strip_language_prefix`
+    // above finds nothing left to strip. So `had_lang_prefix` is false for every
+    // request that reached here through that middleware, which is all of them,
+    // and this branch never ran: every language-prefixed address that was not a
+    // content alias 404'd, the front page at `/it/` included.
+    //
+    // `RequestedPath` is recorded before that strip and is the only surviving
+    // record of the address the visitor asked for. Both conditions are kept: the
+    // local strip is what a caller that never ran the middleware relies on.
+    let stripped_upstream = request
+        .extensions()
+        .get::<crate::middleware::RequestedPath>()
+        .is_some_and(|asked| asked.0 != raw_path);
+
+    if ((had_lang_prefix && path != raw_path) || stripped_upstream)
         && let Ok(new_uri) = rewrite_uri(request.uri(), &path)
     {
         *request.uri_mut() = new_uri;

@@ -253,6 +253,24 @@ async fn render_front_page_item(
     }
     inject_site_context(state, session, &mut context, "/").await;
 
+    // Every language the front page can be read in, and where, the same facts
+    // the item route gives every other page: `available_translations` for a
+    // switcher, `hreflang_links` for a crawler, left out entirely when there is
+    // only one language to name.
+    //
+    // The address is `/`, not the item's own alias. The item is being read as
+    // the front page, and a switcher that moves a reader to `/it/why` has moved
+    // them off the front page they asked for. `/it/` is how the language prefix
+    // negotiator reads that back.
+    let translations = super::helpers::available_translations(state, item_id, "/").await;
+    if translations.len() > 1 {
+        context.insert(
+            "hreflang_links",
+            &super::helpers::build_hreflang_links(&translations, state.default_language()),
+        );
+    }
+    context.insert("available_translations", &translations);
+
     state
         .theme()
         .render_page("/front", &item.title, &item_html, &mut context)

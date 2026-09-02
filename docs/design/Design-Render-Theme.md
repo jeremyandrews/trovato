@@ -119,21 +119,31 @@ keep a reader inside it. Six variables, and one rule about who owns two of them.
 | `text_direction` | `ltr` or `rtl`, for the same language. |
 | `default_language` | The site's default language code. |
 | `available_languages` | Every language the site is configured for. |
-| `available_translations` | On an item page: `{language, path}` for every language this page exists in, default included. What a language switcher is built from. |
+| `available_translations` | On an item page or the front page: `{language, path}` for every language this page exists in, default included. What a language switcher is built from. |
 | `hreflang_links` | The same facts as `<link rel="alternate">` data. Absent when the page exists in only one language. |
 
 `active_language` and `text_direction` belong to the **route**, which is the only
 thing that knows the language the response was actually negotiated in.
 `inject_site_context` supplies the site default only when the context does not
-already carry one, so a route may set them before or after calling it. Inserting
-them unconditionally used to mean the order of two lines decided whether a
-translated page announced itself correctly.
+already carry one. Inserting them unconditionally used to mean the order of two
+lines decided whether a translated page announced itself correctly.
+
+**A route sets them before calling `inject_site_context`.** The fallback rule
+makes the *value* order-independent, which is not the same as making the *call*
+order-independent: the helper reads the language back out of the context and
+builds the localized menus from it. A language inserted afterwards still reaches
+`<html lang>` and reaches nothing derived from it, which is a page announcing one
+language over navigation built for another.
 
 `available_translations` gives the default language's canonical alias verbatim and
 every other language that same address behind a `/{lang}` prefix, which is how the
 prefix negotiator reads it back. Only languages the page actually exists in are
 listed: an `hreflang` naming an address that 404s is worse than no tag at all,
 because a crawler acts on it.
+
+On the front page the addresses are the front page's own, `/` and `/{lang}/`, not
+the configured item's alias. The reader asked for the front page; a switcher that
+lands them on `/it/whatever-the-item-is-called` has moved them somewhere else.
 
 ### Paths in the Render Context
 

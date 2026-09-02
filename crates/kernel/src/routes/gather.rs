@@ -403,18 +403,18 @@ pub async fn execute_and_render(
 
     // Wrap in page layout with site context.
     //
-    // `requested_path` first: a gather alias is reached at a path that still
-    // carries its language prefix, and `base_path` has had it stripped.
+    // Everything the helper reads goes in before it is called. `requested_path`
+    // because a gather alias is reached at a path that still carries its
+    // language prefix and `base_path` has had it stripped; `active_language`
+    // because `inject_site_context` localizes the menus for whatever language
+    // the context carries at the moment it runs.
+    //
+    // A language set after the call still reaches `<html lang>`, so the page
+    // announced itself as Italian over menus built for the default language.
     let mut context = tera::Context::new();
     if let Some(requested_path) = requested_path {
         context.insert("requested_path", requested_path);
     }
-    super::helpers::inject_site_context(state, session, &mut context, base_path).await;
-
-    // Set active_language and text_direction when a translation overlay is
-    // active. `inject_site_context` only fills these in when the context does
-    // not already carry them, so this may run on either side of that call;
-    // it stays after it as the one place the post-call order is exercised.
     if let Some(ref lang) = query_context.language {
         context.insert("active_language", lang);
         context.insert(
@@ -422,6 +422,7 @@ pub async fn execute_and_render(
             crate::middleware::language::text_direction_for_language(lang),
         );
     }
+    super::helpers::inject_site_context(state, session, &mut context, base_path).await;
 
     // Build breadcrumbs: Home > Query Label
     let breadcrumbs = vec![
