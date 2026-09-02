@@ -78,14 +78,23 @@ git push origin v0.102.0
 and arm64 (arm64 is release-only; nightlies skip it and take up to four hours
 when it does run).
 
-That workflow carries `paths-ignore: ['**/*.md']`. A release commit that changes
-only markdown can therefore fail to trigger it. **Confirm the run started**, and
-if it did not, dispatch it against the tag rather than pushing an empty commit:
+That workflow carries `paths-ignore: ['**/*.md']`, which does **not** apply to a
+tag push: GitHub evaluates path filters for branch pushes only. Measured at
+v0.102.0, whose release commit changed `CHANGELOG.md` and nothing else: the push
+to `main` was correctly filtered out, and the push of the tag pointing at that
+same commit built and published. A markdown-only release commit is therefore
+fine, and does not need an empty commit padded onto it.
+
+Confirm the run started anyway, and dispatch it against the tag if it somehow
+did not:
 
 ```sh
 gh run list --workflow=docker-publish.yml --limit 3
-gh workflow run docker-publish.yml --ref v0.102.0   # only if it did not fire
+gh workflow run docker-publish.yml --ref vX.Y.Z   # only if it did not fire
 ```
+
+Budget roughly two and a half hours. The amd64 leg finishes quickly; arm64 is
+built under QEMU and dominates. v0.100.0 took 2h23m and v0.101.0 took 2h47m.
 
 ## 5. The GitHub Release
 
