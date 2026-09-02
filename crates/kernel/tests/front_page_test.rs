@@ -438,3 +438,103 @@ fn promoted_item_behind_newer_published_items_is_listed() {
         delete_items(app, &ids).await;
     });
 }
+
+/// The front page offers its translations, the same as every other item page.
+///
+/// The item route gave every page `available_translations` and `hreflang_links`;
+/// the front route gave the same item neither. So the one page a multilingual
+/// site is most likely to be entered on was the one page with no language
+/// switcher to leave it by, and the one page a crawler was told nothing about.
+///
+/// The addresses are the front page's own, `/` and `/it/`, not the item's alias:
+/// the reader asked for the front page, and a switcher that lands them on
+/// `/it/whatever-the-item-is-called` has moved them somewhere else. The test
+/// fetches `/it/` afterwards, because an offered address that does not serve the
+/// page is worse than no offer at all.
+#[test]
+fn a_translated_front_page_offers_its_translations() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let title = format!("Front Switcher {marker}");
+        let id = create_item(app, &title, 0, chrono::Utc::now().timestamp()).await;
+
+        let translated = format!("Selettore {marker}");
+        sqlx::query(
+            "INSERT INTO item_translation (item_id, language, title, fields) \
+             VALUES ($1, 'it', $2, '{}'::jsonb) \
+             ON CONFLICT (item_id, language) DO UPDATE SET title = EXCLUDED.title",
+        )
+        .bind(id)
+        .bind(&translated)
+        .execute(&app.db)
+        .await
+        .expect("record front page translation");
+
+        set_front_page(app, &format!("/item/{id}")).await;
+
+        let body = body_text(get_front_page(app).await).await;
+        let body = body.replace("&#x2F;", "/");
+        assert!(
+            body.contains(r#"hreflang="it" href="/it/""#),
+            "the front page must name its Italian address:\n{body}"
+        );
+        assert!(
+            body.contains(r#"hreflang="x-default" href="/""#),
+            "x-default is the front page itself:\n{body}"
+        );
+
+        // The offered address has to be a real one.
+        let italian = app
+            .request(Request::get("/it/").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(
+            italian.status(),
+            StatusCode::OK,
+            "the address the switcher offers must serve the page"
+        );
+        let italian_body = body_text(italian).await;
+        assert!(
+            italian_body.contains(&translated),
+            "and must serve it translated, body was:\n{italian_body}"
+        );
+
+        clear_front_page(app).await;
+        delete_items(app, &[id]).await;
+    });
+}
+
+/// A front page with no translation offers no alternates.
+///
+/// One language is nothing to alternate between, and a self-referential
+/// `hreflang` is a tag that says nothing. Same rule the item route follows.
+#[test]
+fn an_untranslated_front_page_offers_no_alternates() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let id = create_item(
+            app,
+            &format!("Front Alone {marker}"),
+            0,
+            chrono::Utc::now().timestamp(),
+        )
+        .await;
+        set_front_page(app, &format!("/item/{id}")).await;
+
+        let body = body_text(get_front_page(app).await).await;
+        assert!(
+            !body.contains("hreflang="),
+            "one language is nothing to alternate between:\n{body}"
+        );
+
+        clear_front_page(app).await;
+        delete_items(app, &[id]).await;
+    });
+}

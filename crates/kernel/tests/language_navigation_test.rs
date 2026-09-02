@@ -412,3 +412,127 @@ fn hreflang_tags_name_the_translations_and_nothing_else() {
         cleanup(app, &[translated_page, plain_page]).await;
     });
 }
+
+/// Register a gather query this file owns, listing its own item type.
+///
+/// Built from JSON rather than the struct literals so that a new field with a
+/// serde default does not turn this fixture into a compile error in a file that
+/// is not testing gather definitions.
+async fn register_gather_query(app: &TestApp, query_id: &str) {
+    let definition = serde_json::from_value(serde_json::json!({
+        "base_table": "item",
+        "item_type": ITEM_TYPE,
+        "fields": [],
+        "filters": [],
+        "sorts": [],
+        "relationships": [],
+        "includes": {},
+        "stage_aware": true,
+    }))
+    .expect("build gather definition");
+
+    let display = serde_json::from_value(serde_json::json!({
+        "format": "table",
+        "items_per_page": 10,
+        "pager": { "enabled": true, "style": "full", "show_count": true },
+        "empty_text": null,
+        "header": null,
+        "footer": null,
+        "canonical_url": null,
+    }))
+    .expect("build gather display");
+
+    app.state
+        .gather()
+        .register_query(trovato_kernel::gather::GatherQuery {
+            query_id: query_id.to_string(),
+            label: "Language Nav Gather".to_string(),
+            description: None,
+            definition,
+            display,
+            plugin: "core".to_string(),
+            created: 0,
+            changed: 0,
+        })
+        .await
+        .expect("register gather query");
+}
+
+/// The address the gather is actually read at, in both languages.
+///
+/// A gather page in a non-default language is reached through an alias: a
+/// language-prefixed path is resolved by the alias fallback, and that lookup is
+/// language-scoped, so a page readable at `/it/{slug}` needs an Italian row of
+/// its own. This is the same shape `create_page` gives an item.
+async fn alias_gather(app: &TestApp, query_id: &str, slug: &str) -> String {
+    let alias = format!("/{slug}");
+    for language in ["en", "it"] {
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: format!("/gather/{query_id}"),
+                alias: alias.clone(),
+                language: Some(language.to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create gather alias");
+    }
+    alias
+}
+
+/// A gather page is a page, and its navigation follows the language too.
+///
+/// `execute_and_render` set `active_language` *after* calling
+/// `inject_site_context`, which is where the menus are localized. The value
+/// still reached `<html lang>`, so an Italian gather page shipped English
+/// navigation under `lang="it"`: the one combination that tells a reader and a
+/// screen reader different things about the same page.
+///
+/// The menu link points at an ordinary item rather than at the gather. What is
+/// pinned is not how a gather is linked, it is that the navigation *on* a gather
+/// page is built for the language that page is served in.
+#[test]
+fn a_gather_page_localizes_its_menus() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let title = format!("Gather Nav {marker}");
+        let mut page = create_page(app, &format!("gnav-{marker}"), &title).await;
+        let translated = format!("Navigazione {marker}");
+        translate(app, page.id, "it", &translated).await;
+        // The label mirrors the page title, which is the case worth translating.
+        add_menu_link(app, &mut page, &title).await;
+
+        let query_id = format!("lang_nav_{marker}");
+        register_gather_query(app, &query_id).await;
+        let gather_alias = alias_gather(app, &query_id, &format!("glist-{marker}")).await;
+
+        let (status, html) = get(app, &format!("/it{gather_alias}")).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+
+        assert!(
+            html.contains(r#"lang="it""#),
+            "the gather page must declare the language it was served in:\n{html}"
+        );
+        assert!(
+            html.contains(&format!("href=\"/it{}\"", page.alias)),
+            "a menu address on a gather page must move into the language:\n{html}"
+        );
+        assert!(
+            html.contains(&translated),
+            "a menu label on a gather page must be the translated title:\n{html}"
+        );
+
+        sqlx::query("DELETE FROM url_alias WHERE source = $1")
+            .bind(format!("/gather/{query_id}"))
+            .execute(&app.db)
+            .await
+            .ok();
+        app.state.gather().delete_query(&query_id).await.ok();
+        cleanup(app, &[page]).await;
+    });
+}

@@ -517,3 +517,57 @@ fn test_e2e_middleware_preserves_query_string() {
             .ok();
     });
 }
+
+/// A language-prefixed address that is a route rather than an alias is served.
+///
+/// The fallback's language re-dispatch was unreachable. `negotiate_language`
+/// strips the prefix off every request it handles, too late to affect route
+/// matching but early enough that the fallback's own `strip_language_prefix`
+/// found nothing left to strip, so its "a prefix was here, try the stripped
+/// path" branch never ran. Every language-prefixed address that was not a
+/// content alias 404'd: `/it/search`, `/it/user/login`, a gather page, and `/`
+/// itself, which is the address a multilingual site is most often entered on.
+///
+/// Aliases went on working throughout, which is why this stayed invisible: they
+/// take the other branch, and they were the only thing anybody tested.
+#[test]
+fn language_prefixed_routes_are_served_not_404() {
+    run_test(async {
+        let app = shared_app().await;
+
+        for path in ["/it/", "/it", "/it/search", "/it/user/login"] {
+            let response = app
+                .request(Request::get(path).body(Body::empty()).unwrap())
+                .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{path} is a real route read in Italian, not a missing page"
+            );
+        }
+    });
+}
+
+/// A prefixed address for something that does not exist is still a 404.
+///
+/// The re-dispatch forwards the stripped path; it does not invent a page. The
+/// language prefix is not a way to reach content that is not there.
+#[test]
+fn a_language_prefix_does_not_conjure_a_missing_page() {
+    run_test(async {
+        let app = shared_app().await;
+
+        let response = app
+            .request(
+                Request::get("/it/nonexistent-page-xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a prefixed path with nothing behind it is still a 404"
+        );
+    });
+}

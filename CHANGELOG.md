@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- Fix: a language prefix reached only content, so most of a translated site 404'd.
+
+  Root cause: two layers each believed the other was not stripping the prefix.
+  `negotiate_language` rewrites the URI to remove `/{lang}`, which in axum 0.8 is
+  too late to affect routing (`Router::layer` middleware runs *after* the route is
+  chosen) but early enough that `path_alias_fallback`, which re-detects the prefix
+  by stripping one itself, found nothing left to strip. Its `had_lang_prefix` was
+  therefore false for every request that came through the middleware, which is all
+  of them, and its "a prefix was here, try the stripped path" branch never ran.
+
+  So every language-prefixed address that was not a content alias returned 404:
+  `/it/search`, `/it/user/login`, a gather page in Italian, and `/it/` itself, the
+  address a multilingual site is most often entered on. Aliases went on working
+  the whole time, because they take the other branch, which is why this survived a
+  release: the only prefixed addresses anybody tested were the ones that worked.
+
+  The fallback now reads `RequestedPath`, recorded before the strip and the only
+  surviving record of the address asked for. A prefixed path with nothing behind
+  it is still a 404: the re-dispatch forwards the stripped path, it does not
+  invent a page.
+
+- Fix: an Italian gather page shipped English menus.
+
+  Root cause: a context-ordering contract that held for a value and not for what
+  is derived from it. `inject_site_context` fills `active_language` in only when
+  the context does not already carry it, which made a route's own insert
+  order-independent; it then reads that language back out and builds the localized
+  menus from it, which makes the *call* order load-bearing again. `routes/gather.rs`
+  inserted after the call, so the menus were built for the site default and the
+  language arrived in time for `<html lang>` and nothing else.
+
+  A reader got `lang="it"` over navigation addressed and labelled in English: the
+  one combination that tells a person and a screen reader different things about
+  the same page. The insert moves above the call, and the helper's contract now
+  says what it actually requires rather than what was true before menus read it.
+
+- The front page offers its translations, like every other page.
+
+  The item route gave every page `available_translations` and `hreflang_links`;
+  the front route gave the same item neither, so the page a multilingual site is
+  most likely to be entered on was the one page with no switcher to leave it by
+  and nothing for a crawler to follow. The addresses are the front page's own, `/`
+  and `/{lang}/`, not the configured item's alias: a switcher that lands a reader
+  on `/it/whatever-the-item-is-called` has moved them off the front page.
+
 - Fix: Gather sorted numeric JSONB fields as text.
 
   Root cause: `add_sorts` routed a `fields.*` sort through `jsonb_extract_expr`,
