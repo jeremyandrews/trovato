@@ -428,6 +428,37 @@ blocked rows.
 BL-89 and BL-106 block nothing at all; they are recorded for the operator and the
 plugin author respectively.
 
+## The fix series against this page
+
+Twelve pull requests are open against rows on this page as of 2026-09-17, and
+none has merged, so no row's status changes because of them and no finding below
+carries a fixed-at commit from this series. They are listed because a row they
+touch should not be worked twice, and because one of them is a Ritrovo gate.
+
+| Pull request | Row | Gate |
+|---|---|---|
+| #70 Point the login page's Forgot password link at the recovery page | BL-07 | |
+| #71 Bump rustls to 0.23.45 for RUSTSEC-2026-0285 | advisory, no row | |
+| #72 Move the login page's passkey script out of the inline block its CSP blocks | BL-08 | |
+| #73 Serve .md, .txt and .xml static files with a type a browser displays | BL-09 | |
+| #74 Write the two content translation admin templates the routes render | BL-15 | **Ritrovo gate** (38.3) |
+| #75 Default the timestamps a hand-written config file omits | BL-11 | |
+| #76 Import an item's promote and sticky, and update created on re-import | BL-10 | |
+| #77 Stop trovato_blog declaring a tap_item_view it never exported | BL-12 | |
+| #78 Remove the menu callbacks the kernel never dispatches from 16 plugins | BL-13 | |
+| #79 Render a themed plugin page's title as its heading | BL-16 | |
+| #80 Apply the request timing middleware that was attached to no router | BL-17 | |
+| #81 Read the field the blog plugin defines in the blog listing teaser | BL-21 | |
+
+#74 closes half of what Ritrovo row 38.3 waits on. The other half is BL-02, the
+write path itself: templates for two GET routes do not let anyone write a
+translation, and 38.3 stays blocked until BL-02 lands. The Ritrovo unblock order
+below depends on #74 rather than repeating it.
+
+RUSTSEC-2026-0285 has no row on this page: it was raised after the verification
+pass that produced it. It belongs with BL-75 and BL-76 in the advisory group and
+should get a row when the next pass runs.
+
 ## Tally
 
 111 distinct findings after merging duplicates: 94 open (one of them, BL-25, partly
