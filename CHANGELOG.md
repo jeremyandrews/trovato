@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- Fix: `argus_notify_test` no longer passes or fails on scheduling (#67, closes
+  #66).
+
+  `the_pipeline_turns_a_summarized_story_into_a_dispatched_notification`
+  asserted that the founding notification carries `article_count` 1. That value
+  is snapshotted when summarize runs (`argus-core/src/pipeline.rs`), so it is 1
+  only if the second article has not clustered yet — an ordering the test never
+  established and the queue never promised. `claim_batch` claims per *plugin*,
+  ordered by `created_at` across every stage at once, and runs the batch in
+  parallel, so two articles seeded together produce two cluster jobs that may or
+  may not coincide. On one unchanged commit in CI this failed twice and passed
+  once.
+
+  The test now seeds and drains the two arrivals one at a time, so the sequence
+  it asserts is one it arranged. No assertion was loosened; two were added,
+  pinning the founding state before the second article exists so a regression
+  names its own cause. The pipeline is unchanged — it was behaving correctly
+  under the documented per-plugin concurrency model.
+
+- `docs/BACKLOG.md`: every kernel finding recorded by this tree and by the
+  projects built on it (the trovato.rs site, Netgrasp, Argus), verified against
+  the code and classified as blocking 1.0, due in 1.0.x, or after. Four
+  descriptions in `KNOWN-ISSUES.md` that the code contradicted are corrected:
+  inline scripts, the permission grid, plugin mail from cron, and template
+  reloading.
+
 ## v0.102.0 — 2026-09-02
 
 An assistant a plugin can be configured through, and the tool calling the kernel
@@ -137,24 +165,6 @@ the kernel knew the language and the things built from it did not.
   and nothing for a crawler to follow. The addresses are the front page's own, `/`
   and `/{lang}/`, not the configured item's alias: a switcher that lands a reader
   on `/it/whatever-the-item-is-called` has moved them off the front page.
-
-- Fix: `argus_notify_test` no longer passes or fails on scheduling (#66).
-
-  `the_pipeline_turns_a_summarized_story_into_a_dispatched_notification`
-  asserted that the founding notification carries `article_count` 1. That value
-  is snapshotted when summarize runs (`argus-core/src/pipeline.rs`), so it is 1
-  only if the second article has not clustered yet — an ordering the test never
-  established and the queue never promised. `claim_batch` claims per *plugin*,
-  ordered by `created_at` across every stage at once, and runs the batch in
-  parallel, so two articles seeded together produce two cluster jobs that may or
-  may not coincide. On one unchanged commit in CI this failed twice and passed
-  once.
-
-  The test now seeds and drains the two arrivals one at a time, so the sequence
-  it asserts is one it arranged. No assertion was loosened; two were added,
-  pinning the founding state before the second article exists so a regression
-  names its own cause. The pipeline is unchanged — it was behaving correctly
-  under the documented per-plugin concurrency model.
 
 - Fix: Gather sorted numeric JSONB fields as text.
 
