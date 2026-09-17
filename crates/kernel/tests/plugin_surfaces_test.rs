@@ -295,3 +295,102 @@ fn the_documentation_records_the_surfaces_as_done() {
         "the gap list must be gone from KNOWN-ISSUES.md, not merely contradicted"
     );
 }
+
+/// Every `.rs` file under `dir`, recursively.
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The names of the functions a plugin's source exports to the kernel.
+///
+/// A plugin exports a function in one of two ways: the SDK's `#[plugin_tap]` or
+/// `#[plugin_tap_result]` attribute, each of which expands to a
+/// `#[unsafe(no_mangle)]` wrapper under the function's own name, or a hand-written
+/// `#[unsafe(no_mangle)]` function. The name is the first `fn` after the attribute.
+fn exported_functions(source: &str) -> Vec<String> {
+    const MARKERS: [&str; 4] = [
+        "#[plugin_tap]",
+        "#[plugin_tap_result]",
+        "#[unsafe(no_mangle)]",
+        "#[no_mangle]",
+    ];
+    let mut names = Vec::new();
+    for marker in MARKERS {
+        for (at, _) in source.match_indices(marker) {
+            let rest = &source[at + marker.len()..];
+            let Some(fn_at) = rest.find("fn ") else {
+                continue;
+            };
+            let name: String = rest[fn_at + 3..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// **A plugin exports every tap its manifest declares.**
+///
+/// The kernel registers a plugin as a handler for each tap in `[taps] implements`
+/// and only discovers a missing export when it dispatches: it instantiates the
+/// module, finds no function, and logs an ERROR, on every dispatch. `trovato_blog`
+/// declared `tap_item_view` and never exported it, so every item view on a default
+/// install logged an error. Nothing at build or load time compares the two lists,
+/// so this does, for every in-tree plugin.
+#[test]
+fn every_in_tree_plugin_exports_the_taps_its_manifest_declares() {
+    let plugins_dir = project_root().join("plugins");
+    let mut checked = 0;
+    let mut mismatches = Vec::new();
+
+    for entry in fs::read_dir(&plugins_dir).expect("read plugins/").flatten() {
+        let dir = entry.path();
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let manifest = dir.join(format!("{name}.info.toml"));
+        if !manifest.is_file() {
+            continue;
+        }
+        let info = trovato_kernel::plugin::PluginInfo::parse(&manifest)
+            .unwrap_or_else(|e| panic!("parse {}: {e:#}", manifest.display()));
+
+        let mut files = Vec::new();
+        rust_files(&dir.join("src"), &mut files);
+        let exported: Vec<String> = files
+            .iter()
+            .flat_map(|f| exported_functions(&fs::read_to_string(f).expect("read plugin source")))
+            .collect();
+
+        for tap in &info.taps.implements {
+            checked += 1;
+            if !exported.contains(tap) {
+                mismatches.push(format!("{name} declares {tap} and does not export it"));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 50,
+        "checked only {checked} declared taps, so the scan is not seeing the plugins"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "plugin manifests declare taps their source does not export:\n{}",
+        mismatches.join("\n")
+    );
+}
