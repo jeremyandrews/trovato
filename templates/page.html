@@ -85,6 +85,9 @@
             {% endfor %}
         </nav>
         {% endif %}
+        {# A page whose content does not carry its own heading asks the theme for
+           one by putting it in `page_heading`; see routes::plugin_api. #}
+        {% if page_heading is defined and page_heading %}<h1 class="page-title">{{ page_heading }}</h1>{% endif %}
         {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
     </div>
     <aside class="page-layout__sidebar">
@@ -104,6 +107,7 @@
     {% endfor %}
 </nav>
 {% endif %}
+{% if page_heading is defined and page_heading %}<h1 class="page-title">{{ page_heading }}</h1>{% endif %}
 {{ content | safe }} {# SAFE: kernel render pipeline output — HTML sanitized via SAFE_TAGS and Tera autoescape #}
 {% endif %}
 {% endblock %}
