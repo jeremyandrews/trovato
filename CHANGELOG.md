@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Security: rustls 0.23.37 -> 0.23.45 (and rustls-webpki 0.103.13 -> 0.103.15,
+  which it requires), clearing RUSTSEC-2026-0285.
+
+  The advisory, published 2026-09-14, is that rustls accepted TLS 1.3 handshake
+  messages across encryption level boundaries. Nothing in the tree changed: the
+  lockfile pinned a release the advisory database now names, so `cargo audit`
+  turned every pull request red from that date. The fix is a lockfile-only bump
+  within the same minor series; the `Security Audit` CI job is the regression
+  guard, and it fails against the old lockfile.
+
 - Fix: `argus_notify_test` no longer passes or fails on scheduling (#67, closes
   #66).
 
