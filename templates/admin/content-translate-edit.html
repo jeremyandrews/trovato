@@ -1,0 +1,43 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{#- Read-only: one language's translation of an item beside the original.
+    There is no write path for translations yet, so this shows what is stored
+    and offers no form. Context: item, language, default_language, translation
+    (absent when the item has none in this language), item_id. -#}
+
+{% block title %}Translation ({{ language }}): {{ item.title }}{% endblock %}
+
+{% block content %}
+{{ list::header(title="Translation (" ~ language ~ "): " ~ item.title) }}
+
+<div class="admin-card">
+    <p><a href="/admin/content/{{ item_id }}/translate">All translations</a></p>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th></th>
+                <th>Original (<code>{{ default_language }}</code>)</th>
+                <th>Translation (<code>{{ language }}</code>)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <th scope="row">Title</th>
+                <td>{{ item.title }}</td>
+                <td>{% if translation %}{{ translation.title }}{% endif %}</td>
+            </tr>
+            <tr>
+                <th scope="row">Fields</th>
+                <td><pre>{{ item.fields | json_encode(pretty=true) }}</pre></td>
+                <td>{% if translation %}<pre>{{ translation.fields | json_encode(pretty=true) }}</pre>{% endif %}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    {% if not translation %}
+    <p>This item has no <code>{{ language }}</code> translation.</p>
+    {% endif %}
+</div>
+{% endblock %}
