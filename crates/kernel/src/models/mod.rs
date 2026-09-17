@@ -43,3 +43,15 @@ pub use tenant::{DEFAULT_TENANT_ID, Tenant, TenantContext};
 pub use url_alias::{CreateUrlAlias, UpdateUrlAlias, UrlAlias};
 pub use user::{CreateUser, UpdateUser, User};
 pub use webauthn_credential::WebauthnCredential;
+
+/// The current Unix time in seconds.
+///
+/// The serde default for the `created` and `changed` timestamps of config
+/// entities. A config file is the interface for everything without a screen, and
+/// a hand-written file has no meaningful timestamp to give: without a default,
+/// omitting one failed the file, and because import validates the whole set
+/// first, failed every other file with it. Storage never overwrites an existing
+/// row's `created` on re-import, so the default only ever dates a new row.
+pub(crate) fn unix_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}

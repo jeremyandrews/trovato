@@ -22,7 +22,9 @@ pub struct Tile {
     pub plugin: String,
     /// Stage UUID referencing category_tag(id) in the "stages" category.
     pub stage_id: Uuid,
+    #[serde(default = "crate::models::unix_now")]
     pub created: i64,
+    #[serde(default = "crate::models::unix_now")]
     pub changed: i64,
 }
 

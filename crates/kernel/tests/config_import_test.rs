@@ -1432,3 +1432,156 @@ async fn item_import_sets_promote_sticky_and_created_and_updates_them() {
 
     db.cleanup().await;
 }
+
+// A hand-written config file that left out `created` failed to parse, and because
+// import validates the whole set before writing, one such file took every other
+// file in the set down with it. Items defaulted their timestamps; roles, tags,
+// URL aliases, stages, tiles and menu links did not, and the last four also
+// required `changed`.
+
+/// Every config entity that carries timestamps imports from a file that omits
+/// them, and lands with a real creation time rather than the epoch.
+#[tokio::test]
+async fn config_files_without_timestamps_import_and_are_stamped_now() {
+    let db = ScratchDb::new("notimestamps").await;
+    let storage = db.storage();
+    let before = chrono::Utc::now().timestamp() - 5;
+
+    let role_id = "0193a5a0-0005-7000-8000-0000000000a1";
+    let tag_id = "0193a5a0-0005-7000-8000-0000000000a2";
+    let alias_id = "0193a5a0-0005-7000-8000-0000000000a3";
+    let tile_id = "0193a5a0-0005-7000-8000-0000000000a4";
+    let link_id = "0193a5a0-0005-7000-8000-0000000000a5";
+
+    let dir = TempConfigDir::new("notimestamps");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &format!("id: {role_id}\nname: notimestamps_role\npermissions:\n- access content\n"),
+    );
+    dir.write(
+        "category.notimestamps_topics.yml",
+        "id: notimestamps_topics\nlabel: Topics\ndescription: null\nhierarchy: 0\nweight: 0\n",
+    );
+    dir.write(
+        &format!("tag.{tag_id}.yml"),
+        &format!(
+            "id: {tag_id}\ncategory_id: notimestamps_topics\nlabel: Rust\n\
+             description: null\nslug: null\nweight: 0\n"
+        ),
+    );
+    dir.write(
+        &format!("stage.{OTHER_STAGE_ID}.yml"),
+        &format!(
+            "id: {OTHER_STAGE_ID}\nmachine_name: roundtrip_review\nlabel: Roundtrip Review\n\
+             visibility: internal\nis_default: false\nweight: 0\n"
+        ),
+    );
+    dir.write(
+        &format!("url_alias.{alias_id}.yml"),
+        &format!(
+            "id: {alias_id}\nsource: /item/{tag_id}\nalias: /notimestamps\nlanguage: en\n\
+             stage_id: {OTHER_STAGE_ID}\n"
+        ),
+    );
+    dir.write(
+        &format!("tile.{tile_id}.yml"),
+        &format!(
+            "id: {tile_id}\nmachine_name: notimestamps_tile\nlabel: Tile\nregion: sidebar\n\
+             tile_type: custom\nconfig: {{}}\nvisibility: {{}}\nweight: 0\nstatus: 1\n\
+             plugin: core\nstage_id: {OTHER_STAGE_ID}\n"
+        ),
+    );
+    dir.write(
+        &format!("menu_link.{link_id}.yml"),
+        &format!(
+            "id: {link_id}\nmenu_name: main\npath: /notimestamps\ntitle: Link\nparent_id: null\n\
+             weight: 0\nhidden: false\nplugin: core\nstage_id: {OTHER_STAGE_ID}\n"
+        ),
+    );
+
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("config files without timestamps must import clean: {e:#}");
+    }
+
+    let role_created: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created FROM roles WHERE name = 'notimestamps_role'")
+            .fetch_one(db.pool())
+            .await
+            .expect("the role landed");
+    assert!(
+        role_created.timestamp() >= before,
+        "role created {role_created}"
+    );
+
+    for (what, sql) in [
+        (
+            "tag",
+            "SELECT created FROM category_tag WHERE label = 'Rust' AND category_id = 'notimestamps_topics'",
+        ),
+        (
+            "url alias",
+            "SELECT created FROM url_alias WHERE alias = '/notimestamps'",
+        ),
+        (
+            "stage",
+            "SELECT t.created FROM category_tag t JOIN stage_config s ON s.tag_id = t.id \
+             WHERE s.machine_name = 'roundtrip_review'",
+        ),
+        (
+            "tile",
+            "SELECT created FROM tile WHERE machine_name = 'notimestamps_tile'",
+        ),
+        (
+            "menu link",
+            "SELECT created FROM menu_link WHERE path = '/notimestamps'",
+        ),
+    ] {
+        let created: i64 = sqlx::query_scalar(sql)
+            .fetch_one(db.pool())
+            .await
+            .unwrap_or_else(|e| panic!("the {what} landed: {e}"));
+        assert!(
+            created >= before,
+            "the {what} must be stamped with the import time, not {created}"
+        );
+    }
+
+    db.cleanup().await;
+}
+
+/// A role file that is genuinely wrong still reports itself by name, and the set
+/// stays atomic: the valid file beside it is not written.
+#[tokio::test]
+async fn a_bad_role_file_is_named_and_nothing_is_written() {
+    let db = ScratchDb::new("badrole").await;
+    let storage = db.storage();
+    let role_id = "0193a5a0-0005-7000-8000-0000000000b1";
+
+    let dir = TempConfigDir::new("badrole");
+    dir.write(
+        "category.badrole_topics.yml",
+        "id: badrole_topics\nlabel: Topics\ndescription: null\nhierarchy: 0\nweight: 0\n",
+    );
+    // No `name`, which a role cannot do without.
+    dir.write(&format!("role.{role_id}.yml"), &format!("id: {role_id}\n"));
+
+    let err = import_config(&storage, db.pool(), dir.path(), false)
+        .await
+        .expect_err("a role file without a name must fail the import");
+    let failed = err
+        .downcast_ref::<ConfigImportFailed>()
+        .expect("the error is a ConfigImportFailed");
+    assert_eq!(failed.failures.len(), 1, "one failure: {failed}");
+    assert_eq!(failed.failures[0].filename, format!("role.{role_id}.yml"));
+    assert!(
+        storage
+            .load(entity_types::CATEGORY, "badrole_topics")
+            .await
+            .expect("category lookup")
+            .is_none(),
+        "the valid sibling must not be written"
+    );
+
+    db.cleanup().await;
+}

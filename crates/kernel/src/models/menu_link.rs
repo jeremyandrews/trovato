@@ -42,9 +42,11 @@ pub struct MenuLink {
     pub stage_id: Uuid,
 
     /// Unix timestamp when created.
+    #[serde(default = "crate::models::unix_now")]
     pub created: i64,
 
     /// Unix timestamp when last changed.
+    #[serde(default = "crate::models::unix_now")]
     pub changed: i64,
 }
 
