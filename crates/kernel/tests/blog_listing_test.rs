@@ -37,6 +37,11 @@ const LIVE_STAGE: &str = "0193a5a0-0000-7000-8000-000000000001";
 /// test booted with the real plugins directory, `/gather/blog_listing` is a 404.
 /// Both are seeded here, under one lock, so this file does not depend on shard
 /// order. The migration is idempotent.
+///
+/// The gather service holds the query set in memory from startup, so the caller
+/// has to reload it after this: a row written now is otherwise invisible, which
+/// is why an app that booted against a database already carrying the row passed
+/// while a fresh one answered "query not found".
 fn ensure_blog_listing(app: &TestApp) {
     let dir = common::project_root().join("plugins/trovato_blog");
     let info = trovato_kernel::plugin::PluginInfo::parse(&dir.join("trovato_blog.info.toml"))
@@ -129,6 +134,11 @@ fn the_blog_listing_shows_each_post_s_teaser_text() {
     run_test(async {
         let app = shared_app().await;
         ensure_blog_listing(app);
+        app.state
+            .gather()
+            .reload_from_db()
+            .await
+            .expect("reload the gather queries after seeding");
         let tag = Uuid::now_v7().simple().to_string();
         let (id, body) = seed_post(app, &tag).await;
 
