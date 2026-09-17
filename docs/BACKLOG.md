@@ -15,8 +15,8 @@ Trovato.
 A line number is where the thing is at `d3f4cd7`; the source documents' own line
 numbers are often stale and are not repeated.
 
-In short: 87 distinct findings, 71 of them open, and 22 proposed as blocking the
-1.0 tag. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
+In short: 111 distinct findings, 94 of them open, and 30 proposed as blocking the
+1.0 tag, plus 26 marked as a Ritrovo gate by the ruling of 2026-09-17. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
 argues each.
 
 ## Sources
@@ -26,6 +26,7 @@ argues each.
 | trovato.rs site | `docs/REPORT.md` "What was found" in [trovato-site](https://github.com/jeremyandrews/trovato-site), 22 items plus 3 site-fixable notes | v0.101.0 |
 | Netgrasp | `plugins/netgrasp/FRICTION.md` in [netgrasp-trovato](https://github.com/jeremyandrews/netgrasp-trovato), 15 findings plus 9 residual bullets | text from 0.99, two findings from 0.102 |
 | Argus | `plugins/argus/M1-FRICTION.md` through `M4-FRICTION.md` in this tree | 0.99 |
+| Ritrovo | `FRICTION.md` and `docs/ritrovo/STATUS.md` in [ritrovo](https://github.com/jeremyandrews/ritrovo), 34 findings and 48 blocked rows | v0.102.0 |
 | This tree's plans | the open items in `ROADMAP.md` and `KNOWN-ISSUES.md` | 0.102.0 |
 | AI assistant work | four candidates reported during the 0.102 assistant implementation and never written down | 0.102.0 |
 
@@ -223,16 +224,109 @@ Three defects no source recorded, found while checking the ones they did.
 | BL-86 | A plugin-served request body is capped at 256 KB, sized for "the tap I/O buffer", while the dispatcher refuses tap input over 64 KB. A body in between passes the 413 check and is answered 502 "Plugin handler failed". | `crates/kernel/src/routes/plugin_api.rs:88-92,380-386`; `crates/kernel/src/tap/dispatcher.rs:322-331` | open | 1.0.x | additive |
 | BL-87 | `CRON_KEY` defaults to the constant `default-cron-key`, which `.env.example` also ships, and nothing warns when a site runs with it. `POST /cron/{key}` is public, so a site that never set the key lets anyone trigger cron (one run at a time, under the Redis lock), including plugin AI spend and index rebuilds. | `crates/kernel/src/config.rs:642`; `crates/kernel/src/routes/cron.rs:22,35-40`; `.env.example:32` | open | 1.0 | additive |
 
+## From Ritrovo
+
+[Ritrovo](https://github.com/jeremyandrews/ritrovo) is the reference conference
+site: five plugins, a bulk importer, an editorial pipeline and admin screens of
+its own, run against the released `v0.102.0` image. Its `FRICTION.md` holds 34
+entries, two carried from earlier work and the rest written on 2026-09-17 by a
+host-in-the-loop test run and a status audit that set every promise in its design
+brief against the running demo.
+
+Ten of the 34 are findings this page already carried under another name. They are
+not repeated as rows: each is named in the table below with the `BL-` number it
+folds into, and where Ritrovo's evidence sharpens that row (a reproduction, a
+file and line, a second half nobody had recorded) the sharpening is written into
+the row itself.
+
+Read against the source: `FRICTION.md` at Ritrovo `824a884` and
+`docs/ritrovo/STATUS.md` at the same commit, which is `main` since pull request
+#8 merged at 2026-09-17T16:46:41Z. Every status below is verified against this
+tree at `980bf0a` with a file and line. A `FRICTION.md` claim the code did not
+bear out is recorded as such in the row rather than dropped.
+
+### The ten that were already here
+
+| Ritrovo entry | Row | What Ritrovo added |
+|---|---|---|
+| `G-PERM-TAP-NOT-DISPATCHED` | BL-69 | A second consumer, and the count: `ritrovo_access` declares seven permissions, `ritrovo_importer` five, `ritrovo_notify` two, and no role can hold one. The workaround KNOWN-ISSUES.md gave (grant by SQL) is undone by BL-90. |
+| `G-TRANSLATION-NO-WRITE-PATH` | BL-02 | Config import has no translation entity (`crates/kernel/src/config_storage/yaml.rs:51-65`), so a seed cannot ship translations either. A plugin can reach the table by declaring it in `db_tables`, which skips cache invalidation, search and revisions. |
+| `G-ITEM-API-BYPASSES-ITEM-SERVICE` | BL-25 | `save-item` also cannot set a stage or a language on create (`crates/kernel/src/host/item.rs:213-214`, both `None`), which is why a plugin cannot land content anywhere but Live. Recorded under BL-92, which is where the fix belongs. |
+| `G-MAIL-UNAVAILABLE-IN-BACKGROUND` | BL-72 | Confirmed at `crates/kernel/src/tap/request_state.rs:188,208`: both background constructors set `email: None`. Every mail Ritrovo's brief sends is sent from cron or a queue worker, so this is the whole of its notification story, not a corner of it. |
+| `G-PRESAVE-CANNOT-REFUSE` | BL-42 | The presave input is `{item_type, title, fields, status}` (`crates/kernel/src/content/item_service.rs:355-361`): no id, no stage, no author, so a tap cannot tell a create from an update. |
+| `G-ADMIN-SCREENS-ARE-ADMIN-ONLY` | BL-41 | The comment moderation queue gates the same way (`crates/kernel/src/routes/admin.rs:524,529`), which BL-41 did not name. `trovato_comments` creates a `comment_moderator` role holding `administer comments` that cannot open the queue it exists for. |
+| `G-QUEUE-WORKER-ERROR-IS-SUCCESS` | BL-50 | The SDK half: `crates/kernel/src/cron/mod.rs:228-231` treats any returned output as success, so a `#[plugin_tap]` worker returning `{"status":"error"}` has its job deleted with no retry and no dead letter. Only `#[plugin_tap_result]` can signal failure, and nothing in the signature says so. |
+| `G-USER-API-NO-ADMIN-BYPASS` | BL-33 | Re-confirmed at `crates/kernel/src/host/user.rs:49` against `crates/kernel/src/tap/request_state.rs:100-102`. |
+| `G-API-RATE-LIMITS-FIXED` | BL-01 | Two halves BL-01 did not carry: the limits are not per role (`crates/kernel/src/middleware/rate_limit.rs:99-120`, one `api` figure for everyone), and API tokens exist with no page to manage them, so a site cannot issue one through the interface. |
+| `G-NO-REQUEST-PROFILER` | BL-17 | Nothing called Gander exists in this tree, which is worth recording because three design documents name it. Pull request #80 is open against BL-17. |
+
+### The 24 that are new
+
+| ID | Finding | Where | Status | Class | Surface |
+|---|---|---|---|---|---|
+| BL-88 (G-ITEM-INSERT-OUTPUT-DISCARDED) | `tap_item_insert` runs after the row exists and its output is bound to `_results` and never read, an `Err` included. `tap_item_update`, `tap_item_delete` and the revert dispatch do the same. Both plugin documents give the tap's return type as `Result<(), String>` and its purpose as pre-insert validation, which it cannot be in either half: it runs too late to prevent anything and nothing reads what it reports. The delete site even comments "can abort deletion". | `crates/kernel/src/content/item_service.rs:396-401,652-658,829-834,1505`; `docs/plugin-development.md:195,217`; `docs/plugin-quick-reference.md:60,74` | open | 1.0.x | frozen; the contract says one thing and the code does another, so one of them changes |
+| BL-89 (G-PLUGIN-INSTALL-WARNS-ON-AN-OVERLAY) | `trovato plugin install` derives a workspace root two directories above the plugin it found and warns when there is no build output there, without first looking at whether the module is already in place. For a plugin on an appended `PLUGINS_DIR` search path, which is how every external plugin is installed, that directory is the overlay's parent and has no `target/`, so the warning prints on every install and tells the operator to build something already built. | `crates/kernel/src/plugin/cli.rs:386-412` (`wasm_src.exists()` with no test of `wasm_dest`) | open | 1.0.x | additive |
+| BL-90 (G-PERM-GRID-SAVE-REVOKES-PLUGIN-GRANTS) | Saving the permission grid revokes every plugin permission from every role. The handler builds each role's desired set by filtering `KERNEL_PERMISSIONS` against the submitted checkboxes, and the save has replace semantics, so a permission the grid never rendered is absent from the set and is revoked. This is the other end of BL-69: the only way to hold a plugin permission is SQL, and an administrator changing an unrelated checkbox takes it away. | `crates/kernel/src/routes/admin_user.rs:821-829`; `crates/kernel/src/models/role.rs:202-213` | open | 1.0 | additive |
+| BL-91 (G-REVISION-HISTORY-500) | The revision history page and revert fail for any item that has a revision. `ItemRevision` carries `change_summary` and `ai_generated` beyond the eight columns `get_revisions` and `get_revision` select. Both have `#[serde(default)]`, which does nothing for `sqlx::FromRow`, and neither has `#[sqlx(default)]`, so decoding a row fails on a missing column. An empty result decodes, which is why the page works until the first edit. | `crates/kernel/src/models/item.rs:96-105` (the two fields), `:396-400` and `:409-413` (the two queries); the route reports it at `crates/kernel/src/routes/item.rs:1243` | open | 1.0 | additive |
+| BL-92 (G-NO-ITEM-STAGE-TRANSITION) | Nothing moves one item from one stage to another. The item forms carry no stage and creation passes `stage_id: None`; the bulk actions are `publish`, `unpublish` and `delete`, which set `status`; `save-item` has no stage on create or update; `StageService::publish` moves a whole stage and no route calls it (`state.stage()` has no caller outside `state.rs`). The tutorial ships `variable.workflow.editorial.yml` describing the transitions and their permissions, and the kernel says in its own source that nothing reads it. | `crates/kernel/src/routes/item.rs:957`; `crates/kernel/src/routes/admin_content.rs:293,625-626`; `crates/kernel/src/host/item.rs:213`; `crates/kernel/src/stage/mod.rs:358-363`; `crates/kernel/src/routes/admin_stage.rs:14-19` | open | 1.0 | additive for the route, the form field and the bulk action; frozen for the `save-item` half (an existing host call starts honouring a field it ignores) |
+| BL-93 (G-DEFAULT-STAGE-IGNORED-ON-CREATE) | `/admin/structure/stages` tells the administrator that exactly one stage is the default, "which is where new content lands", and stores `is_default` on `stage_config`. Nothing reads it: creation binds `input.stage_id.unwrap_or(LIVE_STAGE_ID)`, and a search of the item service, the item routes, the content admin routes and the item model finds no reader. Marking a stage default changes nothing. | `crates/kernel/src/models/stage.rs:107-108,290-297` (stored); `crates/kernel/src/models/item.rs:262` (ignored) | open | 1.0 | frozen; what a create with no stage does is observable to every plugin that calls `save-item` |
+| BL-94 (G-MAIL-CANNOT-REACH-A-USER) | A plugin has no way to send mail to one of the site's own users. `mail` has one function and the recipient is always the site's configured contact address, and `user-api` exposes no address either. The refusal to be a relay is right and it also rules out every message a site sends to its own members on a plugin's behalf. | `crates/wit/kernel.wit:212-225`; `crates/kernel/src/host/mail.rs:1-14`; `crates/wit/kernel.wit:55-58` | open | post | additive (a new `send-to-user(user-id, subject, body)` where the kernel resolves the address) |
+| BL-95 (G-FORM-TAPS-UNREACHABLE) | `tap_form_alter`, `tap_form_validate` and `tap_form_submit` are declared, dispatched by `FormService`, and `FormService` is called by no route: it is constructed on `AppState` and `state.forms()` has no caller. The item forms are built by `FormBuilder` directly and the profile form is hand written. `form_state_cache` exists and its only writer is the content-type field screen, so there is no multi-step flow. The kernel records all of this in its own source. Subsumes the second sentence of BL-42, which named one tap and one route. | `crates/kernel/src/routes/plugin_api.rs:14-18`; `crates/kernel/src/form/service.rs:41-161`; `crates/kernel/src/state.rs:667,1177`; `crates/kernel/src/routes/item.rs:884,1090`; `crates/kernel/src/routes/auth.rs:1092-1101`; `crates/kernel/src/routes/admin_content_type.rs:366-368` | open | 1.0.x | additive, on the BL-69 precedent: a declared tap that has never fired has no observable behaviour to change |
+| BL-96 (G-QUEUE-NO-CROSS-PLUGIN) | A queue belongs to the plugin that pushes into it, so two plugins cannot share one. The queue host inserts every job under the caller's own plugin name, and the drain hands a claimed job to that plugin's `tap_queue_worker`; the queue name is a free label inside that namespace. `tap_queue_info` is read for one key, `concurrency`, from a JSON array, so `max_retries` and `retry_delay_seconds` are parsed by nothing. | `crates/kernel/src/host/queue.rs:124-127`; `crates/kernel/src/cron/mod.rs:179-193,224-231` | open | post | additive as a declared shared queue with the worker resolved by the declaring plugin; frozen if `queue-push` changes meaning |
+| BL-97 (G-NO-REQUEST-LANGUAGE) | A plugin cannot tell which language the page is being rendered in. No host call returns the negotiated language, `ApiRequest` carries none, request-context keys are the plugin's own, and variables are namespaced per plugin (BL-03) so the site's language set is unreadable too. `tap_item_view` is dispatched inside `load_for_view`, which the item route calls before it applies the translation overlay, so a view tap sees the untranslated item as well. | `crates/plugin-sdk/src/types.rs:784-812`; `crates/kernel/src/host/request_context.rs`; `crates/kernel/src/host/variables.rs:4-5`; `crates/kernel/src/content/item_service.rs:575-583` against `crates/kernel/src/routes/item.rs:353-356` | open | 1.0.x | additive |
+| BL-98 (G-LOCALE-STRINGS-NEVER-LOADED) | UI strings for any language but the default are never loaded, and nothing imports a `.po` file. `trovato_locale` preloads the default language and there is no other `load_language` call; `LocaleService::import_translations` has no caller anywhere in the tree: no route, no CLI command, no config entity. The tutorial ships `docs/tutorial/config/locale/it.po` and nothing reads it. A site configured in two languages serves the second one entirely in the first one's strings. | `crates/kernel/src/state.rs:645` (default only); `crates/kernel/src/services/locale.rs:74` (no caller) | open | 1.0 | additive |
+| BL-99 (G-TILE-GATHER-QUERY-RENDERS-NOTHING) | `gather_query` and `menu` tiles render an empty placeholder that nothing fills: `<div class="tile-gather" data-query-id="…">` and `<nav class="tile-menu" data-menu="…">`, with no server-side rendering and no script in `static/` or `templates/` that reads either class. The tile type match is closed, so a plugin cannot supply one. Two of the five tile types an administrator can place do nothing. | `crates/kernel/src/services/tile.rs:78-126` (the closed match), `:98-107` and `:109-118` (the two empty placeholders); no consumer of `tile-gather` or `tile-menu` outside that file and its tests | open | 1.0 | additive |
+| BL-100 (G-SEARCH-PAGE-BLANK-WITHOUT-INDEX) | `/search` throws away the results the server rendered whenever the Pagefind index is absent, which on a stock install is always: `trovato_search` is disabled by default, so nothing builds one. The mechanism is sharper than the report had it. `search-init.js` hides `#search-fallback`, which holds the server-rendered results, and calls `Scolta.init` as soon as the `Scolta` symbol exists; `Scolta.init` then overwrites its own container with an empty search UI. Neither step waits on Pagefind, and the `import` of `pagefind.js` that fails is never checked. The server-rendered results are still in the HTML, which is what a `curl`-based check sees, so a smoke test passes for a page no visitor can use. | `static/js/search-init.js:20-26`; `static/js/scolta.js:1146,1153-1180` (container overwritten), `:196-198` (unchecked import); `templates/search.html:10,56` | open | 1.0 | additive |
+| BL-101 (G-USER-PROFILE-NOT-EXTENSIBLE) | A profile is a username, an email, a timezone and a password, and nothing can add to it. There is no display name, bio, avatar or notification preference, no public profile route, and `users.data` is exposed by no form. The form does not go through `FormService` (BL-95), so a plugin cannot alter it, and a plugin page cannot take an avatar because a plugin route's body is UTF-8 text (BL-107). | `crates/kernel/src/routes/auth.rs:1092-1101`; `templates/user/profile.html:37-59` | open | post | additive |
+| BL-102 (G-BATCH-NO-EXECUTOR) | A batch can be created, polled, cancelled and deleted, and nothing ever runs one. `update_progress`, `complete` and `fail` are called from nowhere outside `crates/kernel/src/batch/`, and `operation_type` is a free string with no implementation behind any value. `/api/batch` is a published endpoint that records intentions. | `crates/kernel/src/routes/batch.rs:88-114`; `crates/kernel/src/batch/service.rs:99,122,142` (no external caller) | open | 1.0.x | additive |
+| BL-103 (G-AJAX-ADMIN-ONLY-NO-CONDITIONAL-FIELDS) | `POST /system/ajax` requires the administrator flag and runs with `RequestState::without_services`, so a `tap_form_ajax` handler has no database, and it is closed a third time by a `form_state_cache` lookup nothing writes. There is no conditional field mechanism in the form types at all. | `crates/kernel/src/routes/admin.rs:386-418`; `crates/kernel/src/routes/plugin_api.rs:16-18` (the kernel's own account) | open | post | additive |
+| BL-104 (G-TUTORIAL-CONFIG-SET-DEFECTS) | The tutorial config set ships in the image (`Dockerfile:72`) and has four defects. (1) The main menu's "Call for Papers" link is `/open-cfps` where the gather's canonical URL and alias are `/cfps`, so the link in the shipped menu is a 404. (2) The three Italian aliases are stored with the prefix and `language: it`; the language middleware rewrites the URI before the alias middleware looks the path up, so those rows can only ever match a doubled prefix. (3) `item_type.conference.yml` declares no `field_topics`, which the tutorial's own importer writes and its gathers filter on, so one save through the edit form drops it. (4) `variable.workflow.editorial.yml` describes transitions nothing reads (BL-92) and `locale/it.po` is imported by nothing (BL-98). | `docs/tutorial/config/menu_link.0193a5a0-0004-7000-8000-000000000003.yml:4` against `gather_query.ritrovo.open_cfps.yml:27`; `url_alias.f1a2b3c4-…yml:4-5` (and two siblings) against `crates/kernel/src/middleware/language.rs:7,158-161` and `crates/kernel/src/middleware/path_alias.rs:66-93`; `item_type.conference.yml` (no `field_topics`) | open | 1.0 | n/a (configuration and documentation) |
+| BL-105 (G-NO-USER-DIRECTORY) | A plugin cannot look up a user it is not currently serving: `user-api` answers only about the caller's own request. The escape hatch is declaring the kernel's `users` table in `db_tables`, which no policy refuses and which hands the plugin every column. That second half is recorded on BL-28, whose allowlist it is, and belongs in the scope of the security review (BL-66). | `crates/kernel/src/host/user.rs:12-56`; `crates/wit/kernel.wit:55-58`; `crates/kernel/src/plugin/db_policy.rs:147-174` | open | post | additive (a lookup by id returning public profile fields) |
+| BL-106 (G-VIEW-TAP-INPUT-CARRIES-NO-VIEWER) | The plugin documentation describes `tap_item_view(input: ItemViewInput) -> RenderElement`, and there is no `ItemViewInput` in the SDK: the kernel serialises the `Item` alone and the SDK tap returns a `String`. The viewer is reachable anyway, because the tap runs with the viewer's request state, and hiding a field is not a view tap's job: `tap_field_access` carries the viewer and removes fields before any view tap runs. A documentation defect that sent a real plugin to wait for a kernel change nobody needs. | `crates/kernel/src/content/item_service.rs:573,575-583`; `docs/plugin-development.md:215,292` | open | 1.0.x | additive (documentation) |
+| BL-107 (G-FILE-NO-HOST-API) | A plugin cannot accept or store a file. There is no file interface among the WIT world's twelve imports, and a plugin route's body is UTF-8 text capped at 256 KiB, so a multipart upload to a plugin page is refused before the plugin sees it. | `crates/wit/kernel.wit:258-270` (the import list); `crates/kernel/src/routes/plugin_api.rs:92,309-313` | open | post | additive if the body gains a field or a host call is added; frozen if `ApiRequest::body` changes type |
+| BL-108 (G-PLUGIN-ROUTE-NO-HEADERS) | A plugin route sees no request headers and sets none. `ApiRequest` carries callback, method, path, params, query, body, user and a CSRF token; `ApiResponse` sets status, body, content type, theme and title. So a plugin cannot redirect after a POST, set `Cache-Control`, or read `Accept-Language`. | `crates/plugin-sdk/src/types.rs:784-812,884-918`; `crates/kernel/src/routes/plugin_api.rs:408-421` | open | post | additive (new optional fields on both records) |
+| BL-109 (G-S3-STORAGE-REMOVED) | There is no S3-compatible storage backend. This is a recorded decision, not an omission: it was an unused, non-default optional feature and the last carrier of the legacy AWS-SDK TLS chain, and the source says so and names the way back. Listed so the documents that promise S3 stop being read as describing something outstanding. | `crates/kernel/src/file/storage.rs:1-8` | decided | closed | n/a |
+| BL-110 (G-REVISION-NO-COMPARE) | `item_revision.change_summary` holds the added, removed and changed fields, and no route or template renders a comparison of two revisions. Waits on BL-91, since the history page is where a compare view is reached from. | `crates/kernel/src/models/item.rs:96-101`; no compare route in `crates/kernel/src/routes/item.rs` | open | post | additive |
+| BL-111 (G-SEARCH-NO-ADMIN-OR-ANALYTICS) | Search ranking is a JSON block in a template rather than configuration, there is no search settings screen, and nothing records a query: a search of `crates/kernel/src` and `templates/` finds no query log, no top-query report and no expansion hit rate. Per-type field weights, which do have a screen, are a different thing. | `templates/search.html:100-121`; no `admin/config/search` route in `crates/kernel/src/routes/mod.rs` | open | post | additive |
+
+### What the code did not bear out
+
+Nothing in `FRICTION.md` was contradicted outright. Three entries are narrower or
+wider than their text, and the rows above carry the corrected version:
+
+- `G-SEARCH-PAGE-BLANK-WITHOUT-INDEX` blames the search template for loading
+  `scolta.js`. The template is not the mechanism: `static/js/search-init.js:20-26`
+  hides the server results and starts Scolta on the mere presence of the symbol,
+  before any Pagefind load is attempted, and `Scolta.init` overwrites its
+  container unconditionally. The finding is real and the fix is in the two scripts
+  rather than the template (BL-100).
+- `G-PLUGIN-INSTALL-WARNS-ON-AN-OVERLAY` describes the derived path. The
+  reportable defect is narrower: the code never asks whether the module is already
+  at its destination before warning that it is missing (BL-89).
+- `G-REVISION-HISTORY-500` says neither extra field carries `#[sqlx(default)]`.
+  Both carry `#[serde(default)]`, which reads as a default at a glance and does
+  nothing for `sqlx::FromRow`. That is why the defect survived review (BL-91).
+
+`G-S3-STORAGE-REMOVED` is not a defect in either direction: it is a decision the
+kernel recorded, and it is listed as closed (BL-109) rather than open.
+
 ## Tally
 
-87 distinct findings after merging duplicates: 71 open (one of them, BL-25, partly
-fixed), 14 fixed, and 2 that do not reproduce. Of the 71 open, 22 are proposed to
-block 1.0, 24 to ship in 1.0.x, and 25 to wait until after 1.0. Of the two that do
-not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
-on one database confirm it.
+111 distinct findings after merging duplicates: 94 open (one of them, BL-25, partly
+fixed), 14 fixed, 2 that do not reproduce, and 1 decided (BL-109). Of the 94 open,
+30 are proposed to block 1.0, 30 to ship in 1.0.x, and 34 to wait until after 1.0.
+Of the two that do not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two
+consecutive runs on one database confirm it.
 
-The 22: BL-01, BL-02, BL-06, BL-07, BL-08, BL-09, BL-11, BL-12, BL-15, BL-21, BL-22,
-BL-41, BL-46, BL-57, BL-66, BL-67, BL-68, BL-69, BL-73, BL-74, BL-85, BL-87.
+The 30: BL-01, BL-02, BL-06, BL-07, BL-08, BL-09, BL-11, BL-12, BL-15, BL-21, BL-22,
+BL-41, BL-46, BL-57, BL-66, BL-67, BL-68, BL-69, BL-73, BL-74, BL-85, BL-87, BL-90,
+BL-91, BL-92, BL-93, BL-98, BL-99, BL-100, BL-104.
+
+The eight Ritrovo added to that list are argued in
+[Why these block 1.0](#why-these-block-10) with the rest. Twenty-six findings
+additionally carry the **Ritrovo gate** mark, which is a separate thing from the
+class: see [How to read a row](#how-to-read-a-row) and
+[Ritrovo unblock order](#ritrovo-unblock-order).
 
 ## Why these block 1.0
 
@@ -344,6 +438,60 @@ startup WARN. Fail startup naming the file, or keep the kernel's templates. Smal
 **BL-87, the default cron key.** Day one: the key is a published constant, so a site
 that never set it has a public cron trigger. Warn at startup, or refuse to serve cron
 with the default key outside development. Small.
+
+**BL-90, the permission grid revoking plugin grants.** Contradicts the definition
+together with BL-69. With `tap_perm` undispatched the only way a role can hold a
+plugin's permission is SQL, and this row means an administrator saving the grid for
+an unrelated reason silently takes it back. So a site running any plugin with a
+permission cannot be operated through the interface at all: the interface undoes the
+only mechanism that works. Revoke only what the grid rendered. Small.
+
+**BL-91, revision history 500.** Day one, and it needs no plugin: edit any item once
+through the admin form and its history page answers 500, as does revert. Revisions
+are a headline feature with a screen and an API. Two columns in two queries, or two
+attributes on two fields, plus the integration test that edits an item before
+loading its history, which is the reason nobody caught it. Small.
+
+**BL-92, no item stage transition.** Contradicts the definition. Stages have a
+schema, an admin screen, a gather filter and a documented editorial workflow, and
+there is no route, form field, bulk action or host call that moves one item between
+them, so the feature can be configured and not used. A site that puts content on a
+non-default stage has no way to publish it. The tutorial teaches an editorial
+workflow that cannot be performed. Medium.
+
+**BL-93, the default stage ignored on create.** The stage admin screen states in so
+many words that the default stage is where new content lands, and nothing reads the
+flag. A shipped screen that makes a false statement is worse than a missing feature,
+and this one is load bearing: it is how an operator would expect to route incoming
+content. Either honour it or take the sentence and the flag out. Small.
+
+**BL-98, interface strings never loaded.** Contradicts the definition for the
+feature 0.102.0 led with. A site can declare a second language, negotiate it, serve
+it under its own prefix, and every string on the page is still the default
+language's, because only the default is ever loaded. `import_translations` exists
+with no caller, so a `.po` file cannot be imported by any route, command or config
+entity: the tutorial ships one that nothing can read. Multilingual that cannot
+translate its own interface is not multilingual. Medium.
+
+**BL-99, two tile types that render nothing.** Day one: an administrator places a
+tile through `/admin/structure/tiles`, and a `gather_query` or `menu` tile renders a
+titled, empty box on every page it is placed on. Two of the five types the screen
+offers do nothing, with no warning on the screen and no script anywhere that would
+fill them. Medium.
+
+**BL-100, the search page blank without an index.** Day one on a stock install:
+`trovato_search` is disabled by default so no Pagefind index exists, and the search
+page hides the results the server rendered and replaces the container with an empty
+search box. The server-rendered results stay in the HTML, so a check that greps the
+response passes for a page that is blank in a browser. Leave the server results
+until the index has actually loaded, which is the progressive enhancement the search
+design promises. Small.
+
+**BL-104, the tutorial config set.** Same reason as BL-74, with more surface: the set
+ships in the image and the tutorial depends on it from Part 2 onward, so a stranger
+learning Trovato meets a 404 in the shipped menu, Italian aliases that answer only at
+a doubled prefix, and a form save that drops a field the same set's importer writes.
+Three files and a decision about who owns the set. Small.
 
 ### Considered and not blocking
 
