@@ -657,6 +657,77 @@ Three files and a decision about who owns the set. Small.
   question.
 - **BL-82**, `robots_txt_custom` without a screen: config import sets it. 1.0.x.
 
+## Ritrovo unblock order
+
+The 26 Ritrovo-gate findings, grouped into twelve batches. Each batch is one
+kernel pull request series of a size one session can finish and verify, and the
+batches are in the order Ritrovo needs them: A5 editorial, A6 forms, A7 community,
+A8 global and API, A9 layout and search. Where a fix serves more than one step it
+sits in the earliest batch that needs it.
+
+A batch closes its identifiers. It does not close the Ritrovo rows: those close
+when the Ritrovo prompt does its half, which is why the "unblocks" column names
+rows rather than claiming them.
+
+**On collisions.** The prompt for this pass asked each batch to say whether it
+collides with Core A3, A4 or A5 as those prompts are described in `ROADMAP.md` and
+this page. Neither file describes them, and neither does anything else under
+`docs/`: a search of `ROADMAP.md`, `KNOWN-ISSUES.md`, `docs/BACKLOG.md` and the
+whole of `docs/` for "Core A3", "Core A4" and "Core A5" finds nothing. So the
+collision column is written against what this repository does record: the twelve
+open pull requests listed in
+[The fix series against this page](#the-fix-series-against-this-page), and the
+rows already on the 1.0 blocker list. If the Core A prompts exist outside the
+repository, their ownership has to be checked against this table by hand before a
+batch starts, and the one to check first is BL-69 and BL-02, the two the prompt
+named.
+
+### The batches
+
+| Batch | Closes | Unblocks | Surface | Files it touches | Collides with |
+|---|---|---|---|---|---|
+| **K1 permissions** | BL-69, BL-90 | 35.2, 36.6, D16, P17, P18; most of D8 | additive | `plugin/info_parser.rs` and wherever boot walks the registry, `routes/admin_user.rs`, `config_storage/yaml.rs`, `models/role.rs`, `templates/admin/permissions.html` | BL-69 is already a 1.0 blocker on this page; no open pull request touches it |
+| **K2 editorial workflow** | BL-92, BL-93 | 35.3, D3 (with K3), and lets Ritrovo's importer land in Incoming (P3) | **contract change**, twice | `routes/item.rs`, `routes/admin_content.rs`, `models/item.rs`, `models/stage.rs`, `stage/mod.rs`, `host/item.rs`, `crates/wit/kernel.wit`, `templates/admin/content-form.html` | none open; needs K1 first, because a transition is gated on a permission |
+| **K3 revisions** | BL-91, BL-110 | 35.4, D20, D3 (with K2) | additive | `models/item.rs`, `routes/item.rs`, `templates/item/revisions.html`, one new compare template, `crates/kernel/tests/` | none; independent of every other batch |
+| **K4 delegated administration and batch** | BL-41, BL-102 | 37.2, 39.2, D25 | additive | `routes/helpers.rs`, `routes/admin_content.rs`, `routes/admin.rs`, `batch/service.rs`, a new executor module | BL-41 is already a 1.0 blocker; needs K1 for permissions that exist and K2 for a stage-publish operation to execute |
+| **K5 forms reachable** | BL-95, BL-42, BL-103 | 36.1, 36.3, D22, D23, 31.6, P16, and the form half of 36.4, 36.5, D6 | additive | `form/service.rs`, `routes/item.rs`, `routes/auth.rs`, `routes/admin.rs`, `content/item_service.rs`, `content/form.rs` | none open; needs K1 to permission-gate `/system/ajax` |
+| **K6 profile and file** | BL-101, BL-107 | 36.7, D15, and 36.4's logo upload | additive if the request body gains a field rather than changing type | `routes/auth.rs`, `templates/user/profile.html`, `routes/plugin_api.rs`, `crates/plugin-sdk/src/types.rs`, `crates/wit/kernel.wit` | needs K5, because the profile form has to be built through `FormService` before a plugin can add to it |
+| **K7 item writes through the service** | BL-25, BL-88 | 38.5's write half, P9, P13, D19, and the imported-change half of 37.4 | **contract change**, twice | `host/item.rs`, `content/item_service.rs`, `crates/wit/kernel.wit`, `crates/plugin-sdk/src/`, `docs/plugin-development.md`, `docs/plugin-quick-reference.md` | none open; independent, and the longest lead time of any batch because it needs a decision first |
+| **K8 mail and user lookup** | BL-94, BL-72, BL-105 | 37.4 (with K7), 37.6, D10, P11, P12 | BL-72 is a **contract change**; BL-94 and BL-105 are additive | `crates/wit/kernel.wit`, `host/mail.rs`, `host/user.rs`, `tap/request_state.rs`, `cron/mod.rs` | none open; independent |
+| **K9 shared queue** | BL-96 | 37.5, D9, and the event half of 36.5 and P6 | additive as a declared shared queue; a change to `queue-push` semantics would be frozen | `host/queue.rs`, `cron/mod.rs`, `plugin/info_parser.rs`, `docs/plugin-queue.md` | touches the same drain as BL-55, which is open and undecided; settle BL-55's per-queue question in the same series |
+| **K10 translation write path** | BL-02, BL-15 | 38.1, 38.3, 38.4, D21, P15 | additive | `routes/admin_translation.rs`, two new `templates/admin/content-translate-*.html`, `config_storage/yaml.rs`, `crates/wit/kernel.wit`, `host/`, `content/item_service.rs` | **depends on pull request #74**, which writes the two templates. Do not rewrite them: take #74 and add the POST handler, the config entity and the host call |
+| **K11 interface strings and language** | BL-98, BL-104, and BL-97 with them | 38.2, D21 (with K10), 34.4's menu half | additive | `state.rs`, `services/locale.rs`, `main.rs` (a CLI import), `config_storage/yaml.rs`, `docs/tutorial/config/`, `routes/plugin_api.rs`, `crates/plugin-sdk/src/types.rs` | BL-97 carries no gate mark: it is here because A8 step 2 needs it and it is the same file set |
+| **K12 layout and search** | BL-99, BL-111, and BL-100 with them | 34.4, D12, 30.3, 30.6, 30.7 | additive | `services/tile.rs`, `static/js/search-init.js`, `static/js/scolta.js`, `templates/search.html`, a new search settings route and template | BL-100 carries no gate mark and is a 1.0 blocker on the day-one test; it is in this batch because it is the same page |
+
+**BL-109 is in no batch.** There is no S3 backend and its removal is a recorded
+decision with a named way back. Ritrovo row 39.3 waits on it and therefore cannot
+close, which makes 39.3 the one gate this order cannot schedule. That is recorded,
+not waived: lifting the mark on 39.3, or reopening S3, is a decision for the person
+who made the ruling.
+
+### The critical path
+
+What has to land before each Ritrovo step can start. A step can start when its
+"blocks the start" batches are in; the "needed during" batches can land while the
+step is running, because the Ritrovo prompt has buildable rows to work on first.
+
+| Ritrovo step | Blocks the start | Needed during | Can start after |
+|---|---|---|---|
+| A5 editorial | K1 | K2, K3, K4 | K1 |
+| A6 forms | K5 | K6 | K1, K5 |
+| A7 community | K8 | K7, K9, and K4 for 37.2 | K4, K8 |
+| A8 global and API | K10 | K11, and K7 for the write endpoints | K7, K10 |
+| A9 layout and search | none | K12, K11 for the switcher | now |
+
+Read down the "blocks the start" column and the order is K1, then K5, then K8 and
+K10, with K2, K3 and K4 following K1 as fast as they can be reviewed. K3 is the
+one batch with no dependency in either direction and the smallest surface, so it
+is the obvious first thing to write while K1 is being designed.
+
+A9 can start today. Ritrovo's own audit proposed moving its first three items to
+the front of A4 because they are defects a visitor meets rather than features, and
+this order agrees: nothing in K12 waits on anything.
+
 ## Frozen-surface findings
 
 [docs/design/Versioning.md](design/Versioning.md) freezes the plugin contract
@@ -691,7 +762,43 @@ The full list of rows whose obvious fix is frozen: BL-03 (if `get` leaves the
 namespace), BL-13 (if the SDK default changes), BL-25, BL-33, BL-36, BL-38 (if the
 defaults go), BL-39, BL-45, BL-50 (if plain returns are reinterpreted), BL-55, BL-59,
 BL-61, BL-64 (if the default order changes), BL-65 (if a warning becomes an error),
-BL-72 and BL-77.
+BL-72, BL-77, BL-88, BL-92 (the `save-item` half only), BL-93, BL-96 (if `queue-push`
+changes meaning) and BL-107 (if `ApiRequest::body` changes type).
+
+### The five Ritrovo gates that are contract changes
+
+Of the 26 Ritrovo-gate findings, 21 are additive and five change the contract. Each
+one is a decision rather than a patch, and the recommendation for each is here so
+that the batch that carries it does not have to make the decision on its own.
+
+- **BL-25, `save-item` through `ItemService`.** Recommend the **opt-in addition
+  now**, not the behaviour change: a second function, or a flag on the payload,
+  that saves through the service with taps, access checks and cache invalidation,
+  leaving today's function as it is. Making the existing one do it would start
+  firing taps inside plugins' own writes and could refuse a write that succeeds
+  today, and both Argus and Netgrasp are written against the current behaviour.
+  The default can flip at 2.0. What must land before 1.0 either way is the WIT
+  note saying `item-api` writes fire no taps.
+- **BL-88, what `tap_item_insert` is for.** Recommend **before 1.0**, as the
+  documentation plus an SDK signature that returns nothing. At the tag what the
+  contract documents becomes the promise, and today it promises pre-insert
+  validation from a tap that runs after the insert and whose return value nobody
+  reads. The real validation belongs on presave (BL-42), which is additive and is
+  in the same batch as the forms work.
+- **BL-72, mail from background dispatch.** Recommend **before 1.0**. An existing
+  host call goes from always failing to sending, which is exactly the change that
+  should not arrive in a patch release after the tag, and the present state is
+  worse than a gap: it reports that SMTP is not configured on a site that has
+  configured it.
+- **BL-93, the default stage on create, and BL-92's `save-item` half.** Recommend
+  **before 1.0**, together, because they are one decision about what a create with
+  no stage means. Today it means Live and the admin screen says it means the
+  default stage. Changing it later would move every plugin's content silently.
+
+BL-96 and BL-107 are listed as frozen only for the variant nobody should choose.
+Recommend the additive variant in both: a declared shared queue rather than new
+meaning for `queue-push`, and a new field on the request record rather than a new
+type for `body`.
 
 ## Where the sources and the code disagree
 
