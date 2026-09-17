@@ -6,7 +6,8 @@ surprise, so it is written down rather than discovered.
 Trovato was developed privately and is published as a pre-1.0 release for
 exactly the reasons on this page. Nothing here is a secret being managed; it is
 a backlog being worked in the open. [ROADMAP.md](ROADMAP.md) says what happens
-to each item.
+to each item, and [docs/BACKLOG.md](docs/BACKLOG.md) lists every finding, including
+the smaller ones this page does not describe, with its verified status.
 
 ## Security
 
@@ -32,10 +33,15 @@ This is related to the item below and the two should be fixed together.
 
 `style-src` keeps `'unsafe-inline'`
 (`crates/kernel/src/middleware/security_headers.rs`) because the base template
-and the admin screens carry inline `style=` attributes. `script-src` no longer
-needs it, so this is the last inline exception. Extracting the styles allows the
-directive to be tightened, which is also what makes the page-builder allowlist
-above worth having.
+and the admin screens carry inline `style=` attributes, 305 of them across 44
+templates. Extracting the styles allows the directive to be tightened, which is
+also what makes the page-builder allowlist above worth having.
+
+`script-src` does not carry `'unsafe-inline'`, but not because nothing needs it:
+five templates still depend on inline `<script>` blocks (login, account recovery,
+sessions, passkeys and the admin recovery settings) and five more on inline `on*=`
+handlers, and the enforcing policy blocks every one of them. Those have to move to
+`static/js/` as well. See BL-08 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
 ### Dependency advisories are suppressed with justifications
 
@@ -181,10 +187,10 @@ nothing a permission check will ever ask for. The evidence it does accept is a
 permission some role in the database already holds, which is what lets an export
 of a site that uses plugin permissions re-import.
 
-The practical consequence: grant a plugin's permissions once at
-`/admin/people/permissions` (or by SQL), after which they can go in the config file
-like any other. The permission grid has the same limitation from the other side —
-it renders the kernel's list, so a plugin's permissions do not appear there either.
+The practical consequence: grant a plugin's permissions once by SQL, after which
+they can go in the config file like any other. The permission grid at
+`/admin/people/permissions` cannot do it, because it renders the kernel's list and a
+plugin's permissions do not appear there.
 Dispatching `tap_perm` is what fixes both, and it is additive to the plugin
 contract rather than a break of it.
 
@@ -200,10 +206,10 @@ There is no down migration and no rollback. Recovering from a bad migration
 means restoring the database. Plan accordingly before upgrading a production
 site.
 
-### Template reloading on file change is for development only
+### Templates are read once, at startup
 
-The filesystem watch that reloads templates is a development convenience. In
-production, templates are read at startup and a change needs a restart.
+There is no filesystem watch. `ThemeEngine::reload` exists and nothing calls it, so
+a template change needs a restart in development and production alike.
 
 ### A revision's authorship can change, and nothing else about it can
 
@@ -244,7 +250,7 @@ what a plugin would legitimately want to change, so a blanket deny-list is wrong
 too. `crates/kernel/tests/plugin_surfaces_test.rs` pins the current state, so this
 entry cannot drift out of date without a test failing.
 
-### A plugin's outgoing mail is not rate-limited
+### A plugin's outgoing mail works only while serving a request
 
 The `mail` host interface refuses to send anywhere except the site's own contact
 address, so it cannot be used to reach strangers. It does not bound how *often* a
@@ -252,11 +258,15 @@ plugin sends.
 
 The web-facing case is covered: a plugin-served POST falls into the `forms`
 rate-limit bucket per client IP like any other form post, so a contact form cannot
-flood the site owner faster than that bucket allows. A plugin sending from a cron
-tap or a queue worker is bounded by nothing, and could fill the owner's mailbox. A
-plugin is code the site owner installed, and one that declared `http` can already
-post anywhere, so this is a trust boundary rather than a hole — but it is worth
-knowing which of the two it is.
+flood the site owner faster than that bucket allows.
+
+The unbounded case this entry used to describe, a plugin sending from a cron tap or
+a queue worker, cannot happen, for a worse reason: background dispatch builds its
+services without the email handle (`RequestServices::for_background` in
+`crates/kernel/src/tap/request_state.rs`), so plugin mail from `tap_cron` or
+`tap_queue_worker` always fails with `ERR_MAIL_NOT_CONFIGURED` and logs that the
+site has no SMTP host, whether it has one or not. Enabling background mail is what
+would then need a limit. See BL-72 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
 ## Contract and versioning
 

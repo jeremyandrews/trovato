@@ -2,7 +2,10 @@
 
 Trovato is at 0.102.0. This page says what stands between that and 1.0, and what
 comes after. [KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more
-detail; this one is about order and intent.
+detail; this one is about order and intent. [docs/BACKLOG.md](docs/BACKLOG.md) is
+the complete ledger: every kernel finding recorded by this tree and by the projects
+built on it, verified against the code and classified as blocking 1.0, due in
+1.0.x, or after.
 
 ## The road to 1.0
 
@@ -88,8 +91,8 @@ now ask to be wrapped in the site's page template.
 
 Two narrower things stayed undone and are in KNOWN-ISSUES.md rather than pretended
 away: `tap_theme` and `tap_preprocess_item` are still declared and not dispatched,
-each for a stated reason, and a plugin's outgoing mail is rate-limited only on the
-web-facing path.
+each for a stated reason, and a plugin's outgoing mail works only on the web-facing
+path, where it is rate-limited; from a cron tap or a queue worker it always fails.
 
 ### Test isolation
 
