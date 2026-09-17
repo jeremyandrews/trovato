@@ -19,11 +19,9 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/categories", "Categories")
-            .callback("category_admin")
             .permission("administer categories")
             .parent("/admin"),
         MenuDefinition::new("/admin/categories/:id/terms", "Terms")
-            .callback("category_term_admin")
             .permission("administer categories"),
     ]
 }

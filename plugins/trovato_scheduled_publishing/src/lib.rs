@@ -21,7 +21,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/content/scheduled", "Scheduled")
-            .callback("scheduled_items")
             .permission("schedule publishing")
             .parent("/admin/content"),
     ]

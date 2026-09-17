@@ -16,7 +16,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/config/content-locking", "Content Locking")
-            .callback("content_locking_admin")
             .permission("break content lock")
             .parent("/admin/config"),
     ]

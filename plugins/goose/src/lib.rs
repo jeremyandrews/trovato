@@ -143,12 +143,8 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 #[plugin_tap]
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
-        MenuDefinition::new("/test-runs", "Test Runs")
-            .callback("goose_run_list")
-            .permission("access content"),
-        MenuDefinition::new("/sites", "Sites")
-            .callback("goose_site_list")
-            .permission("access content"),
+        MenuDefinition::new("/test-runs", "Test Runs").permission("access content"),
+        MenuDefinition::new("/sites", "Sites").permission("access content"),
     ]
 }
 

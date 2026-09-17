@@ -17,7 +17,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/config/webhooks", "Webhooks")
-            .callback("webhook_admin")
             .permission("administer webhooks")
             .parent("/admin/config"),
     ]

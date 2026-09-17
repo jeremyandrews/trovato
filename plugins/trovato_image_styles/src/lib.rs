@@ -17,7 +17,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/config/image-styles", "Image Styles")
-            .callback("image_style_admin")
             .permission("administer image styles")
             .parent("/admin/config"),
     ]
