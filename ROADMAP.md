@@ -5,13 +5,36 @@ comes after. [KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more
 detail; this one is about order and intent. [docs/BACKLOG.md](docs/BACKLOG.md) is
 the complete ledger: every kernel finding recorded by this tree and by the projects
 built on it, verified against the code and classified as blocking 1.0, due in
-1.0.x, or after.
+1.0.x, or after, and marked where a Ritrovo row waits on it.
 
 ## The road to 1.0
 
 1.0 means the CMS is finished to the standard the plugin contract already meets:
 a site can be built, configured and operated through the interface, and the
 security work has been reviewed by someone other than the person who wrote it.
+
+### What Ritrovo gates
+
+[Ritrovo](https://github.com/jeremyandrews/ritrovo), the reference conference site,
+audited all 107 promises in its design brief against the released image on
+2026-09-17 and found 48 of them blocked on this kernel. By the ruling of that date
+every kernel finding a blocked row waits on is a 1.0 blocker, whatever the day-one
+test above says about it on its own.
+
+There are 26 such findings and they are not copied here, because a copy drifts.
+They are listed, classified and ordered into twelve pull request series in
+[docs/BACKLOG.md](docs/BACKLOG.md), under
+[Ritrovo unblock order](docs/BACKLOG.md#ritrovo-unblock-order), with the rows each
+one unblocks and the critical path between them. Eight of the 26 are 1.0 blockers
+on the day-one test as well and are argued there with the rest; fifteen are classed
+post or 1.0.x on that test and block only because of the ruling, and each says so,
+so what the ruling costs stays visible.
+
+Five of the 26 change the plugin contract rather than adding to it. Four of those
+are recommended to land before the tag, because each is an existing host call
+changing observable behaviour, which cannot arrive in a patch release afterwards.
+The fifth, routing `save-item` through `ItemService`, is recommended as an opt-in
+addition now and a default at 2.0.
 
 ### Security review, in public
 
@@ -51,11 +74,17 @@ or names the sentence that records the decision. Adding a config entity type fai
 that test until somebody chooses which it is, so this cannot drift back — which it
 did before, with menus listed as having a screen they did not have.
 
-**Stages are done.** `/admin/structure/stages` creates and edits stages: machine
-name, label, description, visibility, default and weight, which is what the schema
-models. There is deliberately no workflow-membership field, because there is
-nothing to edit: the tutorial ships a `workflow.editorial` variable describing
-transitions and no kernel code reads it.
+**The stage screen is done; stages are not.** `/admin/structure/stages` creates and
+edits stages: machine name, label, description, visibility, default and weight,
+which is what the schema models. There is deliberately no workflow-membership
+field, because there is nothing to edit: the tutorial ships a `workflow.editorial`
+variable describing transitions and no kernel code reads it.
+
+What that paragraph did not say is that the feature behind the screen cannot be
+used. Nothing moves one item from one stage to another: no route, no form field, no
+bulk action and no host call (BL-92). And the screen's own sentence about the
+default stage being where new content lands is not true, because nothing reads the
+flag it saves (BL-93). Both are 1.0 blockers.
 
 **Menus are done.** `/admin/structure/menus` lists a site's menus, renders each as
 an indented tree, and creates, edits, reorders and deletes links, with cycle
