@@ -15,6 +15,10 @@ Trovato.
 A line number is where the thing is at `d3f4cd7`; the source documents' own line
 numbers are often stale and are not repeated.
 
+In short: 87 distinct findings, 71 of them open, and 22 proposed as blocking the
+1.0 tag. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
+argues each.
+
 ## Sources
 
 | Source | What it is | Written against |
@@ -208,6 +212,219 @@ is new; each is a row above, with what verifying it added.
 | AI-2 | No `delete-item` binding in the SDK | BL-19 | Wider: the SDK binds none of the four `item-api` functions. |
 | AI-3 | The admin form rejects loopback base URLs | BL-57 | True, with no allowance, while six other outbound AI paths never validate at all. One policy, broken in both directions. |
 | AI-4 | `tap_item_view` output reaches the page JSON encoded | BL-35 | Fixed at `2ff3a62`: the kernel decodes view output before appending it. The report came from reading the macro, which still encodes. |
+
+## Found while verifying
+
+Three defects no source recorded, found while checking the ones they did.
+
+| ID | Finding | Where | Status | Class | Surface |
+|---|---|---|---|---|---|
+| BL-85 | One template that fails to parse empties the whole theme engine. Every root loads in a single call, a Tera parse error fails it, and startup substitutes an empty engine with a WARN, so every page, kernel pages included, is served as a 200 raw dump. This is what the trovato.rs site hit and reported as a missing comments template (BL-14). | `crates/kernel/src/state.rs:656-663`; `crates/kernel/src/theme/engine.rs:244-285` | open | 1.0 | additive |
+| BL-86 | A plugin-served request body is capped at 256 KB, sized for "the tap I/O buffer", while the dispatcher refuses tap input over 64 KB. A body in between passes the 413 check and is answered 502 "Plugin handler failed". | `crates/kernel/src/routes/plugin_api.rs:88-92,380-386`; `crates/kernel/src/tap/dispatcher.rs:322-331` | open | 1.0.x | additive |
+| BL-87 | `CRON_KEY` defaults to the constant `default-cron-key`, which `.env.example` also ships, and nothing warns when a site runs with it. `POST /cron/{key}` is public, so a site that never set the key lets anyone trigger cron (one run at a time, under the Redis lock), including plugin AI spend and index rebuilds. | `crates/kernel/src/config.rs:642`; `crates/kernel/src/routes/cron.rs:22,35-40`; `.env.example:32` | open | 1.0 | additive |
+
+## Tally
+
+87 distinct findings after merging duplicates: 71 open (one of them, BL-25, partly
+fixed), 14 fixed, and 2 that do not reproduce. Of the 71 open, 22 are proposed to
+block 1.0, 24 to ship in 1.0.x, and 25 to wait until after 1.0. Of the two that do
+not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
+on one database confirm it.
+
+The 22: BL-01, BL-02, BL-06, BL-07, BL-08, BL-09, BL-11, BL-12, BL-15, BL-21, BL-22,
+BL-41, BL-46, BL-57, BL-66, BL-67, BL-68, BL-69, BL-73, BL-74, BL-85, BL-87.
+
+## Why these block 1.0
+
+Each is argued against the test in [How to read a row](#how-to-read-a-row). Effort
+is a rough size: small is an afternoon, medium a few days.
+
+**BL-01, static assets rate-limited as API calls.** Day one. A public deployment
+sits behind a TLS proxy, and with `TRUSTED_PROXIES` unset (the default) every visitor
+shares the proxy's single budget of 100 GETs a minute, pages and assets together.
+With it set, crawlers and cold-cache visitors on asset-heavy pages still meet 429s,
+and an operator cannot tune it without rebuilding. Exempt `/static` and read the
+limits from configuration. Small.
+
+**BL-02 and BL-15, content translation.** The first contradicts the definition: a
+site configured in two languages cannot be given translated content through the
+interface, only by SQL, while 0.102.0's headline was multilingual and KNOWN-ISSUES.md
+pointed operators at a plugin that writes nothing. The second is day one: the plugin
+is enabled by default, so both admin routes are mounted and return 500. Either a
+writer ships (a config entity or an admin form, with the two templates and a POST
+handler) or 1.0 says plainly that content translation is written by SQL or by a
+plugin and the two routes come out. Medium, or small for the second choice.
+
+**BL-06, relative URLs and the route panic.** Day one for anyone who submits a
+sitemap: the protocol requires absolute URLs, as does `hreflang`, and `SITE_URL`
+already exists to build them. The startup panic means installing a plugin whose route
+happens to match a kernel route stops the site booting, where it should be a refusal
+naming the plugin. Small.
+
+**BL-07, the password reset.** Day one, at the first forgotten password: the link is
+a 405, and no part of the email flow is a page a browser can use, so the only reset
+is a shell command. Small to medium.
+
+**BL-08, inline scripts under the kernel's own CSP.** Day one: passkey sign-in never
+appears on the login page; account recovery, session revocation, passkey management
+and the admin recovery settings do not work; and two delete buttons lose their
+confirmation. The kernel's security header disables its own security features.
+Moving the scripts to `static/js/` is additive. Medium.
+
+**BL-09, missing MIME types.** Day one for any site serving `llms.txt`, a feed, a
+WebP image, a PDF or a web app manifest from `static/`: under `nosniff` a browser
+downloads what it should display. Small.
+
+**BL-11, config files that require `created`.** Hand-written config for six entity
+types fails, and a role's timestamp is a string where every other is an integer. The
+config file format is the operating interface for everything without a screen, so
+which fields are required and what a timestamp is should be settled before 1.0 calls
+that format stable. A default is additive; unifying the types means accepting both.
+Small.
+
+**BL-12, the blog's missing export.** The blog is enabled by default, so every item
+view on a stock install logs an ERROR and instantiates a module for nothing. An
+operator's first look at the logs shows an error per request, which teaches them to
+ignore errors. One line in a manifest. Small.
+
+**BL-21, `body` against `field_body`.** Day one on the default blog: teasers render
+with no text, and `page` items get no meta, Open Graph or feed description. Read both
+names. Small.
+
+**BL-22, listings that cannot link to aliases.** Day one for any listing, the
+kernel's own included: every link is `/item/{uuid}`, which serves 200 rather than
+redirecting, so a site with aliases publishes two addresses per page and readers
+share the ugly one. Medium.
+
+**BL-41, the content admin gating on `is_admin`.** Contradicts the definition for any
+site with more than one role: an editor granted content permissions can use the API
+and not the screens. And changing who is authorised for what is exactly the change
+that should not arrive in a patch release after 1.0. Medium.
+
+**BL-46, cron that nothing drives.** Day one: the stock compose file runs no cron
+poker for the main service, no install document mentions one, and scheduled
+publishing, enabled by default, silently never publishes. The 1.0 fix need not be a
+scheduler; a poker service and a paragraph in the install guide are enough, and an
+in-process scheduler can follow as an addition. Small.
+
+**BL-57, the AI provider URL policy.** Both halves. The security clause: the SSRF
+check the author wrote runs on two of eight outbound paths, misses IPv6 literals and
+never resolves hostnames, which is what an independent review will find first. And
+day one: anyone running a local model, which the design document describes as
+pointing `base_url` at localhost, is refused with no allowance. One policy: private
+addresses refused everywhere unless an operator allows them, enforced at the
+resolver. That also gives BL-51 its test allowance. Medium.
+
+**BL-66, the security review.** The definition names it.
+
+**BL-67 and BL-68, the page-builder allowlist and inline styles.** Neither is a day
+one problem: the page builder is off by default, and `'unsafe-inline'` for styles is
+defence in depth. They block for two other reasons. The definition's security clause
+scopes them into the review. And removing `'unsafe-inline'` after 1.0 would break
+every theme and plugin fragment carrying `style=`, including the page builder's own
+output, which is why the two have to be designed together and before the tag. If the
+review decides inline styles stay, that becomes a recorded permanent decision and
+both rows move to post.
+
+**BL-69, `tap_perm` not dispatched.** Day one for any site with a non-admin role that
+uses a stock plugin with its own permission (comments, media, translation): the only
+way to grant it is SQL. Contradicts the definition. Additive. Medium.
+
+**BL-73, the committed binary.** The day-one test does not catch it. It blocks
+because ROADMAP.md already decided it does ("Before 1.0, one of those"), and a 1.0
+source release should not carry a binary its own loader skips. Small.
+
+**BL-74, tutorial part 2.** A stranger learning Trovato follows the tutorial, and
+part 2's first build command fails. Small.
+
+**BL-85, one bad template empties the theme.** Day one for anyone who themes a site:
+one typo in an override serves every page as a raw dump with status 200 and only a
+startup WARN. Fail startup naming the file, or keep the kernel's templates. Small.
+
+**BL-87, the default cron key.** Day one: the key is a published constant, so a site
+that never set it has a public cron trigger. Warn at startup, or refuse to serve cron
+with the default key outside development. Small.
+
+### Considered and not blocking
+
+- **BL-16**, themed plugin pages without an `<h1>`: a real accessibility defect and a
+  broken SDK promise, but `trovato_contact`, the stock plugin that shows it, is off
+  by default. 1.0.x.
+- **BL-26**, stale pages after a plugin writes an item: visible, but only on sites
+  running a plugin that writes items, and bounded by the cache TTL. 1.0.x.
+- **BL-36**, the `db` host's silent nulls: the worst finding for a plugin author and
+  invisible to a site operator, and the fix that does not change a frozen function
+  is an addition that can land at any time. 1.0.x.
+- **BL-61**, `query-raw` accepting writing CTEs: not an escalation, because `raw_sql`
+  grants `execute-raw` anyway. Documenting it is 1.0.x; tightening it is a 2.0
+  question.
+- **BL-82**, `robots_txt_custom` without a screen: config import sets it. 1.0.x.
+
+## Frozen-surface findings
+
+[docs/design/Versioning.md](design/Versioning.md) freezes the plugin contract
+**before** 1.0 as well as after it, so "lands before the tag" is not a free window: a
+contract change now needs the same explicit exception it would need at 2.0. For every
+row marked frozen, the practical route is an opt-in addition (a new function, a new
+key, a new variant), which is additive and can land in any minor release.
+
+What does have to happen before the tag is **documentation of current behaviour**,
+because at 1.0 what the contract documents becomes the promise. These are additive
+and small, and each should land before 1.0 even though its row is classed 1.0.x or
+post:
+
+- BL-25: the WIT should say `item-api` writes fire no taps.
+- BL-36: the WIT should say which column types the `db` host decodes, and that the
+  rest arrive as null.
+- BL-55: the queue documentation should say concurrency is per plugin.
+- BL-61: the SDK should stop calling `query-raw` SELECT-only.
+- BL-64: `query-items` should document its order.
+
+One frozen row has a case for changing code before the tag instead: **BL-59**. The
+WIT already documents `save-item` as insert or update by whether the id exists, and
+the code does not do that. Making the code match the frozen documentation is a bug
+fix to the contract as written; changing the documentation to match the code would
+be the contract change. It needs deciding before 1.0 either way.
+
+BL-77 needs no work: the 1.0 tag makes the major version check refuse every 0.x
+manifest, pre-freeze or not. Every out-of-tree plugin will have to redeclare its
+`api_version` at that tag, which belongs in the 1.0 release notes.
+
+The full list of rows whose obvious fix is frozen: BL-03 (if `get` leaves the
+namespace), BL-13 (if the SDK default changes), BL-25, BL-33, BL-36, BL-38 (if the
+defaults go), BL-39, BL-45, BL-50 (if plain returns are reinterpreted), BL-55, BL-59,
+BL-61, BL-64 (if the default order changes), BL-65 (if a warning becomes an error),
+BL-72 and BL-77.
+
+## Where the sources and the code disagree
+
+So that nobody works from the original write-ups without knowing:
+
+- **Netgrasp `FRICTION.md`** claims verification at API `(1,0)`, which never
+  existed; calls five 0.99.0 fixes residual (BL-31, BL-35, BL-43, BL-44, and the
+  embedding half of BL-25); lists BL-37 as open after 0.100.0 fixed it; cites
+  `crates/kernel/tests/netgrasp_sync_test.rs`, which moved out in `3c72d79`; and has
+  two pinning tests (BL-35, BL-36) that cannot detect the kernel change they are
+  meant to announce.
+- **Argus `M4-FRICTION.md`** has no status note, and the first three of its
+  remaining gaps are closed. The M3 status note misses G-COMMENTS-UNRENDERED
+  (BL-58). M1's "the only retry signal is a trap" (BL-50) and M4's "`query-items`
+  promises no ordering" (BL-64) are out of date, and M2's base URL finding (BL-57)
+  is narrower than the code.
+- **trovato.rs `REPORT.md`**: the comments template is in the image (BL-14);
+  `/user/recover` is not a working alternative to the dead link (BL-07); the CSP
+  blocks five templates, not one (BL-08); re-import does update `changed` (BL-10);
+  six entity types require `created`, not one (BL-11); the startup warnings number
+  20 on a default install, not seventeen (BL-13); `item-api` has four functions and
+  Argus uses three (BL-19); and the "site-fixable" contact form errors are plugin
+  markup in this repository (BL-23).
+- **`KNOWN-ISSUES.md`** had four descriptions the code contradicted, corrected with
+  BL-68, BL-69, BL-72 and BL-81, and the bookkeeping errors below.
+- **`docs/design/ai-integration.md:371`** describes a local model as a localhost
+  `base_url`, which the admin form refuses (BL-57).
+- **The `d3f4cd7` commit message** calls per-plugin queue concurrency the documented
+  model; the queue documentation says concurrency is honoured and does not say per
+  plugin (BL-55).
 
 ## Bookkeeping corrected alongside this page
 
