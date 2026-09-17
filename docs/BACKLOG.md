@@ -822,6 +822,15 @@ So that nobody works from the original write-ups without knowing:
   20 on a default install, not seventeen (BL-13); `item-api` has four functions and
   Argus uses three (BL-19); and the "site-fixable" contact form errors are plugin
   markup in this repository (BL-23).
+- **Ritrovo `FRICTION.md`** is the most accurate of the source documents: nothing in
+  it was contradicted outright, and its file and line citations hold at this
+  revision. Three entries are narrower or wider than their text, listed under
+  [What the code did not bear out](#what-the-code-did-not-bear-out): the search page
+  is blanked by two scripts rather than by the template, the install warning is
+  about a missing check rather than a derived path, and the revision fields carry
+  `#[serde(default)]`, which is why the defect read as handled.
+- **`ROADMAP.md`** said stages are done, and the feature behind the screen cannot be
+  used at all (BL-92, BL-93). Corrected in the same change as this page.
 - **`KNOWN-ISSUES.md`** had four descriptions the code contradicted, corrected with
   BL-68, BL-69, BL-72 and BL-81, and the bookkeeping errors below.
 - **`docs/design/ai-integration.md:371`** describes a local model as a localhost
@@ -848,3 +857,10 @@ verified on 2026-09-17 and corrected in the same change:
   entries, and nothing outside the tests inserts an `item_translation` row (BL-02).
 - The four descriptions corrected with BL-68, BL-69, BL-72 and BL-81, listed in
   their rows.
+- `KNOWN-ISSUES.md` told operators to grant a plugin's permissions by SQL and keep
+  them in the config file afterwards. Saving the permission grid revokes them
+  (BL-90), so there is no durable path at all; corrected.
+- `KNOWN-ISSUES.md` said `trovato_locale` handles interface strings at
+  `/admin/config/locale` by importing `.po` files. It implements `tap_menu` and
+  `tap_perm` only, declares no host interfaces and exports no `tap_api`, and nothing
+  calls `LocaleService::import_translations` (BL-98); corrected.
