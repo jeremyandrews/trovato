@@ -50,8 +50,9 @@ why. Each entry has reasoning; none is suppressed silently. The open ones:
 
 Every wasmtime and cranelift advisory is **fixed rather than suppressed**:
 RUSTSEC-2026-0085 through -0096, -0114 and -0222 all cleared by upgrading the
-runtime to wasmtime 47.0.3. Nothing about the plugin sandbox is being carried on
-a justification.
+runtime to wasmtime 47.0.3, and RUSTSEC-2026-0268 and -0269 by 47.0.4, which is
+what the runtime is on. Nothing about the plugin sandbox is being carried on a
+justification.
 
 Five suppressions remain, none of them in the WASM runtime:
 
@@ -130,9 +131,17 @@ for it, and this is a decision rather than a gap.
 The other half of the reasoning is that a language screen on its own would not help
 much. Adding a language row is the small part of adding a language; the work is the
 interface strings, which `trovato_locale` handles at `/admin/config/locale` by
-importing `.po` files, and the content translations, which
-`trovato_content_translation` handles per item. A form that adds a row and leaves an
-operator to do both of those anyway would look like the feature without being it.
+importing `.po` files, and the content translations. A form that adds a row and
+leaves an operator to do both of those anyway would look like the feature without
+being it.
+
+Content translations are the weaker half of that sentence than it used to admit.
+`trovato_content_translation` declares one permission and two menu entries and
+nothing else; its migration creates the `item_translation` table. The kernel reads
+that table everywhere a page is rendered, and **nothing writes to it**: no route, no
+API, no config import path and no host function, so outside the tests the only way
+to add a translation is SQL. The two admin routes it would use render templates that
+do not exist and return 500. See BL-02 and BL-15 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
 `crates/kernel/tests/config_admin_coverage_test.rs` holds this decision as a table:
 every config entity type there either names a screen that must serve or names the
@@ -287,20 +296,6 @@ outside this repository's own history, but the check is a compatibility gate and
 not a provenance check, and it is worth knowing which of the two it is.
 
 ## Testing
-
-### One notification test is timing-sensitive under coverage
-
-`the_pipeline_turns_a_summarized_story_into_a_dispatched_notification` in
-`crates/kernel/tests/argus_notify_test.rs` drives the real Argus WASM plugin and
-asserts that the notification captured the story as it stood when it was
-founded, with one member rather than two. It depends on a fixed 1200ms sleep
-winning a race against a second report joining the story.
-
-Under `cargo llvm-cov`, instrumentation slows execution enough that the race can
-go the other way, and the CI Coverage job fails with `article_count` 2. It
-passes on re-run and passes in the ordinary test job. Observed once on
-2026-08-16. If Coverage fails on that assertion, re-run it; the fix is to make
-the test wait on the state it needs instead of on a duration.
 
 ### The local test gate is stronger than CI
 

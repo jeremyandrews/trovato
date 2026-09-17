@@ -208,3 +208,22 @@ is new; each is a row above, with what verifying it added.
 | AI-2 | No `delete-item` binding in the SDK | BL-19 | Wider: the SDK binds none of the four `item-api` functions. |
 | AI-3 | The admin form rejects loopback base URLs | BL-57 | True, with no allowance, while six other outbound AI paths never validate at all. One policy, broken in both directions. |
 | AI-4 | `tap_item_view` output reaches the page JSON encoded | BL-35 | Fixed at `2ff3a62`: the kernel decodes view output before appending it. The report came from reading the macro, which still encodes. |
+
+## Bookkeeping corrected alongside this page
+
+Not findings about the kernel, but errors in the files that describe it, all
+verified on 2026-09-17 and corrected in the same change:
+
+- `KNOWN-ISSUES.md` still described `argus_notify_test` as timing-sensitive.
+  `d3f4cd7` (#67) made the test arrange the ordering it asserts. The entry is gone.
+- The changelog credited that fix to `#66`, which is the issue it closed; the pull
+  request is `#67`. The entry also sat inside the tagged `v0.102.0` section although
+  it merged after the tag (`20baa12`); `docs/RELEASING.md` says such entries
+  accumulate under `## Unreleased`, so it moved there.
+- `KNOWN-ISSUES.md` and `ROADMAP.md` said the runtime is on wasmtime 47.0.3.
+  `Cargo.lock` has 47.0.4 since `a3357b5` (#65).
+- `KNOWN-ISSUES.md` said content translations are what `trovato_content_translation`
+  handles per item. That plugin is 46 lines declaring one permission and two menu
+  entries, and nothing outside the tests inserts an `item_translation` row (BL-02).
+- The four descriptions corrected with BL-68, BL-69, BL-72 and BL-81, listed in
+  their rows.

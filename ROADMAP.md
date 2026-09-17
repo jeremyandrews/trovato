@@ -25,7 +25,7 @@ land together.
 
 ### Dependency advisories
 
-The wasmtime and cranelift batch is **done**: the runtime is on 47.0.3 and no
+The wasmtime and cranelift batch is **done**: the runtime is on 47.0.4 and no
 advisory against it remains. What is left is smaller. The quick-xml pair is
 blocked on an upstream `plist` release and is tracked rather than worked. The
 rmcp DNS-rebinding advisory does not apply to the STDIO transport Trovato uses,
