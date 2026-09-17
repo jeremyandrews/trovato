@@ -196,3 +196,15 @@ the local test run is a stronger gate than CI, which is advice rather than a def
 | BL-82 (`robots_txt_custom`) | The one kernel variable with no screen and no recorded reason; it is settable only by config import. | `crates/kernel/src/routes/sitemap.rs:132`; `KNOWN-ISSUES.md` "What is configuration import only, in full" | open | 1.0.x | additive |
 | BL-83 (plugin variables) | A plugin's variables have no admin screen, by the recorded decision against a generic variable editor. | `crates/kernel/tests/config_admin_coverage_test.rs:48` | open | post | additive |
 | BL-84 (freeze held by policy) | Under 0.x SemVer rules `cargo-semver-checks` cannot fail a contract break, so the freeze is held by review. It ends at the 1.0.0 tag with no work. | `.github/workflows/ci.yml:499`; `docs/design/Versioning.md` | open | post | n/a |
+
+## From the AI assistant work
+
+Four things the 0.102 assistant implementation ran into and nobody wrote down. None
+is new; each is a row above, with what verifying it added.
+
+| ID | Reported as | Row | What verification found |
+|---|---|---|---|
+| AI-1 | `save-item` bypasses `ItemService`, so a plugin write fires no taps | BL-25, BL-26 | True, deliberate, and undocumented at the WIT. The same path also skips cache invalidation (BL-26), which is the half a site's visitors see. It does enqueue embedding. |
+| AI-2 | No `delete-item` binding in the SDK | BL-19 | Wider: the SDK binds none of the four `item-api` functions. |
+| AI-3 | The admin form rejects loopback base URLs | BL-57 | True, with no allowance, while six other outbound AI paths never validate at all. One policy, broken in both directions. |
+| AI-4 | `tap_item_view` output reaches the page JSON encoded | BL-35 | Fixed at `2ff3a62`: the kernel decodes view output before appending it. The report came from reading the macro, which still encodes. |
