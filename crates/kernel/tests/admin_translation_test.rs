@@ -109,7 +109,7 @@ fn ensure_translation_table(app: &TestApp) {
             .await;
             guard.commit().await.expect("release migration lock");
             result.expect("run the translation plugin migrations");
-        })
+        });
     })
     .join()
     .expect("translation migration thread panicked");
