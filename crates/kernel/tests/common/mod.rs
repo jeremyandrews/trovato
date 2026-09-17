@@ -341,6 +341,12 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::inject_security_headers,
             ))
+            // Request timing, outermost as in production, so a test can see the
+            // `Server-Timing` header the middleware is there to add.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::track_request_timing,
+            ))
             .layer(tower_http::trace::TraceLayer::new_for_http())
             // Supply a loopback peer (outermost, runs first) so
             // `resolve_client_ip` has a trusted socket address — mirroring

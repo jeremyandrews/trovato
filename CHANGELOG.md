@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Fix: `QUERY_SLOW_THRESHOLD_MS` does something, and every response reports its
+  duration.
+
+  `track_request_timing` in `middleware/query_profiler.rs` was written,
+  exported, and unit-tested for its threshold arithmetic, and applied to no
+  router. So no response ever carried a `Server-Timing` header, no slow request
+  was ever logged, and a documented setting with a documented default steered
+  nothing. Its module doc also claimed a `query-profiler` cargo feature, which
+  `Cargo.toml` has never defined, and per-query profiling, which it has never
+  done.
+
+  The layer is now applied in `main.rs`, outside every other layer so the
+  measurement covers the whole request, and in the integration test harness in
+  the same position. The module doc says what it measures. `request_timing_test`
+  requires a parseable `total;dur=` on a page, a static asset and a 404 (the
+  layer is outside routing), and asserts that `main.rs` applies it, since the
+  defect was precisely that nothing did.
+
 - Fix: a themed plugin page renders its title as the page heading.
 
   `ApiResponse::themed` carries a title, and `ThemeEngine::render_page` puts it

@@ -338,7 +338,7 @@ async fn run_server() -> Result<()> {
             }
         })
         // Middleware layers (last added = first executed in request flow):
-        // TraceLayer → security_headers → CORS → session → rate_limit(per-IP) →
+        // TraceLayer → track_request_timing → security_headers → CORS → session → rate_limit(per-IP) →
         // bearer_auth → api_token → rate_limit(per-user) → install_check →
         // negotiate_language → redirect → routes
         .layer(axum::middleware::from_fn_with_state(
@@ -387,6 +387,12 @@ async fn run_server() -> Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::inject_security_headers,
+        ))
+        // Request timing, outside every other layer so `Server-Timing` measures
+        // the whole request rather than a part of it.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::track_request_timing,
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());

@@ -1,11 +1,16 @@
-//! Query profiler middleware.
+//! Request timing middleware.
 //!
-//! When enabled (via `--features query-profiler` or always-on in dev),
-//! logs slow database queries and adds `Server-Timing` response headers.
+//! Applied to the whole router in `main.rs`, on every request: it adds a
+//! `Server-Timing` response header and logs a request that takes too long.
 //!
 //! Configuration:
-//! - `QUERY_SLOW_THRESHOLD_MS` (default: 100) — queries exceeding this are logged
-//! - Queries exceeding 5x threshold are logged at ERROR level
+//! - `QUERY_SLOW_THRESHOLD_MS` (default: 100) — a request taking longer than
+//!   this is logged at WARN, and longer than five times this at ERROR.
+//!
+//! The module used to claim a `query-profiler` cargo feature, which
+//! `Cargo.toml` has never defined, and per-query profiling, which it has never
+//! done: it measures the whole request. The name is the one thing left of that
+//! ambition, kept because the setting it reads is named after it.
 
 use std::time::Instant;
 
@@ -39,11 +44,11 @@ pub(crate) fn classify(elapsed_ms: u128, threshold_ms: u128) -> Speed {
     }
 }
 
-/// Middleware that tracks total request DB time via `Server-Timing` header.
+/// Middleware that reports total request duration in a `Server-Timing` header.
 ///
-/// Actual per-query tracking requires wrapping the PgPool, which is
-/// deferred to a future enhancement. This middleware measures total
-/// request processing time as a proxy.
+/// Per-query tracking would require wrapping the `PgPool` and is not done here:
+/// the measurement is the whole request, from the outermost layer inward, which
+/// is what a browser's DevTools shows against `total;dur=`.
 ///
 /// The threshold comes from the application state, resolved once at startup;
 /// it used to be read from the environment on every single request.
