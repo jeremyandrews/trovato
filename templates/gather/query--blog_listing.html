@@ -21,9 +21,12 @@
             <div class="blog-teaser__meta">
                 <time>{{ row.created | format_date }}</time>
             </div>
+            {# `field_body` is the field `trovato_blog` defines for a blog post.
+               The kernel `page` type calls its equivalent `body`, and this
+               template read that, so a blog teaser rendered with no text. #}
             {% if row.fields is defined and row.fields is object %}
-                {% if row.fields.body is defined %}
-                    {% set body_val = row.fields.body %}
+                {% if row.fields.field_body is defined %}
+                    {% set body_val = row.fields.field_body %}
                     {% if body_val.value is defined %}
                     <div class="blog-teaser__summary">
                         {{ body_val.value | truncate(length=200) }}
