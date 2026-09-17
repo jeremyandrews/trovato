@@ -333,6 +333,14 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::resolve_client_ip,
             ))
+            // Security response headers, outside the session layer as in
+            // production. Without it no test could see the CSP a browser
+            // enforces, which is how an inline script the policy blocks shipped
+            // on the login page. It only adds headers.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::inject_security_headers,
+            ))
             .layer(tower_http::trace::TraceLayer::new_for_http())
             // Supply a loopback peer (outermost, runs first) so
             // `resolve_client_ip` has a trusted socket address — mirroring

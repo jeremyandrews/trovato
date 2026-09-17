@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Fix: passkey sign-in appears on the login page of a default install.
+
+  The kernel's enforcing CSP has no `'unsafe-inline'`, nonce or hash in
+  `script-src`, and the passkey code in `templates/user/login.html` was an inline
+  `<script>` block, so the browser never ran it. That script is what reveals the
+  hidden "Sign in with a passkey" button, so the button never appeared. The
+  mismatch survived because `middleware/security_headers.rs` documented that
+  every inline script had already been externalised, and because the
+  integration test harness never installed the security-header middleware, so
+  no test could see the policy a browser enforces.
+
+  The script now lives in `static/js/passkey-login.js`, loaded with `src`.
+  `script-src` is unchanged. The comment now says what the policy does and
+  points at BL-08 for the templates that still carry inline scripts;
+  `KNOWN-ISSUES.md` and `docs/BACKLOG.md` drop login from that list. The test
+  harness installs `inject_security_headers` in the same position as `main.rs`,
+  and `login_page_csp_test` reads the CSP from the response and requires every
+  executable script on the login page to load from a file.
+
 - Fix: the login page's "Forgot password?" link loads a page.
 
   `templates/user/login.html` linked it to `/user/password-reset`, which the

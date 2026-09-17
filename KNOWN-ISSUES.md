@@ -39,7 +39,7 @@ templates. Extracting the styles allows the directive to be tightened, which is
 also what makes the page-builder allowlist above worth having.
 
 `script-src` does not carry `'unsafe-inline'`, but not because nothing needs it:
-five templates still depend on inline `<script>` blocks (login, account recovery,
+four templates still depend on inline `<script>` blocks (account recovery,
 sessions, passkeys and the admin recovery settings) and five more on inline `on*=`
 handlers, and the enforcing policy blocks every one of them. Those have to move to
 `static/js/` as well. See BL-08 in [docs/BACKLOG.md](docs/BACKLOG.md).
