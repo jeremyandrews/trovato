@@ -66,9 +66,59 @@ async fn create_item(app: &TestApp, title: &str) -> Uuid {
         .id
 }
 
+/// Serializes the plugin migration below across tests, binaries and shards.
+const TRANSLATION_MIGRATION_LOCK: i64 = 0x_7A11_0000_0001;
+
+/// Apply `trovato_content_translation`'s own migrations, which create
+/// `item_translation`.
+///
+/// The shared app discovers no plugins (its plugin directory is relative to the
+/// test's working directory), so the table exists only if some earlier test in
+/// the same database booted with the real plugins directory. Depending on that
+/// is depending on shard order, so the fixture runs the migration itself. It is
+/// idempotent: applied files are recorded in `plugin_migration` and skipped.
+///
+/// Driven on its own thread against the shared runtime, the way `shared_app`
+/// builds the app: the migration runner's future does not meet `run_test`'s
+/// `Send` bound.
+fn ensure_translation_table(app: &TestApp) {
+    let dir = common::project_root().join("plugins/trovato_content_translation");
+    let info = trovato_kernel::plugin::PluginInfo::parse(
+        &dir.join("trovato_content_translation.info.toml"),
+    )
+    .expect("parse the translation plugin manifest");
+    let db = app.db.clone();
+    let handle = common::shared_runtime_handle();
+
+    std::thread::spawn(move || {
+        handle.block_on(async move {
+            // Held for the length of the transaction; the migration runs on its
+            // own connection meanwhile, and any concurrent caller waits here.
+            let mut guard = db.begin().await.expect("begin migration lock");
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(TRANSLATION_MIGRATION_LOCK)
+                .execute(&mut *guard)
+                .await
+                .expect("take migration lock");
+            let result = trovato_kernel::plugin::migration::run_plugin_migrations(
+                &db,
+                "trovato_content_translation",
+                &info,
+                &dir,
+            )
+            .await;
+            guard.commit().await.expect("release migration lock");
+            result.expect("run the translation plugin migrations");
+        })
+    })
+    .join()
+    .expect("translation migration thread panicked");
+}
+
 /// An admin session with the translation plugin enabled and an item that has an
 /// Italian translation and no Hebrew one.
 async fn fixture(app: &TestApp) -> (String, Uuid, String) {
+    ensure_translation_table(app);
     app.ensure_plugin_enabled("trovato_content_translation")
         .await;
 
