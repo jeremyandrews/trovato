@@ -128,16 +128,17 @@ mod tests {
 
         // trovato_blog plugin declares these taps
         assert!(registry.has_tap("tap_item_info"));
-        assert!(registry.has_tap("tap_item_view"));
         assert!(registry.has_tap("tap_item_access"));
         assert!(registry.has_tap("tap_menu"));
         assert!(registry.has_tap("tap_perm"));
+        // It never exported a view tap, and no longer declares one.
+        assert!(!registry.has_tap("tap_item_view"));
 
         // Each tap should have exactly one handler (from blog)
-        assert_eq!(registry.handler_count("tap_item_view"), 1);
+        assert_eq!(registry.handler_count("tap_item_access"), 1);
 
         // Handler should reference the blog plugin
-        let handlers = registry.get_handlers("tap_item_view");
+        let handlers = registry.get_handlers("tap_item_access");
         assert_eq!(handlers.len(), 1);
         assert_eq!(handlers[0].plugin.info.name, "trovato_blog");
         assert_eq!(handlers[0].weight, 0);
@@ -165,7 +166,7 @@ mod tests {
         let names: Vec<_> = registry.tap_names().collect();
 
         assert!(names.contains(&"tap_item_info"));
-        assert!(names.contains(&"tap_item_view"));
-        assert_eq!(names.len(), 5); // blog implements 5 taps
+        assert!(names.contains(&"tap_item_access"));
+        assert_eq!(names.len(), 4); // blog implements 4 taps
     }
 }
