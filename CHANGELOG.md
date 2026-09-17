@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Fix: `.md`, `.txt` and `.xml` files under `static/` display instead of
+  downloading.
+
+  `mime_from_path` in `routes/static_files.rs` is a closed list of extensions
+  with `application/octet-stream` as the fallback, and it had no arm for any of
+  the three. Every static response also carries `X-Content-Type-Options:
+  nosniff`, so a browser trusts that type and saves the file: `llms.txt`, a
+  served markdown document and a static sitemap all downloaded. The arms now
+  exist, as `text/markdown`, `text/plain` and `application/xml`, each with an
+  explicit UTF-8 charset so the text is not decoded as Latin-1. One unit test
+  per extension. The other extensions BL-09 lists (`.webp`, `.avif`, `.pdf`,
+  `.webmanifest`, `.otf`) are still open.
+
 - Fix: passkey sign-in appears on the login page of a default install.
 
   The kernel's enforcing CSP has no `'unsafe-inline'`, nonce or hash in
