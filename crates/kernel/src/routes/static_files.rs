@@ -191,6 +191,12 @@ fn mime_from_path(path: &std::path::Path) -> &'static str {
         Some("css") => "text/css",
         Some("html") => "text/html",
         Some("json") => "application/json",
+        // Text a browser should display rather than download: `llms.txt`, a
+        // served markdown file, a static sitemap or feed. The charset is explicit
+        // because without one a browser may decode UTF-8 text as Latin-1.
+        Some("md") => "text/markdown; charset=utf-8",
+        Some("txt") => "text/plain; charset=utf-8",
+        Some("xml") => "application/xml; charset=utf-8",
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
@@ -393,6 +399,40 @@ mod tests {
         assert_eq!(build_asset_manifest(&dirs).len(), 1);
 
         std::fs::remove_dir_all(&kernel).ok();
+    }
+
+    /// Under `X-Content-Type-Options: nosniff`, `application/octet-stream` makes
+    /// a browser download a file. These three extensions fell through to it.
+    #[test]
+    fn markdown_is_served_as_markdown() {
+        assert_eq!(
+            mime_from_path(std::path::Path::new("docs/guide.md")),
+            "text/markdown; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn plain_text_is_served_as_text() {
+        assert_eq!(
+            mime_from_path(std::path::Path::new("llms.txt")),
+            "text/plain; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn xml_is_served_as_xml() {
+        assert_eq!(
+            mime_from_path(std::path::Path::new("sitemap.xml")),
+            "application/xml; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn an_unknown_extension_is_still_octet_stream() {
+        assert_eq!(
+            mime_from_path(std::path::Path::new("archive.bin")),
+            "application/octet-stream"
+        );
     }
 
     // There is deliberately no `STATIC_DIR` test left in this module. It used to
