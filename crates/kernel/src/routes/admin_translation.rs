@@ -60,6 +60,8 @@ async fn translation_list(
     context.insert("default_language", default_lang);
     context.insert("translations", &translations);
     context.insert("item_id", &id.to_string());
+    // `page--admin.html` reads `path` to mark the active admin menu entry.
+    context.insert("path", &format!("/admin/content/{id}/translate"));
 
     render_admin_template(&state, "admin/content-translate-list.html", context).await
 }
@@ -99,6 +101,8 @@ async fn translation_edit(
     context.insert("default_language", state.default_language());
     context.insert("translation", &translation);
     context.insert("item_id", &id.to_string());
+    // `page--admin.html` reads `path` to mark the active admin menu entry.
+    context.insert("path", &format!("/admin/content/{id}/translate/{lang}"));
 
     render_admin_template(&state, "admin/content-translate-edit.html", context).await
 }

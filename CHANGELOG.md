@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Fix: the two content translation admin pages render instead of answering 500.
+
+  `routes/admin_translation.rs` renders `admin/content-translate-list.html` and
+  `admin/content-translate-edit.html`, and neither template was ever written.
+  `trovato_content_translation` puts both routes in the admin menu, so a user
+  allowed to translate content followed a menu link to a Tera "template not
+  found" error. Nothing checks at build time that a template name in Rust names
+  a file, so the gap was invisible until a request. Writing the templates
+  exposed a second omission: both handlers leave `path` out of the context, and
+  `page--admin.html` reads it for the active menu entry, so the pages would
+  still have failed in the parent template. Both handlers now insert it.
+
+  The templates are read-only: a list of the site's languages with each one's
+  translation state, and one language's stored translation beside the original.
+  Translations still have no write path, and the pages do not pretend to offer
+  one. BL-15 in `docs/BACKLOG.md` covers this.
+
+  `admin_translation_test` renders both pages against a real translation and a
+  missing one, and scans kernel source so every template passed to
+  `render_admin_template` or `tera().render` must exist under `templates/`.
+
 - Fix: `.md`, `.txt` and `.xml` files under `static/` display instead of
   downloading.
 
