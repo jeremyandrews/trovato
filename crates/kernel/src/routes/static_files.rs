@@ -201,11 +201,18 @@ fn mime_from_path(path: &std::path::Path) -> &'static str {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
         Some("ico") => "image/x-icon",
         Some("wasm") => "application/wasm",
+        Some("pdf") => "application/pdf",
+        // A web app manifest is only honoured under this type; served as
+        // `application/octet-stream` a browser ignores the whole manifest.
+        Some("webmanifest") => "application/manifest+json",
         _ => "application/octet-stream",
     }
 }
@@ -402,29 +409,28 @@ mod tests {
     }
 
     /// Under `X-Content-Type-Options: nosniff`, `application/octet-stream` makes
-    /// a browser download a file. These three extensions fell through to it.
+    /// a browser download a file rather than display or use it. These eight
+    /// extensions all fell through to it; BL-09 named all eight and the first
+    /// three were fixed on their own, which is why the rest are pinned here
+    /// beside them rather than in a second test.
     #[test]
-    fn markdown_is_served_as_markdown() {
-        assert_eq!(
-            mime_from_path(std::path::Path::new("docs/guide.md")),
-            "text/markdown; charset=utf-8"
-        );
-    }
-
-    #[test]
-    fn plain_text_is_served_as_text() {
-        assert_eq!(
-            mime_from_path(std::path::Path::new("llms.txt")),
-            "text/plain; charset=utf-8"
-        );
-    }
-
-    #[test]
-    fn xml_is_served_as_xml() {
-        assert_eq!(
-            mime_from_path(std::path::Path::new("sitemap.xml")),
-            "application/xml; charset=utf-8"
-        );
+    fn every_extension_bl_09_named_has_a_type_a_browser_acts_on() {
+        for (path, expected) in [
+            ("docs/guide.md", "text/markdown; charset=utf-8"),
+            ("llms.txt", "text/plain; charset=utf-8"),
+            ("sitemap.xml", "application/xml; charset=utf-8"),
+            ("hero.webp", "image/webp"),
+            ("hero.avif", "image/avif"),
+            ("terms.pdf", "application/pdf"),
+            ("site.webmanifest", "application/manifest+json"),
+            ("body.otf", "font/otf"),
+        ] {
+            assert_eq!(
+                mime_from_path(std::path::Path::new(path)),
+                expected,
+                "{path} must be served as {expected}"
+            );
+        }
     }
 
     #[test]

@@ -119,13 +119,14 @@ fn is_article_type(item_type: &str) -> bool {
 
 /// Derive a plain-text description from the item's body text.
 ///
-/// Order: `field_description`, then `field_body`, then the first paragraph of
-/// the first Blocks field. The two field names are the pair `trovato_seo`
-/// already reads, and the block fallback covers block-editor content types,
-/// which have no `field_body` at all.
+/// Order: `field_description`, then the long text field under either of its two
+/// names, then the first paragraph of the first Blocks field. Reading only
+/// `field_body` left every `page` item — which calls the same field `body` —
+/// with no description at all (BL-21). The block fallback covers block-editor
+/// content types, which have neither name.
 fn derive_description(item: &Item, fields: &[FieldDefinition]) -> Option<String> {
-    let from_field =
-        text_field(item, "field_description").or_else(|| text_field(item, "field_body"));
+    let from_field = text_field(item, "field_description")
+        .or_else(|| crate::content::body_field::body_text(&item.fields));
 
     let raw = match from_field {
         Some(text) => text,
@@ -141,12 +142,7 @@ fn derive_description(item: &Item, fields: &[FieldDefinition]) -> Option<String>
 /// Field values are either `{"value": "..."}` or a bare string, the same two
 /// shapes the embedding text builder handles.
 fn text_field(item: &Item, name: &str) -> Option<String> {
-    let value = item.fields.get(name)?;
-    let text = value
-        .get("value")
-        .and_then(|v| v.as_str())
-        .or_else(|| value.as_str())?;
-    non_empty(text)
+    crate::content::body_field::field_text(&item.fields, name)
 }
 
 /// The item's Blocks fields, in content-type declaration order.
@@ -356,6 +352,19 @@ mod tests {
             "page",
             serde_json::json!({"field_body": {"value": "The body."}}),
         );
+
+        let meta = PageMeta::for_item(&item, "/item/x", "https://example.com", "Site", &[]);
+
+        assert_eq!(meta.description.as_deref(), Some("The body."));
+    }
+
+    /// The kernel's own `page` type calls its long text field `body`, not
+    /// `field_body`, so deriving the description from `field_body` alone left
+    /// every stock `page` with no meta description, no Open Graph description
+    /// and no feed description at all (BL-21).
+    #[test]
+    fn description_falls_back_to_the_body_field_under_its_other_name() {
+        let item = item("page", serde_json::json!({"body": {"value": "The body."}}));
 
         let meta = PageMeta::for_item(&item, "/item/x", "https://example.com", "Site", &[]);
 

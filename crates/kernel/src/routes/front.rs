@@ -325,20 +325,19 @@ async fn render_promoted_listing(state: &AppState) -> String {
             ));
         }
 
-        // Render body field summary if available
-        if let Some(body) = item
-            .fields
-            .get("body")
-            .and_then(|f| f.get("value"))
-            .and_then(|v| v.as_str())
-        {
+        // Render body field summary if available. The field goes by two names
+        // (BL-21), and a promoted blog post carries the one this renderer did
+        // not read, so its teaser came out empty on the front page.
+        if let Some(field) = crate::content::body_field::body_field_name(&item.fields) {
+            let body =
+                crate::content::body_field::field_text(&item.fields, field).unwrap_or_default();
             let format = item
                 .fields
-                .get("body")
+                .get(field)
                 .and_then(|f| f.get("format"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("plain_text");
-            let filtered = FilterPipeline::for_format_safe(format).process(body);
+            let filtered = FilterPipeline::for_format_safe(format).process(&body);
             // Truncate for teaser (char-boundary safe)
             let summary = if filtered.chars().count() > 200 {
                 let truncated: String = filtered.chars().take(200).collect();

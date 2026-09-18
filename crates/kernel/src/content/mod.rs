@@ -10,6 +10,7 @@
 
 pub mod block_render;
 pub mod block_types;
+pub mod body_field;
 pub mod compound;
 mod file_refs;
 mod filter;

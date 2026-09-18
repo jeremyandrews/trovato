@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- Fix: the kernel reads one long text field under both the names it goes by.
+
+  The kernel's `page` type declares its long text field as `body`; a content type
+  that declares its own calls it `field_body`, as `trovato_blog` does. Every
+  kernel reader was written against one name, so each rendered nothing for half
+  the site's content: the promoted-items renderer on the front page read `body`
+  only, so a promoted blog post's teaser was a title, a date and a "Read more"
+  link with nothing between them, and page metadata read `field_description` then
+  `field_body` only, so a stock `page` item had no meta description, no Open Graph
+  description and no feed description at all. Neither reader was wrong about its
+  own content type, which is why both survived: each one works on exactly the
+  half of the content model it was written for.
+
+  `content::body_field` is now the one place that knows the pair. It reads
+  `field_body` first, then `body`, so a type that declared its own field wins over
+  the kernel default, and treats a present-but-empty field as absent. The
+  promoted-items renderer, page metadata, the feed description, the pagefind
+  description and index text, and the `ts_headline` snippet source in search all
+  go through it; the snippet's field-access redaction now denies on either name,
+  so widening the source cannot leak a restricted field. No field is renamed:
+  that is a content migration for `item.fields`, `search_field_config` and every
+  plugin reading the other name. `trovato_seo` still reads `field_body` alone and
+  is left for a plugin change. Regression tests: a promoted item shows its teaser
+  under either name on the front page, and a `page` with a `body` yields a meta
+  description.
+
+- Fix: the five remaining static file types BL-09 named are served as themselves.
+
+  `mime_from_path` gained `.md`, `.txt` and `.xml` in `c4dffc5`, leaving five of
+  the eight the finding listed still falling through to
+  `application/octet-stream`, which under `nosniff` makes a browser download a
+  file instead of displaying or using it. `.webp` and `.avif` are now
+  `image/webp` and `image/avif`, `.pdf` is `application/pdf`, `.otf` is
+  `font/otf`, and `.webmanifest` is `application/manifest+json`, without which a
+  browser ignores a web app manifest entirely. An extension outside the table is
+  still `application/octet-stream`, which is the point of the fallback. The test
+  covers all eight in one place.
+
+- Docs: `docs/BACKLOG.md` carries the fix series' results.
+
+  Seven rows the series closes outright are marked fixed with the commit they
+  landed as (BL-10, BL-11, BL-12, BL-13, BL-15, BL-16, BL-17); BL-09 closes on
+  `c4dffc5` plus the work above. BL-07 stays open: #70 repointed the link at a
+  page that exists, and how the reset flow should work has not been ruled on.
+  BL-21 becomes partly fixed, its kernel readers done and its listing template
+  still open. Four findings the run turned up and did not fix are recorded as
+  BL-112 to BL-115: the login page's unconditional sign-up link against a
+  registration route that 404s when registration is closed, which is the default;
+  the startup warning that tells an operator a served path will 404 when only the
+  callback is dead; the web layer design document describing a per-query, per-tap
+  and per-template profiler where the middleware times the whole request and
+  nothing else; and eleven plugin menu paths no route serves, checked by
+  composing the kernel's whole route set rather than by searching for the strings.
+  Every passage that counts rows was recounted against the rows rather than
+  adjusted.
+
+
 - Fix: `QUERY_SLOW_THRESHOLD_MS` does something, and every response reports its
   duration.
 

@@ -83,6 +83,17 @@ async fn ensure_item_type(app: &TestApp) {
 /// Create a published item, optionally promoted, with an explicit `created`
 /// timestamp so that listing order is under the test's control.
 async fn create_item(app: &TestApp, title: &str, promote: i16, created: i64) -> Uuid {
+    create_item_with_fields(app, title, promote, created, serde_json::json!({})).await
+}
+
+/// The same, with field values, for the tests that care what the teaser renders.
+async fn create_item_with_fields(
+    app: &TestApp,
+    title: &str,
+    promote: i16,
+    created: i64,
+    fields: serde_json::Value,
+) -> Uuid {
     let id = app
         .state
         .items()
@@ -94,7 +105,7 @@ async fn create_item(app: &TestApp, title: &str, promote: i16, created: i64) -> 
                 status: Some(1),
                 promote: Some(promote),
                 sticky: Some(0),
-                fields: Some(serde_json::json!({})),
+                fields: Some(fields),
                 stage_id: Some(LIVE_STAGE_ID),
                 language: Some("en".to_string()),
                 log: Some("front page test".to_string()),
@@ -434,6 +445,54 @@ fn promoted_item_behind_newer_published_items_is_listed() {
             body.contains(&format!("/item/{promoted}")),
             "a promoted item must be listed however many newer published items precede it"
         );
+
+        delete_items(app, &ids).await;
+    });
+}
+
+/// A promoted item's teaser carries its body text, under either field name.
+///
+/// The promoted-items renderer read `body` and nothing else. The kernel `page`
+/// type does call the field that, but a content type that declares its own long
+/// text field calls it `field_body` — `trovato_blog` does — so a promoted blog
+/// post rendered on the front page as a title, a date and a "Read more" link
+/// with nothing between them. Both names are pinned here because reading either
+/// one alone is the defect (BL-21).
+#[test]
+fn a_promoted_teaser_shows_its_body_under_either_field_name() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+        clear_front_page(app).await;
+
+        let base = chrono::Utc::now().timestamp() + 86_400;
+        let mut ids = Vec::new();
+        let mut expected = Vec::new();
+
+        for (i, field) in ["field_body", "body"].into_iter().enumerate() {
+            let tag = Uuid::now_v7().simple().to_string();
+            let teaser = format!("The teaser text under {field} {tag}");
+            let id = create_item_with_fields(
+                app,
+                &format!("Promoted Teaser {field} {tag}"),
+                1,
+                base + i as i64,
+                serde_json::json!({ field: { "value": teaser, "format": "plain_text" } }),
+            )
+            .await;
+            ids.push(id);
+            expected.push((field, teaser));
+        }
+
+        let body = body_text(get_front_page(app).await).await;
+        for (field, teaser) in &expected {
+            assert!(
+                body.contains(teaser.as_str()),
+                "a promoted item storing its text as `{field}` must show that text \
+                 in its front page teaser: {body}"
+            );
+        }
 
         delete_items(app, &ids).await;
     });

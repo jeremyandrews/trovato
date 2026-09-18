@@ -15,8 +15,8 @@ Trovato.
 A line number is where the thing is at `d3f4cd7`; the source documents' own line
 numbers are often stale and are not repeated.
 
-In short: 111 distinct findings, 94 of them open, and 30 proposed as blocking the
-1.0 tag, plus 26 marked as a Ritrovo gate by the ruling of 2026-09-17. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
+In short: 115 distinct findings, 91 of them open, and 27 proposed as blocking the
+1.0 tag, plus 25 marked as a Ritrovo gate by the ruling of 2026-09-17. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
 argues each.
 
 ## Sources
@@ -61,7 +61,7 @@ replacing it. It means a row in Ritrovo's `docs/ritrovo/STATUS.md` with the stat
 2026-09-17 makes it a 1.0 blocker whatever the day-one test says. A finding can be
 classed post and still be a gate; the mark wins, and the row says so, so that what
 the ruling costs is visible and individual rows can be waived later by the person
-who made it. Nothing is waived here. The 26 marked findings are listed in
+who made it. Nothing is waived here. The 25 marked findings are listed in
 [Ritrovo unblock order](#ritrovo-unblock-order), and the rows they unblock in
 [Every blocked Ritrovo row, mapped](#every-blocked-ritrovo-row-mapped).
 
@@ -87,21 +87,21 @@ who made it. Nothing is waived here. The 26 marked findings are listed in
 | BL-04 (SITE-4) | `<html lang>` and `text_direction` were overwritten with the site default after the route set them. | `crates/kernel/src/routes/helpers.rs:211-229` | fixed `406ec63` | closed | n/a |
 | BL-05 (SITE-5) | The front page never applied the translation overlay. The configured front-page item now does. The promoted-items fallback listing still takes no language (`crates/kernel/src/routes/front.rs:63,298`). | `crates/kernel/src/routes/front.rs:201-222` | fixed `406ec63`, switcher `4ff80e3` | closed | n/a |
 | BL-06 (SITE-6, SITE-18 residual) | The kernel emits relative URLs where the protocols require absolute ones: sitemap `<loc>`, the `Sitemap:` line in robots.txt, and `hreflang` alternates. The sitemap lists items only. A plugin `api` route on a path a kernel route already serves makes axum panic at startup instead of being refused. | `crates/kernel/src/routes/sitemap.rs:64-73,141`; `crates/kernel/src/routes/helpers.rs:1017-1035`; `crates/kernel/src/routes/plugin_api.rs:144-180` (duplicates checked among plugins only) | open | 1.0 | additive |
-| BL-07 (SITE-7) | The login page's "Forgot password?" links to `/user/password-reset`, which is registered POST only and takes JSON, so it is a 405. The link in the reset email returns JSON as well. No part of the email reset flow is an HTML page; the working reset is `trovato user reset-password` on a shell. | `templates/user/login.html:39`; `crates/kernel/src/routes/password_reset.rs:33,104-121,173` | open | 1.0 | additive |
+| BL-07 (SITE-7) | The login page's "Forgot password?" linked to `/user/password-reset`, which is registered POST only and takes JSON, so it was a 405. `a48a7ec` repoints the link at `/user/recover`, which is a real HTML page, so the link no longer lands on a 405. That is all it changes: `/user/recover` runs on an inline script the enforcing CSP blocks (BL-08), the link in the reset email still returns JSON, and no part of the email reset flow is a page a browser can complete. How the reset flow should work has not been ruled on, so the row stays open. | `templates/user/login.html:39`; `crates/kernel/src/routes/password_reset.rs:33,104-121,173`; `crates/kernel/src/routes/recovery.rs` | partly fixed: the link at `a48a7ec`. The flow itself is **open** | 1.0 | additive |
 | BL-08 (SITE-8) | The enforcing CSP has no `'unsafe-inline'`, nonce or hash for scripts, and four stock templates depend on inline `<script>` blocks: account recovery, sessions, passkeys and admin recovery settings. (Login was the fifth; its passkey script moved to `static/js/passkey-login.js`.) Five more carry inline `on*=` handlers, two of them the `confirm()` guard on a delete, so those deletes happen without confirmation. The only workaround is `CSP_REPORT_ONLY=true`. | `crates/kernel/src/middleware/security_headers.rs:34-42`; `templates/user/recover.html:53`, `sessions.html:84`, `passkeys.html:109`, `templates/admin/recovery.html:53`; handlers in `templates/admin/field-list.html:43`, `admin/ai-providers.html:62`, `admin/tile-form.html:41`, `form/fieldset.html:6`, `elements/comments.html:60` | open | 1.0 | additive |
-| BL-09 (SITE-9) | `mime_from_path` serves every extension it does not know as `application/octet-stream` under `nosniff`. `.md`, `.txt` and `.xml` now have arms; `.webp`, `.avif`, `.pdf`, `.webmanifest` and `.otf` still fall through. | `crates/kernel/src/routes/static_files.rs`, `mime_from_path` | open | 1.0 | additive |
-| BL-10 (SITE-10) | The `item` config entity could not set `promote` or `sticky` (inserted as 0), and re-import never updated `created`. The report also said `changed` is not updated; it is. Both flags are now read from the file (default false) and, with a declared `created`, updated on re-import. | `crates/kernel/src/config_storage/mod.rs:53-89`; `crates/kernel/src/config_storage/direct.rs:726-744` | open | 1.0.x | additive |
-| BL-11 (SITE-11) | A config file that omitted `created` failed to parse, and because import validates the whole set first, nothing was written. The report said only roles; tags, menu links, URL aliases, tiles and stages required it too (and all but aliases required `changed`), only items defaulted it. Every config entity now defaults both to the import time. Still open: a role's `created` is an RFC 3339 string while every other entity's is a Unix integer. | `crates/kernel/src/models/role.rs:83-88`; `crates/kernel/src/config_storage/yaml.rs:559-570`; `crates/kernel/src/models/category.rs:57`, `menu_link.rs:45`, `url_alias.rs:31`, `tile.rs:25`, `stage.rs:114` | open | 1.0 | additive (a default); changes the documented config format if the timestamp types are unified |
-| BL-12 (SITE-12) | `trovato_blog` declares `tap_item_view` in its manifest and does not export it. The blog is enabled by default, so every item view of any type instantiates the blog module, finds no export, and logs an ERROR. | `plugins/trovato_blog/trovato_blog.info.toml:10`; `crates/kernel/src/tap/dispatcher.rs:99-104,286-296` | open | 1.0 | additive |
-| BL-13 (SITE-13) | A menu entry with a `callback` and the default `handler_type` logs a warning at startup. 16 in-tree plugins declared 22 such entries; a default install logged 20 from 15 plugins. The report's "seventeen" matches no count. The in-tree entries no longer name a callback, and `plugin_menu_callbacks_test` fails if one does; the warning itself is unchanged for external plugins. | `crates/kernel/src/routes/plugin_api.rs:109-131`; `.callback(` in `plugins/*/src` | open | 1.0.x | additive (fix the plugins); frozen if the SDK's `MenuDefinition` default changes |
+| BL-09 (SITE-9) | `mime_from_path` served every extension it did not know as `application/octet-stream` under `nosniff`, which makes a browser download a file rather than display or use it. All eight extensions the report named now have arms: `.md`, `.txt` and `.xml`, then `.webp`, `.avif`, `.pdf`, `.webmanifest` and `.otf`. An extension outside the table is still `application/octet-stream`, deliberately. | `crates/kernel/src/routes/static_files.rs`, `mime_from_path` | fixed `c4dffc5` (`.md`, `.txt`, `.xml`) and #90 (`.webp`, `.avif`, `.pdf`, `.webmanifest`, `.otf`) | closed | additive |
+| BL-10 (SITE-10) | The `item` config entity could not set `promote` or `sticky` (inserted as 0), and re-import never updated `created`. The report also said `changed` is not updated; it is. Both flags are now read from the file (default false) and, with a declared `created`, updated on re-import. | `crates/kernel/src/config_storage/mod.rs:53-89`; `crates/kernel/src/config_storage/direct.rs:726-744` | fixed `d2dc666` | closed | additive |
+| BL-11 (SITE-11) | A config file that omitted `created` failed to parse, and because import validates the whole set first, nothing was written. The report said only roles; tags, menu links, URL aliases, tiles and stages required it too (and all but aliases required `changed`), only items defaulted it. Every config entity now defaults both to the import time. Still open: a role's `created` is an RFC 3339 string while every other entity's is a Unix integer. | `crates/kernel/src/models/role.rs:83-88`; `crates/kernel/src/config_storage/yaml.rs:559-570`; `crates/kernel/src/models/category.rs:57`, `menu_link.rs:45`, `url_alias.rs:31`, `tile.rs:25`, `stage.rs:114` | fixed `279fef5` | closed | additive (a default); changes the documented config format if the timestamp types are unified |
+| BL-12 (SITE-12) | `trovato_blog` declares `tap_item_view` in its manifest and does not export it. The blog is enabled by default, so every item view of any type instantiates the blog module, finds no export, and logs an ERROR. | `plugins/trovato_blog/trovato_blog.info.toml:10`; `crates/kernel/src/tap/dispatcher.rs:99-104,286-296` | fixed `e0add82` | closed | additive |
+| BL-13 (SITE-13) | A menu entry with a `callback` and the default `handler_type` logs a warning at startup. 16 in-tree plugins declared 22 such entries; a default install logged 20 from 15 plugins. The report's "seventeen" matches no count. The in-tree entries no longer name a callback, and `plugin_menu_callbacks_test` fails if one does; the warning itself is unchanged for external plugins. | `crates/kernel/src/routes/plugin_api.rs:109-131`; `.callback(` in `plugins/*/src` | fixed `54cf968` | closed | additive (fix the plugins); frozen if the SDK's `MenuDefinition` default changes |
 | BL-14 (SITE-14) | "`elements/comments.html` is not in the image." It is: the file exists since `2ff3a62` and the Dockerfile copies `templates/` whole (`Dockerfile:70`). The logged "not found" is what the empty fallback engine says, and the site hit that state in the same gate (see BL-85). | `templates/elements/comments.html`; `crates/kernel/src/state.rs:657-663` | cannot reproduce | closed | n/a |
-| BL-15 (SITE-15) | The two content translation admin routes render `admin/content-translate-list.html` and `admin/content-translate-edit.html`, which have never existed in git history. `trovato_content_translation` is enabled by default, so both routes are mounted and return a 500 to a user allowed to translate. | `crates/kernel/src/routes/admin_translation.rs:64,103`; `crates/kernel/src/routes/mod.rs:144-148` | open | 1.0, **Ritrovo gate** | additive |
-| BL-16 (SITE-16) | A themed plugin response's `title` reaches `<title>` and no heading, so every themed plugin page ships without an `<h1>`. The SDK documents the field as "the `<title>` and the page heading", so this breaks a written promise. | `templates/page.html:71-107`; `crates/plugin-sdk/src/types.rs:913-917`; `crates/kernel/src/theme/engine.rs:826-848` | open | 1.0.x | additive |
-| BL-17 (SITE-17) | `track_request_timing` (a `Server-Timing` header and slow-request logging) was applied to no router, so `QUERY_SLOW_THRESHOLD_MS` did nothing, and the module advertised a `query-profiler` feature `Cargo.toml` does not define. It is now applied outermost in `main.rs` and the module docs describe what it measures. | `crates/kernel/src/middleware/query_profiler.rs:50-74`; `crates/kernel/Cargo.toml:72-73` | open | post | additive |
+| BL-15 (SITE-15) | The two content translation admin routes render `admin/content-translate-list.html` and `admin/content-translate-edit.html`, which have never existed in git history. `trovato_content_translation` is enabled by default, so both routes are mounted and return a 500 to a user allowed to translate. | `crates/kernel/src/routes/admin_translation.rs:64,103`; `crates/kernel/src/routes/mod.rs:144-148` | fixed `dcb7b35`: both templates exist and both routes render. The Ritrovo gate this row carried is satisfied; Ritrovo row 38.3 still waits on BL-02, the write path, which is where that mark now lives | closed | additive |
+| BL-16 (SITE-16) | A themed plugin response's `title` reaches `<title>` and no heading, so every themed plugin page ships without an `<h1>`. The SDK documents the field as "the `<title>` and the page heading", so this breaks a written promise. | `templates/page.html:71-107`; `crates/plugin-sdk/src/types.rs:913-917`; `crates/kernel/src/theme/engine.rs:826-848` | fixed `c96858e` | closed | additive |
+| BL-17 (SITE-17) | `track_request_timing` (a `Server-Timing` header and slow-request logging) was applied to no router, so `QUERY_SLOW_THRESHOLD_MS` did nothing, and the module advertised a `query-profiler` feature `Cargo.toml` does not define. It is now applied outermost in `main.rs` and the module docs describe what it measures. | `crates/kernel/src/middleware/query_profiler.rs:50-74`; `crates/kernel/Cargo.toml:72-73` | fixed `28a029b` | closed | additive |
 | BL-18 (SITE-18) | `build_hreflang_links` was reachable only from its tests. It is now called from the item and front routes. The relative hrefs it produces are part of BL-06. | `crates/kernel/src/routes/item.rs:760-767`; `crates/kernel/src/routes/front.rs:265-272` | fixed `22b1d74`, front page `4ff80e3` | closed | n/a |
 | BL-19 (SITE-19, G-SDK-NO-ITEM, G-ITEM-API-NO-DELETE-BINDING, AI-2) | `item-api` declares four functions (`get-item`, `save-item`, `delete-item`, `query-items`) and the SDK binds none of them. Argus and Netgrasp hand-roll the same FFI. The SDK's error documentation lists -1 to -3 while the host also returns -10, -12, -13 and -14. The report said two functions and no users; both are wrong. | `crates/wit/kernel.wit:7-19`; `crates/plugin-sdk/src/host.rs:27-162`; `crates/plugin-sdk/src/host_errors.rs:58-75`; `plugins/argus/src/item_host.rs` | open | 1.0.x | additive |
 | BL-20 (SITE-20) | The Tera `markdown` filter cleans with ammonia's defaults, which strip `class` from `<code>`, so a fenced block loses its language hint and cannot be highlighted. | `crates/kernel/src/theme/engine.rs:430-457` | open | 1.0.x | additive |
-| BL-21 (SITE-21) | Body field naming is split. The kernel's `page` type has `body` and `trovato_blog` has `field_body`; the stock blog listing template and the promoted-items renderer read `body`, while page metadata, feeds, search snippets, pagefind and `trovato_seo` read `field_body`. So blog teasers render with no text, and `page` items get no meta description, Open Graph description or feed description. | `crates/kernel/migrations/20260212000004_create_item_types.sql:37`; `plugins/trovato_blog/src/lib.rs:19`; `templates/gather/query--blog_listing.html:21-27`; `crates/kernel/src/routes/front.rs:329-340`; `crates/kernel/src/content/page_meta.rs:126-128`; `crates/kernel/src/routes/feed.rs:294` | open | 1.0 | additive (read both names); a data change if a field is renamed |
+| BL-21 (SITE-21) | Body field naming is split. The kernel's `page` type has `body` and `trovato_blog` has `field_body`, and every reader was written against one name, so each rendered nothing for half the site's content. #90 gives the kernel one helper, `content::body_field`, that reads both names in that order, and routes the promoted-items renderer, page metadata, the feed description, pagefind and the `ts_headline` snippet source through it. What is left: the stock blog listing template still reads `body` alone (#81 changes it to `field_body` and is open, so a blog teaser in the listing is still empty), `trovato_seo` reads `field_body` alone, and the naming split itself remains — renaming either field is a content migration for `item.fields`, `search_field_config` and every plugin reading the other name. | `crates/kernel/src/content/body_field.rs`; `crates/kernel/migrations/20260212000004_create_item_types.sql:37`; `plugins/trovato_blog/src/lib.rs:19`; `templates/gather/query--blog_listing.html:21-27` (open); `plugins/trovato_seo/src/lib.rs:59-62` (open) | partly fixed: the kernel readers at #90. The listing template, `trovato_seo` and the naming split are **open** | 1.0 | additive (read both names); a data change if a field is renamed |
 | BL-22 (SITE-22) | Gather cannot link to a friendly URL: relationships join on column equality, includes match plain fields, no Tera filter resolves an alias, and the `RelationshipHandler` extension point is never consulted. Every stock listing links to `/item/{uuid}`, and that address serves 200 rather than redirecting to the alias. | `crates/kernel/src/gather/query_builder.rs:463-484`; `crates/kernel/src/gather/extension.rs:254-259,380-386`; `templates/gather/row.html:4`; `templates/gather/query--blog_listing.html:15,30` | open | 1.0 | additive |
 | BL-23 (site-fixable 1) | `trovato_contact` renders validation errors as a plain list above the form, with no `role="alert"`, `aria-invalid` or `aria-describedby`, and its errors carry no field key to associate. The report called this site-fixable; a site can only wrap the plugin's markup, so it belongs here. | `plugins/trovato_contact/src/lib.rs:107-131,229-253` | open | 1.0.x | additive |
 | BL-24 (site-fixable 2) | The `filtered_html` format allows no `span` and no `class` on `code` or `pre`, so highlighted code is flattened to text. | `crates/kernel/src/content/filter.rs:136-179,205-210` | open | 1.0.x | additive |
@@ -363,7 +363,7 @@ and `P1` to `P19` for its intended plugin taps.
 | 37.6 | Comment notifications to subscribers | BL-94 | BL-72 | A7 |
 | 38.1 | Multilingual content model | BL-02 | | A8 |
 | 38.2 | Language routing, switcher, interface strings | BL-98 | BL-104 | A8 |
-| 38.3 | `ritrovo_translate` detection, queue, side by side | BL-02 | BL-15, BL-88 | A8 |
+| 38.3 | `ritrovo_translate` detection, queue, side by side | BL-02 | BL-88 | A8 |
 | 38.4 | Italian conferences with English translations | BL-02 | | A8 |
 | 38.5 | REST endpoints, including the write half | BL-25 | | A8 |
 | 39.2 | Batch operations with progress | BL-102 | BL-92, BL-41 | A5 |
@@ -397,11 +397,10 @@ BL-41, BL-42, BL-69) and 31 to one of the new rows. Counted by identifier, the
 weight is where Ritrovo's own audit put it: BL-69 with BL-90 carries six rows,
 BL-95 six, BL-94 five, BL-02 five, BL-25 three.
 
-### Eight findings a blocked row names in passing
+### Seven findings a blocked row names in passing
 
 These carry the gate mark although no row's primary, because a row above does not
-close until they close too: **BL-15** (38.3 cannot use translate screens whose
-templates do not exist), **BL-72** (37.4, D10, P11 and P12 send their mail from
+close until they close too: **BL-72** (37.4, D10, P11 and P12 send their mail from
 cron or a queue worker), **BL-90** (35.2 and D16 lose by the grid what SQL
 granted), **BL-93** (35.3 and 36.4 need new content to land where the operator
 said), **BL-104** (34.4's menu links and 38.2's aliases), **BL-105** (37.4 must
@@ -428,29 +427,49 @@ blocked rows.
 BL-89 and BL-106 block nothing at all; they are recorded for the operator and the
 plugin author respectively.
 
+## From the fix series
+
+Four findings the A2 run turned up while landing the pull requests above, and did
+not fix. Each names a location checked at `28a029b` or later.
+
+| ID | Finding | Where | Status | Class | Surface |
+|---|---|---|---|---|---|
+| BL-112 | The login page offers "Create one" linking to `/user/register`, unconditionally, and that route answers 404 whenever registration is closed. Closed is the default: with nothing stored, `RegistrationMode::resolve` returns `AdminOnly`, so a stock install shows every visitor a sign-up link that dead-ends. The template has no guard and no context variable to guard on. Next to BL-07: the same login page, the same class of defect, a link to a page that is not there. | `templates/user/login.html:57`; `crates/kernel/src/routes/auth.rs:467-471,490-492`; `crates/kernel/src/models/site_config.rs:79-97` (the default) | open | 1.0 | additive |
+| BL-113 | The startup warning for a menu entry with a callback says the path "will 404". That is true of the callback and not of the path: a kernel route may serve it anyway, and two in-tree menu paths are served exactly that way, `/admin/media` and `/admin/content/comments`. So the warning tells an operator a working page is broken. Only the callback is dead. A wording fix, not a behaviour change. | `crates/kernel/src/routes/plugin_api.rs:126-129` (the message), `:97-117` (the rule, which is right) | open | 1.0.x | additive |
+| BL-114 | `docs/design/Design-Web-Layer.md` describes the profiling middleware keeping a request-scoped `RequestProfile` and logging "detailed JSON traces for slow requests, including breakdown of DB query duration, WASM tap invocation duration, and template rendering duration", structured for Jaeger or Honeycomb. The middleware measures whole-request duration and nothing else: one `Server-Timing: total;dur=N` header and a log line over a threshold. There is no per-query, per-tap or per-template measurement anywhere, and no `RequestProfile` type. Doc drift, recorded next to BL-17, which is the same middleware. | `docs/design/Design-Web-Layer.md:13,41-70`; `crates/kernel/src/middleware/query_profiler.rs:47-80` | open | post | n/a (documentation) |
+| BL-115 | Eleven plugin menu paths are served by no route, so every one of them is a navigation entry that 404s. Checked by composing the kernel's whole route set (218 paths; the kernel uses `.merge()` throughout and no `.nest()`, so every registered path is already absolute) and testing each menu path against it, including against every path-parameter route that might have swallowed one. None matched. All eleven are declared with the SDK's `MenuDefinition`, which cannot carry `handler_type = "api"` and converts to `"page"`, so no plugin `api` route serves them either. Two groups: `/test-runs` and `/sites` (goose) and `/media` (`trovato_media`) look like pages that were never built; the other eight point at paths the kernel serves under different names, `/admin/categories` against the kernel's `/admin/structure/categories` being the clearest. Sibling of BL-13, and classed with it: the screens themselves are reachable, it is the menu that lies. | goose `plugins/goose/src/lib.rs:146,149`; `trovato_media/src/lib.rs:47`; `trovato_categories/src/lib.rs:21`; `trovato_locale/src/lib.rs:18,23`; `trovato_redirects/src/lib.rs:18`; `trovato_webhooks/src/lib.rs:19`; `trovato_oauth2/src/lib.rs:19`; `trovato_scheduled_publishing/src/lib.rs:23`; `trovato_image_styles/src/lib.rs:19`; `trovato_audit_log/src/lib.rs:18`; against `crates/plugin-sdk/src/types.rs:572-581,750-764` and `crates/kernel/src/routes/plugin_api.rs:149-151` | open | 1.0.x | additive (correct the paths, or build the pages) |
+
 ## The fix series against this page
 
-Twelve pull requests are open against rows on this page as of 2026-09-17, and
-none has merged, so no row's status changes because of them and no finding below
-carries a fixed-at commit from this series. They are listed because a row they
-touch should not be worked twice, and because one of them is a Ritrovo gate.
+Eleven of the twelve pull requests that were open against rows on this page have
+merged, each as the squash commit its row now carries. Kept as the index of which
+commit answers which row.
 
-| Pull request | Row | Gate |
+| Pull request | Row | Landed as |
 |---|---|---|
-| #70 Point the login page's Forgot password link at the recovery page | BL-07 | |
-| #71 Bump rustls to 0.23.45 for RUSTSEC-2026-0285 | advisory, no row | |
-| #72 Move the login page's passkey script out of the inline block its CSP blocks | BL-08 | |
-| #73 Serve .md, .txt and .xml static files with a type a browser displays | BL-09 | |
-| #74 Write the two content translation admin templates the routes render | BL-15 | **Ritrovo gate** (38.3) |
-| #75 Default the timestamps a hand-written config file omits | BL-11 | |
-| #76 Import an item's promote and sticky, and update created on re-import | BL-10 | |
-| #77 Stop trovato_blog declaring a tap_item_view it never exported | BL-12 | |
-| #78 Remove the menu callbacks the kernel never dispatches from 16 plugins | BL-13 | |
-| #79 Render a themed plugin page's title as its heading | BL-16 | |
-| #80 Apply the request timing middleware that was attached to no router | BL-17 | |
-| #81 Read the field the blog plugin defines in the blog listing teaser | BL-21 | |
+| #70 Point the login page's Forgot password link at the recovery page | BL-07 | `a48a7ec` (the link only; the row stays open) |
+| #71 Bump rustls to 0.23.45 for RUSTSEC-2026-0285 | advisory, no row | `7904e24` |
+| #72 Move the login page's passkey script out of the inline block its CSP blocks | BL-08 | `73a9160` (login only; four templates remain) |
+| #73 Serve .md, .txt and .xml static files with a type a browser displays | BL-09 | `c4dffc5`, completed by #90 |
+| #74 Write the two content translation admin templates the routes render | BL-15 | `dcb7b35` |
+| #75 Default the timestamps a hand-written config file omits | BL-11 | `279fef5` |
+| #76 Import an item's promote and sticky, and update created on re-import | BL-10 | `d2dc666` |
+| #77 Stop trovato_blog declaring a tap_item_view it never exported | BL-12 | `e0add82` |
+| #78 Remove the menu callbacks the kernel never dispatches from 16 plugins | BL-13 | `54cf968` |
+| #79 Render a themed plugin page's title as its heading | BL-16 | `c96858e` |
+| #80 Apply the request timing middleware that was attached to no router | BL-17 | `28a029b` |
+| #81 Read the field the blog plugin defines in the blog listing teaser | BL-21 | **open** |
+| #90 Finish BL-09, read both body field names, and bring this page up to date | BL-09, BL-21 | this pull request |
 
-#74 closes half of what Ritrovo row 38.3 waits on. The other half is BL-02, the
+#81 is the one that did not land. Rebasing it onto a `main` that already carried
+#85 left its own test asserting an address the template no longer emits: #85 moved
+the row URL out of the template's literal text and into a `row_url` variable,
+which Tera HTML-escapes, so the `/item/{id}` the test looks for renders as
+`&#x2F;item&#x2F;{id}`. The teaser fix itself works — the rendered page carries
+the text — and the assertion is what is stale. BL-21 records the listing template
+as still open until it lands.
+
+#74 closed half of what Ritrovo row 38.3 waits on. The other half is BL-02, the
 write path itself: templates for two GET routes do not let anyone write a
 translation, and 38.3 stays blocked until BL-02 lands. The Ritrovo unblock order
 below depends on #74 rather than repeating it.
@@ -461,21 +480,29 @@ should get a row when the next pass runs.
 
 ## Tally
 
-111 distinct findings after merging duplicates: 94 open (one of them, BL-25, partly
-fixed), 14 fixed, 2 that do not reproduce, and 1 decided (BL-109). Of the 94 open,
-30 are proposed to block 1.0, 30 to ship in 1.0.x, and 34 to wait until after 1.0.
-Of the two that do not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two
-consecutive runs on one database confirm it.
+115 distinct findings after merging duplicates. By status: 86 open, 4 partly fixed
+(BL-03, BL-07, BL-21, BL-25), 22 fixed, 2 that do not reproduce, and 1 decided
+(BL-109). By class: 27 proposed to block 1.0, 30 to ship in 1.0.x, 34 to wait until
+after 1.0, and 24 closed. The two partitions cross at two rows: of the two that do
+not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
+on one database confirm it, so the 24 closed are the 22 fixed plus BL-14 and
+BL-109. Everything not closed — 91 rows — is what "open" means in the paragraph
+above, and the four partly fixed rows are inside it, each one open on the half its
+row names.
 
-The 30: BL-01, BL-02, BL-06, BL-07, BL-08, BL-09, BL-11, BL-12, BL-15, BL-21, BL-22,
-BL-41, BL-46, BL-57, BL-66, BL-67, BL-68, BL-69, BL-73, BL-74, BL-85, BL-87, BL-90,
-BL-91, BL-92, BL-93, BL-98, BL-99, BL-100, BL-104.
+The 27: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-41, BL-46, BL-57,
+BL-66, BL-67, BL-68, BL-69, BL-73, BL-74, BL-85, BL-87, BL-90, BL-91, BL-92, BL-93,
+BL-98, BL-99, BL-100, BL-104, BL-112.
+
+Four of the 30 that stood here before closed in the fix series — BL-09, BL-11,
+BL-12 and BL-15 — and BL-112 is new, so the list is three shorter.
 
 The eight Ritrovo added to that list are argued in
-[Why these block 1.0](#why-these-block-10) with the rest. Twenty-six findings
+[Why these block 1.0](#why-these-block-10) with the rest. Twenty-five findings
 additionally carry the **Ritrovo gate** mark, which is a separate thing from the
 class: see [How to read a row](#how-to-read-a-row) and
-[Ritrovo unblock order](#ritrovo-unblock-order).
+[Ritrovo unblock order](#ritrovo-unblock-order). BL-15 carried a twenty-sixth
+until `dcb7b35` closed it; Ritrovo row 38.3 now waits on BL-02 alone.
 
 ## Why these block 1.0
 
@@ -489,14 +516,14 @@ With it set, crawlers and cold-cache visitors on asset-heavy pages still meet 42
 and an operator cannot tune it without rebuilding. Exempt `/static` and read the
 limits from configuration. Small.
 
-**BL-02 and BL-15, content translation.** The first contradicts the definition: a
-site configured in two languages cannot be given translated content through the
-interface, only by SQL, while 0.102.0's headline was multilingual and KNOWN-ISSUES.md
-pointed operators at a plugin that writes nothing. The second is day one: the plugin
-is enabled by default, so both admin routes are mounted and return 500. Either a
-writer ships (a config entity or an admin form, with the two templates and a POST
-handler) or 1.0 says plainly that content translation is written by SQL or by a
-plugin and the two routes come out. Medium, or small for the second choice.
+**BL-02, content translation.** Contradicts the definition: a site configured in
+two languages cannot be given translated content through the interface, only by
+SQL, while 0.102.0's headline was multilingual and KNOWN-ISSUES.md pointed
+operators at a plugin that writes nothing. Either a writer ships (a config entity
+or an admin form, with a POST handler) or 1.0 says plainly that content
+translation is written by SQL or by a plugin. Medium. BL-15, the missing templates
+that made both admin routes 500, closed at `dcb7b35`: the two GET screens render
+now, which is what makes the absence of a write path the whole of what is left.
 
 **BL-06, relative URLs and the route panic.** Day one for anyone who submits a
 sitemap: the protocol requires absolute URLs, as does `hreflang`, and `SITE_URL`
@@ -514,25 +541,19 @@ and the admin recovery settings do not work; and two delete buttons lose their
 confirmation. The kernel's security header disables its own security features.
 Moving the scripts to `static/js/` is additive. Medium.
 
-**BL-09, missing MIME types.** Day one for any site serving `llms.txt`, a feed, a
-WebP image, a PDF or a web app manifest from `static/`: under `nosniff` a browser
-downloads what it should display. Small.
+**BL-21, `body` against `field_body`.** Day one on the default blog. The kernel
+readers were fixed at #90 — the promoted-items renderer, page metadata, the feed
+description, pagefind and the search snippet all read both names through one
+helper — so `page` items have their meta, Open Graph and feed descriptions. What
+still blocks is the stock blog listing template, which reads `body` alone, so a
+teaser in the listing is still empty on the default blog; #81 is the one-line
+change and is open. Small.
 
-**BL-11, config files that require `created`.** Hand-written config for six entity
-types fails, and a role's timestamp is a string where every other is an integer. The
-config file format is the operating interface for everything without a screen, so
-which fields are required and what a timestamp is should be settled before 1.0 calls
-that format stable. A default is additive; unifying the types means accepting both.
-Small.
-
-**BL-12, the blog's missing export.** The blog is enabled by default, so every item
-view on a stock install logs an ERROR and instantiates a module for nothing. An
-operator's first look at the logs shows an error per request, which teaches them to
-ignore errors. One line in a manifest. Small.
-
-**BL-21, `body` against `field_body`.** Day one on the default blog: teasers render
-with no text, and `page` items get no meta, Open Graph or feed description. Read both
-names. Small.
+**BL-112, the sign-up link that dead-ends.** Day one, on the page every visitor
+who has an account starts from: registration is closed by default, and the login
+page offers "Create one" anyway, so the first thing a stranger's readers are shown
+is a 404. Guard the link on the registration mode, which means passing the mode to
+the template. Small.
 
 **BL-22, listings that cannot link to aliases.** Day one for any listing, the
 kernel's own included: every link is `/item/{uuid}`, which serves 200 rather than
@@ -695,7 +716,7 @@ named.
 | **K7 item writes through the service** | BL-25, BL-88 | 38.5's write half, P9, P13, D19, and the imported-change half of 37.4 | **contract change**, twice | `host/item.rs`, `content/item_service.rs`, `crates/wit/kernel.wit`, `crates/plugin-sdk/src/`, `docs/plugin-development.md`, `docs/plugin-quick-reference.md` | none open; independent, and the longest lead time of any batch because it needs a decision first |
 | **K8 mail and user lookup** | BL-94, BL-72, BL-105 | 37.4 (with K7), 37.6, D10, P11, P12 | BL-72 is a **contract change**; BL-94 and BL-105 are additive | `crates/wit/kernel.wit`, `host/mail.rs`, `host/user.rs`, `tap/request_state.rs`, `cron/mod.rs` | none open; independent |
 | **K9 shared queue** | BL-96 | 37.5, D9, and the event half of 36.5 and P6 | additive as a declared shared queue; a change to `queue-push` semantics would be frozen | `host/queue.rs`, `cron/mod.rs`, `plugin/info_parser.rs`, `docs/plugin-queue.md` | touches the same drain as BL-55, which is open and undecided; settle BL-55's per-queue question in the same series |
-| **K10 translation write path** | BL-02, BL-15 | 38.1, 38.3, 38.4, D21, P15 | additive | `routes/admin_translation.rs`, two new `templates/admin/content-translate-*.html`, `config_storage/yaml.rs`, `crates/wit/kernel.wit`, `host/`, `content/item_service.rs` | **depends on pull request #74**, which writes the two templates. Do not rewrite them: take #74 and add the POST handler, the config entity and the host call |
+| **K10 translation write path** | BL-02 | 38.1, 38.3, 38.4, D21, P15 | additive | `routes/admin_translation.rs`, `config_storage/yaml.rs`, `crates/wit/kernel.wit`, `host/`, `content/item_service.rs` | the two templates landed with #74 at `dcb7b35` (BL-15, closed). Do not rewrite them: add the POST handler, the config entity and the host call around them |
 | **K11 interface strings and language** | BL-98, BL-104, and BL-97 with them | 38.2, D21 (with K10), 34.4's menu half | additive | `state.rs`, `services/locale.rs`, `main.rs` (a CLI import), `config_storage/yaml.rs`, `docs/tutorial/config/`, `routes/plugin_api.rs`, `crates/plugin-sdk/src/types.rs` | BL-97 carries no gate mark: it is here because A8 step 2 needs it and it is the same file set |
 | **K12 layout and search** | BL-99, BL-111, and BL-100 with them | 34.4, D12, 30.3, 30.6, 30.7 | additive | `services/tile.rs`, `static/js/search-init.js`, `static/js/scolta.js`, `templates/search.html`, a new search settings route and template | BL-100 carries no gate mark and is a 1.0 blocker on the day-one test; it is in this batch because it is the same page |
 
