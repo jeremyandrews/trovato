@@ -146,6 +146,23 @@
   `/item/{id}` fallback for it. Record gathers are untouched: a record has no
   `/item/` address.
 
+- Fix: the `markdown` filter keeps the class that makes a code block
+  highlightable.
+
+  `theme/engine.rs` sanitized the filter's output with `ammonia::clean`, whose
+  defaults strip every `class` attribute. `pulldown_cmark` renders a fenced
+  ```` ```rust ```` block as `<code class="language-rust">`, the class was
+  removed, and nothing downstream could then tell what language the block was —
+  so highlighted code was impossible in any Markdown field on the site.
+
+  The filter now runs an `ammonia::Builder` that allows `class` on `code`, `pre`
+  and `span` only, and only for values on an allowlist: `language-*` and `lang-*`
+  on the block, with the name bounded to the characters real language names use,
+  and the token classes Prism and highlight.js apply on a span. A class with
+  nothing left after filtering is dropped rather than left empty. Everything else
+  is unchanged from ammonia's defaults: a class on a `div`, a `style`, an
+  `onclick` and a `<script>` are all still removed.
+
 - Fix: `argus_notify_test` no longer passes or fails on scheduling (#67, closes
   #66).
 
