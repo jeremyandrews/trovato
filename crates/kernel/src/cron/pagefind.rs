@@ -187,8 +187,10 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
         let url = alias_map.get(&source_path).cloned().unwrap_or(source_path);
 
         // Extract structured metadata from fields for richer result cards
+        // The long text field under either of its two names (BL-21), so a
+        // `page` item's result card is not left with no description.
         let description = extract_field_text(&item.fields, "field_description")
-            .or_else(|| extract_field_text(&item.fields, "field_body"))
+            .or_else(|| crate::content::body_field::body_text(&item.fields))
             .unwrap_or_default();
         // Strip HTML and truncate for a clean description meta
         let description_clean = ammonia::clean(&description);
@@ -397,9 +399,10 @@ fn extract_searchable_text(
         }
     }
 
-    // Fall back to field_body if no search_field_config entries matched
+    // Fall back to the long text field, under either of its two names (BL-21),
+    // if no search_field_config entries matched.
     if parts.is_empty()
-        && let Some(body) = extract_field_text(fields, "field_body")
+        && let Some(body) = crate::content::body_field::body_text(fields)
     {
         parts.push(body);
     }
@@ -412,17 +415,7 @@ fn extract_searchable_text(
 /// Handles both `{field_name: {value: "..."}}` (structured) and
 /// `{field_name: "..."}` (plain string) formats.
 fn extract_field_text(fields: &serde_json::Value, field_name: &str) -> Option<String> {
-    fields.get(field_name).and_then(|f| {
-        let text = f
-            .get("value")
-            .and_then(|v| v.as_str())
-            .or_else(|| f.as_str())?;
-        if text.is_empty() {
-            None
-        } else {
-            Some(text.to_string())
-        }
-    })
+    crate::content::body_field::field_text(fields, field_name)
 }
 
 /// Find the pagefind binary in PATH.

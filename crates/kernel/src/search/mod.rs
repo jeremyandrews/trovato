@@ -141,9 +141,16 @@ impl SearchService {
                         -- added by StartSel/StopSel afterwards, so the snippet is
                         -- genuinely safe to render with `| safe`.
                         replace(replace(replace(replace(
+                            -- The long text field goes by two names (BL-21):
+                            -- `field_body` where a content type declared it,
+                            -- `body` on the kernel's own `page`. Both, in that
+                            -- order, or a `page` matched only on its title gets
+                            -- a snippet with no body text in it.
                             COALESCE(title, '') || ' ' || COALESCE(
                                 fields->'field_body'->>'value',
                                 fields->>'field_body',
+                                fields->'body'->>'value',
+                                fields->>'body',
                                 ''
                             ),
                         '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), '"', '&quot;'),
@@ -183,9 +190,16 @@ impl SearchService {
                         -- added by StartSel/StopSel afterwards, so the snippet is
                         -- genuinely safe to render with `| safe`.
                         replace(replace(replace(replace(
+                            -- The long text field goes by two names (BL-21):
+                            -- `field_body` where a content type declared it,
+                            -- `body` on the kernel's own `page`. Both, in that
+                            -- order, or a `page` matched only on its title gets
+                            -- a snippet with no body text in it.
                             COALESCE(title, '') || ' ' || COALESCE(
                                 fields->'field_body'->>'value',
                                 fields->>'field_body',
+                                fields->'body'->>'value',
+                                fields->>'body',
                                 ''
                             ),
                         '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), '"', '&quot;'),

@@ -939,13 +939,14 @@ impl ItemService {
     /// FR-8 Story 3.7 — route search results through the shared access seam.
     ///
     /// Search's own SQL applies only a coarse `status`/`author`/`stage` filter
-    /// and builds `ts_headline` snippets from the raw `field_body`, with no
+    /// and builds `ts_headline` snippets from the raw long text field, with no
     /// field-level access. This runs each result row through the same seam
     /// REST/SSR/gather use: (1) drop any result the viewer cannot see at the
     /// item level (`check_access("view")`) — this catches plugin `tap_item_access`
     /// denies the coarse SQL filter misses; (2) **redact the snippet** (the
-    /// `ts_headline` source) for any result whose type denies the viewer
-    /// `field_body`, so a restricted field cannot leak through the highlight.
+    /// `ts_headline` source) for any result whose type denies the viewer that
+    /// field under either of its two names, so a restricted field cannot leak
+    /// through the highlight.
     /// The field decision is **batched per distinct type** (N+1-free); the
     /// per-result cost is one `check_access`, bounded to the page.
     ///
@@ -976,17 +977,25 @@ impl ItemService {
             }
         }
 
-        // Tier 2 — redact the snippet where `field_body` is denied, one field
-        // decision per distinct type.
-        let field_body = ["field_body".to_string()];
+        // Tier 2 — redact the snippet where the long text field is denied, one
+        // field decision per distinct type. The snippet is built from that field
+        // under either of its two names (BL-21), so a deny on either name has to
+        // redact, or the name this type happens to use leaks past a deny on the
+        // other.
+        let body_names: Vec<String> = crate::content::body_field::BODY_FIELD_NAMES
+            .iter()
+            .map(|n| (*n).to_string())
+            .collect();
         let mut redact_by_type: HashMap<String, bool> = HashMap::new();
         for r in &visible {
             if !redact_by_type.contains_key(&r.item_type) {
                 let decisions = self
-                    .field_access_decisions(viewer, &r.item_type, &field_body, "view")
+                    .field_access_decisions(viewer, &r.item_type, &body_names, "view")
                     .await;
-                let allowed = decisions.get("field_body").copied().unwrap_or(true);
-                redact_by_type.insert(r.item_type.clone(), !allowed);
+                let denied = body_names
+                    .iter()
+                    .any(|name| !decisions.get(name.as_str()).copied().unwrap_or(true));
+                redact_by_type.insert(r.item_type.clone(), denied);
             }
         }
         for r in &mut visible {

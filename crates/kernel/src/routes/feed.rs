@@ -290,11 +290,14 @@ fn render_entry(
         })
         .unwrap_or_else(|| site_url.to_string());
 
-    // `summary` is what the row templates show; the two field names after it are
-    // the pair the rest of the kernel reads for a description.
-    let description = ["summary", "field_description", "field_body"]
+    // `summary` is what the row templates show; `field_description` is the
+    // explicit one after it. The long text field last, under either of its two
+    // names (BL-21), so a `page` item's feed entry is not left with no
+    // description because it calls the field `body`.
+    let description = ["summary", "field_description"]
         .iter()
         .find_map(|key| row.get(*key).and_then(field_text))
+        .or_else(|| crate::content::body_field::body_text(row))
         .unwrap_or_default();
 
     let pub_date = row
