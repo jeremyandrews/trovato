@@ -83,6 +83,45 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 `.env.example` is the fuller reference, including the `POSTGRES_*` and
 `REDIS_PORT` settings that only `docker compose` reads.
 
+### Rate Limits
+
+Every request is counted against one bucket, chosen by its path and method, and
+limited per client IP (and, for an authenticated request, a second time per user).
+Each bucket's limit is the request count in the table below; the window is fixed.
+
+A limit is overridden by the environment variable `TROVATO_RATE_LIMIT_<BUCKET>`
+or by the site configuration key `rate_limit.<bucket>`, both taking the count
+alone. **The environment wins over the stored configuration**, so a limit can
+always be changed without reaching into the database. Both are read once at
+startup, so a change to the stored value takes effect on the next restart. A
+value that is not an integer of at least 1 is ignored with a warning and the
+compiled default stands.
+
+| Bucket | Default | Applies to |
+|--------|---------|------------|
+| `static` | 2000 / minute | Reads under `/static/` and `FILES_URL` (default `/files/`), and `/favicon.ico` |
+| `api` | 100 / minute | `/api/` endpoints, and any request no other bucket claims |
+| `forms` | 30 / minute | Any other POST |
+| `search` | 20 / minute | `/search` and `/api/search` |
+| `search_expand` | 30 / minute | `POST /api/v1/search/expand` |
+| `search_summarize` | 10 / minute | `POST /api/v1/search/summarize` |
+| `search_followup` | 5 / minute | `POST /api/v1/search/followup` |
+| `login` | 5 / minute | `POST /user/login` |
+| `register` | 3 / hour | `POST /user/register` |
+| `uploads` | 10 / minute | `/file/upload` |
+| `verify_email` | 10 / minute | Email verification token attempts |
+| `profile` | 10 / minute | Profile update submissions |
+| `password` | 5 / minute | Password change submissions |
+| `recovery` | 5 / 15 minutes | Account recovery, per IP and per account |
+| `comment` | 4 / minute | Comment writes |
+| `data_export` | 1 / hour | Personal-data export downloads |
+
+For example, to serve a site whose pages carry an unusual number of assets:
+
+```bash
+TROVATO_RATE_LIMIT_STATIC=5000
+```
+
 ## 3. Build
 
 ```bash

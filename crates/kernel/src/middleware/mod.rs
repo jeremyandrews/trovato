@@ -23,7 +23,8 @@ pub use language::negotiate_language;
 pub use path_alias::{path_alias_fallback, resolve_path_alias};
 pub use query_profiler::track_request_timing;
 pub use rate_limit::{
-    ClientIp, RateLimitConfig, RateLimiter, categorize_path, check_authenticated_rate_limit,
+    BUCKETS, ClientIp, DEFAULT_STATIC_PREFIXES, RateLimitConfig, RateLimiter, bucket_config_key,
+    bucket_env_key, categorize_path, categorize_path_with, check_authenticated_rate_limit,
     check_rate_limit, get_client_id, parse_trusted_proxies, rate_limit_response, resolve_client_ip,
 };
 pub use redirect::check_redirect;

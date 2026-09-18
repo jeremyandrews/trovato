@@ -12,6 +12,26 @@
   within the same minor series; the `Security Audit` CI job is the regression
   guard, and it fails against the old lockfile.
 
+- Fix: static assets are no longer rate limited as API calls.
+
+  `categorize_path` had no branch for an asset path, so a GET of a stylesheet,
+  a script or an uploaded image fell through to the trailing `"api"` default and
+  was counted against the generic bucket of 100 a minute per IP. A page carrying
+  twenty assets therefore spent twenty-one of a visitor's hundred requests, and
+  five such page views in a minute came within a hair of serving a 429 for a
+  favicon — worse behind a NAT, where the bucket is shared. Nothing was
+  configurable either: `state.rs` built `RateLimitConfig::default()` and there
+  was no way to raise any limit without recompiling.
+
+  Static reads now have their own `static` bucket, defaulting to 2000 a minute,
+  matched on `/static/`, the configured `FILES_URL` (default `/files/`) and
+  `/favicon.ico`. Only GET and HEAD qualify, so a write under an asset prefix
+  does not inherit the generous limit. Every bucket's limit is now overridable by
+  `TROVATO_RATE_LIMIT_<BUCKET>` or the `rate_limit.<bucket>` site config key,
+  environment first; an unparseable or zero value is ignored with a warning
+  rather than taking the site down. The full table of buckets and defaults is in
+  [INSTALL.md](INSTALL.md#rate-limits).
+
 - Fix: `argus_notify_test` no longer passes or fails on scheduling (#67, closes
   #66).
 
