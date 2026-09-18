@@ -1,7 +1,12 @@
+{# `row.url` is the address the item is actually served at — its URL alias when
+   it has one, `/item/{id}` otherwise — resolved once for the whole result set by
+   the gather service. The fallback covers a gather whose field list omits `id`,
+   which resolves to no url at all. #}
+{% set row_url = row.url | default(value="/item/" ~ row.id) %}
 <article class="gather-row">
     {% if row.title %}
     <h3 class="gather-row__title">
-        <a href="/item/{{ row.id }}">{{ row.title }}</a>
+        <a href="{{ row_url }}">{{ row.title }}</a>
     </h3>
     {% endif %}
 

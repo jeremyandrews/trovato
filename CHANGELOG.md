@@ -128,6 +128,24 @@
   startup with a message naming the plugin and the path, instead of by a panic
   inside `Router::merge` reporting an overlapping route.
 
+- Fix: gather rows carry a resolved `url`, so a listing can link to a friendly
+  address.
+
+  `templates/gather/row.html` and every other shipped listing template emitted
+  `/item/{{ row.id }}`, because the row had nothing else to emit. A site built on
+  the kernel therefore advertised a UUID in every link on every listing, while
+  the friendly URL the item itself was served at sat in `url_alias` unused. A
+  template could not fix it alone: resolving an alias is a database lookup, and a
+  template doing one per row is the shape to avoid.
+
+  `GatherService` now resolves the whole result set at once — one query for the
+  page, not one per row and not one per render — and gives each row a `url`: its
+  URL alias when it has one, `/item/{id}` otherwise. Resolution honours the
+  gather's own stage overlay and language. A row from a field list that omits
+  `id` gets no `url` rather than a wrong one, and the shipped templates keep a
+  `/item/{id}` fallback for it. Record gathers are untouched: a record has no
+  `/item/` address.
+
 - Fix: `argus_notify_test` no longer passes or fails on scheduling (#67, closes
   #66).
 

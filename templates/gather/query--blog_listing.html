@@ -10,9 +10,13 @@
     {% else %}
     <div class="blog-listing__items">
         {% for row in rows %}
+        {# `row.url` is the item's URL alias when it has one, `/item/{id}`
+           otherwise, resolved once for the whole result set by the gather
+           service. #}
+        {% set row_url = row.url | default(value="/item/" ~ row.id) %}
         <article class="blog-teaser">
             <h2 class="blog-teaser__title">
-                <a href="/item/{{ row.id }}">{{ row.title }}</a>
+                <a href="{{ row_url }}">{{ row.title }}</a>
             </h2>
             <div class="blog-teaser__meta">
                 <time>{{ row.created | format_date }}</time>
@@ -27,7 +31,7 @@
                     {% endif %}
                 {% endif %}
             {% endif %}
-            <a href="/item/{{ row.id }}" class="blog-teaser__read-more">Read more &rarr;</a>
+            <a href="{{ row_url }}" class="blog-teaser__read-more">Read more &rarr;</a>
         </article>
         {% endfor %}
     </div>

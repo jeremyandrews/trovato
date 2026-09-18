@@ -227,6 +227,44 @@ impl UrlAlias {
         Ok(rows.into_iter().collect())
     }
 
+    /// The canonical alias for many sources, across a stage overlay.
+    ///
+    /// [`Self::canonical_aliases_for`] for a caller holding several stages at
+    /// once — a gather executed with a stage overlay draws its rows from all of
+    /// them, and resolving their addresses against only one would give a staged
+    /// row the live site's address or none at all.
+    ///
+    /// "Canonical" is the same most-recent row every other lookup here picks, so
+    /// a stage overlay does not change which alias wins for a source that has one
+    /// in only one stage.
+    pub async fn canonical_aliases_for_stages(
+        pool: &PgPool,
+        sources: &[String],
+        stage_ids: &[Uuid],
+        language: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        if sources.is_empty() || stage_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT ON (source) source, alias
+            FROM url_alias
+            WHERE source = ANY($1) AND stage_id = ANY($2) AND language = $3
+            ORDER BY source, created DESC, id DESC
+            "#,
+        )
+        .bind(sources)
+        .bind(stage_ids)
+        .bind(language)
+        .fetch_all(pool)
+        .await
+        .context("failed to get canonical aliases for stages")?;
+
+        Ok(rows.into_iter().collect())
+    }
+
     /// Resolve many aliases back to their source paths in one query.
     ///
     /// The reverse of [`Self::canonical_aliases_for`], and it exists for the same
