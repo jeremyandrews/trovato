@@ -1,7 +1,7 @@
 //! Theme engine with Tera templates and suggestion resolution.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
@@ -13,6 +13,118 @@ use crate::form::Form;
 use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
+
+/// Class values kept on a `<span>` inside sanitized Markdown.
+///
+/// The token classes Prism and highlight.js apply, and nothing else. They matter
+/// only for HTML that arrives already highlighted — a client-side highlighter
+/// adds its spans in the browser, long after this runs, so it never meets the
+/// sanitizer at all. What that highlighter *does* need is the `language-` class
+/// on the block, which is what [`is_allowed_class`] keeps.
+const HIGHLIGHT_TOKEN_CLASSES: [&str; 34] = [
+    // highlight.js
+    "hljs",
+    // Prism's marker class, applied alongside a token type below.
+    "token",
+    // Token types, shared in spelling by both highlighters.
+    "atrule",
+    "attr-name",
+    "attr-value",
+    "boolean",
+    "builtin",
+    "cdata",
+    "class-name",
+    "comment",
+    "constant",
+    "deleted",
+    "doctype",
+    "entity",
+    "function",
+    "important",
+    "inserted",
+    "keyword",
+    "namespace",
+    "number",
+    "operator",
+    "prolog",
+    "property",
+    "punctuation",
+    "regex",
+    "selector",
+    "string",
+    "symbol",
+    "tag",
+    "url",
+    "variable",
+    // Emphasis a highlighter applies to a token; harmless, and dropping them
+    // makes highlighted output look wrong for no gain.
+    "bold",
+    "italic",
+    "highlighted",
+];
+
+/// Whether one class value survives sanitization on `element`.
+///
+/// `language-rust` and `lang-rust` on the block, a highlighter's token class on a
+/// span, and nothing else. A language name is bounded to the characters real ones
+/// use, so `language-` cannot smuggle an arbitrary value into the attribute.
+fn is_allowed_class(element: &str, class: &str) -> bool {
+    if let Some(language) = class
+        .strip_prefix("language-")
+        .or_else(|| class.strip_prefix("lang-"))
+    {
+        return matches!(element, "code" | "pre")
+            && !language.is_empty()
+            && language.len() <= 32
+            && language
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '#' | '.'));
+    }
+
+    // highlight.js namespaces its own token classes; Prism does not.
+    if let Some(rest) = class.strip_prefix("hljs-") {
+        return element == "span"
+            && !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    }
+
+    element == "span" && HIGHLIGHT_TOKEN_CLASSES.contains(&class)
+}
+
+/// The sanitizer the `markdown` filter runs its output through.
+///
+/// `ammonia::clean`'s defaults strip every `class`, which is what made a
+/// highlighted code block impossible: `pulldown_cmark` renders a fenced
+/// ```` ```rust ```` block as `<code class="language-rust">`, the class was
+/// removed, and no highlighter — server-side or in the browser — could then tell
+/// what language the block was.
+///
+/// `class` is allowed back on `code`, `pre` and `span` only, and only for the
+/// values [`is_allowed_class`] accepts. Everything else is unchanged from
+/// ammonia's defaults, so a `class` on a `div`, a `style` attribute, an `onclick`
+/// and a `<script>` are all still removed.
+static MARKDOWN_SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+    let mut builder = ammonia::Builder::default();
+    builder.add_tag_attributes("code", ["class"]);
+    builder.add_tag_attributes("pre", ["class"]);
+    builder.add_tag_attributes("span", ["class"]);
+    builder.attribute_filter(|element, attribute, value| {
+        if attribute != "class" {
+            return Some(value.into());
+        }
+        let kept: Vec<&str> = value
+            .split_whitespace()
+            .filter(|class| is_allowed_class(element, class))
+            .collect();
+        // No surviving class means no attribute, rather than `class=""`.
+        if kept.is_empty() {
+            None
+        } else {
+            Some(kept.join(" ").into())
+        }
+    });
+    builder
+});
 
 /// CLDR-based localized month names for supported locales.
 ///
@@ -449,8 +561,9 @@ impl ThemeEngine {
                 let mut html_output = String::new();
                 pulldown_cmark::html::push_html(&mut html_output, parser);
 
-                // Sanitize to prevent XSS from raw HTML in Markdown
-                let clean = ammonia::clean(&html_output);
+                // Sanitize to prevent XSS from raw HTML in Markdown, keeping the
+                // class attribute a code block needs to be highlightable.
+                let clean = MARKDOWN_SANITIZER.clean(&html_output).to_string();
 
                 Ok(tera::Value::String(clean))
             },
@@ -1088,6 +1201,132 @@ mod tests {
         );
         assert!(result.contains("Hello"));
         assert!(result.contains("world"));
+    }
+
+    /// Render `body` through the real `markdown` filter.
+    fn markdown(body: &str) -> String {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+        tera.add_raw_template("test", "{{ body | markdown | safe }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("body", body);
+        tera.render("test", &ctx).unwrap()
+    }
+
+    /// The defect, stated directly: `ammonia::clean`'s defaults stripped every
+    /// class, so the language of a fenced block was erased and no highlighter
+    /// could tell what it was.
+    #[test]
+    fn a_fenced_block_keeps_its_language_class() {
+        let result = markdown("```rust\nfn main() {}\n```");
+        assert!(
+            result.contains("class=\"language-rust\""),
+            "the language class is what makes highlighting possible: {result}"
+        );
+        assert!(result.contains("<code"), "got {result}");
+    }
+
+    /// The other half of the bargain: allowing `class` back must not allow it
+    /// everywhere.
+    #[test]
+    fn an_arbitrary_class_on_a_div_is_still_stripped() {
+        let result = markdown("<div class=\"totally-fine\">text</div>");
+        assert!(
+            !result.contains("totally-fine"),
+            "class is allowed on code, pre and span only: {result}"
+        );
+        assert!(result.contains("text"), "the content survives: {result}");
+    }
+
+    /// A class on an allowed element is still filtered by value: `class` on
+    /// `code` is not a free-form attribute.
+    #[test]
+    fn an_arbitrary_class_on_code_is_stripped() {
+        let result = markdown("<code class=\"evil sneaky\">x</code>");
+        assert!(!result.contains("evil"), "got {result}");
+        assert!(!result.contains("sneaky"), "got {result}");
+        assert!(
+            !result.contains("class=\"\""),
+            "an emptied allowlist drops the attribute rather than leaving it empty: {result}"
+        );
+    }
+
+    /// A block carrying both a language and a stray class keeps only the
+    /// language.
+    #[test]
+    fn a_mixed_class_list_keeps_only_what_is_allowed() {
+        let result = markdown("<code class=\"language-rust pwned\">x</code>");
+        assert!(result.contains("language-rust"), "got {result}");
+        assert!(!result.contains("pwned"), "got {result}");
+    }
+
+    /// Pre-highlighted markup keeps the token classes that make it look like
+    /// anything.
+    #[test]
+    fn highlighter_token_classes_survive_on_a_span() {
+        let result = markdown(
+            "<pre><code class=\"language-rust\"><span class=\"token keyword\">fn</span></code></pre>",
+        );
+        assert!(result.contains("language-rust"), "got {result}");
+        assert!(result.contains("token"), "got {result}");
+        assert!(result.contains("keyword"), "got {result}");
+    }
+
+    /// The allowlist is per element: a language class belongs on the block, a
+    /// token class on a span, and neither is accepted in the other's place.
+    #[test]
+    fn the_class_allowlist_is_per_element() {
+        assert!(is_allowed_class("code", "language-rust"));
+        assert!(is_allowed_class("pre", "lang-rust"));
+        assert!(is_allowed_class("span", "token"));
+        assert!(is_allowed_class("span", "hljs-keyword"));
+
+        assert!(
+            !is_allowed_class("span", "language-rust"),
+            "a language belongs on the block, not on a token span"
+        );
+        assert!(
+            !is_allowed_class("code", "token"),
+            "a token class belongs on a span"
+        );
+        assert!(!is_allowed_class("div", "language-rust"));
+        assert!(!is_allowed_class("p", "token"));
+    }
+
+    /// `language-` is a prefix, not an escape hatch: the name after it is bounded
+    /// to the characters real language names use.
+    #[test]
+    fn a_language_name_cannot_smuggle_anything() {
+        assert!(is_allowed_class("code", "language-c++"));
+        assert!(is_allowed_class("code", "language-c#"));
+        assert!(is_allowed_class("code", "language-objective-c"));
+
+        assert!(
+            !is_allowed_class("code", "language-"),
+            "empty is not a name"
+        );
+        assert!(!is_allowed_class("code", "language-a b"));
+        assert!(!is_allowed_class("code", "language-<script>"));
+        assert!(!is_allowed_class("code", "language-a/../b"));
+        assert!(
+            !is_allowed_class("code", &format!("language-{}", "x".repeat(33))),
+            "a name long enough to be a payload is not a name"
+        );
+        assert!(!is_allowed_class("span", "hljs-"), "empty suffix");
+        assert!(!is_allowed_class("span", "hljs-a b"));
+    }
+
+    /// Everything else ammonia's defaults remove stays removed.
+    #[test]
+    fn allowing_class_did_not_allow_anything_else() {
+        let result = markdown(
+            "<code class=\"language-rust\" style=\"color:red\" onclick=\"steal()\">x</code>",
+        );
+        assert!(result.contains("language-rust"), "got {result}");
+        assert!(!result.contains("style"), "got {result}");
+        assert!(!result.contains("onclick"), "got {result}");
+        assert!(!result.contains("steal"), "got {result}");
     }
 
     #[test]
