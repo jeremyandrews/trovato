@@ -25,9 +25,15 @@ static HSTS: HeaderValue = HeaderValue::from_static("max-age=31536000; includeSu
 
 /// The default CSP policy.
 ///
-/// All inline scripts have been externalized to static JS files.
+/// `script-src` carries no `'unsafe-inline'`, nonce or hash, so the browser
+/// refuses every inline `<script>` block and inline `on*=` handler. Executable
+/// JavaScript has to be a file under `static/js/`, loaded with `src`.
 /// Template-dependent data is passed via `<script type="application/json">`
 /// data blocks (which are not subject to CSP because they don't execute).
+///
+/// Not every stock template obeys that yet: the ones that still carry inline
+/// scripts or handlers are tracked as BL-08 in `docs/BACKLOG.md`, and those
+/// scripts do not run under this policy.
 ///
 /// `style-src` keeps `'unsafe-inline'` because 100+ inline `style=`
 /// attributes would break without it; inline styles are a low XSS risk.
@@ -127,9 +133,9 @@ impl Default for SecurityHeaders {
 /// - `Strict-Transport-Security` (only when request arrived via HTTPS)
 ///
 /// The CSP comes from [`SecurityHeaders`] on the application state, resolved at
-/// startup. script-src does not include 'unsafe-inline' — all inline scripts have
-/// been externalized to static JS files. style-src keeps 'unsafe-inline' for
-/// inline `style=` attributes (low XSS risk).
+/// startup. script-src does not include 'unsafe-inline', so an inline script is
+/// blocked (see `DEFAULT_CSP`). style-src keeps 'unsafe-inline' for inline
+/// `style=` attributes (low XSS risk).
 pub async fn inject_security_headers(
     State(state): State<AppState>,
     request: Request<Body>,
