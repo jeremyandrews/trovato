@@ -255,6 +255,33 @@ struct AppStateInner {
     comments: OnceLock<Arc<services::comment::CommentService>>,
 }
 
+/// Read every stored `rate_limit.<bucket>` override, keyed by config key.
+///
+/// One lookup per bucket rather than one `LIKE` scan, so the tenant fallback in
+/// `SiteConfig::get` applies to these the way it does to every other setting.
+/// A read failure is not fatal: the caller keeps the compiled defaults, because
+/// refusing to boot over an unreadable *optional* setting would turn a tuning
+/// knob into a liveness dependency.
+async fn load_rate_limit_overrides(db: &PgPool) -> std::collections::HashMap<String, String> {
+    let mut stored = std::collections::HashMap::new();
+    for bucket in crate::middleware::rate_limit::BUCKETS {
+        let key = crate::middleware::rate_limit::bucket_config_key(bucket);
+        match crate::models::SiteConfig::get(db, &key).await {
+            Ok(Some(serde_json::Value::String(s))) => {
+                stored.insert(key, s);
+            }
+            Ok(Some(other)) => {
+                stored.insert(key, other.to_string());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(key = %key, error = %e, "failed to read rate limit override, using the default");
+            }
+        }
+    }
+    stored
+}
+
 impl AppState {
     /// Create new application state with database connections.
     ///
@@ -786,11 +813,28 @@ impl AppState {
         // Create rate limiter. Trusted proxies (whose X-Forwarded-For is
         // believed) are parsed once by `Config::from_env` from TRUSTED_PROXIES;
         // an empty list ⇒ trust none (RATE-1).
-        let rate_limiter = Arc::new(RateLimiter::new(
-            redis.clone(),
-            RateLimitConfig::default(),
-            config.trusted_proxies.clone(),
-        ));
+        //
+        // Each bucket starts at its compiled default and is then overridden by
+        // `TROVATO_RATE_LIMIT_<BUCKET>` or the `rate_limit.<bucket>` site config
+        // key, environment first. Resolved once here: a site config edit takes
+        // effect on the next restart, which is the same as every other setting
+        // `AppState::new` reads.
+        let mut rate_limit_config = RateLimitConfig::default();
+        let stored_limits = load_rate_limit_overrides(&db).await;
+        rate_limit_config.apply_overrides(&|key| std::env::var(key).ok(), &|key| {
+            stored_limits.get(key).cloned()
+        });
+        // Uploaded files are static assets too, and `FILES_URL` decides where
+        // they are served from, so the bucket has to follow it rather than assume
+        // the default.
+        let rate_limiter = Arc::new(
+            RateLimiter::new(
+                redis.clone(),
+                rate_limit_config,
+                config.trusted_proxies.clone(),
+            )
+            .with_static_prefixes(&["/static", config.files_url.as_str()]),
+        );
 
         // Create batch service
         let batch = Arc::new(BatchService::new(redis.clone()));

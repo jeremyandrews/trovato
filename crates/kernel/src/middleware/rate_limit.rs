@@ -94,6 +94,62 @@ pub struct RateLimitConfig {
     /// AI search follow-up questions. The most expensive of the three: every call
     /// carries the conversation context.
     pub search_followup: (u32, Duration),
+
+    /// Static assets: everything under the static and uploaded-file prefixes.
+    ///
+    /// Named `static_assets` because `static` is a keyword; the bucket is called
+    /// `static` everywhere it is configured or keyed.
+    ///
+    /// These are GETs of files on disk, and a single page view fetches as many of
+    /// them as it has stylesheets, scripts and images. Before this bucket existed
+    /// they fell through `categorize_path` to `api` at 100 a minute, so a visitor
+    /// on a shared IP loading a handful of asset-heavy pages could be served a 429
+    /// for a favicon. The default is deliberately an order of magnitude above the
+    /// generic bucket: it exists to bound a scraper, not to ration a page load.
+    pub static_assets: (u32, Duration),
+}
+
+/// Every rate-limit bucket, by the name used to key it, configure it and
+/// categorize a request into it.
+///
+/// The one list: [`RateLimitConfig::bucket`] and its private `bucket_mut` twin
+/// resolve each of these to a field, and `every_bucket_resolves_to_a_field` fails
+/// if a name here has no field behind it.
+pub const BUCKETS: [&str; 16] = [
+    "login",
+    "forms",
+    "api",
+    "search",
+    "uploads",
+    "register",
+    "verify_email",
+    "profile",
+    "password",
+    "recovery",
+    "comment",
+    "data_export",
+    "search_expand",
+    "search_summarize",
+    "search_followup",
+    "static",
+];
+
+/// Path prefixes served as static assets.
+///
+/// `/files/` is the default `FILES_URL`; a site that moves uploaded files
+/// elsewhere gets its configured prefix threaded through
+/// [`RateLimiter::with_static_prefixes`], and these are only the fallback used by
+/// the [`categorize_path`] convenience wrapper.
+pub const DEFAULT_STATIC_PREFIXES: [&str; 2] = ["/static/", "/files/"];
+
+/// The environment variable that overrides `bucket`'s limit.
+pub fn bucket_env_key(bucket: &str) -> String {
+    format!("TROVATO_RATE_LIMIT_{}", bucket.to_uppercase())
+}
+
+/// The `site_config` key that overrides `bucket`'s limit.
+pub fn bucket_config_key(bucket: &str) -> String {
+    format!("rate_limit.{bucket}")
 }
 
 impl Default for RateLimitConfig {
@@ -115,6 +171,101 @@ impl Default for RateLimitConfig {
             search_expand: (30, Duration::from_secs(60)), // 30 per minute
             search_summarize: (10, Duration::from_secs(60)), // 10 per minute
             search_followup: (5, Duration::from_secs(60)), // 5 per minute
+            static_assets: (2000, Duration::from_secs(60)), // 2000 per minute
+        }
+    }
+}
+
+impl RateLimitConfig {
+    /// The limit and window for `bucket`, or `None` if there is no such bucket.
+    pub fn bucket(&self, bucket: &str) -> Option<(u32, Duration)> {
+        Some(match bucket {
+            "login" => self.login,
+            "forms" => self.forms,
+            "api" => self.api,
+            "search" => self.search,
+            "uploads" => self.uploads,
+            "register" => self.register,
+            "verify_email" => self.verify_email,
+            "profile" => self.profile,
+            "password" => self.password,
+            "recovery" => self.recovery,
+            "comment" => self.comment,
+            "data_export" => self.data_export,
+            "search_expand" => self.search_expand,
+            "search_summarize" => self.search_summarize,
+            "search_followup" => self.search_followup,
+            "static" => self.static_assets,
+            _ => return None,
+        })
+    }
+
+    /// Mutable access to `bucket`'s limit, for applying an override.
+    fn bucket_mut(&mut self, bucket: &str) -> Option<&mut (u32, Duration)> {
+        Some(match bucket {
+            "login" => &mut self.login,
+            "forms" => &mut self.forms,
+            "api" => &mut self.api,
+            "search" => &mut self.search,
+            "uploads" => &mut self.uploads,
+            "register" => &mut self.register,
+            "verify_email" => &mut self.verify_email,
+            "profile" => &mut self.profile,
+            "password" => &mut self.password,
+            "recovery" => &mut self.recovery,
+            "comment" => &mut self.comment,
+            "data_export" => &mut self.data_export,
+            "search_expand" => &mut self.search_expand,
+            "search_summarize" => &mut self.search_summarize,
+            "search_followup" => &mut self.search_followup,
+            "static" => &mut self.static_assets,
+            _ => return None,
+        })
+    }
+
+    /// Replace each bucket's default limit with a configured override.
+    ///
+    /// For every bucket in [`BUCKETS`], the environment is asked first
+    /// (`TROVATO_RATE_LIMIT_<BUCKET>`) and the site configuration second
+    /// (`rate_limit.<bucket>`) — **environment wins**, so an operator can always
+    /// override a value stored in the database without reaching into it.
+    ///
+    /// The value is the request count. The window is not configurable: it is part
+    /// of what the bucket *means* (`register` is three an hour, `login` five a
+    /// minute), and a window edited independently of the count turns a documented
+    /// limit into an undocumented one.
+    ///
+    /// An override that does not parse as a count of at least 1 is ignored with a
+    /// warning and the default stands. Refusing to start would be defensible; a
+    /// typo in one bucket taking the whole site down is not, and a limit of 0
+    /// would reject every request to that bucket including the ones an operator
+    /// would need to fix it.
+    pub fn apply_overrides(
+        &mut self,
+        env: &dyn Fn(&str) -> Option<String>,
+        config: &dyn Fn(&str) -> Option<String>,
+    ) {
+        for bucket in BUCKETS {
+            let (raw, source) = match env(&bucket_env_key(bucket)) {
+                Some(raw) => (raw, bucket_env_key(bucket)),
+                None => match config(&bucket_config_key(bucket)) {
+                    Some(raw) => (raw, bucket_config_key(bucket)),
+                    None => continue,
+                },
+            };
+
+            match raw.trim().parse::<u32>() {
+                Ok(limit) if limit >= 1 => {
+                    if let Some(slot) = self.bucket_mut(bucket) {
+                        slot.0 = limit;
+                    }
+                }
+                _ => warn!(
+                    source = %source,
+                    value = %raw,
+                    "rate limit override is not a positive integer, keeping the default"
+                ),
+            }
         }
     }
 }
@@ -127,6 +278,10 @@ pub struct RateLimiter {
     /// Proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted. Empty
     /// ⇒ trust none (ignore forwarding headers). See [`parse_trusted_proxies`].
     trusted_proxies: Arc<Vec<IpAddr>>,
+    /// Path prefixes routed to the `static` bucket. Defaults to
+    /// [`DEFAULT_STATIC_PREFIXES`]; production supplies the configured
+    /// `FILES_URL` via [`RateLimiter::with_static_prefixes`].
+    static_prefixes: Arc<Vec<String>>,
 }
 
 impl RateLimiter {
@@ -136,12 +291,45 @@ impl RateLimiter {
             redis,
             config,
             trusted_proxies: Arc::new(trusted_proxies),
+            static_prefixes: Arc::new(
+                DEFAULT_STATIC_PREFIXES
+                    .iter()
+                    .map(|p| (*p).to_string())
+                    .collect(),
+            ),
         }
+    }
+
+    /// Route these path prefixes to the `static` bucket.
+    ///
+    /// Each is normalized to a trailing slash, so `/files` and `/files/` both
+    /// match `/files/2026/photo.jpg` and neither matches `/filesystem`.
+    #[must_use]
+    pub fn with_static_prefixes<S: AsRef<str>>(mut self, prefixes: &[S]) -> Self {
+        self.static_prefixes = Arc::new(
+            prefixes
+                .iter()
+                .map(|p| {
+                    let p = p.as_ref();
+                    if p.ends_with('/') {
+                        p.to_string()
+                    } else {
+                        format!("{p}/")
+                    }
+                })
+                .collect(),
+        );
+        self
     }
 
     /// The configured trusted-proxy allowlist.
     pub fn trusted_proxies(&self) -> &[IpAddr] {
         &self.trusted_proxies
+    }
+
+    /// The path prefixes routed to the `static` bucket.
+    pub fn static_prefixes(&self) -> &[String] {
+        &self.static_prefixes
     }
 
     /// Check if a request should be rate limited.
@@ -176,25 +364,11 @@ impl RateLimiter {
     }
 
     /// Get the rate limit for a category.
+    ///
+    /// An unknown category falls back to the `api` bucket, which is what
+    /// `categorize_path`'s own default does.
     fn get_limit(&self, category: &str) -> (u32, Duration) {
-        match category {
-            "login" => self.config.login,
-            "forms" => self.config.forms,
-            "api" => self.config.api,
-            "search" => self.config.search,
-            "uploads" => self.config.uploads,
-            "register" => self.config.register,
-            "verify_email" => self.config.verify_email,
-            "profile" => self.config.profile,
-            "password" => self.config.password,
-            "recovery" => self.config.recovery,
-            "comment" => self.config.comment,
-            "data_export" => self.config.data_export,
-            "search_expand" => self.config.search_expand,
-            "search_summarize" => self.config.search_summarize,
-            "search_followup" => self.config.search_followup,
-            _ => self.config.api, // Default to API limits
-        }
+        self.config.bucket(category).unwrap_or(self.config.api)
     }
 
     /// Increment the counter and return the new value.
@@ -242,14 +416,46 @@ impl RateLimiter {
     }
 }
 
+/// Categorize a request path for rate limiting, using the default static
+/// prefixes.
+///
+/// A site with a non-default `FILES_URL` wants
+/// [`categorize_path_with`] and the prefixes the [`RateLimiter`] carries.
+pub fn categorize_path(path: &str, method: &str) -> &'static str {
+    categorize_path_with(path, method, &DEFAULT_STATIC_PREFIXES)
+}
+
+/// Whether this request is a read of a static asset.
+///
+/// Reads only: a POST under an asset prefix is not a file being served, and
+/// giving it the static bucket's very generous limit would be a hole.
+fn is_static_asset<S: AsRef<str>>(path: &str, method: &str, static_prefixes: &[S]) -> bool {
+    if !matches!(method, "GET" | "HEAD") {
+        return false;
+    }
+    path == "/favicon.ico"
+        || static_prefixes
+            .iter()
+            .any(|prefix| path.starts_with(prefix.as_ref()))
+}
+
 /// Categorize a request path for rate limiting.
 ///
 /// Order matters: the specific categories are tested before the generic `/api/`
 /// one, since every path they name is also an `/api/` path. That is how the AI
 /// search endpoints and the comment writes used to land in the `api` bucket at
 /// 100 a minute.
-pub fn categorize_path(path: &str, method: &str) -> &'static str {
-    if path.starts_with("/user/login") && method == "POST" {
+///
+/// Static assets are tested first, both because it is the hottest path and
+/// because their prefixes overlap nothing below.
+pub fn categorize_path_with<S: AsRef<str>>(
+    path: &str,
+    method: &str,
+    static_prefixes: &[S],
+) -> &'static str {
+    if is_static_asset(path, method, static_prefixes) {
+        "static"
+    } else if path.starts_with("/user/login") && method == "POST" {
         "login"
     } else if path.starts_with("/user/register") && method == "POST" {
         "register"
@@ -394,7 +600,11 @@ pub async fn check_rate_limit(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let category = categorize_path(request.uri().path(), request.method().as_str());
+    let category = categorize_path_with(
+        request.uri().path(),
+        request.method().as_str(),
+        state.rate_limiter().static_prefixes(),
+    );
     // Prefer the vetted IP resolved by `resolve_client_ip`; fall back to an
     // inline trusted-proxy resolution if that middleware is not in the stack.
     let client_id = request
@@ -443,7 +653,11 @@ pub async fn check_authenticated_rate_limit(
 
     // Only apply per-user limits to authenticated requests.
     if let Some(uid) = user_id {
-        let category = categorize_path(request.uri().path(), request.method().as_str());
+        let category = categorize_path_with(
+            request.uri().path(),
+            request.method().as_str(),
+            state.rate_limiter().static_prefixes(),
+        );
         let user_key = format!("user:{uid}");
 
         if let Err(retry_after) = state.rate_limiter().check(category, &user_key).await {
@@ -625,6 +839,193 @@ mod tests {
     #[test]
     fn categorize_default_get() {
         assert_eq!(categorize_path("/some/page", "GET"), "api");
+    }
+
+    // --- static asset bucket ---
+
+    /// The defect: a stylesheet was an `api` call. Every asset prefix now lands
+    /// in its own bucket.
+    #[test]
+    fn static_assets_are_their_own_category() {
+        assert_eq!(categorize_path("/static/css/theme.css", "GET"), "static");
+        assert_eq!(categorize_path("/static/js/app.js", "GET"), "static");
+        assert_eq!(categorize_path("/files/2026/09/photo.jpg", "GET"), "static");
+        assert_eq!(categorize_path("/favicon.ico", "GET"), "static");
+        assert_eq!(categorize_path("/static/css/theme.css", "HEAD"), "static");
+    }
+
+    /// A write under an asset prefix is not a file being served, and must not
+    /// inherit the static bucket's very generous limit.
+    #[test]
+    fn a_write_under_an_asset_prefix_is_not_static() {
+        assert_eq!(categorize_path("/static/css/theme.css", "POST"), "forms");
+        assert_eq!(categorize_path("/files/anything", "DELETE"), "api");
+    }
+
+    /// Prefix matching is on a path segment, not a string prefix.
+    #[test]
+    fn an_asset_prefix_does_not_match_a_longer_word() {
+        assert_eq!(categorize_path("/staticky", "GET"), "api");
+        assert_eq!(categorize_path("/filesystem/etc/passwd", "GET"), "api");
+    }
+
+    /// A site with a non-default `FILES_URL` gets its own prefix routed, with or
+    /// without the trailing slash.
+    #[test]
+    fn configured_static_prefixes_are_honored() {
+        let limiter_prefixes = ["/static/", "/assets/"];
+        assert_eq!(
+            categorize_path_with("/assets/logo.svg", "GET", &limiter_prefixes),
+            "static"
+        );
+        // `with_static_prefixes` normalizes a prefix given without the slash.
+        assert_eq!(
+            categorize_path_with("/assets/logo.svg", "GET", &["/assets"]),
+            "static",
+            "a prefix without a trailing slash still matches its own subtree"
+        );
+        // And the default prefix is no longer special once overridden.
+        assert_eq!(
+            categorize_path_with("/files/x.jpg", "GET", &limiter_prefixes),
+            "api"
+        );
+    }
+
+    /// The point of the whole bucket, in one assertion: an ordinary asset-heavy
+    /// page must not consume a meaningful share of a visitor's budget.
+    #[test]
+    fn a_page_with_twenty_assets_does_not_trip_anything() {
+        let config = RateLimitConfig::default();
+        let page_view = 1 + 20; // the HTML, then twenty assets
+        let assets = 20;
+
+        assert_eq!(
+            categorize_path("/some/page", "GET"),
+            "api",
+            "the page itself is still an api-bucket request"
+        );
+        assert!(
+            config.static_assets.0 >= assets * 10,
+            "twenty assets a page leaves no headroom at {:?}",
+            config.static_assets
+        );
+        assert!(
+            config.static_assets.0 > config.api.0,
+            "the static bucket must be looser than the generic one, not tighter"
+        );
+        // Before the fix all twenty-one requests shared the api bucket, so five
+        // page views in a minute came within a hair of the limit and a sixth
+        // tripped it.
+        assert!(
+            page_view * 5 > config.api.0 / 2,
+            "sanity: the old shared-bucket arithmetic is why this bucket exists"
+        );
+    }
+
+    // --- per-bucket overrides ---
+
+    /// Every name in `BUCKETS` has a field behind it, in both directions. A new
+    /// bucket added to the struct and not to the list is unconfigurable; a name in
+    /// the list with no field silently ignores its override.
+    #[test]
+    fn every_bucket_resolves_to_a_field() {
+        let mut config = RateLimitConfig::default();
+        for bucket in BUCKETS {
+            assert!(
+                config.bucket(bucket).is_some(),
+                "{bucket} is listed but has no limit"
+            );
+            assert!(
+                config.bucket_mut(bucket).is_some(),
+                "{bucket} is listed but cannot be overridden"
+            );
+        }
+    }
+
+    #[test]
+    fn override_keys_follow_the_documented_shape() {
+        assert_eq!(bucket_env_key("static"), "TROVATO_RATE_LIMIT_STATIC");
+        assert_eq!(
+            bucket_env_key("search_expand"),
+            "TROVATO_RATE_LIMIT_SEARCH_EXPAND"
+        );
+        assert_eq!(bucket_config_key("static"), "rate_limit.static");
+    }
+
+    #[test]
+    fn an_override_replaces_the_default_limit() {
+        let mut config = RateLimitConfig::default();
+        config.apply_overrides(
+            &|key| (key == "TROVATO_RATE_LIMIT_STATIC").then(|| "500".to_string()),
+            &|_| None,
+        );
+        assert_eq!(config.static_assets.0, 500);
+        assert_eq!(
+            config.static_assets.1,
+            Duration::from_secs(60),
+            "the window is not configurable and must survive an override"
+        );
+        assert_eq!(config.api.0, 100, "other buckets are untouched");
+    }
+
+    /// The stated precedence: an operator can override a stored value without
+    /// reaching into the database.
+    #[test]
+    fn the_environment_wins_over_the_stored_config() {
+        let mut config = RateLimitConfig::default();
+        config.apply_overrides(
+            &|key| (key == "TROVATO_RATE_LIMIT_LOGIN").then(|| "9".to_string()),
+            &|key| (key == "rate_limit.login").then(|| "77".to_string()),
+        );
+        assert_eq!(config.login.0, 9);
+    }
+
+    #[test]
+    fn the_stored_config_applies_when_the_environment_is_silent() {
+        let mut config = RateLimitConfig::default();
+        config.apply_overrides(&|_| None, &|key| {
+            (key == "rate_limit.forms").then(|| "42".to_string())
+        });
+        assert_eq!(config.forms.0, 42);
+    }
+
+    /// A typo in one bucket must not take the site down, and must not resolve to
+    /// a limit of zero, which would reject every request to that bucket.
+    #[test]
+    fn a_junk_override_keeps_the_default() {
+        let mut config = RateLimitConfig::default();
+        let default_api = config.api.0;
+        for junk in ["", "  ", "lots", "-5", "0", "12.5"] {
+            config.apply_overrides(&|_| Some(junk.to_string()), &|_| None);
+            assert_eq!(
+                config.api.0, default_api,
+                "{junk:?} must not become a limit"
+            );
+        }
+    }
+
+    /// Whitespace around a value from an env file is not a typo.
+    #[test]
+    fn an_override_tolerates_surrounding_whitespace() {
+        let mut config = RateLimitConfig::default();
+        config.apply_overrides(&|_| Some(" 7 \n".to_string()), &|_| None);
+        assert_eq!(config.api.0, 7);
+    }
+
+    /// An override reaches the limiter's own lookup, not just the struct field.
+    #[test]
+    fn get_limit_reads_the_overridden_value() {
+        let mut config = RateLimitConfig::default();
+        config.apply_overrides(
+            &|key| (key == "TROVATO_RATE_LIMIT_STATIC").then(|| "1234".to_string()),
+            &|_| None,
+        );
+        assert_eq!(config.bucket("static").map(|b| b.0), Some(1234));
+        assert_eq!(
+            config.bucket("nonexistent"),
+            None,
+            "an unknown category has no bucket of its own"
+        );
     }
 
     #[test]
