@@ -7,7 +7,8 @@ Trovato was developed privately and is published as a pre-1.0 release for
 exactly the reasons on this page. Nothing here is a secret being managed; it is
 a backlog being worked in the open. [ROADMAP.md](ROADMAP.md) says what happens
 to each item, and [docs/BACKLOG.md](docs/BACKLOG.md) lists every finding, including
-the smaller ones this page does not describe, with its verified status.
+the smaller ones this page does not describe, with its verified status and whether a
+Ritrovo row waits on it.
 
 ## Security
 
@@ -130,10 +131,22 @@ for it, and this is a decision rather than a gap.
 
 The other half of the reasoning is that a language screen on its own would not help
 much. Adding a language row is the small part of adding a language; the work is the
-interface strings, which `trovato_locale` handles at `/admin/config/locale` by
-importing `.po` files, and the content translations. A form that adds a row and
-leaves an operator to do both of those anyway would look like the feature without
-being it.
+interface strings and the content translations. This page used to say that
+`trovato_locale` handles the first at `/admin/config/locale` by importing `.po`
+files. It does not, in either half. The plugin is 47 lines: it implements `tap_menu`
+and `tap_perm` only, declares no host interfaces, and registers its two menu entries
+with a `callback` and no `tap_api` behind it, so both paths are a startup warning and
+a 404. And `LocaleService::import_translations`
+(`crates/kernel/src/services/locale.rs:74`) has no caller anywhere in the tree: no
+route, no CLI command, no config entity, so no `.po` file can be imported by any
+means. `trovato_locale` preloads the default language and no other `load_language`
+call exists (`crates/kernel/src/state.rs:645`), so a site's second language is served
+entirely in the first language's strings.
+
+That is the same shape as the content translation paragraph below, and it has the
+same consequence: a form that adds a language row would look like the feature without
+being it, because neither of the two things that make a language work can be done at
+all. See BL-98 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
 Content translations are the weaker half of that sentence than it used to admit.
 `trovato_content_translation` declares one permission and two menu entries and
@@ -196,12 +209,22 @@ nothing a permission check will ever ask for. The evidence it does accept is a
 permission some role in the database already holds, which is what lets an export
 of a site that uses plugin permissions re-import.
 
-The practical consequence: grant a plugin's permissions once by SQL, after which
-they can go in the config file like any other. The permission grid at
-`/admin/people/permissions` cannot do it, because it renders the kernel's list and a
-plugin's permissions do not appear there.
-Dispatching `tap_perm` is what fixes both, and it is additive to the plugin
-contract rather than a break of it.
+The practical consequence used to be written here as: grant a plugin's permissions
+once by SQL, after which they can go in the config file like any other. That
+workaround does not survive contact with the interface. The permission grid at
+`/admin/people/permissions` cannot grant one, because it renders the kernel's list
+and a plugin's permissions do not appear there, and **saving the grid revokes
+them**: the handler builds each role's desired set by filtering the kernel's list,
+and the save has replace semantics, so a permission the grid never rendered is
+absent from the set and is taken away
+(`crates/kernel/src/routes/admin_user.rs:821-829`,
+`crates/kernel/src/models/role.rs:202-213`). An administrator changing an unrelated
+checkbox undoes the SQL. So on 0.102.0 there is no durable way for a role to hold a
+plugin's permission at all.
+
+Dispatching `tap_perm` is what fixes the first half and it is additive to the plugin
+contract rather than a break of it; merging rather than replacing on save is what
+fixes the second. See BL-69 and BL-90 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
 ### Semantic search has no approximate index
 
@@ -219,6 +242,19 @@ site.
 
 There is no filesystem watch. `ThemeEngine::reload` exists and nothing calls it, so
 a template change needs a restart in development and production alike.
+
+### The revision history page fails once an item has a revision
+
+`ItemRevision` carries two fields, `change_summary` and `ai_generated`, beyond the
+eight columns `get_revisions` and `get_revision` select. Both carry
+`#[serde(default)]`, which reads as a default at a glance and does nothing for
+`sqlx::FromRow`, and neither carries `#[sqlx(default)]`, so decoding a row fails on a
+missing column (`crates/kernel/src/models/item.rs:96-105`, `:396-400`, `:409-413`).
+
+An empty result decodes, so `/item/{id}/revisions` works until the first edit and
+answers 500 afterwards, and revert fails the same way. It is a 1.0 blocker and it
+needs the integration test that edits an item before loading its history, which is
+why it survived. See BL-91 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
 ### A revision's authorship can change, and nothing else about it can
 
