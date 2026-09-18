@@ -64,6 +64,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
+| `SITE_URL` | `http://localhost:<PORT>` | The site's public base URL. Every absolute address the kernel emits is built from it: `sitemap.xml`, the `Sitemap:` line in `robots.txt`, the RSS feeds, `<link rel="canonical">`, the Open Graph tags and the links in outgoing mail. Set it to the scheme and host visitors actually use, or a crawler is handed addresses that resolve to a developer's laptop. A trailing slash is ignored. |
 | `DATABASE_MAX_CONNECTIONS` | `10` | PostgreSQL connection pool size |
 | `RUST_LOG` | `info` | Log filter, in `RUST_LOG` format |
 | `PLUGINS_DIR` | `./plugins` | Plugin search path. Several directories may be given, separated by `:`; later ones win a name collision. |

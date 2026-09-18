@@ -955,6 +955,20 @@ pub fn is_valid_timezone(tz: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '+' || c == '-')
 }
 
+/// Escape the five XML predefined entities in text content.
+///
+/// Shared by every kernel route that writes XML by hand — the RSS feeds and the
+/// sitemap. A URL alias may legitimately contain an `&`, and an unescaped one
+/// makes the whole document unparseable rather than making one entry wrong.
+pub fn xml_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// One language a page can be read in, and the address it is read at.
 ///
 /// Goes into the render context as `available_translations`, which is what a

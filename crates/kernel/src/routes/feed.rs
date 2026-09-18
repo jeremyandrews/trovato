@@ -45,6 +45,7 @@ use crate::gather::types::GatherQuery;
 use crate::models::UrlAlias;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::gather::ExecuteParams;
+use crate::routes::helpers::xml_escape;
 use crate::state::AppState;
 
 /// Largest number of entries a feed will carry, whatever its config asks for.
@@ -384,16 +385,6 @@ fn build_rss_feed(title: &str, link: &str, description: &str, items: &[String]) 
 
     feed.push_str("  </channel>\n</rss>\n");
     feed
-}
-
-/// Escape the five XML predefined entities in text content.
-fn xml_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 /// Make a string safe inside a CDATA section.
