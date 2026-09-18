@@ -103,6 +103,31 @@
   an additive one, and it is recorded against BL-03 in `docs/BACKLOG.md` as an
   opt-in addition for a later minor.
 
+- Fix: `sitemap.xml` emits absolute addresses, and lists translations.
+
+  `routes/sitemap.rs` wrote the URL alias, or `/item/{id}`, into `<loc>` with no
+  scheme or host. The sitemap protocol requires a full URL, and a sitemap is
+  fetched with no request context to resolve a relative path against, so every
+  address in the document was unusable. `robots.txt` named the sitemap the same
+  relative way, which its own specification also forbids.
+
+  Both now build on `SITE_URL`, the setting the canonical link, the Open Graph
+  tags and the RSS feeds already read; a trailing slash on it no longer doubles.
+  Values are XML-escaped, so an alias containing `&` no longer makes the document
+  unparseable. `SITE_URL` itself was undocumented and is now in
+  [INSTALL.md](INSTALL.md) and `.env.example`.
+
+  A translated item was listed once, in the default language, with no `hreflang`
+  at all. It is now listed at every address it is readable at, each entry
+  carrying the whole alternate set built by `build_hreflang_links` — the same
+  function the item and front pages use for their `<head>`, so a crawler cannot
+  be told two different stories about one page. Existence comes from one bulk
+  query rather than the per-item lookup `available_translations` does.
+
+  A plugin claiming `/sitemap.xml` or `/robots.txt` is still refused, but now at
+  startup with a message naming the plugin and the path, instead of by a panic
+  inside `Router::merge` reporting an overlapping route.
+
 - Fix: `argus_notify_test` no longer passes or fails on scheduling (#67, closes
   #66).
 

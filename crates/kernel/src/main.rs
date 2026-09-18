@@ -262,9 +262,14 @@ async fn run_server() -> Result<()> {
     // Build the inner router with all routes (no path alias — that's handled
     // by the fallback below so it runs BEFORE Axum route matching).
     // Say so, once, when a plugin declares a callback the kernel cannot reach.
-    routes::plugin_api::warn_unreachable_callbacks(
-        &state.menu_registry().all().cloned().collect::<Vec<_>>(),
-    );
+    let plugin_menus = state.menu_registry().all().cloned().collect::<Vec<_>>();
+    routes::plugin_api::warn_unreachable_callbacks(&plugin_menus);
+
+    // Refuse, with a message naming the plugin, when one claims a path the
+    // kernel serves and cannot yield. `Router::merge` panics on an overlapping
+    // route, so before this check a plugin could take the process down at boot
+    // with axum's message instead of an explanation of what to do about it.
+    routes::sitemap::ensure_reserved_paths_unclaimed(&plugin_menus)?;
 
     let inner_router: Router<AppState> = Router::new()
         .merge(routes::front::router())
