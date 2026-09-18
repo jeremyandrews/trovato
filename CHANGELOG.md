@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fix: the login page's "Forgot password?" link loads a page.
+
+  `templates/user/login.html` linked it to `/user/password-reset`, which the
+  kernel registers for POST only: it is the JSON endpoint that mints a reset
+  token, not something a browser can open, so the click answered 405. The link
+  was written against the API endpoint rather than the human recovery flow, and
+  nothing rendered the login page and followed its links, so the mismatch never
+  surfaced. It now points at `/user/recover`, the recovery entry page.
+  `login_page_test` follows the link the page renders and requires it to load.
+
 - Fix: a hand-written config file may omit `created` and `changed`.
 
   Only `ConfigItem` gave its timestamps a serde default. `Role`, `Tag`,
