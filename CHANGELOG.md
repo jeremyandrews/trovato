@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Fix: a themed plugin page renders its title as the page heading.
+
+  `ApiResponse::themed` carries a title, and `ThemeEngine::render_page` puts it
+  in the template context, where `templates/page.html` used it for the document
+  `<title>` and nothing else. A plugin page therefore rendered with no `<h1>`:
+  the site chrome and a bare body, with no heading for a reader or a screen
+  reader to navigate by. `/contact`, the themed plugin page in the tree, was
+  the visible case.
+
+  `page.html` now renders `page_heading` as the page's `<h1>`, and the themed
+  plugin route sets it from the response's title. It is a separate context key
+  rather than `title` because an item page, a gather page and an assistant
+  conversation already render their own heading inside the content they pass to
+  the same template; making the template render `title` unconditionally would
+  give each of them a second one. `contact_form_test` requires the heading,
+  requires exactly one `<h1>` on the page, and requires it to precede the
+  plugin's form.
+
 - Fix: a default install no longer logs a startup warning for every stock
   plugin's admin menu.
 

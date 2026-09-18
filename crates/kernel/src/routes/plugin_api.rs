@@ -448,6 +448,15 @@ async fn themed_response(
 ) -> Response {
     let mut context = tera::Context::new();
     crate::routes::helpers::inject_site_context(state, session, &mut context, path).await;
+    // The title is the page's heading as well as its `<title>`: a plugin page
+    // arrived with no `<h1>` at all, because `render_page` puts the title in the
+    // context and the theme's page template only used it in the document title.
+    // `page_heading` is how a caller whose content carries no heading of its own
+    // asks the template for one — an item or a gather page renders its own, so
+    // they do not set it and do not get a second.
+    if !parsed.title.trim().is_empty() {
+        context.insert("page_heading", &parsed.title);
+    }
 
     let html = match state
         .theme()

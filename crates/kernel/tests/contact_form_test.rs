@@ -282,6 +282,42 @@ fn the_form_is_rendered_into_the_site_theme() {
     });
 }
 
+/// A themed plugin page has a heading.
+///
+/// `ApiResponse::themed` carries a title, and `render_page` put it in the context
+/// where the theme used it for the document title only, so the page rendered with
+/// no `<h1>` at all: a visitor saw the site chrome and a bare form, and a screen
+/// reader found no heading to navigate by. The title is the page's heading too.
+#[test]
+fn the_themed_page_renders_its_title_as_the_page_heading() {
+    common::run_test(async {
+        let fixture = fixture();
+
+        let response = fixture
+            .app
+            .request(
+                Request::get("/contact")
+                    .header("x-forwarded-for", common::test_ip_for(BUCKET))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = text_body(response).await;
+
+        // The plugin's title, as the page's heading.
+        assert!(
+            html.contains("<h1 class=\"page-title\">Contact</h1>"),
+            "the themed page must render its title as an h1: {html}"
+        );
+        // Exactly one, and it precedes the plugin's body.
+        assert_eq!(html.matches("<h1").count(), 1, "one h1 per page: {html}");
+        let heading = html.find("<h1").expect("the heading");
+        let form = html.find("<form method=\"post\"").expect("the form");
+        assert!(heading < form, "the heading comes before the form");
+    });
+}
+
 /// A post with no token is refused by the kernel before the plugin sees it, and
 /// nothing is sent.
 #[test]
