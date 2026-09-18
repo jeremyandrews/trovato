@@ -16,6 +16,7 @@ use super::types::{
     QueryDefinition, QueryDisplay, QueryFilter,
 };
 use crate::content::{ItemService, RecordTypeRegistry};
+use crate::models::UrlAlias;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::vector_store::{PgVectorStore, VectorStore};
 use crate::tap::UserContext;
@@ -804,7 +805,72 @@ impl GatherService {
                 .await?;
         }
 
+        // Give every row the address it is actually read at. Records have no
+        // `/item/` address, so this is for Item gathers only.
+        if record_ctx.is_none() {
+            self.resolve_row_urls(&mut rows, stage_ids, context).await;
+        }
+
         Ok(GatherResult::new(rows, total as u64, page, per_page).with_access_capped(access_capped))
+    }
+
+    /// Give each row a `url`: its URL alias when it has one, `/item/{id}`
+    /// otherwise.
+    ///
+    /// **One query for the whole result set**, not one per row and not one per
+    /// render. Every shipped listing template emitted `/item/{{ row.id }}`
+    /// because the row had nothing else to emit, so a site built on the kernel
+    /// advertised UUIDs in every link on every listing while the friendly URL the
+    /// item itself was served at sat in `url_alias` unused. A template cannot fix
+    /// that on its own: resolving an alias is a database lookup, and a template
+    /// doing one per row is the shape this exists to avoid.
+    ///
+    /// A row with no usable `id` — an explicit-field gather that did not select
+    /// one — gets no `url` rather than a wrong one, and its template falls back
+    /// to whatever it did before.
+    ///
+    /// A failed lookup is not fatal: `/item/{id}` links are worth more than a
+    /// failed page, and are exactly what the listing rendered before.
+    async fn resolve_row_urls(
+        &self,
+        rows: &mut [serde_json::Value],
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+    ) {
+        if rows.is_empty() {
+            return;
+        }
+
+        let sources: Vec<String> = rows
+            .iter()
+            .filter_map(row_id)
+            .map(|id| format!("/item/{id}"))
+            .collect();
+        if sources.is_empty() {
+            return;
+        }
+
+        let language = context.language.as_deref().unwrap_or("en");
+        let aliases = UrlAlias::canonical_aliases_for_stages(
+            &self.pool,
+            &sources,
+            stage_ids,
+            language,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to resolve gather row URLs, falling back to /item/{{id}}");
+            HashMap::new()
+        });
+
+        for row in rows.iter_mut() {
+            let Some(id) = row_id(row) else { continue };
+            let source = format!("/item/{id}");
+            let url = aliases.get(&source).cloned().unwrap_or(source);
+            if let Some(object) = row.as_object_mut() {
+                object.insert("url".to_string(), serde_json::Value::String(url));
+            }
+        }
     }
 
     /// Item-access enforcement with the D-26 over-fetch/geometric-backfill loop.
@@ -2079,6 +2145,18 @@ fn json_value_to_string(v: &serde_json::Value) -> Option<String> {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Number(n) => Some(n.to_string()),
         serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
+    }
+}
+
+/// The `id` of a gather row, as a string, when it has one.
+///
+/// A gather may project an explicit field list that omits `id`, in which case
+/// the row has no item address to resolve and is left alone.
+fn row_id(row: &serde_json::Value) -> Option<String> {
+    match row.get("id")? {
+        serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Null => None,
         other => Some(other.to_string()),
     }
