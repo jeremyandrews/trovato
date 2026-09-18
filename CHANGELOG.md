@@ -54,6 +54,30 @@
   rather than taking the site down. The full table of buckets and defaults is in
   [INSTALL.md](INSTALL.md#rate-limits).
 
+- Fix: a plugin reading a variable that is not set is no longer silent (BL-03,
+  partly).
+
+  `host/variables.rs` namespaces every key as `plugin.{plugin_name}.{name}` and
+  returned the caller's default on `Ok(None)` with nothing logged. The
+  namespacing makes the mistake easy to hit: a plugin asking for another
+  plugin's setting is asking for a key under its own name, which will never
+  exist, so the read succeeds with the default forever and nothing anywhere says
+  why.
+
+  The host now logs at warn level the first time each key misses in the life of
+  the process, naming both the key the plugin asked for and the namespaced key it
+  resolved to. Once per key, so a variable read on every request warns once;
+  tracking is capped so a plugin building keys from request data cannot grow the
+  set without bound.
+
+  The return value is unchanged and still indistinguishable from a set variable.
+  The WIT declares `get: func(name: string, default-value: string) -> string` —
+  no `option`, no `result` — and the SDK reads every negative return as a host
+  failure, so a sentinel for "unset" would make an ordinary unset variable look
+  like a failure to every plugin already compiled. That is a contract change, not
+  an additive one, and it is recorded against BL-03 in `docs/BACKLOG.md` as an
+  opt-in addition for a later minor.
+
 - Fix: `argus_notify_test` no longer passes or fails on scheduling (#67, closes
   #66).
 
