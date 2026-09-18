@@ -373,6 +373,14 @@ pub const ERR_MAIL_ATTACHMENT_TOO_LARGE: i32 = -53;
 /// the shared SMTP circuit breaker is open. The kernel logs the reason.
 pub const ERR_MAIL_SEND_FAILED: i32 = -54;
 
+/// The plugin has sent as much mail as its bucket allows for now.
+///
+/// Per plugin and on every path, including cron and the queue worker. Nothing
+/// was sent and the kernel logged the refusal. Distinct from
+/// [`ERR_MAIL_SEND_FAILED`] because the answer is different: waiting fixes this
+/// one, and retrying immediately only spends the next window.
+pub const ERR_MAIL_RATE_LIMITED: i32 = -55;
+
 // =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)
 // =============================================================================

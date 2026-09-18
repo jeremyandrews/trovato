@@ -11,6 +11,7 @@ weight = 0
 
 # `queue` grants the push/enqueue host imports (tap_cron exercises the additive
 # `enqueue`); `logging` is present because the #[plugin_tap] macro references the
-# logging import on its error paths.
+# logging import on its error paths; `mail` is what the `"mail"` payload calls,
+# so the suite can see what a plugin sending mail from a queue worker is told.
 [capabilities]
-host_interfaces = ["logging", "queue"]
+host_interfaces = ["logging", "queue", "mail"]

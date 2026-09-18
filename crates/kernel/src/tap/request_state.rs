@@ -163,6 +163,16 @@ pub struct RequestServices {
     /// paths; `None` in serviceless and test contexts, where the host function
     /// reports it rather than pretending to send.
     pub email: Option<Arc<crate::services::email::EmailService>>,
+
+    /// The site's rate limiter, for the per-plugin `mail` bucket.
+    ///
+    /// Carried on **every** dispatch path rather than only the request one,
+    /// because the bucket it serves is checked inside the `mail` host function
+    /// and has to apply from `tap_cron` and `tap_queue_worker` too. `None` in
+    /// serviceless and test contexts, where the host function allows the send:
+    /// the limiter fails open on a Redis error for the same reason, and a mail
+    /// bucket that refuses when it cannot count would take mail down with Redis.
+    pub rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
 }
 
 impl RequestServices {
@@ -186,6 +196,7 @@ impl RequestServices {
             plugin_runtime: None,
             field_access_cache: Arc::new(new_field_access_cache()),
             email: None,
+            rate_limiter: None,
         }
     }
 
@@ -206,6 +217,7 @@ impl RequestServices {
             plugin_runtime: None,
             field_access_cache: Arc::new(new_field_access_cache()),
             email: None,
+            rate_limiter: None,
         }
     }
 
@@ -238,6 +250,17 @@ impl RequestServices {
     #[must_use]
     pub fn with_email(mut self, email: Arc<crate::services::email::EmailService>) -> Self {
         self.email = Some(email);
+        self
+    }
+
+    /// Attach the site's rate limiter, arming the per-plugin `mail` bucket.
+    ///
+    /// Builder-style, applied on the `AppState` template and on every background
+    /// dispatch path. Without it the `mail` host function is unbounded, which is
+    /// what this exists to stop.
+    #[must_use]
+    pub fn with_rate_limiter(mut self, limiter: Arc<crate::middleware::RateLimiter>) -> Self {
+        self.rate_limiter = Some(limiter);
         self
     }
 

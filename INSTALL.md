@@ -115,6 +115,7 @@ compiled default stands.
 | `recovery` | 5 / 15 minutes | Account recovery, per IP and per account |
 | `comment` | 4 / minute | Comment writes |
 | `data_export` | 1 / hour | Personal-data export downloads |
+| `mail` | 100 / hour | Mail a plugin sends through the `mail` host interface. Keyed **per plugin**, not per client, and checked on every path — a request, `tap_cron`, `tap_queue_worker`, `tap_install` — because the mailbox being protected is the site's own. |
 
 For example, to serve a site whose pages carry an unusual number of assets:
 
