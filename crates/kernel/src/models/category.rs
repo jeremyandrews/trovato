@@ -54,9 +54,11 @@ pub struct Tag {
     pub weight: i16,
 
     /// Unix timestamp when created.
+    #[serde(default = "crate::models::unix_now")]
     pub created: i64,
 
     /// Unix timestamp when last changed.
+    #[serde(default = "crate::models::unix_now")]
     pub changed: i64,
 }
 

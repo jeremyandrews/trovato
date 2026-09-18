@@ -111,9 +111,11 @@ pub struct Stage {
     pub weight: i16,
 
     /// Unix timestamp when created (category_tag.created).
+    #[serde(default = "crate::models::unix_now")]
     pub created: i64,
 
     /// Unix timestamp when last changed (category_tag.changed).
+    #[serde(default = "crate::models::unix_now")]
     pub changed: i64,
 }
 

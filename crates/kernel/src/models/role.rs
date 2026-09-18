@@ -84,6 +84,9 @@ pub fn permission_diff(current: &[String], desired: &[String]) -> (Vec<String>, 
 pub struct Role {
     pub id: Uuid,
     pub name: String,
+    /// Defaults to the time of deserialization, so a hand-written config file
+    /// may omit it the way it may for every other config entity.
+    #[serde(default = "Utc::now")]
     pub created: DateTime<Utc>,
 }
 

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Fix: a hand-written config file may omit `created` and `changed`.
+
+  Only `ConfigItem` gave its timestamps a serde default. `Role`, `Tag`,
+  `UrlAlias`, `Stage`, `Tile` and `MenuLink` declared `created` as a plain
+  required field, and all but `UrlAlias` required `changed` too, so a file
+  written by hand without them failed to deserialize. Config import validates
+  the whole set before it writes anything, so that one file stopped every other
+  file in the set from importing. The report named roles; the same fault was in
+  five more entity types.
+
+  Each of those fields now defaults to the time of deserialization
+  (`models::unix_now`, and `Utc::now` for a role, whose `created` is a
+  timestamp rather than an integer). Storage never overwrites an existing row's
+  `created` on re-import, so the default only dates new rows.
+
+  Import stays atomic on purpose: a file that is genuinely wrong is named in the
+  error and nothing is written. `config_import_test` imports one file of each of
+  the six types with no timestamps and checks each row is stamped with the
+  import time, and pins that a bad role file is reported by name with its valid
+  sibling left unwritten. The role/everything-else timestamp type mismatch in
+  BL-11 is still open.
+
 - Fix: config import sets an item's `promote` and `sticky`, and updates
   `created` on re-import.
 

@@ -28,6 +28,7 @@ pub struct UrlAlias {
     pub stage_id: Uuid,
 
     /// Unix timestamp when created.
+    #[serde(default = "crate::models::unix_now")]
     pub created: i64,
 }
 
