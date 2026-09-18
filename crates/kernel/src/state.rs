@@ -303,6 +303,37 @@ impl AppState {
         let redis = RedisClient::open(config.redis_url.as_str())
             .context("failed to create Redis client")?;
 
+        // Create the rate limiter here, before anything that dispatches to a
+        // plugin: the per-plugin `mail` bucket is checked inside the host
+        // function, so every dispatch path has to be able to carry the
+        // limiter, the boot-time `tap_install` spawn below included.
+        //
+        // Trusted proxies (whose X-Forwarded-For is
+        // believed) are parsed once by `Config::from_env` from TRUSTED_PROXIES;
+        // an empty list ⇒ trust none (RATE-1).
+        //
+        // Each bucket starts at its compiled default and is then overridden by
+        // `TROVATO_RATE_LIMIT_<BUCKET>` or the `rate_limit.<bucket>` site config
+        // key, environment first. Resolved once here: a site config edit takes
+        // effect on the next restart, which is the same as every other setting
+        // `AppState::new` reads.
+        let mut rate_limit_config = RateLimitConfig::default();
+        let stored_limits = load_rate_limit_overrides(&db).await;
+        rate_limit_config.apply_overrides(&|key| std::env::var(key).ok(), &|key| {
+            stored_limits.get(key).cloned()
+        });
+        // Uploaded files are static assets too, and `FILES_URL` decides where
+        // they are served from, so the bucket has to follow it rather than assume
+        // the default.
+        let rate_limiter = Arc::new(
+            RateLimiter::new(
+                redis.clone(),
+                rate_limit_config,
+                config.trusted_proxies.clone(),
+            )
+            .with_static_prefixes(&["/static", config.files_url.as_str()]),
+        );
+
         // Test Redis connection
         let mut conn = redis
             .get_multiplexed_async_connection()
@@ -436,6 +467,7 @@ impl AppState {
         if !pending.is_empty() {
             let tap_install_db = db.clone();
             let tap_install_dispatcher = tap_dispatcher.clone();
+            let tap_install_limiter = rate_limiter.clone();
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
                 for plugin_name in &pending {
@@ -447,7 +479,8 @@ impl AppState {
                             None,
                             http.clone(),
                         )
-                        .with_plugin_runtime(tap_install_dispatcher.runtime().clone()),
+                        .with_plugin_runtime(tap_install_dispatcher.runtime().clone())
+                        .with_rate_limiter(tap_install_limiter.clone()),
                     );
                     // dispatch_to_plugin returns None when the plugin does not
                     // export tap_install (harmless) OR when the WASM call fails
@@ -769,7 +802,10 @@ impl AppState {
         // Attach the runtime so plugin host functions can invoke other plugins
         // (FR-4a). Cloned into item/user/comment services below, so they inherit it.
         .with_plugin_runtime(plugin_runtime.clone())
-        .with_field_access_cache(field_access_cache);
+        .with_field_access_cache(field_access_cache)
+        // Arms the per-plugin `mail` bucket on every request-path dispatch; the
+        // cron and queue-worker paths get it from `CronService` below.
+        .with_rate_limiter(rate_limiter.clone());
         if let Some(ref email) = email {
             tap_services = tap_services.with_email(email.clone());
         }
@@ -809,32 +845,6 @@ impl AppState {
 
         // Create metrics
         let metrics = Arc::new(Metrics::new());
-
-        // Create rate limiter. Trusted proxies (whose X-Forwarded-For is
-        // believed) are parsed once by `Config::from_env` from TRUSTED_PROXIES;
-        // an empty list ⇒ trust none (RATE-1).
-        //
-        // Each bucket starts at its compiled default and is then overridden by
-        // `TROVATO_RATE_LIMIT_<BUCKET>` or the `rate_limit.<bucket>` site config
-        // key, environment first. Resolved once here: a site config edit takes
-        // effect on the next restart, which is the same as every other setting
-        // `AppState::new` reads.
-        let mut rate_limit_config = RateLimitConfig::default();
-        let stored_limits = load_rate_limit_overrides(&db).await;
-        rate_limit_config.apply_overrides(&|key| std::env::var(key).ok(), &|key| {
-            stored_limits.get(key).cloned()
-        });
-        // Uploaded files are static assets too, and `FILES_URL` decides where
-        // they are served from, so the bucket has to follow it rather than assume
-        // the default.
-        let rate_limiter = Arc::new(
-            RateLimiter::new(
-                redis.clone(),
-                rate_limit_config,
-                config.trusted_proxies.clone(),
-            )
-            .with_static_prefixes(&["/static", config.files_url.as_str()]),
-        );
 
         // Create batch service
         let batch = Arc::new(BatchService::new(redis.clone()));
@@ -975,6 +985,9 @@ impl AppState {
         // Wire plugin services into cron
         cron.set_plugin_services(content_lock.clone(), audit.clone());
         cron.set_email_service(email.clone());
+        // The per-plugin `mail` bucket has to apply from `tap_cron` and
+        // `tap_queue_worker`, not only from a request.
+        cron.set_rate_limiter(rate_limiter.clone());
         cron.set_tap_dispatcher(tap_dispatcher.clone());
         cron.set_ai_providers(ai_providers.clone());
         cron.set_ai_budgets(ai_budgets.clone());

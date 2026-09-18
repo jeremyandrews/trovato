@@ -19,12 +19,18 @@
 //!   is no recipient to fall back to, and the call is refused rather than
 //!   guessing at one (the `from` address is a transport identity, not a contact
 //!   address).
-//! - **A plugin can still be a nuisance.** Nothing here bounds how often a
-//!   plugin calls this, so a plugin in a loop can fill the site owner's mailbox.
-//!   The web-facing case is bounded by the `forms` rate-limit bucket every
-//!   plugin-served POST already falls into (`middleware::rate_limit`); a plugin
-//!   calling from a cron tap is not bounded, and is recorded in KNOWN-ISSUES.md
-//!   rather than half-gated here.
+//! - **How often a plugin may send is bounded, on every path.** The `mail`
+//!   rate-limit bucket is checked here, in the host function, keyed by plugin:
+//!   100 messages an hour by default, configurable like every other bucket
+//!   (`TROVATO_RATE_LIMIT_MAIL`, or the `rate_limit.mail` site config key).
+//!
+//!   In the host function rather than in the middleware because the middleware
+//!   only sees requests. The web-facing POST was already bounded by the `forms`
+//!   bucket per client IP, and a plugin calling from `tap_cron` or
+//!   `tap_queue_worker` was bounded by nothing at all. Keying by plugin rather
+//!   than by client is deliberate: what is being protected is one mailbox, the
+//!   site's own, so a plugin in a loop floods it regardless of who set it going,
+//!   and a per-IP bound cannot see that.
 //!
 //! # Delivery
 //!
@@ -112,6 +118,26 @@ pub fn register_mail_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     };
                     let plugin_name = caller.data().plugin_name.clone();
                     let db = services.db.clone();
+
+                    // Bound before anything else is decided, so the answer does
+                    // not depend on which path the call arrived on. Checking
+                    // after the SMTP-handle test would make a background caller
+                    // report "no SMTP host" forever and never reach its own
+                    // limit; checking after validation would let a plugin spend
+                    // the window on malformed requests.
+                    if let Some(limiter) = services.rate_limiter.clone()
+                        && let Err(retry_after) = limiter
+                            .check("mail", &format!("plugin:{plugin_name}"))
+                            .await
+                    {
+                        warn!(
+                            plugin = %plugin_name,
+                            retry_after_secs = retry_after,
+                            "plugin mail refused: the plugin has sent as much as its bucket allows"
+                        );
+                        return host_errors::ERR_MAIL_RATE_LIMITED;
+                    }
+
                     let Some(email) = services.email.clone() else {
                         warn!(
                             plugin = %plugin_name,

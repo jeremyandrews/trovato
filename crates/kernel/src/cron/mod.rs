@@ -207,6 +207,7 @@ async fn run_queue_job(
     ai_providers: Option<Arc<AiProviderService>>,
     ai_budgets: Option<Arc<AiTokenBudgetService>>,
     http: reqwest::Client,
+    rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
     plugin_name: String,
     job: ClaimedJob,
 ) -> Result<JobOutcome> {
@@ -215,11 +216,15 @@ async fn run_queue_job(
 
     // P11c / D-40: queue-worker dispatch carries the kernel-internal background
     // principal so a plugin holding `ai_background` may call AI from the worker.
-    let state = RequestState::new(
-        crate::tap::UserContext::background(),
+    let mut services =
         crate::tap::RequestServices::for_background(pool.clone(), ai_providers, ai_budgets, http)
-            .with_plugin_runtime(dispatcher.runtime().clone()),
-    );
+            .with_plugin_runtime(dispatcher.runtime().clone());
+    // The per-plugin `mail` bucket has to bound a queue worker too, which is
+    // the path nothing bounded before.
+    if let Some(limiter) = rate_limiter {
+        services = services.with_rate_limiter(limiter);
+    }
+    let state = RequestState::new(crate::tap::UserContext::background(), services);
 
     let dispatched = dispatcher
         .dispatch_to_plugin("tap_queue_worker", &input_json, &plugin_name, state)
@@ -467,6 +472,10 @@ pub struct CronService {
     /// Defaults to `./static` so a harness without a `Config` still has a
     /// destination; `apply_runtime_config` sets it from the static search path.
     pagefind_static_dir: PathBuf,
+    /// The site's rate limiter, threaded into background dispatch so the
+    /// per-plugin `mail` bucket applies from `tap_cron` and `tap_queue_worker`
+    /// and not only from a request.
+    rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
 }
 
 impl CronService {
@@ -486,6 +495,7 @@ impl CronService {
             http: build_http_client(),
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
+            rate_limiter: None,
         }
     }
 
@@ -505,7 +515,17 @@ impl CronService {
             http: build_http_client(),
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
+            rate_limiter: None,
         }
+    }
+
+    /// Attach the site's rate limiter, arming the per-plugin `mail` bucket on
+    /// the cron and queue-worker paths.
+    ///
+    /// Without it a plugin calling `mail` from a background tap is unbounded,
+    /// which is the gap this closes.
+    pub fn set_rate_limiter(&mut self, limiter: Arc<crate::middleware::RateLimiter>) {
+        self.rate_limiter = Some(limiter);
     }
 
     /// Configure the update check, or disable it with `None`.
@@ -747,13 +767,7 @@ impl CronService {
                 // reaches a web/session context.
                 let state = RequestState::new(
                     crate::tap::UserContext::background(),
-                    crate::tap::RequestServices::for_background(
-                        self.pool.clone(),
-                        self.ai_providers.clone(),
-                        self.ai_budgets.clone(),
-                        self.http.clone(),
-                    )
-                    .with_plugin_runtime(dispatcher.runtime().clone()),
+                    self.background_services(dispatcher),
                 );
                 match tokio::time::timeout(
                     Duration::from_secs(LOCK_TTL_SECS / 2),
@@ -1000,9 +1014,20 @@ impl CronService {
                     let ai_providers = self.ai_providers.clone();
                     let ai_budgets = self.ai_budgets.clone();
                     let http = self.http.clone();
+                    let limiter = self.rate_limiter.clone();
                     let plugin = plugin_name.clone();
                     set.spawn(async move {
-                        run_queue_job(pool, disp, ai_providers, ai_budgets, http, plugin, job).await
+                        run_queue_job(
+                            pool,
+                            disp,
+                            ai_providers,
+                            ai_budgets,
+                            http,
+                            limiter,
+                            plugin,
+                            job,
+                        )
+                        .await
                     });
                 }
 
@@ -1178,14 +1203,27 @@ impl CronService {
     fn background_state(&self, dispatcher: &Arc<TapDispatcher>) -> RequestState {
         RequestState::new(
             crate::tap::UserContext::background(),
-            crate::tap::RequestServices::for_background(
-                self.pool.clone(),
-                self.ai_providers.clone(),
-                self.ai_budgets.clone(),
-                self.http.clone(),
-            )
-            .with_plugin_runtime(dispatcher.runtime().clone()),
+            self.background_services(dispatcher),
         )
+    }
+
+    /// The services every background dispatch from this service carries.
+    ///
+    /// One builder for `tap_cron` and `tap_queue_worker` both, so the per-plugin
+    /// `mail` bucket cannot be armed on one background path and missing from the
+    /// other.
+    fn background_services(&self, dispatcher: &Arc<TapDispatcher>) -> crate::tap::RequestServices {
+        let mut services = crate::tap::RequestServices::for_background(
+            self.pool.clone(),
+            self.ai_providers.clone(),
+            self.ai_budgets.clone(),
+            self.http.clone(),
+        )
+        .with_plugin_runtime(dispatcher.runtime().clone());
+        if let Some(limiter) = self.rate_limiter.clone() {
+            services = services.with_rate_limiter(limiter);
+        }
+        services
     }
 
     /// Load the resident queue-runner config from `site_config` (default off).

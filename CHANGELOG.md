@@ -34,6 +34,31 @@
   within the same minor series; the `Security Audit` CI job is the regression
   guard, and it fails against the old lockfile.
 
+- Fix: plugin mail is rate limited on every path, not only the web-facing one.
+
+  The `mail` host interface bounds who a plugin may write to — the site's own
+  contact address and nothing else — but not how often. The web-facing case was
+  covered incidentally, because a plugin-served POST falls into the `forms`
+  bucket per client IP; a plugin calling `mail` from `tap_cron` or
+  `tap_queue_worker` fell into nothing, because the rate limiter only ever saw
+  requests and background dispatch never carried it.
+
+  There is now a `mail` bucket, 100 messages an hour, checked inside the host
+  function so it applies wherever the call comes from. It is keyed **per plugin**
+  rather than per client: the mailbox being protected is the site's own, so a
+  plugin in a loop floods it regardless of who set it going, and a per-IP bound
+  cannot see that. Configurable like every other bucket, through
+  `TROVATO_RATE_LIMIT_MAIL` or the `rate_limit.mail` site config key.
+
+  The check runs before the SMTP-handle test and before payload validation, so
+  the answer does not depend on which path the call arrived on, and a plugin
+  cannot spend its window on malformed requests. A refusal returns the new
+  additive `ERR_MAIL_RATE_LIMITED` (-55), distinct from `ERR_MAIL_SEND_FAILED`
+  because the remedy is different: waiting fixes this one.
+
+  The rate limiter is now built early enough in `AppState::new` to reach every
+  dispatch path, and is threaded through `CronService` into both background taps.
+
 - Fix: static assets are no longer rate limited as API calls.
 
   `categorize_path` had no branch for an asset path, so a GET of a stylesheet,

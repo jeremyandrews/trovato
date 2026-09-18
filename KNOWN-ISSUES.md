@@ -298,20 +298,25 @@ entry cannot drift out of date without a test failing.
 ### A plugin's outgoing mail works only while serving a request
 
 The `mail` host interface refuses to send anywhere except the site's own contact
-address, so it cannot be used to reach strangers. It does not bound how *often* a
-plugin sends.
+address, so it cannot be used to reach strangers.
 
-The web-facing case is covered: a plugin-served POST falls into the `forms`
-rate-limit bucket per client IP like any other form post, so a contact form cannot
-flood the site owner faster than that bucket allows.
+How *often* a plugin may send is now bounded on every path by the `mail`
+rate-limit bucket, checked inside the host function and keyed by plugin: 100
+messages an hour by default, configurable like every other bucket
+(`TROVATO_RATE_LIMIT_MAIL`, or the `rate_limit.mail` site config key). Keyed by
+plugin rather than by client because the mailbox being protected is the site's
+own, which a plugin in a loop floods regardless of who set it going. It is checked
+before the SMTP-handle test, so the answer does not depend on which path the call
+arrived on.
 
-The unbounded case this entry used to describe, a plugin sending from a cron tap or
-a queue worker, cannot happen, for a worse reason: background dispatch builds its
-services without the email handle (`RequestServices::for_background` in
+What remains is the *delivery* half: background dispatch builds its services
+without the email handle (`RequestServices::for_background` in
 `crates/kernel/src/tap/request_state.rs`), so plugin mail from `tap_cron` or
-`tap_queue_worker` always fails with `ERR_MAIL_NOT_CONFIGURED` and logs that the
-site has no SMTP host, whether it has one or not. Enabling background mail is what
-would then need a limit. See BL-72 in [docs/BACKLOG.md](docs/BACKLOG.md).
+`tap_queue_worker` still fails with `ERR_MAIL_NOT_CONFIGURED` and logs that the
+site has no SMTP host, whether it has one or not. The limit that enabling
+background mail would need is therefore already in place and tested
+(`crates/kernel/tests/plugin_mail_rate_limit_test.rs`); enabling the delivery is
+BL-72 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
 ## Contract and versioning
 

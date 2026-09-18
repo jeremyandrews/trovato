@@ -107,6 +107,24 @@ pub struct RateLimitConfig {
     /// for a favicon. The default is deliberately an order of magnitude above the
     /// generic bucket: it exists to bound a scraper, not to ration a page load.
     pub static_assets: (u32, Duration),
+
+    /// Mail a plugin sends through the `mail` host interface, per plugin.
+    ///
+    /// Not a path bucket: nothing categorizes a request into it. It is checked
+    /// inside the host function, so it applies on **every** path a plugin can
+    /// call `mail` from — a request, `tap_cron`, `tap_queue_worker`,
+    /// `tap_install` — not only the web-facing POST the `forms` bucket already
+    /// bounds per IP.
+    ///
+    /// Keyed by plugin rather than by client, because the thing bounded is what
+    /// arrives in one mailbox: the interface sends only to the site's own contact
+    /// address, so a plugin in a loop fills the site owner's inbox no matter who,
+    /// or what, set it going. A per-IP bound cannot see that.
+    ///
+    /// An hour rather than a minute, because the runaway this stops would send
+    /// thousands, and a limit measured per minute would still let one through
+    /// every minute all day.
+    pub mail: (u32, Duration),
 }
 
 /// Every rate-limit bucket, by the name used to key it, configure it and
@@ -115,7 +133,7 @@ pub struct RateLimitConfig {
 /// The one list: [`RateLimitConfig::bucket`] and its private `bucket_mut` twin
 /// resolve each of these to a field, and `every_bucket_resolves_to_a_field` fails
 /// if a name here has no field behind it.
-pub const BUCKETS: [&str; 16] = [
+pub const BUCKETS: [&str; 17] = [
     "login",
     "forms",
     "api",
@@ -132,6 +150,7 @@ pub const BUCKETS: [&str; 16] = [
     "search_summarize",
     "search_followup",
     "static",
+    "mail",
 ];
 
 /// Path prefixes served as static assets.
@@ -172,6 +191,7 @@ impl Default for RateLimitConfig {
             search_summarize: (10, Duration::from_secs(60)), // 10 per minute
             search_followup: (5, Duration::from_secs(60)), // 5 per minute
             static_assets: (2000, Duration::from_secs(60)), // 2000 per minute
+            mail: (100, Duration::from_secs(3600)),       // 100 per hour, per plugin
         }
     }
 }
@@ -196,6 +216,7 @@ impl RateLimitConfig {
             "search_summarize" => self.search_summarize,
             "search_followup" => self.search_followup,
             "static" => self.static_assets,
+            "mail" => self.mail,
             _ => return None,
         })
     }
@@ -219,6 +240,7 @@ impl RateLimitConfig {
             "search_summarize" => &mut self.search_summarize,
             "search_followup" => &mut self.search_followup,
             "static" => &mut self.static_assets,
+            "mail" => &mut self.mail,
             _ => return None,
         })
     }
@@ -919,6 +941,65 @@ mod tests {
         assert!(
             page_view * 5 > config.api.0 / 2,
             "sanity: the old shared-bucket arithmetic is why this bucket exists"
+        );
+    }
+
+    // --- the mail bucket ---
+
+    /// `mail` is a bucket like any other — configurable, with its own limit — but
+    /// unlike the rest it is never reached by categorizing a path.
+    #[test]
+    fn mail_is_a_bucket_but_not_a_path_category() {
+        let config = RateLimitConfig::default();
+        assert!(config.bucket("mail").is_some(), "mail has its own limit");
+        assert_eq!(bucket_env_key("mail"), "TROVATO_RATE_LIMIT_MAIL");
+        assert_eq!(bucket_config_key("mail"), "rate_limit.mail");
+        assert!(
+            BUCKETS.contains(&"mail"),
+            "or it would not be configurable with the others"
+        );
+
+        // Nothing routes into it: it is checked inside the mail host function,
+        // which is how it reaches cron and the queue worker as well as a request.
+        for (path, method) in [
+            ("/mail", "GET"),
+            ("/mail", "POST"),
+            ("/api/mail", "POST"),
+            ("/some/page", "GET"),
+        ] {
+            assert_ne!(
+                categorize_path(path, method),
+                "mail",
+                "{method} {path} must not be categorized into the mail bucket"
+            );
+        }
+    }
+
+    /// The window is an hour, not a minute: the runaway this stops would send
+    /// thousands, and a per-minute limit would still let one through every
+    /// minute all day.
+    #[test]
+    fn the_mail_bucket_is_measured_over_an_hour() {
+        let config = RateLimitConfig::default();
+        assert_eq!(config.mail.1, Duration::from_secs(3600));
+        assert!(
+            config.mail.0 >= 1,
+            "a limit of zero would refuse a site's own contact form"
+        );
+    }
+
+    #[test]
+    fn the_mail_limit_is_overridable_like_the_others() {
+        let mut config = RateLimitConfig::default();
+        config.apply_overrides(
+            &|key| (key == "TROVATO_RATE_LIMIT_MAIL").then(|| "5".to_string()),
+            &|_| None,
+        );
+        assert_eq!(config.mail.0, 5);
+        assert_eq!(
+            config.mail.1,
+            Duration::from_secs(3600),
+            "the window survives an override"
         );
     }
 

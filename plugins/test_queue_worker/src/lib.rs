@@ -14,7 +14,10 @@
 //!   `"trap"` panics (a WASM trap → a *failed attempt*, not a lost item);
 //!   `"error"` returns an error-shaped JSON body (a *successful* dispatch under
 //!   the drain's contract — proving error-JSON is not retried, preserving the
-//!   reference importer's semantics); anything else returns success.
+//!   reference importer's semantics); `"mail"` calls the `mail` host interface
+//!   and reports the code it got back, so the suite can see what a plugin
+//!   sending mail from a queue worker is actually told; anything else returns
+//!   success.
 //! - `tap_cron` enqueues two jobs through the additive `enqueue` host function
 //!   (one high-priority, one delayed) so the suite can verify priority and
 //!   delay reach `plugin_queue`.
@@ -46,11 +49,35 @@ fn tap_queue_info() -> serde_json::Value {
 ///   dispatch (positive-length output), so the drain deletes it — matching how
 ///   the reference importer's `{"status":"error"}` returns behave;
 /// - anything else → succeed.
+/// - `"mail"` → call the `mail` host interface and return whatever it said. The
+///   code is reported rather than swallowed so the suite can tell a rate-limit
+///   refusal from any other, which is the whole point of the per-plugin mail
+///   bucket applying on this path.
 #[plugin_tap]
 fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
     match input.get("outcome").and_then(|v| v.as_str()) {
         Some("trap") => panic!("test_queue_worker: intentional trap"),
         Some("error") => json!({ "status": "error", "reason": "intentional" }),
+        Some("mail") => {
+            let code = match trovato_sdk::host::mail_send_to_site_contacts(
+                "queue worker mail",
+                "sent from tap_queue_worker",
+                &[],
+            ) {
+                Ok(()) => 0,
+                Err(code) => code,
+            };
+            // The drain deletes a succeeding job and keeps no record of what it
+            // returned, so a payload that states the expected code makes the
+            // answer observable: match and the job succeeds, mismatch and this
+            // traps, which the drain records as a failed attempt.
+            if let Some(expected) = input.get("expect_code").and_then(|v| v.as_i64())
+                && i64::from(code) != expected
+            {
+                panic!("test_queue_worker: mail returned {code}, expected {expected}");
+            }
+            json!({ "status": "ok", "mail_code": code })
+        }
         _ => json!({ "status": "ok" }),
     }
 }
