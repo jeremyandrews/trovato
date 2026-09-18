@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Fix: item views no longer log an error from `trovato_blog`.
+
+  `trovato_blog.info.toml` listed `tap_item_view` in `[taps] implements`, and
+  the plugin's source has never exported it. The kernel registers a handler for
+  every declared tap without checking the module's exports, and only finds the
+  function missing when it dispatches, so every item view of any type
+  instantiated the blog module, found no export, and logged "tap invocation
+  failed". The blog renders items through templates and has no view hook to
+  offer, so the declaration is removed.
+
+  Nothing compared a manifest with the source it describes. A test in
+  `plugin_surfaces_test` now reads every in-tree plugin's manifest and requires
+  each declared tap to be exported, through `#[plugin_tap]`,
+  `#[plugin_tap_result]` or a hand-written `no_mangle` function. On the old
+  manifest it names `trovato_blog` and nothing else.
+
 - Fix: the two content translation admin pages render instead of answering 500.
 
   `routes/admin_translation.rs` renders `admin/content-translate-list.html` and

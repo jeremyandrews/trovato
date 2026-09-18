@@ -131,7 +131,7 @@ fn load_single_plugin() {
             .info
             .taps
             .implements
-            .contains(&"tap_item_view".to_string())
+            .contains(&"tap_item_access".to_string())
     );
 }
 
@@ -283,7 +283,7 @@ fn plugin_metadata_correct() {
             .info
             .taps
             .implements
-            .contains(&"tap_item_view".to_string())
+            .contains(&"tap_item_access".to_string())
     );
     assert!(
         plugin
@@ -332,10 +332,9 @@ fn tap_registry_indexes_taps() {
 
     let registry = TapRegistry::from_plugins(&runtime);
 
-    // Blog plugin registers 5 taps
-    assert_eq!(registry.tap_count(), 5);
+    // Blog plugin registers 4 taps
+    assert_eq!(registry.tap_count(), 4);
     assert!(registry.has_tap("tap_item_info"));
-    assert!(registry.has_tap("tap_item_view"));
     assert!(registry.has_tap("tap_item_access"));
     assert!(registry.has_tap("tap_menu"));
     assert!(registry.has_tap("tap_perm"));
@@ -361,7 +360,7 @@ fn tap_registry_handlers_in_weight_order() {
 
     let registry = TapRegistry::from_plugins(&runtime);
 
-    let handlers = registry.get_handlers("tap_item_view");
+    let handlers = registry.get_handlers("tap_item_access");
     assert_eq!(handlers.len(), 1);
     assert_eq!(handlers[0].plugin.info.name, "trovato_blog");
     assert_eq!(handlers[0].weight, 0);
