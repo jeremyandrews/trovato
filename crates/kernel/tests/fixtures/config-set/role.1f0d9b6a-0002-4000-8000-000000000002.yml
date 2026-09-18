@@ -1,0 +1,10 @@
+# A second role, with more than one permission, so the test asserts a list rather
+# than a single value. Every permission named here is a kernel permission:
+# import rejects one it has never seen, which is what it should do.
+id: 1f0d9b6a-0002-4000-8000-000000000002
+name: fixture_writer
+created: "2026-01-01T00:00:00Z"
+permissions:
+- access content
+- create content
+- edit own content

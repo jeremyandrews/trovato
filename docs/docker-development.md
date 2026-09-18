@@ -100,6 +100,12 @@ cargo run --release --bin trovato
 
 The dev container has everything needed to follow the tutorial:
 
+> The set under `docs/tutorial/config` is a frozen snapshot. Ritrovo's content
+> model moved to the Ritrovo repository at `demo/config/`
+> ([jeremyandrews/ritrovo#11](https://github.com/jeremyandrews/ritrovo/pull/11),
+> merged as `3322075`); this copy stays because the tutorial and the released
+> image still use it.
+
 ```bash
 # Import configuration
 cargo run --release --bin trovato -- config import docs/tutorial/config

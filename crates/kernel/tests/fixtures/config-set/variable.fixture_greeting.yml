@@ -1,0 +1,3 @@
+# A variable, so the entity type is exercised. Nothing reads this value.
+key: fixture_greeting
+value: hello

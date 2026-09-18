@@ -1771,72 +1771,69 @@ parents:
         assert!(result.is_err());
     }
 
+    /// A real config file off disk deserializes into a content type with its
+    /// field definitions intact.
+    ///
+    /// This read `docs/tutorial/config/item_type.conference.yml` until the
+    /// content model that file described moved to the Ritrovo repository
+    /// (`demo/config/`, jeremyandrews/ritrovo#11). A compile-time `include_str!`
+    /// of a file another project owns is a build that breaks when they rename a
+    /// field, so it reads the kernel's own fixture now. The tutorial's copy stays
+    /// on disk and is still shipped; it is simply not what this asserts on.
     #[test]
-    fn tutorial_conference_yaml_deserializes() {
-        let yaml = include_str!("../../../../docs/tutorial/config/item_type.conference.yml");
+    fn fixture_workshop_yaml_deserializes() {
+        let yaml = include_str!("../../tests/fixtures/config-set/item_type.workshop.yml");
         let parsed = deserialize_entity("item_type", yaml).unwrap();
         let (entity, tag_parents) = (parsed.entity, parsed.tag_parents);
         assert_eq!(entity.entity_type(), "item_type");
-        assert_eq!(entity.id(), "conference");
+        assert_eq!(entity.id(), "workshop");
         assert!(tag_parents.is_empty());
 
         let it = entity.as_item_type().expect("expected ItemType variant");
-        assert_eq!(it.label, "Conference");
+        assert_eq!(it.label, "Workshop");
         assert!(it.has_title);
-        assert_eq!(it.title_label.as_deref(), Some("Conference Name"));
+        assert_eq!(it.title_label.as_deref(), Some("Workshop Name"));
         assert_eq!(it.plugin, "core");
 
-        // Verify all 14 fields deserialize with correct types and required flags
         let fields: Vec<trovato_sdk::types::FieldDefinition> = it
             .settings
             .get("fields")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .expect("settings.fields should deserialize");
 
-        assert_eq!(fields.len(), 14, "expected 14 fields, got {}", fields.len());
+        assert_eq!(fields.len(), 4, "expected 4 fields, got {}", fields.len());
 
-        // Required fields
-        let start = fields
-            .iter()
-            .find(|f| f.field_name == "field_start_date")
-            .unwrap();
-        assert!(start.required, "field_start_date should be required");
-        let end = fields
-            .iter()
-            .find(|f| f.field_name == "field_end_date")
-            .unwrap();
-        assert!(end.required, "field_end_date should be required");
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|f| f.field_name == name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+                .clone()
+        };
 
-        // Non-required fields should default to false
-        let city = fields
-            .iter()
-            .find(|f| f.field_name == "field_city")
-            .unwrap();
-        assert!(!city.required, "field_city should not be required");
+        // `required: true` is carried, and its absence defaults to false rather
+        // than failing to parse.
+        let starts_on = field("field_starts_on");
+        assert!(starts_on.required, "field_starts_on should be required");
+        let summary = field("field_summary");
+        assert!(!summary.required, "field_summary should not be required");
 
-        // Verify field type variants
+        // One variant of each YAML shape: a tagged variant with a payload, and
+        // three unit variants.
         assert!(matches!(
-            start.field_type,
+            summary.field_type,
+            trovato_sdk::types::FieldType::Text { .. }
+        ));
+        assert!(matches!(
+            starts_on.field_type,
             trovato_sdk::types::FieldType::Date
         ));
         assert!(matches!(
-            city.field_type,
-            trovato_sdk::types::FieldType::Text { .. }
-        ));
-        let online = fields
-            .iter()
-            .find(|f| f.field_name == "field_online")
-            .unwrap();
-        assert!(matches!(
-            online.field_type,
+            field("field_remote").field_type,
             trovato_sdk::types::FieldType::Boolean
         ));
-        let desc = fields
-            .iter()
-            .find(|f| f.field_name == "field_description")
-            .unwrap();
         assert!(matches!(
-            desc.field_type,
+            field("field_notes").field_type,
             trovato_sdk::types::FieldType::Blocks
         ));
     }

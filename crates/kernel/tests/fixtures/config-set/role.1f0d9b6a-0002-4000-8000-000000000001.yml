@@ -1,0 +1,7 @@
+# A role holding one kernel permission. Import applies permissions, and it is the
+# only path that does, so a file skipped here is a role that never arrives.
+id: 1f0d9b6a-0002-4000-8000-000000000001
+name: fixture_reader
+created: "2026-01-01T00:00:00Z"
+permissions:
+- access content

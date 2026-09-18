@@ -1,0 +1,16 @@
+# A tile. `tile` was one of the entity types a skipped file used to lose
+# silently, so the test counts these.
+id: 1f0d9b6a-0005-4000-8000-000000000001
+machine_name: fixture_notice
+label: Fixture Notice
+region: sidebar
+tile_type: static
+config:
+  body: A fixture tile.
+visibility: {}
+weight: 0
+status: 1
+plugin: core
+stage_id: 1f0d9b6a-0003-4000-8000-000000000001
+created: 1767225600
+changed: 1767225600

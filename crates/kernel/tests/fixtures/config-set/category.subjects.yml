@@ -1,0 +1,6 @@
+# The fixture's category. hierarchy 2 so a tag may declare parents.
+id: subjects
+label: Subjects
+description: A fixture category, used only by the kernel's own tests
+hierarchy: 2
+weight: 0

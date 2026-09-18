@@ -1,0 +1,7 @@
+# The reference that makes this set indivisible: `bundle` has to resolve to an
+# item type, and the only one that carries it is item_type.workshop.yml, here.
+# Import the two apart and neither lands.
+id: 1f0d9b6a-0001-4000-8000-000000000001
+bundle: workshop
+field_name: field_summary
+weight: B

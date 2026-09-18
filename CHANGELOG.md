@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Tests: the kernel's config-import tests read a fixture the kernel owns, instead
+  of the tutorial's configuration set.
+
+  `docs/tutorial/config/` carried Ritrovo's content model as well as the
+  tutorial's, and that model has moved to the Ritrovo repository
+  (jeremyandrews/ritrovo#11, merged as `3322075`). Four kernel tests read the
+  directory: a unit test `include_str!`d `item_type.conference.yml`, so a rename
+  downstream would have stopped `cargo test --lib` compiling, and three
+  integration tests asserted the set's counts and its roles' exact permissions.
+
+  They now read `crates/kernel/tests/fixtures/config-set/`, thirteen files chosen
+  for the import behaviour each one pins rather than for what they model: a
+  `search_field_config` whose bundle resolves to an item type in the same set, a
+  tag resolving both its category and its parent, a menu link resolving another,
+  roles whose permissions import applies, and stages landing under the UUIDs their
+  files declare. Its README says what each file is for.
+
+  `docs/tutorial/config/` is unchanged and still shipped: the image copies it and
+  Parts 1 to 7 import it. Parts 2, 3, 4 and 7, the directory's own README and
+  `docs/docker-development.md` now say where the model went and that this copy is
+  a frozen snapshot. Nothing in the tutorial's instructions changes.
+
 - Security: rustls 0.23.37 -> 0.23.45 (and rustls-webpki 0.103.13 -> 0.103.15,
   which it requires), clearing RUSTSEC-2026-0285.
 

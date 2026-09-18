@@ -1,0 +1,33 @@
+# The fixture's content type.
+#
+# Read three ways: imported by config_import_test.rs, deserialized directly by
+# the `fixture_workshop_yaml_deserializes` unit test in
+# crates/kernel/src/config_storage/yaml.rs, and named as a `bundle` by the search
+# field config in this directory.
+#
+# The field list is chosen to cover the variants that have their own YAML shape:
+# a tagged variant with a payload (`Text`), three unit variants (`Date`,
+# `Boolean`, `Blocks`), and both a required and an optional field.
+type: workshop
+label: Workshop
+description: A fixture content type, used only by the kernel's own tests
+has_title: true
+title_label: Workshop Name
+plugin: core
+settings:
+  fields:
+  - field_name: field_summary
+    field_type:
+      Text:
+        max_length: null
+    label: Summary
+  - field_name: field_starts_on
+    field_type: Date
+    label: Starts On
+    required: true
+  - field_name: field_remote
+    field_type: Boolean
+    label: Remote
+  - field_name: field_notes
+    field_type: Blocks
+    label: Notes
