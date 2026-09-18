@@ -52,8 +52,8 @@ use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, Ur
 ///
 /// Lighter than the full `Item` model — includes only the fields
 /// that a site builder would define in a YAML file. Database-managed
-/// fields (promote, sticky, item_group_id, search_vector) are
-/// populated with defaults on import.
+/// fields (item_group_id, search_vector) are populated with defaults on
+/// import.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
     /// Item UUID. If provided, used as-is; if absent, generated on import.
@@ -78,6 +78,14 @@ pub struct ConfigItem {
     /// Dynamic fields as key-value pairs.
     #[serde(default)]
     pub fields: serde_json::Value,
+
+    /// Promote to the front page (default: false).
+    #[serde(default)]
+    pub promote: bool,
+
+    /// Sticky at the top of lists (default: false).
+    #[serde(default)]
+    pub sticky: bool,
 
     /// Unix timestamp when created (default: current time).
     #[serde(default)]

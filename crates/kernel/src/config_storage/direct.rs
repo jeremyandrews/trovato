@@ -715,6 +715,8 @@ impl DirectConfigStorage {
                 language: r.language,
                 status: r.status,
                 fields: r.fields.clone(),
+                promote: r.promote != 0,
+                sticky: r.sticky != 0,
                 created: r.created,
                 changed: r.changed,
             })
@@ -722,24 +724,30 @@ impl DirectConfigStorage {
     }
 
     /// Save (upsert) an item from config.
+    ///
+    /// `promote`, `sticky` and `created` come from the file and are updated on
+    /// re-import, like the other fields the file owns. A file that omits
+    /// `created` inserts with the current time and, on re-import, keeps the
+    /// stored value: an absent timestamp is not a claim that the item was
+    /// created just now.
     async fn save_item(&self, item: &ConfigItem) -> Result<()> {
-        let now = if item.created > 0 {
-            item.created
-        } else {
-            chrono::Utc::now().timestamp()
-        };
+        let declared_created = (item.created > 0).then_some(item.created);
+        let now = declared_created.unwrap_or_else(|| chrono::Utc::now().timestamp());
         let changed = if item.changed > 0 { item.changed } else { now };
 
         sqlx::query(
             r#"
             INSERT INTO item (id, type, title, author_id, status, fields, created, changed,
                               promote, sticky, stage_id, language, item_group_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (id) DO UPDATE SET
                 title = EXCLUDED.title,
                 fields = EXCLUDED.fields,
                 status = EXCLUDED.status,
                 language = EXCLUDED.language,
+                promote = EXCLUDED.promote,
+                sticky = EXCLUDED.sticky,
+                created = COALESCE($14, item.created),
                 changed = EXCLUDED.changed
             "#,
         )
@@ -751,9 +759,12 @@ impl DirectConfigStorage {
         .bind(&item.fields)
         .bind(now)
         .bind(changed)
+        .bind(i16::from(item.promote))
+        .bind(i16::from(item.sticky))
         .bind(crate::models::stage::LIVE_STAGE_ID)
         .bind(&item.language)
         .bind(Uuid::now_v7()) // item_group_id
+        .bind(declared_created)
         .execute(&self.pool)
         .await
         .context("failed to save item")?;
@@ -810,6 +821,8 @@ impl DirectConfigStorage {
                     language: r.language,
                     status: r.status,
                     fields: r.fields.clone(),
+                    promote: r.promote != 0,
+                    sticky: r.sticky != 0,
                     created: r.created,
                     changed: r.changed,
                 })

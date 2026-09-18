@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Fix: config import sets an item's `promote` and `sticky`, and updates
+  `created` on re-import.
+
+  `ConfigItem` had no `promote` or `sticky` field, so a file that declared them
+  parsed cleanly and the values were silently dropped; `save_item` in
+  `config_storage/direct.rs` then bound both as literal `0, 0` in the INSERT
+  and left them, and `created`, out of `ON CONFLICT DO UPDATE`. No config file
+  could put an item on the front page or pin it, and a corrected creation time
+  never reached an item that already existed.
+
+  `ConfigItem` now carries both flags (default false), export writes them, and
+  the upsert takes all three from the file. A file that omits `created` still
+  inserts with the current time and, on re-import, keeps the stored value, since
+  an absent timestamp is not a claim that the item was created now. `changed`
+  is unchanged. `item_import_sets_promote_sticky_and_created_and_updates_them`
+  covers insert, re-import, an omitted `created`, and the export round trip.
+
 - Tests: the kernel's config-import tests read a fixture the kernel owns, instead
   of the tutorial's configuration set.
 

@@ -1340,3 +1340,95 @@ async fn roles_arrive_with_their_permissions() {
 
     db.cleanup().await;
 }
+
+// The `item` config entity bound `promote` and `sticky` as literal zeros in its
+// INSERT and left them, and `created`, out of `ON CONFLICT DO UPDATE`. A file
+// could not promote an item to the front page or pin it, and a corrected
+// `created` never reached an item that already existed.
+
+/// Read back an imported item's promote, sticky and created.
+async fn item_flags(db: &ScratchDb, id: &str) -> (i16, i16, i64) {
+    sqlx::query_as("SELECT promote, sticky, created FROM item WHERE id = $1")
+        .bind(id.parse::<uuid::Uuid>().unwrap())
+        .fetch_one(db.pool())
+        .await
+        .expect("the item landed")
+}
+
+/// `promote`, `sticky` and `created` come from the file on insert and on re-import.
+#[tokio::test]
+async fn item_import_sets_promote_sticky_and_created_and_updates_them() {
+    let db = ScratchDb::new("itemflags").await;
+    let storage = db.storage();
+    let id = "0193a5a0-0006-7000-8000-0000000000a1";
+    let file = format!("item.{id}.yml");
+    let dir = TempConfigDir::new("itemflags");
+
+    // Insert: both flags on, an explicit creation time.
+    dir.write(
+        &file,
+        &format!(
+            "id: {id}\ntype: page\ntitle: Flagged\npromote: true\nsticky: true\n\
+             created: 1767225600\n"
+        ),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the item must import clean: {e:#}");
+    }
+    assert_eq!(
+        item_flags(&db, id).await,
+        (1, 1, 1_767_225_600),
+        "insert must take promote, sticky and created from the file"
+    );
+
+    // Re-import: promote turned off, sticky omitted (defaults to false), a
+    // corrected creation time.
+    dir.write(
+        &file,
+        &format!("id: {id}\ntype: page\ntitle: Flagged\npromote: false\ncreated: 1735689600\n"),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the re-import must succeed: {e:#}");
+    }
+    assert_eq!(
+        item_flags(&db, id).await,
+        (0, 0, 1_735_689_600),
+        "re-import must update promote, sticky and created"
+    );
+
+    // Re-import without `created`: the stored creation time must survive, since
+    // an absent timestamp is not a claim that the item was created just now.
+    dir.write(&file, &format!("id: {id}\ntype: page\ntitle: Flagged\n"));
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the third import must succeed: {e:#}");
+    }
+    assert_eq!(
+        item_flags(&db, id).await.2,
+        1_735_689_600,
+        "a file without created must not overwrite the stored creation time"
+    );
+
+    // Export carries the flags, so an export/import round trip keeps them.
+    dir.write(
+        &file,
+        &format!("id: {id}\ntype: page\ntitle: Flagged\npromote: true\nsticky: true\n"),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the fourth import must succeed: {e:#}");
+    }
+    let out = TempConfigDir::new("itemflags_export");
+    export_config(&storage, db.pool(), out.path(), false)
+        .await
+        .expect("export");
+    let exported = std::fs::read_to_string(out.path().join(&file)).expect("item exported");
+    assert!(
+        yaml_declares(&exported, "promote", "true") && yaml_declares(&exported, "sticky", "true"),
+        "export must carry promote and sticky: {exported}"
+    );
+
+    db.cleanup().await;
+}
