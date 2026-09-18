@@ -1,5 +1,20 @@
 # Ritrovo config set
 
+> **This is a snapshot, not the model.** These files described Ritrovo's content
+> model, and that model moved to the Ritrovo repository at `demo/config/` in
+> [jeremyandrews/ritrovo#11](https://github.com/jeremyandrews/ritrovo/pull/11),
+> merged as `3322075`. It is being developed there against the design brief, and
+> the two copies have already diverged.
+>
+> This copy stays, and is deliberately not being corrected: the released image
+> ships it (`Dockerfile:72`) and tutorial Parts 1 to 7 import it, so removing or
+> changing it would break both. It goes when the tutorial is rewritten against the
+> Ritrovo set.
+>
+> The kernel's own tests do NOT read this directory. They import
+> `crates/kernel/tests/fixtures/config-set/`, which the kernel owns, so that a
+> rename in another repository cannot fail a kernel test.
+
 The config set the tutorial imports:
 
 ```bash

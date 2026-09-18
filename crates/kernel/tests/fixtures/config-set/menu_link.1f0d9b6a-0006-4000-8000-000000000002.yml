@@ -1,0 +1,13 @@
+# A child link, so the import's menu-parent resolution and its cycle check both
+# have something to walk.
+id: 1f0d9b6a-0006-4000-8000-000000000002
+menu_name: main
+parent_id: 1f0d9b6a-0006-4000-8000-000000000001
+path: /workshops/archive
+title: Archive
+weight: 0
+hidden: false
+plugin: core
+stage_id: 1f0d9b6a-0003-4000-8000-000000000001
+created: 1767225600
+changed: 1767225600

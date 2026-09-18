@@ -4,6 +4,21 @@ In Part 1, you built a Trovato site and manually created three conferences. That
 
 In this part you'll build the `ritrovo_importer` plugin: a WASM module that runs on a daily cron cycle, fetches conference JSON from GitHub, and keeps your database up to date. Along the way you'll learn how Trovato's plugin system works and when to reach for it.
 
+> **Where this configuration lives now.** The `conference` and `speaker` types,
+> the topic category and its terms, the Gather queries, the roles, the stages, the
+> tiles, the menu links and the aliases are Ritrovo's content model, and they moved
+> to the Ritrovo repository in
+> [jeremyandrews/ritrovo#11](https://github.com/jeremyandrews/ritrovo/pull/11),
+> merged as `3322075`. The set lives there at `demo/config/`, and that copy is the
+> one being developed against the design brief.
+>
+> The copy under `docs/tutorial/config/` stays, is still shipped in the released
+> image, and is still what the commands in this part import, so everything below
+> works as written. The two copies have already diverged, and this one is not the
+> one that will be corrected. This part will be rewritten against the Ritrovo set;
+> until it is, treat `docs/tutorial/config/` as a frozen snapshot rather than a
+> model to copy.
+
 ---
 
 ## 2.1 The WASM Plugin Model

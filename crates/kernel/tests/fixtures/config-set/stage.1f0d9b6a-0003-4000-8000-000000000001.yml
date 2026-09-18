@@ -1,0 +1,14 @@
+# A stage, under the UUID this file declares. Internal: see its sibling.
+#
+# Stages landing under a UUID the kernel invented instead is what made a second
+# import fail: the first run created them elsewhere, the second did not find them
+# and tried again, colliding on the unique machine_name. Both stage files are
+# here so the idempotency test has something to count.
+id: 1f0d9b6a-0003-4000-8000-000000000001
+machine_name: fixture_draft
+label: Fixture Draft
+visibility: internal
+is_default: false
+weight: 0
+created: 1767225600
+changed: 1767225600

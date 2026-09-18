@@ -1,0 +1,14 @@
+# The second stage of the pair. See its sibling for why the UUID matters.
+#
+# Internal, and not the default, like the first: the kernel seeds a public stage
+# of its own and `uq_stage_visibility_public` allows exactly one, so a fixture
+# that declared a second public stage would collide with the site it is importing
+# into rather than testing anything about import.
+id: 1f0d9b6a-0003-4000-8000-000000000002
+machine_name: fixture_review
+label: Fixture Review
+visibility: internal
+is_default: false
+weight: 10
+created: 1767225600
+changed: 1767225600

@@ -97,9 +97,16 @@ impl ScratchDb {
     }
 }
 
-/// Path to the tutorial's config set.
-fn tutorial_config_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/tutorial/config")
+/// Path to the config set the kernel owns for its own tests.
+///
+/// These tests used to import `docs/tutorial/config/`. That set carried the
+/// tutorial's content and, with it, Ritrovo's content model; the model moved to
+/// the Ritrovo repository (`demo/config/`, jeremyandrews/ritrovo#11), which would
+/// have left the kernel asserting on files another project is free to change.
+/// `docs/tutorial/config/` stays where it is, because the image ships it and the
+/// tutorial imports it. See the fixture's README for what each file pins.
+fn fixture_config_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config-set")
 }
 
 /// Directory for a test's hand-written config files, removed on drop.
@@ -272,13 +279,13 @@ async fn import_fails_when_a_reference_cannot_be_resolved() {
 /// path — a silently skipped file there means an entity that never arrives and
 /// nothing that says why.
 #[tokio::test]
-async fn tutorial_config_set_imports_clean_on_a_fresh_database() {
-    let db = ScratchDb::new("tutorial").await;
+async fn the_fixture_config_set_imports_clean_on_a_fresh_database() {
+    let db = ScratchDb::new("fixtureset").await;
     let storage = db.storage();
-    let dir = tutorial_config_dir();
+    let dir = fixture_config_dir();
 
     let expected_files = std::fs::read_dir(&dir)
-        .expect("tutorial config directory must exist")
+        .expect("the fixture config directory must exist")
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.path()
@@ -291,13 +298,13 @@ async fn tutorial_config_set_imports_clean_on_a_fresh_database() {
         Ok(result) => result,
         Err(e) => {
             db.cleanup().await;
-            panic!("the tutorial config set must import clean: {e}");
+            panic!("the fixture config set must import clean: {e}");
         }
     };
 
     assert!(
         result.warnings.is_empty(),
-        "the tutorial config set should import without warnings: {:?}",
+        "the fixture config set should import without warnings: {:?}",
         result.warnings
     );
     assert_eq!(
@@ -312,7 +319,7 @@ async fn tutorial_config_set_imports_clean_on_a_fresh_database() {
         .fetch_all(db.pool())
         .await
         .expect("failed to list roles");
-    for expected in ["editor", "publisher", "viewer"] {
+    for expected in ["fixture_reader", "fixture_writer"] {
         assert!(
             roles.iter().any(|r| r == expected),
             "role '{expected}' should have landed as a row, got: {roles:?}"
@@ -326,10 +333,8 @@ async fn tutorial_config_set_imports_clean_on_a_fresh_database() {
             .await
             .expect("failed to list stages");
     for (expected_id, expected_name) in [
-        ("0193a5a0-0000-7000-8000-000000000001", "live"),
-        ("0193a5a0-0000-7000-8000-000000000002", "incoming"),
-        ("0193a5a0-0000-7000-8000-000000000003", "curated"),
-        ("0193a5a0-0000-7000-8000-000000000004", "legal_review"),
+        ("1f0d9b6a-0003-4000-8000-000000000001", "fixture_draft"),
+        ("1f0d9b6a-0003-4000-8000-000000000002", "fixture_review"),
     ] {
         let expected_id: uuid::Uuid = expected_id.parse().unwrap();
         assert!(
@@ -345,49 +350,55 @@ async fn tutorial_config_set_imports_clean_on_a_fresh_database() {
         .fetch_one(db.pool())
         .await
         .expect("failed to count tiles");
-    assert_eq!(tiles, 5, "all five tutorial tiles should have landed");
+    assert_eq!(tiles, 1, "the fixture's tile should have landed");
 
     let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM menu_link")
         .fetch_one(db.pool())
         .await
         .expect("failed to count menu links");
-    assert_eq!(links, 6, "all six tutorial menu links should have landed");
+    assert_eq!(links, 2, "both fixture menu links should have landed");
 
     db.cleanup().await;
 }
 
-/// Importing the tutorial set twice has to converge, not fail the second time.
+/// Importing the set twice has to converge, not fail the second time.
 ///
 /// This is what `Stage::create` generating its own UUID used to break: the first
 /// run created stages under UUIDs the files did not declare, so the second run
 /// did not find them and tried to create them again, colliding on the unique
 /// `machine_name`.
 #[tokio::test]
-async fn tutorial_config_set_is_idempotent() {
+async fn the_fixture_config_set_is_idempotent() {
     let db = ScratchDb::new("idempotent").await;
     let storage = db.storage();
-    let dir = tutorial_config_dir();
+    let dir = fixture_config_dir();
 
     for run in 1..=2 {
         if let Err(e) = import_config(&storage, db.pool(), &dir, false).await {
             db.cleanup().await;
-            panic!("import run {run} of the tutorial config set failed: {e}");
+            panic!("import run {run} of the fixture config set failed: {e}");
         }
     }
 
-    let stages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stage_config")
-        .fetch_one(db.pool())
-        .await
-        .expect("failed to count stages");
-    assert_eq!(stages, 4, "a second import must not duplicate stages");
+    // The fixture's own stages only. A fresh database already carries the
+    // kernel's seeded public stage, and counting that in would make this
+    // assertion about the migrations rather than about importing twice.
+    let stages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stage_config \
+         WHERE machine_name IN ('fixture_draft', 'fixture_review')",
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("failed to count stages");
+    assert_eq!(stages, 2, "a second import must not duplicate stages");
 
     let roles: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM roles WHERE name IN ('viewer', 'editor', 'publisher')",
+        "SELECT COUNT(*) FROM roles WHERE name IN ('fixture_reader', 'fixture_writer')",
     )
     .fetch_one(db.pool())
     .await
     .expect("failed to count roles");
-    assert_eq!(roles, 3, "a second import must not duplicate roles");
+    assert_eq!(roles, 2, "a second import must not duplicate roles");
 
     db.cleanup().await;
 }
@@ -1290,48 +1301,25 @@ async fn a_permission_some_role_already_holds_is_accepted() {
     db.cleanup().await;
 }
 
-/// The tutorial's role files declare real permissions, and importing the set
-/// grants them.
+/// Role files declare real permissions, and importing the set grants them.
 ///
-/// The point of the change: the tutorial used to tell a reader to run SQL, or
-/// click through the permission grid, for something its own config set should
-/// have applied.
+/// The point of the change this pins: a reader used to be told to run SQL, or to
+/// click through the permission grid, for something a config set should apply.
 #[tokio::test]
-async fn the_tutorial_roles_arrive_with_their_permissions() {
-    let db = ScratchDb::new("tutorialperms").await;
+async fn roles_arrive_with_their_permissions() {
+    let db = ScratchDb::new("fixtureperms").await;
     let storage = db.storage();
 
-    if let Err(e) = import_config(&storage, db.pool(), &tutorial_config_dir(), false).await {
+    if let Err(e) = import_config(&storage, db.pool(), &fixture_config_dir(), false).await {
         db.cleanup().await;
-        panic!("the tutorial config set must import clean: {e:#}");
+        panic!("the fixture config set must import clean: {e:#}");
     }
 
     for (role, expected) in [
-        ("viewer", vec!["access content"]),
+        ("fixture_reader", vec!["access content"]),
         (
-            "editor",
-            vec![
-                "access content",
-                "access files",
-                "create content",
-                "edit any content",
-                "edit own content",
-                "use filtered_html",
-            ],
-        ),
-        (
-            "publisher",
-            vec![
-                "access content",
-                "access files",
-                "administer files",
-                "create content",
-                "delete any content",
-                "edit any content",
-                "edit own content",
-                "use filtered_html",
-                "use full_html",
-            ],
+            "fixture_writer",
+            vec!["access content", "create content", "edit own content"],
         ),
     ] {
         let granted: Vec<String> = sqlx::query_scalar(

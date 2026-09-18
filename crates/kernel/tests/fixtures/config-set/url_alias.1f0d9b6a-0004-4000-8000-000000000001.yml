@@ -1,0 +1,7 @@
+# An alias, on the fixture's first stage.
+id: '1f0d9b6a-0004-4000-8000-000000000001'
+source: /gather/fixture.workshops
+alias: /workshops
+language: en
+stage_id: '1f0d9b6a-0003-4000-8000-000000000001'
+created: 1767225600

@@ -1,0 +1,9 @@
+# A root tag. Resolves its category within this set.
+id: '1f0d9b6a-0000-4000-8000-000000000001'
+category_id: subjects
+label: Craft
+description: null
+slug: craft
+weight: 0
+created: 1767225600
+changed: 1767225600

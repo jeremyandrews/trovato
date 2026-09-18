@@ -9,6 +9,21 @@ Ritrovo goes **bilingual** (English + Italian), gets a **translation workflow** 
 
 > **Implementation note:** The kernel has a language model (`models/language.rs`, 424 lines) with BCP 47 validation, a full language middleware (`middleware/language.rs`, 736 lines) with URL prefix and Accept-Language negotiation, and a locale service (`services/locale.rs`) for UI string translation. The `trovato_content_translation` plugin provides translation storage, and the `ritrovo_translate` plugin (238 lines) manages translation workflows for conferences. Italian seed data (15 conference translations) is in `docs/tutorial/config/seed-italian/`. The versioned REST API at `/api/v1/` with pagination, filters, and JSON responses is operational. API token authentication and per-endpoint rate limiting are implemented. All features described in this part are implemented.
 
+> **Where this configuration lives now.** The `conference` and `speaker` types,
+> the topic category and its terms, the Gather queries, the roles, the stages, the
+> tiles, the menu links and the aliases are Ritrovo's content model, and they moved
+> to the Ritrovo repository in
+> [jeremyandrews/ritrovo#11](https://github.com/jeremyandrews/ritrovo/pull/11),
+> merged as `3322075`. The set lives there at `demo/config/`, and that copy is the
+> one being developed against the design brief.
+>
+> The copy under `docs/tutorial/config/` stays, is still shipped in the released
+> image, and is still what the commands in this part import, so everything below
+> works as written. The two copies have already diverged, and this one is not the
+> one that will be corrected. This part will be rewritten against the Ritrovo set;
+> until it is, treat `docs/tutorial/config/` as a frozen snapshot rather than a
+> model to copy.
+
 ---
 
 ## Step 1: i18n Architecture
