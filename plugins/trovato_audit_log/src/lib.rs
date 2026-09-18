@@ -16,7 +16,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/reports/audit", "Audit Log")
-            .callback("audit_log_admin")
             .permission("view audit log")
             .parent("/admin/reports"),
     ]

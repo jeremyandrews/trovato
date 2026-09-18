@@ -25,7 +25,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/config/seo", "SEO Settings")
-            .callback("seo_admin")
             .permission("administer seo")
             .parent("/admin/config"),
     ]

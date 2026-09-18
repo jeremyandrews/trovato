@@ -76,12 +76,8 @@ pub fn tap_item_access(input: ItemAccessInput) -> AccessResult {
 #[plugin_tap]
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
-        MenuDefinition::new("/blog", "Blog")
-            .callback("blog_listing")
-            .permission("access content"),
-        MenuDefinition::new("/blog/:slug", "Post")
-            .callback("blog_view")
-            .permission("access content"),
+        MenuDefinition::new("/blog", "Blog").permission("access content"),
+        MenuDefinition::new("/blog/:slug", "Post").permission("access content"),
     ]
 }
 

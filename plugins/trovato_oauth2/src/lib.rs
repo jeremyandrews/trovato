@@ -17,7 +17,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/config/oauth", "OAuth Clients")
-            .callback("oauth_admin")
             .permission("administer oauth clients")
             .parent("/admin/config"),
     ]

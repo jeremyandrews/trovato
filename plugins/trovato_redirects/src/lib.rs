@@ -16,7 +16,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/config/redirects", "Redirects")
-            .callback("redirect_admin")
             .permission("administer redirects")
             .parent("/admin/config"),
     ]

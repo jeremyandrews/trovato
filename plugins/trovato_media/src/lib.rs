@@ -44,11 +44,8 @@ pub fn tap_item_access(input: ItemAccessInput) -> AccessResult {
 #[plugin_tap]
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
-        MenuDefinition::new("/media", "Media")
-            .callback("media_browser")
-            .permission("access content"),
+        MenuDefinition::new("/media", "Media").permission("access content"),
         MenuDefinition::new("/admin/media", "Media")
-            .callback("media_admin")
             .permission("view media content")
             .parent("/admin"),
     ]

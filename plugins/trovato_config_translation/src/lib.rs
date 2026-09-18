@@ -16,7 +16,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_menu() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition::new("/admin/config/translate", "Config Translation")
-            .callback("config_translate_admin")
             .permission("translate configuration")
             .parent("/admin/config"),
     ]

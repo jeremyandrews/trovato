@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Fix: a default install no longer logs a startup warning for every stock
+  plugin's admin menu.
+
+  Sixteen in-tree plugins built their `tap_menu` entries with
+  `MenuDefinition::new(...).callback("...")`. `MenuDefinition` has no handler
+  type, so the kernel reads each entry as `handler_type = "page"`, and it only
+  ever dispatches a callback for `"api"` (`routes::plugin_api`). Every one of
+  those 22 callbacks named a handler that did not exist and could never be
+  called. The kernel warns
+  about exactly this at startup, so the log opened with twenty warnings about
+  the project's own code, which buries the one warning meant to catch a plugin
+  route that is really dead. The callbacks were copied from plugin to plugin as
+  if a menu entry needed one.
+
+  The dead `.callback(...)` calls are removed; paths, titles, permissions and
+  parents are unchanged. The warning stays a warning, so external plugins that
+  trip it still load. Whether each of those menu paths is served by some route
+  is a separate question this change does not touch. `plugin_menu_callbacks_test` scans every in-tree plugin's
+  shipped source for a callback on a `MenuDefinition`, or on a `MenuRoute` that
+  is not `"api"`, and fails naming the file and line. It reads source because CI
+  builds only some plugins to WASM, and a runtime check would silently skip the
+  rest. On the old source it names all 22 entries.
+
 - Fix: item views no longer log an error from `trovato_blog`.
 
   `trovato_blog.info.toml` listed `tap_item_view` in `[taps] implements`, and
