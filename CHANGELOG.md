@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- Fix: the permission grid no longer deletes what it does not display, and a
+  user can be put in a role.
+
+  Two defects seen on the same 0.102.0 site, with the external `netgrasp` plugin
+  enabled.
+
+  **The grid deleted 29 grants across every role.** All of them were plugin
+  permissions, `administer netgrasp` among them, inserted by the plugin's
+  migrations. The grid rendered the kernel's list and nothing else, and the save
+  replaced each role's whole set from what the form returned — so every
+  permission the screen had never shown arrived looking exactly like a box
+  someone had deliberately unticked, and was taken away. They were restored with
+  SQL, and the next unrelated checkbox would have removed them again.
+
+  Dispatching `tap_perm` shrinks the problem because a plugin's permissions now
+  appear in the grid, and it does not remove it: a disabled plugin's grants, a
+  permission inserted by SQL and one left behind by a migration are all still
+  invisible to this screen. So the save is scoped rather than merely better
+  informed. The form states which permissions it rendered, and
+  `Role::set_permissions_within` confines removals to that set; a permission the
+  grid did not render keeps whatever it had, granted or not.
+  `Role::set_permissions` is untouched and still replaces the whole set, because
+  that is right for `config import`, where the file is the complete statement of
+  what a role holds.
+
+  **There was no way to give a user a role.** Neither the user edit form nor the
+  CLI offered it, so the run used SQL to put `netadmin` into `network_admin`.
+  `user_roles` has always existed and `RoleService::assign_to_user` has always
+  been there; nothing called them. The user add and edit forms now carry a
+  checkbox per role, gated on `administer users` like the rest of those screens,
+  and the CLI gains `trovato user role-add <username> <role>`, `role-remove`,
+  and `roles <username>` to see what someone holds, in the same two-word style as
+  the existing `user reset-password`.
+
+  Role membership is delegable and the permissions it can carry are not.
+  `administer users` is itself a grantable permission and roles carry
+  permissions, so without a guard a delegated user administrator could assign
+  themselves a role holding `administer site` and become a site administrator by
+  way of the screen they were given to manage usernames. A non-superuser may
+  therefore grant or revoke only a role whose permissions they already hold: they
+  can hand out what they have and no more. A superuser is unrestricted, and a
+  role the actor may not touch is left exactly as it was on the target rather
+  than silently dropped. The CLI has no such guard, because it is not reachable
+  over the network and whoever runs it already has the database; it does say that
+  a running server will not see the change until its permission cache expires,
+  which is the limitation `config import` has always had for the same reason.
+
+  Regression tests: a grant the grid never rendered survives a save (verified
+  failing against the old replace-all semantics, where the grant came back as an
+  empty set), a rendered permission left unchecked is removed, a rendered one
+  left checked is kept, and ticking one box leaves an invisible grant alone. On
+  the role side: the form offers the checkboxes, assigns and removes, a user
+  without `administer users` can change neither someone else's roles nor their
+  own, a delegate cannot grant a role beyond their own permissions but can grant
+  one within them, a delegate cannot set the superuser flag, and the model calls
+  the CLI verbs sit on assign, are idempotent, and remove.
+
 - Fix: a content translation can be written, not only read.
 
   `item_translation` has been read since the table was added. The request
