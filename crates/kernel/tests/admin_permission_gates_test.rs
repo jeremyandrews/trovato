@@ -85,6 +85,16 @@ async fn get_as(app: &TestApp, path: &str, cookies: &str, bucket: &str) -> Statu
     response.status()
 }
 
+/// Enable the plugins whose gates sit in front of routes in [`SURFACES`].
+///
+/// `/admin/structure/categories` is behind `gate_categories`, so on a clean
+/// database it is 404 before it is ever 403 and the permission check below is
+/// never reached. A developer database usually has the plugin enabled already,
+/// which is exactly why this has to be explicit rather than assumed.
+async fn enable_gated_plugins(app: &TestApp) {
+    app.ensure_plugin_enabled("trovato_categories").await;
+}
+
 /// A representative converted route from each permission family.
 ///
 /// One row per distinct permission string rather than per route: the conversion
@@ -105,6 +115,7 @@ const SURFACES: &[(&str, &str)] = &[
 fn a_role_holding_the_permission_reaches_the_admin_screen() {
     run_test(async {
         let app = shared_app().await;
+        enable_gated_plugins(app).await;
 
         for (path, permission) in SURFACES {
             let (_, cookies) = user_holding(app, "permgate-yes", &[permission]).await;
@@ -122,6 +133,7 @@ fn a_role_holding_the_permission_reaches_the_admin_screen() {
 fn a_role_without_the_permission_is_refused() {
     run_test(async {
         let app = shared_app().await;
+        enable_gated_plugins(app).await;
 
         // One user with no permissions at all, checked against every surface.
         let (_, cookies) = user_holding(app, "permgate-no", &[]).await;
@@ -141,6 +153,7 @@ fn a_role_without_the_permission_is_refused() {
 fn holding_one_admin_permission_does_not_open_the_others() {
     run_test(async {
         let app = shared_app().await;
+        enable_gated_plugins(app).await;
 
         // `administer comments` is a real permission and grants exactly its own
         // screens. If the conversion had collapsed everything onto one check,
@@ -162,6 +175,7 @@ fn holding_one_admin_permission_does_not_open_the_others() {
 fn the_superuser_bypass_still_reaches_every_converted_screen() {
     run_test(async {
         let app = shared_app().await;
+        enable_gated_plugins(app).await;
 
         // A superuser with no roles at all: every pass below is the bypass.
         let name = username("permgate-super");
