@@ -1700,6 +1700,7 @@ mod tests {
             entity_types::GATHER_QUERY,
             entity_types::URL_ALIAS,
             entity_types::ITEM,
+            entity_types::ITEM_TRANSLATION,
             entity_types::ROLE,
             entity_types::STAGE,
             entity_types::TILE,

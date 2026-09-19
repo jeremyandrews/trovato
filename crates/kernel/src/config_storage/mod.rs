@@ -99,9 +99,9 @@ pub struct ConfigItem {
 /// One language's translation of a content item, as a config file.
 ///
 /// Stored at `item_translation.<item uuid>.<language>.yml`.
-/// [`crate::config_storage::yaml::parse_config_filename`] splits an entity file
-/// on its *first* dot, so the id is the whole `<uuid>.<language>` string and no
-/// parser change was needed to carry two keys in one name.
+/// The config filename parser splits an entity file on its *first* dot, so the
+/// id is the whole `<uuid>.<language>` string and no parser change was needed to
+/// carry two keys in one name.
 ///
 /// The item it translates must already exist. Config import applies entity types
 /// in dependency order and this one comes after `item`, so a set that ships an
