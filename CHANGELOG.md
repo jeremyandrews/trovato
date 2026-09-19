@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- Fix: the admin UI asks what you may do, not whether you are the superuser.
+
+  111 admin route handlers across 17 files called `require_admin`, which gates on
+  the `users.is_admin` column. That column is not a permission: it cannot be
+  granted to a role, it cannot be named in a `role.*.yml` config file, and it
+  does not appear in the permission grid. So a role holding exactly the right
+  permissions still could not use the admin UI to exercise them. The case that
+  named the bug was a role granted `administer argus` that got 403 on
+  `/admin/content/add/argus_feed`, because that screen asked whether you were a
+  superuser rather than whether you could create that content. The public
+  `/item/add/{type}` route had always asked the second question, so the two ways
+  into the same operation disagreed, and the admin one was unreachable by anyone
+  but a superuser.
+
+  Each call is now `require_permission` against a permission the route already
+  implies, drawn from the strings the kernel and its plugins already declare; no
+  parallel names were invented. `/admin/content/add/{type}` builds
+  `create {type} content` from the path, the same string `/item/add/{type}`
+  checks, which is what makes a plugin's content types reachable by a role.
+  `/admin/content/bulk` is gated on the action it was asked to perform, so a
+  role that may publish cannot obtain a delete by routing it through the bulk
+  endpoint. Content, comment, file, user, category and AI screens take their own
+  permissions; the structure and configuration screens, for which nothing more
+  specific is declared anywhere, take `administer site`, which is at least a
+  grantable permission where `is_admin` was not. `docs/admin-permissions.md` is
+  the full table.
+
+  Nothing was weakened. `require_permission` keeps the superuser bypass, so a
+  superuser reaches every one of these routes exactly as before, and a user
+  without the permission is refused exactly as before; the only new case is the
+  non-superuser who holds it. Two routes keep `require_admin` on purpose:
+  `/admin/plugins` and `/admin/plugins/toggle`, because enabling a plugin runs
+  new code in the kernel and can introduce permissions, routes and tables, which
+  is not something a permission should be able to grant.
+
+  The superuser flag itself did not become delegable. The user add and edit
+  forms carry an `is_admin` checkbox, and those routes are now gated on
+  `administer users`, so honouring that checkbox for a non-superuser would have
+  turned `administer users` into a self-escalation to superuser, and would
+  equally have let a delegated user administrator revoke the real superusers and
+  lock them out. Only a superuser may set or clear the flag; for anyone else the
+  stored value is preserved whatever the form submitted, and the rest of user
+  administration stays delegable. Regression tests: a non-superuser holding each
+  permission reaches its screen, a user holding none is refused every one, one
+  admin permission does not open the others, the superuser bypass still reaches
+  all of them, and `create conference content` opens the conference add form
+  while `create page content` does not.
+
 - Fix: the kernel reads one long text field under both the names it goes by.
 
   The kernel's `page` type declares its long text field as `body`; a content type

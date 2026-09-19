@@ -15,7 +15,9 @@ use crate::form::csrf::generate_csrf_token;
 use crate::models::SiteConfig;
 use crate::state::AppState;
 
-use super::helpers::{render_admin_template, render_server_error, require_admin, require_csrf};
+use super::helpers::{
+    render_admin_template, render_server_error, require_csrf, require_permission,
+};
 
 /// Session key for flash messages on the site config page.
 const FLASH_KEY: &str = "site_config_flash";
@@ -95,7 +97,7 @@ async fn load_config_string(pool: &sqlx::PgPool, key: &str) -> String {
 ///
 /// GET /admin/config/site
 async fn site_config_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -201,7 +203,7 @@ async fn site_config_submit(
     session: Session,
     Form(form): Form<SiteConfigFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -445,7 +447,7 @@ async fn test_email(
     session: Session,
     Form(form): Form<TestEmailForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {

@@ -814,7 +814,9 @@ pub struct RecoveryConfigRequest {
 
 /// `GET /admin/recovery` — the recovery configuration page.
 async fn admin_recovery_page(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(resp) = crate::routes::helpers::require_admin(&state, &session).await {
+    if let Err(resp) =
+        crate::routes::helpers::require_permission(&state, &session, "administer users").await
+    {
         return resp;
     }
 
@@ -864,7 +866,9 @@ async fn admin_recovery_save(
     headers: HeaderMap,
     Json(body): Json<RecoveryConfigRequest>,
 ) -> Response {
-    if let Err(resp) = crate::routes::helpers::require_admin(&state, &session).await {
+    if let Err(resp) =
+        crate::routes::helpers::require_permission(&state, &session, "administer users").await
+    {
         return resp;
     }
     if let Err((status, resp)) = require_csrf_header(&session, &headers).await {

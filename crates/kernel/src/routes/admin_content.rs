@@ -13,7 +13,7 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, html_escape, render_admin_template,
-    render_not_found, render_server_error, require_admin, require_csrf,
+    render_not_found, render_server_error, require_csrf, require_permission,
 };
 
 /// Session key for flash messages on the content list page.
@@ -99,7 +99,7 @@ async fn list_content(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "edit any content").await {
         return redirect;
     }
 
@@ -160,7 +160,7 @@ async fn list_content(
 ///
 /// GET /admin/content/add
 async fn select_content_type(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "create content").await {
         return redirect;
     }
 
@@ -181,7 +181,13 @@ async fn add_content_form(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    // The per-type permission `/item/add/{type}` already checks, so the two
+    // ways into the same form agree. Gating this on `is_admin` was what made a
+    // role holding a plugin's own content permissions unable to use the admin
+    // UI to create that plugin's content.
+    if let Err(redirect) =
+        require_permission(&state, &session, &format!("create {type_name} content")).await
+    {
         return redirect;
     }
 
@@ -215,10 +221,13 @@ async fn add_content_submit(
     Path(type_name): Path<String>,
     Form(form): Form<ContentFormData>,
 ) -> Response {
-    let user = match require_admin(&state, &session).await {
-        Ok(user) => user,
-        Err(redirect) => return redirect,
-    };
+    // Same per-type permission the GET above checks, and the same one
+    // `/item/add/{type}` checks.
+    let user =
+        match require_permission(&state, &session, &format!("create {type_name} content")).await {
+            Ok(user) => user,
+            Err(redirect) => return redirect,
+        };
 
     // Verify CSRF token
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -349,7 +358,7 @@ async fn edit_content_form(
     session: Session,
     Path(item_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "edit any content").await {
         return redirect;
     }
 
@@ -412,7 +421,7 @@ async fn edit_content_submit(
     Path(item_id): Path<uuid::Uuid>,
     Form(form): Form<ContentFormData>,
 ) -> Response {
-    let user = match require_admin(&state, &session).await {
+    let user = match require_permission(&state, &session, "edit any content").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -566,7 +575,7 @@ async fn delete_content(
     Path(item_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    let user = match require_admin(&state, &session).await {
+    let user = match require_permission(&state, &session, "delete any content").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -613,7 +622,16 @@ async fn bulk_content_action(
     session: Session,
     Form(form): Form<BulkActionForm>,
 ) -> Response {
-    let user = match require_admin(&state, &session).await {
+    // A bulk action is gated on the permission for the action it performs, not
+    // on one permission for the whole screen: bulk delete is a delete, and a
+    // role that may publish must not get a delete for free by routing it
+    // through this endpoint. An unrecognized action asks for the publish
+    // permission and is then rejected as unknown below.
+    let required = match form.action.as_str() {
+        "delete" => "delete any content",
+        _ => "edit any content",
+    };
+    let user = match require_permission(&state, &session, required).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };

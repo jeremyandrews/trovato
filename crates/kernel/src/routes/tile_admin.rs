@@ -14,7 +14,7 @@ use crate::state::AppState;
 
 use super::helpers::{
     is_valid_machine_name, render_admin_template, render_error, render_not_found,
-    render_server_error, require_admin, require_csrf,
+    render_server_error, require_csrf, require_permission,
 };
 
 // -------------------------------------------------------------------------
@@ -66,7 +66,7 @@ impl TileFormData {
 ///
 /// GET /admin/structure/tiles
 async fn list_tiles(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -93,7 +93,7 @@ async fn list_tiles(State(state): State<AppState>, session: Session) -> Response
 ///
 /// GET /admin/structure/tiles/add
 async fn add_tile_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -117,7 +117,7 @@ async fn add_tile_submit(
     session: Session,
     Form(form): Form<TileFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -162,7 +162,7 @@ async fn edit_tile_form(
     session: Session,
     Path(tile_id): Path<Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -206,7 +206,7 @@ async fn edit_tile_submit(
     Path(tile_id): Path<Uuid>,
     Form(form): Form<TileFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -252,7 +252,7 @@ async fn delete_tile(
     Path(tile_id): Path<Uuid>,
     Form(form): Form<TileDeleteData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 

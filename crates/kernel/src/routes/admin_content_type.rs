@@ -12,7 +12,7 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, MACHINE_NAME_ERROR, html_escape, is_valid_machine_name, render_admin_template,
-    render_error, render_not_found, render_server_error, require_admin, require_csrf,
+    render_error, render_not_found, render_server_error, require_csrf, require_permission,
 };
 
 // =============================================================================
@@ -65,7 +65,7 @@ struct SearchConfigFormData {
 ///
 /// GET /admin/structure/types
 async fn list_content_types(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -82,7 +82,7 @@ async fn list_content_types(State(state): State<AppState>, session: Session) -> 
 ///
 /// GET /admin/structure/types/add
 async fn add_content_type_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -108,7 +108,7 @@ async fn add_content_type_submit(
     session: Session,
     Form(form): Form<ContentTypeFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -200,7 +200,7 @@ async fn edit_content_type_form(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -264,7 +264,7 @@ async fn edit_content_type_submit(
     Path(type_name): Path<String>,
     Form(form): Form<ContentTypeFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -351,7 +351,7 @@ async fn manage_fields(
 ) -> Response {
     use crate::form::FormState;
 
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -391,7 +391,7 @@ async fn add_field(
     Path(type_name): Path<String>,
     Form(form): Form<FieldFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -504,7 +504,7 @@ async fn edit_field_form(
     session: Session,
     Path((type_name, field_name)): Path<(String, String)>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -545,7 +545,7 @@ async fn edit_field_submit(
     Path((type_name, field_name)): Path<(String, String)>,
     Form(form): Form<FieldEditFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -633,7 +633,7 @@ async fn delete_field_submit(
     Path((type_name, field_name)): Path<(String, String)>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -677,7 +677,7 @@ async fn manage_search_config(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -726,7 +726,7 @@ async fn add_search_config(
     Path(type_name): Path<String>,
     Form(form): Form<SearchConfigFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -776,7 +776,7 @@ async fn remove_search_config(
     Path((type_name, field_name)): Path<(String, String)>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -817,7 +817,7 @@ async fn reindex_content_type(
     Path(type_name): Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 

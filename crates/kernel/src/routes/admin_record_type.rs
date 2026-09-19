@@ -28,7 +28,7 @@ use tower_sessions::Session;
 
 use crate::state::AppState;
 
-use super::helpers::{render_not_found, render_server_error, require_admin};
+use super::helpers::{render_not_found, render_server_error, require_permission};
 
 /// Maximum record rows shown on the admin list surface.
 const RECORD_LIST_LIMIT: i64 = 200;
@@ -37,7 +37,7 @@ const RECORD_LIST_LIMIT: i64 = 200;
 ///
 /// GET /admin/structure/records
 async fn list_record_types(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -70,7 +70,7 @@ async fn list_records(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -117,7 +117,7 @@ async fn view_record(
     session: Session,
     Path((type_name, id)): Path<(String, String)>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 

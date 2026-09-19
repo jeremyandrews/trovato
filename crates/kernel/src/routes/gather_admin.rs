@@ -14,8 +14,8 @@ use crate::gather::{
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_admin,
-    require_csrf,
+    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
+    require_permission,
 };
 
 // =============================================================================
@@ -47,7 +47,7 @@ struct GatherFormData {
 ///
 /// GET /admin/gather
 async fn list_queries(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -68,7 +68,7 @@ async fn list_queries(State(state): State<AppState>, session: Session) -> Respon
 ///
 /// GET /admin/gather/create
 async fn create_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -110,7 +110,7 @@ async fn create_submit(
     session: Session,
     Form(form): Form<GatherFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -233,7 +233,7 @@ async fn edit_form(
     session: Session,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -278,7 +278,7 @@ async fn save_submit(
     Path(id): Path<String>,
     Form(form): Form<GatherFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -389,7 +389,7 @@ async fn clone_query(
     Path(id): Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -426,7 +426,7 @@ async fn delete_query(
     Path(id): Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 

@@ -14,7 +14,7 @@ use tracing::info;
 use crate::cron::CronResult;
 use crate::state::AppState;
 
-use super::helpers::require_admin;
+use super::helpers::require_permission;
 
 /// Create the cron router.
 pub fn router() -> Router<AppState> {
@@ -118,7 +118,7 @@ pub struct QueueLengths {
 /// Get cron status (admin only).
 async fn cron_status(State(state): State<AppState>, session: Session) -> Response {
     // Check admin permission
-    if let Err(e) = require_admin(&state, &session).await {
+    if let Err(e) = require_permission(&state, &session, "administer site").await {
         return e;
     }
 

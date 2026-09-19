@@ -19,8 +19,8 @@ use crate::services::pathauto::update_alias_item;
 use crate::state::AppState;
 
 use super::helpers::{
-    is_valid_machine_name, render_admin_template, render_error, render_server_error, require_admin,
-    require_csrf,
+    is_valid_machine_name, render_admin_template, render_error, render_server_error, require_csrf,
+    require_permission,
 };
 
 /// Session key for flash messages on the pathauto settings page.
@@ -68,7 +68,7 @@ struct RegenerateForm {
 ///
 /// GET /admin/config/pathauto
 async fn pathauto_config_page(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -129,7 +129,7 @@ async fn save_pathauto_config(
     session: Session,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -217,7 +217,7 @@ async fn regenerate_aliases(
     session: Session,
     Form(form): Form<RegenerateForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 

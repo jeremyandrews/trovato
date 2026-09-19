@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::routes::helpers::{
-    render_not_found, render_server_error, require_admin, require_csrf_header, require_login,
+    render_not_found, render_server_error, require_csrf_header, require_login, require_permission,
 };
 use crate::services::session_registry::{SESSION_DEVICE_ID, SessionEntry};
 use crate::state::AppState;
@@ -271,7 +271,7 @@ async fn admin_sessions_page(
     session: Session,
     Path(user_id): Path<Uuid>,
 ) -> Response {
-    if let Err(resp) = require_admin(&state, &session).await {
+    if let Err(resp) = require_permission(&state, &session, "administer users").await {
         return resp;
     }
 
@@ -319,7 +319,7 @@ async fn admin_revoke_session(
     Path((user_id, device_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Response {
-    let admin = match require_admin(&state, &session).await {
+    let admin = match require_permission(&state, &session, "administer users").await {
         Ok(u) => u,
         Err(resp) => return resp,
     };
