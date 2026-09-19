@@ -5,11 +5,17 @@ and a real provider, on the kernel in this tree (0.102.0), and checking the six
 claims the milestone documents make about it.
 
 **Status: session 1 of 2.** This session built the image, brought the stack up,
-configured the provider and the content, and confirmed ingestion and relevance
-scoring against live feeds. Three of the six verdicts need elapsed time that a
-single session cannot idle through — every feed fetched twice, two outlets
-reaching the same event — so the stack is left running and a second session
-collects them. Every verdict below states plainly whether it was reached.
+configured the provider and the content, and confirmed ingestion, relevance
+scoring and analysis against live feeds. Every verdict below states plainly
+whether it was reached.
+
+**Read finding F8 first.** The intended shape of this exercise was to leave the
+stack running and let a second session collect the verdicts that need elapsed
+time. That is not possible on this build: the queue workers wedge within 30 to
+60 seconds of every container start and only a restart recovers, which is why
+four of the six verdicts are unreached and why an external watchdog (section 9)
+had to be added for the overnight window. The defect that stops the pipeline is
+the most important thing this run found.
 
 Run date: 2026-09-19. Host: Apple silicon, Docker 29.4.0, Docker Desktop.
 
@@ -178,12 +184,14 @@ First fetch tick confirmed at 04:45 UTC. As of the end of session 1:
 |---|---|
 | Articles ingested | 154 |
 | Feeds fetched without error | 6 of 6, `failure_count = 0` on all |
-| Decided (survived the threshold) | 35 |
-| Discarded | 97 |
-| Awaiting decide | 22 |
-| Analyze jobs queued, never yet attempted | 35 |
-| Stories | 0 |
+| Decided (survived the threshold) | 36 |
+| Discarded | 110 |
+| Analyzed | 4 |
+| Awaiting decide | 0 (queue fully drained) |
+| Analyze jobs queued | 34 |
+| Embed jobs queued, never yet attempted | 4 |
 | Vectors written | 0 |
+| Stories | 0 |
 
 Relevance scoring is working, and working well. A sample, verbatim from
 `argus_articles`:
@@ -203,9 +211,11 @@ The stored `relevance_reason` for the discards names the prompt's own exclusions
 reaching the model and genuinely discriminating. That part of Argus does what
 the README says it does.
 
-Analyze has not started because decide is still draining and holds the higher
-priority. That is ordinary throughput, not a fault, and it is the reason three
-verdicts below are NOT REACHED.
+Analyze reached only four articles, and embed none, because of **F8** — not
+because of throughput. The decide queue drained completely within one cycle of
+clearing the wedged jobs, and analyze began immediately; it then wedged again
+after two jobs. Every stage this run reached works; the pipeline simply cannot
+stay running long enough to get through them.
 
 ---
 
@@ -285,27 +295,30 @@ The stuck-queue alert works.
 
 | day | stage | calls | unpriced_calls | cost_usd |
 |---|---|---|---|---|
-| 2026-09-19 | argus_decide | 132 | **132** | **0** |
+| 2026-09-19 | argus_decide | 150 | **150** | **0** |
+| 2026-09-19 | argus_analyze | 4 | 0 | 0.0453 |
 
-Every single call is unpriced, and the recorded spend is zero, despite
-`ai_pricing` containing an entry for the model that was routed to. This is
-finding **F4** and it is the most consequential thing in this report, because it
-means `argus.daily_limit_usd = 2.00` protected nothing for the whole run.
+Every decide call is unpriced and its recorded spend is zero, despite
+`ai_pricing` containing an entry for the model decide was routed to; analyze,
+configured identically, is priced correctly. This is finding **F4**, and it means
+`argus.daily_limit_usd = 2.00` was enforcing against roughly a quarter of the
+actual spend.
 
 The real cost, computed by hand from `ai_usage_log` at the published Haiku 4.5
 rate:
 
-| Stage | Model | Calls | Input tokens | Output tokens | Cost |
-|---|---|---|---|---|---|
-| decide | claude-haiku-4-5 | 132 | 84 818 | 9 254 | **$0.131** |
-| analyze | claude-sonnet-5 | 0 | 0 | 0 | $0.000 |
-| embed | text-embedding-3-small | 0 | 0 | 0 | $0.000 |
-| summarize | claude-sonnet-5 | 0 | 0 | 0 | $0.000 |
-| judge | claude-haiku-4-5 | 0 | 0 | 0 | $0.000 |
-| **Total** | | **132** | **84 818** | **9 254** | **$0.131** |
+| Stage | Model | Calls | Input tok | Output tok | Cost | Metered by Argus? |
+|---|---|---|---|---|---|---|
+| decide | claude-haiku-4-5 | 150 | 89 426 | 10 441 | $0.142 | **no** — unpriced |
+| analyze | claude-sonnet-5 | 4 | 2 351 | 2 444 | $0.045 | yes |
+| embed | text-embedding-3-small | 0 | 0 | 0 | $0.000 | — not reached |
+| summarize | claude-sonnet-5 | 0 | 0 | 0 | $0.000 | — not reached |
+| judge | claude-haiku-4-5 | 0 | 0 | 0 | $0.000 | — not reached |
+| **Total** | | **154** | **91 777** | **12 885** | **$0.187** | |
 
-**The run so far cost 13.1 cents**, all of it relevance scoring. Argus's own
-accounting reports $0.00 and will keep reporting $0.00 however much is spent.
+**The run cost 18.7 cents.** Argus's own `argus_cost_daily` reports $0.045 of
+that — the analyze rows only — and $0.00 for decide, which was 97 % of the calls
+and 76 % of the money.
 
 ### 4.6 Did the queue concurrency collapse produce a duplicate story? — **NOT REACHED** (the collapse itself: **CONFIRMED**)
 
@@ -437,6 +450,25 @@ The operator priced the model they configured. The kernel priced a string they
 never typed and cannot predict, because which snapshot an alias resolves to is
 the provider's choice and changes over time.
 
+**And it fails silently for some models while working for others in the same
+configuration**, which is what makes it genuinely dangerous rather than merely
+wrong. Once analyze started, `ai_usage_log` held both cases side by side:
+
+```
+           model           | calls | unpriced | kernel_cost
+---------------------------+-------+----------+-------------
+ claude-haiku-4-5-20251001 |   150 |      150 |      0.0000
+ claude-sonnet-5           |     4 |        0 |      0.0453
+```
+
+Anthropic echoes `claude-sonnet-5` back unchanged, so analyze is priced
+correctly and contributes to the cap. It resolves `claude-haiku-4-5` to a dated
+snapshot, so decide is invisible. Same site, same `ai_pricing`, same provider,
+both entered the same way — and an operator has no way to tell which of their
+models is being metered without querying `ai_usage_log` by hand. A partially
+enforced spend cap is worse than none, because the dashboard looks like it is
+working.
+
 This is worse than a reporting nuisance. `README.md` is explicit that "a model
 that is not in `ai_pricing` is charged as *unknown*, not as free… so a low spend
 figure can never be misread as a cheap day" — the intent is right, but the
@@ -466,7 +498,7 @@ Evidence under verdict 4.6. Worth stating because `M2-FRICTION.md`'s status note
 lists which of its findings closed, and a reader could reasonably assume the
 remaining High one had been picked up since. It has not.
 
-### F7 — A trapping queue job is re-claimed past `max_attempts` instead of dying **[Medium]**
+### F7 — A trapping queue job is re-claimed past `max_attempts` instead of dying **[High]**
 
 Four `argus_decide` jobs sat at `attempts = 5, max_attempts = 5`, status
 `claimed`, `last_error = "tap_queue_worker failed (trap or error result)"`, and
@@ -479,27 +511,75 @@ therefore reclaimed however many times it has already failed, and
 `dead_at`/`dead_reason` stay null. Four poison jobs occupied four of the four
 available worker slots on each cycle they were picked up.
 
-### F8 — A wedged cron run holds a self-renewing lock with no alert and no recovery **[Medium; induced, not spontaneous]**
+This is the mechanism that turns **F8** from a transient stall into a permanent
+one. Marking those four rows `dead` by hand drained the entire remaining decide
+queue in a single cycle and let analyze start — the first real progress in
+twenty minutes.
 
-Stated with its cause, because the cause matters: **I triggered this by firing
-twelve `POST /cron/<key>` requests in a tight loop**, on top of `argus-cron`'s
-own 60-second poke. It was not observed under normal operation.
+### F8 — The queue workers wedge within a minute of every start, and only a restart recovers **[Critical]**
 
-What followed is still worth recording. One cron run stopped making progress:
-the container sat at 123–125 % CPU for roughly seven minutes with zero plugin log
-output, while `TTL cron:lock` in Redis stayed pinned near 300 and *rose* between
-samples — the lock-renewal task at `crates/kernel/src/cron/mod.rs:773` refreshes
-it every `LOCK_TTL_SECS / 2`. Every subsequent poke returned
-`{"status":"skipped","message":"Another instance is running cron"}`. The server
-stayed healthy and responsive throughout; only cron was dead. Nothing alerted —
-the `alert.queue_stuck` event had already fired and does not re-fire — and
-nothing recovered it. `docker compose restart argus`, deleting `cron:lock` and
-resetting the four claimed jobs to `ready` restored normal draining, which then
-continued without incident.
+**This is the headline finding, and it is why four of the six verdicts are not
+reached.** Argus cannot run unattended on this build at all.
 
-The renewal loop has no liveness condition: it refreshes the lock because the run
-has not returned, not because the run is doing anything. A run that stops making
-progress therefore holds the site's only cron lock forever.
+I first saw this after firing twelve `POST /cron/<key>` requests in a tight loop
+and initially wrote it up as self-inflicted. That was wrong. It has now
+reproduced **three times**, twice with `argus-cron`'s ordinary 60-second poke as
+the only driver and no interference from me. The corrected account:
+
+Within **30 to 60 seconds** of every container start, two to four tokio worker
+threads enter state `R` and stay there, burning 100 % of a core each, and the
+container never does useful work again. Measured across the three occurrences:
+
+| Restart at | Last useful work | Time to wedge |
+|---|---|---|
+| 04:57 UTC | 05:01:08 | ~4 min (under my cron burst) |
+| 05:05:44 | 05:06:38 | **54 s** |
+| 05:14:53 | 05:15:08 | **~15 s** |
+
+While wedged:
+
+- CPU sits at 123–130 %, with the thread table showing the spinners directly:
+  `/proc/1/task/*/stat` fields 14+15 reach 25 758 and 16 754 jiffies (257 s and
+  167 s of CPU) on threads in state `R`, against single digits for every other
+  worker.
+- `TTL cron:lock` in Redis stays pinned near 300 and **rises** between samples.
+  The renewal task at `crates/kernel/src/cron/mod.rs:773` refreshes the lock every
+  `LOCK_TTL_SECS / 2` for as long as the run has not returned — it has no
+  liveness condition, so it refreshes because the run is stuck, not because it is
+  working.
+- Every subsequent poke returns
+  `{"status":"skipped","message":"Another instance is running cron"}`.
+- Every other queue starves. At the third occurrence: 34 analyze, 16 fetch and 1
+  notify job sat `ready` and untouched behind 2 `claimed` analyze jobs.
+- The HTTP server stays healthy and responsive throughout, `/health` returns
+  green, and **nothing alerts.** `alert.queue_stuck` fires once and does not
+  re-fire.
+
+The jobs it wedges on are ordinary. At the third occurrence the two `claimed`
+jobs were `analyze` on articles of 6 245 and 3 437 characters — close to the
+1 980-character corpus average, nothing near the 7 020-character maximum — and
+both were on `attempts = 1`, their **first** attempt. So this is not a retry
+loop, not a poison-content problem, and not size-related. It is a general
+worker-lifecycle defect that hits whatever happens to be in flight.
+
+Recovery is `docker compose restart argus`, deleting `cron:lock`, and returning
+the claimed rows to `ready`. That works every time, and then it wedges again
+within a minute.
+
+Two things this interacts with. **F7** is what makes it permanent rather than
+self-limiting: a job that spins is re-claimed forever instead of dead-lettering,
+so the same four occupied all four worker slots across restarts until I marked
+them dead by hand — at which point the decide queue drained completely in one
+cycle and analyze started immediately. And **F6**'s collapsed concurrency sets
+how many it takes: `QUEUE_CONCURRENCY_CAP = 4` means four spinning jobs is total
+starvation.
+
+Because the pipeline cannot run unattended, an external watchdog was added for
+the overnight window so that session 2 has data to report at all. It lives
+outside the repository and is described in section 9; the restart count it
+records is the closest thing to a mean-time-between-failures figure this run can
+produce.
+
 
 ### F9 — Argus declares record types that collide with its own content types **[Low]**
 
@@ -694,10 +774,36 @@ The default in force for this run, and the number session 2 argues from, is
 ## 9. State left running
 
 - Compose project `trovato-argus`, four containers up, site on
-  `http://localhost:3003`.
-- `argus-cron` poking every 60 s. Do not fire the cron endpoint manually in a
-  loop; see **F8**.
-- 154 articles ingested and growing, 35 analyze jobs queued.
-- Spend to date $0.131, all decide. `argus.daily_limit_usd = 2.00` is set but
-  cannot enforce (**F4**), so session 2 should check the hand-computed figure
-  rather than `argus_cost_daily`.
+  `http://localhost:3003`. `argus-cron` poking every 60 s.
+- 154 articles ingested, 36 decided, 4 analyzed, 34 analyze and 4 embed jobs
+  queued. Four decide jobs marked `dead` by hand (see **F7**).
+- Spend to date **$0.187**, of which Argus metered $0.045 (**F4**). The
+  `argus.daily_limit_usd = 2.00` cap is set but only partially enforceable, so
+  session 2 should trust the hand-computed figure from `ai_usage_log`, not
+  `argus_cost_daily`.
+
+### A watchdog is running, and it is not part of Trovato
+
+Because of **F8** the stack cannot make progress unattended, so an external
+script polls every 30 s and restarts the argus container when it detects the
+wedge — no AI call in 200 s while CPU is above 50 % and work is still queued —
+then clears `cron:lock` and returns expired claims to `ready`, dead-lettering
+anything already past `max_attempts`.
+
+It lives at
+`<session scratchpad>/argus-watchdog.sh`, **outside the repository**, is not
+committed, and touches nothing but this test stack. It logs every restart to
+`watchdog.log` beside itself.
+
+Session 2 should:
+
+1. Read `watchdog.log` first. The restart count over the elapsed window is the
+   real mean-time-between-failures figure for **F8** and belongs in this report.
+2. Collect verdicts 1, 2, 4 and 6 from whatever the pipeline managed between
+   restarts.
+3. Stop it when finished: `pkill -f argus-watchdog.sh`.
+
+Its restarts are disclosed here because they are not a neutral test condition:
+every restart re-runs `plugin install`, and a story that spans a restart has
+been clustered across two process lifetimes. That is worth stating before
+drawing conclusions about clustering from this corpus.
