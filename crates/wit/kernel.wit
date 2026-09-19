@@ -335,11 +335,13 @@ world plugin {
     // {trigger, form_id, values} and returns an AjaxResponse (commands array).
     export tap-form-ajax: func(callback-json: string) -> string;
 
-    // Routing & permissions (return JSON arrays). `tap-menu` is dispatched
-    // (state.rs); `tap-perm` is declared but not yet dispatched (dispatch
-    // pending). Its no-input `() -> string` JSON-array shape has nothing to guess.
+    // Routing & permissions (return JSON arrays). Both are dispatched at boot
+    // from state.rs; a declaration is a constant, so it is collected once rather
+    // than asked for per request. `tap-perm`'s result is also written to
+    // `plugin_permission`, because `config import` validates a role file's
+    // permission list from a separate process that has no AppState to read.
     export tap-menu: func() -> string;
-    export tap-perm: func() -> string;                     // (dispatch pending)
+    export tap-perm: func() -> string;
 
     // Serves one HTTP request for a `tap-menu` entry whose handler-type is
     // "api" and which names a callback (G-NO-PLUGIN-HTTP; added in the 0.99

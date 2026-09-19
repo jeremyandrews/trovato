@@ -1254,13 +1254,100 @@ async fn an_unknown_permission_fails_validation_loudly() {
     db.cleanup().await;
 }
 
+/// A permission a plugin declared can be granted by a config file.
+///
+/// The point of dispatching `tap_perm`. Before it, a plugin's permissions were
+/// in no list the kernel could consult, so `config import` refused to grant one:
+/// a role file naming `administer netgrasp` failed validation, and the only way
+/// to hold a plugin permission was SQL, which the next save of the permission
+/// grid then deleted.
+///
+/// The declaration reaches this process through the `plugin_permission` table
+/// rather than through memory, which is the whole reason that table exists:
+/// `config import` is a CLI with a pool and no `AppState`, so an in-memory
+/// registry would be invisible to it. This test writes the declaration the way
+/// the boot dispatch does and then imports a role file naming it.
+#[tokio::test]
+async fn a_permission_a_plugin_declared_can_be_granted_by_a_config_file() {
+    let db = ScratchDb::new("rolepluginperm").await;
+    let storage = db.storage();
+    let role_id = "0193a5a0-0002-7000-8000-0000000000e3";
+
+    // A name no kernel permission and no seeded grant uses, so passing can only
+    // mean the declaration was consulted.
+    let declared = "administer widget farms";
+    sqlx::query("INSERT INTO plugin_permission (name, plugin, description) VALUES ($1, $2, $3)")
+        .bind(declared)
+        .bind("trovato_widgets")
+        .bind("Administer widget farms")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let held: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM role_permissions WHERE permission = $1")
+            .bind(declared)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        held, 0,
+        "no role may already hold it, or the older already-granted rule would \
+         accept this file and the declaration would prove nothing"
+    );
+
+    let dir = TempConfigDir::new("rolepluginperm");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(role_id, "widget_admin", Some(&[declared])),
+    );
+
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("a permission a plugin declared must be grantable by config: {e:#}");
+    }
+
+    assert_eq!(
+        permissions_of(&db, role_id).await,
+        vec![declared.to_string()],
+        "the plugin permission must have been granted"
+    );
+
+    db.cleanup().await;
+}
+
+/// An undeclared, ungranted permission is still refused.
+///
+/// The other half of the rule above: accepting declarations must not turn the
+/// validation off. A typo in a role file is still a grant that matches nothing
+/// any check will ever ask for, and it still has to be caught here.
+#[tokio::test]
+async fn a_permission_nothing_declares_or_holds_is_still_refused() {
+    let db = ScratchDb::new("rolebogusperm").await;
+    let storage = db.storage();
+    let role_id = "0193a5a0-0002-7000-8000-0000000000e4";
+
+    let dir = TempConfigDir::new("rolebogusperm");
+    dir.write(
+        &format!("role.{role_id}.yml"),
+        &role_yaml(role_id, "typo_role", Some(&["administer widgt farms"])),
+    );
+
+    let result = import_config(&storage, db.pool(), dir.path(), false).await;
+    let refused = result.is_err();
+    db.cleanup().await;
+    assert!(
+        refused,
+        "a permission neither declared nor granted must still be refused"
+    );
+}
+
 /// A permission the kernel does not define but a role already holds is valid.
 ///
-/// This is the plugin case. `tap_perm` is declared and not dispatched, so a
-/// plugin's permissions appear in no list the kernel can consult; what a site has
-/// already granted is the only evidence they exist. Without this, exporting a
-/// site that uses any plugin permission would produce a set that cannot be
-/// re-imported. The seeded `authenticated user` role proves the two sets differ:
+/// The disabled-plugin case. A plugin that is off declares nothing, because only
+/// enabled plugins are loaded and dispatched, while the grants it left behind
+/// remain. Without this, exporting such a site would produce a set that cannot
+/// be re-imported. The seeded `authenticated user` role proves the sets differ:
 /// it holds `view own profile`, which the kernel's own list does not contain.
 #[tokio::test]
 async fn a_permission_some_role_already_holds_is_accepted() {

@@ -764,6 +764,49 @@ async fn delete_role(
     }
 }
 
+/// One row of the permission grid.
+///
+/// The grid used to iterate over bare strings, which left it no way to say who
+/// owns a permission or what it does. Now that a plugin's permissions appear
+/// beside the kernel's, "who declared this" is the difference between a grid an
+/// administrator can reason about and a flat list of strings from nowhere.
+#[derive(Debug, serde::Serialize)]
+struct GridPermission {
+    /// The permission string itself.
+    name: String,
+    /// Who declared it: `Kernel`, or the plugin's name.
+    provider: String,
+    /// Human-readable description; empty for kernel permissions, which have
+    /// never carried one.
+    description: String,
+}
+
+/// Every permission the grid renders: the kernel's, then each plugin's.
+///
+/// This is also the exact set the save is allowed to revoke, which is why both
+/// sides go through one function. A permission missing from here is one the
+/// screen cannot show, cannot grant, and must not take away.
+fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
+    let mut rows: Vec<GridPermission> = KERNEL_PERMISSIONS
+        .iter()
+        .map(|name| GridPermission {
+            name: (*name).to_string(),
+            provider: "Kernel".to_string(),
+            description: String::new(),
+        })
+        .collect();
+
+    for declared in state.plugin_permissions().permissions() {
+        rows.push(GridPermission {
+            name: declared.name.clone(),
+            provider: declared.plugin.clone(),
+            description: declared.description.clone(),
+        });
+    }
+
+    rows
+}
+
 /// Show permission matrix.
 ///
 /// GET /admin/people/permissions
@@ -798,7 +841,7 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
     let mut context = tera::Context::new();
     context.insert("roles", &roles);
     context.insert("role_permissions", &role_permissions);
-    context.insert("available_permissions", &KERNEL_PERMISSIONS);
+    context.insert("available_permissions", &grid_permissions(&state));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("path", "/admin/people/permissions");
@@ -831,23 +874,56 @@ async fn save_permissions(
         }
     };
 
-    // Process form data - permissions are submitted as "perm_{role_id}_{permission}"
+    // The form states which permissions it rendered, as `permname_{i}`, and
+    // checks them as `perm_{i}_{role_id}`.
+    //
+    // The index matters. The old encoding put the permission name in the
+    // checkbox key with spaces replaced by underscores, which is not
+    // reversible: `create argus_feed content` and a hypothetical `create argus
+    // feed content` produce the same key. That was harmless while the grid
+    // rendered only the kernel's 21 names and stopped being harmless the moment
+    // plugin permissions appeared, since plugin content permissions routinely
+    // contain underscores. The name now travels as a value, where nothing has
+    // to be escaped out of it.
+    //
+    // Reading the rendered set from the form rather than recomputing it is
+    // deliberate too: it is the set the administrator actually saw, so it stays
+    // correct even if a plugin was enabled or disabled between the render and
+    // the save.
+    let mut rendered: Vec<(usize, String)> = Vec::new();
+    for index in 0usize.. {
+        let Some(name) = form.permissions.get(&format!("permname_{index}")) else {
+            break;
+        };
+        rendered.push((index, name.clone()));
+    }
+    let rendered_names: std::collections::HashSet<String> =
+        rendered.iter().map(|(_, name)| name.clone()).collect();
+
     for role in &roles {
-        let desired: Vec<String> = KERNEL_PERMISSIONS
+        let desired: Vec<String> = rendered
             .iter()
-            .filter(|permission| {
-                let key = format!("perm_{}_{}", role.id, permission.replace(' ', "_"));
-                form.permissions.contains_key(&key)
+            .filter(|(index, _)| {
+                form.permissions
+                    .contains_key(&format!("perm_{index}_{}", role.id))
             })
-            .map(|p| (*p).to_string())
+            .map(|(_, name)| name.clone())
             .collect();
 
-        if let Err(e) = state.roles().save_permissions(role.id, &desired).await {
+        // Scoped to what the form rendered: a permission this screen never
+        // showed is left exactly as it was, granted or not. Replacing the whole
+        // set here is what deleted 29 plugin grants across every role on a
+        // 0.102.0 site.
+        if let Err(e) = state
+            .roles()
+            .save_permissions_within(role.id, &desired, &rendered_names)
+            .await
+        {
             tracing::error!(error = %e, role_id = %role.id, "failed to save permissions");
         }
     }
 
-    tracing::info!("permissions updated");
+    tracing::info!(rendered = rendered_names.len(), "permissions updated");
     Redirect::to("/admin/people/permissions").into_response()
 }
 

@@ -297,10 +297,17 @@ fn deleting_a_role_removes_its_assignments_and_nothing_else() {
     });
 }
 
-/// The permission grid links back to the roles screen, and says what it cannot
-/// grant. Both directions of the link, so neither screen is a dead end.
+/// The permission grid links back to the roles screen, and says whose each
+/// permission is. Both directions of the link, so neither screen is a dead end.
+///
+/// This used to assert that the page explained why a plugin's permissions were
+/// *absent*, which was the honest thing to say while `tap_perm` went
+/// undispatched. It is dispatched now, so the grid renders plugin permissions
+/// alongside the kernel's and the claim it must make is the opposite one: which
+/// permissions it shows, who declared each, and that saving leaves anything it
+/// did not show alone.
 #[test]
-fn the_permission_grid_links_back_and_states_its_limit() {
+fn the_permission_grid_links_back_and_names_each_permissions_owner() {
     run_test(async {
         let app = shared_app().await;
         let cookies = admin_session(app).await;
@@ -312,8 +319,22 @@ fn the_permission_grid_links_back_and_states_its_limit() {
             "the grid must link to the roles screen"
         );
         assert!(
-            html.contains("tap_perm"),
-            "the grid must say why a plugin's permissions are absent, got: {html}"
+            html.contains("Declared by"),
+            "the grid must name the owner of each permission, got: {html}"
+        );
+        assert!(
+            html.contains("Kernel"),
+            "a kernel permission must be attributed to the kernel, got: {html}"
+        );
+        // The rendered set is what the save is allowed to revoke, so the page
+        // has to carry it. No hidden name, no safe save.
+        assert!(
+            html.contains(r#"name="permname_0""#),
+            "the grid must submit the permissions it rendered, got: {html}"
+        );
+        assert!(
+            !html.contains("does not yet dispatch"),
+            "the grid must not still claim plugin permissions cannot appear"
         );
     });
 }

@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+- Fix: a plugin's permissions exist, can be seen, and can be granted.
+
+  `tap_perm` was declared in the WIT and never dispatched, so the permissions a
+  plugin declares existed only inside the plugin. Nothing in the kernel had a
+  list of them, and three things followed from that at once: the permission grid
+  could not show or grant one, `config import` refused to name one in a
+  `role.*.yml` file, and saving the grid **revoked** any that SQL or a migration
+  had inserted, because the save rebuilt each role's whole set from the kernel's
+  list and anything absent from that list was indistinguishable from a box
+  someone had deliberately unticked. On a 0.102.0 site that last one deleted 29
+  grants across every role. So there was no durable way for a role to hold a
+  plugin's permission at all: the documented workaround was SQL, and the next
+  visit to the grid undid it.
+
+  The kernel now dispatches `tap_perm` at boot, beside `tap_menu` and for the
+  same reason: a declaration is a constant, so it is collected once rather than
+  asked for during a request. What comes back is parsed into a registry that
+  stamps the declaring plugin onto each permission, the way the menu registry
+  already stamps its own, and a plugin that returns nonsense is recorded and
+  skipped rather than allowed to stop the boot.
+
+  The result is also written to a new `plugin_permission` table, which the other
+  two registries have no need for. The reason is `config import`: it validates a
+  role file's permission list, and it runs as a CLI with a pool and no
+  `AppState`, so a registry that lived only in memory would be invisible to
+  exactly the consumer that makes a plugin's permission nameable in a config
+  file. The table is a cache of declarations and never a grant; `role_permissions`
+  remains the only place a permission is held. A plugin that is disabled cannot
+  answer, so a refresh replaces only the rows of the plugins that did, and
+  validation still accepts a permission some role already holds, which is what
+  lets such a site re-import.
+
+  The grid renders plugin permissions beside the kernel's with a column naming
+  the plugin that declared each, and its save now replaces only the permissions
+  the form actually rendered: `Role::set_permissions_within` confines removals to
+  that set, so a permission the screen never showed keeps whatever it had,
+  granted or not. The form states which permissions it rendered by submitting
+  each name as a hidden value keyed by row index, which also retires the old
+  checkbox key that encoded the name with spaces replaced by underscores. That
+  encoding was not reversible and stopped being merely ugly the moment plugin
+  permissions arrived, since names like `create argus_feed content` already
+  contain underscores.
+
+  A plugin enabled from `/admin/plugins` while the server runs has its
+  declarations refreshed immediately when its module is already compiled, and
+  otherwise registers them on the next restart, because the runtime loads the
+  plugins enabled at boot and builds the tap registry from that set once. That is
+  the same restart boundary `plugin enable` on the CLI already documents and the
+  one `tap_install` already waits for; KNOWN-ISSUES.md records it.
+
+  Not changed, and reported instead: `current-user-has-permission` on the user
+  host interface is still a literal string membership test, so it disagrees with
+  the kernel's route check for an administrator. Correcting it needs a decision
+  that is not this change's to make, because the kernel's own routes do not agree
+  with each other about what `administer site` means: `require_permission` bypasses
+  on the `users.is_admin` column, while `routes/item.rs` bypasses on
+  `UserContext::is_admin()`, which is the string `administer site`. A role holding
+  `administer site` and nothing else therefore passes one check and fails the
+  other. BL-33 already records the split. Making the host function match "the
+  kernel's semantics" requires first choosing which of the two the kernel means.
+
+  Regression tests: a declaration is parsed with its owner, a double-encoded one
+  parses too, a malformed one is dropped without taking the others down, a plugin
+  cannot claim a kernel permission or one another plugin claimed, a refresh
+  replaces only the plugins that answered, and a config file grants a permission a
+  plugin declared while one nothing declares or holds is still refused.
+
 - Fix: the admin UI asks what you may do, not whether you are the superuser.
 
   111 admin route handlers across 17 files called `require_admin`, which gates on

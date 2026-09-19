@@ -806,12 +806,16 @@ async fn validate_references(
 /// Valid means one of two things:
 ///
 /// - a permission the kernel defines ([`crate::models::role::KERNEL_PERMISSIONS`]);
-/// - a permission some role in this database already holds. A plugin declares its
-///   permissions through `tap_perm`, which the kernel does not yet dispatch, so a
-///   plugin's permissions are in no list the kernel can consult. Accepting what is
-///   already granted is what lets an export of such a site re-import, and it is
-///   also why the seeded `authenticated user` role, which holds `view own
-///   profile`, does not trip this.
+/// - a permission a plugin declared through `tap_perm`, which the kernel
+///   dispatches at boot and stores in `plugin_permission`. This is the case that
+///   makes a plugin's permission nameable in a config file at all, and it is why
+///   the declarations are written to the database rather than kept in memory:
+///   `config import` runs in its own process with a pool and no `AppState`;
+/// - a permission some role in this database already holds. Kept for a site
+///   whose plugin is currently disabled, so it declares nothing while its grants
+///   remain: this is what lets an export of such a site re-import, and it is also
+///   why the seeded `authenticated user` role, which holds `view own profile`,
+///   does not trip this.
 ///
 /// The message says which of the two likely causes it is, because "unknown
 /// permission" on its own does not tell an operator whether to fix a typo or
@@ -832,6 +836,18 @@ async fn validate_role_permissions(
         .iter()
         .map(|p| (*p).to_string())
         .collect();
+    match crate::plugin::permission_registry::load_all(pool).await {
+        Ok(declared) => known.extend(declared.into_iter().map(|p| p.name)),
+        Err(e) => {
+            // Same reasoning as the granted set below: narrowing what counts as
+            // valid would reject a permission the file legitimately names.
+            failures.push(ConfigImportFailure {
+                filename: "(role permissions)".to_string(),
+                error: format!("failed to read the declared plugin permissions: {e:#}"),
+            });
+            return;
+        }
+    }
     match Role::all_granted_permissions(pool).await {
         Ok(granted) => known.extend(granted),
         Err(e) => {

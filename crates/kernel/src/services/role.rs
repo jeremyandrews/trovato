@@ -119,6 +119,23 @@ impl RoleService {
         Ok(())
     }
 
+    /// Update a role's permissions **within a known subset**, leaving any
+    /// permission outside `rendered` exactly as it was.
+    ///
+    /// What the permission grid saves with. See
+    /// [`Role::set_permissions_within`] for why a partial view of the
+    /// permission universe must not replace the whole set.
+    pub async fn save_permissions_within(
+        &self,
+        role_id: Uuid,
+        desired: &[String],
+        rendered: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        Role::set_permissions_within(&self.inner.pool, role_id, desired, rendered).await?;
+        self.inner.permissions.invalidate_all();
+        Ok(())
+    }
+
     /// Get all roles for a user.
     pub async fn get_user_roles(&self, user_id: Uuid) -> Result<Vec<Role>> {
         Role::get_user_roles(&self.inner.pool, user_id).await
