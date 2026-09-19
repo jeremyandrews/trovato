@@ -8,10 +8,11 @@
 <div class="admin-card">
     <p>Every role against every permission. To add, rename or delete a role, go to
     <a href="/admin/people/roles">Roles</a>.</p>
-    <p>This grid lists the permissions the kernel defines. A plugin declares its own
-    through <code>tap_perm</code>, which the kernel does not yet dispatch, so a
-    plugin's permissions do not appear here and cannot be granted from this screen.
-    See KNOWN-ISSUES.md.</p>
+    <p>This grid lists the permissions the kernel defines and the permissions each
+    enabled plugin declares through <code>tap_perm</code>, with the owner of each in
+    the Declared by column. Saving changes only the permissions shown here: one
+    belonging to a disabled plugin, or added directly to the database, keeps
+    whatever it already had.</p>
 </div>
 
 <div class="admin-card">
@@ -23,24 +24,39 @@
             <thead>
                 <tr>
                     <th>Permission</th>
+                    <th>Declared by</th>
                     {% for role in roles %}
                     <th class="role-column">{{ role.name }}</th>
                     {% endfor %}
                 </tr>
             </thead>
             <tbody>
+                {# The loop index, not the permission name, keys each checkbox.
+                   The name travels as the value of a hidden field, so it needs
+                   no escaping and survives round-tripping intact; a name-derived
+                   key could not, once plugin permissions brought underscores
+                   into names. The hidden fields are also how the save learns
+                   which permissions this page rendered, and therefore which ones
+                   it may revoke. #}
                 {% for permission in available_permissions %}
+                {% set i = loop.index0 %}
                 <tr>
-                    <td class="permission-name">{{ permission }}</td>
+                    <td class="permission-name">
+                        <input type="hidden" name="permname_{{ i }}" value="{{ permission.name }}">
+                        {{ permission.name }}
+                        {% if permission.description %}
+                        <span class="permission-description">{{ permission.description }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="permission-provider">{{ permission.provider }}</td>
                     {% for role in roles %}
                     {% set role_id_str = role.id %}
-                    {% set perm_key = "perm_" ~ role.id ~ "_" ~ permission | replace(from=" ", to="_") %}
                     {% set role_perms = role_permissions[role_id_str] | default(value=[]) %}
                     <td class="permission-checkbox">
                         <input type="checkbox"
-                               name="{{ perm_key }}"
+                               name="perm_{{ i }}_{{ role.id }}"
                                value="1"
-                               {% if permission in role_perms %}checked{% endif %}>
+                               {% if permission.name in role_perms %}checked{% endif %}>
                     </td>
                     {% endfor %}
                 </tr>
@@ -70,6 +86,16 @@
     }
     .permission-name {
         font-weight: 500;
+    }
+    .permission-description {
+        display: block;
+        font-weight: 400;
+        font-size: 0.85em;
+        color: #666;
+    }
+    .permission-provider {
+        white-space: nowrap;
+        color: #555;
     }
     .permission-checkbox {
         text-align: center;

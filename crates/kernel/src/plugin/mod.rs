@@ -17,6 +17,7 @@ pub mod gate;
 mod info_parser;
 pub mod limits;
 pub mod migration;
+pub mod permission_registry;
 pub mod runtime;
 pub mod status;
 

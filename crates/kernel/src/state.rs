@@ -106,6 +106,8 @@ struct AppStateInner {
 
     /// Assistant scope registry, built once at boot from `tap_assistant_scopes`.
     assistant_scopes: Arc<AssistantRegistry>,
+    /// Permissions plugins declared through `tap_perm`, collected once at boot.
+    plugin_permissions: Arc<crate::plugin::permission_registry::PluginPermissionRegistry>,
 
     /// Content type registry.
     content_types: Arc<ContentTypeRegistry>,
@@ -537,6 +539,40 @@ impl AppState {
         });
 
         let menu_registry = Arc::new(menu_registry);
+
+        // Plugin permissions, collected the same way and for the same reason: a
+        // permission declaration is a constant, so it is gathered once here
+        // rather than asked for during a request. Dispatched without services,
+        // like `tap_menu`.
+        //
+        // Unlike the other two registries this one is also written to the
+        // database, because it has a consumer that is not this process:
+        // `config import` validates a role file's permission list from a CLI
+        // that has a pool and no `AppState`. Until this dispatch existed, a
+        // plugin's permissions were in no list the kernel could consult, so they
+        // could not be granted from the grid or named in a config file, and the
+        // grid's save revoked them.
+        let plugin_permissions = {
+            let perm_state = RequestState::without_services(UserContext::anonymous());
+            let results = tap_dispatcher.dispatch("tap_perm", "{}", perm_state).await;
+            let registry =
+                crate::plugin::permission_registry::PluginPermissionRegistry::from_tap_results(
+                    results
+                        .into_iter()
+                        .map(|r| (r.plugin_name, r.output))
+                        .collect(),
+                );
+            if !registry.is_empty() {
+                info!(count = registry.len(), "registered plugin permissions");
+            }
+            // A failure to store is logged and not fatal: the site boots with
+            // the grid showing the kernel's permissions only, which is what it
+            // did before this existed.
+            if let Err(e) = crate::plugin::permission_registry::persist(&db, &registry).await {
+                error!(error = %e, "failed to store declared plugin permissions");
+            }
+            Arc::new(registry)
+        };
 
         // Assistant scopes, collected the same way and for the same reason: a
         // scope names a route the kernel has to serve and a permission it has to
@@ -1050,6 +1086,7 @@ impl AppState {
                 tap_dispatcher,
                 tap_services,
                 menu_registry,
+                plugin_permissions,
                 assistant_scopes,
                 content_types,
                 record_types,
@@ -1191,6 +1228,17 @@ impl AppState {
     /// Get the assistant scope registry.
     pub fn assistant_scopes(&self) -> &Arc<AssistantRegistry> {
         &self.inner.assistant_scopes
+    }
+
+    /// The permissions plugins declared through `tap_perm`.
+    ///
+    /// Read by the permission grid so a plugin's permissions can be granted
+    /// there. `config import` reads the same set from the database instead,
+    /// because it runs in its own process.
+    pub fn plugin_permissions(
+        &self,
+    ) -> &Arc<crate::plugin::permission_registry::PluginPermissionRegistry> {
+        &self.inner.plugin_permissions
     }
 
     /// Get the content type registry.

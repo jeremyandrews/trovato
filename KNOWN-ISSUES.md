@@ -195,36 +195,34 @@ containing a file it cannot parse: the run names every offending file, exits
 non-zero, and writes nothing. It used to skip such a file with a warning and report
 success, which meant an entity that never arrived with nothing that said why.
 
-### A plugin's permissions cannot be granted by config import
+### A plugin enabled while the server runs registers its permissions on restart
 
-A role config file declares a `permissions` list and `config import` grants
-exactly that set, so a role now arrives able to do something. What it cannot
-declare is a permission belonging to a plugin.
+`tap_perm` is dispatched at boot and its result stored, so every plugin enabled
+at startup has its permissions in the grid and nameable in a `role.*.yml` file.
+Enabling a plugin from `/admin/plugins` also refreshes its declarations
+immediately, but only if that plugin's module was already compiled: the runtime
+loads the plugins that were enabled at boot and builds the tap registry from
+that set once, so a plugin enabled afterwards has nothing to dispatch to until
+the next restart. Its permissions then appear on the next start. This is the
+same restart boundary `plugin enable` on the CLI already documents and the one
+`tap_install` already waits for.
 
-A plugin declares its permissions through `tap_perm`, which is declared in the WIT
-and **not dispatched** by the kernel (`crates/wit/kernel.wit` says so). So the
-kernel has no list of a plugin's permissions to validate against, and it refuses a
-permission string it has no evidence exists rather than granting one that matches
-nothing a permission check will ever ask for. The evidence it does accept is a
-permission some role in the database already holds, which is what lets an export
-of a site that uses plugin permissions re-import.
+### A plugin's permissions cannot be granted by config import (fixed)
 
-The practical consequence used to be written here as: grant a plugin's permissions
-once by SQL, after which they can go in the config file like any other. That
-workaround does not survive contact with the interface. The permission grid at
-`/admin/people/permissions` cannot grant one, because it renders the kernel's list
-and a plugin's permissions do not appear there, and **saving the grid revokes
-them**: the handler builds each role's desired set by filtering the kernel's list,
-and the save has replace semantics, so a permission the grid never rendered is
-absent from the set and is taken away
-(`crates/kernel/src/routes/admin_user.rs:821-829`,
-`crates/kernel/src/models/role.rs:202-213`). An administrator changing an unrelated
-checkbox undoes the SQL. So on 0.102.0 there is no durable way for a role to hold a
-plugin's permission at all.
+`tap_perm` was declared in the WIT and not dispatched, so the kernel had no list
+of a plugin's permissions. Three things followed at once: the permission grid
+could not show or grant one, `config import` refused to name one, and saving the
+grid **revoked** any that SQL or a migration had inserted, because the save
+rebuilt each role's whole set from the kernel's list and anything absent from
+that list looked deliberately unchecked.
 
-Dispatching `tap_perm` is what fixes the first half and it is additive to the plugin
-contract rather than a break of it; merging rather than replacing on save is what
-fixes the second. See BL-69 and BL-90 in [docs/BACKLOG.md](docs/BACKLOG.md).
+All three are fixed. The kernel dispatches `tap_perm` at boot and stores what it
+gets in `plugin_permission`, which is a cache of declarations and never a grant.
+The grid renders those beside the kernel's own with a column naming the plugin
+that declared each. `config import` accepts a declared permission, and still
+accepts one some role already holds, which covers a site whose plugin is
+currently disabled. The save now replaces only the permissions the form actually
+rendered, so a permission the grid did not show keeps whatever it had.
 
 ### Semantic search has no approximate index
 

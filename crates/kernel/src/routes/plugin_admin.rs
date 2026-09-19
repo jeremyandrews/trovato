@@ -213,6 +213,10 @@ async fn toggle_plugin(
             // .html files, so we must NOT pre-escape here.
             let msg = format!("Plugin '{}' {}.", form.plugin_name, action_word);
             let _ = session.insert(FLASH_KEY, &msg).await;
+
+            if want_enabled {
+                refresh_declared_permissions(&state, &form.plugin_name).await;
+            }
         }
         Ok(false) => {
             // Row not found — roll back in-memory change to actual prior state.
@@ -230,6 +234,57 @@ async fn toggle_plugin(
     }
 
     Redirect::to("/admin/plugins").into_response()
+}
+
+/// Ask a just-enabled plugin what permissions it declares, and store them.
+///
+/// The boot dispatch in `AppState::new` is the main path and covers every
+/// plugin enabled at startup. This covers the plugin enabled from this screen
+/// while the server is running, so its permissions reach the grid without
+/// waiting for a restart.
+///
+/// **It cannot always succeed, and that is a property of the runtime, not of
+/// this function.** `PluginRuntime::load_enabled` compiles only the plugins
+/// enabled at boot, and the tap registry is built from that set once, so a
+/// plugin enabled afterwards has no compiled module to dispatch to until the
+/// next restart. The dispatch then returns nothing, which is reported here as
+/// what it is rather than logged as a failure: it is the same restart boundary
+/// the CLI already documents for `plugin enable`, and the same one `tap_install`
+/// already waits for.
+async fn refresh_declared_permissions(state: &AppState, plugin: &str) {
+    use crate::plugin::permission_registry::{PluginPermissionRegistry, persist};
+    use crate::tap::{RequestState, UserContext};
+
+    let tap_state = RequestState::without_services(UserContext::anonymous());
+    let Some(result) = state
+        .tap_dispatcher()
+        .dispatch_to_plugin("tap_perm", "{}", plugin, tap_state)
+        .await
+    else {
+        tracing::info!(
+            plugin = %plugin,
+            "plugin declared no permissions yet; they register on the next restart"
+        );
+        return;
+    };
+
+    let registry =
+        PluginPermissionRegistry::from_tap_results(vec![(plugin.to_string(), result.output)]);
+    if registry.is_empty() {
+        return;
+    }
+    match persist(state.db(), &registry).await {
+        Ok(()) => tracing::info!(
+            plugin = %plugin,
+            count = registry.len(),
+            "registered a newly enabled plugin's permissions"
+        ),
+        Err(e) => tracing::error!(
+            plugin = %plugin,
+            error = %e,
+            "failed to store a newly enabled plugin's permissions"
+        ),
+    }
 }
 
 // =============================================================================

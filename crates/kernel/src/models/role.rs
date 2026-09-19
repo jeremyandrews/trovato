@@ -26,11 +26,12 @@ pub mod well_known {
 /// how they drift.
 ///
 /// **This is not every valid permission.** A plugin declares its own through
-/// `tap_perm`, which the kernel does not yet dispatch (see `crates/wit/kernel.wit`),
-/// so plugin permissions appear in neither this list nor the grid. What is already
-/// granted in `role_permissions` is treated as valid by config-import validation
-/// for exactly that reason, and the seeded `authenticated user` role is the proof
-/// that the two sets differ: it holds `view own profile`, which is not here.
+/// `tap_perm`, which the kernel dispatches at boot and stores in
+/// `plugin_permission`; the grid renders those beside these and config-import
+/// validation accepts them. What is already granted in `role_permissions` stays
+/// valid too, which covers a site whose plugin is currently disabled, and the
+/// seeded `authenticated user` role is the proof that the sets differ: it holds
+/// `view own profile`, which is not here.
 pub const KERNEL_PERMISSIONS: &[&str] = &[
     "administer site",
     "access content",
@@ -210,6 +211,46 @@ impl Role {
             Self::add_permission(pool, role_id, permission).await?;
         }
         for permission in &to_remove {
+            Self::remove_permission(pool, role_id, permission).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Make this role hold exactly `desired` **among `rendered`**, touching
+    /// nothing outside that set.
+    ///
+    /// [`Self::set_permissions`] replaces the whole set, which is right for
+    /// `config import`, where the file is the complete statement of what a role
+    /// holds. It is wrong for any caller that knows about only part of the
+    /// permission universe, and the permission grid is exactly that caller: it
+    /// renders a list and submits checkboxes for that list, so every permission
+    /// it never rendered arrives looking identical to one deliberately
+    /// unchecked. Replacing on that input silently revoked them, which is how
+    /// saving the grid on a 0.102.0 site deleted 29 plugin grants across every
+    /// role.
+    ///
+    /// So removals are confined to `rendered`: a permission outside it is left
+    /// exactly as it was, granted or not. `desired` is still applied in full, on
+    /// the assumption a caller does not ask for something it did not render.
+    pub async fn set_permissions_within(
+        pool: &PgPool,
+        role_id: Uuid,
+        desired: &[String],
+        rendered: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let current = Self::get_permissions(pool, role_id).await?;
+        let (to_add, to_remove) = permission_diff(&current, desired);
+
+        for permission in &to_add {
+            Self::add_permission(pool, role_id, permission).await?;
+        }
+        for permission in &to_remove {
+            if !rendered.contains(permission) {
+                // Not on the form at all, so its absence from `desired` says
+                // nothing about whether anyone wanted it revoked.
+                continue;
+            }
             Self::remove_permission(pool, role_id, permission).await?;
         }
 
