@@ -72,6 +72,24 @@ the bulk endpoint.
 | `/admin/users/{id}/sessions` and its revoke route | GET, POST | `administer users` |
 | `/admin/recovery` | GET, POST | `administer users` |
 
+**Role membership is delegable; the permissions it can carry are not.**
+The user add and edit forms carry a checkbox per role. `administer users` is a
+grantable permission and roles carry permissions, so without a guard a delegated
+user administrator could assign themselves a role holding `administer site` and
+become a site administrator by way of the screen they were given to manage
+usernames. A non-superuser may therefore only grant or revoke a role whose
+permissions they already hold themselves: they can hand out what they have and
+no more. A superuser is unrestricted. Roles the actor may not touch are left
+exactly as they were on the target rather than silently dropped.
+
+The CLI has the same two operations without the guard, because it is not
+reachable over the network and whoever runs it already has the database:
+`trovato user role-add <username> <role>`, `trovato user role-remove`, and
+`trovato user roles <username>` to see what someone holds. A CLI change is not
+seen by a running server until its permission cache expires, which the commands
+say; that is the same limitation `config import` has always had, for the same
+reason.
+
 **The superuser flag itself is not delegated.** The user add and edit forms
 carry an `is_admin` checkbox. `administer users` is a grantable permission and
 the superuser flag is what grants it, so honouring that checkbox for a
@@ -132,7 +150,8 @@ neither.
 | Route | Method | Permission |
 |---|---|---|
 | `/admin/content/{id}/translate` | GET | `translate content` |
-| `/admin/content/{id}/translate/{lang}` | GET | `translate content` |
+| `/admin/content/{id}/translate/{lang}` | GET, POST | `translate content` |
+| `/admin/content/{id}/translate/{lang}/delete` | POST | `translate content` |
 
 ## Superuser only
 

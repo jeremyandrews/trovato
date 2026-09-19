@@ -63,10 +63,38 @@
                                {% if values.is_admin %}checked{% endif %}>
                         <label for="is_admin">Administrator</label>
                     </div>
-                    <p class="form-item__description">Administrators have full access to the site.</p>
+                    <p class="form-item__description">Administrators have full access to the site.
+                    Only an administrator can grant or remove this.</p>
                 </div>
             </div>
         </fieldset>
+
+        {#- Role membership. The checkbox key carries the role id, because
+            `serde_urlencoded` cannot collect repeated same-name fields into a
+            list; the server iterates its own role list and reads each key back,
+            so an unknown key names nothing. -#}
+        {% if roles %}
+        <fieldset class="fieldset">
+            <legend>Roles</legend>
+            <div class="fieldset__content">
+                {% set held = values.roles | default(value=[]) %}
+                {% for role in roles %}
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="role_{{ role.id }}"
+                               name="role_{{ role.id }}" value="1"
+                               {% if role.id in held %}checked{% endif %}>
+                        <label for="role_{{ role.id }}">{{ role.name }}</label>
+                    </div>
+                </div>
+                {% endfor %}
+                <p class="form-item__description">
+                    A role grants its permissions to every user who holds it. See
+                    <a href="/admin/people/permissions">Permissions</a>.
+                </p>
+            </div>
+        </fieldset>
+        {% endif %}
 
         {% if editing %}
         {{ form::actions(submit_label="Save changes", cancel_url="/admin/people") }}

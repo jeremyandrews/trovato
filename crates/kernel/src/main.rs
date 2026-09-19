@@ -120,6 +120,25 @@ enum UserAction {
         /// New password (min 12 characters). If omitted, reads from stdin.
         password: Option<String>,
     },
+    /// Give a user a role.
+    RoleAdd {
+        /// Username.
+        username: String,
+        /// Role name.
+        role: String,
+    },
+    /// Take a role away from a user.
+    RoleRemove {
+        /// Username.
+        username: String,
+        /// Role name.
+        role: String,
+    },
+    /// List the roles a user holds.
+    Roles {
+        /// Username.
+        username: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -585,10 +604,73 @@ async fn run_user_command(action: UserAction) -> Result<()> {
                 anyhow::bail!("Failed to update password for user '{username}'.");
             }
         }
+        UserAction::RoleAdd { username, role } => {
+            let (user, role) = find_user_and_role(&pool, &username, &role).await?;
+            // Idempotent: `assign_to_user` upserts, so re-running is not an
+            // error, and saying which it was is more use than a bare "done".
+            let already = models::Role::get_user_roles(&pool, user.id)
+                .await?
+                .into_iter()
+                .any(|r| r.id == role.id);
+            models::Role::assign_to_user(&pool, user.id, role.id).await?;
+            if already {
+                println!("User '{username}' already had role '{}'.", role.name);
+            } else {
+                println!("User '{username}' now has role '{}'.", role.name);
+                println!("{CLI_ROLE_CACHE_NOTE}");
+            }
+        }
+        UserAction::RoleRemove { username, role } => {
+            let (user, role) = find_user_and_role(&pool, &username, &role).await?;
+            models::Role::remove_from_user(&pool, user.id, role.id).await?;
+            println!("User '{username}' no longer has role '{}'.", role.name);
+            println!("{CLI_ROLE_CACHE_NOTE}");
+        }
+        UserAction::Roles { username } => {
+            let user = models::User::find_by_name(&pool, &username)
+                .await?
+                .context(format!("User '{username}' not found."))?;
+            let roles = models::Role::get_user_roles(&pool, user.id).await?;
+            if roles.is_empty() {
+                println!("User '{username}' holds no roles.");
+            } else {
+                println!("User '{username}' holds {} role(s):", roles.len());
+                for role in roles {
+                    println!("  {}", role.name);
+                }
+            }
+        }
     }
 
     Ok(())
 }
+
+/// Resolve a username and a role name, or say which one was not found.
+///
+/// Both lookups are by name rather than id, because a name is what an operator
+/// has in front of them. Naming the missing one matters: "not found" on its own
+/// leaves them checking both.
+async fn find_user_and_role(
+    pool: &sqlx::PgPool,
+    username: &str,
+    role: &str,
+) -> Result<(models::User, models::Role)> {
+    let user = models::User::find_by_name(pool, username)
+        .await?
+        .context(format!("User '{username}' not found."))?;
+    let role = models::Role::find_by_name(pool, role)
+        .await?
+        .context(format!("Role '{role}' not found."))?;
+    Ok((user, role))
+}
+
+/// A running server caches permissions, so a CLI role change is not instant.
+///
+/// The same limitation `config import` has had since it could grant a role's
+/// permissions: both run in their own process with no `AppState` to invalidate.
+/// Said once, here, rather than in each arm.
+const CLI_ROLE_CACHE_NOTE: &str =
+    "A running server may take up to its permission cache TTL to see this change.";
 
 fn print_config_summary(
     verb: &str,

@@ -11,7 +11,7 @@ use crate::form::csrf::generate_csrf_token;
 use crate::models::role::KERNEL_PERMISSIONS;
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
-use crate::models::{CreateUser, UpdateUser};
+use crate::models::{CreateUser, UpdateUser, User};
 use crate::state::AppState;
 
 use super::helpers::{
@@ -31,6 +31,16 @@ struct UserFormData {
     password: Option<String>,
     is_admin: Option<String>,
     status: Option<String>,
+    /// Role membership, as `role_{role_id}` keys.
+    ///
+    /// Flattened into a map rather than collected into a `Vec<Uuid>` because
+    /// `axum::Form` deserializes with `serde_urlencoded`, which cannot gather
+    /// repeated same-name keys into a sequence. Every multi-checkbox group in
+    /// this codebase encodes identity in the key for that reason, and reads it
+    /// back by reconstructing the key from the server's own list rather than by
+    /// trusting what the browser sent.
+    #[serde(flatten)]
+    roles: std::collections::HashMap<String, String>,
 }
 
 /// One role in the listing.
@@ -116,7 +126,8 @@ async fn add_user_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
-    context.insert("values", &serde_json::json!({}));
+    context.insert("values", &serde_json::json!({"roles": []}));
+    context.insert("roles", &state.roles().list().await.unwrap_or_default());
     context.insert("path", "/admin/people/add");
 
     render_admin_template(&state, "admin/user-form.html", context).await
@@ -176,6 +187,7 @@ async fn add_user_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
         context.insert("errors", &errors);
+        let all_roles = state.roles().list().await.unwrap_or_default();
         context.insert(
             "values",
             &serde_json::json!({
@@ -183,8 +195,10 @@ async fn add_user_submit(
                 "mail": form.mail,
                 "is_admin": form.is_admin.is_some(),
                 "status": form.status.is_some(),
+                "roles": submitted_role_ids(&all_roles, &form.roles),
             }),
         );
+        context.insert("roles", &all_roles);
         context.insert("path", "/admin/people/add");
 
         return render_admin_template(&state, "admin/user-form.html", context).await;
@@ -206,7 +220,8 @@ async fn add_user_submit(
 
     let user_ctx = admin_user_context(&state, &current_user).await;
     match state.users().create(input, &user_ctx).await {
-        Ok(_user) => {
+        Ok(user) => {
+            apply_role_membership(&state, &current_user, user.id, &form.roles).await;
             tracing::info!(name = %form.name, "user created");
             Redirect::to("/admin/people").into_response()
         }
@@ -242,6 +257,14 @@ async fn edit_user_form(
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
     context.insert("user_id", &user_id.to_string());
+    let held: Vec<String> = state
+        .roles()
+        .get_user_roles(user_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.id.to_string())
+        .collect();
     context.insert(
         "values",
         &serde_json::json!({
@@ -249,8 +272,10 @@ async fn edit_user_form(
             "mail": target_user.mail,
             "is_admin": target_user.is_admin,
             "status": target_user.status == 1,
+            "roles": held,
         }),
     );
+    context.insert("roles", &state.roles().list().await.unwrap_or_default());
     context.insert("path", &format!("/admin/people/{user_id}/edit"));
 
     // Local task tabs for user edit pages (hardcoded + plugin-registered)
@@ -336,6 +361,7 @@ async fn edit_user_submit(
         context.insert("editing", &true);
         context.insert("user_id", &user_id.to_string());
         context.insert("errors", &errors);
+        let all_roles = state.roles().list().await.unwrap_or_default();
         context.insert(
             "values",
             &serde_json::json!({
@@ -343,8 +369,10 @@ async fn edit_user_submit(
                 "mail": form.mail,
                 "is_admin": form.is_admin.is_some(),
                 "status": form.status.is_some(),
+                "roles": submitted_role_ids(&all_roles, &form.roles),
             }),
         );
+        context.insert("roles", &all_roles);
         let current_path = format!("/admin/people/{user_id}/edit");
         context.insert("path", &current_path);
         context.insert(
@@ -384,6 +412,8 @@ async fn edit_user_submit(
     let user_ctx = admin_user_context(&state, &current_user).await;
     match state.users().update(user_id, input, &user_ctx).await {
         Ok(_) => {
+            apply_role_membership(&state, &current_user, user_id, &form.roles).await;
+
             // Update password if provided
             if let Some(ref password) = form.password
                 && !password.is_empty()
@@ -760,6 +790,114 @@ async fn delete_role(
         Err(e) => {
             tracing::error!(error = %e, "failed to delete role");
             render_server_error("Failed to delete role.")
+        }
+    }
+}
+
+/// The role ids a submitted form ticked, for re-rendering after a validation
+/// error so the operator does not lose their selection.
+fn submitted_role_ids(
+    roles: &[crate::models::Role],
+    submitted: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    roles
+        .iter()
+        .filter(|role| submitted.contains_key(&format!("role_{}", role.id)))
+        .map(|role| role.id.to_string())
+        .collect()
+}
+
+/// Apply the role checkboxes a user form submitted.
+///
+/// The authoritative iteration is over the roles the server knows, not over
+/// whatever keys the browser sent, so an unknown `role_*` key names nothing and
+/// does nothing.
+///
+/// # The escalation guard
+///
+/// `administer users` is a grantable permission, and roles carry permissions.
+/// Without a guard, a delegated user administrator could assign themselves a
+/// role holding `administer site` and become a site administrator by way of the
+/// screen they were given to manage usernames. So a non-superuser may only
+/// grant or revoke a role whose permissions they already hold themselves: they
+/// can hand out what they have and no more. A superuser is unrestricted, as they
+/// are everywhere else.
+///
+/// Roles the actor may not touch are left exactly as they are on the target,
+/// granted or not, rather than being silently dropped.
+async fn apply_role_membership(
+    state: &AppState,
+    actor: &User,
+    target_id: uuid::Uuid,
+    submitted: &std::collections::HashMap<String, String>,
+) {
+    let roles = match state.roles().list().await {
+        Ok(roles) => roles,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list roles while saving a user");
+            return;
+        }
+    };
+
+    let held: std::collections::HashSet<uuid::Uuid> = state
+        .roles()
+        .get_user_roles(target_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+
+    // What the actor may delegate. Loaded once; a superuser skips it entirely.
+    let actor_permissions: std::collections::HashSet<String> = if actor.is_admin {
+        std::collections::HashSet::new()
+    } else {
+        state
+            .permissions()
+            .user_permissions(actor)
+            .await
+            .unwrap_or_default()
+    };
+
+    for role in &roles {
+        let wanted = submitted.contains_key(&format!("role_{}", role.id));
+        let currently = held.contains(&role.id);
+        if wanted == currently {
+            continue;
+        }
+
+        if !actor.is_admin {
+            let role_permissions = state
+                .roles()
+                .get_permissions(role.id)
+                .await
+                .unwrap_or_default();
+            let may_delegate = role_permissions
+                .iter()
+                .all(|p| actor_permissions.contains(p));
+            if !may_delegate {
+                tracing::warn!(
+                    actor = %actor.id,
+                    target = %target_id,
+                    role = %role.name,
+                    "refused a role change carrying permissions the actor does not hold"
+                );
+                continue;
+            }
+        }
+
+        let result = if wanted {
+            state.roles().assign_to_user(target_id, role.id).await
+        } else {
+            state.roles().remove_from_user(target_id, role.id).await
+        };
+        if let Err(e) = result {
+            tracing::error!(
+                error = %e,
+                target = %target_id,
+                role = %role.name,
+                "failed to change role membership"
+            );
         }
     }
 }
