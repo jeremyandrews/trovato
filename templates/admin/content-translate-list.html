@@ -1,19 +1,22 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
-{#- Read-only: the translations an item has, one row per site language.
-    There is no write path for translations yet, so nothing here offers to
-    create or change one. Context: item, languages, default_language,
-    translations (pairs of language and translated title), item_id. -#}
+{#- The translations an item has, one row per site language, each linking to
+    the screen that writes it. Context: item, languages, default_language,
+    translations (pairs of language and translated title), item_id, flash. -#}
 
 {% block title %}Translations: {{ item.title }}{% endblock %}
 
 {% block content %}
 {{ list::header(title="Translations: " ~ item.title) }}
 
+{% if flash %}
+<div class="admin-card messages messages--status">{{ flash }}</div>
+{% endif %}
+
 <div class="admin-card">
     <p>
-        Source language: <strong>{{ default_language }}</strong>.
+        Source language: <strong>{{ item.language }}</strong>.
         <a href="/admin/content/{{ item_id }}/edit">Edit the original</a>
     </p>
 
@@ -34,18 +37,18 @@
             {% endfor %}
             <tr>
                 <td><code>{{ language }}</code></td>
-                {% if language == default_language %}
+                {% if language == item.language %}
                 <td>{{ item.title }}</td>
                 <td>Original</td>
-                <td></td>
+                <td><a href="/admin/content/{{ item_id }}/edit">Edit the original</a></td>
                 {% elif translated_title %}
                 <td>{{ translated_title }}</td>
                 <td>Translated</td>
-                <td><a href="/admin/content/{{ item_id }}/translate/{{ language }}">View</a></td>
+                <td><a href="/admin/content/{{ item_id }}/translate/{{ language }}">Edit</a></td>
                 {% else %}
                 <td></td>
                 <td>Not translated</td>
-                <td></td>
+                <td><a href="/admin/content/{{ item_id }}/translate/{{ language }}">Add</a></td>
                 {% endif %}
             </tr>
             {% endfor %}

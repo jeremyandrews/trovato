@@ -1254,6 +1254,117 @@ async fn an_unknown_permission_fails_validation_loudly() {
     db.cleanup().await;
 }
 
+/// A config file writes a content translation.
+///
+/// The second of the two write paths. `item_translation` had no config entity at
+/// all, so a config set could ship an item and never its translations, and a
+/// site's translated content could not be exported and re-imported the way every
+/// other entity can.
+///
+/// The file is `item_translation.<uuid>.<language>.yml`. The filename parser
+/// splits an entity file on its *first* dot, so `<uuid>.<language>` arrives as
+/// one id string and no parser change was needed to carry two keys in one name.
+#[tokio::test]
+async fn a_config_file_writes_a_content_translation() {
+    let db = ScratchDb::new("itemtrans").await;
+    let storage = db.storage();
+    let item_id = "0193a5a0-0002-7000-8000-0000000000f1";
+
+    // The table belongs to `trovato_content_translation`, so a database with
+    // only the kernel's migrations does not have it.
+    create_item_translation_table(&db).await;
+    seed_language(&db, "it", "Italian").await;
+
+    let dir = TempConfigDir::new("itemtrans");
+    dir.write(
+        &format!("item.{item_id}.yml"),
+        &format!(
+            "id: {item_id}\ntype: page\ntitle: The Original\nlanguage: en\nstatus: 1\nfields:\n  body: the original body\n"
+        ),
+    );
+    dir.write(
+        &format!("item_translation.{item_id}.it.yml"),
+        &format!(
+            "item_id: {item_id}\nlanguage: it\ntitle: L'originale\nfields:\n  body: il corpo originale\n"
+        ),
+    );
+
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("an item and its translation must import together: {e:#}");
+    }
+
+    let row: Option<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT title, fields FROM item_translation WHERE item_id = $1 AND language = 'it'",
+    )
+    .bind(item_id.parse::<uuid::Uuid>().unwrap())
+    .fetch_optional(db.pool())
+    .await
+    .unwrap();
+
+    let ok = row.as_ref().is_some_and(|(title, fields)| {
+        title == "L'originale"
+            && fields.get("body").and_then(|v| v.as_str()) == Some("il corpo originale")
+    });
+    db.cleanup().await;
+    assert!(ok, "the translation must be stored as written, got {row:?}");
+}
+
+/// A translation of an item that does not exist is refused.
+///
+/// `item_translation` has no foreign key to `item`, so without this check the
+/// file would import cleanly and produce a row nothing ever reads.
+#[tokio::test]
+async fn a_translation_of_a_missing_item_is_refused() {
+    let db = ScratchDb::new("itemtransorphan").await;
+    let storage = db.storage();
+    let missing = "0193a5a0-0002-7000-8000-0000000000f2";
+
+    create_item_translation_table(&db).await;
+    seed_language(&db, "it", "Italian").await;
+
+    let dir = TempConfigDir::new("itemtransorphan");
+    dir.write(
+        &format!("item_translation.{missing}.it.yml"),
+        &format!("item_id: {missing}\nlanguage: it\ntitle: Orfano\nfields: {{}}\n"),
+    );
+
+    let result = import_config(&storage, db.pool(), dir.path(), false).await;
+    let refused = result.is_err();
+    db.cleanup().await;
+    assert!(refused, "a translation of a missing item must be refused");
+}
+
+/// Create the plugin-owned `item_translation` table on a scratch database.
+async fn create_item_translation_table(db: &ScratchDb) {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS item_translation (
+            item_id UUID NOT NULL,
+            language VARCHAR(12) NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            fields JSONB NOT NULL DEFAULT '{}',
+            created BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::bigint,
+            changed BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::bigint,
+            PRIMARY KEY (item_id, language)
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .expect("create item_translation");
+}
+
+async fn seed_language(db: &ScratchDb, id: &str, label: &str) {
+    sqlx::query(
+        "INSERT INTO language (id, label, weight, is_default, direction) \
+         VALUES ($1, $2, 1, false, 'ltr') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(id)
+    .bind(label)
+    .execute(db.pool())
+    .await
+    .expect("seed language");
+}
+
 /// A permission a plugin declared can be granted by a config file.
 ///
 /// The point of dispatching `tap_perm`. Before it, a plugin's permissions were

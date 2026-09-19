@@ -96,6 +96,33 @@ pub struct ConfigItem {
     pub changed: i64,
 }
 
+/// One language's translation of a content item, as a config file.
+///
+/// Stored at `item_translation.<item uuid>.<language>.yml`.
+/// The config filename parser splits an entity file on its *first* dot, so the
+/// id is the whole `<uuid>.<language>` string and no parser change was needed to
+/// carry two keys in one name.
+///
+/// The item it translates must already exist. Config import applies entity types
+/// in dependency order and this one comes after `item`, so a set that ships an
+/// item and its translations together imports in one pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigItemTranslation {
+    /// The item being translated.
+    pub item_id: Uuid,
+
+    /// The language this translation is in. Must be a language the site knows,
+    /// and must not be the item's own language.
+    pub language: String,
+
+    /// The translated title.
+    pub title: String,
+
+    /// The translated field values, by field name.
+    #[serde(default)]
+    pub fields: serde_json::Value,
+}
+
 fn generate_uuid() -> Uuid {
     Uuid::now_v7()
 }
@@ -154,6 +181,10 @@ pub enum ConfigEntity {
     #[serde(rename = "item")]
     Item(ConfigItem),
 
+    /// One language's translation of a content item.
+    #[serde(rename = "item_translation")]
+    ItemTranslation(ConfigItemTranslation),
+
     /// Role definition.
     #[serde(rename = "role")]
     Role(Role),
@@ -184,6 +215,7 @@ impl ConfigEntity {
             Self::GatherQuery(..) => "gather_query",
             Self::UrlAlias(_) => "url_alias",
             Self::Item(_) => "item",
+            Self::ItemTranslation(_) => "item_translation",
             Self::Role(_) => "role",
             Self::Stage(_) => "stage",
             Self::Tile(_) => "tile",
@@ -203,6 +235,9 @@ impl ConfigEntity {
             Self::GatherQuery(q) => q.query_id.clone(),
             Self::UrlAlias(a) => a.id.to_string(),
             Self::Item(i) => i.id.to_string(),
+            // `<uuid>.<language>`, which the filename parser reads back whole
+            // because it splits an entity filename on its first dot only.
+            Self::ItemTranslation(t) => format!("{}.{}", t.item_id, t.language),
             Self::Role(r) => r.id.to_string(),
             Self::Stage(s) => s.id.to_string(),
             Self::Tile(t) => t.id.to_string(),
@@ -480,6 +515,15 @@ pub mod entity_types {
 
     /// Menu link definitions.
     pub const MENU_LINK: &str = "menu_link";
+
+    /// One language's translation of a content item.
+    ///
+    /// A separate entity rather than a key on the item file, because a
+    /// translation has its own identity: `(item_id, language)` is its primary
+    /// key and it carries its own `created` and `changed`. The two things an
+    /// item file does carry that the item struct does not (a tag's parents, a
+    /// role's permissions) are both 1-to-N data with no identity of their own.
+    pub const ITEM_TRANSLATION: &str = "item_translation";
 }
 
 /// Helper to parse a tag ID from a string (UUID format).
