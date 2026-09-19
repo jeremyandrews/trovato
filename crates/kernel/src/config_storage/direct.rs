@@ -10,8 +10,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{
-    ConfigEntity, ConfigFilter, ConfigItem, ConfigStorage, SearchFieldConfig, entity_types,
-    parse_tag_id,
+    ConfigEntity, ConfigFilter, ConfigItem, ConfigItemTranslation, ConfigStorage,
+    SearchFieldConfig, entity_types, parse_tag_id,
 };
 use crate::gather::types::{GatherQuery, QueryDefinition, QueryDisplay};
 use crate::models::stage::LIVE_STAGE_ID;
@@ -730,6 +730,154 @@ impl DirectConfigStorage {
     /// `created` inserts with the current time and, on re-import, keeps the
     /// stored value: an absent timestamp is not a claim that the item was
     /// created just now.
+    /// Upsert one language's translation of an item.
+    ///
+    /// Replace on `(item_id, language)`, the same semantics the admin form
+    /// saves with and the same every other config entity has: the file is the
+    /// complete statement of that translation.
+    ///
+    /// The item is checked to exist first. `item_translation` has no foreign
+    /// key to `item`, so a translation of a missing item would otherwise import
+    /// cleanly and then be read by nothing, which is the failure mode config
+    /// validation exists to prevent.
+    /// Split an `item_translation` config id into its two parts.
+    ///
+    /// The id is `<item uuid>.<language>`, so it splits on the **last** dot: a
+    /// uuid contains no dot, and a BCP-47 language tag may.
+    fn split_translation_id(id: &str) -> Result<(Uuid, String)> {
+        let (item, language) = id
+            .rsplit_once('.')
+            .ok_or_else(|| anyhow::anyhow!("item_translation id must be '<uuid>.<language>'"))?;
+        let item_id = item
+            .parse::<Uuid>()
+            .map_err(|e| anyhow::anyhow!("invalid item id in '{id}': {e}"))?;
+        Ok((item_id, language.to_string()))
+    }
+
+    async fn load_item_translation(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let (item_id, language) = Self::split_translation_id(id)?;
+        let row: Option<(Uuid, String, String, serde_json::Value)> = sqlx::query_as(
+            "SELECT item_id, language, title, fields FROM item_translation \
+             WHERE item_id = $1 AND language = $2",
+        )
+        .bind(item_id)
+        .bind(&language)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load item translation")?;
+
+        Ok(row.map(|(item_id, language, title, fields)| {
+            ConfigEntity::ItemTranslation(ConfigItemTranslation {
+                item_id,
+                language,
+                title,
+                fields,
+            })
+        }))
+    }
+
+    async fn delete_item_translation(&self, id: &str) -> Result<bool> {
+        let (item_id, language) = Self::split_translation_id(id)?;
+        let result =
+            sqlx::query("DELETE FROM item_translation WHERE item_id = $1 AND language = $2")
+                .bind(item_id)
+                .bind(&language)
+                .execute(&self.pool)
+                .await
+                .context("failed to delete item translation")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Every stored translation, for export.
+    ///
+    /// The table belongs to `trovato_content_translation`, so a site that has
+    /// never enabled it does not have the table at all. That is an empty export
+    /// rather than a failed one: config export walks every entity type, and one
+    /// absent plugin table must not stop a site exporting the rest.
+    async fn list_item_translations(
+        &self,
+        _filter: Option<&ConfigFilter>,
+    ) -> Result<Vec<ConfigEntity>> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = current_schema() AND table_name = 'item_translation')",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to check for the item_translation table")?;
+        if !exists {
+            return Ok(Vec::new());
+        }
+
+        let rows: Vec<(Uuid, String, String, serde_json::Value)> = sqlx::query_as(
+            "SELECT item_id, language, title, fields FROM item_translation \
+             ORDER BY item_id, language",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list item translations")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(item_id, language, title, fields)| {
+                ConfigEntity::ItemTranslation(ConfigItemTranslation {
+                    item_id,
+                    language,
+                    title,
+                    fields,
+                })
+            })
+            .collect())
+    }
+
+    async fn save_item_translation(&self, translation: &ConfigItemTranslation) -> Result<()> {
+        let item_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item WHERE id = $1)")
+                .bind(translation.item_id)
+                .fetch_one(&self.pool)
+                .await
+                .context("failed to check the translated item exists")?;
+        if !item_exists {
+            anyhow::bail!(
+                "item_translation names item {}, which does not exist",
+                translation.item_id
+            );
+        }
+
+        let language_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM language WHERE id = $1)")
+                .bind(&translation.language)
+                .fetch_one(&self.pool)
+                .await
+                .context("failed to check the translation language exists")?;
+        if !language_exists {
+            anyhow::bail!(
+                "item_translation names language '{}', which the site does not have",
+                translation.language
+            );
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO item_translation (item_id, language, title, fields)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (item_id, language) DO UPDATE SET
+                title = EXCLUDED.title,
+                fields = EXCLUDED.fields,
+                changed = EXTRACT(EPOCH FROM NOW())::bigint
+            "#,
+        )
+        .bind(translation.item_id)
+        .bind(&translation.language)
+        .bind(&translation.title)
+        .bind(&translation.fields)
+        .execute(&self.pool)
+        .await
+        .context("failed to save item translation")?;
+
+        Ok(())
+    }
+
     async fn save_item(&self, item: &ConfigItem) -> Result<()> {
         let declared_created = (item.created > 0).then_some(item.created);
         let now = declared_created.unwrap_or_else(|| chrono::Utc::now().timestamp());
@@ -1144,6 +1292,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::GATHER_QUERY => self.load_gather_query(id).await,
             entity_types::URL_ALIAS => self.load_url_alias(id).await,
             entity_types::ITEM => self.load_item(id).await,
+            entity_types::ITEM_TRANSLATION => self.load_item_translation(id).await,
             entity_types::ROLE => self.load_role(id).await,
             entity_types::STAGE => self.load_stage(id).await,
             entity_types::TILE => self.load_tile(id).await,
@@ -1163,6 +1312,7 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::GatherQuery(q) => self.save_gather_query(q).await,
             ConfigEntity::UrlAlias(a) => self.save_url_alias(a).await,
             ConfigEntity::Item(i) => self.save_item(i).await,
+            ConfigEntity::ItemTranslation(t) => self.save_item_translation(t).await,
             ConfigEntity::Role(r) => self.save_role(r).await,
             ConfigEntity::Stage(s) => self.save_stage(s).await,
             ConfigEntity::Tile(t) => self.save_tile(t).await,
@@ -1181,6 +1331,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::GATHER_QUERY => self.delete_gather_query(id).await,
             entity_types::URL_ALIAS => self.delete_url_alias(id).await,
             entity_types::ITEM => self.delete_item(id).await,
+            entity_types::ITEM_TRANSLATION => self.delete_item_translation(id).await,
             entity_types::ROLE => self.delete_role(id).await,
             entity_types::STAGE => self.delete_stage(id).await,
             entity_types::TILE => self.delete_tile(id).await,
@@ -1204,6 +1355,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::GATHER_QUERY => self.list_gather_queries(filter).await,
             entity_types::URL_ALIAS => self.list_url_aliases(filter).await,
             entity_types::ITEM => self.list_items(filter).await,
+            entity_types::ITEM_TRANSLATION => self.list_item_translations(filter).await,
             entity_types::ROLE => self.list_roles(filter).await,
             entity_types::STAGE => self.list_stages(filter).await,
             entity_types::TILE => self.list_tiles(filter).await,

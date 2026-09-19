@@ -482,6 +482,74 @@ impl ItemService {
         Ok(row)
     }
 
+    /// Create or replace an item's translation in one language.
+    ///
+    /// The first writer of `item_translation` in the kernel. Every other method
+    /// here reads it, and the overlay in `routes/helpers.rs` and the join in the
+    /// gather query builder have been reading it since the table was added; the
+    /// only thing that ever put a row in was SQL, or a test.
+    ///
+    /// Replace rather than merge, on the primary key `(item_id, language)`: a
+    /// translation is one language's version of the whole item, so a save that
+    /// merged would leave a field behind at whatever a previous save set it to,
+    /// with nothing on the form to say so.
+    ///
+    /// `created` is preserved across a replace, because the row is the same
+    /// translation being edited rather than a new one; `changed` moves. Neither
+    /// is taken from the caller.
+    ///
+    /// # Not validated here
+    ///
+    /// That `language` is a language the site knows, and that `item_id` names an
+    /// item, are the caller's to check. The route checks both, and says which
+    /// one failed; this would only be able to return a foreign-key error, and
+    /// `item_translation` has no foreign keys to give one.
+    pub async fn save_translation(
+        &self,
+        item_id: Uuid,
+        language: &str,
+        title: &str,
+        fields: &serde_json::Value,
+    ) -> Result<ItemTranslation> {
+        let row = sqlx::query_as::<_, ItemTranslation>(
+            "INSERT INTO item_translation (item_id, language, title, fields) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (item_id, language) DO UPDATE \
+                SET title = EXCLUDED.title, \
+                    fields = EXCLUDED.fields, \
+                    changed = EXTRACT(EPOCH FROM NOW())::bigint \
+             RETURNING item_id, language, title, fields, created, changed",
+        )
+        .bind(item_id)
+        .bind(language)
+        .bind(title)
+        .bind(fields)
+        .fetch_one(&self.inner.pool)
+        .await
+        .context("failed to save item translation")?;
+
+        Ok(row)
+    }
+
+    /// Remove an item's translation in one language.
+    ///
+    /// Returns whether a row was there to remove. The counterpart of
+    /// [`Self::save_translation`]: a screen that can add a translation and not
+    /// take it back leaves a wrong translation on the site with no way to
+    /// withdraw it short of SQL, which is the situation this whole path exists
+    /// to end.
+    pub async fn delete_translation(&self, item_id: Uuid, language: &str) -> Result<bool> {
+        let result =
+            sqlx::query("DELETE FROM item_translation WHERE item_id = $1 AND language = $2")
+                .bind(item_id)
+                .bind(language)
+                .execute(&self.inner.pool)
+                .await
+                .context("failed to delete item translation")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// List all translations that exist for an item, ordered by language.
     ///
     /// Returns `(language, title)` pairs for use in admin translation listing.

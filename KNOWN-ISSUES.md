@@ -148,13 +148,28 @@ same consequence: a form that adds a language row would look like the feature wi
 being it, because neither of the two things that make a language work can be done at
 all. See BL-98 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
-Content translations are the weaker half of that sentence than it used to admit.
-`trovato_content_translation` declares one permission and two menu entries and
-nothing else; its migration creates the `item_translation` table. The kernel reads
-that table everywhere a page is rendered, and **nothing writes to it**: no route, no
-API, no config import path and no host function, so outside the tests the only way
-to add a translation is SQL. The two admin routes it would use render templates that
-do not exist and return 500. See BL-02 and BL-15 in [docs/BACKLOG.md](docs/BACKLOG.md).
+Content translations used to be the weaker half of that sentence. The kernel read
+`item_translation` everywhere a page is rendered and **nothing wrote to it**, so
+outside the tests the only way to add a translation was SQL.
+
+Two of the three write paths now exist. `/admin/content/{id}/translate/{lang}`
+takes a POST that saves one, with the same `_token` protection as the rest of the
+admin, and a delete route withdraws it; the form is built from the content type's
+own text fields, since a boolean or a file reference is the same value in every
+language. And `item_translation.<uuid>.<lang>.yml` is a config entity, placed
+after `item` in the import order, so a config set ships an item and its
+translations in one pass and a translated site exports and re-imports like any
+other.
+
+The third is a finding rather than a fix. There is no SDK-visible way for a
+plugin to write a translation, because no WIT item write can carry a language:
+`save-item` takes opaque item JSON and the host behind it builds `UpdateItem`,
+which has no `language` field, and `CreateItem` with `language: None` hardcoded
+— so a plugin cannot set even an item's own language, let alone a translation of
+it. Adding one means changing a WIT signature. See BL-02 in
+[docs/BACKLOG.md](docs/BACKLOG.md).
+
+Interface strings are still the open half: see BL-98 above.
 
 `crates/kernel/tests/config_admin_coverage_test.rs` holds this decision as a table:
 every config entity type there either names a screen that must serve or names the
@@ -163,8 +178,8 @@ which it is.
 
 ### What is configuration import only, in full
 
-**Twelve of the thirteen config entity types have an admin screen**, and the
-thirteenth (`language`) is import-only by the decision above. That leaves the
+**Thirteen of the fourteen config entity types have an admin screen**, and the
+fourteenth (`language`) is import-only by the decision above. That leaves the
 `variable` type, which is a key/value store rather than one thing, and so is
 partly covered:
 

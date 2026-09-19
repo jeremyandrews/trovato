@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- Fix: a content translation can be written, not only read.
+
+  `item_translation` has been read since the table was added. The request
+  overlay resolves an item through it, the gather query builder joins it, the
+  sitemap builds alternate links from it and the menu takes translated labels
+  from it. Nothing in the kernel ever put a row in. Outside the tests the only
+  writer was SQL, so every one of those readers was reading something no part of
+  the product could produce, and the two admin translation screens could display
+  a translation they had no way to create.
+
+  Two write paths now exist. `POST /admin/content/{id}/translate/{lang}` saves a
+  translation from the screen that already showed it, with the same `_token`
+  form protection as the rest of the admin, and a sibling delete route withdraws
+  one: a screen that can add a translation and not take it back leaves a wrong
+  translation on the site with no way to retract it short of SQL, which is the
+  situation this path exists to end. The form is built from the content type's
+  own text fields rather than a fixed pair of boxes, and only from its text
+  fields: a boolean, a date or a file reference is the same value in every
+  language, and offering a per-language copy of one invites two answers to a
+  question that has one. Saving replaces on `(item_id, language)`, because a
+  translation is one language's version of the whole item; `created` survives a
+  replace and `changed` moves. Translating an item into its own language is
+  refused, since the overlay would apply the row on top of the original it
+  duplicates.
+
+  The second path is configuration. `item_translation.<uuid>.<lang>.yml` is a
+  config entity, so a config set can ship an item and its translations together
+  and a translated site exports and re-imports like any other. It is a separate
+  entity rather than a key on the item file because a translation has its own
+  identity: `(item_id, language)` is its primary key and it carries its own
+  timestamps, where the two things an item file already carries beyond its struct
+  (a tag's parents, a role's permissions) are 1-to-N data with no identity of
+  their own. The filename parser splits an entity file on its first dot, so
+  `<uuid>.<lang>` arrives as one id and no parser change was needed. The type is
+  ordered after `item`, so both import in one pass, and importing a translation
+  of an item that does not exist is refused: `item_translation` has no foreign
+  key to `item`, so it would otherwise import cleanly and be read by nothing.
+  Export tolerates the table being absent entirely, which it is on a site that
+  never enabled the plugin that creates it.
+
+  The third path asked for is **not** added, and this is the finding rather than
+  an omission. There is no SDK-visible way for a plugin to write a translation
+  because no existing WIT item write can carry a language: `save-item` takes
+  opaque item JSON, and the host behind it builds `UpdateItem`, which has no
+  `language` field at all, or `CreateItem` with `language: None` hardcoded, so a
+  plugin cannot set even an item's own language. The `tap-item-*` exports are
+  notification hooks carrying the same language-free JSON. Adding a carrier would
+  mean changing a WIT signature or an SDK type, so it is recorded instead.
+
+  Regression tests: the form creates a translation that was not there, a second
+  save replaces rather than accumulating, a forged `_token` writes nothing, a
+  user without `translate content` writes nothing, an unknown language is a 404,
+  an item cannot be translated into its own language, a translation can be
+  removed, and a written translation is what an Italian reader is served. On the
+  config side, an item and its translation import together, and a translation of
+  a missing item is refused.
+
 - Fix: a plugin's permissions exist, can be seen, and can be granted.
 
   `tap_perm` was declared in the WIT and never dispatched, so the permissions a

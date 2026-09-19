@@ -73,6 +73,15 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("stage", Screen("/admin/structure/stages", None)),
     ("url_alias", Screen("/admin/structure/aliases", None)),
     ("item", Screen("/admin/content", None)),
+    // Per item, so the path carries one: the test seeds it. Gated on the
+    // translation plugin, like every other translation route.
+    (
+        "item_translation",
+        Screen(
+            "/admin/content/019417ad-0000-7000-8000-0000cf9a1d17/translate",
+            Some("trovato_content_translation"),
+        ),
+    ),
     ("tile", Screen("/admin/structure/tiles", None)),
     ("menu_link", Screen("/admin/structure/menus", None)),
 ];
@@ -136,6 +145,21 @@ fn every_claimed_screen_actually_serves() {
         .execute(&app.db)
         .await
         .expect("seed a category for the tag screen");
+
+        // An item, for the per-item translation screen. The translation table
+        // belongs to the plugin, so its migration has to have run before the
+        // screen can list anything; enabling the plugin does not run it.
+        common::ensure_translation_table(app);
+
+        // Fixed id so the audit path above can name it; anonymous author, like
+        // a config-imported item.
+        app.ensure_conference_items().await;
+        sqlx::query(
+            "INSERT INTO item (id, type, title, author_id, status, fields, created, changed,                                promote, sticky, language)              VALUES ('019417ad-0000-7000-8000-0000cf9a1d17', 'conference',                      'Audit Translation Subject',                      '00000000-0000-0000-0000-000000000000', 1, '{}'::jsonb,                      EXTRACT(EPOCH FROM NOW())::bigint, EXTRACT(EPOCH FROM NOW())::bigint,                      0, 0, 'en')              ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&app.db)
+        .await
+        .expect("seed an item for the translation screen");
 
         for (entity_type, coverage) in COVERAGE {
             let Screen(path, gate) = coverage else {

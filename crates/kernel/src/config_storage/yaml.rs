@@ -60,6 +60,9 @@ pub const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::STAGE,
     entity_types::URL_ALIAS,
     entity_types::ITEM,
+    // After ITEM: a translation names the item it translates, so a config set
+    // that ships both imports in one pass.
+    entity_types::ITEM_TRANSLATION,
     entity_types::TILE,
     entity_types::MENU_LINK,
 ];
@@ -274,6 +277,7 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
             value: value.clone(),
         }),
         ConfigEntity::Language(lang) => serde_yml::to_string(lang),
+        ConfigEntity::ItemTranslation(t) => serde_yml::to_string(t),
         ConfigEntity::GatherQuery(q) => {
             let export = GatherQueryExport {
                 query_id: q.query_id.clone(),
@@ -1292,6 +1296,13 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
             let item: super::ConfigItem =
                 serde_yml::from_str(content).context("invalid item YAML")?;
             Ok(ParsedFile::plain(ConfigEntity::Item(item)))
+        }
+        entity_types::ITEM_TRANSLATION => {
+            let translation: super::ConfigItemTranslation =
+                serde_yml::from_str(content).context("invalid item_translation YAML")?;
+            Ok(ParsedFile::plain(ConfigEntity::ItemTranslation(
+                translation,
+            )))
         }
         entity_types::ROLE => {
             let export: RoleExport = serde_yml::from_str(content).context("invalid role YAML")?;
