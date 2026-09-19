@@ -16,7 +16,7 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
-    render_not_found, render_server_error, require_admin, require_csrf, validate_password,
+    render_not_found, render_server_error, require_csrf, require_permission, validate_password,
 };
 
 /// User form data.
@@ -78,7 +78,7 @@ struct PermissionFormData {
 ///
 /// GET /admin/people
 async fn list_users(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -104,7 +104,7 @@ async fn list_users(State(state): State<AppState>, session: Session) -> Response
 ///
 /// GET /admin/people/add
 async fn add_user_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -130,7 +130,7 @@ async fn add_user_submit(
     session: Session,
     Form(form): Form<UserFormData>,
 ) -> Response {
-    let current_user = match require_admin(&state, &session).await {
+    let current_user = match require_permission(&state, &session, "administer users").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -195,7 +195,13 @@ async fn add_user_submit(
         name: form.name.clone(),
         password: password.to_string(),
         mail: form.mail.clone(),
-        is_admin: form.is_admin.is_some(),
+        // Only a superuser may create another superuser. The route gate is
+        // `administer users`, which is a grantable permission; the superuser
+        // flag is what that permission is granted *by*, so letting it be set
+        // from here would make `administer users` a self-escalation to
+        // superuser. Checked on the field rather than the route so that
+        // managing ordinary users stays delegable.
+        is_admin: form.is_admin.is_some() && current_user.is_admin,
     };
 
     let user_ctx = admin_user_context(&state, &current_user).await;
@@ -219,7 +225,7 @@ async fn edit_user_form(
     session: Session,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -272,7 +278,7 @@ async fn edit_user_submit(
     Path(user_id): Path<uuid::Uuid>,
     Form(form): Form<UserFormData>,
 ) -> Response {
-    let current_user = match require_admin(&state, &session).await {
+    let current_user = match require_permission(&state, &session, "administer users").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -359,7 +365,16 @@ async fn edit_user_submit(
     let input = UpdateUser {
         name: Some(form.name.clone()),
         mail: Some(form.mail.clone()),
-        is_admin: Some(form.is_admin.is_some()),
+        // Only a superuser may change the superuser flag, in either direction:
+        // granting it would make `administer users` a self-escalation, and
+        // revoking it would let a delegated user administrator lock the real
+        // superusers out. For anyone else the stored value is preserved
+        // regardless of what the form submitted.
+        is_admin: Some(if current_user.is_admin {
+            form.is_admin.is_some()
+        } else {
+            existing_user.is_admin
+        }),
         status: Some(if form.status.is_some() { 1 } else { 0 }),
         timezone: None,
         language: None,
@@ -416,7 +431,7 @@ async fn delete_user(
     Path(user_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    let current_user = match require_admin(&state, &session).await {
+    let current_user = match require_permission(&state, &session, "administer users").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -457,7 +472,7 @@ async fn delete_user(
 ///
 /// GET /admin/people/roles
 async fn list_roles(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -507,7 +522,7 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
 ///
 /// GET /admin/people/roles/add
 async fn add_role_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -533,7 +548,7 @@ async fn add_role_submit(
     session: Session,
     Form(form): Form<RoleFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -595,7 +610,7 @@ async fn edit_role_form(
     session: Session,
     Path(role_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -639,7 +654,7 @@ async fn edit_role_submit(
     Path(role_id): Path<uuid::Uuid>,
     Form(form): Form<RoleFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -715,7 +730,7 @@ async fn delete_role(
     Path(role_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -753,7 +768,7 @@ async fn delete_role(
 ///
 /// GET /admin/people/permissions
 async fn permissions_matrix(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
@@ -799,7 +814,7 @@ async fn save_permissions(
     session: Session,
     Form(form): Form<PermissionFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 

@@ -14,7 +14,7 @@ use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
 use crate::models::SiteConfig;
-use crate::routes::helpers::{render_admin_template, render_server_error, require_admin};
+use crate::routes::helpers::{render_admin_template, render_server_error, require_permission};
 use crate::state::AppState;
 
 /// Site config key for AI feature toggles.
@@ -147,7 +147,7 @@ struct AiFeaturesForm {
 
 /// Display the AI features configuration form.
 async fn show_form(State(state): State<AppState>, session: Session) -> Response {
-    let _admin = match require_admin(&state, &session).await {
+    let _admin = match require_permission(&state, &session, "configure ai").await {
         Ok(u) => u,
         Err(resp) => return resp,
     };
@@ -171,7 +171,7 @@ async fn save_form(
     session: Session,
     Form(form): Form<AiFeaturesForm>,
 ) -> Response {
-    let _admin = match require_admin(&state, &session).await {
+    let _admin = match require_permission(&state, &session, "configure ai").await {
         Ok(u) => u,
         Err(resp) => return resp,
     };

@@ -13,8 +13,8 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, MACHINE_NAME_ERROR, SLUG_FORMAT_ERROR, is_valid_machine_name, is_valid_slug,
-    render_admin_template, render_error, render_not_found, render_server_error, require_admin,
-    require_csrf,
+    render_admin_template, render_error, render_not_found, render_server_error, require_csrf,
+    require_permission,
 };
 
 // =============================================================================
@@ -56,7 +56,7 @@ struct TagFormData {
 ///
 /// GET /admin/structure/categories
 async fn list_categories(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -90,7 +90,7 @@ async fn list_categories(State(state): State<AppState>, session: Session) -> Res
 ///
 /// GET /admin/structure/categories/add
 async fn add_category_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -116,7 +116,7 @@ async fn add_category_submit(
     session: Session,
     Form(form): Form<CategoryFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -200,7 +200,7 @@ async fn edit_category_form(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -252,7 +252,7 @@ async fn edit_category_submit(
     Path(category_id): Path<String>,
     Form(form): Form<CategoryFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -332,7 +332,7 @@ async fn delete_category(
     Path(category_id): Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -365,7 +365,7 @@ async fn list_tags(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -409,7 +409,7 @@ async fn add_tag_form(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -461,7 +461,7 @@ async fn add_tag_submit(
     Path(category_id): Path<String>,
     Form(form): Form<TagFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -583,7 +583,7 @@ async fn edit_tag_form(
     session: Session,
     Path(tag_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -654,7 +654,7 @@ async fn edit_tag_submit(
     Path(tag_id): Path<uuid::Uuid>,
     Form(form): Form<TagFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
@@ -784,7 +784,7 @@ async fn delete_tag(
     Path(tag_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 

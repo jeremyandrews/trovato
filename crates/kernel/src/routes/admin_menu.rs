@@ -38,8 +38,8 @@ use crate::models::{CreateMenuLink, MenuLink, UpdateMenuLink};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_admin,
-    require_csrf,
+    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
+    require_permission,
 };
 
 /// The plugin name a link this form owns carries.
@@ -411,7 +411,7 @@ fn plugin_entries(state: &AppState) -> Vec<PluginEntry> {
 ///
 /// GET /admin/structure/menus
 async fn list_menus(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -470,7 +470,7 @@ async fn show_menu(
     session: Session,
     Path(menu_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -538,7 +538,7 @@ async fn add_link_form(
     session: Session,
     Path(menu_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     // Every field the template reads is present, empty rather than absent: Tera
@@ -563,7 +563,7 @@ async fn add_link_submit(
     Path(menu_name): Path<String>,
     Form(form): Form<MenuLinkFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -658,7 +658,7 @@ async fn edit_link_form(
     session: Session,
     Path((menu_name, link_id)): Path<(String, Uuid)>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -702,7 +702,7 @@ async fn edit_link_submit(
     Path((menu_name, link_id)): Path<(String, Uuid)>,
     Form(form): Form<MenuLinkFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -823,7 +823,7 @@ async fn delete_link(
     Path((menu_name, link_id)): Path<(String, Uuid)>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {

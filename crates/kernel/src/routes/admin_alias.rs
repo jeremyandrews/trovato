@@ -12,8 +12,8 @@ use crate::models::{CreateUrlAlias, UpdateUrlAlias, UrlAlias};
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_admin,
-    require_csrf,
+    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
+    require_permission,
 };
 
 // =============================================================================
@@ -51,7 +51,7 @@ async fn list_aliases(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -105,7 +105,7 @@ async fn list_aliases(
 ///
 /// GET /admin/structure/aliases/add
 async fn add_alias_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -129,7 +129,7 @@ async fn add_alias_submit(
     session: Session,
     Form(form): Form<UrlAliasFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -175,7 +175,7 @@ async fn edit_alias_form(
     session: Session,
     Path(alias_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -219,7 +219,7 @@ async fn edit_alias_submit(
     Path(alias_id): Path<uuid::Uuid>,
     Form(form): Form<UrlAliasFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -267,7 +267,7 @@ async fn delete_alias(
     Path(alias_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 

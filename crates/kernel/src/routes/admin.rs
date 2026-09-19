@@ -21,7 +21,7 @@ use crate::error::AppError;
 
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, render_admin_template, render_not_found, render_server_error,
-    require_admin, require_admin_json, require_csrf,
+    require_admin_json, require_csrf, require_permission,
 };
 
 /// Stage switch request.
@@ -94,7 +94,7 @@ async fn get_current_stage(
 ///
 /// GET /admin
 async fn dashboard(State(state): State<AppState>, session: Session) -> Response {
-    let user = match require_admin(&state, &session).await {
+    let user = match require_permission(&state, &session, "administer site").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -135,7 +135,7 @@ async fn list_files(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "access files").await {
         return redirect;
     }
 
@@ -183,7 +183,7 @@ async fn file_details(
     session: Session,
     Path(file_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "access files").await {
         return redirect;
     }
 
@@ -214,7 +214,7 @@ async fn delete_file(
     Path(file_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer files").await {
         return redirect;
     }
 
@@ -262,7 +262,7 @@ async fn set_file_alt_text(
     Path(file_id): Path<uuid::Uuid>,
     Form(form): Form<AltTextForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer files").await {
         return redirect;
     }
 
@@ -300,7 +300,7 @@ async fn media_library(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "access files").await {
         return redirect;
     }
 
@@ -394,7 +394,7 @@ async fn ajax_callback(
     }
 
     // Require authentication for AJAX requests
-    let Ok(user) = require_admin(&state, &session).await else {
+    let Ok(user) = require_permission(&state, &session, "administer site").await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(AjaxResponse::new().alert("Session expired. Please log in again.")),
@@ -526,7 +526,7 @@ async fn list_comments(
     session: Session,
     axum::extract::Query(query): axum::extract::Query<CommentListQuery>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer comments").await {
         return redirect;
     }
 
@@ -607,7 +607,7 @@ async fn edit_comment_form(
     session: Session,
     Path(id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer comments").await {
         return redirect;
     }
 
@@ -658,7 +658,7 @@ async fn edit_comment_submit(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<EditCommentForm>,
 ) -> Response {
-    let user = match require_admin(&state, &session).await {
+    let user = match require_permission(&state, &session, "administer comments").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -744,7 +744,7 @@ async fn set_comment_status(
     status: i16,
     action: &str,
 ) -> Response {
-    let user = match require_admin(state, session).await {
+    let user = match require_permission(state, session, "administer comments").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -855,7 +855,7 @@ async fn save_comment_settings(
     session: Session,
     Form(form): Form<CommentSettingsForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer comments").await {
         return redirect;
     }
 
@@ -897,7 +897,7 @@ async fn delete_comment_admin(
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    let user = match require_admin(&state, &session).await {
+    let user = match require_permission(&state, &session, "administer comments").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };

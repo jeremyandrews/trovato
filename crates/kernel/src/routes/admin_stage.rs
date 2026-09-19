@@ -40,7 +40,7 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, MACHINE_NAME_ERROR, is_valid_machine_name, render_admin_template,
-    render_not_found, render_server_error, require_admin, require_csrf,
+    render_not_found, render_server_error, require_csrf, require_permission,
 };
 
 /// The visibility values a stage may take, for the select.
@@ -106,7 +106,7 @@ struct StageRow {
 ///
 /// GET /admin/structure/stages
 async fn list_stages(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -211,7 +211,7 @@ fn submitted_values(form: &StageFormData) -> serde_json::Value {
 ///
 /// GET /admin/structure/stages/add
 async fn add_stage_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     render_form(&state, &session, None, blank_values(), Vec::new()).await
@@ -244,7 +244,7 @@ async fn add_stage_submit(
     session: Session,
     Form(form): Form<StageFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -359,7 +359,7 @@ async fn edit_stage_form(
     session: Session,
     Path(stage_id): Path<Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
@@ -393,7 +393,7 @@ async fn edit_stage_submit(
     Path(stage_id): Path<Uuid>,
     Form(form): Form<StageFormData>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -490,7 +490,7 @@ async fn delete_stage(
     Path(stage_id): Path<Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
+    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
     if let Err(resp) = require_csrf(&session, &form.token).await {
