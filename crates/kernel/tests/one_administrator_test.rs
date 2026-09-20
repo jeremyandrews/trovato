@@ -181,6 +181,12 @@ fn the_superuser_column_still_opens_the_item_route() {
 
 /// What `administer site` is actually for, after #92: the structure and
 /// configuration screens. Losing the item routes must not cost it these.
+///
+/// `/admin` itself is deliberately **not** in this list. It was, until #97 gave
+/// the dashboard its own `access administration pages`, which a role granted
+/// `administer site` afterwards does not get for free — an upgrading site's
+/// roles were granted it once by migration, and that is the only automatic
+/// grant. `access_administration_pages_test` covers the dashboard.
 #[test]
 fn administer_site_still_opens_the_structure_and_configuration_screens() {
     run_test(async {
@@ -188,7 +194,7 @@ fn administer_site_still_opens_the_structure_and_configuration_screens() {
 
         let cookies = user_holding(app, "onadmin-structure", &["administer site"]).await;
 
-        for path in ["/admin", "/admin/structure/types", "/admin/structure/menus"] {
+        for path in ["/admin/structure/types", "/admin/structure/menus"] {
             let status = get_as(app, path, &cookies, "onadmin-structure").await;
             assert_eq!(
                 status,

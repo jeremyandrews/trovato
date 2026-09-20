@@ -9,6 +9,37 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### `/admin` takes a new `access administration pages` permission
+
+**Who is affected:** a site that has delegated an admin screen to a role — one
+holding `administer comments`, say — and wants that role to use the dashboard.
+A site whose only administrators are superusers or roles holding `administer
+site` needs to do nothing: the migration below covers it.
+
+**What changed.** Every admin screen has its own permission, and until now
+`/admin` itself took `administer site`. So a delegated role could reach the
+screen it was given by typing the address, and got 403 on the dashboard that
+would have linked to it. The delegation worked everywhere except at the front
+door.
+
+`/admin` now takes `access administration pages`. It is admission to the
+administration section and confers no authority inside it: every screen still
+asks for its own permission, and the dashboard shows only the links the viewer
+may actually open.
+
+**The migration.** `access administration pages` is granted once to every role
+that already holds `administer site`, so no existing site loses its dashboard.
+That is the only automatic grant. It is a one-time correction for a permission
+that was split in two, not a rule: `administer site` does not imply admission
+afterwards, and a role granted `administer site` from now on gets exactly that.
+
+**What to do.** If you want a delegated role in the administration section, add
+`access administration pages` to it, at `/admin/people/permissions` or in its
+`role.*.yml`. This is new capability, not a regression: before this permission
+existed there was no way to give that role the dashboard at all.
+
+Superusers are unaffected.
+
 ### `administer site` no longer makes its holder a site administrator
 
 **Who is affected:** a site that granted the `administer site` permission to a

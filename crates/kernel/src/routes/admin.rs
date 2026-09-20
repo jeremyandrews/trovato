@@ -93,32 +93,62 @@ async fn get_current_stage(
 /// Admin dashboard.
 ///
 /// GET /admin
+///
+/// Gated on `access administration pages`, which is admission to the section and
+/// nothing more. Every screen the dashboard links to still asks for its own
+/// permission, so this page can be opened by a role that may use only one of
+/// them — which is the point. Before this permission existed the dashboard took
+/// `administer site`, so a role delegated `administer comments` could reach
+/// `/admin/content/comments` by typing the address and got 403 on the page that
+/// would have linked to it.
+///
+/// The links are filtered to what the viewer may actually open, so the page
+/// never offers a door that answers 403.
 async fn dashboard(State(state): State<AppState>, session: Session) -> Response {
-    let user = match require_permission(&state, &session, "administer site").await {
+    let user = match require_permission(&state, &session, "access administration pages").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
 
+    let viewer = admin_user_context(&state, &user).await;
+
     let content_types = state.content_types().list_all().await;
+    // One entry per type the viewer may actually create, built from the same
+    // string `/item/add/{type}` checks.
+    let creatable: Vec<_> = content_types
+        .iter()
+        .filter(|ct| viewer.can(&format!("create {} content", ct.machine_name)))
+        .cloned()
+        .collect();
 
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
-    context.insert("content_types", &content_types);
+    context.insert("content_types", &creatable);
+    // The structure card links to `/admin/structure/types`, which takes
+    // `administer site`. A viewer without it is shown no card rather than a
+    // link to a 403.
+    context.insert("can_administer_site", &viewer.can("administer site"));
     context.insert("path", "/admin");
     context.insert("user", &user);
     context.insert("csrf_token", &csrf_token);
 
-    // The update banner, read from what the last cron check stored. Only here, and
-    // only past `require_admin`: a visitor has no use for the site's version and no
-    // business being told it. Nothing is fetched on this path — a page render never
-    // makes an outbound request.
-    if let Some(status) = crate::update_status::stored_status(state.db()).await
-        && status.is_behind()
-    {
-        context.insert("update_status", &status);
+    // The update banner, read from what the last cron check stored. Only here,
+    // and only for a viewer holding `administer site`: a visitor has no use for
+    // the site's version and no business being told it, and neither has someone
+    // admitted to the section to moderate comments — they cannot act on an
+    // update, and whether a security release is outstanding is not theirs to
+    // know. Keeping it on `administer site` leaves this page's disclosure
+    // exactly where it was before the section opened wider. Nothing is fetched
+    // on this path — a page render never makes an outbound request.
+    if viewer.can("administer site") {
+        if let Some(status) = crate::update_status::stored_status(state.db()).await
+            && status.is_behind()
+        {
+            context.insert("update_status", &status);
+        }
+        context.insert("running_version", crate::update_status::running_version());
     }
-    context.insert("running_version", crate::update_status::running_version());
 
     render_admin_template(&state, "admin/dashboard.html", context).await
 }

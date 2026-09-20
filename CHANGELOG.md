@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- Add: `access administration pages`, so a delegated role can use the dashboard.
+  **See [UPGRADING.md](UPGRADING.md).**
+
+  #92 gave every admin screen its own permission and left `/admin` itself on
+  `administer site`. The gap had a shape: a role granted only `administer
+  comments` could reach `/admin/content/comments` by typing the address, and got
+  403 on the dashboard that would have linked to it. The delegation worked
+  everywhere except at the front door, which `docs/admin-permissions.md`
+  recorded as a known gap.
+
+  `/admin` now takes `access administration pages`. It is the weakest permission
+  in `KERNEL_PERMISSIONS` by design: admission to the administration section,
+  and no authority inside it. Every screen there still asks for its own
+  permission, so the new one cannot be used to reach anything. `/system/ajax`
+  keeps `administer site`, because it serves the admin forms' AJAX callbacks
+  rather than admitting anyone.
+
+  The dashboard's cards are filtered to what the viewer may open — the structure
+  card on `administer site`, each "Add *type*" link on the same `create {type}
+  content` string `/item/add/{type}` checks — so the page no longer offers a
+  door that answers 403. The site navigation's "Admin" link asks the same
+  admission question, so a role that cannot enter is not shown the way in. The
+  update banner stays on `administer site`: someone admitted to moderate
+  comments cannot act on an update, and whether a security release is
+  outstanding is not theirs to know, so opening the section wider does not widen
+  that disclosure.
+
+  A migration grants the new permission once to every role already holding
+  `administer site`, so no existing site loses its dashboard on upgrade. That is
+  the only automatic grant, and it is a one-time correction rather than a rule:
+  nothing makes `administer site` imply admission afterwards.
+
+  The admin layout's sidebar still lists every screen unconditionally, as it has
+  since #92 made those screens delegable. That is not introduced here and is not
+  fixed here; filtering it means giving `render_admin_template` the viewer, a
+  signature change across its 80 call sites.
+
 - Fix: the kernel has one notion of administrator (BL-33).
   **Behaviour change — see [UPGRADING.md](UPGRADING.md).**
 

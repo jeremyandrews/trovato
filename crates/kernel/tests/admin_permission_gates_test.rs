@@ -100,7 +100,10 @@ async fn enable_gated_plugins(app: &TestApp) {
 /// One row per distinct permission string rather than per route: the conversion
 /// is mechanical and identical within a family, so a row proves the family.
 const SURFACES: &[(&str, &str)] = &[
-    ("/admin", "administer site"),
+    // The dashboard is admission to the section rather than a screen that does
+    // work, so since #97 it takes `access administration pages`. Every row below
+    // it still names the permission its own screen requires.
+    ("/admin", "access administration pages"),
     ("/admin/structure/types", "administer site"),
     ("/admin/structure/menus", "administer site"),
     ("/admin/content", "edit any content"),

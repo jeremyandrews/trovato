@@ -175,7 +175,7 @@ pub async fn require_permission_json(
 /// The viewer is loaded once through [`get_user_context`] and drives three
 /// things: which plugin-registered menus appear in `menus` (see
 /// [`MenuRegistry::root_menus_for`](crate::menu::MenuRegistry::root_menus_for)),
-/// the `user_authenticated` / `user_is_admin` flags, and the roles that tile
+/// the `user_authenticated` / `user_can_access_admin` flags, and the roles that tile
 /// visibility is filtered by. `user_authenticated` therefore reflects whether
 /// the session's user actually exists, not merely whether the session names
 /// one — a session pointing at a deleted user now renders as logged out
@@ -288,12 +288,14 @@ pub async fn inject_site_context(
         user_roles.push("administrator".to_string());
     }
     // Whether to show the "Admin" link, so it asks the question `/admin` itself
-    // asks — `require_permission(.., "administer site")` — rather than whether
-    // the viewer is a site administrator. Those were the same question while
-    // `is_admin()` was derived from the permission, and are not now: a role
-    // granted `administer site` may open the dashboard, and must therefore be
-    // shown the way to it.
-    context.insert("user_is_admin", &viewer.can("administer site"));
+    // asks — `require_permission(.., "access administration pages")` — rather
+    // than whether the viewer is a site administrator. A role that cannot enter
+    // the section is not shown the door, and one that can is not made to guess
+    // the address.
+    context.insert(
+        "user_can_access_admin",
+        &viewer.can("access administration pages"),
+    );
 
     // The AI Assistant's launcher context, read out of the site config already
     // loaded above rather than with a query of its own — a launcher that costs a
