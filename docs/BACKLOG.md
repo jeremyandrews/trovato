@@ -15,7 +15,7 @@ Trovato.
 A line number is where the thing is at `d3f4cd7`; the source documents' own line
 numbers are often stale and are not repeated.
 
-In short: 115 distinct findings, 87 of them open, and 24 proposed as blocking the
+In short: 117 distinct findings, 88 of them open, and 24 proposed as blocking the
 1.0 tag, plus 25 marked as a Ritrovo gate by the ruling of 2026-09-17. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
 argues each.
 
@@ -438,6 +438,8 @@ not fix. Each names a location checked at `28a029b` or later.
 | BL-113 | The startup warning for a menu entry with a callback says the path "will 404". That is true of the callback and not of the path: a kernel route may serve it anyway, and two in-tree menu paths are served exactly that way, `/admin/media` and `/admin/content/comments`. So the warning tells an operator a working page is broken. Only the callback is dead. A wording fix, not a behaviour change. | `crates/kernel/src/routes/plugin_api.rs:126-129` (the message), `:97-117` (the rule, which is right) | open | 1.0.x | additive |
 | BL-114 | `docs/design/Design-Web-Layer.md` describes the profiling middleware keeping a request-scoped `RequestProfile` and logging "detailed JSON traces for slow requests, including breakdown of DB query duration, WASM tap invocation duration, and template rendering duration", structured for Jaeger or Honeycomb. The middleware measures whole-request duration and nothing else: one `Server-Timing: total;dur=N` header and a log line over a threshold. There is no per-query, per-tap or per-template measurement anywhere, and no `RequestProfile` type. Doc drift, recorded next to BL-17, which is the same middleware. | `docs/design/Design-Web-Layer.md:13,41-70`; `crates/kernel/src/middleware/query_profiler.rs:47-80` | open | post | n/a (documentation) |
 | BL-115 | Eleven plugin menu paths are served by no route, so every one of them is a navigation entry that 404s. Checked by composing the kernel's whole route set (218 paths; the kernel uses `.merge()` throughout and no `.nest()`, so every registered path is already absolute) and testing each menu path against it, including against every path-parameter route that might have swallowed one. None matched. All eleven are declared with the SDK's `MenuDefinition`, which cannot carry `handler_type = "api"` and converts to `"page"`, so no plugin `api` route serves them either. Two groups: `/test-runs` and `/sites` (goose) and `/media` (`trovato_media`) look like pages that were never built; the other eight point at paths the kernel serves under different names, `/admin/categories` against the kernel's `/admin/structure/categories` being the clearest. Sibling of BL-13, and classed with it: the screens themselves are reachable, it is the menu that lies. | goose `plugins/goose/src/lib.rs:146,149`; `trovato_media/src/lib.rs:47`; `trovato_categories/src/lib.rs:21`; `trovato_locale/src/lib.rs:18,23`; `trovato_redirects/src/lib.rs:18`; `trovato_webhooks/src/lib.rs:19`; `trovato_oauth2/src/lib.rs:19`; `trovato_scheduled_publishing/src/lib.rs:23`; `trovato_image_styles/src/lib.rs:19`; `trovato_audit_log/src/lib.rs:18`; against `crates/plugin-sdk/src/types.rs:572-581,750-764` and `crates/kernel/src/routes/plugin_api.rs:149-151` | open | 1.0.x | additive (correct the paths, or build the pages) |
+| BL-116 (G-ADMIN-DASHBOARD-NOT-DELEGABLE) | #92 gave every admin screen its own permission and left `/admin` itself on `administer site`, so a role granted only `administer comments` reached `/admin/content/comments` by typing the address and got 403 on the dashboard that would have linked to it. `docs/admin-permissions.md` recorded it as a known gap. `/admin` now takes `access administration pages`, the weakest permission in `KERNEL_PERMISSIONS`: admission to the section, no authority inside it. A migration grants it once to every role already holding `administer site`; nothing implies it afterwards. The dashboard's cards are filtered to what the viewer may open. The admin layout's sidebar is still unfiltered, which #92 introduced and this did not fix — see BL-117. | `crates/kernel/src/models/role.rs` (`KERNEL_PERMISSIONS`); `crates/kernel/src/routes/admin.rs` (`dashboard`); `crates/kernel/migrations/20260920000001_grant_access_administration_pages.sql`; `docs/admin-permissions.md` | fixed (#97) | closed | n/a |
+| BL-117 (G-ADMIN-SIDEBAR-UNFILTERED) | The admin layout's sidebar (`templates/page--admin.html`) lists every administration screen unconditionally, so a delegated role sees a column of links that answer 403. Harmless but hollow: it has been so since #92 made those screens delegable, and #97 made it visible by letting a delegated role through the front door. Filtering it needs the viewer inside `render_admin_template`, which takes no session and has 80 call sites, so it is a signature change rather than a template edit. | `templates/page--admin.html:177-209`; `crates/kernel/src/routes/helpers.rs:351` (`render_admin_template`, no session) | open | 1.0.x | additive |
 
 ## The fix series against this page
 
@@ -480,14 +482,14 @@ should get a row when the next pass runs.
 
 ## Tally
 
-115 distinct findings after merging duplicates. By status: 81 open, 4 partly fixed
-(BL-03, BL-07, BL-21, BL-25), 27 fixed, 2 that do not reproduce, and 1 decided
-(BL-109). By class: 24 proposed to block 1.0, 29 to ship in 1.0.x, 34 to wait until
-after 1.0, and 28 closed. The two partitions cross at three rows: of the two that do
+117 distinct findings after merging duplicates. By status: 82 open, 4 partly fixed
+(BL-03, BL-07, BL-21, BL-25), 28 fixed, 2 that do not reproduce, and 1 decided
+(BL-109). By class: 24 proposed to block 1.0, 30 to ship in 1.0.x, 34 to wait until
+after 1.0, and 29 closed. The two partitions cross at three rows: of the two that do
 not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
 on one database confirm it; and BL-02 is fixed in the kernel and stays in 1.0 for
-the SDK half its row names. So the 28 closed are 26 of the 27 fixed, plus BL-14 and
-BL-109. Everything not closed — 87 rows — is what "open" means in the paragraph
+the SDK half its row names. So the 29 closed are 27 of the 28 fixed, plus BL-14 and
+BL-109. Everything not closed — 88 rows — is what "open" means in the paragraph
 above, and the four partly fixed rows are inside it, each one open on the half its
 row names.
 
@@ -498,9 +500,10 @@ BL-100, BL-104, BL-112.
 Four of the 30 that stood here before closed in the fix series — BL-09, BL-11,
 BL-12 and BL-15 — and BL-112 is new, so that list was three shorter. Three more
 have closed since and are gone from it: BL-41 (#92), BL-69 and BL-90 (#93). The
-fix series has also closed BL-33 (#96), which was in 1.0.x rather than in this
-list. These counts were last recomputed from the rows themselves at #96; the four
-closes before it had updated their own rows without the tally.
+fix series has also closed BL-33 (#96) and BL-116 (#97), neither of which was in
+this list. BL-116 and BL-117 are new, which is why the total is 117 rather than
+115. These counts were last recomputed from the rows themselves at #97; the four
+closes before #96 had updated their own rows without the tally.
 
 The eight Ritrovo added to that list are argued in
 [Why these block 1.0](#why-these-block-10) with the rest. Twenty-five findings

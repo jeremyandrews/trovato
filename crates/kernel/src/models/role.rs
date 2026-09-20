@@ -34,6 +34,12 @@ pub mod well_known {
 /// `view own profile`, which is not here.
 pub const KERNEL_PERMISSIONS: &[&str] = &[
     "administer site",
+    // Admission to `/admin`, and nothing more. It sits beside `administer site`
+    // because it is the other site-wide permission, and it is deliberately the
+    // weaker of the two: it opens the door to the administration section and
+    // confers no authority inside it. Every screen there still asks for its own
+    // permission.
+    "access administration pages",
     "access content",
     "create content",
     "edit own content",

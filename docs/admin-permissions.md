@@ -128,7 +128,6 @@ neither.
 
 | Route | Method | Permission |
 |---|---|---|
-| `/admin` | GET | `administer site` |
 | `/system/ajax` | POST | `administer site` |
 | `/admin/structure/types` and all its field and search routes | GET, POST | `administer site` |
 | `/admin/structure/records` and its listing routes | GET | `administer site` |
@@ -173,12 +172,50 @@ Site installation is also superuser-territory, but it runs before any user
 exists and is gated by the installer rather than by a route check, so it does
 not appear here.
 
-## Known gap
+## Admission to the section
 
-There is no `access administration pages` permission, and none was invented. A
-role granted only `administer comments` can therefore reach
-`/admin/content/comments` directly but gets 403 on `/admin` itself, so it has
-the page without the dashboard that links to it. Closing that needs a new
-permission name, which is a deliberate addition to
-`KERNEL_PERMISSIONS` rather than a mechanical conversion, and is left for that
-decision.
+`/admin` takes `access administration pages`, which is admission to the
+administration section and nothing more. It is the weakest permission in
+`KERNEL_PERMISSIONS` by design: every screen listed above still asks for its
+own, so this one opens the door and confers no authority inside it.
+
+It exists because the conversion above left a gap at the front door. Every
+screen became delegable and the dashboard did not, so a role granted only
+`administer comments` could reach `/admin/content/comments` by typing the
+address and got 403 on the page that would have linked to it.
+
+| Route | Method | Permission |
+|---|---|---|
+| `/admin` | GET | `access administration pages` |
+
+Nothing implies it and it implies nothing. The single exception is a one-time
+migration that grants it to every role already holding `administer site`, so an
+upgrading site does not lose its dashboard; `administer site` does not imply it
+afterwards, and a role granted `administer site` from now on gets exactly that.
+A delegated role needs this permission added before it can use the dashboard,
+which is new capability rather than a regression — see
+[UPGRADING.md](../UPGRADING.md).
+
+The dashboard's own cards are filtered to what the viewer may open: the
+structure card needs `administer site`, and each "Add *type*" link needs the
+same `create {type} content` string `/item/add/{type}` checks. The page
+therefore never offers a door that answers 403.
+
+The update banner, which names the running version and whether a security
+release is outstanding, stays on `administer site` rather than following the
+page. Someone admitted to moderate comments cannot act on an update, so opening
+the section wider does not widen that disclosure.
+
+**The admin layout's sidebar is not filtered.** It lists every screen
+unconditionally, as it has since the conversion above made those screens
+delegable, so a delegated role sees links it cannot open. That is not
+introduced by this permission and is not fixed by it: filtering the sidebar
+means giving `render_admin_template` the viewer, a signature change across its
+80 call sites, and is left for that change.
+
+| Route | Method | Check |
+|---|---|---|
+| `/system/ajax` | POST | `administer site` |
+
+`/system/ajax` keeps `administer site` because it does work rather than admit:
+it serves the admin forms' AJAX callbacks.
