@@ -145,7 +145,7 @@ fn gather_hides_unpublished_shows_published_to_anon() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let marker = format!("GACC-anon-{}", Uuid::now_v7().simple());
         let published = make_conference(app, &admin, &marker, 1).await;
@@ -174,7 +174,7 @@ fn gather_shows_all_and_keeps_fields_for_admin() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let marker = format!("GACC-admin-{}", Uuid::now_v7().simple());
         make_conference(app, &admin, &marker, 1).await;
@@ -208,7 +208,7 @@ fn gather_backfills_past_invisible_for_authenticated_viewer() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let marker = format!("GACC-mix-{}", Uuid::now_v7().simple());
         // Interleave drafts and published items.

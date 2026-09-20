@@ -41,7 +41,7 @@ async fn create_item(app: &TestApp, title: &str) -> Uuid {
                 language: Some("en".to_string()),
                 log: Some("translation write test".to_string()),
             },
-            &UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]),
+            &UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]),
         )
         .await
         .expect("create item")

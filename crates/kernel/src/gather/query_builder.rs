@@ -1200,7 +1200,7 @@ mod tests {
             ..Default::default()
         };
         let admin =
-            UserContext::authenticated(uuid::Uuid::now_v7(), vec!["administer site".to_string()]);
+            UserContext::administrator(uuid::Uuid::now_v7(), vec!["administer site".to_string()]);
         let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID)
             .with_viewer(Some(admin))
             .with_record_published(Some("is_public".to_string()))

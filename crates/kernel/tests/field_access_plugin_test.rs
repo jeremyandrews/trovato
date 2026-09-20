@@ -143,7 +143,7 @@ async fn admin_bypasses_field_access_entirely() {
     // Admin: every field visible regardless of the plugin's rules (no dispatch).
     let d = items
         .field_access_decisions(
-            &UserContext::authenticated(uuid::Uuid::now_v7(), vec!["administer site".to_string()]),
+            &UserContext::administrator(uuid::Uuid::now_v7(), vec!["administer site".to_string()]),
             "person",
             &fields(&["ssn", "salary"]),
             "view",

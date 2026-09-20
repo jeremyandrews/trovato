@@ -95,9 +95,10 @@ impl PermissionService {
     /// Load all permissions for a user from the database, bypassing the cache.
     ///
     /// Returns the raw role-based permission set (does **not** include the
-    /// implicit admin bypass). Callers building a [`UserContext`](crate::tap::UserContext) for admin
-    /// users should add `"administer site"` themselves so that
-    /// [`UserContext::is_admin`](crate::tap::UserContext::is_admin) returns `true`.
+    /// implicit admin bypass). Callers building a
+    /// [`UserContext`](crate::tap::UserContext) for an administrator pass the
+    /// set to [`UserContext::administrator`](crate::tap::UserContext::administrator),
+    /// which carries the column rather than adding anything to the set.
     pub async fn load_user_permissions(&self, user: &User) -> Result<HashSet<String>> {
         let mut permissions = HashSet::new();
 
@@ -136,12 +137,13 @@ impl PermissionService {
     ///
     /// Three things it gets right that a literal list cannot:
     ///
-    /// - The permissions are the user's own, loaded from their roles.
-    /// - An admin additionally carries the `"administer site"` marker, because
-    ///   [`load_user_permissions`](Self::load_user_permissions) returns the raw
-    ///   role set without the implicit admin bypass, and
-    ///   [`UserContext::is_admin`](crate::tap::UserContext::is_admin) is keyed
-    ///   on that marker.
+    /// - The permissions are the user's own, loaded from their roles, and
+    ///   nothing else: an administrator's set is not replaced or padded, so a
+    ///   plugin asking what this user's roles grant gets the truth.
+    /// - An administrator carries the `users.is_admin` column on the context
+    ///   itself, through
+    ///   [`UserContext::administrator`](crate::tap::UserContext::administrator).
+    ///   [`UserContext::can`](crate::tap::UserContext::can) is what reads it.
     /// - The anonymous user's context is built from
     ///   [`UserContext::anonymous`](crate::tap::UserContext::anonymous) rather
     ///   than `authenticated`, so it can never be mistaken for the kernel
@@ -198,14 +200,16 @@ pub fn context_from_permissions(
         return ctx;
     }
 
-    let mut permissions: Vec<String> = permissions.into_iter().collect();
-    // `load_user_permissions` returns the raw role set without the implicit
-    // admin bypass, so an admin needs the marker added for
-    // `UserContext::is_admin()` to hold.
-    if user.is_admin && !permissions.iter().any(|p| p == "administer site") {
-        permissions.push("administer site".to_string());
+    // The permission set is the user's honest role set: nothing is added, and
+    // in particular no `"administer site"` marker. The administrator column
+    // travels as itself, so `has_permission` keeps answering what the roles
+    // grant while `can()` answers what the user may do.
+    let permissions: Vec<String> = permissions.into_iter().collect();
+    if user.is_admin {
+        UserContext::administrator(user.id, permissions)
+    } else {
+        UserContext::authenticated(user.id, permissions)
     }
-    UserContext::authenticated(user.id, permissions)
 }
 
 #[cfg(test)]
@@ -253,13 +257,39 @@ mod tests {
     }
 
     #[test]
-    fn admin_context_keeps_real_permissions_alongside_the_marker() {
+    fn admin_context_carries_the_column_and_its_real_permissions() {
         let ctx = context_from_permissions(&user(Uuid::now_v7(), true), perms(&["moderate feeds"]));
 
-        // The marker is what `is_admin()` reads, but it must not be the whole
-        // permission set: an admin holds their real permissions too.
+        // The column is what `is_admin()` reads. The permission set is the
+        // administrator's own roles, untouched.
         assert!(ctx.is_admin());
         assert!(ctx.has_permission("moderate feeds"));
+        assert!(ctx.can("anything at all"));
+    }
+
+    #[test]
+    fn administer_site_alone_does_not_make_an_administrator() {
+        // BL-33: the string was the marker `is_admin()` read, so a role holding
+        // it passed every bypass keyed on the column. It is now an ordinary
+        // permission.
+        let ctx =
+            context_from_permissions(&user(Uuid::now_v7(), false), perms(&["administer site"]));
+
+        assert!(!ctx.is_admin());
+        assert!(ctx.has_permission("administer site"));
+        assert!(!ctx.can("edit any article content"));
+    }
+
+    #[test]
+    fn an_administrators_permission_set_is_not_padded_with_the_marker() {
+        // The other half of BL-33: the builder used to push `administer site`
+        // onto a column administrator's set, and `current-user-has-permission`
+        // answered from that set literally, so a plugin's own check saw the
+        // marker and nothing the administrator's roles really granted.
+        let ctx = context_from_permissions(&user(Uuid::now_v7(), true), perms(&["moderate feeds"]));
+
+        assert!(!ctx.has_permission("administer site"));
+        assert_eq!(ctx.permissions, vec!["moderate feeds".to_string()]);
     }
 
     #[test]
@@ -272,10 +302,11 @@ mod tests {
     }
 
     #[test]
-    fn admin_marker_is_not_duplicated_when_a_role_already_grants_it() {
+    fn an_administrator_whose_role_grants_the_permission_keeps_it_once() {
         let ctx =
             context_from_permissions(&user(Uuid::now_v7(), true), perms(&["administer site"]));
 
+        assert!(ctx.is_admin());
         assert_eq!(
             ctx.permissions
                 .iter()

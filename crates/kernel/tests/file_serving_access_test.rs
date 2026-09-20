@@ -25,7 +25,7 @@ use uuid::Uuid;
 const FILE_BODY: &[u8] = b"top secret attachment contents";
 
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 fn stranger() -> UserContext {

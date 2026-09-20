@@ -292,10 +292,12 @@ fn a_user_without_the_permission_cannot_assign_themselves_a_role() {
 
 /// A delegated user administrator cannot hand out permissions they lack.
 ///
-/// `administer users` is grantable, and roles carry permissions, so without this
-/// a delegated user administrator could assign themselves a role holding
-/// `administer site` and become a site administrator by way of the screen they
-/// were given to manage usernames.
+/// `administer users` is grantable, and roles carry permissions, so without
+/// this a delegated user administrator could assign themselves a role holding
+/// permissions well beyond their own by way of the screen they were given to
+/// manage usernames. Since BL-33 that is an escalation of permissions rather
+/// than a promotion to site administrator — `administer site` is an ordinary
+/// permission — and it is still an escalation, which is what this guards.
 #[test]
 fn a_delegated_administrator_cannot_grant_a_role_beyond_their_own_permissions() {
     run_test(async {

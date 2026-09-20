@@ -41,9 +41,10 @@ pub async fn resolve_token(state: &AppState, raw_token: &str) -> Result<User> {
 
 /// Build a [`UserContext`] from a [`User`] by loading their permissions.
 ///
-/// The returned context includes all role-based permissions from the database.
-/// Admin users additionally receive `"administer site"` so that
-/// [`UserContext::is_admin`] returns `true`.
+/// The returned context includes all role-based permissions from the database,
+/// and nothing else. An administrator carries the `users.is_admin` column on
+/// the context itself, so [`UserContext::is_admin`] holds without the
+/// permission set being altered to say so.
 ///
 /// Delegates to the kernel's one context builder rather than assembling the
 /// permission list here, so an MCP caller and a web request cannot drift into

@@ -279,7 +279,7 @@ fn user_context_anonymous() {
 
 #[test]
 fn user_context_admin() {
-    let ctx = UserContext::authenticated(Uuid::now_v7(), vec!["administer site".to_string()]);
+    let ctx = UserContext::administrator(Uuid::now_v7(), vec!["administer site".to_string()]);
 
     assert!(ctx.authenticated);
     assert!(ctx.is_admin());

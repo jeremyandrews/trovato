@@ -58,7 +58,7 @@ fn load_for_view_filtered_denies_restricted_item() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         // An unpublished item authored by someone else.
         let author = Uuid::nil();
@@ -97,7 +97,7 @@ fn load_for_view_filtered_allows_published_item() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let item = make_conference(app, &admin, "Public Conf", 1, Uuid::nil()).await;
 
@@ -121,7 +121,7 @@ fn filter_page_for_view_drops_invisible_and_preserves_rank() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let published = make_conference(app, &admin, "Visible Conf", 1, Uuid::nil()).await;
         let draft = make_conference(app, &admin, "Hidden Conf", 0, Uuid::nil()).await;
@@ -159,7 +159,7 @@ fn filter_page_for_view_truncates_to_page_size() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let a = make_conference(app, &admin, "Page A", 1, Uuid::nil()).await;
         let b = make_conference(app, &admin, "Page B", 1, Uuid::nil()).await;

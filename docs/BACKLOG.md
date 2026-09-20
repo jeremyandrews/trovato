@@ -15,7 +15,7 @@ Trovato.
 A line number is where the thing is at `d3f4cd7`; the source documents' own line
 numbers are often stale and are not repeated.
 
-In short: 115 distinct findings, 91 of them open, and 27 proposed as blocking the
+In short: 115 distinct findings, 87 of them open, and 24 proposed as blocking the
 1.0 tag, plus 25 marked as a Ritrovo gate by the ruling of 2026-09-17. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
 argues each.
 
@@ -128,7 +128,7 @@ such row says so.
 | BL-30 (G-NO-GATHER-AGGREGATION, Argus M3) | `QueryDefinition` has no grouping or aggregate projection and no tile type computes a number, so a count is a pager total over a list. | `crates/kernel/src/gather/types.rs:15-60`; `crates/kernel/src/services/tile.rs:79-120` | open | post | additive |
 | BL-31 (G-EXPOSED-FILTER-NO-MATCH-ALL, Argus M3) | A blank exposed filter produced `= ''` and a 500 over a uuid column. Unanswered exposed filters are now dropped for every operator except the null checks. Netgrasp still lists it as residual. | `crates/kernel/src/gather/gather_service.rs:1086-1137` | fixed `2ff3a62` | closed | n/a |
 | BL-32 (G-DISPLAY-CONFIG-CANNOT-STYLE-A-ROW) | A gather's display configuration has no per-row conditional class. | `crates/kernel/src/gather/types.rs:464-508` | open | post | additive |
-| BL-33 (G-USER-API-NO-ADMIN-BYPASS) | `current-user-has-permission` is a literal membership test, while the assistant's gate lets an administrator through, so an administrator can open a plugin's conversation and have every tool refuse them. The kernel has two notions of administrator: `require_admin` reads the `users.is_admin` column and `UserContext::is_admin` reads the `administer site` permission string. | `crates/kernel/src/host/user.rs:49`; `crates/kernel/src/routes/assistant.rs:169-176`; `crates/kernel/src/tap/request_state.rs:100-107`; `crates/kernel/src/routes/helpers.rs:86,116` | open | 1.0.x | frozen; a second "effective permission" function and a WIT note are additive |
+| BL-33 (G-USER-API-NO-ADMIN-BYPASS) | The kernel had two notions of administrator. `require_admin` and `require_permission` read the `users.is_admin` column; `UserContext::is_admin` read whether the permission list held the string `administer site`, which the context builder pushed in for a column administrator. So a role granted `administer site` passed every context bypass and was still refused on the admin screens, while a column administrator's plugin-side permission set was the marker rather than their roles, so `current-user-has-permission` — a literal membership test — refused them everything else. The column now travels on `UserContext` as itself, nothing is added to a permission set, and the new `UserContext::can` is the effective question that the call sites and the host function both ask. `administer site` is an ordinary permission: it opens the structure and configuration screens #92 gated on it and nothing else. **Behaviour change**, recorded in `UPGRADING.md`. Additive: no WIT signature change, no new host function, no API version bump, no migration. | `crates/kernel/src/tap/request_state.rs` (`can`, `is_admin`); `crates/kernel/src/permissions.rs:context_from_permissions`; `crates/kernel/src/host/user.rs`; `UPGRADING.md` | fixed (#96) | closed | n/a |
 | BL-34 (G-SDK-NO-ESCAPE, Argus M3) | The SDK exports no HTML escaping helper, so plugins each write one (Argus, Netgrasp, `trovato_contact`, `trovato_book`, `trovato_seo`, `test_plugin_api`), and the SDK's own doc example calls an `escape_html` it does not provide. | `crates/plugin-sdk/src/types.rs:824`; `crates/kernel/src/routes/helpers.rs:903` (the kernel's private copy) | open | 1.0.x | additive |
 | BL-35 (G-VIEW-OUTPUT-JSON-ENCODED, Argus M3, AI-4) | `tap_item_view` HTML reached the page as a JSON string literal. The macro still serializes a `String` return, and the kernel now decodes it before appending. Netgrasp's pinning test inspects raw dispatcher output, so it cannot see the fix. | `crates/kernel/src/content/item_service.rs:56-71,586-590`; `crates/plugin-sdk-macros/src/lib.rs:158` | fixed `2ff3a62` | closed | n/a |
 | BL-36 (G-DB-HOST-TYPE-COVERAGE) | The `db` host decodes nine Postgres types and falls through to `try_get::<String>().ok()`, so `timestamptz`, `numeric`, `date`, `inet`, `bytea` and arrays arrive as `null`, indistinguishable from a real null. The gather path renders the same column as an ISO string. Netgrasp's pinning test exercises a copy of the function, not the kernel's. | `crates/kernel/src/host/db.rs:104-161` (fall-through `:151-156`); `crates/kernel/src/gather/gather_service.rs:834,858` | open | 1.0.x | frozen; an opt-in typed decode is additive |
@@ -266,7 +266,7 @@ bear out is recorded as such in the row rather than dropped.
 | `G-PRESAVE-CANNOT-REFUSE` | BL-42 | The presave input is `{item_type, title, fields, status}` (`crates/kernel/src/content/item_service.rs:355-361`): no id, no stage, no author, so a tap cannot tell a create from an update. |
 | `G-ADMIN-SCREENS-ARE-ADMIN-ONLY` | BL-41 | The comment moderation queue gates the same way (`crates/kernel/src/routes/admin.rs:524,529`), which BL-41 did not name. `trovato_comments` creates a `comment_moderator` role holding `administer comments` that cannot open the queue it exists for. |
 | `G-QUEUE-WORKER-ERROR-IS-SUCCESS` | BL-50 | The SDK half: `crates/kernel/src/cron/mod.rs:228-231` treats any returned output as success, so a `#[plugin_tap]` worker returning `{"status":"error"}` has its job deleted with no retry and no dead letter. Only `#[plugin_tap_result]` can signal failure, and nothing in the signature says so. |
-| `G-USER-API-NO-ADMIN-BYPASS` | BL-33 | Re-confirmed at `crates/kernel/src/host/user.rs:49` against `crates/kernel/src/tap/request_state.rs:100-102`. |
+| `G-USER-API-NO-ADMIN-BYPASS` | BL-33 | Was re-confirmed at `crates/kernel/src/host/user.rs:49` against `crates/kernel/src/tap/request_state.rs:100-102`; closed by #96, which gave the kernel one notion of administrator. |
 | `G-API-RATE-LIMITS-FIXED` | BL-01 | Two halves BL-01 did not carry: the limits are not per role (`crates/kernel/src/middleware/rate_limit.rs:99-120`, one `api` figure for everyone), and API tokens exist with no page to manage them, so a site cannot issue one through the interface. |
 | `G-NO-REQUEST-PROFILER` | BL-17 | Nothing called Gander exists in this tree, which is worth recording because three design documents name it. Pull request #80 is open against BL-17. |
 
@@ -420,7 +420,7 @@ blocked rows.
 | BL-100 | E4.5, 34.5 and D14 are "kernel has it, Ritrovo does not use it" | A9 step 1 names it, and it is a 1.0 blocker on the day-one test |
 | BL-97 | P14's row is "Ritrovo must build it" | A8 step 2 needs it for a language switcher that knows which language it is on |
 | BL-108 | 37.3's row is "Ritrovo must build it" | A7 needs it for a subscribe toggle that works without JavaScript |
-| BL-33 | P8 and P19 are "Ritrovo must build it" | A5 and A7, once either checks the viewer |
+| BL-33 | P8 and P19 are "Ritrovo must build it" | A5 and A7, once either checks the viewer — closed by #96 |
 | BL-50 | P3 is "Ritrovo must build it" | A4 makes the importer's worker a result type to work around it |
 | BL-17 | D24 is "kernel has it, Ritrovo does not use it" | A9's cache walkthrough has nothing to profile with |
 
@@ -480,22 +480,27 @@ should get a row when the next pass runs.
 
 ## Tally
 
-115 distinct findings after merging duplicates. By status: 86 open, 4 partly fixed
-(BL-03, BL-07, BL-21, BL-25), 22 fixed, 2 that do not reproduce, and 1 decided
-(BL-109). By class: 27 proposed to block 1.0, 30 to ship in 1.0.x, 34 to wait until
-after 1.0, and 24 closed. The two partitions cross at two rows: of the two that do
+115 distinct findings after merging duplicates. By status: 81 open, 4 partly fixed
+(BL-03, BL-07, BL-21, BL-25), 27 fixed, 2 that do not reproduce, and 1 decided
+(BL-109). By class: 24 proposed to block 1.0, 29 to ship in 1.0.x, 34 to wait until
+after 1.0, and 28 closed. The two partitions cross at three rows: of the two that do
 not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
-on one database confirm it, so the 24 closed are the 22 fixed plus BL-14 and
-BL-109. Everything not closed — 91 rows — is what "open" means in the paragraph
+on one database confirm it; and BL-02 is fixed in the kernel and stays in 1.0 for
+the SDK half its row names. So the 28 closed are 26 of the 27 fixed, plus BL-14 and
+BL-109. Everything not closed — 87 rows — is what "open" means in the paragraph
 above, and the four partly fixed rows are inside it, each one open on the half its
 row names.
 
-The 27: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-41, BL-46, BL-57,
-BL-66, BL-67, BL-68, BL-69, BL-73, BL-74, BL-85, BL-87, BL-90, BL-91, BL-92, BL-93,
-BL-98, BL-99, BL-100, BL-104, BL-112.
+The 24: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-66,
+BL-67, BL-68, BL-73, BL-74, BL-85, BL-87, BL-91, BL-92, BL-93, BL-98, BL-99,
+BL-100, BL-104, BL-112.
 
 Four of the 30 that stood here before closed in the fix series — BL-09, BL-11,
-BL-12 and BL-15 — and BL-112 is new, so the list is three shorter.
+BL-12 and BL-15 — and BL-112 is new, so that list was three shorter. Three more
+have closed since and are gone from it: BL-41 (#92), BL-69 and BL-90 (#93). The
+fix series has also closed BL-33 (#96), which was in 1.0.x rather than in this
+list. These counts were last recomputed from the rows themselves at #96; the four
+closes before it had updated their own rows without the tally.
 
 The eight Ritrovo added to that list are argued in
 [Why these block 1.0](#why-these-block-10) with the rest. Twenty-five findings
@@ -780,7 +785,7 @@ manifest, pre-freeze or not. Every out-of-tree plugin will have to redeclare its
 `api_version` at that tag, which belongs in the 1.0 release notes.
 
 The full list of rows whose obvious fix is frozen: BL-03 (if `get` leaves the
-namespace), BL-13 (if the SDK default changes), BL-25, BL-33, BL-36, BL-38 (if the
+namespace), BL-13 (if the SDK default changes), BL-25, BL-36, BL-38 (if the
 defaults go), BL-39, BL-45, BL-50 (if plain returns are reinterpreted), BL-55, BL-59,
 BL-61, BL-64 (if the default order changes), BL-65 (if a warning becomes an error),
 BL-72, BL-77, BL-88, BL-92 (the `save-item` half only), BL-93, BL-96 (if `queue-push`

@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn check_access_admin_bypass() {
-        let admin = UserContext::authenticated(Uuid::now_v7(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::now_v7(), vec!["administer site".to_string()]);
         assert!(admin.is_admin());
         // Admin always gets access regardless of ownership or permissions
         let _comment = make_comment(Uuid::now_v7()); // different author

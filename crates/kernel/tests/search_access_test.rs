@@ -81,7 +81,7 @@ fn search_excludes_restricted_item() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let term = format!("zqxsearch{}", Uuid::now_v7().simple());
         let published = make_item(app, &admin, &format!("{term} public"), 1).await;
@@ -106,7 +106,7 @@ fn search_includes_restricted_item_for_admin() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let term = format!("zqxadmin{}", Uuid::now_v7().simple());
         let published = make_item(app, &admin, &format!("{term} public"), 1).await;
@@ -140,7 +140,7 @@ fn search_keeps_snippet_fail_open() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let term = format!("zqxsnip{}", Uuid::now_v7().simple());
         make_item(app, &admin, &format!("{term} public"), 1).await;
@@ -167,7 +167,7 @@ fn search_snippet_escapes_html_in_source() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_conference_type().await;
-        let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let term = format!("zqxxss{}", Uuid::now_v7().simple());
         // Store an XSS payload in the body, right next to the searchable term so

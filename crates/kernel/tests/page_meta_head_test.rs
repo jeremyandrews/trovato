@@ -34,7 +34,7 @@ const ITEM_TYPE: &str = "page_meta_test";
 const ARTICLE_TYPE: &str = "blog";
 
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 /// Seed an item type with a body field and a blocks field. Idempotent, and safe
