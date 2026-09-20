@@ -188,11 +188,7 @@ fn administer_site_still_opens_the_structure_and_configuration_screens() {
 
         let cookies = user_holding(app, "onadmin-structure", &["administer site"]).await;
 
-        for path in [
-            "/admin",
-            "/admin/structure/types",
-            "/admin/structure/menus",
-        ] {
+        for path in ["/admin", "/admin/structure/types", "/admin/structure/menus"] {
             let status = get_as(app, path, &cookies, "onadmin-structure").await;
             assert_eq!(
                 status,
