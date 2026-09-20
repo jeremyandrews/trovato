@@ -4,7 +4,7 @@ Every place the project version appears, and what it has to say. Trovato has one
 version number (see [Versioning.md](Versioning.md)); this is the list of things
 that have to move when it changes.
 
-Current version: **0.102.0**, plugin API **(0, 102)**.
+Current version: **0.103.0**, plugin API **(0, 103)**.
 
 ## Derived automatically (nothing to do)
 
@@ -21,20 +21,22 @@ listed so nobody "fixes" them by hardcoding a number.
 
 ## Changed by hand on every version bump
 
-| # | Location | Field | At 0.102.0 |
+| # | Location | Field | At 0.103.0 |
 |---|---|---|---|
-| 1 | `Cargo.toml` | `[workspace.package] version` | `"0.102.0"` |
-| 2 | `crates/kernel/src/plugin/mod.rs` | `KERNEL_API_VERSION` | `(0, 102)` |
-| 3 | `crates/kernel/src/plugin/info_parser.rs` | `default_api_version()` | `"0.102"` |
-| 4 | `plugins/**/*.info.toml` (37 files) | `version` | `"0.102.0"` |
-| 5 | `plugins/**/*.info.toml` (37 files) | `api_version` | `"0.102"` |
-| 6 | `.github/workflows/docker-publish.yml` | `BASE_VERSION` | `"0.102"` |
-| 7 | `CHANGELOG.md` | new release section | `## v0.102.0` |
-| 8 | `docs/design/Versioning.md` | worked examples | `0.102.0` / `(0, 102)` |
-| 9 | this file | the "current version" line and the table | `0.102.0` |
-| 10 | `crates/kernel/src/plugin/info_parser.rs` | the two API-compat tests | `"0.102"` accepted, `"0.103"` rejected |
-| 11 | `README.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `KNOWN-ISSUES.md`, `.github/ISSUE_TEMPLATE/config.yml` | prose naming the current release | `0.102.0` |
-| 12 | `crates/kernel/src/plugin/mod.rs`, `crates/kernel/src/plugin/info_parser.rs`, `.github/workflows/ci.yml`, `plugins/trovato_book/src/lib.rs` | comments naming the current API or contract | `0.102` / `(0, 102)` |
+| 1 | `Cargo.toml` | `[workspace.package] version` | `"0.103.0"` |
+| 2 | `crates/kernel/src/plugin/mod.rs` | `KERNEL_API_VERSION` | `(0, 103)` |
+| 3 | `crates/kernel/src/plugin/info_parser.rs` | `default_api_version()` | `"0.103"` |
+| 4 | `plugins/**/*.info.toml` (37 files) | `version` | `"0.103.0"` |
+| 5 | `plugins/**/*.info.toml` (37 files) | `api_version` | `"0.103"` |
+| 6 | `.github/workflows/docker-publish.yml` | `BASE_VERSION` | `"0.103"` |
+| 7 | `CHANGELOG.md` | new release section | `## v0.103.0` |
+| 8 | `docs/design/Versioning.md` | worked examples | `0.103.0` / `(0, 103)` |
+| 9 | this file | the "current version" line and the table | `0.103.0` |
+| 10 | `crates/kernel/src/plugin/info_parser.rs` | the two API-compat tests | `"0.103"` accepted, `"0.104"` rejected |
+| 11 | `README.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `KNOWN-ISSUES.md`, `.github/ISSUE_TEMPLATE/config.yml` | prose naming the current release | `0.103.0` |
+| 12 | `crates/kernel/src/plugin/mod.rs`, `crates/kernel/src/plugin/info_parser.rs`, `.github/workflows/ci.yml`, `plugins/trovato_book/src/lib.rs` | comments naming the current API or contract | `0.103` / `(0, 103)` |
+| 13 | `UPGRADING.md` | `## Unreleased` heading, when the release has operator notes | `## v0.103.0` |
+| 14 | `docs/RELEASING.md` | the worked `git tag` example in section 4 | `v0.103.0` / `Trovato 0.103.0` |
 
 Items 2 and 3 must agree with item 1: the API tuple is the project version with
 the patch component dropped. Items 4 and 5 are mechanical across every manifest.
@@ -49,6 +51,17 @@ newer kernel, and it fails.
 Items 11 and 12 break nothing. They are how the tree speaks its own version, and
 leaving them stale is how a reader ends up believing the wrong number.
 
+Item 13 is conditional: `UPGRADING.md` accumulates entries under `## Unreleased`
+the way `CHANGELOG.md` does, and a release that gained none has no heading to
+close. When there is one, it closes to the same version and the same date as the
+changelog section, because the two describe one release and an operator reading
+"Unreleased" on a version they are running cannot tell whether the note applies
+to them.
+
+Item 14 is the `git tag` command in section 4 of `docs/RELEASING.md`, written out
+with a real version rather than the `vX.Y.Z` the rest of that section uses. It is
+the one stale number a reader is most likely to paste into a terminal.
+
 ## Deliberately not the project version
 
 | Location | Version | Why |
@@ -58,10 +71,10 @@ leaving them stale is how a reader ends up believing the wrong number.
 ## Checking the work
 
 The useful grep after a bump looks for the version that was left behind, not the
-new one. Substitute the previous version; at 0.102.0 that was 0.101:
+new one. Substitute the previous version; at 0.103.0 that was 0.102:
 
 ```sh
-grep -rn '0\.101\|(0, 101)' --include='*.rs' --include='*.toml' --include='*.md' \
+grep -rn '0\.102\|(0, 102)' --include='*.rs' --include='*.toml' --include='*.md' \
   --include='*.yml' --include='*.wit' . | grep -v Cargo.lock | grep -v './target/'
 ```
 
@@ -74,8 +87,8 @@ The direct check is to build and ask:
 
 ```sh
 cargo build --release
-./target/release/trovato --version          # 0.102.0
-grep '^version' Cargo.toml                  # 0.102.0
+./target/release/trovato --version          # 0.103.0
+grep '^version' Cargo.toml                  # 0.103.0
 grep -rh '^api_version' plugins --include='*.info.toml' | sort -u   # one line
 grep -rh '^version' plugins --include='*.info.toml' | sort -u       # one line
 ```
