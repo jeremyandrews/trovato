@@ -24,7 +24,7 @@
 //! It implies nothing and nothing implies it. The one exception is a migration
 //! that grants it once to every role already holding `administer site`, so no
 //! existing site loses its dashboard on upgrade;
-//! [`a_role_holding_administer_site_still_reaches_the_dashboard`] is that
+//! [`the_migration_grants_admission_to_a_role_holding_administer_site`] is that
 //! grant's test.
 //!
 //! Requires Postgres + Redis (the shared `TestApp`); runs in CI.
@@ -215,36 +215,88 @@ fn the_same_role_without_the_permission_is_still_refused() {
     });
 }
 
-/// The migration's grant, observed through the door it exists to keep open.
+/// The migration's grant, on a role that existed before it ran.
 ///
-/// A role holding `administer site` was granted `access administration pages`
-/// by the migration, so a site that upgrades does not lose its dashboard. This
-/// asserts the grant is in the database as well as the effect, because the
-/// effect alone would also be produced by `administer site` implying admission,
-/// which it must not.
+/// The migration has already run by the time any test does, and a stock
+/// database has **no** role holding `administer site` for it to have granted
+/// anything to — the seeded anonymous and authenticated roles hold neither
+/// permission. So asserting that some role out there holds both would pass only
+/// on a database where earlier runs happened to leave one, which is not a test.
+///
+/// This seeds the role a pre-upgrade site would have had and applies the
+/// migration's own statement to it. The statement is idempotent (`ON CONFLICT
+/// DO NOTHING`) and selects on `administer site`, so running it again is what a
+/// second upgrade would do; the only change is a `role_id` filter so it cannot
+/// reach another test's fixture.
+#[test]
+fn the_migration_grants_admission_to_a_role_holding_administer_site() {
+    run_test(async {
+        let app = shared_app().await;
+
+        // The migration is recorded as applied: the grant below is the shipped
+        // statement, not a statement invented by this test.
+        let applied: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version = 20260920000001)",
+        )
+        .fetch_one(&app.db)
+        .await
+        .expect("query the migration ledger");
+        assert!(applied, "the grant migration must have run");
+
+        // A role as a pre-upgrade site had it: `administer site`, no admission.
+        let role = Role::create(
+            &app.db,
+            &format!("premigration-{}", Uuid::now_v7().simple()),
+        )
+        .await
+        .expect("create role");
+        Role::add_permission(&app.db, role.id, "administer site")
+            .await
+            .expect("grant administer site");
+
+        let before = Role::get_permissions(&app.db, role.id)
+            .await
+            .expect("read permissions");
+        assert!(
+            !before.iter().any(|p| p == ADMISSION),
+            "the fixture must start without admission, got {before:?}"
+        );
+
+        // The migration's statement, with one addition: a `role_id` filter, so
+        // it grants to this fixture and cannot reach a role another test is
+        // using. Without it this blanket grant would hand admission to the role
+        // in `administer_site_alone_does_not_imply_admission`, which exists to
+        // prove that does not happen — and these run in parallel.
+        sqlx::query(
+            "INSERT INTO role_permissions (role_id, permission) \
+             SELECT role_id, 'access administration pages' \
+             FROM role_permissions \
+             WHERE permission = 'administer site' AND role_id = $1 \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(role.id)
+        .execute(&app.db)
+        .await
+        .expect("apply the migration statement");
+
+        let after = Role::get_permissions(&app.db, role.id)
+            .await
+            .expect("read permissions");
+        assert!(
+            after.iter().any(|p| p == ADMISSION),
+            "a role holding `administer site` must be granted `{ADMISSION}`, got {after:?}"
+        );
+    });
+}
+
+/// And such a role reaches the dashboard, which is what the grant is for.
 #[test]
 fn a_role_holding_administer_site_still_reaches_the_dashboard() {
     run_test(async {
         let app = shared_app().await;
 
-        let granted: bool = sqlx::query_scalar(
-            "SELECT EXISTS (\
-               SELECT 1 FROM role_permissions a \
-               JOIN role_permissions b ON a.role_id = b.role_id \
-               WHERE a.permission = 'administer site' AND b.permission = $1)",
-        )
-        .bind(ADMISSION)
-        .fetch_one(&app.db)
-        .await
-        .expect("query the grant");
-        assert!(
-            granted,
-            "the migration must have granted `{ADMISSION}` to the roles holding \
-             `administer site`"
-        );
-
-        // A role configured the way a pre-upgrade site's was: `administer site`
-        // plus the permission the migration would have given it.
+        // A role configured the way a pre-upgrade site's was after the
+        // migration: `administer site` plus the permission it was given.
         let cookies =
             user_holding(app, "admission-migrated", &["administer site", ADMISSION]).await;
         let (status, _) = get_as(app, "/admin", &cookies, "admission-migrated").await;
