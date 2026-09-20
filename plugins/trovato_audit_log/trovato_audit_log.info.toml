@@ -1,7 +1,7 @@
 name = "trovato_audit_log"
 description = "Audit logging for content, auth, and permission changes"
-version = "0.102.0"
-api_version = "0.102"
+version = "0.103.0"
+api_version = "0.103"
 dependencies = []
 
 [taps]

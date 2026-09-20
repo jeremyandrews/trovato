@@ -1,6 +1,69 @@
 # Changelog
 
-## Unreleased
+## v0.103.0 — 2026-09-20
+
+A fix series, and the permission work that turns a delegated role from something
+the grid could describe into something a site can actually run on.
+
+0.102 gave every admin screen its own permission and left the kernel holding two
+notions of administrator that did not agree. Five entries here close that.
+`UserContext::is_admin()` stopped being derived from the permission list, so
+`administer site` is an ordinary permission and the superuser flag is the column
+it always claimed to be. `tap_perm` is dispatched, so a plugin's declared
+permissions exist to the kernel, can be seen in the grid and can be named in a
+`role.*.yml`. The grid stopped replacing each role's whole set from the boxes it
+rendered, which on one site had silently deleted 29 plugin grants. A user can be
+put in a role at all, from the form or the CLI. And `/admin` itself took a new
+`access administration pages`, so a role given one screen reaches the dashboard
+that links to it instead of a 403 at the front door. Two of those change
+behaviour on a running site: **see [UPGRADING.md](UPGRADING.md) before
+upgrading.** The administration sidebar is not yet filtered to what the viewer
+may open, so a delegated role still sees links that answer 403; that needs
+`render_admin_template` to know the viewer, across its 80 call sites, and is
+recorded as BL-117.
+
+Content translation gained a write path. `item_translation` had been read since
+the table was added, by the request overlay, the gather query builder, the
+sitemap and the menu, and nothing in the kernel ever wrote a row: every one of
+those readers was reading something no part of the product could produce, and
+the two admin translation screens could display a translation they had no way to
+create. There is now an admin form and a delete route, and a config entity so a
+translated site exports and re-imports like any other. Those two admin screens
+also render, rather than answering 500 on templates that were never written.
+
+The rest is a fix series, most of it findings recorded in `docs/BACKLOG.md` by
+this tree and by the projects built on it, each entry naming a root cause rather
+than a symptom: a documented slow-query threshold that steered nothing because
+its layer was applied to no router, twenty startup warnings the project's own
+plugins emitted about callbacks that could never be called, passkey sign-in that
+a browser never ran because the button's script was inline under a CSP with no
+`unsafe-inline`, a sitemap whose every address was relative and therefore
+unusable, listings that advertised a UUID in every link while the friendly alias
+sat unused, and a markdown filter that stripped the class that says what language
+a code block is. One security entry: rustls 0.23.37 to 0.23.45, clearing
+RUSTSEC-2026-0285, a lockfile-only bump that had been turning every pull request
+red since the advisory published.
+
+The plugin API moves to `(0, 103)`, and nothing about the boundary changed with
+it. No WIT signature moved, no tap was added and no host function was added, so a
+plugin declaring `api_version = "0.102"` installs and runs on this kernel exactly
+as before. The rule is the one it has always been: a manifest's major must equal
+the kernel's and its minor must not exceed it, so a plugin declaring `"0.103"` is
+stating what it was built against rather than reaching for something gated behind
+the number. The two surface additions reach a plugin whatever it declares.
+`ERR_MAIL_RATE_LIMITED` (-55) is a new value the `mail` host function can return,
+distinct from a send failure because waiting fixes it. And
+`current-user-has-permission` now answers the *effective* permission, the same
+question the kernel's own route guards ask, so a plugin's check and the kernel's
+gate no longer disagree about an administrator.
+
+- The project version is 0.103.0 and the plugin API is `(0, 103)`.
+
+  The manifest count in `docs/design/version-map.md` stays at 37. That file gains
+  two rows for locations it did not list: `UPGRADING.md`, whose `## Unreleased`
+  heading closes with the changelog's, and the worked `git tag` example in
+  `docs/RELEASING.md`, which is the one stale version a reader is most likely to
+  paste into a terminal.
 
 - Add: `access administration pages`, so a delegated role can use the dashboard.
   **See [UPGRADING.md](UPGRADING.md).**

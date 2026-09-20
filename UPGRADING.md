@@ -7,7 +7,7 @@ here needs nothing beyond the ordinary upgrade.
 Each entry says what changed, who it affects, and how to find out whether that
 is you **before** you upgrade.
 
-## Unreleased
+## v0.103.0 — 2026-09-20
 
 ### `/admin` takes a new `access administration pages` permission
 
