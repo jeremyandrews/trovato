@@ -299,19 +299,13 @@ pub(crate) use super::helpers::get_user_context;
 /// `"use filtered_html"` and `"use full_html"` permissions.
 /// `plain_text` is always allowed (handled by FormBuilder).
 fn permitted_text_formats(user: &UserContext) -> Vec<String> {
-    if user.is_admin() {
-        return vec![
-            "plain_text".to_string(),
-            "filtered_html".to_string(),
-            "full_html".to_string(),
-        ];
-    }
-
+    // `can` carries the administrator bypass, so the two formats need no
+    // separate admin arm: an administrator answers `true` to both.
     let mut formats = vec!["plain_text".to_string()];
-    if user.has_permission("use filtered_html") {
+    if user.can("use filtered_html") {
         formats.push("filtered_html".to_string());
     }
-    if user.has_permission("use full_html") {
+    if user.can("use full_html") {
         formats.push("full_html".to_string());
     }
     formats
@@ -857,7 +851,7 @@ async fn add_item_form(
 
     // Check permission
     let permission = format!("create {item_type} content");
-    if !user.has_permission(&permission) && !user.is_admin() {
+    if !user.can(&permission) {
         return Err((
             StatusCode::FORBIDDEN,
             Json(JsonError {
@@ -924,7 +918,7 @@ async fn create_item(
 
     // Check permission
     let permission = format!("create {item_type} content");
-    if !user.has_permission(&permission) && !user.is_admin() {
+    if !user.can(&permission) {
         return Err(AppError::forbidden("Access denied"));
     }
 

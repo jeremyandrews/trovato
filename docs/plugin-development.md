@@ -450,9 +450,13 @@ let value = host::context::get("my_key");
 // Get current user ID
 let user_id = host::user::current_user_id();
 
-// Check permission
-if host::user::has_permission("administer site") {
-    // Admin-only logic
+// Check permission. This is the *effective* permission: a site administrator
+// holds everything, so a plugin never needs an administrator case of its own.
+// `administer site` is an ordinary permission (it gates the structure and
+// configuration screens) and does not mean "is an administrator" — ask for the
+// permission your plugin actually declared.
+if host::user::has_permission("administer my_plugin") {
+    // Logic for someone who may administer this plugin.
 }
 ```
 

@@ -137,22 +137,23 @@ async fn chat_handler(
         }
     };
 
-    // Permission check: use ai + use ai chat
-    if !user.is_admin {
-        let has_base = state
-            .permissions()
-            .user_has_permission(&user, "use ai")
-            .await
-            .unwrap_or(false);
-        let has_chat = state
-            .permissions()
-            .user_has_permission(&user, "use ai chat")
-            .await
-            .unwrap_or(false);
+    // Permission check: use ai + use ai chat. `user_has_permission` is the
+    // effective answer and already returns true for a site administrator, so
+    // the hand-written `if !user.is_admin` wrapper that used to sit here was a
+    // second copy of the same bypass (BL-33). One bypass, in one place.
+    let has_base = state
+        .permissions()
+        .user_has_permission(&user, "use ai")
+        .await
+        .unwrap_or(false);
+    let has_chat = state
+        .permissions()
+        .user_has_permission(&user, "use ai chat")
+        .await
+        .unwrap_or(false);
 
-        if !has_base || !has_chat {
-            return AppError::forbidden("Permission required: use ai chat").into_response();
-        }
+    if !has_base || !has_chat {
+        return AppError::forbidden("Permission required: use ai chat").into_response();
     }
 
     // Validate input

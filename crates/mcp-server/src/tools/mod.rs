@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn require_mcp_permission_allows_admin() {
-        let admin = UserContext::authenticated(Uuid::new_v4(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::new_v4(), vec!["administer site".to_string()]);
         assert!(require_mcp_permission(&admin, "access content").is_ok());
         assert!(require_mcp_permission(&admin, "create content").is_ok());
         assert!(require_mcp_permission(&admin, "any permission").is_ok());

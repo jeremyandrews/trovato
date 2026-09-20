@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+- Fix: the kernel has one notion of administrator (BL-33).
+  **Behaviour change — see [UPGRADING.md](UPGRADING.md).**
+
+  It had two, and they did not agree. `require_admin` and `require_permission`
+  read the `users.is_admin` column. `UserContext::is_admin()` read whether the
+  context's permission list contained the string `administer site`, and
+  `context_from_permissions` pushed that string onto a column administrator's
+  list so the second notion would hold for them. Each direction of the
+  disagreement was its own defect.
+
+  **A role could be an administrator without being one.** A role granted
+  `administer site` and nothing else satisfied `UserContext::is_admin()`, so it
+  passed every bypass keyed on it — the item routes, item and field access,
+  menu visibility, the gather access predicate, file serving, the assistant's
+  scope gate — while `require_permission` still refused it on the admin screens
+  those bypasses were supposed to accompany. One permission string was quietly
+  the most powerful grant in the system, and the screen that granted it said
+  only "administer site".
+
+  **An administrator was refused by plugins.** Because the builder pushed the
+  marker onto the permission list rather than carrying the column, and
+  `current-user-has-permission` answered from that list literally, a superuser's
+  plugin-side permission set was the marker and whatever their roles happened to
+  grant. A plugin's own check therefore refused an administrator anything but
+  the literal string `administer site`. The worked example is the AI assistant:
+  the kernel let an administrator open a plugin's conversation and the plugin's
+  belt refused every tool inside it. The assistant's own test suite carried a
+  helper that granted the permission for real to work around exactly this.
+
+  The root cause is that `is_admin()` was a *derived* answer. Deriving it from
+  the permission list made the list a place where authority could be forged, and
+  made the honest list unavailable to anyone who wanted it.
+
+  `UserContext` now carries the `users.is_admin` column as a private field set
+  by its constructors, and `is_admin()` reads it. Nothing is added to a
+  permission set: an administrator's context holds their real role permissions
+  and no marker, so `has_permission` answers what the roles grant. The new
+  `UserContext::can` is the effective question — the column, or the permission —
+  and is the one place the bypass for a context-based check lives. Every site
+  that used to write `has_permission(p) || is_admin()` by hand calls it, and
+  `current-user-has-permission` answers it, so a plugin's check and the kernel's
+  gate now agree. The bypasses that name no permission (item and field access,
+  the gather predicate, file serving) still ask `is_admin()`, which now means
+  the column and only the column.
+
+  `require_permission` and `require_admin` keep their column bypass, which is
+  now the only other one in the kernel. `administer site` is an ordinary
+  permission: it opens the structure and configuration screens 0.102 gated on
+  it, and nothing else. The superuser flag stays non-delegable.
+
+  Additive: no WIT signature change, no new host function, no
+  `KERNEL_API_VERSION` bump and no migration. `current-user-has-permission`
+  gains a doc comment in `crates/wit/kernel.wit` saying it answers effective
+  permission.
+
 - Fix: the permission grid no longer deletes what it does not display, and a
   user can be put in a role.
 

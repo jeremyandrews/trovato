@@ -27,7 +27,7 @@ const ITEM_TYPE: &str = "trust_ladder_test";
 static SETTINGS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 async fn ensure_item_type(app: &TestApp) {

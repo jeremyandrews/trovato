@@ -817,8 +817,12 @@ fn submitted_role_ids(
 ///
 /// `administer users` is a grantable permission, and roles carry permissions.
 /// Without a guard, a delegated user administrator could assign themselves a
-/// role holding `administer site` and become a site administrator by way of the
-/// screen they were given to manage usernames. So a non-superuser may only
+/// role holding permissions well beyond their own — `administer site` and the
+/// structure screens, say — by way of the screen they were given to manage
+/// usernames. (Since BL-33 that is an escalation of permissions and not a
+/// promotion to site administrator: the superuser column is not grantable here
+/// at all, and `administer site` is an ordinary permission.) So a non-superuser
+/// may only
 /// grant or revoke a role whose permissions they already hold themselves: they
 /// can hand out what they have and no more. A superuser is unrestricted, as they
 /// are everywhere else.

@@ -34,7 +34,7 @@ const TYPE_SEED_LOCK: i64 = 0x_1A46_0000_0001;
 const ITEM_TYPE: &str = "language_context_test";
 
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 /// Seed the test item type. Idempotent, and safe against concurrent seeders.

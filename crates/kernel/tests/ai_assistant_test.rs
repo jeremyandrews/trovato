@@ -342,11 +342,12 @@ fn widget_id(name: &str) -> String {
 
 /// An administrator who also literally holds the scope's permission.
 ///
-/// The kernel lets an administrator open any scope, but the plugin's own belt
-/// calls `current_user_has_permission`, which checks the permission list
-/// literally and has no `administer site` bypass. A test that expects a tool to
-/// run therefore has to grant the permission for real — which is what a site
-/// would do too.
+/// A site that delegates this scope to a role grants the permission for real,
+/// and that is what this builds. Since BL-33 an administrator no longer *needs*
+/// the grant — `current_user_has_permission` answers the effective permission,
+/// so the column alone is enough — which
+/// [`an_administrator_alone_passes_the_plugins_own_check`] pins separately.
+/// Holding both is still the ordinary case and is what most tests here want.
 async fn admin_who_may_configure(app: &TestApp, name: &str) -> String {
     let cookies = app
         .create_and_login_admin(name, "Password123!", &format!("{name}@test.local"))
@@ -913,6 +914,50 @@ fn a_read_tool_runs_and_its_result_reaches_the_next_request() {
                 .unwrap_or_default()
                 .contains("\"color\""),
             "{tool_message}"
+        );
+    });
+}
+
+/// BL-33, the defect's own worked example, through the real host function.
+///
+/// The kernel let an administrator open any scope, and then the plugin's belt
+/// — `host::current_user_has_permission(PERM)` — refused every tool inside it,
+/// because the host function answered from the context's permission list
+/// literally and the context builder had replaced an administrator's real
+/// permissions with an `administer site` marker. An administrator could open a
+/// plugin's conversation and have every tool tell them no.
+///
+/// This administrator holds **no** role granting `PERM`. The column is the only
+/// thing they have, and it has to be enough.
+#[test]
+fn an_administrator_alone_passes_the_plugins_own_check() {
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        set_config(app, base_config()).await;
+        clear_widget_color(app).await;
+        let recorder = use_provider(app, "open_ai_compatible").await;
+        recorder.push(calls("c1", "read_widget", "{}"));
+        recorder.push(says("It is unset."));
+
+        let name = "asst_plain_admin";
+        let admin = app
+            .create_and_login_admin(name, "Password123!", &format!("{name}@test.local"))
+            .await;
+
+        let conversation = open_conversation(app, &admin, "w-plainadmin").await;
+        let sse = send_message(app, &admin, conversation, "what colour is it?").await;
+
+        let results: Vec<serde_json::Value> = sse_events(&sse)
+            .into_iter()
+            .filter(|event| event["type"] == "tool_result")
+            .collect();
+        assert_eq!(results.len(), 1, "one tool call was scripted: {sse}");
+        assert_eq!(
+            results[0]["ok"], true,
+            "the plugin's own permission check must pass for an administrator \
+             holding no role that grants `{PERM}`: {:?}",
+            results[0]
         );
     });
 }

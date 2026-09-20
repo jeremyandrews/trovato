@@ -303,9 +303,10 @@ impl Default for MenuRegistry {
 
 /// Whether a viewer may see a menu entry, by the entry's declared permission.
 ///
-/// Empty permission means public. Admins hold every permission implicitly.
+/// Empty permission means public. A site administrator holds every permission
+/// implicitly, which is what `can` carries.
 fn viewer_may_see(menu: &MenuDefinition, viewer: &crate::tap::UserContext) -> bool {
-    menu.permission.is_empty() || viewer.is_admin() || viewer.has_permission(&menu.permission)
+    menu.permission.is_empty() || viewer.can(&menu.permission)
 }
 
 /// Match a route pattern against a path, extracting parameters.
@@ -534,6 +535,14 @@ mod tests {
         )
     }
 
+    /// A site administrator: the `users.is_admin` column, holding no
+    /// permissions of their own. Since BL-33 that column is what makes an
+    /// administrator — a role granted `administer site` is an ordinary viewer
+    /// holding an ordinary permission.
+    fn admin_viewer() -> crate::tap::UserContext {
+        crate::tap::UserContext::administrator(Uuid::now_v7(), Vec::new())
+    }
+
     fn titles(menus: &[MenuDefinition]) -> Vec<&str> {
         menus.iter().map(|m| m.title.as_str()).collect()
     }
@@ -552,10 +561,20 @@ mod tests {
 
     #[test]
     fn gated_menu_appears_for_an_admin() {
-        // Admins implicitly hold every permission, so navigation shows both
-        // gated entries even though the admin's roles grant neither by name.
-        let menus = nav_registry().root_menus_for(&viewer(&["administer site"]));
+        // A site administrator implicitly holds every permission, so navigation
+        // shows both gated entries even though their roles grant neither by
+        // name — and here grant nothing at all.
+        let menus = nav_registry().root_menus_for(&admin_viewer());
         assert_eq!(titles(&menus), vec!["Home", "Stories", "Argus feeds"]);
+    }
+
+    #[test]
+    fn administer_site_alone_does_not_open_a_menu_gated_on_another_permission() {
+        // BL-33: `administer site` used to be the string `is_admin()` read, so
+        // a viewer holding it saw every gated entry. It is an ordinary
+        // permission now, and it is not the one these entries declare.
+        let menus = nav_registry().root_menus_for(&viewer(&["administer site"]));
+        assert_eq!(titles(&menus), vec!["Home"]);
     }
 
     #[test]
@@ -571,10 +590,11 @@ mod tests {
 
     #[test]
     fn navigation_excludes_children_and_invisible_api_routes() {
-        // An admin sees everything permission can allow, so anything still
-        // missing here is excluded structurally: child entries belong under
-        // their parent, and an `api` route is a write endpoint, not a link.
-        let menus = nav_registry().root_menus_for(&viewer(&["administer site"]));
+        // An administrator sees everything permission can allow, so anything
+        // still missing here is excluded structurally: child entries belong
+        // under their parent, and an `api` route is a write endpoint, not a
+        // link.
+        let menus = nav_registry().root_menus_for(&admin_viewer());
         assert!(!titles(&menus).contains(&"Story"));
         assert!(!titles(&menus).contains(&"React"));
     }

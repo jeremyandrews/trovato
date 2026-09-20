@@ -34,7 +34,7 @@ const TYPE_SEED_LOCK: i64 = 0x_1A46_0000_0009;
 const ITEM_TYPE: &str = "gather_row_url_test";
 
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 fn display() -> QueryDisplay {

@@ -56,6 +56,28 @@ pub struct UserContext {
     /// **not** grant the human `use ai` permission plane, which stays the sole
     /// gate for web/user AI calls.
     background: bool,
+
+    /// The `users.is_admin` column, carried rather than inferred.
+    ///
+    /// Set only by [`UserContext::administrator`], which
+    /// [`context_from_permissions`](crate::permissions::context_from_permissions)
+    /// calls when the loaded user has the column. It is the *same* superuser
+    /// flag `require_admin` and `require_permission` read, so the kernel has
+    /// one notion of administrator instead of two.
+    ///
+    /// Before this it was inferred from an `"administer site"` string in
+    /// `permissions`, and the context builder pushed that string in for a
+    /// column administrator. The two notions then disagreed in both
+    /// directions: a role granted `administer site` and nothing else passed
+    /// `is_admin()` and so passed every bypass below, while a column
+    /// administrator's context carried the marker as its whole permission set
+    /// on the plugin side, so a plugin's own check refused them everything but
+    /// the marker itself (BL-33).
+    ///
+    /// `administer site` is now an ordinary permission with no structural
+    /// meaning: it gates the structure and configuration screens (#92) and
+    /// nothing else.
+    is_admin: bool,
 }
 
 impl UserContext {
@@ -66,16 +88,39 @@ impl UserContext {
             authenticated: false,
             permissions: Vec::new(),
             background: false,
+            is_admin: false,
         }
     }
 
     /// Create context for authenticated user.
+    ///
+    /// Not an administrator: a permission list, however powerful, does not
+    /// make one. A user carrying the `users.is_admin` column is built with
+    /// [`UserContext::administrator`] instead.
     pub fn authenticated(id: Uuid, permissions: Vec<String>) -> Self {
         Self {
             id,
             authenticated: true,
             permissions,
             background: false,
+            is_admin: false,
+        }
+    }
+
+    /// Create context for an authenticated user who carries the
+    /// `users.is_admin` column.
+    ///
+    /// The permissions are still the user's own role set, and they still
+    /// matter: [`has_permission`](Self::has_permission) answers from that set
+    /// alone, and only [`can`](Self::can) and the bypasses keyed on
+    /// [`is_admin`](Self::is_admin) look past it.
+    pub fn administrator(id: Uuid, permissions: Vec<String>) -> Self {
+        Self {
+            id,
+            authenticated: true,
+            permissions,
+            background: false,
+            is_admin: true,
         }
     }
 
@@ -93,17 +138,38 @@ impl UserContext {
             authenticated: false,
             permissions: Vec::new(),
             background: true,
+            is_admin: false,
         }
     }
 
-    /// Check if user has a specific permission.
+    /// Whether this user's own roles grant a permission.
+    ///
+    /// The **raw** set membership test: it does not consider the administrator
+    /// column. Nearly every caller wants [`can`](Self::can), which is this
+    /// question plus the one bypass. Reach for this one only to ask what a
+    /// user's roles actually grant, independently of who they are.
     pub fn has_permission(&self, permission: &str) -> bool {
         self.permissions.iter().any(|p| p == permission)
     }
 
-    /// Check if user is admin.
+    /// Whether this user may do a thing: the **effective** permission.
+    ///
+    /// A site administrator (the `users.is_admin` column) holds everything;
+    /// everyone else holds what their roles grant. This is the one place the
+    /// administrator bypass lives for context-based checks, so a call site
+    /// cannot forget it or spell it differently, which is how the two notions
+    /// of administrator drifted apart (BL-33).
+    pub fn can(&self, permission: &str) -> bool {
+        self.is_admin || self.has_permission(permission)
+    }
+
+    /// Whether this user carries the `users.is_admin` column.
+    ///
+    /// The site administrator, not a permission holder. A check that is really
+    /// "may this person do X" wants [`can`](Self::can) instead; this one is for
+    /// the bypasses that have no permission to name.
     pub fn is_admin(&self) -> bool {
-        self.has_permission("administer site")
+        self.is_admin
     }
 
     /// Whether this is the kernel-internal background principal (P11c / D-40).

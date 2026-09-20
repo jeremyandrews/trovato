@@ -115,7 +115,7 @@ async fn wired_items(pool: PgPool) -> ItemService {
 
 /// An admin context that bypasses item access (for the update path).
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 /// Remove all kernel embed rows so a test starts from an empty queue.

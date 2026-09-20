@@ -41,7 +41,7 @@ const TYPE_SEED_LOCK: i64 = 0x_F401_0000_0001;
 const ITEM_TYPE: &str = "front_page_test";
 
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 /// Seed the test item type. Idempotent, and safe against concurrent seeders.

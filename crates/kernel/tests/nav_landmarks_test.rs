@@ -28,7 +28,7 @@ const TYPE_SEED_LOCK: i64 = 0x_F406_0000_0001;
 const ITEM_TYPE: &str = "nav_landmark_test";
 
 fn admin_ctx() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 async fn ensure_item_type(app: &TestApp) {

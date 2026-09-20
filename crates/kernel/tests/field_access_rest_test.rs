@@ -22,7 +22,7 @@ use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
 async fn make_item(app: &common::TestApp, title: &str, status: i16) -> Uuid {
-    let admin = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+    let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
     app.state
         .items()
         .create(

@@ -228,7 +228,7 @@ async fn lightweight_record_gather_enforces_published_and_field_access() {
 
     // 3) Admin: sees the unpublished row too (record-level admin bypass) and every
     //    field (field-access admin bypass) — no dispatch, all visible.
-    let admin = UserContext::authenticated(Uuid::now_v7(), vec!["administer site".to_string()]);
+    let admin = UserContext::administrator(Uuid::now_v7(), vec!["administer site".to_string()]);
     let admin_rows = gather_rows(&gather, admin).await;
     assert_eq!(admin_rows.len(), 2, "admin sees published + unpublished");
     for row in &admin_rows {

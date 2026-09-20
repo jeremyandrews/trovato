@@ -168,7 +168,7 @@ async fn seed(pool: &sqlx::PgPool, story_a: Uuid, story_b: Uuid) {
 fn admin() -> QueryContext {
     QueryContext {
         current_user_id: None,
-        viewer: Some(UserContext::authenticated(
+        viewer: Some(UserContext::administrator(
             Uuid::now_v7(),
             vec!["administer site".to_string()],
         )),

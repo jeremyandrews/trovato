@@ -7,10 +7,12 @@
 //! database to observe:
 //!
 //! - An admin's context is **loaded**, not fabricated. It carries the
-//!   permissions the admin's roles actually grant, alongside the
-//!   `"administer site"` marker. The old `admin_user_context` returned
-//!   `vec!["administer site"]` and nothing else, and got away with it only
-//!   because `is_admin()` short-circuits every permission check.
+//!   permissions the admin's roles actually grant, and the `users.is_admin`
+//!   column travels on the context itself. The old `admin_user_context`
+//!   returned `vec!["administer site"]` and nothing else, and got away with it
+//!   only because `is_admin()` short-circuits every permission check. Since
+//!   BL-33 nothing is added to the set at all: `is_admin()` reads the column,
+//!   not a string in the list.
 //! - The self-service routes (profile update, password change) still work for
 //!   the owner. Those service methods authorize nothing themselves — the route
 //!   gates on identity or on a verified token — so this is the test that would
@@ -114,9 +116,9 @@ fn an_admins_context_carries_their_real_permissions_and_the_admin_marker() {
 
         let ctx = admin_user_context(&app.state, &load_user(app, id).await).await;
 
-        // The marker is what `is_admin()` reads, and it has to be there.
+        // The column is what `is_admin()` reads, and it has to be carried.
         assert!(ctx.is_admin(), "admin context must satisfy is_admin()");
-        // But it must not be the *whole* permission set. This is the assertion
+        // The permission set is the admin's own roles. This is the assertion
         // the fabricated `vec!["administer site"]` failed: an admin holds their
         // real permissions too, and a permission check that stops
         // short-circuiting on `is_admin` has to find them.

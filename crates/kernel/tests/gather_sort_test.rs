@@ -29,7 +29,7 @@ const TYPE_SEED_LOCK: i64 = 0x_1A46_0000_0003;
 const ITEM_TYPE: &str = "gather_sort_test";
 
 fn admin() -> UserContext {
-    UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()])
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
 fn display() -> QueryDisplay {

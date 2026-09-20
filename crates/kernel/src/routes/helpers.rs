@@ -287,7 +287,13 @@ pub async fn inject_site_context(
     if viewer.is_admin() {
         user_roles.push("administrator".to_string());
     }
-    context.insert("user_is_admin", &viewer.is_admin());
+    // Whether to show the "Admin" link, so it asks the question `/admin` itself
+    // asks — `require_permission(.., "administer site")` — rather than whether
+    // the viewer is a site administrator. Those were the same question while
+    // `is_admin()` was derived from the permission, and are not now: a role
+    // granted `administer site` may open the dashboard, and must therefore be
+    // shown the way to it.
+    context.insert("user_is_admin", &viewer.can("administer site"));
 
     // The AI Assistant's launcher context, read out of the site config already
     // loaded above rather than with a query of its own — a launcher that costs a

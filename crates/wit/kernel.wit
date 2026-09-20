@@ -53,6 +53,16 @@ interface request-context {
 
 /// User and permission checks.
 interface user-api {
+    /// Whether the current user may do the named thing.
+    ///
+    /// This is the *effective* permission, the same question the kernel's own
+    /// route guards ask: a site administrator holds every permission, and
+    /// everyone else holds what their roles grant. A plugin does not need to,
+    /// and should not, add an administrator case of its own.
+    ///
+    /// `administer site` is an ordinary permission with no special meaning
+    /// here: it is held by the roles granted it, and it does not make its
+    /// holder an administrator.
     current-user-has-permission: func(permission: string) -> bool;
     current-user-id: func() -> string;
 }

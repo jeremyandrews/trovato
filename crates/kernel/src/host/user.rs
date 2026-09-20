@@ -46,7 +46,13 @@ pub fn register_user_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     return 0;
                 };
 
-                let has_perm = caller.data().request.user.has_permission(&permission);
+                // The *effective* permission, not raw set membership: a site
+                // administrator holds everything, the same answer the kernel's
+                // own route guards give. Answering from the set alone was the
+                // second half of BL-33 — an administrator could open a plugin's
+                // screen through `require_permission` and then have that
+                // plugin's own check refuse them every action on it.
+                let has_perm = caller.data().request.user.can(&permission);
                 if has_perm { 1 } else { 0 }
             },
         )

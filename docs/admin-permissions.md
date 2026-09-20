@@ -75,9 +75,12 @@ the bulk endpoint.
 **Role membership is delegable; the permissions it can carry are not.**
 The user add and edit forms carry a checkbox per role. `administer users` is a
 grantable permission and roles carry permissions, so without a guard a delegated
-user administrator could assign themselves a role holding `administer site` and
-become a site administrator by way of the screen they were given to manage
-usernames. A non-superuser may therefore only grant or revoke a role whose
+user administrator could assign themselves a role holding permissions well
+beyond their own — `administer site` and the structure screens, say — by way of
+the screen they were given to manage usernames. (Since BL-33 that is an
+escalation of permissions rather than a promotion to site administrator:
+`administer site` is an ordinary permission and the superuser column is not
+grantable here at all.) A non-superuser may therefore only grant or revoke a role whose
 permissions they already hold themselves: they can hand out what they have and
 no more. A superuser is unrestricted. Roles the actor may not touch are left
 exactly as they were on the target rather than silently dropped.

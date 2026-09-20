@@ -163,16 +163,18 @@ async fn resolve(state: &AppState, session: &Session) -> Result<Resolved, Respon
 
 /// Whether this person may open this scope.
 ///
-/// Three permissions, all of them, unless the caller is an administrator:
-/// `use ai` is the site-wide AI gate, `use ai assistant` is this feature's, and
-/// the scope's own permission is the plugin's.
+/// Three permissions, all of them: `use ai` is the site-wide AI gate, `use ai
+/// assistant` is this feature's, and the scope's own permission is the
+/// plugin's. A site administrator holds all three, as they hold everything.
 fn may_open(user: &UserContext, scope: &RegisteredScope) -> bool {
-    if user.is_admin() {
-        return true;
-    }
-    user.has_permission("use ai")
-        && user.has_permission("use ai assistant")
-        && (scope.scope.permission.is_empty() || user.has_permission(&scope.scope.permission))
+    // `can` carries the administrator bypass, so each of the three answers
+    // `true` for an administrator and the separate admin arm is gone. That arm
+    // and the plugin-side check disagreeing was BL-33's worked example: an
+    // administrator opened the conversation here and every tool inside refused
+    // them.
+    user.can("use ai")
+        && user.can("use ai assistant")
+        && (scope.scope.permission.is_empty() || user.can(&scope.scope.permission))
 }
 
 /// Render a themed error page.

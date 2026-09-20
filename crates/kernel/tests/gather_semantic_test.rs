@@ -51,7 +51,7 @@ fn test_display() -> QueryDisplay {
 /// `gather_access_test.rs`.
 fn admin_ctx() -> QueryContext {
     QueryContext {
-        viewer: Some(UserContext::authenticated(
+        viewer: Some(UserContext::administrator(
             Uuid::nil(),
             vec!["administer site".to_string()],
         )),
@@ -197,7 +197,7 @@ fn item_create_and_update_run_index_best_effort() {
         let app = shared_app().await;
         app.ensure_conference_type().await;
 
-        let user = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let user = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         let created = app
             .state
@@ -355,7 +355,7 @@ fn semantic_relevance_order_default_and_sort_override() {
         }
         app.ensure_conference_type().await;
 
-        let user = UserContext::authenticated(Uuid::nil(), vec!["administer site".to_string()]);
+        let user = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
 
         // Three items whose alphabetical title order (Alpha, Mike, Zeta)
         // deliberately differs from their relevance order so the two

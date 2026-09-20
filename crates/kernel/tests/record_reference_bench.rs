@@ -122,7 +122,7 @@ async fn bench_access_filtered_gather_at_volume() {
         ),
         (
             "admin",
-            UserContext::authenticated(Uuid::now_v7(), vec!["administer site".to_string()]),
+            UserContext::administrator(Uuid::now_v7(), vec!["administer site".to_string()]),
         ),
     ] {
         let ctx = QueryContext {
