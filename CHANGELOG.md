@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.103.0 — 2026-09-20
+## v0.103.0 — 2026-09-21
 
 A fix series, and the permission work that turns a delegated role from something
 the grid could describe into something a site can actually run on.
