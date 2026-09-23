@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Fix: a queue's declared concurrency bounds that queue
+  (`G-QUEUE-CONCURRENCY-COLLAPSED`).
+
+  `tap_queue_info` has always returned one entry per queue, each with its own
+  `concurrency`. The kernel read the **maximum** across those entries, once per
+  plugin, and applied it to a claim that named no queue at all. A plugin
+  declaring `analyze: 4, cluster: 1, summarize: 1` therefore ran `cluster` four
+  wide, because the width it was given was `analyze`'s, and the four slots it ran
+  in were shared by every queue the plugin owned. Per-queue declarations bounded
+  nothing, and a plugin had no way to say that one of its queues must be
+  serialized.
+
+  That is also what set the blast radius when workers stalled: with one width and
+  one undifferentiated claim, four stuck jobs on one queue occupied every slot
+  the plugin had, and its other queues starved behind them rather than draining
+  alongside.
+
+  `claim_batch` now claims within a named queue, and each queue drains at its own
+  declared width, clamped to `QUEUE_CONCURRENCY_CAP` as before: a declaration can
+  lower the kernel ceiling, never raise it. A queue holding rows that the plugin
+  never declared is not stranded by a declaration it has no say in; it drains at
+  width 1.
+
+  The per-cycle cap stays per plugin, because it is the fairness bound *between*
+  plugins and giving each queue its own would let a plugin multiply its share by
+  declaring more queues. A plugin's queues take turns spending it rather than
+  draining one at a time in name order, so splitting the width did not buy
+  cross-queue starvation in exchange.
+
+  `CronService::resolved_queue_widths` reports the widths the drain will honor,
+  per queue. There was no such answer to give before, only one number per plugin,
+  so a site could not see that the width it declared for one queue was being
+  applied to another.
+
 - Fix: `max_attempts` bounds the claim, not only the failure bookkeeping.
 
   A queue job that reached `max_attempts` while claimed, and whose lease then
