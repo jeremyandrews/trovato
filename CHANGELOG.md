@@ -29,6 +29,10 @@
   - A failed dispatch that consumed its whole epoch budget is dead-lettered at
     once, whatever `attempts` says, with a reason naming the budget. The bound it
     breached is not the attempt count, and a retry only buys the same burn again.
+    The boundary is one epoch tick of slack, an absolute second, not a fraction
+    of the budget: the engine's epoch advances once per second, so an N-tick
+    deadline can expire anywhere in `(N-1, N]` seconds, and a proportional
+    tolerance reads a short budget's plain exhaustion as an ordinary failure.
   - One drain pass has a wall-clock budget (`QUEUE_DRAIN_BUDGET_SECS`, 60s,
     settable per service). It bounds how many further batches a pass starts, not
     the batch in flight, so the ceiling on a pass is the budget plus one

@@ -95,13 +95,27 @@ const QUEUE_DRAIN_BUDGET_SECS: u64 = 60;
 /// [`QUEUE_DRAIN_BUDGET_SECS`].
 const MAX_LOCK_RENEWAL_SECS: u64 = 900;
 
-/// Fraction of the epoch budget a failed dispatch must have consumed before it
-/// counts as CPU exhaustion rather than an ordinary failure.
+/// Slack allowed when deciding that a failed dispatch ran to its epoch deadline.
 ///
-/// An ordinary trap returns in milliseconds and a cut-off job runs for the whole
-/// budget, so anything in this range is unambiguous; 0.9 leaves room for the
-/// epoch thread's one-second granularity and for scheduling delay under load.
-const CPU_EXHAUSTION_RATIO: f64 = 0.9;
+/// The engine's epoch advances once per second, so a deadline of N ticks can
+/// expire anywhere in `(N-1, N]` seconds of wall clock: the uncertainty is one
+/// tick, an **absolute** second, not a fraction of the budget. A proportional
+/// tolerance gets this wrong at small budgets — at a 5-second budget, 10% is half
+/// a second against a full second of granularity — which is how a job that had
+/// plainly run to its deadline was read as an ordinary failure and rescheduled.
+/// One tick plus scheduling slack covers it at every budget size. At the shipped
+/// 150-second budget this still leaves the boundary at 148 seconds, three orders
+/// of magnitude away from the milliseconds an ordinary trap takes, so widening it
+/// costs no precision where it matters.
+const CPU_EXHAUSTION_SLACK: Duration = Duration::from_secs(2);
+
+/// Smallest epoch budget for which exhaustion can be told apart from an ordinary
+/// failure at all.
+///
+/// Below this, [`CPU_EXHAUSTION_SLACK`] would swallow the whole budget and every
+/// failure would read as exhaustion. Such a budget is a misconfiguration; the
+/// classification declines rather than dead-lettering everything.
+const MIN_CLASSIFIABLE_BUDGET_SECS: u64 = 3;
 
 /// `dead_reason` for a job retired by [`CronService::reap_exhausted_jobs`]: it
 /// reached `max_attempts` while claimed and its lease expired without any
@@ -328,16 +342,17 @@ async fn run_queue_job(
 /// collapses every failure into `None` — so the question is answered by how long
 /// it ran. A job cut off at the epoch deadline has run for essentially the whole
 /// budget; an ordinary trap returns in milliseconds. The two are orders of
-/// magnitude apart, so a tolerance well below the budget separates them without
-/// any risk of calling a fast failure an exhaustion.
+/// magnitude apart, so the only care needed is the width of the boundary, which
+/// is [`CPU_EXHAUSTION_SLACK`]: one epoch tick plus scheduling slack.
 ///
-/// A zero budget disables the classification rather than marking everything
-/// exhausted, so misconfiguration cannot dead-letter a whole queue.
+/// A budget too small to classify (see [`MIN_CLASSIFIABLE_BUDGET_SECS`]) declines
+/// rather than marking everything exhausted, so a misconfigured deadline cannot
+/// dead-letter a whole queue.
 fn exhausted_its_cpu_budget(elapsed: Duration, budget_secs: u64) -> bool {
-    if budget_secs == 0 {
+    if budget_secs < MIN_CLASSIFIABLE_BUDGET_SECS {
         return false;
     }
-    elapsed.as_secs_f64() >= budget_secs as f64 * CPU_EXHAUSTION_RATIO
+    elapsed >= Duration::from_secs(budget_secs).saturating_sub(CPU_EXHAUSTION_SLACK)
 }
 
 /// Dead-letter a job that spent its entire CPU budget (P11d).
@@ -2009,11 +2024,35 @@ mod tests {
         assert!(!exhausted_its_cpu_budget(Duration::from_secs(100), 150));
     }
 
+    /// The boundary has to be an absolute tick, not a fraction of the budget.
+    ///
+    /// The engine's epoch advances once per second, so an N-tick deadline can
+    /// expire anywhere in `(N-1, N]` seconds. A proportional tolerance is far too
+    /// tight at a small budget: at a 5-second budget, 10% is half a second
+    /// against a full second of granularity, so a job that had plainly run to its
+    /// deadline read as an ordinary failure and was rescheduled for another full
+    /// burn. This is the case that caught it.
     #[test]
-    fn a_zero_budget_classifies_nothing_as_exhausted() {
-        // Misconfiguration must not dead-letter an entire queue.
+    fn a_small_budget_still_classifies_a_full_burn() {
+        // A 5-tick deadline firing after 4.0s is the earliest legal cut-off.
+        assert!(exhausted_its_cpu_budget(Duration::from_millis(4_000), 5));
+        assert!(exhausted_its_cpu_budget(Duration::from_millis(4_600), 5));
+        assert!(exhausted_its_cpu_budget(Duration::from_secs(5), 5));
+        // A fast failure at the same budget is still not exhaustion.
+        assert!(!exhausted_its_cpu_budget(Duration::from_millis(20), 5));
+        // At the shipped budget the boundary is still tight: 148 of 150s.
+        assert!(exhausted_its_cpu_budget(Duration::from_secs(148), 150));
+        assert!(!exhausted_its_cpu_budget(Duration::from_secs(147), 150));
+    }
+
+    #[test]
+    fn an_unclassifiable_budget_marks_nothing_as_exhausted() {
+        // Misconfiguration must not dead-letter an entire queue. Below the
+        // minimum the slack would swallow the budget whole.
         assert!(!exhausted_its_cpu_budget(Duration::from_secs(600), 0));
         assert!(!exhausted_its_cpu_budget(Duration::ZERO, 0));
+        assert!(!exhausted_its_cpu_budget(Duration::from_secs(600), 1));
+        assert!(!exhausted_its_cpu_budget(Duration::from_secs(600), 2));
     }
 
     // ── The heartbeat stops renewing ────────────────────────────────────────

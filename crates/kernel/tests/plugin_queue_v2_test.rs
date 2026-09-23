@@ -1304,8 +1304,11 @@ fn a_job_that_burns_its_cpu_budget_is_dead_lettered_not_retried() {
         assert_eq!(last_error.as_deref(), Some(reason.as_str()));
 
         // It really did run to the budget; this is not some faster failure path.
+        // The floor allows one epoch tick, since an N-tick deadline may fire as
+        // early as N-1 seconds.
+        let floor = TEST_TAP_BUDGET_SECS as f64 - 1.5;
         assert!(
-            elapsed.as_secs_f64() >= TEST_TAP_BUDGET_SECS as f64 * 0.8,
+            elapsed.as_secs_f64() >= floor,
             "expected the job to run to its {TEST_TAP_BUDGET_SECS}s budget, took {elapsed:?}"
         );
 
@@ -1341,9 +1344,11 @@ fn a_drain_pass_stops_at_its_time_budget() {
             pool.clone(),
         );
         cron.set_tap_dispatcher(dispatcher());
-        // A budget below one dispatch, so the pass stops after the batch in
-        // flight rather than starting another.
-        cron.set_drain_budget(std::time::Duration::from_millis(1));
+        // A budget that allows the pass to start one batch and then stop: long
+        // enough to enter the loop, far shorter than the dispatch it starts. A
+        // budget of zero would prove much less, since the pass would return
+        // without dispatching anything at all.
+        cron.set_drain_budget(std::time::Duration::from_millis(500));
         let cron = Arc::new(cron);
 
         let started = std::time::Instant::now();
@@ -1369,6 +1374,21 @@ fn a_drain_pass_stops_at_its_time_budget() {
         assert!(
             left > 0,
             "the pass consumed the whole queue instead of stopping at its budget"
+        );
+
+        // The batch already in flight was seen through rather than abandoned:
+        // one job reached a terminal state, the other seven did not.
+        let dead: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM plugin_queue WHERE plugin_name = $1 AND status = 'dead'",
+        )
+        .bind(FIXTURE)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            dead, 1,
+            "the budget must bound how many further batches start, not abandon \
+             the one in flight"
         );
 
         clean_queue(&pool).await;
