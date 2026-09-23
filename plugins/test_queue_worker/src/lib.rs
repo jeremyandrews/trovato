@@ -12,6 +12,9 @@
 //!   the suite can assert the kernel clamps it to the cap of 4.
 //! - `tap_queue_worker` branches on the payload's `outcome` field:
 //!   `"trap"` panics (a WASM trap → a *failed attempt*, not a lost item);
+//!   `"spin"` burns CPU and never returns, so only the epoch deadline ends it —
+//!   the shape that held a worker slot for the whole budget and was then handed
+//!   the budget again on the next cycle;
 //!   `"error"` returns an error-shaped JSON body (a *successful* dispatch under
 //!   the drain's contract — proving error-JSON is not retried, preserving the
 //!   reference importer's semantics); `"mail"` calls the `mail` host interface
@@ -69,6 +72,14 @@ fn tap_queue_info() -> serde_json::Value {
 fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
     match input.get("outcome").and_then(|v| v.as_str()) {
         Some("trap") => panic!("test_queue_worker: intentional trap"),
+        Some("spin") => {
+            // A guest that burns CPU and never returns. The kernel's only bound
+            // on this is the epoch deadline, so a drain that dispatches it is
+            // held for the whole epoch budget with no way to reclaim the slot.
+            loop {
+                std::hint::spin_loop();
+            }
+        }
         Some("error") => json!({ "status": "error", "reason": "intentional" }),
         Some("mail") => {
             let code = match trovato_sdk::host::mail_send_to_site_contacts(

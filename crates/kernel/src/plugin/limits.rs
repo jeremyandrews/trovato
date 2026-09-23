@@ -98,6 +98,15 @@ pub struct ResourceLimits {
     pub enable_fuel: bool,
     /// Per-`Store` fuel budget, consulted only when `enable_fuel` is set.
     pub fuel_limit: u64,
+    /// Epoch budget (seconds) for a background tap: `tap_cron`,
+    /// `tap_queue_worker` and the rest of `BACKGROUND_TAPS`.
+    ///
+    /// This is the only bound on how long a queue worker may burn CPU, so it is
+    /// also the price of one poison job to whatever is draining it. Carried here
+    /// rather than read from a constant at the dispatch site so a deployment can
+    /// lower it, and so a test can make the exhaustion path observable in
+    /// seconds instead of two and a half minutes.
+    pub background_tap_epoch_deadline_secs: u64,
 }
 
 impl Default for ResourceLimits {
@@ -110,6 +119,7 @@ impl Default for ResourceLimits {
             max_instances: DEFAULT_MAX_INSTANCES,
             enable_fuel: DEFAULT_ENABLE_FUEL,
             fuel_limit: DEFAULT_FUEL_LIMIT,
+            background_tap_epoch_deadline_secs: BACKGROUND_TAP_EPOCH_DEADLINE_SECS,
         }
     }
 }

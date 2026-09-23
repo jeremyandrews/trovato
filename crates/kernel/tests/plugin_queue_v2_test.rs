@@ -72,11 +72,28 @@ fn plugins_dir() -> PathBuf {
         .join("plugins")
 }
 
+/// Epoch budget (seconds) this suite gives a background tap.
+///
+/// The shipped default is 150, which is the *point* of the `"spin"` fixture arm
+/// and also far too long to wait for in a test. Lowering it here exercises the
+/// identical code path at a size a test can observe. It stays well clear of any
+/// legitimate dispatch in this file — every other payload returns in
+/// milliseconds — so nothing else can be mistaken for CPU exhaustion even on a
+/// loaded CI runner.
+const TEST_TAP_BUDGET_SECS: u64 = 5;
+
 /// Build (once) a dispatcher with only the queue-v2 fixture loaded.
 fn dispatcher() -> Arc<TapDispatcher> {
     FIXTURE_DISPATCHER
         .get_or_init(|| {
-            let mut runtime = PluginRuntime::new(&PluginConfig::default()).expect("create runtime");
+            let config = PluginConfig {
+                limits: trovato_kernel::plugin::limits::ResourceLimits {
+                    background_tap_epoch_deadline_secs: TEST_TAP_BUDGET_SECS,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut runtime = PluginRuntime::new(&config).expect("create runtime");
             runtime
                 .load_plugin(&plugins_dir().join(FIXTURE))
                 .unwrap_or_else(|e| {
@@ -1226,6 +1243,152 @@ fn every_queue_of_a_plugin_advances_in_one_cycle() {
             last_left, 0,
             "the alphabetically last queue starved behind the first: the per-plugin \
              budget is being spent one queue at a time instead of in turns"
+        );
+
+        clean_queue(&pool).await;
+    });
+}
+
+// ── A job that burns its CPU budget, and the drain that used to wait for it ──
+
+/// A worker that spends its entire CPU budget is dead-lettered on the spot.
+///
+/// This is the wedge, reduced to one job. `tap_queue_worker` is bounded only by
+/// the background epoch deadline, so a worker that burns CPU occupies its slot
+/// for the whole budget and is then cut off. The kernel recorded that as an
+/// ordinary failed attempt and rescheduled it, which bought nothing: the retry
+/// gets the same full budget and burns it against the same wall, holding a
+/// worker slot each time, until `max_attempts` finally ran out — five times the
+/// budget later, if it ever got there at all.
+///
+/// Measured on the shipped 150-second budget before this fix: the drain returned
+/// after 150.2 seconds with one core pinned at 100%, and the job came back
+/// `ready` with `attempts = 1` for another go.
+///
+/// A job cut off at its budget now dies immediately, whatever `attempts` says.
+/// The bound it breached is not the attempt count.
+#[test]
+fn a_job_that_burns_its_cpu_budget_is_dead_lettered_not_retried() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        let id = insert_job(&pool, serde_json::json!({"outcome": "spin"}), 0, 5, now()).await;
+
+        let cron = cron_with(pool.clone(), dispatcher());
+        let started = std::time::Instant::now();
+        let stats = cron.drain_plugin_queues().await.unwrap();
+        let elapsed = started.elapsed();
+
+        let (status, attempts, _next, last_error, dead_reason) = row_state(&pool, id).await;
+
+        assert_eq!(
+            status, "dead",
+            "a job cut off at its CPU budget was rescheduled instead of dead-lettered: \
+             the retry will burn the same budget again and hold a worker slot again"
+        );
+        assert_eq!(
+            stats.dead_lettered, 1,
+            "the drain should report one dead-lettered job"
+        );
+        assert_eq!(stats.retried, 0, "it must not be counted as a retry");
+        assert_eq!(
+            attempts, 1,
+            "it died on its first attempt, not after exhausting max_attempts"
+        );
+        let reason = dead_reason.expect("a dead job must say why it died");
+        assert!(
+            reason.contains("CPU budget"),
+            "the reason must name the CPU budget, not a generic failure: {reason}"
+        );
+        assert_eq!(last_error.as_deref(), Some(reason.as_str()));
+
+        // It really did run to the budget; this is not some faster failure path.
+        // The floor allows one epoch tick, since an N-tick deadline may fire as
+        // early as N-1 seconds.
+        let floor = TEST_TAP_BUDGET_SECS as f64 - 1.5;
+        assert!(
+            elapsed.as_secs_f64() >= floor,
+            "expected the job to run to its {TEST_TAP_BUDGET_SECS}s budget, took {elapsed:?}"
+        );
+
+        clean_queue(&pool).await;
+    });
+}
+
+/// One drain pass gives the cron lock back on a bound of its own.
+///
+/// `MAX_QUEUE_ITEMS_PER_CYCLE` bounded a pass in *items*, never in time, and a
+/// single item may legitimately occupy a worker for the whole epoch budget. So a
+/// pass could run for `items / width * budget` — over an hour at the shipped
+/// values — and it ran inside a cron run holding the global cron lock. For that
+/// whole time every other trigger answered "another instance is running cron",
+/// `tap_cron` never dispatched, and a plugin's own stuck-queue alarm (which
+/// lives in `tap_cron`) could neither observe the condition nor report it. That
+/// is why the alert fired once and never again.
+///
+/// Eight CPU-burning jobs on a width-1 queue is 8 × the budget of work. The pass
+/// must stop at its own budget and leave the rest for the next cycle.
+#[test]
+fn a_drain_pass_stops_at_its_time_budget() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        for _ in 0..8 {
+            insert_on_queue(&pool, SERIAL_QUEUE, serde_json::json!({"outcome": "spin"})).await;
+        }
+
+        let mut cron = CronService::new(
+            redis::Client::open("redis://127.0.0.1:6379").expect("redis client"),
+            pool.clone(),
+        );
+        cron.set_tap_dispatcher(dispatcher());
+        // A budget that allows the pass to start one batch and then stop: long
+        // enough to enter the loop, far shorter than the dispatch it starts. A
+        // budget of zero would prove much less, since the pass would return
+        // without dispatching anything at all.
+        cron.set_drain_budget(std::time::Duration::from_millis(500));
+        let cron = Arc::new(cron);
+
+        let started = std::time::Instant::now();
+        cron.drain_plugin_queues().await.unwrap();
+        let elapsed = started.elapsed();
+
+        // The budget bounds how many more batches are STARTED, not the one in
+        // flight, so one dispatch is expected; eight are not.
+        let ceiling = TEST_TAP_BUDGET_SECS as f64 * 2.5;
+        assert!(
+            elapsed.as_secs_f64() < ceiling,
+            "the pass ran {elapsed:?}, past its budget plus one dispatch: it is still \
+             unbounded in time and is holding the cron lock for all of it"
+        );
+
+        let left: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM plugin_queue WHERE plugin_name = $1 AND status <> 'dead'",
+        )
+        .bind(FIXTURE)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            left > 0,
+            "the pass consumed the whole queue instead of stopping at its budget"
+        );
+
+        // The batch already in flight was seen through rather than abandoned:
+        // one job reached a terminal state, the other seven did not.
+        let dead: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM plugin_queue WHERE plugin_name = $1 AND status = 'dead'",
+        )
+        .bind(FIXTURE)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            dead, 1,
+            "the budget must bound how many further batches start, not abandon \
+             the one in flight"
         );
 
         clean_queue(&pool).await;
