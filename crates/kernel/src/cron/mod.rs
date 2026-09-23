@@ -672,7 +672,7 @@ impl CronService {
     /// which is the gap this closes.
     /// Override the wall-clock budget for one drain pass.
     ///
-    /// The default is [`QUEUE_DRAIN_BUDGET_SECS`]. Lowering it makes each pass
+    /// The default is `QUEUE_DRAIN_BUDGET_SECS`. Lowering it makes each pass
     /// give the cron lock back sooner at the cost of more passes.
     pub fn set_drain_budget(&mut self, budget: Duration) {
         self.drain_budget = budget;
@@ -1112,7 +1112,7 @@ impl CronService {
     /// A per-plugin per-cycle cap (`MAX_QUEUE_ITEMS_PER_CYCLE`) preserves
     /// fairness: one plugin flooding its queue cannot starve another.
     ///
-    /// A pass is also bounded in *time* by [`QUEUE_DRAIN_BUDGET_SECS`], checked
+    /// A pass is also bounded in *time* by `QUEUE_DRAIN_BUDGET_SECS`, checked
     /// between batches. The item cap alone did not bound it: a job may occupy a
     /// worker for the whole background epoch deadline, so a cap of 100 items at
     /// width 4 allowed a pass lasting over an hour, all of it inside a cron run
