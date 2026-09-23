@@ -1071,3 +1071,163 @@ fn a_retired_job_stays_retired_across_drains() {
         clean_queue(&pool).await;
     });
 }
+
+// ── Concurrency is declared PER QUEUE, and honored per queue ─────────────────
+
+/// The fixture's second queue, declared at concurrency 1 where `test_queue` is
+/// declared at 8. Two queues on one plugin with different declarations is the
+/// shape the collapse hid.
+const SERIAL_QUEUE: &str = "test_serial_queue";
+
+/// Insert one job onto a named queue; returns its id.
+async fn insert_on_queue(pool: &PgPool, queue_name: &str, payload: serde_json::Value) -> i64 {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO plugin_queue
+            (plugin_name, queue_name, payload, created_at, priority, max_attempts,
+             attempts, next_attempt_at, status, locked_until)
+        VALUES ($1, $2, $3, $4, 0, 5, 0, 0, 'ready', 0)
+        RETURNING id
+        "#,
+    )
+    .bind(FIXTURE)
+    .bind(queue_name)
+    .bind(&payload)
+    .bind(now())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    row.get::<i64, _>("id")
+}
+
+/// Each declared queue keeps its OWN width.
+///
+/// `tap_queue_info` has always returned one entry per queue, each with its own
+/// `concurrency`. The kernel read the **maximum** across those entries, once per
+/// plugin, and applied it to a claim that spanned every one of the plugin's
+/// queues. So a plugin declaring `analyze: 4, cluster: 1, summarize: 1` ran
+/// `cluster` four wide, because the width it got was `analyze`'s. Per-queue
+/// declarations bounded nothing (`G-QUEUE-CONCURRENCY-COLLAPSED`).
+///
+/// The fixture declares `test_queue` at 8 and `test_serial_queue` at 1. Under
+/// the collapse both resolve to 4 (the max, clamped). They must not.
+#[test]
+fn declared_widths_are_per_queue_not_per_plugin() {
+    serial(async {
+        let pool = fresh_pool().await;
+        let cron = cron_with(pool.clone(), dispatcher());
+
+        let widths = cron.resolved_queue_widths(FIXTURE).await;
+
+        assert_eq!(
+            widths.get("test_queue").copied(),
+            Some(4),
+            "a declaration over the kernel cap is clamped to it"
+        );
+        assert_eq!(
+            widths.get(SERIAL_QUEUE).copied(),
+            Some(1),
+            "a queue declared at 1 must be honored at 1; getting the plugin's \
+             maximum here is the per-queue collapse"
+        );
+        assert_eq!(
+            widths.len(),
+            2,
+            "both declared queues should be resolved, and nothing else"
+        );
+    });
+}
+
+/// A queue with rows but no declaration still drains, at width 1.
+///
+/// The claim is now scoped to a queue name, so a row on a queue the plugin never
+/// declared could have been stranded by a declaration it has no say in. It is
+/// not: an undeclared queue drains at the conservative width.
+#[test]
+fn an_undeclared_queue_still_drains() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        for _ in 0..3 {
+            insert_on_queue(
+                &pool,
+                "never_declared",
+                serde_json::json!({"outcome": "ok"}),
+            )
+            .await;
+        }
+
+        let cron = cron_with(pool.clone(), dispatcher());
+        let stats = cron.drain_plugin_queues().await.unwrap();
+
+        assert_eq!(
+            stats.succeeded, 3,
+            "an undeclared queue must not be stranded"
+        );
+        assert_eq!(count(&pool, None).await, 0);
+
+        // And it is not in the declared map, which is what makes it width 1.
+        assert!(
+            cron.resolved_queue_widths(FIXTURE)
+                .await
+                .get("never_declared")
+                .is_none()
+        );
+
+        clean_queue(&pool).await;
+    });
+}
+
+/// Every queue of a plugin makes progress in one cycle.
+///
+/// Giving each queue its own width means the shared per-plugin budget is spent
+/// across several queues, and spending it one queue at a time in name order
+/// would let the first queue starve the rest. The queues take turns instead, so
+/// a cycle that cannot finish everything still advances all of them.
+#[test]
+fn every_queue_of_a_plugin_advances_in_one_cycle() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        // More than the per-plugin cycle cap on the first queue alphabetically,
+        // plus a little work on the last. Spent in name order, the 100-row queue
+        // would consume the whole budget and the other would not move.
+        for i in 0..100 {
+            insert_on_queue(
+                &pool,
+                "aaa_first",
+                serde_json::json!({"outcome": "ok", "i": i}),
+            )
+            .await;
+        }
+        for i in 0..3 {
+            insert_on_queue(
+                &pool,
+                "zzz_last",
+                serde_json::json!({"outcome": "ok", "i": i}),
+            )
+            .await;
+        }
+
+        let cron = cron_with(pool.clone(), dispatcher());
+        cron.drain_plugin_queues().await.unwrap();
+
+        let last_left: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM plugin_queue WHERE plugin_name = $1 AND queue_name = 'zzz_last'",
+        )
+        .bind(FIXTURE)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            last_left, 0,
+            "the alphabetically last queue starved behind the first: the per-plugin \
+             budget is being spent one queue at a time instead of in turns"
+        );
+
+        clean_queue(&pool).await;
+    });
+}

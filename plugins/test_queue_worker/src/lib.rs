@@ -29,14 +29,26 @@ use trovato_sdk::types::QueueOptions;
 /// Logical queue name owned by this fixture.
 const QUEUE_NAME: &str = "test_queue";
 
-/// Declare the queue this fixture owns at concurrency 8 (clamped to the kernel
-/// cap of 4 by the drain — D-47).
+/// A second queue owned by this fixture, declared at concurrency **1**.
+///
+/// Its whole purpose is to differ from [`QUEUE_NAME`]'s declaration, so the
+/// suite can tell a per-queue width from a per-plugin one. A plugin declaring a
+/// wide queue and a narrow one is the shape that exposed the collapse: the
+/// narrow queue used to be drained at the wide queue's width.
+const SERIAL_QUEUE_NAME: &str = "test_serial_queue";
+
+/// Declare both queues this fixture owns: one at concurrency 8 (clamped to the
+/// kernel cap of 4 by the drain — D-47) and one at concurrency 1.
 #[plugin_tap]
 fn tap_queue_info() -> serde_json::Value {
     json!([
         {
             "name": QUEUE_NAME,
             "concurrency": 8
+        },
+        {
+            "name": SERIAL_QUEUE_NAME,
+            "concurrency": 1
         }
     ])
 }

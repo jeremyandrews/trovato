@@ -12,6 +12,7 @@ pub use tasks::UpdateCheckConfig;
 pub use queue::{Queue, RedisQueue};
 pub use tasks::CronTasks;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,25 +178,43 @@ fn backoff_secs(attempts: i32) -> i64 {
         .min(QUEUE_BACKOFF_CAP_SECS)
 }
 
-/// Extract the maximum declared `concurrency` from a `tap_queue_info` result.
+/// Read the declared `concurrency` of each queue from a `tap_queue_info` result.
 ///
 /// `tap_queue_info` returns a JSON array of
-/// `{ "name": string, "concurrency": int }`. Missing/invalid entries contribute
-/// nothing; an empty or unparseable declaration yields 1.
-fn parse_max_concurrency(output: &str) -> usize {
+/// `{ "name": string, "concurrency": int }`. Each entry is a statement about
+/// **that queue**, so the result is a map keyed by queue name rather than a
+/// single number. Entries without a usable `name` are dropped (they name no
+/// queue, so they bound nothing); an entry whose `concurrency` is missing,
+/// unparseable or zero falls back to 1. Every width is clamped to
+/// [`QUEUE_CONCURRENCY_CAP`], so a declaration can lower the kernel ceiling but
+/// never raise it. A duplicate name keeps the lower of the two, which is the
+/// safe reading of a contradictory declaration.
+fn parse_queue_concurrency(output: &str) -> BTreeMap<String, usize> {
+    let mut widths = BTreeMap::new();
     let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
-        return 1;
+        return widths;
     };
     let Some(queues) = value.as_array() else {
-        return 1;
+        return widths;
     };
-    queues
-        .iter()
-        .filter_map(|q| q.get("concurrency").and_then(serde_json::Value::as_u64))
-        .map(|c| c as usize)
-        .max()
-        .filter(|&c| c >= 1)
-        .unwrap_or(1)
+    for q in queues {
+        let Some(name) = q.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let width = q
+            .get("concurrency")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(1, |c| c as usize)
+            .clamp(1, QUEUE_CONCURRENCY_CAP);
+        widths
+            .entry(name.to_string())
+            .and_modify(|existing: &mut usize| *existing = (*existing).min(width))
+            .or_insert(width);
+    }
+    widths
 }
 
 /// Dispatch `tap_queue_worker` for one claimed job and record its terminal
@@ -934,9 +953,10 @@ impl CronService {
 
     /// Drain the plugin queue with v2 semantics (P11d / D-45..D-47).
     ///
-    /// For each plugin with claimable items, claims batches of up to the
-    /// plugin's honored concurrency (D-47: parsed from `tap_queue_info`, clamped
-    /// to `QUEUE_CONCURRENCY_CAP`) via `FOR UPDATE SKIP LOCKED`, dispatches
+    /// For each plugin with claimable items, and then for **each of that
+    /// plugin's queues**, claims batches of up to that queue's honored
+    /// concurrency (D-47: parsed from `tap_queue_info`, clamped to
+    /// `QUEUE_CONCURRENCY_CAP`) via `FOR UPDATE SKIP LOCKED`, dispatches
     /// `tap_queue_worker` on each claimed item **in parallel**, and records the
     /// terminal outcome:
     ///
@@ -1015,58 +1035,91 @@ impl CronService {
                 continue;
             }
 
-            let width = self.plugin_concurrency(&dispatcher, plugin_name).await;
+            // What the plugin declared, per queue, and which of its queues
+            // actually hold work. A queue with rows but no declaration drains at
+            // width 1 rather than being stranded.
+            let declared = self.plugin_queue_widths(&dispatcher, plugin_name).await;
+            let queues = self.claimable_queues(plugin_name).await?;
+
+            // The per-cycle cap stays PER PLUGIN: it is the fairness bound
+            // between plugins (D-45), and giving each queue its own would let a
+            // plugin multiply its share by declaring more queues.
+            //
+            // Its queues take turns rather than draining one at a time in name
+            // order. A shared budget spent queue by queue would let the
+            // alphabetically first queue consume the whole cycle and starve the
+            // rest — cross-queue starvation introduced by the same change that
+            // fixed cross-queue width, which is not a trade worth making. One
+            // round gives every still-active queue exactly one batch of its own
+            // width; a queue that comes back empty drops out of the rotation.
             let mut processed: i64 = 0;
+            let mut active: Vec<&String> = queues.iter().collect();
 
-            while processed < MAX_QUEUE_ITEMS_PER_CYCLE {
-                let batch = width.min((MAX_QUEUE_ITEMS_PER_CYCLE - processed) as usize);
-                let claimed = self.claim_batch(plugin_name, batch).await?;
-                if claimed.is_empty() {
-                    break;
-                }
-                processed += claimed.len() as i64;
+            while processed < MAX_QUEUE_ITEMS_PER_CYCLE && !active.is_empty() {
+                let mut still_active = Vec::with_capacity(active.len());
 
-                // Dispatch the claimed chunk in parallel — this is where a
-                // plugin's declared concurrency (bounded by the kernel cap)
-                // actually executes concurrently. Each job owns its state and
-                // does its own delete/retry/dead-letter bookkeeping.
-                let mut set = tokio::task::JoinSet::new();
-                for job in claimed {
-                    let pool = self.pool.clone();
-                    let disp = dispatcher.clone();
-                    let ai_providers = self.ai_providers.clone();
-                    let ai_budgets = self.ai_budgets.clone();
-                    let http = self.http.clone();
-                    let limiter = self.rate_limiter.clone();
-                    let plugin = plugin_name.clone();
-                    set.spawn(async move {
-                        run_queue_job(
-                            pool,
-                            disp,
-                            ai_providers,
-                            ai_budgets,
-                            http,
-                            limiter,
-                            plugin,
-                            job,
-                        )
-                        .await
-                    });
-                }
+                for queue_name in active {
+                    if processed >= MAX_QUEUE_ITEMS_PER_CYCLE {
+                        // Budget spent mid-round. Keep the queue in the rotation
+                        // so the outer condition, not this queue, ends the cycle.
+                        still_active.push(queue_name);
+                        continue;
+                    }
+                    let width = declared.get(queue_name).copied().unwrap_or(1);
+                    let batch = width.min((MAX_QUEUE_ITEMS_PER_CYCLE - processed) as usize);
+                    let claimed = self.claim_batch(plugin_name, queue_name, batch).await?;
+                    if claimed.is_empty() {
+                        // Nothing claimable here any more; drop it from the
+                        // rotation rather than re-querying it every round.
+                        continue;
+                    }
+                    still_active.push(queue_name);
+                    processed += claimed.len() as i64;
 
-                while let Some(joined) = set.join_next().await {
-                    match joined {
-                        Ok(Ok(outcome)) => stats.record(outcome),
-                        Ok(Err(e)) => {
-                            warn!(error = %e, plugin = %plugin_name, "queue job bookkeeping failed");
-                            stats.errors += 1;
-                        }
-                        Err(e) => {
-                            warn!(error = %e, plugin = %plugin_name, "queue job task panicked");
-                            stats.errors += 1;
+                    // Dispatch the claimed chunk in parallel — this is where a
+                    // queue's declared concurrency actually executes
+                    // concurrently. Each job owns its state and does its own
+                    // delete/retry/dead-letter bookkeeping.
+                    let mut set = tokio::task::JoinSet::new();
+                    for job in claimed {
+                        let pool = self.pool.clone();
+                        let disp = dispatcher.clone();
+                        let ai_providers = self.ai_providers.clone();
+                        let ai_budgets = self.ai_budgets.clone();
+                        let http = self.http.clone();
+                        let limiter = self.rate_limiter.clone();
+                        let plugin = plugin_name.clone();
+                        set.spawn(async move {
+                            run_queue_job(
+                                pool,
+                                disp,
+                                ai_providers,
+                                ai_budgets,
+                                http,
+                                limiter,
+                                plugin,
+                                job,
+                            )
+                            .await
+                        });
+                    }
+
+                    while let Some(joined) = set.join_next().await {
+                        match joined {
+                            Ok(Ok(outcome)) => stats.record(outcome),
+                            Ok(Err(e)) => {
+                                warn!(error = %e, plugin = %plugin_name, queue = %queue_name, "queue job bookkeeping failed");
+                                stats.errors += 1;
+                            }
+                            Err(e) => {
+                                warn!(error = %e, plugin = %plugin_name, queue = %queue_name, "queue job task panicked");
+                                stats.errors += 1;
+                            }
                         }
                     }
                 }
+
+                active = still_active;
             }
         }
 
@@ -1104,7 +1157,9 @@ impl CronService {
         while processed < MAX_QUEUE_ITEMS_PER_CYCLE {
             let batch =
                 KERNEL_EMBED_CONCURRENCY.min((MAX_QUEUE_ITEMS_PER_CYCLE - processed) as usize);
-            let claimed = self.claim_batch(KERNEL_EMBED_PLUGIN, batch).await?;
+            let claimed = self
+                .claim_batch(KERNEL_EMBED_PLUGIN, embed_index::EMBED_QUEUE_NAME, batch)
+                .await?;
             if claimed.is_empty() {
                 break;
             }
@@ -1181,7 +1236,50 @@ impl CronService {
         Ok(reaped)
     }
 
-    /// Atomically claim up to `limit` eligible items for `plugin_name`.
+    /// The worker concurrency the kernel will honor for each queue
+    /// `plugin_name` declares, as the drain resolves it.
+    ///
+    /// The answer the drain acts on, exposed so it can be asserted and shown:
+    /// before this was per queue there was no such answer to give, only a single
+    /// number per plugin, and a site had no way to see that the width it
+    /// declared for one queue was being applied to another.
+    pub async fn resolved_queue_widths(&self, plugin_name: &str) -> BTreeMap<String, usize> {
+        let Some(dispatcher) = self.tap_dispatcher.clone() else {
+            return BTreeMap::new();
+        };
+        self.plugin_queue_widths(&dispatcher, plugin_name).await
+    }
+
+    /// List the queues of `plugin_name` that currently hold claimable rows.
+    ///
+    /// The drain visits queues, not plugins, so it needs the queues that exist
+    /// in the table rather than only those the plugin declared: a row on a queue
+    /// the plugin never declared still has to drain, or it would be stranded
+    /// forever by a declaration it has no say in.
+    async fn claimable_queues(&self, plugin_name: &str) -> Result<Vec<String>> {
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query_scalar(
+            r#"
+            SELECT DISTINCT queue_name
+            FROM plugin_queue
+            WHERE plugin_name = $1
+              AND attempts < max_attempts
+              AND (
+                    (status = 'ready' AND next_attempt_at <= $2)
+                 OR (status = 'claimed' AND locked_until <= $2)
+              )
+            ORDER BY queue_name
+            "#,
+        )
+        .bind(plugin_name)
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list claimable queues")
+    }
+
+    /// Atomically claim up to `limit` eligible items for one queue of
+    /// `plugin_name`.
     ///
     /// Uses `FOR UPDATE SKIP LOCKED` so concurrent drainers (the cron drain and
     /// the resident runner, or multiple server instances) never claim the same
@@ -1198,7 +1296,12 @@ impl CronService {
     /// already been attempted, incrementing `attempts` past its own bound while
     /// `dead_at` stayed null forever. Rows that reach the bound this way are
     /// retired by [`Self::reap_exhausted_jobs`] instead.
-    async fn claim_batch(&self, plugin_name: &str, limit: usize) -> Result<Vec<ClaimedJob>> {
+    async fn claim_batch(
+        &self,
+        plugin_name: &str,
+        queue_name: &str,
+        limit: usize,
+    ) -> Result<Vec<ClaimedJob>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -1213,6 +1316,7 @@ impl CronService {
             WHERE id IN (
                 SELECT id FROM plugin_queue
                 WHERE plugin_name = $1
+                  AND queue_name = $5
                   AND attempts < max_attempts
                   AND (
                         (status = 'ready' AND next_attempt_at <= $3)
@@ -1229,6 +1333,7 @@ impl CronService {
         .bind(lease_until)
         .bind(now)
         .bind(limit as i64)
+        .bind(queue_name)
         .fetch_all(&self.pool)
         .await
         .context("failed to claim plugin queue items")?;
@@ -1247,36 +1352,44 @@ impl CronService {
             .collect())
     }
 
-    /// Resolve the honored worker concurrency for `plugin_name` (D-47).
+    /// Resolve the honored worker concurrency of each queue `plugin_name`
+    /// declares (D-47).
     ///
-    /// Dispatches the plugin's `tap_queue_info` — parsed here for the first time
-    /// in the kernel's history; historically `concurrency` was only ever a
-    /// codegen docstring — reads the maximum `concurrency` it declares across
-    /// its queues, and clamps the result to `[1, QUEUE_CONCURRENCY_CAP]`. Read
-    /// fresh each cycle; a plugin that declares nothing (or exports no
-    /// `tap_queue_info`) drains at concurrency 1.
-    async fn plugin_concurrency(
+    /// Dispatches the plugin's `tap_queue_info` and reads the `concurrency` of
+    /// every queue it declares, each clamped to `[1, QUEUE_CONCURRENCY_CAP]`.
+    /// Read fresh each cycle, so a redeployed plugin's new declaration takes
+    /// effect on the next drain.
+    ///
+    /// The result is a map, not a single number. It used to be a number: the
+    /// maximum across the plugin's queues, applied to a claim that spanned all
+    /// of them at once. A plugin declaring `analyze: 4, cluster: 1,
+    /// summarize: 1` therefore ran `cluster` four wide, because the width it got
+    /// was `analyze`'s. Per-queue declarations bounded nothing, which is the
+    /// collapse recorded as `G-QUEUE-CONCURRENCY-COLLAPSED`.
+    ///
+    /// An empty map means the plugin declared nothing usable (or exports no
+    /// `tap_queue_info`); its queues each drain at width 1.
+    async fn plugin_queue_widths(
         &self,
         dispatcher: &Arc<TapDispatcher>,
         plugin_name: &str,
-    ) -> usize {
+    ) -> BTreeMap<String, usize> {
         if !dispatcher
             .registry()
             .get_handlers("tap_queue_info")
             .iter()
             .any(|h| h.plugin.info.name == plugin_name)
         {
-            return 1;
+            return BTreeMap::new();
         }
         let state = self.background_state(dispatcher);
-        let declared = match dispatcher
+        match dispatcher
             .dispatch_to_plugin("tap_queue_info", "{}", plugin_name, state)
             .await
         {
-            Some(result) => parse_max_concurrency(&result.output),
-            None => 1,
-        };
-        declared.clamp(1, QUEUE_CONCURRENCY_CAP)
+            Some(result) => parse_queue_concurrency(&result.output),
+            None => BTreeMap::new(),
+        }
     }
 
     /// Build a background `RequestState` for kernel-internal tap dispatch.
@@ -1553,43 +1666,69 @@ mod tests {
     // ── P11d: queue v2 pure-logic units (D-47 concurrency, backoff) ──────────
 
     #[test]
-    fn parse_max_concurrency_reads_declared_max() {
+    fn parse_queue_concurrency_reads_each_queue() {
         // Ritrovo-style single-queue declaration.
-        assert_eq!(
-            parse_max_concurrency(r#"[{"name":"ritrovo_import","concurrency":4}]"#),
-            4
+        let one = parse_queue_concurrency(r#"[{"name":"ritrovo_import","concurrency":4}]"#);
+        assert_eq!(one.get("ritrovo_import").copied(), Some(4));
+
+        // Multiple queues: each keeps its OWN width. The old parser collapsed
+        // these to the maximum (7) and applied it to every queue, which is the
+        // per-queue collapse this replaces.
+        let many = parse_queue_concurrency(
+            r#"[{"name":"a","concurrency":2},{"name":"b","concurrency":3}]"#,
         );
-        // Multiple queues → the maximum wins.
-        assert_eq!(
-            parse_max_concurrency(r#"[{"name":"a","concurrency":2},{"name":"b","concurrency":7}]"#),
-            7
-        );
+        assert_eq!(many.get("a").copied(), Some(2));
+        assert_eq!(many.get("b").copied(), Some(3));
+        assert_eq!(many.len(), 2);
     }
 
     #[test]
-    fn parse_max_concurrency_defaults_to_one() {
-        // Empty declaration, missing field, non-array, and garbage all → 1.
-        assert_eq!(parse_max_concurrency("[]"), 1);
-        assert_eq!(parse_max_concurrency(r#"[{"name":"a"}]"#), 1);
-        assert_eq!(parse_max_concurrency(r#"{"not":"an array"}"#), 1);
-        assert_eq!(parse_max_concurrency("not json at all"), 1);
-        // Zero is not a valid width.
+    fn parse_queue_concurrency_defaults_to_one() {
+        // Empty declaration, non-array and garbage name no queues at all.
+        assert!(parse_queue_concurrency("[]").is_empty());
+        assert!(parse_queue_concurrency(r#"{"not":"an array"}"#).is_empty());
+        assert!(parse_queue_concurrency("not json at all").is_empty());
+        // An entry with no usable name bounds no queue, so it is dropped.
+        assert!(parse_queue_concurrency(r#"[{"concurrency":3}]"#).is_empty());
+        assert!(parse_queue_concurrency(r#"[{"name":"","concurrency":3}]"#).is_empty());
+        // A named queue with a missing or zero width falls back to 1.
         assert_eq!(
-            parse_max_concurrency(r#"[{"name":"a","concurrency":0}]"#),
-            1
+            parse_queue_concurrency(r#"[{"name":"a"}]"#)
+                .get("a")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            parse_queue_concurrency(r#"[{"name":"a","concurrency":0}]"#)
+                .get("a")
+                .copied(),
+            Some(1)
         );
     }
 
     #[test]
     fn concurrency_is_clamped_to_the_kernel_cap() {
-        // D-47: a plugin may declare any concurrency; the drain clamps it to the
-        // kernel cap. This is the "clamping is enforced" contract.
+        // D-47: a plugin may declare any concurrency; the parse clamps it to the
+        // kernel cap. This is the "clamping is enforced" contract, and it now
+        // holds per queue rather than once per plugin.
         assert_eq!(QUEUE_CONCURRENCY_CAP, 4);
-        let declared = parse_max_concurrency(r#"[{"name":"q","concurrency":64}]"#);
-        assert_eq!(declared, 64);
-        assert_eq!(declared.clamp(1, QUEUE_CONCURRENCY_CAP), 4);
-        // A declaration below the cap is honored, not raised.
-        assert_eq!(2usize.clamp(1, QUEUE_CONCURRENCY_CAP), 2);
+        let widths = parse_queue_concurrency(
+            r#"[{"name":"big","concurrency":64},{"name":"small","concurrency":2}]"#,
+        );
+        // Over the cap is lowered to the cap.
+        assert_eq!(widths.get("big").copied(), Some(4));
+        // Under the cap is honored, not raised to it.
+        assert_eq!(widths.get("small").copied(), Some(2));
+    }
+
+    #[test]
+    fn a_contradictory_duplicate_keeps_the_lower_width() {
+        // Two entries naming the same queue is a malformed declaration. Taking
+        // the lower of the two is the reading that cannot over-dispatch.
+        let widths = parse_queue_concurrency(
+            r#"[{"name":"q","concurrency":4},{"name":"q","concurrency":1}]"#,
+        );
+        assert_eq!(widths.get("q").copied(), Some(1));
     }
 
     #[test]
