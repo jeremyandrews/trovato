@@ -1169,10 +1169,10 @@ fn an_undeclared_queue_still_drains() {
 
         // And it is not in the declared map, which is what makes it width 1.
         assert!(
-            cron.resolved_queue_widths(FIXTURE)
+            !cron
+                .resolved_queue_widths(FIXTURE)
                 .await
-                .get("never_declared")
-                .is_none()
+                .contains_key("never_declared")
         );
 
         clean_queue(&pool).await;
