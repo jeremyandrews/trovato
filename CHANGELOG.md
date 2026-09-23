@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- Fix: a cron run gives the lock back, and a job that burns its CPU budget dies.
+
+  A queue worker's only bound is the background epoch deadline, 150 seconds. A
+  worker that burns CPU therefore holds its slot for the whole budget at 100% of
+  a core and is then cut off, and the kernel recorded that as an ordinary failed
+  attempt and rescheduled it. The retry gets the same full budget and burns it
+  against the same wall. Measured on a synthetic queue load with no AI provider
+  configured: one such job held the drain for 150.2 seconds and came back `ready`
+  for another go.
+
+  Nothing bounded the drain around it. `MAX_QUEUE_ITEMS_PER_CYCLE` bounds a pass
+  in items, never in time, so a pass could run for `items / width * budget`:
+  over an hour at the shipped values, all of it inside a cron run holding the
+  global cron lock. And `run_heartbeat` extended that lock every 60 seconds for
+  as long as the run had not returned, with no condition attached, so a run that
+  could not finish kept the lock looking healthy: `TTL cron:lock` sat at its
+  maximum and *rose* between samples precisely because the run was stuck. Every
+  later trigger answered "another instance is running cron", `tap_cron` never
+  dispatched again, and anything reporting on queue health from `tap_cron` (a
+  plugin's own stuck-queue alarm, say) went quiet at the moment it was needed.
+  That is why such an alert fires once and never re-fires.
+
+  Three bounds, none of them a supervisor and none of them a restart:
+
+  - A failed dispatch that consumed its whole epoch budget is dead-lettered at
+    once, whatever `attempts` says, with a reason naming the budget. The bound it
+    breached is not the attempt count, and a retry only buys the same burn again.
+  - One drain pass has a wall-clock budget (`QUEUE_DRAIN_BUDGET_SECS`, 60s,
+    settable per service). It bounds how many further batches a pass starts, not
+    the batch in flight, so the ceiling on a pass is the budget plus one
+    dispatch. Work left over is claimable again next cycle.
+  - Lock renewal stops after `MAX_LOCK_RENEWAL_SECS` (900s). The lock then
+    expires on its own TTL, the next trigger proceeds, and reporting resumes. A
+    stuck run is not killed; it simply stops being able to keep the whole cron
+    system waiting on it. Release stays owner-checked, so a run that outlived its
+    renewal cannot delete a newer run's lock.
+
+  The background epoch budget moves onto `ResourceLimits`, settable with
+  `PLUGIN_BACKGROUND_TAP_DEADLINE_SECS`. The default is unchanged at 150. It was
+  a constant read at the dispatch site, which left a deployment no way to lower
+  the price of one runaway worker, and left the exhaustion path untestable
+  without waiting out the real budget.
+
 - Fix: a queue's declared concurrency bounds that queue
   (`G-QUEUE-CONCURRENCY-COLLAPSED`).
 

@@ -63,6 +63,46 @@ const QUEUE_BACKOFF_CAP_SECS: i64 = 3600;
 /// `site_config` key gating the opt-in resident queue-runner (P11d / D-46).
 const QUEUE_RUNNER_CONFIG_KEY: &str = "queue_runner";
 
+/// Wall-clock budget for one `drain_plugin_queues` pass, checked between
+/// batches.
+///
+/// The drain had no bound of its own. Its only limit was
+/// `MAX_QUEUE_ITEMS_PER_CYCLE` jobs per plugin, and a job may legitimately
+/// occupy a worker for the whole background epoch deadline, so one pass could
+/// run for `100 / width * deadline` seconds: over an hour at the shipped values.
+/// It ran inside a cron run holding the global cron lock, so for that whole
+/// time every other poke answered "another instance is running cron", `tap_cron`
+/// never dispatched, and nothing that lives in `tap_cron` (a plugin's own
+/// stuck-queue alarm, for instance) could observe or report the condition.
+///
+/// This bounds how many more batches a pass will start, not the batch already in
+/// flight, so the true ceiling on one pass is this plus one dispatch. Work left
+/// over is not lost: it is claimable again on the next cycle.
+const QUEUE_DRAIN_BUDGET_SECS: u64 = 60;
+
+/// Longest a single cron run may keep renewing the cron lock.
+///
+/// [`run_heartbeat`] extended the lock every `LOCK_TTL_SECS / 2` for as long as
+/// the run had not returned, with no condition attached. A run that could not
+/// finish therefore kept the lock healthy-looking forever: `TTL cron:lock` sat
+/// at its maximum and rose between samples precisely *because* the run was
+/// stuck, and the outage lasted until someone restarted the process.
+///
+/// Renewal now stops here. The lock then expires on its own TTL, the next cron
+/// trigger proceeds, and whatever reports on queue health gets to run again.
+/// Deliberately longer than a legitimate long run needs, so this is a backstop
+/// against an unforeseen stall rather than a routine bound: the routine bound is
+/// [`QUEUE_DRAIN_BUDGET_SECS`].
+const MAX_LOCK_RENEWAL_SECS: u64 = 900;
+
+/// Fraction of the epoch budget a failed dispatch must have consumed before it
+/// counts as CPU exhaustion rather than an ordinary failure.
+///
+/// An ordinary trap returns in milliseconds and a cut-off job runs for the whole
+/// budget, so anything in this range is unambiguous; 0.9 leaves room for the
+/// epoch thread's one-second granularity and for scheduling delay under load.
+const CPU_EXHAUSTION_RATIO: f64 = 0.9;
+
 /// `dead_reason` for a job retired by [`CronService::reap_exhausted_jobs`]: it
 /// reached `max_attempts` while claimed and its lease expired without any
 /// terminal outcome being recorded, so no failure path ever ran for it.
@@ -225,6 +265,10 @@ fn parse_queue_concurrency(output: &str) -> BTreeMap<String, usize> {
 /// traps or returns an error result, surfaced as `None` from
 /// `dispatch_to_plugin`) either reschedules with backoff or, at
 /// `max_attempts`, dead-letters the row with the last error preserved.
+///
+/// A failure that consumed the whole epoch budget is treated differently: it is
+/// dead-lettered at once, whatever `attempts` says. See
+/// [`exhausted_its_cpu_budget`].
 #[allow(clippy::too_many_arguments)]
 async fn run_queue_job(
     pool: PgPool,
@@ -251,18 +295,89 @@ async fn run_queue_job(
     }
     let state = RequestState::new(crate::tap::UserContext::background(), services);
 
+    let budget = dispatcher
+        .runtime()
+        .limits()
+        .background_tap_epoch_deadline_secs;
+    let started = std::time::Instant::now();
     let dispatched = dispatcher
         .dispatch_to_plugin("tap_queue_worker", &input_json, &plugin_name, state)
         .await;
+    let elapsed = started.elapsed();
 
     if dispatched.is_some() {
         mark_job_succeeded(&pool, job.id).await?;
         return Ok(JobOutcome::Succeeded);
     }
 
+    // A failure that ran to the epoch deadline is not an ordinary failure: the
+    // job asked for more CPU than a worker is allowed and was cut off. Retrying
+    // it buys another full budget burned against the same wall, so it dies now.
+    if exhausted_its_cpu_budget(elapsed, budget) {
+        return mark_job_cpu_exhausted(&pool, &job, &plugin_name, budget).await;
+    }
+
     // Failure: the worker trapped or returned an error result.
     let err = "tap_queue_worker failed (trap or error result)";
     mark_job_failed(&pool, &job, &plugin_name, err).await
+}
+
+/// Did a failed dispatch consume its whole epoch budget?
+///
+/// The kernel cannot ask wasmtime *why* a call failed here — `dispatch_to_plugin`
+/// collapses every failure into `None` — so the question is answered by how long
+/// it ran. A job cut off at the epoch deadline has run for essentially the whole
+/// budget; an ordinary trap returns in milliseconds. The two are orders of
+/// magnitude apart, so a tolerance well below the budget separates them without
+/// any risk of calling a fast failure an exhaustion.
+///
+/// A zero budget disables the classification rather than marking everything
+/// exhausted, so misconfiguration cannot dead-letter a whole queue.
+fn exhausted_its_cpu_budget(elapsed: Duration, budget_secs: u64) -> bool {
+    if budget_secs == 0 {
+        return false;
+    }
+    elapsed.as_secs_f64() >= budget_secs as f64 * CPU_EXHAUSTION_RATIO
+}
+
+/// Dead-letter a job that spent its entire CPU budget (P11d).
+///
+/// Unlike [`mark_job_failed`] this ignores `attempts`: the bound that matters is
+/// the one the job already breached. Recording it as dead on the first
+/// occurrence is what stops a worker that burns its budget from being handed the
+/// same budget again on the next cycle, and the next, holding a worker slot each
+/// time.
+async fn mark_job_cpu_exhausted(
+    pool: &PgPool,
+    job: &ClaimedJob,
+    plugin_name: &str,
+    budget_secs: u64,
+) -> Result<JobOutcome> {
+    let now = chrono::Utc::now().timestamp();
+    let reason =
+        format!("tap_queue_worker exhausted its {budget_secs}s CPU budget and was cut off");
+    sqlx::query(
+        r#"
+        UPDATE plugin_queue
+        SET status = 'dead', dead_reason = $2, dead_at = $3,
+            last_error = $2, locked_until = 0
+        WHERE id = $1
+        "#,
+    )
+    .bind(job.id)
+    .bind(&reason)
+    .bind(now)
+    .execute(pool)
+    .await
+    .context("failed to dead-letter a CPU-exhausted queue item")?;
+    warn!(
+        plugin = %plugin_name,
+        item_id = job.id,
+        attempts = job.attempts,
+        budget_secs = budget_secs,
+        "queue item dead-lettered: it spent its whole CPU budget"
+    );
+    Ok(JobOutcome::DeadLettered)
 }
 
 /// Delete a queue row whose job reached a terminal *success* (P11d). Shared by
@@ -501,6 +616,10 @@ pub struct CronService {
     /// per-plugin `mail` bucket applies from `tap_cron` and `tap_queue_worker`
     /// and not only from a request.
     rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
+    /// Wall-clock budget for one drain pass ([`QUEUE_DRAIN_BUDGET_SECS`]).
+    /// Carried here rather than read from the constant so a deployment can tune
+    /// it and a test can drive it to a value it can observe.
+    drain_budget: Duration,
 }
 
 impl CronService {
@@ -521,6 +640,7 @@ impl CronService {
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
+            drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
         }
     }
 
@@ -541,6 +661,7 @@ impl CronService {
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
+            drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
         }
     }
 
@@ -549,6 +670,14 @@ impl CronService {
     ///
     /// Without it a plugin calling `mail` from a background tap is unbounded,
     /// which is the gap this closes.
+    /// Override the wall-clock budget for one drain pass.
+    ///
+    /// The default is [`QUEUE_DRAIN_BUDGET_SECS`]. Lowering it makes each pass
+    /// give the cron lock back sooner at the cost of more passes.
+    pub fn set_drain_budget(&mut self, budget: Duration) {
+        self.drain_budget = budget;
+    }
+
     pub fn set_rate_limiter(&mut self, limiter: Arc<crate::middleware::RateLimiter>) {
         self.rate_limiter = Some(limiter);
     }
@@ -668,7 +797,13 @@ impl CronService {
         let heartbeat_redis = self.redis.clone();
         let heartbeat_lock = lock_value.clone();
         let heartbeat_handle = tokio::spawn(async move {
-            run_heartbeat(heartbeat_redis, &heartbeat_lock, stop_rx).await;
+            run_heartbeat(
+                heartbeat_redis,
+                &heartbeat_lock,
+                stop_rx,
+                HeartbeatConfig::default(),
+            )
+            .await;
         });
 
         // Run tasks
@@ -977,11 +1112,19 @@ impl CronService {
     /// A per-plugin per-cycle cap (`MAX_QUEUE_ITEMS_PER_CYCLE`) preserves
     /// fairness: one plugin flooding its queue cannot starve another.
     ///
+    /// A pass is also bounded in *time* by [`QUEUE_DRAIN_BUDGET_SECS`], checked
+    /// between batches. The item cap alone did not bound it: a job may occupy a
+    /// worker for the whole background epoch deadline, so a cap of 100 items at
+    /// width 4 allowed a pass lasting over an hour, all of it inside a cron run
+    /// holding the global lock. Work left over when the budget runs out is
+    /// claimable again on the next cycle.
+    ///
     /// Called both from the in-request cron drain ([`Self::run`]) and, when
     /// enabled, from the resident queue-runner ([`Self::run_queue_runner`]); the
     /// `SKIP LOCKED` claims make concurrent drainers safe.
     pub async fn drain_plugin_queues(&self) -> Result<QueueDrainStats> {
         let mut stats = QueueDrainStats::default();
+        let deadline = std::time::Instant::now() + self.drain_budget;
 
         let Some(dispatcher) = self.tap_dispatcher.clone() else {
             return Ok(stats);
@@ -1019,6 +1162,14 @@ impl CronService {
         .context("failed to query plugin_queue")?;
 
         for plugin_name in &plugins {
+            if std::time::Instant::now() >= deadline {
+                debug!(
+                    budget_secs = self.drain_budget.as_secs(),
+                    "drain budget spent; remaining plugins wait for the next cycle"
+                );
+                break;
+            }
+
             // Retire abandoned rows before claiming, so a plugin whose slots are
             // all held by exhausted rows gets them back in this pass.
             if let Err(e) = self.reap_exhausted_jobs(plugin_name).await {
@@ -1055,13 +1206,19 @@ impl CronService {
             let mut processed: i64 = 0;
             let mut active: Vec<&String> = queues.iter().collect();
 
-            while processed < MAX_QUEUE_ITEMS_PER_CYCLE && !active.is_empty() {
+            while processed < MAX_QUEUE_ITEMS_PER_CYCLE
+                && !active.is_empty()
+                && std::time::Instant::now() < deadline
+            {
                 let mut still_active = Vec::with_capacity(active.len());
 
                 for queue_name in active {
-                    if processed >= MAX_QUEUE_ITEMS_PER_CYCLE {
-                        // Budget spent mid-round. Keep the queue in the rotation
-                        // so the outer condition, not this queue, ends the cycle.
+                    if processed >= MAX_QUEUE_ITEMS_PER_CYCLE
+                        || std::time::Instant::now() >= deadline
+                    {
+                        // Cap or time budget spent mid-round. Keep the queue in
+                        // the rotation so the outer condition, not this queue,
+                        // ends the cycle.
                         still_active.push(queue_name);
                         continue;
                     }
@@ -1552,20 +1709,84 @@ pub struct LastCronRun {
     pub result: String,
 }
 
-/// Run the heartbeat task to extend lock TTL.
-async fn run_heartbeat(redis: RedisClient, lock_value: &str, mut stop_rx: watch::Receiver<bool>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+/// What [`run_heartbeat`] is allowed to do, and for how long.
+///
+/// Every value used to be a module constant read at the point of use, which made
+/// the renewal bound impossible to exercise without waiting out the real one.
+#[derive(Debug, Clone)]
+pub(crate) struct HeartbeatConfig {
+    /// Redis key holding the lock.
+    pub key: String,
+    /// How often to attempt a renewal.
+    pub interval: Duration,
+    /// TTL written by each renewal.
+    pub ttl_secs: u64,
+    /// How long this run may go on renewing before it must stop.
+    pub max_renewal: Duration,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            key: CRON_LOCK_KEY.to_string(),
+            interval: Duration::from_secs(HEARTBEAT_INTERVAL_SECS),
+            ttl_secs: LOCK_TTL_SECS,
+            max_renewal: Duration::from_secs(MAX_LOCK_RENEWAL_SECS),
+        }
+    }
+}
+
+/// Run the heartbeat task to extend lock TTL, for as long as the run is entitled
+/// to hold it.
+///
+/// The entitlement is the point. This used to extend the lock every
+/// `HEARTBEAT_INTERVAL_SECS` for as long as [`CronService::run`] had not
+/// returned, with no condition attached, which made a stuck run
+/// indistinguishable from a working one and actively hid it: the lock's TTL sat
+/// at its maximum and *rose* between samples precisely because the run was not
+/// finishing. Every later trigger answered "another instance is running cron", so
+/// `tap_cron` never dispatched again, and anything reporting on queue health from
+/// `tap_cron` went quiet at exactly the moment it was needed.
+///
+/// Renewal stops after [`MAX_LOCK_RENEWAL_SECS`]. The lock then expires on its
+/// own TTL, the next trigger proceeds, and that reporting resumes. Nothing is
+/// killed and nothing is restarted: a stuck run continues, it simply stops being
+/// able to keep the whole cron system waiting on it. `run` still releases the
+/// lock when it finally returns, and the release is owner-checked, so a run that
+/// outlived its renewal cannot delete a newer run's lock.
+pub(crate) async fn run_heartbeat(
+    redis: RedisClient,
+    lock_value: &str,
+    mut stop_rx: watch::Receiver<bool>,
+    cfg: HeartbeatConfig,
+) {
+    let mut interval = tokio::time::interval(cfg.interval);
+    let started = std::time::Instant::now();
+    let mut gave_up = false;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                if gave_up {
+                    continue;
+                }
+                if started.elapsed() >= cfg.max_renewal {
+                    warn!(
+                        held_secs = started.elapsed().as_secs(),
+                        max_secs = cfg.max_renewal.as_secs(),
+                        "cron run has held the lock too long; no longer extending it so \
+                         the next run can proceed"
+                    );
+                    gave_up = true;
+                    continue;
+                }
                 if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
                     // Extend lock TTL if we still own it
                     let script = redis::Script::new(EXTEND_LOCK_SCRIPT);
                     if let Err(e) = script
-                        .key(CRON_LOCK_KEY)
+                        .key(&cfg.key)
                         .arg(lock_value)
-                        .arg(LOCK_TTL_SECS)
+                        .arg(cfg.ttl_secs)
                         .invoke_async::<()>(&mut conn)
                         .await
                     {
@@ -1764,5 +1985,113 @@ mod tests {
         assert_eq!(s.retried, 1);
         assert_eq!(s.dead_lettered, 1);
         assert_eq!(s.total(), 4);
+    }
+
+    // ── CPU exhaustion is told apart from an ordinary failure by duration ────
+
+    #[test]
+    fn a_failure_that_ran_the_whole_budget_is_cpu_exhaustion() {
+        // Cut off at the epoch deadline: the elapsed time IS the budget.
+        assert!(exhausted_its_cpu_budget(Duration::from_secs(150), 150));
+        // Slightly under, within the epoch thread's one-second granularity.
+        assert!(exhausted_its_cpu_budget(
+            Duration::from_millis(149_000),
+            150
+        ));
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_not_cpu_exhaustion() {
+        // A trap returns in milliseconds. Nothing near the budget.
+        assert!(!exhausted_its_cpu_budget(Duration::from_millis(3), 150));
+        assert!(!exhausted_its_cpu_budget(Duration::from_secs(1), 150));
+        // Even a slow-but-legitimate failure well inside the budget.
+        assert!(!exhausted_its_cpu_budget(Duration::from_secs(100), 150));
+    }
+
+    #[test]
+    fn a_zero_budget_classifies_nothing_as_exhausted() {
+        // Misconfiguration must not dead-letter an entire queue.
+        assert!(!exhausted_its_cpu_budget(Duration::from_secs(600), 0));
+        assert!(!exhausted_its_cpu_budget(Duration::ZERO, 0));
+    }
+
+    // ── The heartbeat stops renewing ────────────────────────────────────────
+
+    /// The renewal bound: a run that will not finish must stop being able to
+    /// keep the cron lock alive.
+    ///
+    /// Before this, `run_heartbeat` extended the lock on every tick for as long
+    /// as the run had not returned, with no condition attached — so a stuck run
+    /// held the lock forever, every later trigger answered "another instance is
+    /// running cron", and the TTL rose between samples *because* the run was
+    /// stuck. The test drives a tiny interval and a tiny maximum and asserts the
+    /// renewals stop: with no bound the count grows without limit.
+    #[tokio::test]
+    async fn the_heartbeat_stops_renewing_past_its_maximum() {
+        let Ok(client) = redis::Client::open("redis://127.0.0.1:6379") else {
+            return;
+        };
+        let Ok(mut conn) = client.get_multiplexed_async_connection().await else {
+            return; // No Redis in this environment; the bound is covered above.
+        };
+
+        let key = format!("cron:lock:test:{}", uuid::Uuid::new_v4());
+        let value = "owner";
+        let _: () = redis::cmd("SET")
+            .arg(&key)
+            .arg(value)
+            .arg("EX")
+            .arg(60)
+            .query_async(&mut conn)
+            .await
+            .expect("seed the lock");
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let cfg = HeartbeatConfig {
+            key: key.clone(),
+            interval: Duration::from_millis(50),
+            ttl_secs: 60,
+            max_renewal: Duration::from_millis(250),
+        };
+        let handle = tokio::spawn({
+            let client = client.clone();
+            async move {
+                run_heartbeat(client, value, stop_rx, cfg).await;
+            }
+        });
+
+        // Well past max_renewal: an unbounded heartbeat would still be renewing.
+        tokio::time::sleep(Duration::from_millis(900)).await;
+
+        // Shrink the TTL by hand. A heartbeat still renewing would push it back
+        // up to 60 within two ticks (100 ms); one that has given up leaves it.
+        let _: () = redis::cmd("EXPIRE")
+            .arg(&key)
+            .arg(5)
+            .query_async(&mut conn)
+            .await
+            .expect("shrink the ttl");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let ttl: i64 = redis::cmd("TTL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .expect("read the ttl");
+
+        let _ = stop_tx.send(true);
+        let _ = handle.await;
+        let _: () = redis::cmd("DEL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .unwrap_or(());
+
+        assert!(
+            ttl <= 5,
+            "the heartbeat pushed the TTL back to {ttl} after its renewal maximum: \
+             a run that cannot finish is still keeping the cron lock alive"
+        );
     }
 }

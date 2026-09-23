@@ -184,10 +184,11 @@ impl TapDispatcher {
         // Background taps may make many network/DB calls and need a longer epoch
         // deadline than request-scoped taps.  Add new long-running background taps
         // to BACKGROUND_TAPS so they receive the extended limit automatically.
-        // The two budgets are named constants in the resource-limits home
-        // (WASM-4); values are unchanged.
+        // The background budget is carried on the runtime's `ResourceLimits` so a
+        // deployment can lower it; the request-scoped one is still a constant.
+        // Both defaults are unchanged.
         let epoch_deadline = if BACKGROUND_TAPS.contains(&tap_name) {
-            crate::plugin::limits::BACKGROUND_TAP_EPOCH_DEADLINE_SECS
+            self.runtime.limits().background_tap_epoch_deadline_secs
         } else {
             crate::plugin::limits::TAP_EPOCH_DEADLINE_SECS
         };

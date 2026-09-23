@@ -130,6 +130,8 @@ impl crate::plugin::PluginConfig {
     /// - `PLUGIN_LIMIT_INSTANCES` (default 1) — instances per `Store`.
     /// - `PLUGIN_ENABLE_FUEL` (default false) — opt-in fuel metering.
     /// - `PLUGIN_FUEL_LIMIT` (default 10_000_000_000) — per-`Store` fuel budget.
+    /// - `PLUGIN_BACKGROUND_TAP_DEADLINE_SECS` (default 150) — epoch budget for
+    ///   a background tap, and so the longest a single queue job may burn CPU.
     ///
     /// Every variable falls back to its documented default when unset or
     /// unparseable. The pool slab and the limiter memory cap are kept coherent at
@@ -180,6 +182,11 @@ impl crate::plugin::PluginConfig {
                 ),
                 enable_fuel: parse_bool_or(lookup, "PLUGIN_ENABLE_FUEL", lim_defaults.enable_fuel),
                 fuel_limit: parse_or(lookup, "PLUGIN_FUEL_LIMIT", lim_defaults.fuel_limit),
+                background_tap_epoch_deadline_secs: parse_or(
+                    lookup,
+                    "PLUGIN_BACKGROUND_TAP_DEADLINE_SECS",
+                    lim_defaults.background_tap_epoch_deadline_secs,
+                ),
             },
         }
     }
