@@ -62,6 +62,12 @@ const QUEUE_BACKOFF_CAP_SECS: i64 = 3600;
 /// `site_config` key gating the opt-in resident queue-runner (P11d / D-46).
 const QUEUE_RUNNER_CONFIG_KEY: &str = "queue_runner";
 
+/// `dead_reason` for a job retired by [`CronService::reap_exhausted_jobs`]: it
+/// reached `max_attempts` while claimed and its lease expired without any
+/// terminal outcome being recorded, so no failure path ever ran for it.
+const ABANDONED_CLAIM_REASON: &str =
+    "abandoned at max_attempts: claim lease expired with no terminal outcome recorded";
+
 /// Result of a cron run.
 #[derive(Debug, Clone)]
 pub enum CronResult {
@@ -971,8 +977,19 @@ impl CronService {
             r#"
             SELECT DISTINCT plugin_name
             FROM plugin_queue
-            WHERE (status = 'ready' AND next_attempt_at <= $1)
-               OR (status = 'claimed' AND locked_until <= $1)
+            WHERE status IN ('ready', 'claimed')
+              AND (
+                    (attempts < max_attempts
+                     AND (
+                           (status = 'ready' AND next_attempt_at <= $1)
+                        OR (status = 'claimed' AND locked_until <= $1)
+                     ))
+                 -- Exhausted-but-abandoned rows have no claimable work left, but
+                 -- the plugin still has to be visited so the reaper can retire
+                 -- them.
+                 OR (status = 'claimed' AND locked_until <= $1
+                     AND attempts >= max_attempts)
+              )
             ORDER BY plugin_name
             "#,
         )
@@ -982,6 +999,12 @@ impl CronService {
         .context("failed to query plugin_queue")?;
 
         for plugin_name in &plugins {
+            // Retire abandoned rows before claiming, so a plugin whose slots are
+            // all held by exhausted rows gets them back in this pass.
+            if let Err(e) = self.reap_exhausted_jobs(plugin_name).await {
+                warn!(error = %e, plugin = %plugin_name, "failed to reap exhausted queue items");
+            }
+
             // Skip plugins that don't implement tap_queue_worker.
             if !dispatcher
                 .registry()
@@ -1071,6 +1094,12 @@ impl CronService {
             return Ok(stats);
         }
 
+        // Same retirement the plugin arm gets: an embed job abandoned at the
+        // bound is retired rather than re-claimed forever.
+        if let Err(e) = self.reap_exhausted_jobs(KERNEL_EMBED_PLUGIN).await {
+            warn!(error = %e, "failed to reap exhausted embed queue items");
+        }
+
         let mut processed: i64 = 0;
         while processed < MAX_QUEUE_ITEMS_PER_CYCLE {
             let batch =
@@ -1107,6 +1136,51 @@ impl CronService {
         Ok(stats)
     }
 
+    /// Retire rows that reached `max_attempts` without ever recording a terminal
+    /// outcome, and whose claim lease has expired.
+    ///
+    /// [`mark_job_failed`] dead-letters on the *failure* path, which only runs
+    /// when a dispatch returns. A claimer that never returns — it crashed, or it
+    /// spent its entire epoch budget and its drain was torn down — leaves the row
+    /// `claimed` with `attempts` at the bound and `dead_at` null. Now that
+    /// [`Self::claim_batch`] refuses to re-claim such a row, something has to
+    /// give it an ending, or it would sit `claimed` forever: invisible to the
+    /// queue, invisible to the DLQ admin screen, and counted against nothing.
+    ///
+    /// Runs at the head of every drain, before any claim, so an abandoned row is
+    /// retired in the same pass that would previously have re-dispatched it.
+    /// Returns the number of rows retired.
+    async fn reap_exhausted_jobs(&self, plugin_name: &str) -> Result<u64> {
+        let now = chrono::Utc::now().timestamp();
+        let reaped = sqlx::query(
+            r#"
+            UPDATE plugin_queue
+            SET status = 'dead', dead_reason = $2, dead_at = $3,
+                last_error = COALESCE(last_error, $2), locked_until = 0
+            WHERE plugin_name = $1
+              AND status = 'claimed'
+              AND locked_until <= $3
+              AND attempts >= max_attempts
+            "#,
+        )
+        .bind(plugin_name)
+        .bind(ABANDONED_CLAIM_REASON)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .context("failed to retire exhausted queue items")?
+        .rows_affected();
+
+        if reaped > 0 {
+            warn!(
+                plugin = %plugin_name,
+                count = reaped,
+                "retired queue items abandoned at max attempts"
+            );
+        }
+        Ok(reaped)
+    }
+
     /// Atomically claim up to `limit` eligible items for `plugin_name`.
     ///
     /// Uses `FOR UPDATE SKIP LOCKED` so concurrent drainers (the cron drain and
@@ -1115,6 +1189,15 @@ impl CronService {
     /// (`locked_until`), and increments `attempts` — so a crashed claimer's
     /// attempt still counts toward `max_attempts` (bounded retries,
     /// at-least-once delivery).
+    ///
+    /// `attempts < max_attempts` is part of the eligibility predicate, not only
+    /// of the failure bookkeeping in [`mark_job_failed`]. Without it
+    /// `max_attempts` bounded nothing on the *claim* side: a row whose lease
+    /// expired before any terminal outcome was recorded (the claimer crashed, or
+    /// spent its whole CPU budget) was re-claimed however many times it had
+    /// already been attempted, incrementing `attempts` past its own bound while
+    /// `dead_at` stayed null forever. Rows that reach the bound this way are
+    /// retired by [`Self::reap_exhausted_jobs`] instead.
     async fn claim_batch(&self, plugin_name: &str, limit: usize) -> Result<Vec<ClaimedJob>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -1130,6 +1213,7 @@ impl CronService {
             WHERE id IN (
                 SELECT id FROM plugin_queue
                 WHERE plugin_name = $1
+                  AND attempts < max_attempts
                   AND (
                         (status = 'ready' AND next_attempt_at <= $3)
                      OR (status = 'claimed' AND locked_until <= $3)

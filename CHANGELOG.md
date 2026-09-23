@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+- Fix: `max_attempts` bounds the claim, not only the failure bookkeeping.
+
+  A queue job that reached `max_attempts` while claimed, and whose lease then
+  expired, was handed straight back to a worker. `claim_batch` selected on
+  `status`, `next_attempt_at` and `locked_until` alone, with no
+  `attempts < max_attempts` term, and incremented `attempts` unconditionally.
+  `max_attempts` was read in exactly one place, `mark_job_failed`, which runs on
+  the *failure* path. A claimer that never returns never reaches that path, so
+  the bound was never applied to it: the row was re-dispatched on every cycle
+  forever, `attempts` climbing past its own limit while `dead_at` and
+  `dead_reason` stayed null.
+
+  The cost was not the wasted dispatches. It was the worker slot. Four such rows
+  held all four slots of `QUEUE_CONCURRENCY_CAP` on every cycle they were picked
+  up, so every other queue starved behind jobs that had already spent their
+  attempts. Marking those four rows dead by hand drained the rest of the queue in
+  a single cycle. That is what turns a worker stall into a permanent outage.
+
+  `attempts < max_attempts` is now part of the eligibility predicate, so an
+  exhausted row is never claimed again. Because nothing else would then give it
+  an ending, a reaper runs at the head of every drain and retires rows that are
+  claimed, past the bound, and past their lease, with a `dead_reason` that says
+  what happened to them: the claim lease expired with no terminal outcome
+  recorded. Both arms get it, the plugin drain and the kernel embed drain, since
+  both claim through the same primitive.
+
+  Crash recovery is unchanged. A job with attempts still on it whose claimer died
+  is reclaimed exactly as before, which is the at-least-once guarantee (D-47);
+  the new term fences only rows that have nothing left to spend.
+
 ## v0.103.0 — 2026-09-21
 
 A fix series, and the permission work that turns a delegated role from something
