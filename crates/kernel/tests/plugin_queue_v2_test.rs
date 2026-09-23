@@ -856,3 +856,218 @@ fn higher_priority_jobs_drain_first() {
         clean_queue(&pool).await;
     });
 }
+
+// ── max_attempts bounds the CLAIM, not only the failure bookkeeping ──────────
+
+/// Insert a row with explicit lifecycle columns; returns its id. The v2 tests
+/// above all start from a pristine `ready` row, which cannot express the state
+/// this section is about: a job that was claimed and never heard from again.
+async fn insert_raw_job(
+    pool: &PgPool,
+    payload: serde_json::Value,
+    attempts: i32,
+    max_attempts: i32,
+    status: &str,
+    locked_until: i64,
+) -> i64 {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO plugin_queue
+            (plugin_name, queue_name, payload, created_at, priority, max_attempts,
+             attempts, next_attempt_at, status, locked_until)
+        VALUES ($1, 'test_queue', $2, $3, 0, $4, $5, 0, $6, $7)
+        RETURNING id
+        "#,
+    )
+    .bind(FIXTURE)
+    .bind(&payload)
+    .bind(now())
+    .bind(max_attempts)
+    .bind(attempts)
+    .bind(status)
+    .bind(locked_until)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    row.get::<i64, _>("id")
+}
+
+/// A job that reached `max_attempts` while claimed, and whose lease then
+/// expired, must be RETIRED — never handed to a worker again.
+///
+/// This is the defect that turned a transient worker stall into a permanent
+/// outage. `claim_batch` selected on `status`/`next_attempt_at`/`locked_until`
+/// alone, with no `attempts < max_attempts` term, and incremented `attempts`
+/// unconditionally. `max_attempts` was consulted *only* by `mark_job_failed`,
+/// on the failure path — which never runs for a claimer that does not return.
+/// So a row whose claimer vanished was re-dispatched on every cycle forever,
+/// `attempts` climbing past its own bound and `dead_at` staying null, while its
+/// worker slot was never released. Four such rows held all four slots of the
+/// kernel concurrency cap and starved every other queue behind them.
+///
+/// The observable contract this pins: the row is `dead`, it carries a
+/// `dead_reason` and a `dead_at`, its `attempts` did NOT advance (it was never
+/// dispatched again), and the drain reports no work done on it.
+#[test]
+fn exhausted_job_is_retired_not_reclaimed() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        // attempts == max_attempts, claimed, lease long expired: exactly the
+        // rows found wedged in production.
+        let id = insert_raw_job(
+            &pool,
+            serde_json::json!({"outcome": "ok"}),
+            5,
+            5,
+            "claimed",
+            now() - 1000,
+        )
+        .await;
+
+        let cron = cron_with(pool.clone(), dispatcher());
+        let stats = cron.drain_plugin_queues().await.unwrap();
+
+        // Name the pre-fix failure rather than panicking on a bare RowNotFound:
+        // under the defect the row is re-claimed, dispatched, succeeds and is
+        // DELETED, so `row_state` finds nothing. That deletion IS the bug, and a
+        // red run should say which defect it is looking at.
+        let present: i64 = sqlx::query_scalar("SELECT count(*) FROM plugin_queue WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            present, 1,
+            "the job was dispatched a 6th time against a 5-attempt bound and consumed: \
+             max_attempts is bounding only the failure path, not the claim"
+        );
+
+        let (status, attempts, _next, _last_error, dead_reason) = row_state(&pool, id).await;
+
+        assert_eq!(
+            status, "dead",
+            "an exhausted, abandoned job must be retired; it was re-dispatched instead"
+        );
+        assert_eq!(
+            attempts, 5,
+            "attempts must not advance past max_attempts: a retired job is never dispatched again"
+        );
+        assert!(
+            dead_reason.is_some(),
+            "a retired job must record why it died, or it is invisible to the DLQ screen"
+        );
+        let dead_at: Option<i64> =
+            sqlx::query_scalar("SELECT dead_at FROM plugin_queue WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(dead_at.is_some(), "a retired job must carry dead_at");
+
+        assert_eq!(
+            stats.succeeded, 0,
+            "the worker must not have run: this job had already spent its attempts"
+        );
+
+        clean_queue(&pool).await;
+    });
+}
+
+/// The bound must not break crash recovery. A job UNDER `max_attempts` whose
+/// lease expired is still reclaimable — that is the at-least-once guarantee
+/// (D-47), and the fence above must not be mistaken for "never reclaim a
+/// claimed row".
+#[test]
+fn unexhausted_job_with_expired_lease_is_still_reclaimed() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        // One attempt spent of five, claimer crashed, lease expired.
+        let id = insert_raw_job(
+            &pool,
+            serde_json::json!({"outcome": "ok"}),
+            1,
+            5,
+            "claimed",
+            now() - 1000,
+        )
+        .await;
+
+        let cron = cron_with(pool.clone(), dispatcher());
+        let stats = cron.drain_plugin_queues().await.unwrap();
+
+        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM plugin_queue WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "a job with attempts left must still be reclaimed and run after a crashed claimer"
+        );
+        assert_eq!(
+            stats.succeeded, 1,
+            "the reclaimed job should have succeeded"
+        );
+
+        clean_queue(&pool).await;
+    });
+}
+
+/// A retired job stays retired. The reaper runs at the head of every drain, so
+/// it must be idempotent: a second pass must not re-stamp `dead_at`, resurrect
+/// the row, or report it as fresh work.
+#[test]
+fn a_retired_job_stays_retired_across_drains() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        let id = insert_raw_job(
+            &pool,
+            serde_json::json!({"outcome": "ok"}),
+            5,
+            5,
+            "claimed",
+            now() - 1000,
+        )
+        .await;
+
+        let cron = cron_with(pool.clone(), dispatcher());
+        cron.drain_plugin_queues().await.unwrap();
+        let first: Option<i64> =
+            sqlx::query_scalar("SELECT dead_at FROM plugin_queue WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the exhausted job was re-dispatched and consumed by the first drain, \
+                     so there is nothing left to stay retired"
+                    )
+                });
+
+        let stats = cron.drain_plugin_queues().await.unwrap();
+        let (status, attempts, _n, _l, _d) = row_state(&pool, id).await;
+        let second: Option<i64> =
+            sqlx::query_scalar("SELECT dead_at FROM plugin_queue WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(status, "dead", "the row must stay dead");
+        assert_eq!(attempts, 5, "a dead row is never dispatched again");
+        assert_eq!(
+            first, second,
+            "dead_at must not be re-stamped by a later drain"
+        );
+        assert_eq!(stats.total(), 0, "a dead row is not work");
+
+        clean_queue(&pool).await;
+    });
+}
