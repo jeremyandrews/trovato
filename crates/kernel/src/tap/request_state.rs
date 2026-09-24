@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use moka::sync::Cache;
@@ -396,6 +397,14 @@ pub struct RequestState {
     /// plugin *can* write through the request-context host function is a separate
     /// field — the depth deliberately does not live there.)
     pub(crate) invocation_depth: u32,
+    /// Where to publish the id of the plugin call this state is dispatched into.
+    ///
+    /// The queue drain sets this before dispatching a job so that, if it later
+    /// has to give up waiting on that job, it can ask the host-call registry
+    /// which host function the job was sitting in. Nothing reads it back out of
+    /// the state; the kernel writes the id here at `Store` construction and the
+    /// drain holds the other end of the `Arc`.
+    pub(crate) invocation_sink: Option<Arc<AtomicU64>>,
 }
 
 impl RequestState {
@@ -406,7 +415,17 @@ impl RequestState {
             context: HashMap::new(),
             services: Some(services),
             invocation_depth: 0,
+            invocation_sink: None,
         }
+    }
+
+    /// Publish this call's invocation id into `sink` when the `Store` is built.
+    ///
+    /// Used by the queue drain, which needs a way back from "this job is taking
+    /// too long" to "and it is inside this host call".
+    pub(crate) fn with_invocation_sink(mut self, sink: Arc<AtomicU64>) -> Self {
+        self.invocation_sink = Some(sink);
+        self
     }
 
     /// Create request state without services (for testing).
@@ -416,6 +435,7 @@ impl RequestState {
             context: HashMap::new(),
             services: None,
             invocation_depth: 0,
+            invocation_sink: None,
         }
     }
 
