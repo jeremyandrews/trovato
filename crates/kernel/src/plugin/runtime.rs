@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use super::db_policy::DbPolicy;
 use super::info_parser::PluginInfo;
@@ -74,6 +75,14 @@ pub struct PluginState {
     /// Monotonic handle-id source for [`Self::http_streams`]. Never reused within a
     /// call, so a closed handle's id cannot silently rebind to a new stream.
     next_http_handle: u32,
+    /// Nanoseconds this call has spent inside host functions.
+    ///
+    /// The epoch deadline is wall clock, so without this a guest that merely
+    /// *waited* on the host would be charged for the wait as though it had been
+    /// computing. The host-call tracing adds to this on every return, and the
+    /// epoch callback extends the deadline by whatever has accumulated, which
+    /// leaves the budget measuring guest execution and nothing else.
+    pub host_call_nanos: Arc<AtomicU64>,
     /// Process-unique id for this plugin call, assigned at construction.
     ///
     /// Host-call tracing keys its in-flight registry by this id, which is what
@@ -126,6 +135,7 @@ impl PluginState {
             http_max_transfer: crate::host::http::DEFAULT_TRANSFER_CEILING,
             http_streams: HashMap::new(),
             next_http_handle: 1,
+            host_call_nanos: Arc::new(AtomicU64::new(0)),
             invocation_id,
         }
     }

@@ -18,8 +18,8 @@
 //! job has to be able to name the host call it was abandoned in, and by then
 //! the call has produced no exit record to read.
 
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -163,6 +163,9 @@ fn leave(
 /// wrapped that way because `IntoFunc` is sealed over the closure's own arity,
 /// so those register a guard at the top of the closure body.
 pub(crate) struct HostCallGuard {
+    /// Where to add this call's duration, so the epoch deadline can discount
+    /// time the guest spent waiting on the host rather than computing.
+    host_call_nanos: Option<Arc<AtomicU64>>,
     invocation_id: u64,
     module: &'static str,
     function: &'static str,
@@ -184,7 +187,8 @@ impl HostCallGuard {
     ) -> Self {
         let invocation_id = caller.data().invocation_id;
         let plugin = caller.data().plugin_name.clone();
-        Self::open(invocation_id, module, function, plugin, true)
+        let nanos = caller.data().host_call_nanos.clone();
+        Self::open(invocation_id, module, function, plugin, true, Some(nanos))
     }
 
     /// Open a guard from already-read identity, for the asynchronous path.
@@ -198,9 +202,11 @@ impl HostCallGuard {
         function: &'static str,
         plugin: String,
         completed: bool,
+        host_call_nanos: Option<Arc<AtomicU64>>,
     ) -> Self {
         let started = enter(invocation_id, module, function, &plugin);
         Self {
+            host_call_nanos,
             invocation_id,
             module,
             function,
@@ -218,6 +224,10 @@ impl HostCallGuard {
 
 impl Drop for HostCallGuard {
     fn drop(&mut self) {
+        if let Some(nanos) = self.host_call_nanos.as_ref() {
+            let spent = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            nanos.fetch_add(spent, Ordering::Relaxed);
+        }
         leave(
             self.invocation_id,
             self.module,
@@ -278,7 +288,9 @@ impl TracedLinker for Linker<PluginState> {
             let plugin = caller.data().plugin_name.clone();
             // The guard, not a plain pair of calls: if this future is dropped
             // before it resolves, `Drop` still clears the in-flight entry.
-            let mut guard = HostCallGuard::open(invocation_id, module, name, plugin, false);
+            let nanos = caller.data().host_call_nanos.clone();
+            let mut guard =
+                HostCallGuard::open(invocation_id, module, name, plugin, false, Some(nanos));
             let inner = func(caller, params);
             Box::new(async move {
                 let out = Box::into_pin(inner).await;
@@ -340,6 +352,7 @@ mod tests {
                 "cancelled",
                 "testplugin".to_string(),
                 false,
+                None,
             );
             assert!(
                 in_flight(id).is_some(),

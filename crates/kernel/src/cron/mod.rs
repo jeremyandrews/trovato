@@ -31,7 +31,7 @@ use crate::services::embed_index::{
     self, EmbedJobPayload, KERNEL_EMBED_CONCURRENCY, KERNEL_EMBED_PLUGIN,
 };
 use crate::services::vector_store::{PgVectorStore, VectorStore};
-use crate::tap::{RequestState, TapDispatcher};
+use crate::tap::{DispatchOutcome, RequestState, TapDispatcher};
 
 /// Lock TTL in seconds (5 minutes).
 const LOCK_TTL_SECS: u64 = 300;
@@ -296,9 +296,9 @@ fn parse_queue_concurrency(output: &str) -> BTreeMap<String, usize> {
 /// `dispatch_to_plugin`) either reschedules with backoff or, at
 /// `max_attempts`, dead-letters the row with the last error preserved.
 ///
-/// A failure that consumed the whole epoch budget is treated differently: it is
-/// dead-lettered at once, whatever `attempts` says. See
-/// [`exhausted_its_cpu_budget`].
+/// A guest the dispatcher reports was cut off at the epoch deadline is treated
+/// differently: it is dead-lettered at once, whatever `attempts` says. See
+/// [`mark_job_cpu_exhausted`].
 #[allow(clippy::too_many_arguments)]
 async fn run_queue_job(
     pool: PgPool,
@@ -331,46 +331,27 @@ async fn run_queue_job(
         .runtime()
         .limits()
         .background_tap_epoch_deadline_secs;
-    let started = std::time::Instant::now();
-    let dispatched = dispatcher
-        .dispatch_to_plugin("tap_queue_worker", &input_json, &plugin_name, state)
+    let outcome = dispatcher
+        .dispatch_to_plugin_outcome("tap_queue_worker", &input_json, &plugin_name, state)
         .await;
-    let elapsed = started.elapsed();
 
-    if dispatched.is_some() {
-        mark_job_succeeded(&pool, job.id).await?;
-        return Ok(JobOutcome::Succeeded);
+    match outcome {
+        DispatchOutcome::Ok(_) => {
+            mark_job_succeeded(&pool, job.id).await?;
+            Ok(JobOutcome::Succeeded)
+        }
+        // The guest used its whole budget of *guest* CPU and was cut off.
+        // Retrying buys another full budget burned against the same wall, so it
+        // dies now. This is the dispatcher's own account of what happened, not
+        // an inference from how long the call took.
+        DispatchOutcome::CpuExhausted => {
+            mark_job_cpu_exhausted(&pool, &job, &plugin_name, budget).await
+        }
+        DispatchOutcome::NoHandler | DispatchOutcome::Failed => {
+            let err = "tap_queue_worker failed (trap or error result)";
+            mark_job_failed(&pool, &job, &plugin_name, err).await
+        }
     }
-
-    // A failure that ran to the epoch deadline is not an ordinary failure: the
-    // job asked for more CPU than a worker is allowed and was cut off. Retrying
-    // it buys another full budget burned against the same wall, so it dies now.
-    if exhausted_its_cpu_budget(elapsed, budget) {
-        return mark_job_cpu_exhausted(&pool, &job, &plugin_name, budget).await;
-    }
-
-    // Failure: the worker trapped or returned an error result.
-    let err = "tap_queue_worker failed (trap or error result)";
-    mark_job_failed(&pool, &job, &plugin_name, err).await
-}
-
-/// Did a failed dispatch consume its whole epoch budget?
-///
-/// The kernel cannot ask wasmtime *why* a call failed here — `dispatch_to_plugin`
-/// collapses every failure into `None` — so the question is answered by how long
-/// it ran. A job cut off at the epoch deadline has run for essentially the whole
-/// budget; an ordinary trap returns in milliseconds. The two are orders of
-/// magnitude apart, so the only care needed is the width of the boundary, which
-/// is [`CPU_EXHAUSTION_SLACK`]: one epoch tick plus scheduling slack.
-///
-/// A budget too small to classify (see [`MIN_CLASSIFIABLE_BUDGET_SECS`]) declines
-/// rather than marking everything exhausted, so a misconfigured deadline cannot
-/// dead-letter a whole queue.
-fn exhausted_its_cpu_budget(elapsed: Duration, budget_secs: u64) -> bool {
-    if budget_secs < MIN_CLASSIFIABLE_BUDGET_SECS {
-        return false;
-    }
-    elapsed >= Duration::from_secs(budget_secs).saturating_sub(CPU_EXHAUSTION_SLACK)
 }
 
 /// Dead-letter a job that spent its entire CPU budget (P11d).
@@ -380,6 +361,15 @@ fn exhausted_its_cpu_budget(elapsed: Duration, budget_secs: u64) -> bool {
 /// occurrence is what stops a worker that burns its budget from being handed the
 /// same budget again on the next cycle, and the next, holding a worker slot each
 /// time.
+///
+/// This is reached only when the dispatcher reports the guest was cut off at the
+/// epoch deadline, which now counts guest execution and not time spent waiting
+/// in host calls. It used to be reached by comparing elapsed wall clock against
+/// the budget, on the reasoning that exhaustion and an ordinary trap were
+/// "orders of magnitude apart". They are not: at the shipped 150 seconds the
+/// margin over an observed analyze call of 12 to 17 seconds is about tenfold,
+/// and a single slow provider response was enough to dead-letter a job on its
+/// first attempt.
 async fn mark_job_cpu_exhausted(
     pool: &PgPool,
     job: &ClaimedJob,
@@ -2145,57 +2135,6 @@ mod tests {
     }
 
     // ── CPU exhaustion is told apart from an ordinary failure by duration ────
-
-    #[test]
-    fn a_failure_that_ran_the_whole_budget_is_cpu_exhaustion() {
-        // Cut off at the epoch deadline: the elapsed time IS the budget.
-        assert!(exhausted_its_cpu_budget(Duration::from_secs(150), 150));
-        // Slightly under, within the epoch thread's one-second granularity.
-        assert!(exhausted_its_cpu_budget(
-            Duration::from_millis(149_000),
-            150
-        ));
-    }
-
-    #[test]
-    fn an_ordinary_failure_is_not_cpu_exhaustion() {
-        // A trap returns in milliseconds. Nothing near the budget.
-        assert!(!exhausted_its_cpu_budget(Duration::from_millis(3), 150));
-        assert!(!exhausted_its_cpu_budget(Duration::from_secs(1), 150));
-        // Even a slow-but-legitimate failure well inside the budget.
-        assert!(!exhausted_its_cpu_budget(Duration::from_secs(100), 150));
-    }
-
-    /// The boundary has to be an absolute tick, not a fraction of the budget.
-    ///
-    /// The engine's epoch advances once per second, so an N-tick deadline can
-    /// expire anywhere in `(N-1, N]` seconds. A proportional tolerance is far too
-    /// tight at a small budget: at a 5-second budget, 10% is half a second
-    /// against a full second of granularity, so a job that had plainly run to its
-    /// deadline read as an ordinary failure and was rescheduled for another full
-    /// burn. This is the case that caught it.
-    #[test]
-    fn a_small_budget_still_classifies_a_full_burn() {
-        // A 5-tick deadline firing after 4.0s is the earliest legal cut-off.
-        assert!(exhausted_its_cpu_budget(Duration::from_millis(4_000), 5));
-        assert!(exhausted_its_cpu_budget(Duration::from_millis(4_600), 5));
-        assert!(exhausted_its_cpu_budget(Duration::from_secs(5), 5));
-        // A fast failure at the same budget is still not exhaustion.
-        assert!(!exhausted_its_cpu_budget(Duration::from_millis(20), 5));
-        // At the shipped budget the boundary is still tight: 148 of 150s.
-        assert!(exhausted_its_cpu_budget(Duration::from_secs(148), 150));
-        assert!(!exhausted_its_cpu_budget(Duration::from_secs(147), 150));
-    }
-
-    #[test]
-    fn an_unclassifiable_budget_marks_nothing_as_exhausted() {
-        // Misconfiguration must not dead-letter an entire queue. Below the
-        // minimum the slack would swallow the budget whole.
-        assert!(!exhausted_its_cpu_budget(Duration::from_secs(600), 0));
-        assert!(!exhausted_its_cpu_budget(Duration::ZERO, 0));
-        assert!(!exhausted_its_cpu_budget(Duration::from_secs(600), 1));
-        assert!(!exhausted_its_cpu_budget(Duration::from_secs(600), 2));
-    }
 
     // ── The heartbeat stops renewing ────────────────────────────────────────
 

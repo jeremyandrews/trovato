@@ -1460,3 +1460,63 @@ fn a_job_that_will_not_return_is_abandoned_and_requeued() {
         clean_queue(&pool).await;
     });
 }
+
+// ── F-WALLCLOCK: the budget measures guest compute, not waiting ──────────────
+
+/// A worker that *waited* must not be dead-lettered as one that *burned*.
+///
+/// The epoch deadline is wall clock, so a guest parked in a host call was billed
+/// for the wait exactly as though it had been computing, and the drain then read
+/// "ran for the whole budget" as CPU exhaustion and dead-lettered the row on its
+/// first attempt — ignoring `max_attempts` entirely. At the shipped 150 seconds
+/// the margin over an observed analyze call of 12 to 17 seconds is about
+/// tenfold, not the orders of magnitude the code assumed, so one slow provider
+/// response was enough to lose a job.
+///
+/// Here the guest does nothing at all and the host call takes twice the budget.
+#[test]
+fn a_job_that_only_waited_is_retried_not_dead_lettered() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        // Two host calls of 4s each against a 5s budget: comfortably over the
+        // wall-clock bound, with no guest execution to speak of.
+        let id = insert_job(
+            &pool,
+            serde_json::json!({"outcome": "slow_host", "calls": 2, "seconds": 4}),
+            0,
+            5,
+            now(),
+        )
+        .await;
+
+        let cron = cron_with(pool.clone(), dispatcher());
+        let stats = cron.drain_plugin_queues().await.unwrap();
+
+        // A job that merely waited is not cut off at all now, so the happy
+        // outcome is that it *finished* and its row was consumed. Anything
+        // still there must at least not be dead.
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT status, dead_reason FROM plugin_queue WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+
+        if let Some((status, dead_reason)) = row {
+            assert_ne!(
+                status, "dead",
+                "a job that spent its time waiting on a host call was dead-lettered as \
+                 a CPU burn (reason: {dead_reason:?}); waiting is not burning, and this \
+                 ignores max_attempts to lose the job on its first attempt"
+            );
+        }
+        assert_eq!(
+            stats.dead_lettered, 0,
+            "the drain counted a waiting job as CPU-exhausted"
+        );
+
+        clean_queue(&pool).await;
+    });
+}

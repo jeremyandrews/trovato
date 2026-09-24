@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Fix: a worker's CPU budget counts what the guest executed, not what it waited for.
+
+  The epoch deadline is wall clock. A guest parked in a host call — an AI
+  request, a feed fetch — was billed for the wait exactly as though it had been
+  computing, so a slow provider and a runaway loop were indistinguishable. The
+  drain then compounded it: `dispatch_to_plugin` collapsed every failure into
+  `None`, so the only way left to ask *why* a call failed was how long it took,
+  and a call that ran roughly the budget was recorded as CPU exhaustion. That
+  path dead-letters on the spot and ignores `attempts` entirely, by design —
+  which is right for a worker that burns its budget and is data loss for one
+  that merely waited. The comment justifying the guess claimed the two were
+  "orders of magnitude apart"; at the shipped 150 seconds, against an observed
+  analyze call of 12 to 17 seconds, the margin is about tenfold, and a single
+  slow response was enough to lose a job on its first attempt.
+
+  Two changes, and the guess is gone rather than retuned:
+
+  - The `Store` now carries an epoch-deadline callback that extends the deadline
+    by however long the call has spent inside host functions since it was last
+    asked, so only guest execution counts the budget down. Host-call time is
+    accumulated by the tracing added for the host-call registry, which was
+    already measuring exactly this.
+  - The dispatcher reports *why* a call failed. `ExportCallError` gained a
+    `CpuExhausted` variant, set by the epoch callback as it interrupts, and the
+    drain reads that instead of inferring from the clock.
+    `exhausted_its_cpu_budget` is deleted; a wall-clock heuristic with a better
+    threshold would still be a wall-clock heuristic.
+
+  A job that only waits is no longer cut off at all: it finishes. A guest that
+  burns its budget is still dead-lettered on the first occurrence, which is the
+  behaviour that bound it in the first place.
+
 - Fix: one queue job that never returns no longer holds the whole drain pass open.
 
   The epoch deadline bounds a guest that keeps *executing*. It cannot bound one
