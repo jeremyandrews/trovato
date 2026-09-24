@@ -1811,7 +1811,26 @@ pub(crate) async fn run_heartbeat(
                     }
                 }
             }
-            _ = stop_rx.changed() => {
+            changed = stop_rx.changed() => {
+                // An error here means every sender is gone, and the only sender
+                // is the local in `CronService::run` that spawned this task. So
+                // the run is over — and crucially, it is over in the one way it
+                // cannot tell us about: its future was dropped part way, which
+                // is what happens whenever the HTTP client that triggered cron
+                // hangs up (the poker gives each run 30 seconds). Treating that
+                // as "nothing to do" left this arm permanently ready, because a
+                // closed channel reports closed every time it is asked, and the
+                // `loop` re-entered `select!` to be told again: a tight busy
+                // loop on a runtime worker, still renewing the lock every tick,
+                // that no longer had a run to stop it and so outlived every
+                // later cron trigger until the process was restarted.
+                //
+                // There is nothing left to hold the lock for either way, so
+                // stop. The lock then expires on its own TTL.
+                if changed.is_err() {
+                    debug!("heartbeat stopping: its cron run is gone");
+                    break;
+                }
                 if *stop_rx.borrow() {
                     debug!("heartbeat stopping");
                     break;
@@ -2131,6 +2150,46 @@ mod tests {
             ttl <= 5,
             "the heartbeat pushed the TTL back to {ttl} after its renewal maximum: \
              a run that cannot finish is still keeping the cron lock alive"
+        );
+    }
+
+    /// A heartbeat whose run was cancelled must end, not spin.
+    ///
+    /// `CronService::run` owns the only sender. When its future is dropped part
+    /// way — which is what happens every time the HTTP client that triggered
+    /// cron hangs up, and the poker allows each run 30 seconds — the sender goes
+    /// with it and `changed()` reports a closed channel immediately, and for
+    /// ever after. The arm used to discard that result and fall through, leaving
+    /// itself permanently ready, so the `loop` re-entered `select!` to be told
+    /// again: a busy loop pinning a runtime worker at a full core, still
+    /// renewing the cron lock on every tick, with no run left to stop it. Only
+    /// a restart cleared it.
+    ///
+    /// No Redis is needed: the interval is set long enough that the renewing arm
+    /// never fires, so the test turns entirely on the closed channel.
+    #[tokio::test]
+    async fn the_heartbeat_stops_when_its_run_is_gone() {
+        let client = redis::Client::open("redis://127.0.0.1:1/").expect("lazy client");
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let cfg = HeartbeatConfig {
+            key: "cron:lock:test:cancelled".to_string(),
+            interval: Duration::from_secs(3600),
+            ttl_secs: 60,
+            max_renewal: Duration::from_secs(3600),
+        };
+        let handle = tokio::spawn(async move {
+            run_heartbeat(client, "owner", stop_rx, cfg).await;
+        });
+
+        // The run is cancelled: its future, and the sender it held, are dropped
+        // without anyone ever sending `true`.
+        drop(stop_tx);
+
+        let finished = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(
+            finished.is_ok(),
+            "the heartbeat outlived the run that owned it: with the sender gone \
+             it must stop, not spin on a closed channel for ever"
         );
     }
 }

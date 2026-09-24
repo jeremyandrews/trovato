@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- Fix: a cron run no longer leaves an immortal heartbeat spinning on a closed channel.
+
+  The Argus pipeline stopped about thirty seconds into a cron run and stayed
+  stopped: a runtime worker pinned at a full core, the database pool completely
+  idle, no provider call in flight, and every later trigger answered "another
+  instance is running cron" until the process was restarted. The jobs were never
+  the problem — re-claimed later, the same ones finished in about two seconds
+  each.
+
+  Thirty seconds is not a coincidence. It is the poker's `curl -m 30`. When a
+  run outlasts it the client hangs up, and the handler awaited `CronService::run`
+  inline, so the whole run was dropped mid-await. That alone left claimed queue
+  rows (their tasks aborted where they stood) and a lock that `release_lock`
+  never reached. The heartbeat, though, was spawned rather than contained: it
+  outlived the run that owned it, and the only sender for its stop channel was a
+  local in the future that had just been dropped.
+
+  `stop_rx.changed()` reports a closed channel immediately, and every time it is
+  asked thereafter. The arm was written `_ = stop_rx.changed()`, discarding that
+  result; the stored value was still `false`, so it did not break, and the `loop`
+  re-entered `select!` to be told the same thing again. A tight busy loop, on a
+  runtime worker, still renewing the cron lock on every tick, with no run left
+  that could ever stop it. Each timed-out run leaked another one.
+
+  Both halves are fixed:
+
+  - The heartbeat treats a closed channel as what it is. The only sender lives in
+    the run that spawned it, so the channel closing means the run is gone —
+    including in the one way it cannot announce, its future being dropped part
+    way. There is nothing left to hold the lock for, so the task ends and the
+    lock expires on its own TTL.
+  - The route runs cron on a task of its own and awaits that. A dropped
+    `JoinHandle` stops observing a task, it does not stop the task, so a client
+    disconnect now cancels only the waiting. The run finishes, releases its lock,
+    and completes its queue bookkeeping instead of being torn up in the middle of
+    it.
+
+  Found by attaching gdb to the wedged container: two independent samples caught
+  the burning thread inside `run_heartbeat`'s `select!`.
+
 - Add: every host call a plugin makes is observable, and a wedged one can be named.
 
   A guest suspended inside a host function is invisible to every bound the

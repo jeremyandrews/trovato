@@ -32,6 +32,23 @@ pub struct CronResponse {
     pub message: Option<String>,
 }
 
+/// Await `fut` on a task of its own, so dropping *this* future cancels only the
+/// waiting and never the work.
+///
+/// A request handler's future is dropped as soon as its client disconnects.
+/// Anything awaited inline is dropped with it, part way through whatever it was
+/// doing; anything spawned is not, because a `JoinHandle` that is dropped stops
+/// observing a task, it does not stop the task. Cron needs the second
+/// behaviour: a run that is torn up mid-flight leaves claimed queue rows, an
+/// unreleased lock, and an orphaned heartbeat behind it.
+async fn detached<F>(fut: F) -> Result<F::Output, tokio::task::JoinError>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(fut).await
+}
+
 /// Run cron tasks (protected by secret key).
 async fn run_cron(State(state): State<AppState>, Path(key): Path<String>) -> Response {
     // Validate cron key. Resolved once at startup rather than read from the
@@ -51,9 +68,21 @@ async fn run_cron(State(state): State<AppState>, Path(key): Path<String>) -> Res
             .into_response();
     }
 
-    // Run cron
+    // Run cron on its own task rather than inline.
+    //
+    // The handler's future is dropped the instant the client that triggered
+    // cron hangs up, and the poker allows each run only 30 seconds. Awaiting
+    // `run` inline meant that disconnect tore a live cron run apart mid-await:
+    // its queue jobs were aborted with their rows still `claimed`, its lock was
+    // never released, and the heartbeat task it owned but did not contain was
+    // orphaned. Detaching the work means a disconnect cancels only the waiting:
+    // the run finishes and releases what it holds.
     info!("cron triggered via HTTP");
-    let result = state.cron().run().await;
+    let cron = state.cron().clone();
+    let result = match detached(async move { cron.run().await }).await {
+        Ok(result) => result,
+        Err(e) => CronResult::Failed(format!("cron task did not finish: {e}")),
+    };
 
     match result {
         CronResult::Completed {
@@ -165,4 +194,45 @@ async fn cron_status(State(state): State<AppState>, session: Session) -> Respons
         },
     })
     .into_response()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    /// Work handed to [`detached`] must finish even when the caller waiting on
+    /// it goes away.
+    ///
+    /// This is the cron handler's situation exactly: the poker gives a run 30
+    /// seconds, and on a slower run it hangs up and axum drops the handler
+    /// future. While the run was awaited inline, that dropped the run itself
+    /// mid-await, which is what left claimed queue rows, an unreleased lock and
+    /// an orphaned heartbeat behind.
+    #[tokio::test]
+    async fn work_survives_the_caller_being_dropped() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = finished.clone();
+
+        {
+            let mut waiting = Box::pin(detached(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                flag.store(true, Ordering::SeqCst);
+            }));
+            // Poll once so the task is actually spawned, then walk away, as a
+            // disconnecting client does.
+            let _ = tokio::time::timeout(Duration::from_millis(10), &mut waiting).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the work was cancelled when its caller was dropped: a cron run must \
+             outlive the request that triggered it, or it leaves its lock and its \
+             claimed queue rows behind"
+        );
+    }
 }
