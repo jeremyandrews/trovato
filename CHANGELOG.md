@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+Documentation only. No code changed and no behaviour moved.
+
+`SECURITY.md` at the repository root, which the project did not have. It names
+GitHub's private vulnerability reporting as the channel, sets response time
+targets, and says that security fixes land on the current minor only while
+Trovato is pre-1.0. A project that ships a security release convention
+(`[security]` in the title, read by `is_security_title`) and a dependency
+advisory policy but no way to report a vulnerability privately was telling
+people to open a public issue by omission.
+
+`docs/security/REVIEW-BRIEF.md`, written to be handed to an external reviewer
+without the maintainer present. It maps ten surfaces to their code, the
+invariant each is supposed to hold and the tests that pin it; collects the
+security relevant changelog entries and every advisory taken, with commit ids;
+states the threat model as five attackers and what each must not be able to do;
+and says what "done" means, which is a findings table where every row's status
+reads `fixed <commit>` or `accepted: <reason>`. `KNOWN-ISSUES.md` records that
+the security posture is "reviewed once, by the author" and calls independent
+verification a 1.0 blocker (BL-66); this is the document that unblocks it.
+
+Writing it turned up twelve places where the repository's own documentation
+claims more than the code does, collected in section 6 of the brief rather than
+fixed here. Two are worth naming: `docs/admin-permissions.md` says exactly two
+routes still gate on `require_admin` and the code has nine plus one inline
+check, and `docs/BACKLOG.md` maps the rustls advisory bump to the wrong commit.
+
 ## v0.104.0 — 2026-09-24
 
 A queue release. Eight entries, and between them they are the difference between
