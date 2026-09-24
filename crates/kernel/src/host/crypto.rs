@@ -8,6 +8,8 @@
 use anyhow::Result;
 use wasmtime::Linker;
 
+use super::trace::HostCallGuard;
+
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::plugin::{PluginState, WasmtimeExt};
 
@@ -25,6 +27,7 @@ pub fn register_crypto_functions(linker: &mut Linker<PluginState>) -> Result<()>
              out_ptr: i32,
              out_max_len: i32|
              -> i32 {
+                let _trace = HostCallGuard::new(&caller, "trovato:kernel/crypto-api", "sha256");
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     return -1;
                 };
@@ -58,6 +61,8 @@ pub fn register_crypto_functions(linker: &mut Linker<PluginState>) -> Result<()>
              out_ptr: i32,
              out_max_len: i32|
              -> i32 {
+                let _trace =
+                    HostCallGuard::new(&caller, "trovato:kernel/crypto-api", "hmac-sha256");
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     return -1;
                 };
@@ -96,6 +101,8 @@ pub fn register_crypto_functions(linker: &mut Linker<PluginState>) -> Result<()>
              out_ptr: i32,
              out_max_len: i32|
              -> i32 {
+                let _trace =
+                    HostCallGuard::new(&caller, "trovato:kernel/crypto-api", "random-bytes");
                 if len <= 0 || len > 256 {
                     return -1;
                 }
@@ -126,6 +133,8 @@ pub fn register_crypto_functions(linker: &mut Linker<PluginState>) -> Result<()>
              b_ptr: i32,
              b_len: i32|
              -> i32 {
+                let _trace =
+                    HostCallGuard::new(&caller, "trovato:kernel/crypto-api", "constant-time-eq");
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     return 0;
                 };

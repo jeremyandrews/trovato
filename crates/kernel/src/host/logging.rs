@@ -6,6 +6,8 @@ use anyhow::Result;
 use tracing::{debug, error, info, trace, warn};
 use wasmtime::Linker;
 
+use super::trace::HostCallGuard;
+
 use super::read_string_from_memory;
 use crate::plugin::{PluginState, WasmtimeExt};
 
@@ -22,6 +24,7 @@ pub fn register_logging_functions(linker: &mut Linker<PluginState>) -> Result<()
              plugin_len: i32,
              message_ptr: i32,
              message_len: i32| {
+                let _trace = HostCallGuard::new(&caller, "trovato:kernel/logging", "log");
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     error!("plugin missing memory export");
                     return;

@@ -74,6 +74,12 @@ pub struct PluginState {
     /// Monotonic handle-id source for [`Self::http_streams`]. Never reused within a
     /// call, so a closed handle's id cannot silently rebind to a new stream.
     next_http_handle: u32,
+    /// Process-unique id for this plugin call, assigned at construction.
+    ///
+    /// Host-call tracing keys its in-flight registry by this id, which is what
+    /// lets the queue drain ask "which host call is this job sitting in" when
+    /// it gives up waiting. See the kernel's `host::trace` module.
+    pub invocation_id: u64,
 }
 
 impl PluginState {
@@ -113,6 +119,7 @@ impl PluginState {
             http_max_transfer: crate::host::http::DEFAULT_TRANSFER_CEILING,
             http_streams: HashMap::new(),
             next_http_handle: 1,
+            invocation_id: crate::host::trace::next_invocation_id(),
         }
     }
 

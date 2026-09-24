@@ -5,6 +5,8 @@
 use anyhow::Result;
 use wasmtime::Linker;
 
+use super::trace::HostCallGuard;
+
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::plugin::{PluginState, WasmtimeExt};
 
@@ -19,6 +21,8 @@ pub fn register_user_functions(linker: &mut Linker<PluginState>) -> Result<()> {
              out_ptr: i32,
              out_max_len: i32|
              -> i32 {
+                let _trace =
+                    HostCallGuard::new(&caller, "trovato:kernel/user-api", "current-user-id");
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     return 0;
                 };
@@ -37,6 +41,11 @@ pub fn register_user_functions(linker: &mut Linker<PluginState>) -> Result<()> {
             "trovato:kernel/user-api",
             "current-user-has-permission",
             |mut caller: wasmtime::Caller<'_, PluginState>, perm_ptr: i32, perm_len: i32| -> i32 {
+                let _trace = HostCallGuard::new(
+                    &caller,
+                    "trovato:kernel/user-api",
+                    "current-user-has-permission",
+                );
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     return 0;
                 };

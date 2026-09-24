@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Add: every host call a plugin makes is observable, and a wedged one can be named.
+
+  A guest suspended inside a host function is invisible to every bound the
+  kernel has. The epoch deadline interrupts guest code, so a guest waiting on
+  the host is never interrupted; fuel metering is off by default; and the queue
+  drain's dead-letter classifier only runs once `dispatch_to_plugin` has
+  returned. When a worker stopped coming back, nothing in the logs said which
+  host function it had entered — the kernel knew a tap was running and nothing
+  more.
+
+  All 35 host functions across the 13 host interfaces are now wrapped. Each
+  emits a paired record: `debug` on entry, `debug` on return carrying
+  `elapsed_ms`, and `warn` instead of the second `debug` when the call took
+  longer than `SLOW_HOST_CALL_MS` (30 seconds — about twice the slowest
+  legitimate call measured, an analyze against a large model at 12 to 17
+  seconds, and a fifth of the 150-second background-tap epoch budget, so a call
+  heading for trouble is visible long before any deadline could fire). A host
+  call that is entered and never returns leaves only its entry line, which is
+  what names it in a log tail.
+
+  Logging alone does not answer the question at the moment it is asked, though:
+  a call that has not returned has produced no record to read. So the same
+  wrapper maintains a live registry of in-flight calls, keyed by a new
+  per-invocation id on `PluginState`. The guest inside one tap invocation is
+  single-threaded and can therefore have at most one host call outstanding, so
+  that key answers "which host call is this invocation sitting in right now" for
+  any caller that needs it.
+
+  Asynchronous host functions go through a `Linker` extension
+  (`func_wrap_async_traced`) that wraps the returned future, so the call sites
+  changed by one method name and no closure body moved. Synchronous ones cannot
+  be wrapped that way — `IntoFunc` is sealed over each closure's own arity — so
+  they open an RAII `HostCallGuard` as their first statement instead.
+
 - Fix: a cron run gives the lock back, and a job that burns its CPU budget dies.
 
   A queue worker's only bound is the background epoch deadline, 150 seconds. A

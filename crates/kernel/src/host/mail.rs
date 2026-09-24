@@ -47,6 +47,8 @@ use serde::Deserialize;
 use tracing::{info, warn};
 use wasmtime::Linker;
 
+use super::trace::TracedLinker;
+
 use super::read_string_from_memory;
 use crate::plugin::{PluginState, WasmtimeExt};
 use crate::services::email::Attachment;
@@ -99,7 +101,7 @@ pub fn register_mail_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // 0 on success, negative host_errors code otherwise. There is nothing to
     // return on success, so there is no output buffer.
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/mail",
             "send-to-site-contacts",
             |mut caller: wasmtime::Caller<'_, PluginState>, (req_ptr, req_len): (i32, i32)| {

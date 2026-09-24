@@ -34,6 +34,8 @@ use tracing::warn;
 use trovato_sdk::host_errors;
 use wasmtime::Linker;
 
+use super::trace::TracedLinker;
+
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::models::SiteConfig;
 use crate::plugin::{PluginState, WasmtimeExt};
@@ -101,7 +103,7 @@ fn report_unset_variable(plugin_name: &str, name: &str, db_key: &str) {
 pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // get(name, default) -> string (bytes written or 0)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/variables",
             "get",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -166,7 +168,7 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
 
     // set(name, value) -> result (0 = success, negative = error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/variables",
             "set",
             |mut caller: wasmtime::Caller<'_, PluginState>,

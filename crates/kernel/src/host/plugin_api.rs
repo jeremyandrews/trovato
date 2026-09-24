@@ -53,6 +53,8 @@
 use anyhow::Result;
 use wasmtime::{Caller, Extern, Linker, Memory};
 
+use super::trace::{HostCallGuard, TracedLinker};
+
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::plugin::{PluginCapabilities, PluginRuntime, PluginState, WasmtimeExt};
 use crate::tap::{ExportCallError, RequestState, instantiate_and_call_export};
@@ -114,7 +116,7 @@ pub fn register_plugin_api_functions(linker: &mut Linker<PluginState>) -> Result
     // invoke(plugin_ptr, plugin_len, fn_ptr, fn_len, payload_ptr, payload_len,
     //        out_ptr, out_max_len) -> i64  (length-tagged; see module ABI note)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/plugin-api",
             "invoke",
             |mut caller: Caller<'_, PluginState>,
@@ -204,6 +206,8 @@ pub fn register_plugin_api_functions(linker: &mut Linker<PluginState>) -> Result
             "trovato:kernel/plugin-api",
             "plugin-exists",
             |mut caller: Caller<'_, PluginState>, name_ptr: i32, name_len: i32| -> i32 {
+                let _trace =
+                    HostCallGuard::new(&caller, "trovato:kernel/plugin-api", "plugin-exists");
                 let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
                     return 0;
                 };

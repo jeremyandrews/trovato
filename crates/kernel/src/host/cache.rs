@@ -10,6 +10,8 @@
 use anyhow::Result;
 use wasmtime::Linker;
 
+use super::trace::TracedLinker;
+
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::plugin::{PluginState, WasmtimeExt};
 
@@ -20,7 +22,7 @@ const DEFAULT_TTL_SECS: u64 = 300;
 pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // get(bin, key, out) -> i32 (bytes written or -1 for miss)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/cache-api",
             "get",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -76,7 +78,7 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
 
     // set(bin, key, value, tags_json) -> void
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/cache-api",
             "set",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -137,7 +139,7 @@ pub fn register_cache_functions(linker: &mut Linker<PluginState>) -> Result<()> 
 
     // invalidate-tag(tag) -> void
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/cache-api",
             "invalidate-tag",
             |mut caller: wasmtime::Caller<'_, PluginState>, (tag_ptr, tag_len): (i32, i32)| {

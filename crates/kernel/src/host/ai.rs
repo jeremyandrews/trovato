@@ -14,6 +14,8 @@ use anyhow::Result;
 use tracing::{info, warn};
 use wasmtime::Linker;
 
+use super::trace::TracedLinker;
+
 use crate::plugin::{PluginState, WasmtimeExt};
 use crate::services::ai_provider::{
     EMBEDDING_INPUT_MAX_CHARS, ProviderProtocol, ResolvedProvider, cap_embedding_input,
@@ -553,7 +555,7 @@ fn parse_anthropic_response(body: &str, latency_ms: u64) -> Result<AiResponse, S
 /// Provides the `ai-request` function under `trovato:kernel/ai-api`.
 pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/ai-api",
             "ai-request",
             |mut caller: wasmtime::Caller<'_, PluginState>,
