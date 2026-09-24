@@ -1,7 +1,7 @@
 name = "test_e2e_caller"
 description = "Epic 2 e2e fixture: plugin-to-plugin invocation caller/driver"
-version = "0.103.0"
-api_version = "0.103"
+version = "0.104.0"
+api_version = "0.104"
 default_enabled = false
 dependencies = []
 

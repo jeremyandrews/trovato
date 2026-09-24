@@ -1,6 +1,52 @@
 # Changelog
 
-## Unreleased
+## v0.104.0 — 2026-09-24
+
+A queue release. Eight entries, and between them they are the difference between
+a queue-driven site that needs someone watching it and one that runs unattended.
+
+Every failure here was found on a running site and every one of them ended the
+same way: work stopped, and nothing said so. A cron run whose HTTP client hung up
+at thirty seconds was dropped mid-await, leaving a heartbeat spinning on a closed
+channel that renewed the global cron lock forever, so every later trigger
+answered "another instance is running cron" and anything reporting on queue
+health from `tap_cron` went quiet at the moment it was needed. A job that reached
+`max_attempts` while claimed was handed back to a worker on every cycle, climbing
+past its own limit, holding a slot that everything else queued behind. A plugin's
+queues all ran at the width of its widest, so four stuck jobs on one queue
+starved the rest. A guest parked in a host call was billed for the wait as though
+it had been computing, and a single slow provider response lost the job on its
+first attempt. The shape is the same each time: a bound that was never applied,
+or applied to the wrong quantity, and no way to see it from outside.
+
+So the bounds are real now, and they are observable. `max_attempts` fences the
+claim rather than only the failure bookkeeping, and a reaper gives an ending to
+the rows that were stranded without one. Each queue drains at the width it
+declared. A drain pass, the lock renewal and a worker that burns its CPU budget
+are each bounded, and the CPU budget counts guest execution rather than wall
+clock, so waiting and looping are finally distinguishable. All 35 host functions
+across the 13 host interfaces report entry, return and elapsed time, and keep a
+live registry so a wedged call can be named while it is still wedged rather than
+inferred afterwards. Every queue job emits one line saying which outcome it
+reached and how long it took.
+
+Four of these change what a running site does with work it has already claimed:
+**see [UPGRADING.md](UPGRADING.md) before upgrading.**
+
+The plugin API moves to `(0, 104)`, and nothing about the boundary changed with
+it. No WIT signature moved, no tap was added and no host function was added. The
+rule is the one it has always been: a manifest's major must equal the kernel's
+and its minor must not exceed it, so a plugin declaring `api_version = "0.103"`
+installs and runs on this kernel exactly as before, and a plugin declaring
+`"0.104"` is stating what it was built against rather than reaching for something
+gated behind the number.
+
+- The project version is 0.104.0 and the plugin API is `(0, 104)`.
+
+  The manifest count in `docs/design/version-map.md` stays at 37. That file gains
+  one row for a location it did not list: the two manifest fixtures in
+  `info_parser.rs` that spell out a version. Unlike the API-compatibility tests
+  beside them they pass whatever version they name, so a miss there is silent.
 
 - Add: every queue job reports what became of it and how long it took.
 
