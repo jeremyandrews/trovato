@@ -36,6 +36,15 @@
   be wrapped that way — `IntoFunc` is sealed over each closure's own arity — so
   they open an RAII `HostCallGuard` as their first statement instead.
 
+  Both paths record their exit from `Drop` rather than from a call on the way
+  out, because a host call does not always reach its own end: when a cron run's
+  HTTP client disconnects, the request future is dropped and every host call
+  under it is torn out mid-flight. Recording that as an ordinary return would
+  leave a registry entry insisting the guest is still inside a call it left long
+  ago, so a dropped call is cleared and logged as cancelled, with its elapsed
+  time, and only a call that reached the far side of its own `await` is reported
+  as having returned.
+
 - Fix: a cron run gives the lock back, and a job that burns its CPU budget dies.
 
   A queue worker's only bound is the background epoch deadline, 150 seconds. A

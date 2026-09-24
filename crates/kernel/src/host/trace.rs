@@ -109,16 +109,33 @@ fn enter(
 }
 
 /// Record that `invocation_id` has left a host call.
+///
+/// `completed` distinguishes a call that returned from one whose future was
+/// dropped before it could. Cancellation is not hypothetical: when a cron run's
+/// HTTP client disconnects, the whole request future is dropped and every host
+/// call under it goes with it. Recording that as an ordinary return would leave
+/// a stale registry entry claiming the guest is still inside a call it has long
+/// since been torn out of.
 fn leave(
     invocation_id: u64,
     module: &'static str,
     function: &'static str,
     plugin: &str,
     started: Instant,
+    completed: bool,
 ) {
     IN_FLIGHT.remove(&invocation_id);
     let elapsed_ms = started.elapsed().as_millis();
-    if elapsed_ms >= SLOW_HOST_CALL_MS {
+    if !completed {
+        debug!(
+            host_fn = function,
+            host_module = module,
+            plugin = plugin,
+            invocation_id = invocation_id,
+            elapsed_ms = elapsed_ms,
+            "host call cancelled before it returned"
+        );
+    } else if elapsed_ms >= SLOW_HOST_CALL_MS {
         warn!(
             host_fn = function,
             host_module = module,
@@ -151,10 +168,15 @@ pub(crate) struct HostCallGuard {
     function: &'static str,
     plugin: String,
     started: Instant,
+    /// Whether the call reached its own end, as opposed to being dropped.
+    completed: bool,
 }
 
 impl HostCallGuard {
     /// Open a guard for a synchronous host call.
+    ///
+    /// A synchronous call cannot be cancelled part way: once the closure is
+    /// entered it runs to its end or traps, so the guard is born completed.
     pub(crate) fn new(
         caller: &Caller<'_, PluginState>,
         module: &'static str,
@@ -162,6 +184,21 @@ impl HostCallGuard {
     ) -> Self {
         let invocation_id = caller.data().invocation_id;
         let plugin = caller.data().plugin_name.clone();
+        Self::open(invocation_id, module, function, plugin, true)
+    }
+
+    /// Open a guard from already-read identity, for the asynchronous path.
+    ///
+    /// `completed` starts `false` there: the future may be dropped before it
+    /// finishes, and only [`Self::complete`] on the far side of the `await`
+    /// proves it was not.
+    fn open(
+        invocation_id: u64,
+        module: &'static str,
+        function: &'static str,
+        plugin: String,
+        completed: bool,
+    ) -> Self {
         let started = enter(invocation_id, module, function, &plugin);
         Self {
             invocation_id,
@@ -169,7 +206,13 @@ impl HostCallGuard {
             function,
             plugin,
             started,
+            completed,
         }
+    }
+
+    /// Mark the call as having returned under its own power.
+    fn complete(&mut self) {
+        self.completed = true;
     }
 }
 
@@ -181,6 +224,7 @@ impl Drop for HostCallGuard {
             self.function,
             &self.plugin,
             self.started,
+            self.completed,
         );
     }
 }
@@ -232,11 +276,14 @@ impl TracedLinker for Linker<PluginState> {
             // Read identity before the caller is handed to the wrapped closure.
             let invocation_id = caller.data().invocation_id;
             let plugin = caller.data().plugin_name.clone();
-            let started = enter(invocation_id, module, name, &plugin);
+            // The guard, not a plain pair of calls: if this future is dropped
+            // before it resolves, `Drop` still clears the in-flight entry.
+            let mut guard = HostCallGuard::open(invocation_id, module, name, plugin, false);
             let inner = func(caller, params);
             Box::new(async move {
                 let out = Box::into_pin(inner).await;
-                leave(invocation_id, module, name, &plugin, started);
+                guard.complete();
+                drop(guard);
                 out
             })
         })
@@ -266,7 +313,42 @@ mod tests {
         assert_eq!(seen.plugin, "testplugin");
         assert_eq!(seen.qualified_name(), "trovato:kernel/test::spin");
 
-        leave(id, "trovato:kernel/test", "spin", "testplugin", started);
+        leave(
+            id,
+            "trovato:kernel/test",
+            "spin",
+            "testplugin",
+            started,
+            true,
+        );
         assert!(in_flight(id).is_none(), "entry is cleared on return");
+    }
+
+    /// A host call whose future is dropped before it resolves must not leave a
+    /// registry entry behind claiming the guest is still inside it.
+    ///
+    /// This is the cancellation a cron run actually suffers: the HTTP client
+    /// disconnects, the request future is dropped, and every host call under it
+    /// goes with it without ever reaching its own end.
+    #[test]
+    fn a_dropped_call_clears_its_entry() {
+        let id = next_invocation_id();
+        {
+            let _guard = HostCallGuard::open(
+                id,
+                "trovato:kernel/test",
+                "cancelled",
+                "testplugin".to_string(),
+                false,
+            );
+            assert!(
+                in_flight(id).is_some(),
+                "call is in flight inside the scope"
+            );
+        }
+        assert!(
+            in_flight(id).is_none(),
+            "a dropped call must clear its in-flight entry, not leak it"
+        );
     }
 }
