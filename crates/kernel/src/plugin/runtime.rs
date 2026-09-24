@@ -110,6 +110,13 @@ impl PluginState {
         limits: ResourceLimits,
     ) -> Self {
         let limiter = PluginResourceLimiter::new(limits, plugin_name.clone());
+        // Allocate the id first and publish it to whoever asked for it, so a
+        // caller holding the other end of the sink can name this call's host
+        // traffic while the call is still running.
+        let invocation_id = crate::host::trace::next_invocation_id();
+        if let Some(sink) = request.invocation_sink.as_ref() {
+            sink.store(invocation_id, std::sync::atomic::Ordering::Relaxed);
+        }
         Self {
             request,
             plugin_name,
@@ -119,7 +126,7 @@ impl PluginState {
             http_max_transfer: crate::host::http::DEFAULT_TRANSFER_CEILING,
             http_streams: HashMap::new(),
             next_http_handle: 1,
-            invocation_id: crate::host::trace::next_invocation_id(),
+            invocation_id,
         }
     }
 

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Fix: one queue job that never returns no longer holds the whole drain pass open.
+
+  The epoch deadline bounds a guest that keeps *executing*. It cannot bound one
+  that has stopped executing — parked in a host call that never comes back — and
+  the drain awaited its in-flight batch unconditionally. A single such job
+  therefore held the pass, and with it the cron lock, for as long as it liked;
+  the pass's own 60-second budget bounds only how many further batches it
+  *starts*, never the batch already running.
+
+  The drain now stops waiting past a ceiling of the worker's CPU budget plus
+  `JOB_ABANDON_SLACK`. The ceiling sits above the epoch deadline deliberately: a
+  job the epoch mechanism is about to cut off cleanly should be cut off cleanly,
+  not abandoned a moment earlier. Every job still running at the ceiling is
+  handed back through the ordinary failure path, so `attempts` and
+  `max_attempts` mean what they always meant and nothing is dead-lettered for
+  being slow once. Each one logs an `error` naming the plugin, the queue, the
+  row and the host call it was sitting in, read from the in-flight registry.
+
+  What the bound can and cannot do, stated plainly: it recovers the *row*, not
+  the *task*. Dropping the `JoinSet` aborts what it holds, and an abort lands at
+  the next await point — so a job waiting on I/O stops there, while a guest
+  burning CPU without yielding reaches no await point and keeps its thread until
+  the epoch deadline reclaims it. The drain no longer waits for that to happen.
+
 - Fix: a cron run no longer leaves an immortal heartbeat spinning on a closed channel.
 
   The Argus pipeline stopped about thirty seconds into a cron run and stayed

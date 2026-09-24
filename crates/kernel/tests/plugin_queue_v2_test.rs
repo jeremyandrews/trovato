@@ -1394,3 +1394,69 @@ fn a_drain_pass_stops_at_its_time_budget() {
         clean_queue(&pool).await;
     });
 }
+
+// ── The drain's own ceiling on an in-flight job ──────────────────────────────
+
+/// A job that will not come back must not hold the pass open.
+///
+/// The epoch deadline bounds a guest that keeps *executing*. It cannot bound
+/// one that has stopped executing, parked in a host call that never returns,
+/// and the drain awaited its in-flight batch unconditionally — so a single such
+/// job held the pass, and with it the cron lock, for as long as it liked.
+///
+/// The ceiling is set below this suite's epoch budget on purpose: it proves the
+/// drain gave up on its own terms rather than being rescued by the epoch
+/// mechanism, which would have dead-lettered the row instead of returning it.
+/// The `"spin"` payload is a guest that never yields, so this also pins the
+/// limit of the bound: the row is recovered, the task is not. Aborting a future
+/// only lands at an await point, and a guest burning CPU never reaches one, so
+/// that task keeps its thread until the epoch deadline reclaims it moments
+/// later. The drain no longer waits for that to happen.
+#[test]
+fn a_job_that_will_not_return_is_abandoned_and_requeued() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        let id = insert_job(&pool, serde_json::json!({"outcome": "spin"}), 0, 5, now()).await;
+
+        let redis = redis::Client::open("redis://127.0.0.1:6379").expect("redis client");
+        let mut cron = CronService::new(redis, pool.clone());
+        cron.set_tap_dispatcher(dispatcher());
+        // Below TEST_TAP_BUDGET_SECS, so the drain reaches its ceiling first.
+        cron.set_job_ceiling(std::time::Duration::from_secs(2));
+
+        let started = std::time::Instant::now();
+        let stats = cron.drain_plugin_queues().await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(TEST_TAP_BUDGET_SECS),
+            "the drain waited {elapsed:?} on a job that never returns: the pass must end \
+             at its own ceiling, not sit on the in-flight batch until something else \
+             happens to cut the worker off"
+        );
+
+        let (status, attempts, _next, last_error, _dead) = row_state(&pool, id).await;
+        assert_eq!(
+            status, "ready",
+            "an abandoned job was left {status} instead of being handed back to the queue"
+        );
+        assert_eq!(
+            attempts, 1,
+            "the abandoned job's attempt was not counted, so it can be abandoned \
+             for ever without ever reaching max_attempts"
+        );
+        assert_eq!(
+            stats.retried, 1,
+            "the abandoned job was not recorded as retried"
+        );
+        let last_error = last_error.unwrap_or_default();
+        assert!(
+            last_error.contains("abandoned"),
+            "the row does not say why it came back: {last_error}"
+        );
+
+        clean_queue(&pool).await;
+    });
+}

@@ -12,16 +12,17 @@ pub use tasks::UpdateCheckConfig;
 pub use queue::{Queue, RedisQueue};
 pub use tasks::CronTasks;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::PgPool;
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::file::FileService;
 use crate::services::ai_provider::AiProviderService;
@@ -140,7 +141,11 @@ pub enum CronResult {
 }
 
 /// A queue job claimed for one worker dispatch (P11d).
-#[derive(Debug)]
+///
+/// `Clone` so the drain can keep a record of what it dispatched: if it later
+/// gives up waiting on a job, the row still has to be handed back to the queue,
+/// and by then the task that owned the original has been aborted.
+#[derive(Debug, Clone)]
 struct ClaimedJob {
     /// `plugin_queue.id` of the claimed row.
     id: i64,
@@ -151,6 +156,17 @@ struct ClaimedJob {
     /// Attempt bound after which the job is dead-lettered.
     max_attempts: i32,
 }
+
+/// How far past a worker's own CPU budget the drain waits before it stops
+/// waiting on an in-flight job.
+///
+/// The epoch deadline is the bound a *well-behaved* worker answers to: a guest
+/// that keeps executing is interrupted there. It cannot bound a guest that is
+/// not executing — one parked in a host call that never comes back — so the
+/// drain needs a bound of its own, and it has to sit above the epoch deadline
+/// or it would abandon jobs the epoch mechanism was about to cut off cleanly.
+/// One epoch tick of slack past the budget is enough to tell the two apart.
+const JOB_ABANDON_SLACK: Duration = Duration::from_secs(30);
 
 /// Terminal outcome of a single queue job dispatch (P11d drain stats).
 #[derive(Debug, Clone, Copy)]
@@ -293,6 +309,7 @@ async fn run_queue_job(
     rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
     plugin_name: String,
     job: ClaimedJob,
+    invocation_sink: Arc<AtomicU64>,
 ) -> Result<JobOutcome> {
     // Infallible: payload came from JSONB and round-trips to a string.
     let input_json = serde_json::to_string(&job.payload).unwrap_or_else(|_| "{}".to_string());
@@ -307,7 +324,8 @@ async fn run_queue_job(
     if let Some(limiter) = rate_limiter {
         services = services.with_rate_limiter(limiter);
     }
-    let state = RequestState::new(crate::tap::UserContext::background(), services);
+    let state = RequestState::new(crate::tap::UserContext::background(), services)
+        .with_invocation_sink(invocation_sink);
 
     let budget = dispatcher
         .runtime()
@@ -635,6 +653,12 @@ pub struct CronService {
     /// Carried here rather than read from the constant so a deployment can tune
     /// it and a test can drive it to a value it can observe.
     drain_budget: Duration,
+    /// How far past a worker's CPU budget the drain waits on an in-flight job
+    /// before abandoning it (`JOB_ABANDON_SLACK`).
+    abandon_slack: Duration,
+    /// An outright override of the in-flight ceiling, ignoring the worker's
+    /// budget. `None` in production, where the ceiling is budget + slack.
+    job_ceiling: Option<Duration>,
 }
 
 impl CronService {
@@ -656,6 +680,8 @@ impl CronService {
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
+            abandon_slack: JOB_ABANDON_SLACK,
+            job_ceiling: None,
         }
     }
 
@@ -677,6 +703,8 @@ impl CronService {
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
+            abandon_slack: JOB_ABANDON_SLACK,
+            job_ceiling: None,
         }
     }
 
@@ -691,6 +719,24 @@ impl CronService {
     /// give the cron lock back sooner at the cost of more passes.
     pub fn set_drain_budget(&mut self, budget: Duration) {
         self.drain_budget = budget;
+    }
+
+    /// Override how long the drain waits past a worker's CPU budget before it
+    /// abandons an in-flight job.
+    ///
+    /// The default is `JOB_ABANDON_SLACK`. Tests lower it so a job that will
+    /// never come back is abandoned in seconds rather than minutes.
+    pub fn set_abandon_slack(&mut self, slack: Duration) {
+        self.abandon_slack = slack;
+    }
+
+    /// Override the in-flight ceiling outright, ignoring the worker's budget.
+    ///
+    /// Only tests use this. A test needs to abandon a job *before* the epoch
+    /// deadline would reclaim it, which a ceiling derived from that same
+    /// deadline can never do.
+    pub fn set_job_ceiling(&mut self, ceiling: Duration) {
+        self.job_ceiling = Some(ceiling);
     }
 
     pub fn set_rate_limiter(&mut self, limiter: Arc<crate::middleware::RateLimiter>) {
@@ -1204,6 +1250,12 @@ impl CronService {
             // What the plugin declared, per queue, and which of its queues
             // actually hold work. A queue with rows but no declaration drains at
             // width 1 rather than being stranded.
+            // The same budget a worker is dispatched with, so the drain's own
+            // ceiling can be expressed relative to it.
+            let budget = dispatcher
+                .runtime()
+                .limits()
+                .background_tap_epoch_deadline_secs;
             let declared = self.plugin_queue_widths(&dispatcher, plugin_name).await;
             let queues = self.claimable_queues(plugin_name).await?;
 
@@ -1253,6 +1305,11 @@ impl CronService {
                     // concurrently. Each job owns its state and does its own
                     // delete/retry/dead-letter bookkeeping.
                     let mut set = tokio::task::JoinSet::new();
+                    // What is still running, so a job the drain gives up on can
+                    // be named and handed back to the queue rather than left
+                    // claimed until its lock lapses.
+                    let mut inflight: HashMap<tokio::task::Id, (ClaimedJob, Arc<AtomicU64>)> =
+                        HashMap::new();
                     for job in claimed {
                         let pool = self.pool.clone();
                         let disp = dispatcher.clone();
@@ -1261,7 +1318,10 @@ impl CronService {
                         let http = self.http.clone();
                         let limiter = self.rate_limiter.clone();
                         let plugin = plugin_name.clone();
-                        set.spawn(async move {
+                        let sink = Arc::new(AtomicU64::new(0));
+                        let job_record = job.clone();
+                        let job_sink = sink.clone();
+                        let handle = set.spawn(async move {
                             run_queue_job(
                                 pool,
                                 disp,
@@ -1271,21 +1331,84 @@ impl CronService {
                                 limiter,
                                 plugin,
                                 job,
+                                job_sink,
                             )
                             .await
                         });
+                        inflight.insert(handle.id(), (job_record, sink));
                     }
 
-                    while let Some(joined) = set.join_next().await {
+                    // Wait for the batch, but not without end. A worker that
+                    // stops executing stops answering to the epoch deadline too,
+                    // and this `await` was the one place a single such job could
+                    // hold the pass — and with it the cron lock — open.
+                    let batch_ceiling = tokio::time::Instant::now()
+                        + self
+                            .job_ceiling
+                            .unwrap_or(Duration::from_secs(budget) + self.abandon_slack);
+                    loop {
+                        let joined =
+                            tokio::time::timeout_at(batch_ceiling, set.join_next_with_id()).await;
                         match joined {
-                            Ok(Ok(outcome)) => stats.record(outcome),
-                            Ok(Err(e)) => {
+                            Ok(Some(Ok((id, Ok(outcome))))) => {
+                                inflight.remove(&id);
+                                stats.record(outcome);
+                            }
+                            Ok(Some(Ok((id, Err(e))))) => {
+                                inflight.remove(&id);
                                 warn!(error = %e, plugin = %plugin_name, queue = %queue_name, "queue job bookkeeping failed");
                                 stats.errors += 1;
                             }
-                            Err(e) => {
+                            Ok(Some(Err(e))) => {
+                                inflight.remove(&e.id());
                                 warn!(error = %e, plugin = %plugin_name, queue = %queue_name, "queue job task panicked");
                                 stats.errors += 1;
+                            }
+                            Ok(None) => break,
+                            Err(_) => {
+                                // Ceiling reached. Hand every job still running
+                                // back to the queue, naming where it was stuck,
+                                // then end the pass so the lock is released.
+                                for (job, sink) in inflight.values() {
+                                    let where_stuck = crate::host::trace::in_flight(
+                                        sink.load(std::sync::atomic::Ordering::Relaxed),
+                                    )
+                                    .map_or_else(
+                                        || "no host call in progress".to_string(),
+                                        |c| c.qualified_name(),
+                                    );
+                                    error!(
+                                        plugin = %plugin_name,
+                                        queue = %queue_name,
+                                        item_id = job.id,
+                                        attempts = job.attempts,
+                                        host_call = %where_stuck,
+                                        "queue job abandoned: it outlasted the drain's ceiling and \
+                                         was handed back to the queue"
+                                    );
+                                    let ceiling = self.job_ceiling.unwrap_or(
+                                        Duration::from_secs(budget) + self.abandon_slack,
+                                    );
+                                    let err = format!(
+                                        "abandoned after {}s in {where_stuck}",
+                                        ceiling.as_secs()
+                                    );
+                                    match mark_job_failed(&self.pool, job, plugin_name, &err).await
+                                    {
+                                        Ok(outcome) => stats.record(outcome),
+                                        Err(e) => {
+                                            warn!(error = %e, plugin = %plugin_name, item_id = job.id, "failed to release an abandoned queue job");
+                                            stats.errors += 1;
+                                        }
+                                    }
+                                }
+                                // Dropping the set aborts what it holds. An abort
+                                // lands at the next await point, so a job waiting
+                                // on I/O stops here; one burning CPU without
+                                // yielding cannot be reclaimed in-process at all,
+                                // and keeps its thread until the process restarts.
+                                drop(set);
+                                return Ok(stats);
                             }
                         }
                     }
