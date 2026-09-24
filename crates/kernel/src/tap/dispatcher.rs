@@ -4,10 +4,11 @@
 //! Errors are logged and skipped, allowing other plugins to continue.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use tracing::{debug, error, warn};
-use wasmtime::{Instance, Store, TypedFunc};
+use wasmtime::{Instance, Store, TypedFunc, UpdateDeadline};
 
 use super::{RequestState, TapHandler, TapRegistry};
 use crate::plugin::{CompiledPlugin, PluginRuntime, PluginState, WasmtimeExt};
@@ -148,19 +149,46 @@ impl TapDispatcher {
         plugin_name: &str,
         state: RequestState,
     ) -> Option<TapResult> {
+        self.dispatch_to_plugin_outcome(tap_name, input_json, plugin_name, state)
+            .await
+            .ok()
+    }
+
+    /// As [`Self::dispatch_to_plugin`], but says *why* a dispatch failed.
+    ///
+    /// The queue drain needs the distinction: a worker cut off at the epoch
+    /// deadline has burned a whole budget of guest CPU and will burn another on
+    /// retry, while an ordinary trap is a failed attempt like any other. The
+    /// drain used to tell them apart by how long the call took, which charged a
+    /// slow provider as though it were a runaway loop.
+    pub async fn dispatch_to_plugin_outcome(
+        &self,
+        tap_name: &str,
+        input_json: &str,
+        plugin_name: &str,
+        state: RequestState,
+    ) -> DispatchOutcome {
         let handlers = self.registry.get_handlers(tap_name);
-        let handler = handlers
-            .iter()
-            .find(|h| h.plugin.info.name == plugin_name)?;
+        let Some(handler) = handlers.iter().find(|h| h.plugin.info.name == plugin_name) else {
+            return DispatchOutcome::NoHandler;
+        };
 
         match self
             .invoke_handler(tap_name, input_json, handler, state)
             .await
         {
-            Ok(output) => Some(TapResult {
+            Ok(output) => DispatchOutcome::Ok(TapResult {
                 plugin_name: plugin_name.to_string(),
                 output,
             }),
+            Err(ExportCallError::CpuExhausted) => {
+                error!(
+                    plugin = %plugin_name,
+                    tap = %tap_name,
+                    "tap invocation cut off: guest used its whole CPU budget"
+                );
+                DispatchOutcome::CpuExhausted
+            }
             Err(e) => {
                 error!(
                     plugin = %plugin_name,
@@ -168,7 +196,7 @@ impl TapDispatcher {
                     error = %e,
                     "tap invocation failed"
                 );
-                None
+                DispatchOutcome::Failed
             }
         }
     }
@@ -180,7 +208,7 @@ impl TapDispatcher {
         input_json: &str,
         handler: &TapHandler,
         state: RequestState,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, ExportCallError> {
         // Background taps may make many network/DB calls and need a longer epoch
         // deadline than request-scoped taps.  Add new long-running background taps
         // to BACKGROUND_TAPS so they receive the extended limit automatically.
@@ -204,12 +232,31 @@ impl TapDispatcher {
         .await
         {
             Ok(output) => Ok(output),
-            // A missing tap export is normal (a plugin may declare it in the
-            // registry but not export it); preserve the historical message.
-            Err(ExportCallError::ExportMissing) => {
-                Err(anyhow::anyhow!("tap '{tap_name}' not exported"))
-            }
-            Err(ExportCallError::Failed(e)) => Err(e),
+            other => other,
+        }
+    }
+}
+
+/// What became of one plugin dispatch, for a caller that must act on the
+/// difference rather than only on success.
+#[derive(Debug)]
+pub enum DispatchOutcome {
+    /// The tap returned.
+    Ok(TapResult),
+    /// No such handler for this plugin and tap.
+    NoHandler,
+    /// The guest was cut off having used its whole CPU budget.
+    CpuExhausted,
+    /// Anything else: a trap, a memory-protocol violation, a missing export.
+    Failed,
+}
+
+impl DispatchOutcome {
+    /// The successful result, discarding why a failure happened.
+    pub fn ok(self) -> Option<TapResult> {
+        match self {
+            Self::Ok(result) => Some(result),
+            _ => None,
         }
     }
 }
@@ -225,8 +272,27 @@ pub(crate) enum ExportCallError {
     /// The requested export is absent (or has the wrong signature) on the
     /// instantiated module.
     ExportMissing,
+    /// The guest used its whole CPU budget and was cut off at the epoch
+    /// deadline.
+    ///
+    /// Distinct from [`Self::Failed`] because the two call for opposite
+    /// bookkeeping: a trap is an ordinary failed attempt that should be retried,
+    /// while a worker that burns its budget will burn it again next time. The
+    /// caller used to tell them apart by how long the call ran, which charged a
+    /// slow provider as though it were a runaway loop.
+    CpuExhausted,
     /// Instantiation or execution failed (trap, memory-protocol violation, etc.).
     Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for ExportCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExportMissing => write!(f, "tap not exported"),
+            Self::CpuExhausted => write!(f, "guest used its whole CPU budget"),
+            Self::Failed(e) => write!(f, "{e:#}"),
+        }
+    }
 }
 
 /// Instantiate `plugin` in a fresh `Store`, resolve the named `export`, and call
@@ -282,6 +348,34 @@ pub(crate) async fn instantiate_and_call_export(
     // incremented by a background thread every second.
     store.set_epoch_deadline(epoch_deadline);
 
+    // F-WALLCLOCK: charge the budget for guest execution, not for waiting.
+    //
+    // The epoch is wall clock, so without this a guest that spent its time
+    // parked in a host call — an AI request, a feed fetch — was billed for the
+    // wait exactly as though it had been computing, and a slow provider looked
+    // identical to a runaway loop. The callback extends the deadline by however
+    // long this call has spent inside host functions since it was last asked,
+    // so only guest execution counts down. When nothing new has been spent
+    // waiting, the guest really is burning CPU, and the deadline stands.
+    let host_call_nanos = store.data().host_call_nanos.clone();
+    let cpu_exhausted = Arc::new(AtomicBool::new(false));
+    let exhausted_flag = cpu_exhausted.clone();
+    let mut credited_secs: u64 = 0;
+    store.epoch_deadline_callback(move |_ctx| {
+        let waited_secs = host_call_nanos.load(Ordering::Relaxed) / 1_000_000_000;
+        if waited_secs > credited_secs {
+            let extra = waited_secs - credited_secs;
+            credited_secs = waited_secs;
+            Ok(UpdateDeadline::Continue(extra))
+        } else {
+            // Nothing new spent waiting: this is guest compute, and it has had
+            // its whole budget. Recorded so the caller is told *why* the call
+            // failed rather than having to infer it from how long it ran.
+            exhausted_flag.store(true, Ordering::Relaxed);
+            Ok(UpdateDeadline::Interrupt)
+        }
+    });
+
     // Instantiate the module against the plugin's own linker (WASM-1): it exposes
     // only the host interfaces the plugin declares (deny-unless-declared).
     let instance = plugin
@@ -301,7 +395,15 @@ pub(crate) async fn instantiate_and_call_export(
     // Allocate input in WASM memory and call the function.
     call_export_function(&instance, &mut store, func, input_json)
         .await
-        .map_err(ExportCallError::Failed)
+        .map_err(|e| {
+            // The epoch callback records CPU exhaustion as it interrupts, so
+            // the reason is known here rather than guessed from the clock.
+            if cpu_exhausted.load(Ordering::Relaxed) {
+                ExportCallError::CpuExhausted
+            } else {
+                ExportCallError::Failed(e)
+            }
+        })
 }
 
 /// Call a resolved export with JSON input.
@@ -549,8 +651,10 @@ mod tests {
         };
         let (res, ()) = tokio::join!(call, bump);
         assert!(
-            matches!(res, Err(ExportCallError::Failed(_))),
-            "spin loop must be interrupted by the epoch deadline"
+            matches!(res, Err(ExportCallError::CpuExhausted)),
+            "spin loop must be interrupted by the epoch deadline, and reported as \
+             CPU exhaustion rather than as an ordinary failure: the caller has to be \
+             able to tell a guest that burned its budget from one that merely waited"
         );
     }
 

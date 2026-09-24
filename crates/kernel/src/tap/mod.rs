@@ -7,7 +7,7 @@ mod dispatcher;
 mod registry;
 mod request_state;
 
+pub use dispatcher::{DispatchOutcome, TapDispatcher, TapResult};
 pub(crate) use dispatcher::{ExportCallError, instantiate_and_call_export};
-pub use dispatcher::{TapDispatcher, TapResult};
 pub use registry::{TapHandler, TapRegistry};
 pub use request_state::{RequestServices, RequestState, UserContext, new_field_access_cache};

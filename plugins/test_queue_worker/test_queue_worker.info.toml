@@ -14,4 +14,8 @@ weight = 0
 # logging import on its error paths; `mail` is what the `"mail"` payload calls,
 # so the suite can see what a plugin sending mail from a queue worker is told.
 [capabilities]
-host_interfaces = ["logging", "queue", "mail"]
+# `db` + `raw_sql` are what the `"slow_host"` payload uses: `SELECT pg_sleep(...)`
+# is a host call that takes real wall-clock time while the guest does nothing,
+# which is the only way to tell a worker that *waited* from one that *burned*.
+host_interfaces = ["logging", "queue", "mail", "db"]
+raw_sql = true

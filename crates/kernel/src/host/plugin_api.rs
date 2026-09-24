@@ -289,6 +289,13 @@ pub(crate) async fn do_invoke(
         Err(ExportCallError::ExportMissing) => {
             return Err(format!("{ERR_FUNCTION_NOT_EXPORTED}: {target}::{function}"));
         }
+        Err(ExportCallError::CpuExhausted) => {
+            // A callee that burns its whole budget is an errored target from the
+            // caller's side; the frozen prefix is unchanged.
+            return Err(format!(
+                "{ERR_TARGET_ERRORED}: {target}::{function} used its whole CPU budget"
+            ));
+        }
         Err(ExportCallError::Failed(e)) => {
             return Err(format!("{ERR_TARGET_ERRORED}: {e:#}"));
         }

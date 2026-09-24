@@ -80,6 +80,23 @@ fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
                 std::hint::spin_loop();
             }
         }
+        Some("slow_host") => {
+            // Wall-clock spent *inside a host call*, with the guest idle
+            // throughout. The kernel's statement timeout caps one call, so the
+            // payload says how many to make.
+            let calls = input
+                .get("calls")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(2);
+            let seconds = input
+                .get("seconds")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(4);
+            for _ in 0..calls {
+                let _ = trovato_sdk::host::query_raw(&format!("SELECT pg_sleep({seconds})"), &[]);
+            }
+            json!({ "status": "ok", "waited": calls * seconds })
+        }
         Some("error") => json!({ "status": "error", "reason": "intentional" }),
         Some("mail") => {
             let code = match trovato_sdk::host::mail_send_to_site_contacts(
