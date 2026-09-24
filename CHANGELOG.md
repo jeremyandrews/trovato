@@ -2,7 +2,23 @@
 
 ## Unreleased
 
-Documentation only. No code changed and no behaviour moved.
+Argus leaves the tree, and two security documents arrive. No kernel code changed
+and no kernel behaviour moved.
+
+Argus, the news-intelligence plugin, now lives in its own repository,
+`jeremyandrews/argus`, pinned to the `v0.104.0` tag and installed as an overlay
+on the released image the way Netgrasp and Ritrovo are. `plugins/argus`,
+`crates/argus-core` and the four `argus_*_test.rs` suites are gone from here; the
+suites went with the code, along with the Argus half of `plugin_api_test.rs`. The
+workspace members, the Dockerfile plugin build, the CI and pre-commit plugin
+builds, the `argus` and `argus-cron` compose services and the Argus section of
+`.env.example` go with them, and so does the `roxmltree` workspace dependency,
+which nothing else used. `plugin_queue_v2_test.rs` used Argus as its second
+queue worker and now uses `trovato_spam`, which has the same property the test
+needs: it answers an unrecognised job with an error value rather than a trap.
+The version map's manifest count drops from 37 to 36. An image built from this
+tree no longer carries `argus`, so a deployment that ran the old compose profile
+installs it from the new repository instead.
 
 `SECURITY.md` at the repository root, which the project did not have. It names
 GitHub's private vulnerability reporting as the channel, sets response time

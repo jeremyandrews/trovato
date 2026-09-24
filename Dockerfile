@@ -29,7 +29,7 @@ RUN cargo build --target wasm32-wasip1 --release \
     -p trovato_page_builder -p trovato_captcha \
     -p trovato_series -p trovato_spam \
     -p trovato_book -p trovato_contact \
-    -p argus -p goose
+    -p goose
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim

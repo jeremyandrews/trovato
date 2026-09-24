@@ -30,9 +30,6 @@ use common::TestApp;
 use uuid::Uuid;
 
 const PLUGIN: &str = "test_plugin_api";
-/// Enabled alongside the fixture so its own `api` routes register, which is
-/// what the consumer-validation test below exercises.
-const ARGUS: &str = "argus";
 const PERM_WRITE: &str = "write test notes";
 
 static APP: std::sync::OnceLock<TestApp> = std::sync::OnceLock::new();
@@ -55,11 +52,9 @@ async fn build_app() -> TestApp {
         .connect(&database_url)
         .await
         .expect("failed to connect for fixture setup");
-    for plugin in [PLUGIN, ARGUS] {
-        trovato_kernel::plugin::status::install_plugin(&pool, plugin, "1.0.0")
-            .await
-            .unwrap_or_else(|e| panic!("failed to install '{plugin}': {e:#}"));
-    }
+    trovato_kernel::plugin::status::install_plugin(&pool, PLUGIN, "1.0.0")
+        .await
+        .unwrap_or_else(|e| panic!("failed to install '{PLUGIN}': {e:#}"));
     pool.close().await;
 
     // Integration tests run with the crate directory as CWD, so `Config`'s
@@ -192,7 +187,7 @@ async fn note_count(app: &TestApp, slug: &str) -> i64 {
 /// Leave the fixture disabled so it does not load in other test binaries.
 async fn disable_plugin(app: &TestApp) {
     sqlx::query("UPDATE plugin_status SET status = 0 WHERE name = ANY($1)")
-        .bind(vec![PLUGIN.to_string(), ARGUS.to_string()])
+        .bind(vec![PLUGIN.to_string()])
         .execute(&app.db)
         .await
         .ok();
@@ -470,96 +465,6 @@ fn a_bearer_authenticated_write_needs_no_csrf_token() {
         assert_eq!(text, "from a token client");
 
         cleanup(app, user).await;
-        disable_plugin(app).await;
-    });
-}
-
-/// **The Argus consumer validation (M3 deviation 5, un-deviated).** An
-/// authenticated reader POSTs an upvote to the real `plugins/argus` route and
-/// reads it back. M3 shipped `argus_reactions` with a schema, indexes, storage
-/// functions and unit tests, and **no writer** — an upvote had nowhere to go.
-///
-/// Runs against the same app: `argus` is `default_enabled`, so its `tap_menu`
-/// entries are registered here too.
-#[test]
-fn an_argus_reader_can_post_a_reaction_and_read_it_back() {
-    common::run_test(async {
-        let app = app();
-
-        let cookies = app
-            .create_and_login_user(
-                "k1argusreader",
-                "correct-horse-battery-staple",
-                "k1a@test.local",
-            )
-            .await;
-        let user = user_id_of(app, "k1argusreader").await;
-        grant_permission(app, user, "react to argus stories").await;
-
-        // A story to react to. Argus stories are Items, so this is one.
-        let story = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO item (id, type, title, fields, status, author_id, created, changed) \
-             VALUES ($1, 'argus_story', 'A story worth an upvote', '{}'::jsonb, 1, $2, 0, 0)",
-        )
-        .bind(story)
-        .bind(user)
-        .execute(&app.db)
-        .await
-        .expect("seed an argus_story item");
-
-        let token = csrf_token(app, &cookies).await;
-        let response = app
-            .request_with_cookies(
-                Request::post(format!("/argus/story/{story}/react"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .header("X-CSRF-Token", &token)
-                    .body(Body::from(r#"{"reaction":"upvote"}"#))
-                    .unwrap(),
-                &cookies,
-            )
-            .await;
-        let status = response.status();
-        let body = json_body(response).await;
-        assert_eq!(status, StatusCode::OK, "the upvote must be served: {body}");
-        assert_eq!(body["reactions"], serde_json::json!(["upvote"]));
-
-        // The row is in Argus's own table.
-        let kind: String = sqlx::query_scalar(
-            "SELECT reaction_type FROM argus_reactions WHERE user_id = $1 AND story_item_id = $2",
-        )
-        .bind(user)
-        .bind(story)
-        .fetch_one(&app.db)
-        .await
-        .expect("the reaction landed in argus_reactions");
-        assert_eq!(kind, "upvote");
-
-        // And the reader reads it back through Argus's own GET route.
-        let response = app
-            .request_with_cookies(
-                Request::get(format!("/argus/story/{story}/reactions"))
-                    .body(Body::empty())
-                    .unwrap(),
-                &cookies,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            json_body(response).await["reactions"],
-            serde_json::json!(["upvote"])
-        );
-
-        sqlx::query("DELETE FROM argus_reactions WHERE user_id = $1")
-            .bind(user)
-            .execute(&app.db)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM item WHERE id = $1")
-            .bind(story)
-            .execute(&app.db)
-            .await
-            .ok();
         disable_plugin(app).await;
     });
 }

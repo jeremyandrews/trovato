@@ -127,7 +127,7 @@ additionally rejects a first keyword in a six entry `DDL_KEYWORDS` list.
 *The known first keyword weakness:* a data modifying CTE (`WITH x AS (DELETE
 ... RETURNING *) SELECT * FROM x`) begins with `WITH`, carries no semicolon, and
 writes. This is not hypothetical: the Argus plugin depends on it
-(`plugins/argus/src/notify_ports.rs:285`). Recorded as BL-61 /
+(`plugins/argus/src/notify_ports.rs:285` in `jeremyandrews/argus`). Recorded as BL-61 /
 G-QUERY-RAW-FIRST-KEYWORD, open, targeted 1.0.x, graded not an escalation
 because `raw_sql` already grants `execute-raw`.
 
@@ -271,8 +271,10 @@ form; the admin route rejecting a private base URL end to end
 posts to those routes, so only the pure function is covered and the wiring is
 not); `save_provider` accepting an unvalidated URL; credentials in a URL; the
 chat path's lack of validation, which is instead **depended on** by
-`argus_pipeline_test.rs` and `argus_notify_test.rs`, so a future fix will
-surface as two confusing integration failures rather than a clear red test.
+`argus_pipeline_test.rs` and `argus_notify_test.rs`, which left this tree with
+Argus for `jeremyandrews/argus`. A future fix will not fail anything here; it
+will surface there, as two confusing integration failures on the first pin
+bump past it, rather than as a clear red test in this repository.
 
 ### 1.3 Authentication
 
@@ -923,7 +925,7 @@ is `e2f6225`. A reviewer following the ledger lands on the wrong change.
 ### 2.3 Friction log and site report findings that are security relevant
 
 The Argus plugin friction logs live in `plugins/argus/M1-FRICTION.md` through
-`M4-FRICTION.md`. The consolidated ledger is `docs/BACKLOG.md`. **The site
+`M4-FRICTION.md` in `jeremyandrews/argus`, where Argus moved after 0.104.0. The consolidated ledger is `docs/BACKLOG.md`. **The site
 report is not in this repository**: it is `docs/REPORT.md` in the sibling
 `jeremyandrews/trovato-site`, 22 findings against v0.101.0 restatused at
 v0.102.0. A reviewer who needs it should ask for that repository.
@@ -1170,7 +1172,7 @@ cargo build --target wasm32-wasip1 --release \
   -p trovato_page_builder -p trovato_captcha \
   -p trovato_series -p trovato_spam \
   -p trovato_book -p trovato_contact \
-  -p argus -p goose
+  -p goose
 
 for w in target/wasm32-wasip1/release/*.wasm; do
   n=$(basename "$w" .wasm); mkdir -p "plugins/$n"; cp "$w" "plugins/$n/";

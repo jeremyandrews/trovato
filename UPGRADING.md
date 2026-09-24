@@ -7,6 +7,26 @@ here needs nothing beyond the ordinary upgrade.
 Each entry says what changed, who it affects, and how to find out whether that
 is you **before** you upgrade.
 
+## Unreleased
+
+### The image no longer ships the `argus` plugin
+
+**Who is affected:** a site that runs Argus from the published image, which is
+what the old `argus` compose profile in this repository did. Find out with
+`SELECT status FROM plugin_status WHERE name = 'argus';`: no row, or a status
+of 0, means this is not you.
+
+**What changed.** Argus moved to its own repository, `jeremyandrews/argus`. An
+image built after this change has no `plugins/argus`, so a site with it enabled
+starts without it: its routes, cron work and queue jobs stop, and its tables and
+data stay exactly where they are.
+
+**What to do.** Install it from its repository as an overlay: append its
+plugin directory to `PLUGINS_DIR`, or use that repository's own
+`docker-compose.yml`, which runs this kernel's published image unmodified. It is
+the same plugin with the same migration files, so migrations the site has
+already applied are not run again.
+
 ## v0.104.0 — 2026-09-24
 
 Four queue and cron changes alter what a running site does with work it has
