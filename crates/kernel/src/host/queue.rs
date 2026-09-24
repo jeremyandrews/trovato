@@ -11,6 +11,8 @@ use anyhow::Result;
 use tracing::warn;
 use wasmtime::Linker;
 
+use super::trace::TracedLinker;
+
 use super::read_string_from_memory;
 use crate::plugin::{PluginState, WasmtimeExt};
 use trovato_sdk::host_errors;
@@ -90,7 +92,7 @@ pub fn register_queue_functions(linker: &mut Linker<PluginState>) -> Result<()> 
     // ABI FROZEN (D-48): signature, error codes (-1..-5), and behavior are
     // byte-identical to v1 — priority 0, no delay. Do not modify; new options
     // ship via `enqueue` below.
-    linker.func_wrap_async(
+    linker.func_wrap_async_traced(
         "trovato:kernel/queue",
         "push",
         |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -148,7 +150,7 @@ pub fn register_queue_functions(linker: &mut Linker<PluginState>) -> Result<()> 
     // code. The plugin_name is injected so plugins cannot impersonate each
     // other; v2 retry/backoff/dead-letter semantics apply server-side.
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/queue",
             "enqueue",
             |mut caller: wasmtime::Caller<'_, PluginState>,

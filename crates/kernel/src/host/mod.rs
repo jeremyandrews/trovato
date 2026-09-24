@@ -14,6 +14,7 @@ mod mail;
 mod plugin_api;
 mod queue;
 mod request_context;
+pub(crate) mod trace;
 mod user;
 mod variables;
 

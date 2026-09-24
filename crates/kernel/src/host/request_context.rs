@@ -5,6 +5,8 @@
 use anyhow::Result;
 use wasmtime::Linker;
 
+use super::trace::HostCallGuard;
+
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::plugin::{PluginState, WasmtimeExt};
 
@@ -22,6 +24,7 @@ pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> R
              out_ptr: i32,
              out_max_len: i32|
              -> i32 {
+                let _trace = HostCallGuard::new(&caller, "trovato:kernel/request-context", "get");
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     return -1;
                 };
@@ -59,6 +62,7 @@ pub fn register_request_context_functions(linker: &mut Linker<PluginState>) -> R
              key_len: i32,
              value_ptr: i32,
              value_len: i32| {
+                let _trace = HostCallGuard::new(&caller, "trovato:kernel/request-context", "set");
                 let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
                     return;
                 };

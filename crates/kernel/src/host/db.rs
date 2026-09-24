@@ -13,6 +13,8 @@ use tracing::warn;
 use trovato_sdk::host_errors;
 use wasmtime::Linker;
 
+use super::trace::TracedLinker;
+
 use crate::plugin::WasmtimeExt;
 
 /// Maximum execution time for plugin SQL queries (5 seconds).
@@ -536,7 +538,7 @@ fn default_asc() -> String {
 pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // select(query_json, out) -> i32 (bytes written or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/db",
             "select",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -577,7 +579,7 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // insert(table, data_json, out) -> i32 (bytes written or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/db",
             "insert",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -630,7 +632,7 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // update(table, data_json, where_json) -> i64 (rows affected or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/db",
             "update",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -682,7 +684,7 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // delete(table, where_json) -> i64 (rows affected or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/db",
             "delete",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -721,7 +723,7 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // query-raw(sql, params_json, out) -> i32 (bytes written or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/db",
             "query-raw",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -784,7 +786,7 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // execute-raw(sql, params_json) -> i64 (rows affected or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/db",
             "execute-raw",
             |mut caller: wasmtime::Caller<'_, PluginState>,

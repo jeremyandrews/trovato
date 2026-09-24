@@ -11,6 +11,8 @@ use trovato_sdk::host_errors;
 use uuid::Uuid;
 use wasmtime::Linker;
 
+use super::trace::TracedLinker;
+
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::models::{CreateItem, Item, UpdateItem};
 use crate::plugin::{PluginState, WasmtimeExt};
@@ -73,7 +75,7 @@ async fn enqueue_embed_for_plugin_item(pool: &sqlx::PgPool, item: &Item) {
 pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // get-item(id, out) -> i32 (bytes written or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/item-api",
             "get-item",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -132,7 +134,7 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // save-item(item_json, out) -> i32 (bytes written or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/item-api",
             "save-item",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -255,7 +257,7 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // delete-item(id) -> i32 (0 = success, negative = error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/item-api",
             "delete-item",
             |mut caller: wasmtime::Caller<'_, PluginState>, (id_ptr, id_len): (i32, i32)| {
@@ -293,7 +295,7 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
     // query-items(query_json, out) -> i32 (bytes written or error)
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/item-api",
             "query-items",
             |mut caller: wasmtime::Caller<'_, PluginState>,

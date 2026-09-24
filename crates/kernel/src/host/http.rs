@@ -42,6 +42,8 @@ use tracing::warn;
 use url::Url;
 use wasmtime::Linker;
 
+use super::trace::{HostCallGuard, TracedLinker};
+
 use crate::plugin::{PluginState, WasmtimeExt};
 use trovato_sdk::host_errors;
 
@@ -103,7 +105,7 @@ const TRANSFER_BUDGET: Duration = Duration::from_millis(60_000);
 /// `trovato:kernel/http`.
 pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/http",
             "request",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -188,7 +190,7 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // int-return convention matches the one-shot `request` (bytes written) — one
     // vocabulary for both HTTP entry points.
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/http",
             "http-open",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -273,7 +275,7 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     // http-read(handle, out_ptr, out_max_len) -> i32: bytes written (0 = EOF),
     // or a negative error code (P11e / D-49).
     linker
-        .func_wrap_async(
+        .func_wrap_async_traced(
             "trovato:kernel/http",
             "http-read",
             |mut caller: wasmtime::Caller<'_, PluginState>,
@@ -324,6 +326,7 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
             "trovato:kernel/http",
             "http-close",
             |mut caller: wasmtime::Caller<'_, PluginState>, handle: i32| {
+                let _trace = HostCallGuard::new(&caller, "trovato:kernel/http", "http-close");
                 if caller.data_mut().http_stream_close(handle as u32) {
                     0
                 } else {
