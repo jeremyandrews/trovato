@@ -1520,3 +1520,108 @@ fn a_job_that_only_waited_is_retried_not_dead_lettered() {
         clean_queue(&pool).await;
     });
 }
+
+// ── Part 4: every job outcome is reported with its duration ──────────────────
+
+/// Shared buffer a `tracing` subscriber writes into, so a test can read what was
+/// actually logged rather than trusting that it was.
+#[derive(Clone, Default)]
+struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn contents(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Install the capturing subscriber once for the whole test binary.
+///
+/// It has to be the *global* subscriber, not a thread-local one: the outcome
+/// line is emitted from the task the drain spawns per job, which runs on a
+/// runtime worker thread, and `set_default` would not reach it.
+static CAPTURE: OnceLock<CapturedLogs> = OnceLock::new();
+
+fn captured_logs() -> &'static CapturedLogs {
+    CAPTURE.get_or_init(|| {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("install the capturing subscriber");
+        logs
+    })
+}
+
+/// Every job outcome must be reported with how long it took.
+///
+/// `elapsed` was measured and then discarded on the success and ordinary-failure
+/// paths, and a succeeded row is deleted outright, so there was no way to answer
+/// "how long do jobs take" without sampling `plugin_queue` from outside and
+/// hoping to catch one mid-flight.
+#[test]
+fn every_job_outcome_is_logged_with_its_duration() {
+    serial(async {
+        let logs = captured_logs();
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        let ok_id = insert_job(&pool, serde_json::json!({"outcome": "ok"}), 0, 5, now()).await;
+        let trap_id = insert_job(&pool, serde_json::json!({"outcome": "trap"}), 0, 5, now()).await;
+
+        let before = logs.contents().len();
+        let cron = cron_with(pool.clone(), dispatcher());
+        cron.drain_plugin_queues().await.unwrap();
+
+        let text = logs.contents()[before..].to_string();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("queue job finished"))
+            .collect();
+
+        for id in [ok_id, trap_id] {
+            let line = lines
+                .iter()
+                .find(|l| l.contains(&format!("item_id={id}")))
+                .unwrap_or_else(|| panic!("no outcome line for job {id}:\n{text}"));
+            assert!(
+                line.contains("elapsed_ms="),
+                "the outcome line for job {id} carries no duration: {line}"
+            );
+            assert!(
+                line.contains("attempt=") && line.contains("queue="),
+                "the outcome line for job {id} does not identify it: {line}"
+            );
+        }
+
+        assert!(
+            lines.iter().any(|l| l.contains("outcome=\"succeeded\"")),
+            "no succeeded outcome was reported:\n{text}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("outcome=\"retried\"")),
+            "no retried outcome was reported:\n{text}"
+        );
+
+        clean_queue(&pool).await;
+    });
+}

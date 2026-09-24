@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Add: every queue job reports what became of it and how long it took.
+
+  `elapsed` was measured on the dispatch path and then thrown away on the
+  success and ordinary-failure paths, and a succeeded row is deleted outright,
+  so "how long do jobs take" could only be answered by sampling `plugin_queue`
+  from outside and hoping to catch a job mid-flight. A stage that had quietly
+  doubled in latency looked exactly like one that had not.
+
+  Every outcome now emits one structured line naming the plugin, the queue, the
+  row, the attempt, the elapsed milliseconds and which outcome it was:
+
+      queue job finished plugin=argus queue=argus_decide item_id=1013
+        attempt=1 elapsed_ms=1561 outcome="succeeded"
+
+  All four outcomes are covered — `succeeded`, `retried`, `dead_lettered`, and
+  the `abandoned` case the drain's ceiling produces, which carries the host call
+  it was abandoned in as well.
+
+  No timing columns were added to `plugin_queue`, and not because the migration
+  would have been awkward: a succeeded row is deleted, so a duration column
+  could only ever retain the failures. That is the biased half of the
+  distribution, and a table that answers the question wrongly is worse than one
+  that does not answer it.
+
 - Fix: a worker's CPU budget counts what the guest executed, not what it waited for.
 
   The epoch deadline is wall clock. A guest parked in a host call — an AI

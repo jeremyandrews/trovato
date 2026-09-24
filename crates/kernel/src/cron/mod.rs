@@ -179,6 +179,17 @@ enum JobOutcome {
     DeadLettered,
 }
 
+impl JobOutcome {
+    /// Stable name for the outcome, for the per-job log line.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Retried => "retried",
+            Self::DeadLettered => "dead_lettered",
+        }
+    }
+}
+
 /// Aggregate outcome of a [`CronService::drain_plugin_queues`] pass.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueueDrainStats {
@@ -308,6 +319,7 @@ async fn run_queue_job(
     http: reqwest::Client,
     rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
     plugin_name: String,
+    queue_name: String,
     job: ClaimedJob,
     invocation_sink: Arc<AtomicU64>,
 ) -> Result<JobOutcome> {
@@ -331,11 +343,13 @@ async fn run_queue_job(
         .runtime()
         .limits()
         .background_tap_epoch_deadline_secs;
+    let started = std::time::Instant::now();
     let outcome = dispatcher
         .dispatch_to_plugin_outcome("tap_queue_worker", &input_json, &plugin_name, state)
         .await;
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    match outcome {
+    let settled = match outcome {
         DispatchOutcome::Ok(_) => {
             mark_job_succeeded(&pool, job.id).await?;
             Ok(JobOutcome::Succeeded)
@@ -351,7 +365,24 @@ async fn run_queue_job(
             let err = "tap_queue_worker failed (trap or error result)";
             mark_job_failed(&pool, &job, &plugin_name, err).await
         }
+    };
+
+    // One line per job, whatever became of it. Before this, `elapsed` was
+    // measured and thrown away on the success and ordinary-failure paths, and a
+    // succeeded row is deleted — so nobody could answer "how long do jobs take"
+    // without sampling the table from outside and hoping to catch one.
+    if let Ok(outcome) = settled.as_ref() {
+        info!(
+            plugin = %plugin_name,
+            queue = %queue_name,
+            item_id = job.id,
+            attempt = job.attempts,
+            elapsed_ms = elapsed_ms,
+            outcome = outcome.as_str(),
+            "queue job finished"
+        );
     }
+    settled
 }
 
 /// Dead-letter a job that spent its entire CPU budget (P11d).
@@ -1308,6 +1339,7 @@ impl CronService {
                         let http = self.http.clone();
                         let limiter = self.rate_limiter.clone();
                         let plugin = plugin_name.clone();
+                        let queue = queue_name.clone();
                         let sink = Arc::new(AtomicU64::new(0));
                         let job_record = job.clone();
                         let job_sink = sink.clone();
@@ -1320,6 +1352,7 @@ impl CronService {
                                 http,
                                 limiter,
                                 plugin,
+                                queue,
                                 job,
                                 job_sink,
                             )
@@ -1332,6 +1365,7 @@ impl CronService {
                     // stops executing stops answering to the epoch deadline too,
                     // and this `await` was the one place a single such job could
                     // hold the pass — and with it the cron lock — open.
+                    let batch_started = std::time::Instant::now();
                     let batch_ceiling = tokio::time::Instant::now()
                         + self
                             .job_ceiling
@@ -1371,8 +1405,10 @@ impl CronService {
                                         plugin = %plugin_name,
                                         queue = %queue_name,
                                         item_id = job.id,
-                                        attempts = job.attempts,
+                                        attempt = job.attempts,
+                                        elapsed_ms = batch_started.elapsed().as_millis(),
                                         host_call = %where_stuck,
+                                        outcome = "abandoned",
                                         "queue job abandoned: it outlasted the drain's ceiling and \
                                          was handed back to the queue"
                                     );
