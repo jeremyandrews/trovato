@@ -7,6 +7,110 @@ here needs nothing beyond the ordinary upgrade.
 Each entry says what changed, who it affects, and how to find out whether that
 is you **before** you upgrade.
 
+## v0.104.0 — 2026-09-24
+
+Four queue and cron changes alter what a running site does with work it has
+already claimed. None of them needs a migration, and none needs a configuration
+change before you upgrade. Read the first two if you run plugin queues.
+
+### A queue now drains at the width it declared, not at its plugin's widest
+
+**Who is affected:** a site running a plugin that declares more than one queue
+in `tap_queue_info` with different `concurrency` values. A plugin with a single
+queue, or with the same width on all of them, sees no change.
+
+**What changed.** The kernel read the **maximum** `concurrency` across a
+plugin's queues, once per plugin, and applied it to a claim that named no queue.
+A plugin declaring `analyze: 4, cluster: 1, summarize: 1` ran all three four
+wide, out of four slots they shared. Each queue now claims within itself and
+drains at its own declared width, still clamped to `QUEUE_CONCURRENCY_CAP`. A
+queue holding rows the plugin never declared drains at width 1.
+
+**What you will notice.** Throughput moves on both sides. A queue that was
+inheriting a larger sibling's width slows to the width it asked for, and a queue
+that was starving behind a sibling's stuck jobs now drains alongside them. If
+you tuned a plugin's declarations while the maximum was the only number that
+mattered, those declarations now mean what they say.
+
+**What to do.** Nothing, unless a queue you relied on running wide was only
+running wide by inheritance. `CronService::resolved_queue_widths` reports the
+width the drain will honor for each queue, which is the answer that did not
+exist before.
+
+### Queue rows that have spent their attempts are retired on the first drain
+
+**Who is affected:** a site whose `plugin_queue` table holds rows that were
+claimed, passed `max_attempts`, and were never given a terminal outcome. If the
+table has none, nothing happens.
+
+**What changed.** `claim_batch` selected on `status`, `next_attempt_at` and
+`locked_until` with no `attempts < max_attempts` term, so a row whose claimer
+died after the bound was handed back to a worker forever, `attempts` climbing
+past its own limit. The bound is now part of the eligibility predicate, and a
+reaper at the head of every drain retires rows that are claimed, past the bound,
+and past their lease.
+
+**What you will notice.** On the first drain after the upgrade, those rows move
+to dead with a `dead_reason` saying the claim lease expired with no terminal
+outcome recorded. They are rows that were already past their limit; what changes
+is that they now have an ending, and stop taking a worker slot on every cycle.
+
+**What to do.** Count them first if you want to know the size of it:
+
+```sql
+SELECT plugin, queue, count(*)
+FROM plugin_queue
+WHERE status = 'claimed'
+  AND attempts >= max_attempts
+  AND locked_until < now()
+GROUP BY plugin, queue;
+```
+
+Crash recovery is unchanged: a job with attempts still on it whose claimer died
+is reclaimed exactly as before.
+
+### A job that burns its whole CPU budget is dead-lettered on the first occurrence
+
+**Who is affected:** a site with a plugin queue job that runs the background tap
+epoch budget (`PLUGIN_BACKGROUND_TAP_DEADLINE_SECS`, default 150) to exhaustion.
+
+**What changed.** Such a job was recorded as an ordinary failed attempt and
+rescheduled, and the retry got the same budget to burn against the same wall. It
+is now dead-lettered at once, whatever `attempts` says, with a reason naming the
+budget.
+
+The counterpart matters as much: the budget now counts only what the guest
+executed. Time parked in a host call — an AI request, a feed fetch — no longer
+counts against it, so a job that is merely waiting on a slow provider is not cut
+off at all. The old wall-clock reckoning could not tell the two apart, and a
+single slow response was enough to lose a job on its first attempt.
+
+**What to do.** Nothing, unless you were relying on retries to carry a job that
+genuinely computes past the budget. Raise `PLUGIN_BACKGROUND_TAP_DEADLINE_SECS`
+for that deployment if so; it is settable per service, and its default is
+unchanged.
+
+### A cron run outlives the client that triggered it
+
+**Who is affected:** a site that pokes `/cron` from a scheduler with a timeout
+shorter than a run — the usual `curl -m 30` in a crontab.
+
+**What changed.** The handler awaited the run inline, so a client hanging up
+dropped the whole run mid-await: claimed rows were left with their tasks aborted
+where they stood, the cron lock was never released, and a leaked heartbeat kept
+renewing it until the process restarted. The route now runs cron on a task of
+its own and awaits that, so a disconnect cancels only the waiting.
+
+**What you will notice.** Your poker's timeout stops meaning what it used to
+mean. `curl -m 30` still returns a timeout on a run that takes longer, but the
+run now finishes, releases its lock and completes its queue bookkeeping instead
+of dying there. A timeout from the poker is no longer evidence that the run
+failed.
+
+**What to do.** Nothing is required. If you alert on the poker's exit status,
+that alert now reports "the run took longer than 30 seconds" rather than "the
+run died", and should be read, or re-tuned, accordingly.
+
 ## v0.103.0 — 2026-09-21
 
 ### `/admin` takes a new `access administration pages` permission

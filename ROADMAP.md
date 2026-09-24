@@ -1,6 +1,6 @@
 # Roadmap
 
-Trovato is at 0.103.0. This page says what stands between that and 1.0, and what
+Trovato is at 0.104.0. This page says what stands between that and 1.0, and what
 comes after. [KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more
 detail; this one is about order and intent. [docs/BACKLOG.md](docs/BACKLOG.md) is
 the complete ledger: every kernel finding recorded by this tree and by the projects

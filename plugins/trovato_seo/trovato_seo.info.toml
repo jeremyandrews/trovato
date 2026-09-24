@@ -1,7 +1,7 @@
 name = "trovato_seo"
 description = "Search engine optimization: meta tags, Open Graph, sitemap.xml, JSON-LD"
-version = "0.103.0"
-api_version = "0.103"
+version = "0.104.0"
+api_version = "0.104"
 dependencies = []
 
 [taps]

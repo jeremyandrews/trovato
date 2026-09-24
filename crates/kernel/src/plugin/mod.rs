@@ -41,7 +41,7 @@ pub use runtime::{CompiledPlugin, PluginConfig, PluginLoadError, PluginRuntime, 
 /// Increment MAJOR when host functions are removed or signatures change (breaking).
 ///
 /// **This tuple is not independent.** It is the project version with the patch
-/// component dropped: kernel `0.103.0` means API `(0, 103)`, and at `1.0.0` it
+/// component dropped: kernel `0.104.0` means API `(0, 104)`, and at `1.0.0` it
 /// becomes `(1, 0)`. There is one version for the whole project and everything
 /// moves together; see `docs/design/Versioning.md`.
 ///
@@ -61,4 +61,4 @@ pub use runtime::{CompiledPlugin, PluginConfig, PluginLoadError, PluginRuntime, 
 /// provenance check: nothing built against the pre-freeze API was ever
 /// released, so no such plugin exists in the wild. Build against the current
 /// SDK and declare the current `api_version`.
-pub const KERNEL_API_VERSION: (u32, u32) = (0, 103);
+pub const KERNEL_API_VERSION: (u32, u32) = (0, 104);
