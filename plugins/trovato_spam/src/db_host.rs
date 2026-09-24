@@ -15,8 +15,8 @@
 //! declares `db_tables = ["comment"]` and calls the structured `update` through
 //! the binding below. The declaration mirrors the SDK's own calling convention
 //! exactly and changes nothing about the frozen contract; the proper fix is an
-//! SDK binding for the structured four, the same gap
-//! `plugins/argus/src/item_host.rs` records for `item-api`.
+//! SDK binding for the structured four, the same gap Argus records for
+//! `item-api` in `plugins/argus/src/item_host.rs` (jeremyandrews/argus).
 
 use serde_json::Value;
 

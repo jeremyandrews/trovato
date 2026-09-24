@@ -67,69 +67,6 @@ services:
       redis:
         condition: service_healthy
 
-  # ---------------------------------------------------------------------------
-  # Argus — Trovato with the news-intelligence plugin installed and running.
-  #
-  #   cp .env.example .env      # then set at least ARGUS_AI_* if you want AI
-  #   docker compose --profile argus up -d
-  #
-  # `plugin install` runs the kernel migrations, then argus's own, then enables
-  # the plugin; only then does the server start. It is idempotent, so a restart
-  # is a no-op and an upgrade applies whatever migrations are new.
-  # ---------------------------------------------------------------------------
-  argus:
-    profiles: ["argus"]
-    image: ghcr.io/jeremyandrews/trovato:nightly
-    build: .
-    restart: unless-stopped
-    ports:
-      - "${ARGUS_PORT:-3002}:3000"
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-trovato}:${POSTGRES_PASSWORD:-trovato}@postgres:5432/${POSTGRES_DB:-trovato}
-      REDIS_URL: redis://redis:6379
-      DATABASE_MAX_CONNECTIONS: "${DATABASE_MAX_CONNECTIONS:-10}"
-      RUST_LOG: "${RUST_LOG:-info,tower_http=info,sqlx=warn}"
-      PORT: "3000"
-      CRON_KEY: "${CRON_KEY:-default-cron-key}"
-    command:
-      - /bin/sh
-      - -c
-      - "./trovato plugin install argus && exec ./trovato serve"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 30s
-
-  # Argus's clock.
-  #
-  # `tap_cron` fires only when something calls the cron route — the kernel runs
-  # no internal scheduler (the "cron cadence is external-only" residual from M1).
-  # Without this container Argus never polls a feed, never runs maintenance and
-  # never raises an operator alert. It is not optional.
-  argus-cron:
-    profiles: ["argus"]
-    image: curlimages/curl:8.11.1
-    restart: unless-stopped
-    environment:
-      CRON_KEY: "${CRON_KEY:-default-cron-key}"
-      ARGUS_CRON_INTERVAL: "${ARGUS_CRON_INTERVAL:-60}"
-    # `|| true` so a single failed poke (a restarting server, a slow migration)
-    # does not kill the loop and stop the pipeline for good.
-    command:
-      - /bin/sh
-      - -c
-      - 'while true; do curl -fsS -m 30 -X POST "http://argus:3000/cron/$$CRON_KEY" >/dev/null || true; sleep "$$ARGUS_CRON_INTERVAL"; done'
-    depends_on:
-      argus:
-        condition: service_healthy
-
   # Trovato dev container — only starts with: docker compose --profile dev up
   # Provides full Rust toolchain for development without native Rust install.
   # Source code is mounted from host; edits are instant, builds use cached volumes.

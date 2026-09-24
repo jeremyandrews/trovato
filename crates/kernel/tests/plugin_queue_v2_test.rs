@@ -32,11 +32,13 @@ use trovato_kernel::tap::{RequestServices, RequestState, TapDispatcher, TapRegis
 const FIXTURE: &str = "test_queue_worker";
 
 /// A second real plugin that exports `tap_queue_worker`, used to prove the
-/// per-plugin cap is measured per-plugin. `argus` returns an error VALUE (not a
-/// trap) for an unrecognized payload, and queue v2 counts a non-trapping return
-/// as success — so its jobs land in `QueueDrainStats::succeeded` alongside the
-/// fixture's, which is exactly the contamination under test.
-const SECOND_WORKER: &str = "argus";
+/// per-plugin cap is measured per-plugin. `trovato_spam` returns an error VALUE
+/// (not a trap) for a job with no `comment_id`, and queue v2 counts a
+/// non-trapping return as success — so its jobs land in
+/// `QueueDrainStats::succeeded` alongside the fixture's, which is exactly the
+/// contamination under test. (This was `argus` until Argus moved to its own
+/// repository; `trovato_spam` has the same property and ships in this tree.)
+const SECOND_WORKER: &str = "trovato_spam";
 
 /// Serializes queue tests at the OS-thread level (see module docs).
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -484,7 +486,7 @@ fn cap_is_measured_per_plugin_not_across_plugins() {
         }
         const SECOND_JOBS: i64 = 5;
         for i in 0..SECOND_JOBS {
-            // Unrecognized payload: argus returns an error value rather than
+            // No `comment_id`: trovato_spam returns an error value rather than
             // trapping, which queue v2 records as a success.
             insert_job_for(&pool, SECOND_WORKER, serde_json::json!({"not_a_stage": i})).await;
         }

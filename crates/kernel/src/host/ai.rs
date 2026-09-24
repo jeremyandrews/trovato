@@ -477,9 +477,9 @@ fn parse_openai_response(body: &str, latency_ms: u64) -> Result<AiResponse, Stri
 ///
 /// `AiResponse` carries no vector field — adding one would break the frozen SDK
 /// type — so the vector travels in `content` as a JSON float array, which is
-/// exactly what a plugin already parses it as (`plugins/argus/src/host_ports.rs`,
-/// `HostProvider::embed`, written against that assumption in M1 and unusable
-/// until now).
+/// exactly what a plugin already parses it as (Argus's `HostProvider::embed`,
+/// `plugins/argus/src/host_ports.rs` in the jeremyandrews/argus repository,
+/// written against that assumption in M1 and unusable until now).
 ///
 /// An embeddings response reports `usage.prompt_tokens` / `usage.total_tokens`
 /// and no completion tokens, so `completion_tokens` is zero rather than absent,

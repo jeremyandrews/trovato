@@ -26,8 +26,8 @@ listed so nobody "fixes" them by hardcoding a number.
 | 1 | `Cargo.toml` | `[workspace.package] version` | `"0.104.0"` |
 | 2 | `crates/kernel/src/plugin/mod.rs` | `KERNEL_API_VERSION` | `(0, 104)` |
 | 3 | `crates/kernel/src/plugin/info_parser.rs` | `default_api_version()` | `"0.104"` |
-| 4 | `plugins/**/*.info.toml` (37 files) | `version` | `"0.104.0"` |
-| 5 | `plugins/**/*.info.toml` (37 files) | `api_version` | `"0.104"` |
+| 4 | `plugins/**/*.info.toml` (36 files) | `version` | `"0.104.0"` |
+| 5 | `plugins/**/*.info.toml` (36 files) | `api_version` | `"0.104"` |
 | 6 | `.github/workflows/docker-publish.yml` | `BASE_VERSION` | `"0.104"` |
 | 7 | `CHANGELOG.md` | new release section | `## v0.104.0` |
 | 8 | `docs/design/Versioning.md` | worked examples | `0.104.0` / `(0, 104)` |

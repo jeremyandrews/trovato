@@ -6,7 +6,6 @@ members = [
     "crates/plugin-sdk",
     "crates/plugin-sdk-macros",
     "crates/test-utils",
-    "crates/argus-core",
     "benchmarks/phase0",
     "benchmarks/load-test",
     "plugins/trovato_blog",
@@ -27,7 +26,6 @@ members = [
     "plugins/trovato_search",
     "plugins/trovato_spam",
     "plugins/trovato_ai",
-    "plugins/argus",
     "plugins/goose",
 "plugins/trovato_seo",
     "plugins/trovato_page_builder",
@@ -74,14 +72,13 @@ members = [
     "plugins/trovato_record_ref",
 ]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
-# Plugin cdylibs (argus, goose) excluded — build with --target wasm32-wasip1
+# Plugin cdylibs (goose) excluded — build with --target wasm32-wasip1
 default-members = [
     "crates/kernel",
     "crates/mcp-server",
     "crates/plugin-sdk",
     "crates/plugin-sdk-macros",
     "crates/test-utils",
-    "crates/argus-core",
     "benchmarks/phase0",
     "benchmarks/load-test",
     "plugins/trovato_blog",
@@ -164,7 +161,6 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 async-stream = "0.3"
 futures-core = "0.3"
-roxmltree = "0.20"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 
 [workspace.lints.clippy]

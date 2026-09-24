@@ -223,8 +223,11 @@ The `plugins-disabled/` directory may contain plugins that require
 additional infrastructure (e.g., external APIs or dedicated databases).
 These are not loaded by default:
 
-- `argus` &mdash; Drupal 6 site monitoring
 - `goose` &mdash; Load testing integration
+
+Argus, the news-intelligence plugin (RSS and Atom ingest, relevance scoring,
+story clustering), is not in this tree: it builds and installs from its own
+repository, `jeremyandrews/argus`, as an overlay on a released kernel.
 
 ## 5. Start the Server
 
