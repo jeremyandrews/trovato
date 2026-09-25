@@ -20,10 +20,10 @@ pub struct PluginInfo {
     /// Human-readable description.
     pub description: String,
 
-    /// Semantic version (e.g., "0.104.0").
+    /// Semantic version, e.g. `"1.2.3"`.
     pub version: String,
 
-    /// Plugin API version compatibility target (e.g., "0.104").
+    /// Plugin API version compatibility target, e.g. `"1.2"`.
     #[serde(default = "default_api_version")]
     pub api_version: String,
 
@@ -387,9 +387,11 @@ fn default_true() -> bool {
 }
 
 fn default_api_version() -> String {
-    // A manifest that omits `api_version` targets the current kernel API. This
-    // string tracks KERNEL_API_VERSION and moves with the project version.
-    "0.104".to_string()
+    // A manifest that omits `api_version` targets the current kernel API, so this
+    // is formatted from KERNEL_API_VERSION rather than written out: there is no
+    // literal here to leave behind at a bump.
+    let (major, minor) = crate::plugin::KERNEL_API_VERSION;
+    format!("{major}.{minor}")
 }
 
 fn default_id_column() -> String {
@@ -628,7 +630,7 @@ impl PluginInfo {
     /// Check if this plugin's declared API version is compatible with the kernel.
     ///
     /// Rule: plugin MAJOR == kernel MAJOR AND plugin MINOR <= kernel MINOR.
-    /// A plugin built for API 0.104 works on a kernel serving API 0.104. A plugin
+    /// A plugin built for an API works on a kernel serving that same API. A plugin
     /// built for a future minor does NOT work on an older kernel, because the
     /// host functions it expects may not exist. A plugin built for a different
     /// major does not work at all (see [`super::KERNEL_API_VERSION`]).
@@ -1033,26 +1035,40 @@ version = "1.0.0"
 
     #[test]
     fn default_api_version_is_the_current_kernel_api() {
-        let toml = r#"
+        // The fixture names the kernel's own version so that it stays a manifest
+        // for the current release without naming a literal that a bump leaves
+        // behind.
+        let toml = format!(
+            r#"
 name = "test_plugin"
 description = "test"
-version = "0.104.0"
-"#;
-        let info: PluginInfo = toml::from_str(toml).unwrap();
+version = "{}"
+"#,
+            env!("CARGO_PKG_VERSION")
+        );
+        let info: PluginInfo = toml::from_str(&toml).unwrap();
         let (major, minor) = super::super::KERNEL_API_VERSION;
         assert_eq!(info.api_version, format!("{major}.{minor}"));
     }
 
     #[test]
     fn explicit_api_version_parses() {
-        let toml = r#"
+        // Built from the kernel's own version for the same reason as the fixture
+        // above: an explicit api_version is what a current plugin declares, and
+        // spelling it out would be one more literal to move.
+        let (major, minor) = super::super::KERNEL_API_VERSION;
+        let api = format!("{major}.{minor}");
+        let toml = format!(
+            r#"
 name = "test_plugin"
 description = "test"
-version = "0.104.0"
-api_version = "0.104"
-"#;
-        let info: PluginInfo = toml::from_str(toml).unwrap();
-        assert_eq!(info.api_version, "0.104");
+version = "{}"
+api_version = "{api}"
+"#,
+            env!("CARGO_PKG_VERSION")
+        );
+        let info: PluginInfo = toml::from_str(&toml).unwrap();
+        assert_eq!(info.api_version, api);
     }
 
     #[test]
@@ -1089,7 +1105,10 @@ api_version = "1.2.3"
 
     #[test]
     fn api_compat_same_version_ok() {
-        let info = make_info("0.104");
+        // The kernel's own API version, built from the constant, so this names no
+        // literal and cannot be left behind at a bump.
+        let (major, minor) = super::super::KERNEL_API_VERSION;
+        let info = make_info(&format!("{major}.{minor}"));
         assert!(info.check_api_compatibility().is_ok());
     }
 
@@ -1097,7 +1116,7 @@ api_version = "1.2.3"
     fn api_compat_older_minor_accepted() {
         // Same major, lower minor: accepted, because the rule is a compatibility
         // gate (does this kernel provide everything the plugin asks for?) and a
-        // kernel at 0.104 provides everything a 0.2-era manifest declared. It is
+        // current kernel provides everything a 0.2-era manifest declared. It is
         // NOT a provenance check; see the KERNEL_API_VERSION docs. Nothing was
         // ever released against the pre-freeze API, so no such plugin exists.
         let info = make_info("0.2");
@@ -1107,8 +1126,10 @@ api_version = "1.2.3"
     #[test]
     fn api_compat_newer_minor_rejected() {
         // A future minor requires a newer kernel: it may call host functions
-        // this kernel does not export.
-        let info = make_info("0.105");
+        // this kernel does not export. One minor above the kernel's own, derived
+        // rather than written, so the pair moves with the project version.
+        let (major, minor) = super::super::KERNEL_API_VERSION;
+        let info = make_info(&format!("{major}.{}", minor + 1));
         let err = info.check_api_compatibility().unwrap_err();
         assert!(err.to_string().contains("requires a newer kernel"));
     }
@@ -1117,7 +1138,7 @@ api_version = "1.2.3"
     fn api_compat_major_mismatch_rejected() {
         // A different major is incompatible in either direction. Once the
         // project reaches 1.0 this is the case that keeps a 1.x plugin off a
-        // 0.104 kernel.
+        // 0.x kernel.
         let info = make_info("1.0");
         let err = info.check_api_compatibility().unwrap_err();
         assert!(err.to_string().contains("Major version mismatch"));

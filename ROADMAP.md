@@ -1,8 +1,11 @@
 # Roadmap
 
-Trovato is at 0.104.0. This page says what stands between that and 1.0, and what
-comes after. [KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more
-detail; this one is about order and intent. [docs/BACKLOG.md](docs/BACKLOG.md) is
+<!-- version:begin -->
+Trovato is at 0.104.0.
+<!-- version:end -->
+This page says what stands between that and 1.0, and what comes after.
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more detail; this one
+is about order and intent. [docs/BACKLOG.md](docs/BACKLOG.md) is
 the complete ledger: every kernel finding recorded by this tree and by the projects
 built on it, verified against the code and classified as blocking 1.0, due in
 1.0.x, or after, and marked where a Ritrovo row waits on it.

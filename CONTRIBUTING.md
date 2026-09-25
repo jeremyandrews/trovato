@@ -1,6 +1,8 @@
 # Contributing to Trovato
 
+<!-- version:begin -->
 Trovato is at 0.104.0 and the work between here and 1.0 is happening in public.
+<!-- version:end -->
 [ROADMAP.md](ROADMAP.md) says what that work is, and the admin screens listed
 there are the most approachable place to start.
 

@@ -4,25 +4,29 @@ Trovato has **one version number**. The kernel, the SDK crates, every plugin,
 every plugin manifest, the plugin API tuple and the Docker tags all carry it,
 and they all move together.
 
+<!-- version:begin -->
 At 0.104.0 the plugin API is `(0, 104)` and every manifest declares
 `api_version = "0.104"`. At 1.0.0 the API becomes `(1, 0)` and every manifest
 declares `"1.0"`. There is no case where one of these numbers moves and the
 others do not.
+<!-- version:end -->
 
 This is a deliberate simplification. Earlier in development there were four
 independent tracks (a kernel version, a plugin API version, an SDK crate version
 and a plugin version) and keeping them straight cost more than the flexibility
-was worth. A reader who knows a site runs Trovato 0.104.0 now knows exactly which
+was worth. A reader who knows which Trovato a site runs now knows exactly which
 plugin API it serves and which SDK its plugins were built against.
 
 ## Where the number lives
 
 The single source is `[workspace.package]` in the root `Cargo.toml`:
 
+<!-- version:begin -->
 ```toml
 [workspace.package]
 version = "0.104.0"
 ```
+<!-- version:end -->
 
 Every in-tree crate inherits it with `version.workspace = true`. No crate in the
 workspace declares its own version. Everything else derives from it, and the
@@ -37,9 +41,13 @@ The project version follows [Semantic Versioning 2.0.0](https://semver.org/):
 - **MINOR**: new features, admin pages, config entities, new host functions and
   taps (backward compatible)
 - **PATCH**: bug fixes, security fixes, performance improvements
+The plugin API tuple is the same version with the patch component dropped,
+declared as `KERNEL_API_VERSION` in `crates/kernel/src/plugin/mod.rs`, where it
+is derived from the crate version rather than written out:
 
-The plugin API tuple is the same version with the patch component dropped:
-`0.104.0` gives `(0, 104)`, declared as `KERNEL_API_VERSION` in
+<!-- version:begin -->
+`0.104.0` gives `(0, 104)`.
+<!-- version:end -->
 `crates/kernel/src/plugin/mod.rs`.
 
 ## Compatibility rule
@@ -51,6 +59,7 @@ Plugin API MAJOR == Kernel API MAJOR
 Plugin API MINOR <= Kernel API MINOR
 ```
 
+<!-- version:begin -->
 With a kernel at API 0.104:
 
 | Plugin API | Compatible? | Reason |
@@ -58,6 +67,7 @@ With a kernel at API 0.104:
 | 0.104 | Yes | Exact match |
 | 0.42 | Yes | Same major, older minor: the kernel provides everything it asks for |
 | 0.105 | No | Needs host functions this kernel may not export |
+<!-- version:end -->
 | 1.0 | No | Major version mismatch |
 
 The check runs before any expensive work (WASM compilation, migrations) and
@@ -75,7 +85,7 @@ and does not change before 1.0.
 Read that alongside how SemVer treats 0.x versions, because the two do not line
 up. Under the 0.x rules a breaking change is permitted by a MINOR bump, so
 `cargo-semver-checks` in the `SDK Semver Gate` CI job **cannot** fail a break
-that moves 0.104 to 0.105. Before 1.0 the freeze is therefore policy, held by
+that moves one MINOR to the next. Before 1.0 the freeze is therefore policy, held by
 review, not by the tool. At 1.0.0 the tooling and the policy agree again, and a
 break requires a MAJOR bump plus a written justification.
 
@@ -86,12 +96,14 @@ starts with a zero does not make it negotiable.
 
 Plugins declare both numbers in `.info.toml`:
 
+<!-- version:begin -->
 ```toml
 name = "my_plugin"
 description = "Example plugin"
 version = "0.104.0"
 api_version = "0.104"
 ```
+<!-- version:end -->
 
 - `version` is the plugin's own version. In-tree plugins carry the project
   version, because they are released as part of Trovato. An out-of-tree plugin
@@ -115,7 +127,7 @@ Deprecation lasts at least one MINOR before removal.
 
 ## Docker images
 
-- **Release tags** (`v0.104.0`): multi-platform (amd64 + arm64), tagged with the
+- **Release tags** (`vX.Y.Z`): multi-platform (amd64 + arm64), tagged with the
   full version, with major.minor, and with `latest`
 - **Nightly builds** (every push to `main`): amd64 only, tagged `nightly`,
   `nightly-<sha>`, and an auto-incrementing version

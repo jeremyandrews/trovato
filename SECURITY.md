@@ -67,10 +67,12 @@ give, or not at all if they prefer. There is no bug bounty.
 Trovato is pre-1.0 and releases roughly weekly. Security fixes land on the
 current minor only, and the upgrade path is forward:
 
+<!-- version:begin -->
 | Version | Supported |
 |---|---|
 | 0.104.x (current) | Yes |
 | 0.103.x and earlier | No: upgrade to the current release |
+<!-- version:end -->
 
 There are no backports to earlier minors before 1.0. `UPGRADING.md` documents
 what each step needs. This policy is deliberately narrow while the plugin
