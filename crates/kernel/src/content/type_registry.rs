@@ -35,6 +35,18 @@ struct ContentTypeRegistryInner {
     types: Cache<String, ContentTypeDefinition>,
 }
 
+/// Name the JSON shape of a value, for diagnostics.
+fn json_shape(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 /// Resolve the title label, normalizing empty strings to None and
 /// falling back to "Title" if no value is provided.
 fn resolve_title_label(primary: Option<&str>, fallback: Option<&str>) -> Option<String> {
@@ -120,7 +132,7 @@ impl ContentTypeRegistry {
                 label: db_type.label.clone(),
                 description: db_type.description.clone().unwrap_or_default(),
                 title_label: db_type.title_label.clone(),
-                fields: self.parse_fields_from_settings(&db_type.settings),
+                fields: self.parse_fields_from_settings(&db_type.type_name, &db_type.settings),
             };
             self.inner.types.insert(db_type.type_name, def);
         }
@@ -139,7 +151,13 @@ impl ContentTypeRegistry {
             has_title: Some(true),
             title_label: resolve_title_label(def.title_label.as_deref(), None),
             plugin: plugin_name.to_string(),
-            settings: Some(serde_json::to_value(&def.fields).context("serialize fields")?),
+            // The object shape `{"fields": [...]}` is the one canonical layout
+            // for this column, and the one `parse_fields_from_settings` reads.
+            // Writing the bare array here is what made every plugin-declared
+            // type come back from the database with zero fields.
+            settings: Some(serde_json::json!({
+                "fields": serde_json::to_value(&def.fields).context("serialize fields")?,
+            })),
         };
 
         ItemType::upsert(&self.inner.pool, input).await?;
@@ -153,12 +171,44 @@ impl ContentTypeRegistry {
         Ok(())
     }
 
-    /// Parse field definitions from ItemType settings JSON.
-    fn parse_fields_from_settings(&self, settings: &serde_json::Value) -> Vec<FieldDefinition> {
-        settings
-            .get("fields")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default()
+    /// Parse field definitions from the canonical `{"fields": [...]}` settings
+    /// object.
+    ///
+    /// Returning an empty `Vec` for a shape this cannot read is what let a
+    /// writer/reader disagreement go unnoticed: a content type with no fields
+    /// and a content type whose fields could not be parsed looked identical,
+    /// in the admin form and in required-field validation alike. An
+    /// unreadable shape is now logged rather than passed off as "no fields".
+    fn parse_fields_from_settings(
+        &self,
+        type_name: &str,
+        settings: &serde_json::Value,
+    ) -> Vec<FieldDefinition> {
+        let Some(obj) = settings.as_object() else {
+            warn!(
+                type_name = %type_name,
+                shape = %json_shape(settings),
+                "item_type.settings is not an object; reading it as having no fields"
+            );
+            return Vec::new();
+        };
+
+        // No "fields" key is legitimate: a type that declares none.
+        let Some(raw) = obj.get("fields") else {
+            return Vec::new();
+        };
+
+        match serde_json::from_value::<Vec<FieldDefinition>>(raw.clone()) {
+            Ok(fields) => fields,
+            Err(e) => {
+                warn!(
+                    type_name = %type_name,
+                    error = %e,
+                    "failed to parse item_type.settings fields; reading it as having no fields"
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Reload all content types from the database into cache.
@@ -173,7 +223,7 @@ impl ContentTypeRegistry {
                 label: db_type.label.clone(),
                 description: db_type.description.clone().unwrap_or_default(),
                 title_label: db_type.title_label.clone(),
-                fields: self.parse_fields_from_settings(&db_type.settings),
+                fields: self.parse_fields_from_settings(&db_type.type_name, &db_type.settings),
             };
             self.inner.types.insert(db_type.type_name, def);
         }
@@ -199,7 +249,7 @@ impl ContentTypeRegistry {
                 label: db_type.label.clone(),
                 description: db_type.description.clone().unwrap_or_default(),
                 title_label: db_type.title_label.clone(),
-                fields: self.parse_fields_from_settings(&db_type.settings),
+                fields: self.parse_fields_from_settings(&db_type.type_name, &db_type.settings),
             };
             self.inner.types.insert(type_name.to_string(), def.clone());
             Ok(Some(def))
@@ -247,7 +297,7 @@ impl ContentTypeRegistry {
         ItemType::upsert(&self.inner.pool, input).await?;
 
         // Update cache (parse fields from settings if present)
-        let fields = self.parse_fields_from_settings(&settings);
+        let fields = self.parse_fields_from_settings(machine_name, &settings);
         let def = ContentTypeDefinition {
             machine_name: machine_name.to_string(),
             label: label.to_string(),
@@ -382,13 +432,19 @@ impl ContentTypeRegistry {
                 .await
                 .context("failed to read item_type settings")?;
 
-        let mut settings = current.unwrap_or_else(|| serde_json::json!({}));
-        if let Some(obj) = settings.as_object_mut() {
-            obj.insert(
-                "fields".to_string(),
-                serde_json::to_value(&def.fields).context("serialize fields")?,
-            );
-        }
+        // Anything that is not an object cannot carry a "fields" key, and
+        // silently leaving it alone is how a field edit used to report success
+        // while writing nothing. Replace it with the canonical object shape,
+        // keeping any other settings keys an object already holds.
+        let mut obj = match current {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        obj.insert(
+            "fields".to_string(),
+            serde_json::to_value(&def.fields).context("serialize fields")?,
+        );
+        let settings = serde_json::Value::Object(obj);
 
         sqlx::query("UPDATE item_type SET settings = $1 WHERE type = $2")
             .bind(&settings)

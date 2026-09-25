@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+Plugin-declared content types get their fields back. `GET /admin/content/add/<type>`
+rendered a title and a Published checkbox and none of the type's declared fields
+for every type registered through `tap_item_info`, and because the same empty
+field list reached `validate_required_fields`, an item saved cleanly with a
+required field left empty.
+
+The root cause was a writer and a reader disagreeing about one column. Two
+shapes were being written to `item_type.settings`: the core seed migration and
+every admin-side writer stored the object `{"fields": [...]}`, while plugin
+registration stored the bare array `[...]`. The reader only understood the
+object shape and returned an empty `Vec` for anything else without a word, so
+`page` rendered its body field while `blog` and every plugin-declared type
+rendered none. The object shape is now the one canonical layout: plugin
+registration writes it, a migration lifts the rows already written as bare
+arrays, and a reader that cannot parse what it finds says so in the log instead
+of passing it off as a type with no fields. The same disagreement also made
+`persist_fields` silently write nothing when it found an array, so adding,
+editing or deleting a field on a plugin-declared type reported success and
+changed nothing; it now normalizes the row instead of skipping the write.
+
 Argus leaves the tree, and two security documents arrive. No kernel code changed
 and no kernel behaviour moved.
 
