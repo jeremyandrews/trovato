@@ -880,8 +880,19 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     if let Some(ref budget_svc) = services.ai_budgets {
                         // Estimate cost (P11c / D-44) from the model + token
                         // counts; None for an unpriced model (tokens-only).
+                        //
+                        // Priced on `resolved.model`, the model this request
+                        // ASKED for, not on `ai_response.model`, the string the
+                        // provider reports having served. Anthropic resolves an
+                        // alias server side, so a request for `claude-haiku-4-5`
+                        // answers as `claude-haiku-4-5-20251001` and matched no
+                        // row in a pricing table keyed by the name the operator
+                        // configured. Every call then logged unpriced, the
+                        // currency cap enforced nothing, and the spend read
+                        // zero while real money was being spent.
                         let cost_estimate = budget_svc
-                            .estimate_cost(
+                            .estimate_call_cost(
+                                &resolved.model,
                                 &ai_response.model,
                                 i64::from(ai_response.usage.prompt_tokens.min(i32::MAX as u32)),
                                 i64::from(ai_response.usage.completion_tokens.min(i32::MAX as u32)),
