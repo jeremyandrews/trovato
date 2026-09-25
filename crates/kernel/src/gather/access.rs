@@ -161,7 +161,7 @@ pub(crate) fn field_projection_map(fields: &[QueryField]) -> Vec<(String, String
     let mut map = Vec::new();
     for field in fields {
         if let Some(path) = field.field_name.strip_prefix("fields.") {
-            let output_key = field.label.clone().unwrap_or_else(|| path.to_string());
+            let output_key = field.result_key().to_string();
             let item_field = path.split('.').next().unwrap_or(path).to_string();
             map.push((output_key, item_field));
         }

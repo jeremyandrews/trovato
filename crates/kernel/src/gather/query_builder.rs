@@ -420,15 +420,12 @@ impl GatherQueryBuilder {
                     .as_deref()
                     .unwrap_or(&self.definition.base_table);
 
-                if field.field_name.starts_with("fields.") {
-                    // JSONB field extraction
-                    let jsonb_path = &field.field_name[7..]; // Strip "fields."
+                if let Some(jsonb_path) = field.field_name.strip_prefix("fields.") {
+                    // JSONB field extraction, aliased to the key a result row
+                    // will carry. `QueryField::result_key` owns that rule so a
+                    // reader of the row cannot drift from this projection.
                     let expr = self.jsonb_extract_expr(table, jsonb_path);
-                    if let Some(ref label) = field.label {
-                        query.expr_as(expr, Alias::new(label));
-                    } else {
-                        query.expr_as(expr, Alias::new(jsonb_path));
-                    }
+                    query.expr_as(expr, Alias::new(field.result_key()));
                 } else {
                     // Regular column
                     query.column((Alias::new(table), Alias::new(&field.field_name)));

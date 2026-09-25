@@ -721,13 +721,16 @@ impl GatherService {
         // captured before `final_definition` is moved into the builder def.
         let is_star = final_definition.fields.is_empty();
         let field_map = access::field_projection_map(&final_definition.fields);
+        // The keys the projection actually produces. A plain column is projected
+        // unaliased, so its key is its field name and NOT its label; taking the
+        // label here meant the row-rebuild below retained a key no row had, and
+        // dropped the column's real one. Any gather that labelled a plain column
+        // silently lost that column's values. `QueryField::result_key` is the
+        // one place that rule lives.
         let output_keys: Vec<String> = final_definition
             .fields
             .iter()
-            .map(|f| match f.field_name.strip_prefix("fields.") {
-                Some(path) => f.label.clone().unwrap_or_else(|| path.to_string()),
-                None => f.label.clone().unwrap_or_else(|| f.field_name.clone()),
-            })
+            .map(|f| f.result_key().to_string())
             .collect();
         let builder_def = QueryDefinition {
             includes: HashMap::new(),

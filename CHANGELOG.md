@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+Gather queries in `table` format render a table. 23 of the 29 queries in a stock
+install use that format, including nine core administrative listings, and every
+one of them failed to render, logged the failure, and fell through to a fallback
+that dumped whatever keys the rows happened to carry. Each page still answered
+200, which is why nothing upstream noticed.
+
+`templates/gather/query--table.html` iterates `columns`, and no kernel code ever
+put `columns` in the render context. It is supplied now: a query that names its
+fields gets those, in declared order and under their labels, while a query that
+names none is a `SELECT base.*`, which is what every core listing is, and takes
+its columns from the rows. The same template also rendered `row.id` bare, and a
+query that names its fields has the injected access columns stripped back out of
+its rows, so `row.id` was absent for exactly those queries and failed the whole
+render; it is now conditional.
+
+Underneath was a third copy of the same disagreement, and that one was losing
+data rather than markup. The query builder projects a plain column unaliased, so
+its key in a result row is its field name, but the row-rebuild in the field
+access pass listed its key as the column's label. Any gather that gave a label
+to a plain column had that column dropped from every row it returned, silently
+and regardless of format. The rule now lives once, as `QueryField::result_key`,
+and the projection, the access pass and the template columns all read it.
+
 AI calls are priced on the model that was requested, so a currency cap enforces
 something again. A run of 132 calls logged every one of them unpriced and left
 the daily spend reading `0` while real money was being spent, with the requested

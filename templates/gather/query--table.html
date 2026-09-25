@@ -11,7 +11,11 @@
     </thead>
     <tbody>
         {% for row in rows %}
-        <tr data-id="{{ row.id }}">
+        {# `id` is not guaranteed: a query that names its fields has the
+           injected access columns stripped back out of its rows, so `row.id`
+           is absent for exactly those queries and rendering it bare failed the
+           whole template. #}
+        <tr{% if row.id %} data-id="{{ row.id }}"{% endif %}>
             {% for column in columns %}
             <td>{{ row[column.field] | default(value="-") }}</td>
             {% endfor %}
