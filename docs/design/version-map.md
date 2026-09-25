@@ -1,73 +1,101 @@
 # Version map
 
-Every place the project version appears, and what it has to say. Trovato has one
-version number (see [Versioning.md](Versioning.md)); this is the list of things
-that have to move when it changes.
+Trovato has one version number (see [Versioning.md](Versioning.md)). This page
+explains how that one number reaches everything that repeats it.
 
+<!-- version:begin -->
 Current version: **0.104.0**, plugin API **(0, 104)**.
+<!-- version:end -->
 
-## Derived automatically (nothing to do)
+That line is generated. So is nearly everything below it: the only thing a
+release changes by hand is `[workspace.package] version` in the root
+`Cargo.toml`, plus a `CHANGELOG.md` entry, which is writing rather than
+bookkeeping.
 
-These read the version at compile time from `[workspace.package]`. They are
-listed so nobody "fixes" them by hardcoding a number.
+## A bump, start to finish
 
-| Location | Reads |
+```sh
+# 1. Edit the one authored copy.
+$EDITOR Cargo.toml            # [workspace.package] version
+
+# 2. Write it everywhere else.
+./scripts/sync-version.sh
+
+# 3. Describe the release in your own words.
+$EDITOR CHANGELOG.md
+```
+
+`cargo test` then fails by name if anything disagrees. There is no list to work
+through and nothing to remember, which is the point: the list used to be
+fifteen rows long and two of those rows were "every one of the plugin
+manifests".
+
+## What derives the version, and how
+
+### The compiler
+
+Nothing to do, and nothing that can go stale. These are listed so that nobody
+"fixes" one by hardcoding a number.
+
+| Location | How |
 |---|---|
 | every in-tree crate | `version.workspace = true` |
+| `crates/kernel/src/plugin/mod.rs` | `KERNEL_API_VERSION` is parsed from `CARGO_PKG_VERSION_MAJOR` and `CARGO_PKG_VERSION_MINOR` by a `const fn` |
+| `crates/kernel/src/plugin/info_parser.rs` | `default_api_version()` formats `KERNEL_API_VERSION` |
+| `crates/kernel/src/plugin/info_parser.rs` | the API compatibility tests build their accepted and rejected versions from `KERNEL_API_VERSION` and the minor above it |
 | `crates/kernel/src/main.rs` | `#[command(version)]`, so `trovato --version` |
 | `crates/kernel/src/cron/mod.rs` | outbound HTTP user-agent, `Trovato/<version>` |
 | `crates/kernel/src/routes/route_metadata.rs` | the OpenAPI document's `info.version` |
 | `crates/mcp-server/src/server.rs` | MCP server identification |
 
-## Changed by hand on every version bump
+The API tuple is the project version with the patch component dropped. It is
+derived rather than declared, so it cannot disagree with the version it is
+supposed to follow.
 
-| # | Location | Field | At 0.104.0 |
-|---|---|---|---|
-| 1 | `Cargo.toml` | `[workspace.package] version` | `"0.104.0"` |
-| 2 | `crates/kernel/src/plugin/mod.rs` | `KERNEL_API_VERSION` | `(0, 104)` |
-| 3 | `crates/kernel/src/plugin/info_parser.rs` | `default_api_version()` | `"0.104"` |
-| 4 | `plugins/**/*.info.toml` (36 files) | `version` | `"0.104.0"` |
-| 5 | `plugins/**/*.info.toml` (36 files) | `api_version` | `"0.104"` |
-| 6 | `.github/workflows/docker-publish.yml` | `BASE_VERSION` | `"0.104"` |
-| 7 | `CHANGELOG.md` | new release section | `## v0.104.0` |
-| 8 | `docs/design/Versioning.md` | worked examples | `0.104.0` / `(0, 104)` |
-| 9 | this file | the "current version" line and the table | `0.104.0` |
-| 10 | `crates/kernel/src/plugin/info_parser.rs` | the two API-compat tests | `"0.104"` accepted, `"0.105"` rejected |
-| 11 | `README.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `KNOWN-ISSUES.md`, `.github/ISSUE_TEMPLATE/config.yml` | prose naming the current release | `0.104.0` |
-| 12 | `crates/kernel/src/plugin/mod.rs`, `crates/kernel/src/plugin/info_parser.rs`, `.github/workflows/ci.yml`, `plugins/trovato_book/src/lib.rs` | comments naming the current API or contract | `0.104` / `(0, 104)` |
-| 13 | `UPGRADING.md` | `## Unreleased` heading, when the release has operator notes | `## v0.104.0` |
-| 14 | `docs/RELEASING.md` | the worked `git tag` example in section 4 | `v0.104.0` / `Trovato 0.104.0` |
-| 15 | `crates/kernel/src/plugin/info_parser.rs` | the manifest fixtures in `default_api_version_is_the_current_kernel_api` and `explicit_api_version_parses` | `"0.104.0"` / `"0.104"` |
+### The publish workflow
 
-Items 2 and 3 must agree with item 1: the API tuple is the project version with
-the patch component dropped. Items 4 and 5 are mechanical across every manifest.
+`.github/workflows/docker-publish.yml` reads the major and minor out of
+`Cargo.toml` in its first step and exports `BASE_VERSION`, which the nightly tag
+arithmetic then uses. The workflow carries no copy of the version.
 
-Item 10 is the one that fails the suite rather than merely reading wrong.
-`api_compat_same_version_ok` and `api_compat_newer_minor_rejected` in
-`info_parser.rs` name minors relative to the kernel: the first has to be the
-current minor, the second one above it. Moving `KERNEL_API_VERSION` without
-moving them leaves a test asserting that the kernel's own API version requires a
-newer kernel, and it fails.
+### `scripts/sync-version.sh`
 
-Items 11 and 12 break nothing. They are how the tree speaks its own version, and
-leaving them stale is how a reader ends up believing the wrong number.
+Run after a bump; takes no arguments, because there is nothing to tell it that
+`Cargo.toml` does not already say.
 
-Item 13 is conditional: `UPGRADING.md` accumulates entries under `## Unreleased`
-the way `CHANGELOG.md` does, and a release that gained none has no heading to
-close. When there is one, it closes to the same version and the same date as the
-changelog section, because the two describe one release and an operator reading
-"Unreleased" on a version they are running cannot tell whether the note applies
-to them.
+| Location | Field |
+|---|---|
+| `plugins/**/*.info.toml` | `version` and `api_version`, in every manifest |
+| `docs/design/Versioning.md` | the five worked examples |
+| this file | the current-version line |
+| `README.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `KNOWN-ISSUES.md` | the sentence naming the current release |
+| `docs/RELEASING.md` | the worked `git tag` example |
+| `SECURITY.md` | the supported-versions table |
+| `.github/ISSUE_TEMPLATE/config.yml` | the line naming the current release |
 
-Item 14 is the `git tag` command in section 4 of `docs/RELEASING.md`, written out
-with a real version rather than the `vX.Y.Z` the rest of that section uses. It is
-the one stale number a reader is most likely to paste into a terminal.
+In the Markdown files the generated text sits between a `version:begin` and a
+`version:end` HTML comment, and only what is between the markers is rewritten.
+Prose outside them is written to be durable: where a sentence used to name the
+current release in passing, it now describes the rule instead, and a comment
+that records what was true when it was written needs no bump and is not on this
+list.
 
-Item 15 is two test fixtures that spell out a manifest at the current version.
-Unlike item 10 they pass whatever version they name, because each asserts against
-the number it just set, so nothing fails when they are missed. They are listed
-because the leftover grep reads them as present tense and a maintainer chasing
-that hit should find the row rather than decide for themselves.
+The plugin manifests are the reason the script exists. The loader reads them at
+run time, so they hold literal strings rather than anything derived, and there
+are dozens of them.
+
+### The test
+
+`crates/kernel/tests/version_sync.rs` walks every manifest and every marker
+block and asserts each one names the current version. One manifest out of step
+fails the suite and names the file. That is what makes the literals on disk safe
+to leave as literals.
+
+## Still a human act
+
+`CHANGELOG.md` gets a new section per release, and `UPGRADING.md` closes its
+`## Unreleased` heading when the release has operator notes. Both are writing,
+not bookkeeping, and neither is generated.
 
 ## Deliberately not the project version
 
@@ -77,8 +105,10 @@ that hit should find the row rather than decide for themselves.
 
 ## Checking the work
 
-The useful grep after a bump looks for the version that was left behind, not the
-new one. Substitute the previous version; at 0.104.0 that was 0.103:
+The test is the check. The grep below stays useful as an independent one,
+because it answers a question the test cannot: whether some prose nobody
+thought to mark up is still talking about the previous release. Substitute the
+version that was just left behind:
 
 ```sh
 grep -rn '0\.103\|(0, 103)' --include='*.rs' --include='*.toml' --include='*.md' \
@@ -94,11 +124,10 @@ The direct check is to build and ask:
 
 ```sh
 cargo build --release
-./target/release/trovato --version          # 0.104.0
-grep '^version' Cargo.toml                  # 0.104.0
+./target/release/trovato --version          # the workspace version
 grep -rh '^api_version' plugins --include='*.info.toml' | sort -u   # one line
 grep -rh '^version' plugins --include='*.info.toml' | sort -u       # one line
 ```
 
-The last two are the useful ones: if either prints more than one line, a manifest
-was missed.
+The last two are the useful ones: if either prints more than one line, a
+manifest is out of step, and the test will already have said which.
