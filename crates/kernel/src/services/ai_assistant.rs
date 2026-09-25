@@ -1049,9 +1049,14 @@ async fn record_usage(
     completion: &ChatCompletion,
 ) {
     let (prompt, completion_tokens, total) = completion.usage;
+    // Priced on the model this request asked for, not on `completion.model`,
+    // which is whatever string the provider reported serving. A provider that
+    // resolves an alias server side answers with a dated variant that matches
+    // no row in an operator-keyed pricing table, and the call logs unpriced.
     let cost_estimate = state
         .ai_budgets()
-        .estimate_cost(
+        .estimate_call_cost(
+            &resolved.model,
             &completion.model,
             i64::from(prompt),
             i64::from(completion_tokens),

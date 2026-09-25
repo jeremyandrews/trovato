@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::models::SiteConfig;
@@ -63,6 +64,40 @@ impl AiPricingConfig {
         let output = (completion_tokens.max(0) as f64) / 1000.0 * price.output_per_1k;
         Some(input + output)
     }
+
+    /// Price a completed call.
+    ///
+    /// Prices on the model that was **requested**, not the one the provider
+    /// reports having served. Anthropic resolves an alias server side, so a
+    /// request for `claude-haiku-4-5` comes back as
+    /// `claude-haiku-4-5-20251001`; pricing on that string matches no row in a
+    /// table operators key by the name they configured, and every call reads
+    /// as free.
+    ///
+    /// `served_model` is taken only to name it in the log when the requested
+    /// model turns out to be unpriced, so the operator can see which of the two
+    /// to add to the table.
+    pub fn cost_for_call(
+        &self,
+        requested_model: &str,
+        served_model: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+    ) -> Option<f64> {
+        let cost = self.cost_for(requested_model, prompt_tokens, completion_tokens);
+        if cost.is_none() {
+            // A silent `None` is indistinguishable from a genuinely free call
+            // once it reaches the log as a NULL cost, and that is what let a
+            // spend cap sit at zero while real money was being spent.
+            warn!(
+                requested_model = %requested_model,
+                served_model = %served_model,
+                "no ai_pricing row for this model; the call is logged with no cost and counts \
+                 nothing towards any currency budget"
+            );
+        }
+        cost
+    }
 }
 
 /// Result of a per-plugin currency (cost) budget check (P11c / D-44).
@@ -76,6 +111,14 @@ pub struct CostBudgetCheckResult {
     pub used: f64,
     /// The action to take if the budget is exceeded.
     pub action: BudgetAction,
+    /// Calls in this period that were logged with no cost, and so contributed
+    /// nothing to `used`.
+    ///
+    /// Non-zero means `used` is a floor rather than the spend, and the caller
+    /// is deciding against incomplete data. Kept separate from `used` rather
+    /// than folded into it: the kernel does not know what an unpriced call
+    /// cost, and inventing a figure would be worse than admitting the gap.
+    pub unpriced_calls: i64,
 }
 
 // =============================================================================
@@ -341,6 +384,27 @@ impl AiTokenBudgetService {
         pricing.cost_for(model, prompt_tokens, completion_tokens)
     }
 
+    /// Estimate the cost of a completed call, pricing on the model that was
+    /// **requested** rather than the one the provider reports having served.
+    ///
+    /// See [`AiPricingConfig::cost_for_call`] for why the distinction matters
+    /// and what an unpriced call does.
+    pub async fn estimate_call_cost(
+        &self,
+        requested_model: &str,
+        served_model: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+    ) -> Option<f64> {
+        let pricing = self.get_pricing_config().await.ok()?;
+        pricing.cost_for_call(
+            requested_model,
+            served_model,
+            prompt_tokens,
+            completion_tokens,
+        )
+    }
+
     // -------------------------------------------------------------------------
     // Per-user overrides (stored in users.data JSONB)
     // -------------------------------------------------------------------------
@@ -564,6 +628,38 @@ impl AiTokenBudgetService {
         Ok(total.unwrap_or(0.0).max(0.0))
     }
 
+    /// How many of a plugin's **background** calls in the period were logged
+    /// with no cost (P11c / D-44).
+    ///
+    /// A NULL `cost_estimate` sums as zero, so a period full of unpriced calls
+    /// and a period with no calls at all produce the same spend figure. A
+    /// currency cap checked against that figure is not being enforced, and the
+    /// only way to say so is to count the rows it cannot see.
+    pub async fn get_plugin_unpriced_calls_for_period(
+        &self,
+        pool: &PgPool,
+        plugin_name: &str,
+        provider_id: &str,
+        since: i64,
+    ) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM ai_usage_log
+            WHERE plugin_name = $1 AND provider_id = $2 AND created >= $3
+              AND user_id IS NULL AND cost_estimate IS NULL
+            "#,
+        )
+        .bind(plugin_name)
+        .bind(provider_id)
+        .bind(since)
+        .fetch_one(pool)
+        .await
+        .context("failed to count unpriced plugin calls for period")?;
+
+        Ok(count)
+    }
+
     // -------------------------------------------------------------------------
     // Budget enforcement
     // -------------------------------------------------------------------------
@@ -736,6 +832,7 @@ impl AiTokenBudgetService {
                 limit: 0.0,
                 used: 0.0,
                 action: BudgetAction::Deny,
+                unpriced_calls: 0,
             });
         };
 
@@ -753,6 +850,7 @@ impl AiTokenBudgetService {
                 limit: 0.0,
                 used: 0.0,
                 action: config.action_on_limit,
+                unpriced_calls: 0,
             });
         }
 
@@ -760,12 +858,28 @@ impl AiTokenBudgetService {
         let used = self
             .get_plugin_cost_for_period(pool, plugin_name, provider_id, since)
             .await?;
+        let unpriced_calls = self
+            .get_plugin_unpriced_calls_for_period(pool, plugin_name, provider_id, since)
+            .await?;
+
+        if unpriced_calls > 0 {
+            warn!(
+                plugin = %plugin_name,
+                provider = %provider_id,
+                unpriced_calls,
+                used,
+                limit,
+                "currency budget checked against incomplete spend: calls in this period were \
+                 logged with no cost and count as zero towards the cap"
+            );
+        }
 
         Ok(CostBudgetCheckResult {
             allowed: used < limit,
             limit,
             used,
             action: config.action_on_limit,
+            unpriced_calls,
         })
     }
 
@@ -947,6 +1061,48 @@ mod tests {
     }
 
     // ---- P11c / D-44 pricing / cost accounting ----
+
+    #[test]
+    fn a_call_is_priced_on_the_requested_model_not_the_served_one() {
+        // An operator prices the name they configured.
+        let mut models = HashMap::new();
+        models.insert(
+            "claude-haiku-4-5".to_string(),
+            ModelPrice {
+                input_per_1k: 0.25,
+                output_per_1k: 1.25,
+                currency: "USD".to_string(),
+            },
+        );
+        let pricing = AiPricingConfig { models };
+
+        // Anthropic resolves the alias and answers as a dated variant.
+        let served = "claude-haiku-4-5-20251001";
+
+        // Pricing on what came back is what made every call read as free.
+        assert_eq!(
+            pricing.cost_for(served, 2_000, 1_000),
+            None,
+            "the served string matches no row; this was the defect"
+        );
+
+        // Pricing on what was asked for gets the right figure.
+        let cost = pricing
+            .cost_for_call("claude-haiku-4-5", served, 2_000, 1_000)
+            .expect("the requested model is priced");
+        assert!((cost - (0.5 + 1.25)).abs() < 1e-9, "got {cost}");
+    }
+
+    #[test]
+    fn an_unpriced_model_yields_no_cost_rather_than_a_zero() {
+        let pricing = AiPricingConfig::default();
+        assert_eq!(
+            pricing.cost_for_call("who-knows", "who-knows-20260101", 1_000, 1_000),
+            None,
+            "an unpriced model must be None, never Some(0.0): a zero is indistinguishable \
+             from a free call once it reaches the log"
+        );
+    }
 
     #[test]
     fn pricing_cost_math_per_row() {

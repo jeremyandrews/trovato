@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+AI calls are priced on the model that was requested, so a currency cap enforces
+something again. A run of 132 calls logged every one of them unpriced and left
+the daily spend reading `0` while real money was being spent, with the requested
+model sitting in the `ai_pricing` table the whole time.
+
+The root cause was the string the pricing lookup was keyed on. `host/ai.rs`
+priced from `ai_response.model`, parsed out of the provider's own response.
+Anthropic resolves an alias server side, so a request for `claude-haiku-4-5`
+comes back as `claude-haiku-4-5-20251001` and matches no row in a table an
+operator keys by the name they configured. `services/ai_assistant.rs` had the
+same defect through `completion.model`. Both now price on the requested model,
+and the resolved string stays in `ai_usage_log.model`, where it says what
+actually ran.
+
+An unpriced call is no longer silent. It is logged with the two model strings,
+so an operator can see which one to add to the pricing table. And because a NULL
+`cost_estimate` sums as zero, a period of unpriced calls and a period of no
+calls produced the same spend figure: a currency cap checked against it was
+enforcing nothing and saying nothing. The cap check now counts the rows it
+cannot see and reports them alongside the spend, so a cap is never quietly
+exceeded. The kernel still refuses to invent a cost for a model it has no price
+for; what changed is that it admits the gap instead of presenting a zero as an
+answer.
+
 Plugin-declared content types get their fields back. `GET /admin/content/add/<type>`
 rendered a title and a Published checkbox and none of the type's declared fields
 for every type registered through `tap_item_info`, and because the same empty
