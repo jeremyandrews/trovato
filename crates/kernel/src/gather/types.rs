@@ -109,6 +109,29 @@ pub struct QueryField {
     pub label: Option<String>,
 }
 
+impl QueryField {
+    /// The key this field takes in a result row.
+    ///
+    /// Rows come back as `row_to_json`, so a row's keys are the SQL column
+    /// aliases. A `fields.`-prefixed field is projected as a JSONB extraction
+    /// aliased to its label when it has one and to the path otherwise, while a
+    /// plain column keeps its own name. A template that wants to read a value
+    /// out of a row has to use the same rule, which is why it lives here rather
+    /// than being spelled out again at each call site.
+    pub fn result_key(&self) -> &str {
+        match self.field_name.strip_prefix("fields.") {
+            Some(path) => self.label.as_deref().unwrap_or(path),
+            None => &self.field_name,
+        }
+    }
+
+    /// The heading this field is displayed under: its label, or its field name
+    /// when it has none.
+    pub fn display_label(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.field_name)
+    }
+}
+
 /// Widget type used to render an exposed filter.
 ///
 /// Each variant controls which HTML control is rendered for the filter in the
@@ -783,6 +806,36 @@ impl GatherResult {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn field(name: &str, label: Option<&str>) -> QueryField {
+        QueryField {
+            field_name: name.to_string(),
+            table_alias: None,
+            label: label.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_plain_column_is_keyed_by_its_name_even_when_it_has_a_label() {
+        // The builder projects a plain column unaliased, so its label never
+        // reaches the row. Reading the row by the label was what dropped a
+        // labelled column's values on the floor.
+        let f = field("title", Some("Conference"));
+        assert_eq!(f.result_key(), "title");
+        assert_eq!(f.display_label(), "Conference");
+    }
+
+    #[test]
+    fn a_jsonb_field_is_keyed_by_its_label_when_it_has_one() {
+        // A `fields.` projection IS aliased, to its label when set.
+        let labelled = field("fields.field_city", Some("City"));
+        assert_eq!(labelled.result_key(), "City");
+        assert_eq!(labelled.display_label(), "City");
+
+        let bare = field("fields.field_city", None);
+        assert_eq!(bare.result_key(), "field_city");
+        assert_eq!(bare.display_label(), "fields.field_city");
+    }
 
     #[test]
     fn query_definition_defaults() {

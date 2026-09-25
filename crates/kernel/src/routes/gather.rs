@@ -439,6 +439,42 @@ pub async fn execute_and_render(
     Ok(Html(page_html))
 }
 
+/// The columns a tabular gather template renders, as `{field, label}` pairs.
+///
+/// `gather/query--table.html` iterates `columns`, and nothing put it in the
+/// context, so every query in `table` format failed to render and fell back to
+/// an untitled dump of whatever keys the rows happened to carry.
+///
+/// A query that names its fields gets those, in the order it declared them,
+/// under their labels. A query that names none is a `SELECT base.*`, which is
+/// what every core administrative listing is, and its columns can only come
+/// from the rows themselves: the first row's keys, which is also what the
+/// non-template fallback has always shown.
+fn gather_columns(query: &GatherQuery, rows: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    if !query.definition.fields.is_empty() {
+        return query
+            .definition
+            .fields
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "field": f.result_key(),
+                    "label": f.display_label(),
+                })
+            })
+            .collect();
+    }
+
+    rows.first()
+        .and_then(serde_json::Value::as_object)
+        .map(|obj| {
+            obj.keys()
+                .map(|key| serde_json::json!({ "field": key, "label": key }))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn render_gather_with_theme(
     state: &AppState,
     query: &GatherQuery,
@@ -461,6 +497,7 @@ fn render_gather_with_theme(
     let mut context = tera::Context::new();
     context.insert("query", query);
     context.insert("rows", &result.items);
+    context.insert("columns", &gather_columns(query, &result.items));
     context.insert("total", &result.total);
     context.insert("page", &result.page);
     context.insert("per_page", &result.per_page);
