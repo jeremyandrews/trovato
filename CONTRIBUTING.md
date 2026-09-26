@@ -80,6 +80,42 @@ runs. A few tests use fixed fixture names and assert exact row counts without
 cleaning up, so they pass the first time and fail the second. See
 KNOWN-ISSUES.md.
 
+## Changelog entries
+
+**Write your entry in its own file, not in `CHANGELOG.md`.** Name it for your
+branch, under `changelog.d/`:
+
+```sh
+echo "changelog.d/$(git rev-parse --abbrev-ref HEAD | tr / -).md"
+```
+
+The body of the file is the entry, copied into `CHANGELOG.md` verbatim when the
+next release folds it in. Write it the way it should read there: prose naming a
+root cause rather than a symptom, at whatever length the change deserves. The
+entries already in `CHANGELOG.md` are the register to match.
+
+This is not ceremony, it is the only way two branches can both add an entry. An
+entry appended to `## Unreleased` lands on the same lines of the same file as
+every other branch's, so the second one to merge conflicts, over a disagreement
+that does not exist. Two fragments are two files.
+
+If the change genuinely needs no entry, say so in the fragment rather than
+leaving it out:
+
+```sh
+echo none > changelog.d/my-branch.md
+```
+
+CI's `Changelog Fragment` job fails a pull request that changes anything under
+`crates/`, `plugins/` or `templates/` and adds neither. Check it before pushing:
+
+```sh
+./scripts/changelog-check.sh
+```
+
+`changelog.d/README.md` has the full format, including the optional `Category:`
+header, and `scripts/changelog-fold.sh` is what the release runs.
+
 ## Coding standards
 
 The full reference is [docs/coding-standards.md](docs/coding-standards.md). The
