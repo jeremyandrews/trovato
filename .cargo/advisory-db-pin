@@ -1,0 +1,9 @@
+# The commit of https://github.com/rustsec/advisory-db that pull request audits
+# run against, with fetching disabled. See scripts/security-audit.sh for why a
+# pull request audits against a pin, and docs/security-audit.md for how and when
+# this line moves.
+#
+# One 40-character commit id, nothing else. Everything above it is commentary.
+#
+# Set 2026-09-26. advisory-db HEAD of 2026-09-25.
+e2111519ba6d14a5da59a7b2e5c8083ae8a37c01

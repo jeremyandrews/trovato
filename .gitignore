@@ -49,3 +49,6 @@ uploads/
 TOOLS.md
 target/
 **/target/
+
+# Advisory database checkout (scripts/security-audit.sh; CI checks it out here)
+/advisory-db/
