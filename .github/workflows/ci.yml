@@ -696,3 +696,27 @@ jobs:
           if [ "$FOUND" -eq 1 ]; then
             echo "::warning::Drupal terminology found. See docs/coding-standards.md for Trovato equivalents."
           fi
+
+  changelog:
+    name: Changelog Fragment
+    runs-on: ubuntu-latest
+    # The entry is the part that gets skipped, because it is the only part not
+    # needed to make the tests pass. This job fails a pull request that changes
+    # crates/, plugins/ or templates/ and adds no file under changelog.d/.
+    #
+    # The escape hatch is a fragment whose whole body is the single word `none`,
+    # not a pull request label: a file travels with the branch, is visible in the
+    # diff a reviewer is already reading, needs no token permissions, and works
+    # the same from a fork and from a local run of the script.
+    #
+    # Pull requests only. A push to main has no base to diff against that would
+    # mean anything here, and the gate has already run on the pull request.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The script diffs against the merge base, which needs the history on
+          # both sides of it.
+          fetch-depth: 0
+      - name: Require a changelog fragment for code changes
+        run: ./scripts/changelog-check.sh "${{ github.event.pull_request.base.sha }}"

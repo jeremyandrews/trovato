@@ -36,10 +36,28 @@ the changelog section and the code all say the same thing.
 Every entry names a root cause, not a symptom. The section heading is
 `## vX.Y.Z — YYYY-MM-DD`, and the date is the day it is tagged.
 
-Entries accumulate under `## Unreleased` as work merges. At release time they
-move into that version's section. If the sweep commit already opened the
-section, fold `Unreleased` into it rather than opening a second one, and restamp
-the date to the day of the tag.
+Entries no longer accumulate under `## Unreleased` as work merges. Each pull
+request writes its own entry to `changelog.d/<branch-name>.md`, so two open
+branches never conflict over the same lines of this file. The release is what
+collects them:
+
+```sh
+scripts/changelog-fold.sh --dry-run          # read what would be written
+scripts/changelog-fold.sh --version X.Y.Z    # write it, and empty changelog.d/
+```
+
+The fold appends the fragments to that version's section, in a deterministic
+order, deletes the fragments it folded, and leaves `changelog.d/` holding nothing
+but its README. Commit the folded entries and the deleted fragments together;
+that is the sweep commit unless the sweep has already landed. On an empty
+`changelog.d/` it exits 0 having changed nothing, so a release script can call it
+without checking first.
+
+Entries written under `## Unreleased` before fragments existed are still sitting
+there, and they release the way they always did: move them into the version's
+section by hand. If the sweep commit already opened that section, fold
+`Unreleased` into it rather than opening a second one, and restamp the date to
+the day of the tag.
 
 ## 3. The gates
 
