@@ -69,7 +69,7 @@ one that will.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --all -- --test-threads=1     # needs Postgres and Redis
-cargo audit
+scripts/security-audit.sh --live        # live fetch: a release gates on today
 cargo semver-checks check-release --manifest-path crates/plugin-sdk/Cargo.toml
 ```
 

@@ -1,0 +1,162 @@
+name: Live Security Audit
+
+# `cargo audit` against a freshly fetched advisory database, on `main`, daily.
+#
+# The pull request audit in ci.yml runs against a pinned advisory database, so a
+# branch's result depends only on that branch (see scripts/security-audit.sh for
+# why). This is the other half, and it is not the weaker one: it fetches live, it
+# sees an advisory the day it is published, and it fails loudly. What it does not
+# do is block a merge, which is exactly why it is allowed to go red for a reason
+# no branch caused.
+#
+# A failure opens an issue naming the advisory and the crate, or comments on the
+# one already open rather than filing a duplicate. A clean run closes an issue
+# that is open, so no open issue means the last run was clean rather than that
+# nobody looked.
+
+on:
+  schedule:
+    # 06:40 UTC daily, deliberately not on the hour: GitHub queues scheduled
+    # workflows and the top of the hour is the most contended minute there is.
+    - cron: '40 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Kept in lock-step with ci.yml's RUST_TOOLCHAIN and rust-toolchain.toml's
+  # channel; dtolnay/rust-toolchain does not read rust-toolchain.toml.
+  RUST_TOOLCHAIN: "1.96.0"
+  CARGO_INCREMENTAL: 0
+  # The label that identifies this workflow's own issue. One open issue at a
+  # time, found by label rather than by guessing at a title.
+  AUDIT_LABEL: security-audit
+
+jobs:
+  audit:
+    name: Live Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      # Prebuilt binary; see the sqlx-cli note in ci.yml's Test job.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Run the live audit
+        id: audit
+        # The job must not stop here: a finding has to reach the issue before the
+        # run goes red, so the exit code is recorded and re-raised at the end.
+        run: |
+          set +e
+          ./scripts/security-audit.sh --live 2>&1 | tee audit.log
+          status="${PIPESTATUS[0]}"
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Name the advisories
+        run: |
+          # A vulnerability block carries no `Warning:` line; an unmaintained,
+          # unsound or yanked block does. Only the vulnerabilities are worth
+          # waking someone for, and they are what the issue names.
+          awk '
+            BEGIN { RS = ""; FS = "\n" }
+            /(^|\n)Crate:/ && !/(^|\n)Warning:/ {
+                crate = id = severity = solution = ""
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^Crate:/)    { crate = $i;    sub(/^Crate:[ \t]*/, "", crate) }
+                    if ($i ~ /^ID:/)       { id = $i;       sub(/^ID:[ \t]*/, "", id) }
+                    if ($i ~ /^Severity:/) { severity = $i; sub(/^Severity:[ \t]*/, "", severity) }
+                    if ($i ~ /^Solution:/) { solution = $i; sub(/^Solution:[ \t]*/, "", solution) }
+                }
+                if (id == "") next
+                line = "- **" id "** in `" crate "`"
+                if (severity != "") line = line ", severity " severity
+                if (solution != "") line = line ". " solution
+                print line
+            }
+          ' audit.log > findings.md
+          if [ ! -s findings.md ]; then
+            echo "The audit failed with no vulnerability block in its output; read the full log below." > findings.md
+          fi
+          cat findings.md
+
+      - name: Open or update the advisory issue
+        if: steps.audit.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "The daily live \`cargo audit\` on \`main\` is failing."
+            echo
+            cat findings.md
+            echo
+            echo "Commit: \`$COMMIT_SHA\`"
+            echo "Run: $RUN_URL"
+            echo
+            echo "**Fix it by upgrading the dependency.** Do not move the pinned"
+            echo "advisory commit in \`.cargo/advisory-db-pin\` past it: that pin is"
+            echo "the floor pull requests audit against, so moving it forward hides"
+            echo "the finding from every branch while leaving it live here. If the"
+            echo "advisory genuinely does not apply to how Trovato uses the crate,"
+            echo "suppress it in \`.cargo/audit.toml\` with the justification and a"
+            echo "review date, per \`docs/security-audit.md\`."
+            echo
+            echo "<details><summary>Full audit output</summary>"
+            echo
+            echo '```'
+            cat audit.log
+            echo '```'
+            echo
+            echo "</details>"
+          } > issue-body.md
+
+          # The label has to exist before it can be filtered on; creating it is
+          # idempotent.
+          gh label create "$AUDIT_LABEL" \
+            --description "Opened by the daily live cargo-audit run" \
+            --color B60205 2>/dev/null || true
+
+          existing="$(gh issue list --label "$AUDIT_LABEL" --state open \
+            --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+            echo "Commented on the open advisory issue #$existing."
+          else
+            gh issue create --title "Live cargo-audit is failing on main" \
+              --label "$AUDIT_LABEL" --body-file issue-body.md
+          fi
+
+      - name: Close the advisory issue when the audit is clean
+        if: steps.audit.outputs.status == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          existing="$(gh issue list --label "$AUDIT_LABEL" --state open \
+            --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --comment \
+              "Live \`cargo audit\` on \`main\` is clean as of \`$COMMIT_SHA\`. Closing; the next failure files a fresh issue."
+            echo "Closed #$existing."
+          else
+            echo "Audit clean, and no advisory issue open."
+          fi
+
+      - name: Fail the run if the audit failed
+        if: steps.audit.outputs.status != '0'
+        run: |
+          echo "Live cargo audit exited ${{ steps.audit.outputs.status }}." >&2
+          exit 1

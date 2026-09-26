@@ -480,6 +480,24 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    # PINNED, deliberately. `cargo audit` fetches the advisory database before it
+    # scans, so a bare run answered a question that changed under it: not "does
+    # this branch have a vulnerable dependency" but "does it have one as of
+    # whenever this job happened to start". Every open branch went red the morning
+    # an advisory landed against a crate none of them had touched, and the only
+    # cure was to rebase and burn another full CI cycle. A red audit had stopped
+    # saying anything about the branch it was attached to.
+    #
+    # This job now audits against the commit recorded in .cargo/advisory-db-pin,
+    # with fetching disabled, so a failure here is a real finding about this
+    # branch's own dependencies and the same commit audited twice gives the same
+    # answer.
+    #
+    # The live check did not go away and was not weakened:
+    # .github/workflows/security-audit.yml fetches live against `main` every day,
+    # fails loudly, and files an issue. The pin cannot rot quietly either — the
+    # script fails on a pin more than 90 days old. See scripts/security-audit.sh
+    # and docs/security-audit.md.
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -491,8 +509,13 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - name: Run security audit
-        run: cargo audit
+      # The script checks out the pinned advisory database itself rather than a
+      # separate actions/checkout step doing it, so CI and a local run are one code
+      # path and there is one place that parses the pin. It also re-checks that the
+      # checkout really is at the pin, so a fetch that landed on something else
+      # fails loudly instead of auditing against a database nobody recorded.
+      - name: Run security audit against the pinned advisory database
+        run: ./scripts/security-audit.sh
 
   semver:
     name: SDK Semver Gate
