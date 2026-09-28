@@ -26,8 +26,8 @@ use trovato_kernel::gather::{
     DisplayFormat, FilterOperator, FilterValue, JoinType, PagerConfig, PagerStyle, QueryContext,
     QueryDefinition, QueryDisplay, QueryField, QueryFilter, QueryRelationship,
 };
-use trovato_kernel::models::{CreateItem, Role};
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
+use trovato_kernel::models::{CreateItem, Role};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
@@ -444,8 +444,7 @@ fn adhoc_gather_refuses_anonymous() {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
-        let json: serde_json::Value =
-            serde_json::from_str(&body).expect("the 403 body is JSON");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("the 403 body is JSON");
         assert!(json.get("error").is_some(), "JSON error body: {body}");
     });
 }
@@ -527,13 +526,8 @@ fn adhoc_gather_allows_superuser() {
             .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
             .await;
         let marker = format!("GADHOC-super-{}", Uuid::now_v7().simple());
-        let (status, body) = post_adhoc(
-            app,
-            &conference_definition(&marker, false),
-            &cookies,
-            &name,
-        )
-        .await;
+        let (status, body) =
+            post_adhoc(app, &conference_definition(&marker, false), &cookies, &name).await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
     });
 }

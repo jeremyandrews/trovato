@@ -3056,7 +3056,10 @@ mod tests {
             ..Default::default()
         };
         let errors = GatherService::validate_definition(&def);
-        assert!(errors.is_empty(), "category_tag join is allowed: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "category_tag join is allowed: {errors:?}"
+        );
     }
 
     #[test]
@@ -3088,7 +3091,14 @@ mod tests {
             "secret column must be refused: {errors:?}"
         );
 
-        for name in ["password", "secret", "token", "token_hash", "client_secret", "reset_token"] {
+        for name in [
+            "password",
+            "secret",
+            "token",
+            "token_hash",
+            "client_secret",
+            "reset_token",
+        ] {
             let def = QueryDefinition {
                 fields: vec![crate::gather::types::QueryField {
                     field_name: name.to_string(),
@@ -3112,7 +3122,10 @@ mod tests {
             };
             let errors = GatherService::validate_definition(&def);
             assert_eq!(
-                errors.iter().filter(|e| e.contains(&format!("'{name}'"))).count(),
+                errors
+                    .iter()
+                    .filter(|e| e.contains(&format!("'{name}'")))
+                    .count(),
                 3,
                 "{name} refused as field, filter and sort: {errors:?}"
             );
