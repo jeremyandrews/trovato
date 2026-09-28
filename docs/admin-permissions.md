@@ -66,9 +66,9 @@ the bulk endpoint.
 
 | Route | Method | Permission |
 |---|---|---|
-| `/admin/people` and all add, edit and delete routes | GET, POST | `administer users` |
-| `/admin/people/roles` and all add, edit and delete routes | GET, POST | `administer users` |
-| `/admin/people/permissions` | GET, POST | `administer users` |
+| `/admin/people` and all add, edit and delete routes | GET, POST | `administer users`; a non-superuser may edit, reset, block or delete only an account whose permissions they all hold, and never a superuser's |
+| `/admin/people/roles` and all add, edit and delete routes | GET, POST | `administer users`; a non-superuser may delete only a role whose permissions they all hold |
+| `/admin/people/permissions` | GET, POST | `administer users`; a non-superuser may grant or revoke only a permission they hold |
 | `/admin/users/{id}/sessions` and its revoke route | GET, POST | `administer users` |
 | `/admin/recovery` | GET, POST | `administer users` |
 
@@ -100,8 +100,32 @@ non-superuser would turn `administer users` into a self-escalation to superuser,
 and would equally let a delegated user administrator revoke the real superusers
 and lock them out. The check is therefore on the field rather than the route:
 only a superuser may set or clear `is_admin`, and for anyone else the stored
-value is preserved whatever the form submitted. Everything else about a user
-stays delegable.
+value is preserved whatever the form submitted.
+
+**One rule covers every screen here: a non-superuser acts only within the
+permissions they hold.** The role checkboxes above were the first place it was
+applied, and it applies to the rest of `/admin/people` the same way. A holder of
+`administer users` who is not a superuser:
+
+- may edit, reset the password of, block or delete an account only when every
+  permission that account holds is one they hold too. A superuser's account is
+  never within reach, since a superuser's authority is not a set of permissions.
+  The edit form is refused with a 403 rather than shown, and so is the submit,
+  before anything about the account changes, roles and password included.
+- may delete a role only when every permission it carries is one they hold,
+  since deleting it takes those permissions from every member.
+- may grant or revoke on the permission grid only the permissions they hold.
+  Any other box is left exactly as it was on every role, and the save still
+  redirects back to the grid.
+
+A superuser is unrestricted, with one exception: **the last active superuser
+cannot be demoted, blocked or deleted** from these screens. A site with no active
+superuser cannot be administered back into having one. Self service account
+deletion has had the same guard; the edit and delete routes here now share it.
+
+The grid also ignores, for everyone, any permission name it did not render. A
+name outside `KERNEL_PERMISSIONS` and the enabled plugins' declared permissions
+can only have been typed into the request, and nothing checks it.
 
 ## Taxonomy
 

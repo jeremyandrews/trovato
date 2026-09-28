@@ -89,6 +89,39 @@ fn edit_body(token: &str, name: &str, mail: &str, role_ids: &[Uuid]) -> String {
     body
 }
 
+/// A delegated user administrator: a non-superuser whose one role grants
+/// `administer users` plus `extra`, logged in.
+///
+/// Returns the session cookies, the username and the user id. The role and the
+/// user are both named `{prefix}_{tag}`.
+async fn login_delegate(
+    app: &TestApp,
+    prefix: &str,
+    tag: &str,
+    extra: &[&str],
+) -> (String, String, Uuid) {
+    let role = Role::create(&app.db, &format!("{prefix}_{tag}"))
+        .await
+        .expect("create role");
+    for permission in std::iter::once(&"administer users").chain(extra) {
+        Role::add_permission(&app.db, role.id, permission)
+            .await
+            .expect("grant");
+    }
+
+    let name = format!("{prefix}_{tag}");
+    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let id = user_id_of(app, &name).await;
+    Role::assign_to_user(&app.db, id, role.id)
+        .await
+        .expect("assign");
+    app.state.permissions().invalidate_user(id);
+    let cookies = app.login(&name, "test-password-123").await;
+
+    (cookies, name, id)
+}
+
 /// An administrator, a target user, and a role holding nothing special.
 async fn fixture(app: &TestApp) -> (String, String, Uuid, Role, String) {
     let tag = Uuid::now_v7().simple().to_string();
@@ -313,26 +346,7 @@ fn a_delegated_administrator_cannot_grant_a_role_beyond_their_own_permissions() 
             .expect("grant");
 
         // A delegate: a non-superuser holding only `administer users`.
-        let delegate_role = Role::create(&app.db, &format!("delegate_{tag}"))
-            .await
-            .expect("create role");
-        Role::add_permission(&app.db, delegate_role.id, "administer users")
-            .await
-            .expect("grant");
-
-        let delegate = format!("delegate_{tag}");
-        app.create_test_user(
-            &delegate,
-            "test-password-123",
-            &format!("{delegate}@example.com"),
-        )
-        .await;
-        let delegate_id = user_id_of(app, &delegate).await;
-        Role::assign_to_user(&app.db, delegate_id, delegate_role.id)
-            .await
-            .expect("assign");
-        app.state.permissions().invalidate_user(delegate_id);
-        let cookies = app.login(&delegate, "test-password-123").await;
+        let (cookies, delegate, delegate_id) = login_delegate(app, "delegate", &tag, &[]).await;
 
         let path = format!("/admin/people/{delegate_id}/edit");
         let token = csrf_token(app, &cookies, &path, "roledelegate").await;
@@ -370,14 +384,8 @@ fn a_delegated_administrator_can_grant_a_role_within_their_permissions() {
         let app = shared_app().await;
         let tag = Uuid::now_v7().simple().to_string();
 
-        let delegate_role = Role::create(&app.db, &format!("delegate2_{tag}"))
-            .await
-            .expect("create role");
-        for permission in ["administer users", "access content"] {
-            Role::add_permission(&app.db, delegate_role.id, permission)
-                .await
-                .expect("grant");
-        }
+        let (cookies, _delegate, _delegate_id) =
+            login_delegate(app, "delegate2", &tag, &["access content"]).await;
 
         // A role holding only something the delegate also holds.
         let modest = Role::create(&app.db, &format!("modest_{tag}"))
@@ -386,20 +394,6 @@ fn a_delegated_administrator_can_grant_a_role_within_their_permissions() {
         Role::add_permission(&app.db, modest.id, "access content")
             .await
             .expect("grant");
-
-        let delegate = format!("delegate2_{tag}");
-        app.create_test_user(
-            &delegate,
-            "test-password-123",
-            &format!("{delegate}@example.com"),
-        )
-        .await;
-        let delegate_id = user_id_of(app, &delegate).await;
-        Role::assign_to_user(&app.db, delegate_id, delegate_role.id)
-            .await
-            .expect("assign");
-        app.state.permissions().invalidate_user(delegate_id);
-        let cookies = app.login(&delegate, "test-password-123").await;
 
         let target = format!("delegate2target_{tag}");
         app.create_test_user(
@@ -445,26 +439,7 @@ fn a_delegated_administrator_cannot_set_the_superuser_flag() {
         let app = shared_app().await;
         let tag = Uuid::now_v7().simple().to_string();
 
-        let delegate_role = Role::create(&app.db, &format!("delegate3_{tag}"))
-            .await
-            .expect("create role");
-        Role::add_permission(&app.db, delegate_role.id, "administer users")
-            .await
-            .expect("grant");
-
-        let delegate = format!("delegate3_{tag}");
-        app.create_test_user(
-            &delegate,
-            "test-password-123",
-            &format!("{delegate}@example.com"),
-        )
-        .await;
-        let delegate_id = user_id_of(app, &delegate).await;
-        Role::assign_to_user(&app.db, delegate_id, delegate_role.id)
-            .await
-            .expect("assign");
-        app.state.permissions().invalidate_user(delegate_id);
-        let cookies = app.login(&delegate, "test-password-123").await;
+        let (cookies, delegate, delegate_id) = login_delegate(app, "delegate3", &tag, &[]).await;
 
         let path = format!("/admin/people/{delegate_id}/edit");
         let token = csrf_token(app, &cookies, &path, "rolesuper").await;
@@ -534,5 +509,351 @@ fn the_cli_role_verbs_assign_and_remove_by_name() {
             .await
             .expect("remove");
         assert!(roles_of(app, target_id).await.is_empty());
+    });
+}
+
+// =============================================================================
+// Acting on an account: the delegation rule applied to people
+// =============================================================================
+//
+// The role checkboxes above only let a delegate hand out what they hold. The
+// same rule applies to the account itself: a delegate may edit, reset, block or
+// delete only someone whose permissions are all among their own, and never a
+// superuser. Without it, `administer users` reaches every account on the site,
+// superusers included, through the password and email fields.
+
+async fn stored_pass(app: &TestApp, user_id: Uuid) -> String {
+    sqlx::query_scalar("SELECT pass FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&app.db)
+        .await
+        .expect("read pass")
+}
+
+async fn stored_mail(app: &TestApp, user_id: Uuid) -> String {
+    sqlx::query_scalar("SELECT mail FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&app.db)
+        .await
+        .expect("read mail")
+}
+
+async fn stored_status(app: &TestApp, user_id: Uuid) -> i16 {
+    sqlx::query_scalar("SELECT status FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&app.db)
+        .await
+        .expect("read status")
+}
+
+async fn exists(app: &TestApp, user_id: Uuid) -> bool {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&app.db)
+        .await
+        .expect("count")
+        == 1
+}
+
+/// A token for a delegate, read from the listing rather than from the target's
+/// edit form: the form is exactly what a refused delegate may not open.
+async fn listing_token(app: &TestApp, cookies: &str, bucket: &str) -> String {
+    csrf_token(app, cookies, "/admin/people", bucket).await
+}
+
+/// A superuser, created directly, with their id.
+async fn superuser(app: &TestApp, prefix: &str, tag: &str) -> (String, Uuid) {
+    let name = format!("{prefix}_{tag}");
+    app.create_test_admin(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let id = user_id_of(app, &name).await;
+    (name, id)
+}
+
+/// A delegate cannot reset a superuser's password.
+#[test]
+fn a_delegate_cannot_change_a_superusers_password() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let (cookies, _delegate, _id) = login_delegate(app, "dlgpass", &tag, &[]).await;
+        let (target, target_id) = superuser(app, "dlgpasssu", &tag).await;
+        let before = stored_pass(app, target_id).await;
+
+        let token = listing_token(app, &cookies, "dlgpass").await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/people/{target_id}/edit"),
+            format!(
+                "{}&is_admin=1&password=taken-over-password-1",
+                edit_body(&token, &target, &format!("{target}@example.com"), &[])
+            ),
+            "dlgpass",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN, "the edit must be refused");
+        assert_eq!(
+            stored_pass(app, target_id).await,
+            before,
+            "a delegate must not change a superuser's password"
+        );
+        app.login(&target, "test-password-123").await;
+    });
+}
+
+/// Nor their email, which is a password reset by another route.
+#[test]
+fn a_delegate_cannot_change_a_superusers_mail() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let (cookies, _delegate, _id) = login_delegate(app, "dlgmail", &tag, &[]).await;
+        let (target, target_id) = superuser(app, "dlgmailsu", &tag).await;
+
+        let token = listing_token(app, &cookies, "dlgmail").await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/people/{target_id}/edit"),
+            format!(
+                "{}&is_admin=1",
+                edit_body(&token, &target, &format!("taken_{tag}@example.com"), &[])
+            ),
+            "dlgmail",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            stored_mail(app, target_id).await,
+            format!("{target}@example.com"),
+            "a delegate must not change a superuser's email"
+        );
+    });
+}
+
+/// Nor block them.
+#[test]
+fn a_delegate_cannot_block_a_superuser() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let (cookies, _delegate, _id) = login_delegate(app, "dlgblock", &tag, &[]).await;
+        let (target, target_id) = superuser(app, "dlgblocksu", &tag).await;
+
+        let token = listing_token(app, &cookies, "dlgblock").await;
+        let body = edit_body(&token, &target, &format!("{target}@example.com"), &[])
+            .replace("&status=1", "")
+            + "&is_admin=1";
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/people/{target_id}/edit"),
+            body,
+            "dlgblock",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            stored_status(app, target_id).await,
+            1,
+            "a delegate must not block a superuser"
+        );
+    });
+}
+
+/// Nor delete them.
+#[test]
+fn a_delegate_cannot_delete_a_superuser() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let (cookies, _delegate, _id) = login_delegate(app, "dlgdel", &tag, &[]).await;
+        let (_target, target_id) = superuser(app, "dlgdelsu", &tag).await;
+
+        let token = listing_token(app, &cookies, "dlgdel").await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/people/{target_id}/delete"),
+            format!("_token={token}"),
+            "dlgdel",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            exists(app, target_id).await,
+            "a delegate must not delete a superuser"
+        );
+    });
+}
+
+/// The rule is about permissions, not only the superuser flag: a delegate
+/// cannot reset the password of someone who holds a permission they lack.
+#[test]
+fn a_delegate_cannot_reset_the_password_of_someone_holding_more_than_they_do() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let (cookies, _delegate, _id) = login_delegate(app, "dlgmore", &tag, &[]).await;
+
+        let site_role = Role::create(&app.db, &format!("dlgmoresite_{tag}"))
+            .await
+            .expect("create role");
+        Role::add_permission(&app.db, site_role.id, "administer site")
+            .await
+            .expect("grant");
+        let target = format!("dlgmoretarget_{tag}");
+        app.create_test_user(
+            &target,
+            "test-password-123",
+            &format!("{target}@example.com"),
+        )
+        .await;
+        let target_id = user_id_of(app, &target).await;
+        Role::assign_to_user(&app.db, target_id, site_role.id)
+            .await
+            .expect("assign");
+        app.state.permissions().invalidate_user(target_id);
+        let before = stored_pass(app, target_id).await;
+
+        let token = listing_token(app, &cookies, "dlgmore").await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/people/{target_id}/edit"),
+            format!(
+                "{}&password=taken-over-password-1",
+                edit_body(
+                    &token,
+                    &target,
+                    &format!("{target}@example.com"),
+                    &[site_role.id]
+                )
+            ),
+            "dlgmore",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            stored_pass(app, target_id).await,
+            before,
+            "a delegate must not reset the password of someone holding `administer site`"
+        );
+    });
+}
+
+/// The guard must not make delegation useless: a delegate still manages an
+/// ordinary account in full.
+#[test]
+fn a_delegate_can_still_manage_an_ordinary_user() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let (cookies, _delegate, _id) = login_delegate(app, "dlgok", &tag, &[]).await;
+
+        let target = format!("dlgoktarget_{tag}");
+        app.create_test_user(
+            &target,
+            "test-password-123",
+            &format!("{target}@example.com"),
+        )
+        .await;
+        let target_id = user_id_of(app, &target).await;
+        let path = format!("/admin/people/{target_id}/edit");
+        let before = stored_pass(app, target_id).await;
+
+        // Edit, with a password reset, through the form the delegate may open.
+        let token = csrf_token(app, &cookies, &path, "dlgok").await;
+        let status = post(
+            app,
+            &cookies,
+            &path,
+            format!(
+                "{}&password=a-new-password-123",
+                edit_body(&token, &target, &format!("new_{tag}@example.com"), &[])
+            ),
+            "dlgok",
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            stored_mail(app, target_id).await,
+            format!("new_{tag}@example.com")
+        );
+        assert_ne!(stored_pass(app, target_id).await, before, "password reset");
+
+        // Block.
+        let token = csrf_token(app, &cookies, &path, "dlgok").await;
+        let body = edit_body(&token, &target, &format!("new_{tag}@example.com"), &[])
+            .replace("&status=1", "");
+        let status = post(app, &cookies, &path, body, "dlgok").await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(stored_status(app, target_id).await, 0, "blocked");
+
+        // Delete.
+        let token = listing_token(app, &cookies, "dlgok").await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/people/{target_id}/delete"),
+            format!("_token={token}"),
+            "dlgok",
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert!(!exists(app, target_id).await, "deleted");
+    });
+}
+
+/// A superuser keeps every power over another superuser.
+#[test]
+fn a_superuser_can_still_edit_and_delete_another_superuser() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let actor = format!("suactor_{tag}");
+        let cookies = app
+            .create_and_login_admin(&actor, "test-password-123", &format!("{actor}@example.com"))
+            .await;
+        let (target, target_id) = superuser(app, "sutarget", &tag).await;
+        let path = format!("/admin/people/{target_id}/edit");
+        let before = stored_pass(app, target_id).await;
+
+        let token = csrf_token(app, &cookies, &path, "suactor").await;
+        let status = post(
+            app,
+            &cookies,
+            &path,
+            format!(
+                "{}&is_admin=1&password=a-new-password-123",
+                edit_body(&token, &target, &format!("su_new_{tag}@example.com"), &[])
+            ),
+            "suactor",
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            stored_mail(app, target_id).await,
+            format!("su_new_{tag}@example.com")
+        );
+        assert_ne!(stored_pass(app, target_id).await, before);
+
+        let token = listing_token(app, &cookies, "suactor").await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/people/{target_id}/delete"),
+            format!("_token={token}"),
+            "suactor",
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert!(!exists(app, target_id).await);
     });
 }
