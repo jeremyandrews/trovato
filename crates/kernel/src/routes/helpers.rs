@@ -872,14 +872,31 @@ pub async fn get_user_context(session: &Session, state: &AppState) -> UserContex
     // Both branches load a real user and go through the same builder: the
     // session user, or the anonymous user row that carries the anonymous role's
     // permissions.
-    let user = match user_id {
-        Some(id) => crate::models::User::find_by_id(state.db(), id).await.ok(),
-        None => crate::models::User::find_by_id(state.db(), Uuid::nil())
-            .await
-            .ok(),
+    let Some(id) = user_id else {
+        return anonymous_user_context(state).await;
     };
+    match crate::models::User::find_by_id(state.db(), id)
+        .await
+        .ok()
+        .flatten()
+    {
+        Some(user) => user_context_for(state, &user).await,
+        None => UserContext::anonymous(),
+    }
+}
 
-    match user.flatten() {
+/// The context of a visitor with no session user: the anonymous user row with
+/// the anonymous role's real permissions.
+///
+/// This is what [`get_user_context`] returns for a request without a login, so a
+/// handler asking "could an anonymous visitor see this too?" gets exactly the
+/// answer an anonymous request would.
+pub async fn anonymous_user_context(state: &AppState) -> UserContext {
+    match crate::models::User::find_by_id(state.db(), Uuid::nil())
+        .await
+        .ok()
+        .flatten()
+    {
         Some(user) => user_context_for(state, &user).await,
         None => UserContext::anonymous(),
     }

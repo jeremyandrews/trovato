@@ -10,8 +10,13 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use tower_sessions::Session;
 
+use crate::routes::file::served_file_cache_control;
 use crate::state::AppState;
+
+/// Public cache lifetime for a derivative anyone may fetch (one year).
+const PUBLIC_MAX_AGE: u32 = 31_536_000;
 
 /// Create the image style routes.
 pub fn router() -> Router<AppState> {
@@ -47,17 +52,37 @@ fn validate_image_path(path: &str) -> bool {
 }
 
 /// GET /files/styles/{style_name}/{path} — serve or generate image derivative.
+///
+/// `path` names the original upload (its storage URI after `local://`). Access
+/// is decided against that original on every request, before the disk cache is
+/// read, so a derivative is servable exactly when its original is.
 async fn serve_derivative(
     State(state): State<AppState>,
+    session: Session,
     Path((style_name, file_path)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    // Invalid paths are 404 like a denied file, so a malformed spelling reveals
+    // nothing the plain file route would not.
     if !validate_image_path(&file_path) || !validate_image_path(&style_name) {
-        return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+        return StatusCode::NOT_FOUND.into_response();
     }
 
     let Some(image_service) = state.image_styles() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "Image styles not enabled").into_response();
     };
+
+    let original_uri = format!("local://{file_path}");
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    match state.items().can_serve_file(&original_uri, &viewer).await {
+        Ok(true) => {}
+        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, path = %file_path, "failed to authorize derivative access");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+    let cache_control =
+        served_file_cache_control(&state, &original_uri, &viewer, PUBLIC_MAX_AGE).await;
 
     // Try reading from disk cache directly (avoids TOCTOU race with separate exists + read)
     let cache_path = image_service.cache_path(&style_name, &file_path);
@@ -68,10 +93,7 @@ async fn serve_derivative(
                 StatusCode::OK,
                 [
                     (header::CONTENT_TYPE, content_type),
-                    (
-                        header::CACHE_CONTROL,
-                        "public, max-age=31536000".to_string(),
-                    ),
+                    (header::CACHE_CONTROL, cache_control),
                 ],
                 Body::from(data),
             )
@@ -104,7 +126,7 @@ async fn serve_derivative(
     };
 
     // Load original file from FileStorage
-    let original = state.files().load_file_data(&file_path).await;
+    let original = state.files().load_file_data(&original_uri).await;
     let original = match original {
         Ok(Some(data)) => data,
         Ok(None) => {
@@ -157,10 +179,7 @@ async fn serve_derivative(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, content_type),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=31536000".to_string(),
-            ),
+            (header::CACHE_CONTROL, cache_control),
         ],
         Body::from(derivative),
     )

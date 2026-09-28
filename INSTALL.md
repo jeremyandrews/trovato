@@ -84,6 +84,16 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 `.env.example` is the fuller reference, including the `POSTGRES_*` and
 `REDIS_PORT` settings that only `docker compose` reads.
 
+### Serving uploaded files
+
+Never point a web server, reverse proxy static location or CDN origin at
+`UPLOADS_DIR`. It holds every upload in one tree, including files attached only
+to unpublished or restricted content, and the image style derivatives generated
+from them under `UPLOADS_DIR/styles/`. The kernel decides access for each file
+against the content that references it, so every file must be fetched through
+the kernel's `/files/` routes. A proxy in front of the kernel may cache what the
+kernel marks `public`; responses it marks `private, no-store` must not be kept.
+
 ### Rate Limits
 
 Every request is counted against one bucket, chosen by its path and method, and

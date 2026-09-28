@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::storage::FileStorage;
+use crate::models::stage::LIVE_STAGE_ID;
 
 /// Maximum file size (10 MB).
 pub const MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
@@ -34,6 +35,27 @@ pub const ALLOWED_MIME_TYPES: &[&str] = &[
     "application/zip",
     "application/gzip",
 ];
+
+/// Which files a media listing may include.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaScope {
+    /// Every file: for viewers who administer files.
+    All,
+    /// Files this user uploaded, plus files referenced by at least one
+    /// published item on the live stage.
+    VisibleTo(Uuid),
+}
+
+/// The SQL predicate for [`MediaScope::VisibleTo`], binding the viewer's id at
+/// `$first` and the live stage id at `$first + 1`.
+fn media_scope_clause(first: u8) -> String {
+    let stage = first + 1;
+    format!(
+        " AND (owner_id = ${first} OR EXISTS (\
+         SELECT 1 FROM file_reference fr JOIN item i ON i.id = fr.item_id \
+         WHERE fr.file_id = file_managed.id AND i.status = 1 AND i.stage_id = ${stage}))"
+    )
+}
 
 /// File status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,13 +371,15 @@ impl FileService {
     ///
     /// `mime_prefix` filters to files whose MIME type starts with the given
     /// string (e.g. `"image/"` for all images). `search` does a
-    /// case-insensitive filename LIKE match. Both filters are AND-combined
+    /// case-insensitive filename LIKE match. `scope` limits the rows to what
+    /// the viewer may see (see [`MediaScope`]). All filters are AND-combined
     /// with an optional status filter.
     pub async fn list_filtered_media(
         &self,
         status: Option<FileStatus>,
         mime_prefix: Option<&str>,
         search: Option<&str>,
+        scope: MediaScope,
         sort: &str,
         limit: i64,
         offset: i64,
@@ -378,6 +402,10 @@ impl FileService {
         if search.is_some() {
             sql.push_str(&format!(" AND filename ILIKE ${param_idx}"));
             param_idx += 1;
+        }
+        if matches!(scope, MediaScope::VisibleTo(_)) {
+            sql.push_str(&media_scope_clause(param_idx));
+            param_idx += 2;
         }
 
         let order = match sort {
@@ -403,6 +431,9 @@ impl FileService {
             let like_pattern = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
             query = query.bind(like_pattern);
         }
+        if let MediaScope::VisibleTo(viewer_id) = scope {
+            query = query.bind(viewer_id).bind(LIVE_STAGE_ID);
+        }
         query = query.bind(limit).bind(offset);
 
         let rows = query
@@ -421,6 +452,7 @@ impl FileService {
         status: Option<FileStatus>,
         mime_prefix: Option<&str>,
         search: Option<&str>,
+        scope: MediaScope,
     ) -> Result<i64> {
         let mut sql = String::from("SELECT COUNT(*) FROM file_managed WHERE 1=1");
         let mut param_idx: u8 = 1;
@@ -435,8 +467,10 @@ impl FileService {
         }
         if search.is_some() {
             sql.push_str(&format!(" AND filename ILIKE ${param_idx}"));
-            // param_idx not needed after this but keep for consistency
-            let _ = param_idx;
+            param_idx += 1;
+        }
+        if matches!(scope, MediaScope::VisibleTo(_)) {
+            sql.push_str(&media_scope_clause(param_idx));
         }
 
         let mut query = sqlx::query_scalar::<_, i64>(&sql);
@@ -451,6 +485,9 @@ impl FileService {
         if let Some(q) = search {
             let like_pattern = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
             query = query.bind(like_pattern);
+        }
+        if let MediaScope::VisibleTo(viewer_id) = scope {
+            query = query.bind(viewer_id).bind(LIVE_STAGE_ID);
         }
 
         let count = query
