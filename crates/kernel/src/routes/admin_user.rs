@@ -16,8 +16,10 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
-    render_not_found, render_server_error, require_csrf, require_permission, validate_password,
+    render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
+    validate_password,
 };
+use super::user_delete::blocks_last_admin;
 
 /// User form data.
 #[derive(Debug, Deserialize)]
@@ -78,6 +80,113 @@ struct PermissionFormData {
     form_build_id: String,
     #[serde(flatten)]
     permissions: std::collections::HashMap<String, String>,
+}
+
+// =============================================================================
+// Delegation
+// =============================================================================
+
+/// What an actor may hand out, take away, or act on through these screens.
+///
+/// `administer users` is a grantable permission, and everything these screens
+/// write is made of permissions: a role carries them, an account holds them, the
+/// grid assigns them. So one rule covers all of it: a non-superuser may act only
+/// within the permissions they already hold, and can hand out what they have
+/// and no more. A superuser is unrestricted, as they are everywhere else.
+///
+/// The rule is applied to a role's membership ([`apply_role_membership`]), to a
+/// role's deletion ([`delete_role`]), to each box on the permission grid
+/// ([`save_permissions`]), and to an account ([`may_act_on`]). It lives here, in
+/// [`Authority::covers`], so the four cannot drift apart.
+enum Authority {
+    /// A superuser.
+    Unrestricted,
+    /// Anyone else: exactly the permissions they hold.
+    Holds(std::collections::HashSet<String>),
+}
+
+impl Authority {
+    /// The actor's authority, loaded once per request.
+    ///
+    /// An error is returned rather than an empty set so that every caller has
+    /// to decide, visibly, to refuse.
+    async fn of(state: &AppState, actor: &User) -> anyhow::Result<Self> {
+        if actor.is_admin {
+            return Ok(Self::Unrestricted);
+        }
+        Ok(Self::Holds(
+            state.permissions().user_permissions(actor).await?,
+        ))
+    }
+
+    /// Whether every one of `permissions` is within this authority.
+    fn covers<'a>(&self, permissions: impl IntoIterator<Item = &'a String>) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::Holds(held) => permissions.into_iter().all(|p| held.contains(p)),
+        }
+    }
+}
+
+/// Whether `actor` may edit, reset, block or delete `target`.
+///
+/// The [`Authority`] rule applied to a person instead of a role: a superuser may
+/// act on anyone; nobody else may act on a superuser, whose authority is not a
+/// set of permissions at all; otherwise the actor must hold every permission the
+/// target holds. Without this, `administer users` reached every account on the
+/// site through the password and email fields, superusers included.
+///
+/// Fails closed: a permission set that cannot be loaded is a refusal.
+async fn may_act_on(state: &AppState, actor: &User, target: &User) -> bool {
+    if actor.is_admin {
+        return true;
+    }
+    if target.is_admin {
+        return false;
+    }
+
+    let authority = match Authority::of(state, actor).await {
+        Ok(authority) => authority,
+        Err(e) => {
+            tracing::error!(error = %e, actor = %actor.id, "failed to load the actor's permissions");
+            return false;
+        }
+    };
+    match state.permissions().user_permissions(target).await {
+        Ok(target_permissions) => authority.covers(&target_permissions),
+        Err(e) => {
+            tracing::error!(error = %e, target = %target.id, "failed to load the target's permissions");
+            false
+        }
+    }
+}
+
+/// Whether an edit takes an active superuser out of that role, by clearing the
+/// flag or by blocking the account.
+///
+/// Only the edit's effect on the superuser population is decided here; whether
+/// that leaves the site with none is [`blocks_last_admin`], the same rule self
+/// service account deletion uses.
+fn demotes_active_superuser(
+    was_admin: bool,
+    was_status: i16,
+    is_admin_after: bool,
+    status_after: i16,
+) -> bool {
+    was_admin && was_status == 1 && (!is_admin_after || status_after != 1)
+}
+
+/// Whether the site can afford to lose one active superuser.
+///
+/// Fails closed: a count that cannot be read refuses.
+async fn may_lose_a_superuser(state: &AppState) -> bool {
+    match state.users().active_admin_count().await {
+        Ok(count) => !blocks_last_admin(true, count),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to count active superusers");
+            false
+        }
+    }
 }
 
 // =============================================================================
@@ -240,13 +349,19 @@ async fn edit_user_form(
     session: Session,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
+    let current_user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(target_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
         return render_not_found();
     };
+
+    // Not shown a form they could not submit.
+    if !may_act_on(&state, &current_user, &target_user).await {
+        return render_forbidden("You may not edit an account holding permissions you do not.");
+    }
 
     let csrf_token = generate_csrf_token(&session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
@@ -316,6 +431,42 @@ async fn edit_user_submit(
     let Some(existing_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
         return render_not_found();
     };
+
+    // Before anything is validated or written: nothing about an account the
+    // actor may not act on changes, roles and password included.
+    if !may_act_on(&state, &current_user, &existing_user).await {
+        tracing::warn!(
+            actor = %current_user.id,
+            target = %user_id,
+            "refused an account edit beyond the actor's own permissions"
+        );
+        return render_forbidden("You may not edit an account holding permissions you do not.");
+    }
+
+    // Only a superuser may change the superuser flag, in either direction:
+    // granting it would make `administer users` a self-escalation, and
+    // revoking it would let a delegated user administrator lock the real
+    // superusers out. For anyone else the stored value is preserved
+    // regardless of what the form submitted.
+    let is_admin_after = if current_user.is_admin {
+        form.is_admin.is_some()
+    } else {
+        existing_user.is_admin
+    };
+    let status_after: i16 = if form.status.is_some() { 1 } else { 0 };
+
+    // A superuser may demote or block another, or themselves, but not the last
+    // one: a site with no active superuser cannot be administered back into
+    // having one.
+    if demotes_active_superuser(
+        existing_user.is_admin,
+        existing_user.status,
+        is_admin_after,
+        status_after,
+    ) && !may_lose_a_superuser(&state).await
+    {
+        return render_forbidden("Cannot demote or block the last active superuser.");
+    }
 
     // Validate
     let mut errors = Vec::new();
@@ -393,17 +544,8 @@ async fn edit_user_submit(
     let input = UpdateUser {
         name: Some(form.name.clone()),
         mail: Some(form.mail.clone()),
-        // Only a superuser may change the superuser flag, in either direction:
-        // granting it would make `administer users` a self-escalation, and
-        // revoking it would let a delegated user administrator lock the real
-        // superusers out. For anyone else the stored value is preserved
-        // regardless of what the form submitted.
-        is_admin: Some(if current_user.is_admin {
-            form.is_admin.is_some()
-        } else {
-            existing_user.is_admin
-        }),
-        status: Some(if form.status.is_some() { 1 } else { 0 }),
+        is_admin: Some(is_admin_after),
+        status: Some(status_after),
         timezone: None,
         language: None,
         data: None,
@@ -478,6 +620,28 @@ async fn delete_user(
     // Prevent deleting yourself
     if user_id == current_user.id {
         return render_error("Cannot delete your own account.");
+    }
+
+    let Some(target_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+
+    if !may_act_on(&state, &current_user, &target_user).await {
+        tracing::warn!(
+            actor = %current_user.id,
+            target = %user_id,
+            "refused an account deletion beyond the actor's own permissions"
+        );
+        return render_forbidden("You may not delete an account holding permissions you do not.");
+    }
+
+    // Unreachable today: only a superuser gets this far with a superuser
+    // target, and it cannot be themselves, so at least two exist. Checked
+    // anyway so the guard does not rest on that reasoning.
+    if demotes_active_superuser(target_user.is_admin, target_user.status, false, 0)
+        && !may_lose_a_superuser(&state).await
+    {
+        return render_forbidden("Cannot delete the last active superuser.");
     }
 
     let user_ctx = admin_user_context(&state, &current_user).await;
@@ -760,9 +924,10 @@ async fn delete_role(
     Path(role_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
+    let current_user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
@@ -771,6 +936,31 @@ async fn delete_role(
     // Prevent deleting built-in roles
     if role_id == ANONYMOUS_ROLE_ID || role_id == AUTHENTICATED_ROLE_ID {
         return render_error("Cannot delete built-in roles.");
+    }
+
+    // Deleting a role takes its permissions from every member, which is a
+    // revocation, so it is held to the rule every other revocation is.
+    if !current_user.is_admin {
+        let covered = match (
+            Authority::of(&state, &current_user).await,
+            state.roles().get_permissions(role_id).await,
+        ) {
+            (Ok(authority), Ok(role_permissions)) => authority.covers(&role_permissions),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::error!(error = %e, role_id = %role_id, "failed to load permissions for a role deletion");
+                false
+            }
+        };
+        if !covered {
+            tracing::warn!(
+                actor = %current_user.id,
+                role_id = %role_id,
+                "refused a role deletion carrying permissions the actor does not hold"
+            );
+            return render_forbidden(
+                "You may not delete a role carrying permissions you do not hold.",
+            );
+        }
     }
 
     // Recorded before the delete, because the cascade takes the rows with it and
@@ -822,13 +1012,12 @@ fn submitted_role_ids(
 /// usernames. (Since BL-33 that is an escalation of permissions and not a
 /// promotion to site administrator: the superuser column is not grantable here
 /// at all, and `administer site` is an ordinary permission.) So a non-superuser
-/// may only
-/// grant or revoke a role whose permissions they already hold themselves: they
-/// can hand out what they have and no more. A superuser is unrestricted, as they
-/// are everywhere else.
+/// may only grant or revoke a role whose permissions they already hold
+/// themselves; see [`Authority`].
 ///
 /// Roles the actor may not touch are left exactly as they are on the target,
-/// granted or not, rather than being silently dropped.
+/// granted or not, rather than being silently dropped. If the actor's own
+/// permissions cannot be loaded, nothing is changed.
 async fn apply_role_membership(
     state: &AppState,
     actor: &User,
@@ -852,15 +1041,13 @@ async fn apply_role_membership(
         .map(|r| r.id)
         .collect();
 
-    // What the actor may delegate. Loaded once; a superuser skips it entirely.
-    let actor_permissions: std::collections::HashSet<String> = if actor.is_admin {
-        std::collections::HashSet::new()
-    } else {
-        state
-            .permissions()
-            .user_permissions(actor)
-            .await
-            .unwrap_or_default()
+    // What the actor may delegate. Loaded once; a superuser skips the query.
+    let authority = match Authority::of(state, actor).await {
+        Ok(authority) => authority,
+        Err(e) => {
+            tracing::error!(error = %e, actor = %actor.id, "failed to load the actor's permissions while saving a user");
+            return;
+        }
     };
 
     for role in &roles {
@@ -871,14 +1058,12 @@ async fn apply_role_membership(
         }
 
         if !actor.is_admin {
-            let role_permissions = state
-                .roles()
-                .get_permissions(role.id)
-                .await
-                .unwrap_or_default();
-            let may_delegate = role_permissions
-                .iter()
-                .all(|p| actor_permissions.contains(p));
+            // Fails closed: a role whose permissions cannot be read is one the
+            // actor cannot be shown to hold.
+            let may_delegate = match state.roles().get_permissions(role.id).await {
+                Ok(role_permissions) => authority.covers(&role_permissions),
+                Err(_) => false,
+            };
             if !may_delegate {
                 tracing::warn!(
                     actor = %actor.id,
@@ -999,9 +1184,10 @@ async fn save_permissions(
     session: Session,
     Form(form): Form<PermissionFormData>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
+    let current_user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     // Verify CSRF token
     if let Err(resp) = require_csrf(&session, &form.token).await {
@@ -1039,6 +1225,57 @@ async fn save_permissions(
         };
         rendered.push((index, name.clone()));
     }
+
+    // Two filters on what the form claims it rendered, both of which leave a
+    // dropped permission exactly as it was on every role.
+    //
+    // A name the grid does not know is dropped for everyone, superusers
+    // included: this screen can only have rendered names from
+    // `grid_permissions`, so anything else was typed into the request, and it
+    // is not a permission anything checks.
+    //
+    // A permission the actor does not hold is dropped for a non-superuser, so
+    // it is neither granted nor revoked on any role: the grid is the
+    // `apply_role_membership` rule applied one box at a time.
+    let known: std::collections::HashSet<String> = grid_permissions(&state)
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    let authority = match Authority::of(&state, &current_user).await {
+        Ok(authority) => authority,
+        Err(e) => {
+            tracing::error!(error = %e, actor = %current_user.id, "failed to load the actor's permissions; the grid was not saved");
+            return Redirect::to("/admin/people/permissions").into_response();
+        }
+    };
+    let mut unknown = Vec::new();
+    let mut refused = Vec::new();
+    rendered.retain(|(_, name)| {
+        if !known.contains(name) {
+            unknown.push(name.clone());
+            false
+        } else if !authority.covers(std::iter::once(name)) {
+            refused.push(name.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if !unknown.is_empty() {
+        tracing::warn!(
+            actor = %current_user.id,
+            permissions = ?unknown,
+            "ignored permission names the grid does not render"
+        );
+    }
+    if !refused.is_empty() {
+        tracing::warn!(
+            actor = %current_user.id,
+            permissions = ?refused,
+            "refused grid changes to permissions the actor does not hold"
+        );
+    }
+
     let rendered_names: std::collections::HashSet<String> =
         rendered.iter().map(|(_, name)| name.clone()).collect();
 
@@ -1096,4 +1333,73 @@ pub fn router() -> Router<AppState> {
             "/admin/people/permissions",
             get(permissions_matrix).post(save_permissions),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn held(names: &[&str]) -> Authority {
+        Authority::Holds(names.iter().map(|n| (*n).to_string()).collect())
+    }
+
+    fn set(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    #[test]
+    fn a_superuser_covers_anything() {
+        assert!(Authority::Unrestricted.covers(&set(&["administer site", "anything"])));
+    }
+
+    #[test]
+    fn a_delegate_covers_only_what_they_hold() {
+        let authority = held(&["administer users", "access content"]);
+        assert!(authority.covers(&set(&["access content"])));
+        assert!(authority.covers(&set(&["administer users", "access content"])));
+        assert!(!authority.covers(&set(&["access content", "administer site"])));
+    }
+
+    #[test]
+    fn nothing_is_covered_by_anyone() {
+        assert!(held(&[]).covers(&set(&[])));
+    }
+
+    #[test]
+    fn clearing_the_flag_or_blocking_demotes_an_active_superuser() {
+        assert!(demotes_active_superuser(true, 1, false, 1), "flag cleared");
+        assert!(demotes_active_superuser(true, 1, true, 0), "blocked");
+        assert!(demotes_active_superuser(true, 1, false, 0), "both");
+    }
+
+    #[test]
+    fn keeping_the_flag_and_the_status_demotes_nobody() {
+        assert!(!demotes_active_superuser(true, 1, true, 1));
+    }
+
+    #[test]
+    fn someone_who_is_not_an_active_superuser_cannot_be_demoted_from_it() {
+        assert!(
+            !demotes_active_superuser(false, 1, false, 0),
+            "not a superuser"
+        );
+        assert!(
+            !demotes_active_superuser(true, 0, false, 0),
+            "a blocked superuser is not counted as active"
+        );
+        assert!(
+            !demotes_active_superuser(false, 1, true, 1),
+            "promotion is not demotion"
+        );
+    }
+
+    /// The two halves together, as `edit_user_submit` combines them.
+    #[test]
+    fn the_last_active_superuser_cannot_be_demoted() {
+        let refused =
+            |count| demotes_active_superuser(true, 1, false, 1) && blocks_last_admin(true, count);
+        assert!(refused(1), "the last one");
+        assert!(refused(0), "a count that has already gone wrong");
+        assert!(!refused(2), "one of two may go");
+    }
 }

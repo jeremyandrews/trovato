@@ -21,7 +21,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{TestApp, extract_cookies, run_test, shared_app};
+use common::{TestApp, extract_cookies, run_test, shared_app, test_ip_for};
 use uuid::Uuid;
 
 async fn admin_session(app: &TestApp) -> String {
@@ -50,7 +50,13 @@ fn csrf_from(html: &str) -> String {
 
 async fn get_page(app: &TestApp, cookies: &str, path: &str) -> (String, String) {
     let response = app
-        .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
+        .request_with_cookies(
+            Request::get(path)
+                .header("x-forwarded-for", test_ip_for("rolesadmin"))
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
         .await;
     let status = response.status();
     let refreshed = extract_cookies(&response);
@@ -91,6 +97,7 @@ async fn post_form(
     app.request_with_cookies(
         Request::post(path)
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("x-forwarded-for", test_ip_for("rolesadmin"))
             .body(Body::from(body))
             .unwrap(),
         cookies,
@@ -387,5 +394,116 @@ fn a_delete_without_a_valid_csrf_token_is_rejected() {
         assert_eq!(still, 1, "the role must survive a CSRF-rejected delete");
 
         cleanup(app, role_id, &users).await;
+    });
+}
+
+/// A delegated user administrator: a non-superuser whose one role grants
+/// `administer users` plus `extra`, logged in. Returns the cookies and the ids
+/// of the delegate and their role, for [`cleanup`].
+async fn delegate_session(app: &TestApp, extra: &[&str]) -> (String, Uuid, Uuid) {
+    let name = format!("roledlg_{}", Uuid::now_v7().simple());
+    let role_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO roles (id, name) VALUES ($1, $2)")
+        .bind(role_id)
+        .bind(&name)
+        .execute(&app.db)
+        .await
+        .expect("insert role");
+    for permission in std::iter::once(&"administer users").chain(extra) {
+        sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)")
+            .bind(role_id)
+            .bind(permission)
+            .execute(&app.db)
+            .await
+            .expect("grant permission");
+    }
+    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+        .bind(&name)
+        .fetch_one(&app.db)
+        .await
+        .expect("the user must exist");
+    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)")
+        .bind(user_id)
+        .bind(role_id)
+        .execute(&app.db)
+        .await
+        .expect("assign role");
+    app.state.permissions().invalidate_user(user_id);
+    let cookies = app.login(&name, "test-password-123").await;
+    (cookies, user_id, role_id)
+}
+
+async fn role_exists(app: &TestApp, role_id: Uuid) -> bool {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM roles WHERE id = $1")
+        .bind(role_id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+        == 1
+}
+
+/// Deleting a role strips its permissions from every member, so a delegate may
+/// delete only a role whose permissions they hold themselves.
+#[test]
+fn a_delegate_cannot_delete_a_role_carrying_a_permission_they_lack() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, delegate_id, delegate_role) = delegate_session(app, &[]).await;
+        let (role_id, _name, users) = seed_role(app, 1).await;
+        sqlx::query(
+            "INSERT INTO role_permissions (role_id, permission) VALUES ($1, 'administer site')",
+        )
+        .bind(role_id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+        let (cookies, html) = get_page(app, &cookies, "/admin/people/roles").await;
+        let token = csrf_from(&html);
+        let response = post_form(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{role_id}/delete"),
+            &[("_token", &token)],
+        )
+        .await;
+
+        assert!(
+            role_exists(app, role_id).await,
+            "a delegate must not delete a role carrying a permission they lack"
+        );
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        cleanup(app, role_id, &users).await;
+        cleanup(app, delegate_role, &[delegate_id]).await;
+    });
+}
+
+/// The guard must not make delegation useless.
+#[test]
+fn a_delegate_can_delete_a_role_within_their_permissions() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, delegate_id, delegate_role) =
+            delegate_session(app, &["access content"]).await;
+        let (role_id, _name, users) = seed_role(app, 1).await;
+
+        let (cookies, html) = get_page(app, &cookies, "/admin/people/roles").await;
+        let token = csrf_from(&html);
+        let response = post_form(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{role_id}/delete"),
+            &[("_token", &token)],
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(!role_exists(app, role_id).await, "the role must be gone");
+
+        cleanup(app, role_id, &users).await;
+        cleanup(app, delegate_role, &[delegate_id]).await;
     });
 }

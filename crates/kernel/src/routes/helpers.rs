@@ -591,6 +591,27 @@ pub fn render_error(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Html(html)).into_response()
 }
 
+/// Render a simple refusal page with the given message.
+///
+/// Returns a `403 Forbidden` response with escaped HTML content, for an actor
+/// who may use a screen but not on this target.
+pub fn render_forbidden(message: &str) -> Response {
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><title>Access denied</title></head>
+<body>
+<div style="max-width: 600px; margin: 100px auto; text-align: center;">
+<h1>Access denied</h1>
+<p>{}</p>
+<p><a href="javascript:history.back()">Go back</a></p>
+</div>
+</body></html>"#,
+        html_escape(message)
+    );
+
+    (StatusCode::FORBIDDEN, Html(html)).into_response()
+}
+
 /// Render a simple error page for server-side failures.
 ///
 /// Returns a `500 Internal Server Error` response with escaped HTML content.

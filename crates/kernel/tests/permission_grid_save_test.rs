@@ -75,6 +75,21 @@ async fn save_grid(
     role_id: Uuid,
     check: impl Fn(&str) -> bool,
 ) -> StatusCode {
+    save_grid_with(app, cookies, role_id, check, None).await
+}
+
+/// [`save_grid`], plus one permission name the grid did not render, posted by
+/// hand after the rendered ones and ticked for the role under test.
+///
+/// This is the one body here the screen never produces, which is the point: it
+/// is what a forged save looks like.
+async fn save_grid_with(
+    app: &TestApp,
+    cookies: &str,
+    role_id: Uuid,
+    check: impl Fn(&str) -> bool,
+    forged: Option<&str>,
+) -> StatusCode {
     let _guard = GRID_SAVE_LOCK.lock().await;
 
     let (status, html) = get(app, cookies, "/admin/people/permissions").await;
@@ -129,6 +144,12 @@ async fn save_grid(
         index += 1;
     }
     assert!(index > 0, "the grid rendered no permissions at all");
+    if let Some(name) = forged {
+        body.push_str(&format!(
+            "&permname_{index}={}&perm_{index}_{role_id}=1",
+            urlencode(name)
+        ));
+    }
 
     app.request_with_cookies(
         Request::post("/admin/people/permissions")
@@ -297,6 +318,156 @@ fn ticking_one_box_does_not_disturb_an_invisible_grant() {
         assert!(
             !held.contains(&"access content".to_string()),
             "newly unchecked revoked: {held:?}"
+        );
+    });
+}
+
+// =============================================================================
+// Who may grant what
+// =============================================================================
+//
+// `administer users` opens this grid, and the grid writes every role's
+// permissions. So the delegation rule the user form applies to roles applies
+// here to each permission: a non-superuser may grant or revoke only what they
+// hold themselves, and anything else is left exactly as it was.
+
+/// Grant `permission` to `role_id` while no save in this file is in flight.
+///
+/// A save echoes every other role as the page showed it, so a grant seeded
+/// between another test's read of the grid and its post would be echoed away.
+/// The fixtures above only seed what their own save is about to overwrite, so
+/// they never noticed; a test asserting that a grant *survives* someone else's
+/// save has to seed under the same lock.
+async fn seed_grant(app: &TestApp, role_id: Uuid, permission: &str) {
+    let _guard = GRID_SAVE_LOCK.lock().await;
+    Role::add_permission(&app.db, role_id, permission)
+        .await
+        .expect("grant");
+}
+
+/// A delegated user administrator: a non-superuser whose one role grants
+/// `administer users` plus `extra`, logged in. Returns the cookies and the
+/// delegate's own role.
+async fn login_delegate(app: &TestApp, prefix: &str, extra: &[&str]) -> (String, Uuid) {
+    let tag = Uuid::now_v7().simple().to_string();
+    let role = Role::create(&app.db, &format!("{prefix}_{tag}"))
+        .await
+        .expect("create role");
+    for permission in std::iter::once(&"administer users").chain(extra) {
+        seed_grant(app, role.id, permission).await;
+    }
+
+    let name = format!("{prefix}_{tag}");
+    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+        .bind(&name)
+        .fetch_one(&app.db)
+        .await
+        .expect("user exists");
+    Role::assign_to_user(&app.db, id, role.id)
+        .await
+        .expect("assign");
+    app.state.permissions().invalidate_user(id);
+    let cookies = app.login(&name, "test-password-123").await;
+
+    (cookies, role.id)
+}
+
+/// The escalation: a delegate ticking `administer site` on their own role.
+#[test]
+fn a_delegate_cannot_grant_their_own_role_a_permission_they_lack() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, own_role) = login_delegate(app, "griddlg", &[]).await;
+
+        let status = save_grid(app, &cookies, own_role, |name| {
+            name == "administer users" || name == "administer site"
+        })
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::SEE_OTHER,
+            "the save redirects as before"
+        );
+
+        let held = grants(app, own_role).await;
+        assert!(
+            !held.contains(&"administer site".to_string()),
+            "a delegate must not grant a permission they lack, got {held:?}"
+        );
+        assert!(
+            held.contains(&"administer users".to_string()),
+            "and what they hold is untouched, got {held:?}"
+        );
+    });
+}
+
+/// Nor take one away from someone else.
+#[test]
+fn a_delegate_cannot_revoke_a_permission_they_lack() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, _own_role) = login_delegate(app, "griddlgrev", &[]).await;
+
+        let tag = Uuid::now_v7().simple().to_string();
+        let other = Role::create(&app.db, &format!("griddlgrevother_{tag}"))
+            .await
+            .expect("create role");
+        seed_grant(app, other.id, "administer site").await;
+
+        let status = save_grid(app, &cookies, other.id, |_| false).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+
+        assert!(
+            grants(app, other.id)
+                .await
+                .contains(&"administer site".to_string()),
+            "a delegate must not revoke a permission they lack, got {:?}",
+            grants(app, other.id).await
+        );
+    });
+}
+
+/// A name the grid never rendered is not granted, whoever posts it.
+#[test]
+fn a_posted_name_the_grid_does_not_render_is_not_granted() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, role_id, tag) = fixture(app).await;
+        let forged = format!("administer everything {tag}");
+
+        let status = save_grid_with(app, &cookies, role_id, |_| false, Some(&forged)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+
+        assert!(
+            !grants(app, role_id).await.contains(&forged),
+            "a permission the grid does not know must not be granted, even by a superuser, \
+             got {:?}",
+            grants(app, role_id).await
+        );
+    });
+}
+
+/// The guard must not make delegation useless.
+#[test]
+fn a_delegate_can_still_grant_a_permission_they_hold() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, _own_role) = login_delegate(app, "griddlgok", &["access content"]).await;
+
+        let tag = Uuid::now_v7().simple().to_string();
+        let target = Role::create(&app.db, &format!("griddlgoktarget_{tag}"))
+            .await
+            .expect("create role");
+
+        let status = save_grid(app, &cookies, target.id, |name| name == "access content").await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+
+        assert_eq!(
+            grants(app, target.id).await,
+            vec!["access content".to_string()],
+            "a delegate must still be able to grant what they hold"
         );
     });
 }
