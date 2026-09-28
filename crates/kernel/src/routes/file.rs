@@ -211,12 +211,76 @@ pub struct FileInfoResponse {
     pub created: i64,
 }
 
+/// `Cache-Control` for a response a shared cache must never keep.
+pub(crate) const PRIVATE_NO_STORE: &str = "private, no-store";
+
+/// Pick the `Cache-Control` value for serving the file at `uri` to `viewer`,
+/// who has already been allowed to fetch it.
+///
+/// A shared cache (CDN, reverse proxy) hands a stored response to whoever asks
+/// next, so the long public value is only safe when an anonymous visitor would
+/// be allowed the same URI. Anything else, including a failed check, is
+/// `private, no-store`.
+pub(crate) async fn served_file_cache_control(
+    state: &AppState,
+    uri: &str,
+    viewer: &crate::tap::UserContext,
+    public_max_age: u32,
+) -> String {
+    let public = if viewer.authenticated {
+        let anonymous = crate::routes::helpers::anonymous_user_context(state).await;
+        match state.items().can_serve_file(uri, &anonymous).await {
+            Ok(allowed) => allowed,
+            Err(e) => {
+                warn!(error = %e, uri = %uri, "failed to check anonymous file access");
+                false
+            }
+        }
+    } else {
+        // The viewer is anonymous and was already allowed.
+        true
+    };
+    if public {
+        format!("public, max-age={public_max_age}")
+    } else {
+        PRIVATE_NO_STORE.to_string()
+    }
+}
+
+/// Whether `path` (the part of a `/files/` URL after the prefix) may name an
+/// original upload.
+///
+/// Each `/`-separated component is checked: an empty component or a `.`
+/// component would let two spellings name one file, and the `styles/` tree
+/// holds image derivatives, which are only served through the image style route
+/// (it checks access against the original). Callers still apply their own
+/// traversal guard.
+fn is_original_upload_path(path: &str) -> bool {
+    path.split('/').next() != Some("styles") && path.split('/').all(|c| !c.is_empty() && c != ".")
+}
+
 /// Get file info.
 ///
 /// GET /file/{id}
-async fn get_file_info(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
+///
+/// Answers only for a file the viewer may fetch; anything else is 404, so a
+/// file id reveals nothing about a file the caller cannot see.
+async fn get_file_info(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> Response {
     match state.files().get(id).await {
         Ok(Some(file)) => {
+            let viewer = crate::routes::item::get_user_context(&session, &state).await;
+            match state.items().can_serve_file(&file.uri, &viewer).await {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+                Err(e) => {
+                    warn!(error = %e, id = %id, "failed to authorize file info");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
             let url = state.files().storage().public_url(&file.uri);
             Json(FileInfoResponse {
                 id: file.id,
@@ -256,6 +320,7 @@ async fn serve_uploaded_file(
         || path.contains('\0')
         || path.contains('\\')
         || path.starts_with('/')
+        || !is_original_upload_path(path)
     {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -279,6 +344,7 @@ async fn serve_uploaded_file(
         Ok(Some(data)) => {
             let content_type =
                 guess_mime_type(path).unwrap_or_else(|| "application/octet-stream".to_string());
+            let cache_control = served_file_cache_control(&state, &uri, &viewer, 604_800).await;
 
             // Use inline disposition for images/PDFs, attachment for everything else
             // to prevent browsers from executing downloaded content.
@@ -289,12 +355,12 @@ async fn serve_uploaded_file(
                     "attachment"
                 };
 
-            // Infallible: Response::builder() with hard-coded valid status and headers cannot fail
+            // Infallible: Response::builder() with a valid status and ASCII header values cannot fail
             #[allow(clippy::unwrap_used)]
             axum::http::Response::builder()
                 .status(StatusCode::OK)
                 .header(axum::http::header::CONTENT_TYPE, &content_type)
-                .header(axum::http::header::CACHE_CONTROL, "public, max-age=604800")
+                .header(axum::http::header::CACHE_CONTROL, cache_control)
                 .header(axum::http::header::CONTENT_DISPOSITION, disposition)
                 .header("X-Content-Type-Options", "nosniff")
                 .body(axum::body::Body::from(data))
@@ -489,4 +555,29 @@ fn guess_mime_type(filename: &str) -> Option<String> {
         _ => return None,
     };
     Some(mime.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn original_upload_path_accepts_ordinary_paths() {
+        assert!(is_original_upload_path("2026/09/abc_photo.jpg"));
+        assert!(is_original_upload_path("photo.jpg"));
+        assert!(is_original_upload_path("file..name.txt"));
+        assert!(is_original_upload_path("stylesheet/notes.txt"));
+    }
+
+    #[test]
+    fn original_upload_path_rejects_dot_empty_and_styles() {
+        assert!(!is_original_upload_path("./styles/w400/photo.jpg"));
+        assert!(!is_original_upload_path("2026/./photo.jpg"));
+        assert!(!is_original_upload_path("styles//w400/photo.jpg"));
+        assert!(!is_original_upload_path("2026//photo.jpg"));
+        assert!(!is_original_upload_path("2026/09/"));
+        assert!(!is_original_upload_path(""));
+        assert!(!is_original_upload_path("styles/w400/photo.jpg"));
+        assert!(!is_original_upload_path("styles"));
+    }
 }

@@ -47,7 +47,7 @@ Implement `LocalFileStorage` and `S3FileStorage` initially.
 4. On item save, mark referenced files as permanent (`status=1`).
 5. On item delete, check if any other item references the file. If not, delete it.
 
-Public files served directly by NGINX. Private files route through the Kernel for access control.
+All files, public or private, route through the Kernel for access control. The uploads directory holds every original and every image style derivative in one tree, so it must never be served directly by NGINX, another web server or a CDN origin. A proxy may cache only the responses the Kernel marks `public`, which it does when an anonymous visitor would be allowed the same file.
 
 ---
 

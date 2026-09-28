@@ -9,7 +9,7 @@ use axum::{Form, Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use crate::file::service::FileStatus;
+use crate::file::service::{FileStatus, MediaScope};
 use crate::form::AjaxRequest;
 use crate::models::{Comment, CommentStatus, SiteConfig, UpdateComment};
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
@@ -357,6 +357,7 @@ async fn media_library(
             Some(FileStatus::Permanent),
             mime_prefix,
             search,
+            MediaScope::All,
             "newest",
             page_size,
             offset,
@@ -372,7 +373,12 @@ async fn media_library(
 
     let total = state
         .files()
-        .count_filtered_media(Some(FileStatus::Permanent), mime_prefix, search)
+        .count_filtered_media(
+            Some(FileStatus::Permanent),
+            mime_prefix,
+            search,
+            MediaScope::All,
+        )
         .await
         .unwrap_or(0);
 

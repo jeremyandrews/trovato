@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::file::service::FileStatus;
+use crate::file::service::{FileStatus, MediaScope};
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
@@ -446,9 +446,18 @@ async fn browse_media(
 ) -> impl IntoResponse {
     // Require authentication
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    if user_id.is_none() {
+    let Some(user_id) = user_id else {
         return error_response(StatusCode::UNAUTHORIZED, "Authentication required").into_response();
-    }
+    };
+
+    // File administrators browse every file, as on the admin file screens;
+    // everyone else sees their own uploads and files on published live items.
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    let scope = if viewer.can("access files") || viewer.can("administer files") {
+        MediaScope::All
+    } else {
+        MediaScope::VisibleTo(user_id)
+    };
 
     let page: i64 = params
         .get("page")
@@ -474,7 +483,7 @@ async fn browse_media(
 
     let total = match state
         .files()
-        .count_filtered_media(Some(FileStatus::Permanent), mime_prefix, search)
+        .count_filtered_media(Some(FileStatus::Permanent), mime_prefix, search, scope)
         .await
     {
         Ok(t) => t,
@@ -491,6 +500,7 @@ async fn browse_media(
             Some(FileStatus::Permanent),
             mime_prefix,
             search,
+            scope,
             sort,
             page_size,
             offset,
