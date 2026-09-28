@@ -494,6 +494,17 @@ impl DirectConfigStorage {
     }
 
     async fn save_gather_query(&self, query: &GatherQuery) -> Result<()> {
+        // An imported gather is written straight to the table, past
+        // `register_query`, so it is checked here. Execution checks it again.
+        let errors = crate::gather::GatherService::validate_definition(&query.definition);
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "gather query '{}' is invalid: {}",
+                query.query_id,
+                errors.join("; ")
+            );
+        }
+
         let now = Utc::now().timestamp();
         let definition_json =
             serde_json::to_value(&query.definition).context("failed to serialize definition")?;

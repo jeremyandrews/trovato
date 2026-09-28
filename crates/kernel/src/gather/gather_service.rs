@@ -171,6 +171,17 @@ impl GatherService {
     pub async fn register_query(&self, query: GatherQuery) -> Result<()> {
         let query_id = query.query_id.clone();
 
+        // Execution refuses an invalid definition wherever it came from; this
+        // refuses it earlier, with the rule that failed, instead of storing a
+        // gather that can never run.
+        let errors = Self::validate_definition(&query.definition);
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "gather query '{query_id}' is invalid: {}",
+                errors.join("; ")
+            );
+        }
+
         // Persist to database
         let now = chrono::Utc::now().timestamp();
         let definition_json = serde_json::to_value(&query.definition)?;
@@ -667,6 +678,7 @@ impl GatherService {
         if !validation_errors.is_empty() {
             anyhow::bail!("Query validation failed: {}", validation_errors.join("; "));
         }
+        self.check_base_table(definition)?;
 
         // Cap items_per_page to the configured maximum (GATHER_MAX_PAGE_SIZE).
         let max_page = self.max_page_size;
@@ -1792,37 +1804,6 @@ impl GatherService {
             },
             // ── 23.8: Admin Entity Gather Views ──
             GatherQuery {
-                query_id: "core.user_list".to_string(),
-                label: "Users".to_string(),
-                description: Some("All user accounts".to_string()),
-                definition: QueryDefinition {
-                    base_table: "users".to_string(),
-                    stage_aware: false,
-                    filters: vec![QueryFilter {
-                        field: "name".to_string(),
-                        operator: FilterOperator::Contains,
-                        value: FilterValue::String(String::new()),
-                        exposed: true,
-                        exposed_label: Some("Name".to_string()),
-                        widget: Default::default(),
-                    }],
-                    sorts: vec![QuerySort {
-                        field: "created".to_string(),
-                        direction: SortDirection::Desc,
-                        nulls: None,
-                    }],
-                    ..Default::default()
-                },
-                display: QueryDisplay {
-                    format: DisplayFormat::Table,
-                    items_per_page: 50,
-                    empty_text: Some("No users found.".to_string()),
-                    ..Default::default()
-                },
-                plugin: "core".to_string(),
-                ..Default::default()
-            },
-            GatherQuery {
                 query_id: "core.comment_list".to_string(),
                 label: "Comments".to_string(),
                 description: Some("All comments".to_string()),
@@ -1964,11 +1945,31 @@ impl GatherService {
             errors.push("Base table name contains invalid characters".to_string());
         }
 
+        // Which tables a definition may read. This is the one function every
+        // execution path calls, so the policy holds for definitions that never
+        // passed a save-time check (plugin migrations and config imports write
+        // `gather_query` directly). Whether the base table is `item` or a
+        // registered record's table needs the record registry, so that half is
+        // `GatherService::check_base_table`.
+        if is_denied_gather_table(&definition.base_table) {
+            errors.push(format!(
+                "Base table '{}' may not be read by a gather",
+                definition.base_table
+            ));
+        }
+
         // Validate relationship table names, aliases, and field names
         for rel in &definition.relationships {
             if !is_safe_table_name(&rel.target_table) {
                 errors.push(format!(
                     "Relationship target table '{}' contains invalid characters",
+                    rel.target_table
+                ));
+            } else if is_denied_gather_table(&rel.target_table)
+                || !GATHER_JOIN_TABLES.contains(&rel.target_table.as_str())
+            {
+                errors.push(format!(
+                    "Relationship target table '{}' may not be joined by a gather",
                     rel.target_table
                 ));
             }
@@ -1999,6 +2000,11 @@ impl GatherService {
                     "Select field '{}' contains invalid characters",
                     field.field_name
                 ));
+            } else if is_secret_column(&field.field_name) {
+                errors.push(format!(
+                    "Select field '{}' may not be read by a gather",
+                    field.field_name
+                ));
             }
             if let Some(ref alias) = field.table_alias
                 && !is_safe_table_name(alias)
@@ -2016,6 +2022,11 @@ impl GatherService {
                     "Filter field '{}' contains invalid characters",
                     filter.field
                 ));
+            } else if is_secret_column(&filter.field) {
+                errors.push(format!(
+                    "Filter field '{}' may not be read by a gather",
+                    filter.field
+                ));
             }
         }
 
@@ -2026,11 +2037,129 @@ impl GatherService {
                     "Sort field '{}' contains invalid characters",
                     sort.field
                 ));
+            } else if is_secret_column(&sort.field) {
+                errors.push(format!(
+                    "Sort field '{}' may not be read by a gather",
+                    sort.field
+                ));
+            }
+        }
+
+        // An include runs as a gather of its own, so a stored definition is
+        // only valid if every include is. Checking here refuses the whole
+        // definition when it is saved, not just the include when it runs.
+        let mut include_names: Vec<&String> = definition.includes.keys().collect();
+        include_names.sort();
+        for name in include_names {
+            for error in Self::validate_definition(&definition.includes[name].definition) {
+                errors.push(format!("Include '{name}': {error}"));
             }
         }
 
         errors
     }
+
+    /// Refuse a base table that is neither `item` nor a registered
+    /// lightweight-record type's table.
+    ///
+    /// A record gather names its type rather than its table (the table is
+    /// filled in from the registry by `resolve_record_context`), so the type is
+    /// what is checked. Anything else must be an item gather. Before this rule,
+    /// a non-item base table produced no rows only by accident: the item access
+    /// pass drops a row without a `type` column, which says nothing about a
+    /// table that happens to have one.
+    fn check_base_table(&self, definition: &QueryDefinition) -> Result<()> {
+        match definition.record_type.as_deref() {
+            Some(record_name) => {
+                let table = self
+                    .record_types
+                    .get()
+                    .and_then(|registry| registry.get(record_name))
+                    .map(|def| def.table.clone());
+                match table {
+                    Some(table) if is_denied_gather_table(&table) => anyhow::bail!(
+                        "Query validation failed: record type '{record_name}' is stored in \
+                         '{table}', which may not be read by a gather"
+                    ),
+                    Some(_) => Ok(()),
+                    None => anyhow::bail!(
+                        "gather references unknown lightweight-record type '{record_name}'"
+                    ),
+                }
+            }
+            None if definition.base_table == "item" => Ok(()),
+            None => anyhow::bail!(
+                "Query validation failed: base table '{}' is not a content table; a gather \
+                 reads 'item' or a registered record type",
+                definition.base_table
+            ),
+        }
+    }
+}
+
+/// Tables no gather definition may read, from any source, as a base or a join.
+///
+/// Accounts, credentials, tokens, permissions, secrets and logs that record
+/// them. It always wins over [`GATHER_JOIN_TABLES`] and over a registered
+/// record type's table. Any table whose name begins with `_sqlx` or `pg_` is
+/// refused as well (see [`is_denied_gather_table`]).
+pub(crate) const GATHER_DENIED_TABLES: &[&str] = &[
+    "users",
+    "user_roles",
+    "roles",
+    "role_permissions",
+    "plugin_permission",
+    "api_tokens",
+    "password_reset_tokens",
+    "email_verification_tokens",
+    "recovery_codes",
+    "recovery_email_challenges",
+    "webauthn_credentials",
+    "user_tenant",
+    "security_audit_log",
+    "site_config",
+    "form_state_cache",
+    "config_revision",
+    "ai_conversation",
+    "ai_proposal",
+    "ai_usage_log",
+    "oauth_client",
+    // The webhook signing secret is stored in plain text, and a gather with
+    // no explicit fields projects every column.
+    "webhook",
+    // Delivered payloads and the endpoint's responses.
+    "webhook_delivery",
+    // Job payloads, which carry whatever a plugin queued.
+    "plugin_queue",
+];
+
+/// The only tables a gather relationship may join.
+pub(crate) const GATHER_JOIN_TABLES: &[&str] = &[
+    "item",
+    "item_translation",
+    "category",
+    "category_tag",
+    "category_tag_hierarchy",
+    "url_alias",
+    "file_managed",
+];
+
+/// Whether `table` is on the gather denylist.
+pub(crate) fn is_denied_gather_table(table: &str) -> bool {
+    GATHER_DENIED_TABLES.contains(&table) || table.starts_with("_sqlx") || table.starts_with("pg_")
+}
+
+/// Whether a column name looks like a secret, whichever table it comes from.
+///
+/// Defense in depth behind the table policy. A `fields.` path addresses a key
+/// inside an item's JSONB fields, not a column, so only its first segment is a
+/// column name.
+fn is_secret_column(name: &str) -> bool {
+    let column = name.split('.').next().unwrap_or(name);
+    matches!(column, "pass" | "password" | "secret" | "token")
+        || column.ends_with("_hash")
+        || column.ends_with("_secret")
+        || column.ends_with("_token")
 }
 
 /// Validate a table/alias name for use in queries.
@@ -2843,5 +2972,191 @@ mod tests {
             errors.iter().any(|e| e.contains("table alias")),
             "should reject table alias exceeding 63 chars: {errors:?}"
         );
+    }
+
+    // SECURITY REGRESSION TEST — a gather may not join the account table, and
+    // the refusal names the table rather than failing on syntax.
+    #[test]
+    fn validate_definition_refuses_users_join() {
+        let def = QueryDefinition {
+            relationships: vec![join("u", "users")],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("'users'")),
+            "join to users must be refused by name: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_refuses_every_denied_table() {
+        // Spelled out rather than read from the policy constant, so shrinking
+        // the constant fails this test instead of silently shrinking it too.
+        let denied = [
+            "users",
+            "user_roles",
+            "roles",
+            "role_permissions",
+            "plugin_permission",
+            "api_tokens",
+            "password_reset_tokens",
+            "email_verification_tokens",
+            "recovery_codes",
+            "recovery_email_challenges",
+            "webauthn_credentials",
+            "user_tenant",
+            "security_audit_log",
+            "site_config",
+            "form_state_cache",
+            "config_revision",
+            "ai_conversation",
+            "ai_proposal",
+            "ai_usage_log",
+            "oauth_client",
+            "webhook",
+            "webhook_delivery",
+            "plugin_queue",
+            "_sqlx_migrations",
+            "pg_authid",
+            "pg_shadow",
+        ];
+        for table in denied {
+            let as_join = QueryDefinition {
+                relationships: vec![join("t", table)],
+                ..Default::default()
+            };
+            let errors = GatherService::validate_definition(&as_join);
+            assert!(
+                errors.iter().any(|e| e.contains(&format!("'{table}'"))),
+                "join to {table} must be refused: {errors:?}"
+            );
+
+            let as_base = QueryDefinition {
+                base_table: table.to_string(),
+                ..Default::default()
+            };
+            let errors = GatherService::validate_definition(&as_base);
+            assert!(
+                errors.iter().any(|e| e.contains(&format!("'{table}'"))),
+                "base table {table} must be refused: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_definition_accepts_category_tag_join() {
+        let def = QueryDefinition {
+            relationships: vec![join("tag", "category_tag")],
+            fields: vec![crate::gather::types::QueryField {
+                field_name: "label".to_string(),
+                table_alias: Some("tag".to_string()),
+                label: None,
+            }],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(errors.is_empty(), "category_tag join is allowed: {errors:?}");
+    }
+
+    #[test]
+    fn validate_definition_refuses_join_outside_allowlist() {
+        let def = QueryDefinition {
+            relationships: vec![join("s", "stage")],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("'stage'")),
+            "a join target off the allowlist is refused by name: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_definition_refuses_secret_column_on_any_alias() {
+        let def = QueryDefinition {
+            fields: vec![crate::gather::types::QueryField {
+                field_name: "pass".to_string(),
+                table_alias: Some("u".to_string()),
+                label: None,
+            }],
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors.iter().any(|e| e.contains("'pass'")),
+            "secret column must be refused: {errors:?}"
+        );
+
+        for name in ["password", "secret", "token", "token_hash", "client_secret", "reset_token"] {
+            let def = QueryDefinition {
+                fields: vec![crate::gather::types::QueryField {
+                    field_name: name.to_string(),
+                    table_alias: None,
+                    label: None,
+                }],
+                filters: vec![QueryFilter {
+                    field: name.to_string(),
+                    operator: FilterOperator::Equals,
+                    value: FilterValue::String(String::new()),
+                    exposed: false,
+                    exposed_label: None,
+                    widget: Default::default(),
+                }],
+                sorts: vec![QuerySort {
+                    field: name.to_string(),
+                    direction: SortDirection::Asc,
+                    nulls: None,
+                }],
+                ..Default::default()
+            };
+            let errors = GatherService::validate_definition(&def);
+            assert_eq!(
+                errors.iter().filter(|e| e.contains(&format!("'{name}'"))).count(),
+                3,
+                "{name} refused as field, filter and sort: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_definition_refuses_bad_include() {
+        use crate::gather::types::IncludeDefinition;
+        let child = QueryDefinition {
+            relationships: vec![join("u", "users")],
+            ..Default::default()
+        };
+        let mut includes = HashMap::new();
+        includes.insert(
+            "authors".to_string(),
+            IncludeDefinition {
+                definition: child,
+                parent_field: "id".to_string(),
+                child_field: "id".to_string(),
+                singular: false,
+                display: None,
+            },
+        );
+        let def = QueryDefinition {
+            includes,
+            ..Default::default()
+        };
+        let errors = GatherService::validate_definition(&def);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("authors") && e.contains("'users'")),
+            "an include that joins users invalidates the parent: {errors:?}"
+        );
+    }
+
+    fn join(alias: &str, table: &str) -> crate::gather::types::QueryRelationship {
+        crate::gather::types::QueryRelationship {
+            name: alias.to_string(),
+            target_table: table.to_string(),
+            join_type: crate::gather::types::JoinType::Left,
+            local_field: "author_id".to_string(),
+            foreign_field: "id".to_string(),
+        }
     }
 }

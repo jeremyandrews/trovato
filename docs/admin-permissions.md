@@ -136,6 +136,7 @@ neither.
 | `/admin/structure/tiles` and all its routes | GET, POST | `administer site` |
 | `/admin/structure/aliases` and all its routes | GET, POST | `administer site` |
 | `/admin/gather` and all its routes | GET, POST | `administer site` |
+| `POST /api/gather/query`, the ad hoc gather the builder preview calls | POST | `administer site` |
 | `/admin/config/site` and its test-email route | GET, POST | `administer site` |
 | `/admin/config/pathauto` and its regenerate route | GET, POST | `administer site` |
 | `/cron/status` | GET | `administer site` |
