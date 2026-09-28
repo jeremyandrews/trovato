@@ -18,14 +18,16 @@
 
 mod common;
 
-use common::{run_test, shared_app};
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use common::{TestApp, run_test, shared_app, test_ip_for};
 use std::collections::HashMap;
 use trovato_kernel::gather::{
-    DisplayFormat, FilterOperator, FilterValue, PagerConfig, PagerStyle, QueryContext,
-    QueryDefinition, QueryDisplay, QueryFilter,
+    DisplayFormat, FilterOperator, FilterValue, JoinType, PagerConfig, PagerStyle, QueryContext,
+    QueryDefinition, QueryDisplay, QueryField, QueryFilter, QueryRelationship,
 };
-use trovato_kernel::models::CreateItem;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
+use trovato_kernel::models::{CreateItem, Role};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
@@ -275,5 +277,341 @@ fn gather_access_capped_signal_when_starved() {
             result.access_capped,
             "under-filled page beyond the scan cap must signal access_capped"
         );
+    });
+}
+
+// -------------------------------------------------------------------------
+// The ad hoc endpoint and the gather table policy
+// -------------------------------------------------------------------------
+
+fn username(prefix: &str) -> String {
+    format!("{prefix}-{}", Uuid::now_v7().simple())
+}
+
+async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+        .bind(name)
+        .fetch_one(&app.db)
+        .await
+        .expect("test user should exist")
+}
+
+async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
+    let role = Role::create(&app.db, &format!("gatheradhoc-{}", Uuid::now_v7().simple()))
+        .await
+        .expect("create role");
+    for permission in permissions {
+        Role::add_permission(&app.db, role.id, permission)
+            .await
+            .expect("add permission to role");
+    }
+    Role::assign_to_user(&app.db, user_id, role.id)
+        .await
+        .expect("assign role to user");
+    app.state.permissions().invalidate_user(user_id);
+}
+
+async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> (Uuid, String) {
+    let name = username(prefix);
+    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let id = user_id_of(app, &name).await;
+    if !permissions.is_empty() {
+        grant_via_role(app, id, permissions).await;
+    }
+    let cookies = app.login(&name, "test-password-123").await;
+    (id, cookies)
+}
+
+/// A published conference whose author is a real account, so a join from the
+/// item to `users` has a stored password hash to reach.
+async fn conference_by_real_author(app: &TestApp, marker: &str) -> (Uuid, String) {
+    let name = username("gather-author");
+    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let author = user_id_of(app, &name).await;
+    let hash: String = sqlx::query_scalar("SELECT pass FROM users WHERE id = $1")
+        .bind(author)
+        .fetch_one(&app.db)
+        .await
+        .expect("author hash");
+    let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+    app.state
+        .items()
+        .create(
+            CreateItem {
+                item_type: "conference".to_string(),
+                title: format!("{marker} {}", Uuid::now_v7().simple()),
+                author_id: author,
+                status: Some(1),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: None,
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("gather ad hoc lockdown test".to_string()),
+            },
+            &admin,
+        )
+        .await
+        .expect("create");
+    (author, hash)
+}
+
+/// Conferences whose title carries `marker`, optionally joined to `users` with
+/// the author's `pass` column projected.
+fn conference_definition(marker: &str, join_users: bool) -> QueryDefinition {
+    let mut definition = QueryDefinition {
+        base_table: "item".to_string(),
+        item_type: Some("conference".to_string()),
+        filters: vec![QueryFilter {
+            field: "title".to_string(),
+            operator: FilterOperator::Contains,
+            value: FilterValue::String(marker.to_string()),
+            exposed: false,
+            exposed_label: None,
+            widget: Default::default(),
+        }],
+        stage_aware: true,
+        ..Default::default()
+    };
+    if join_users {
+        definition.relationships = vec![QueryRelationship {
+            name: "u".to_string(),
+            target_table: "users".to_string(),
+            join_type: JoinType::Left,
+            local_field: "author_id".to_string(),
+            foreign_field: "id".to_string(),
+        }];
+        definition.fields = ["id", "type", "author_id", "status", "stage_id", "title"]
+            .into_iter()
+            .map(|f| QueryField {
+                field_name: f.to_string(),
+                table_alias: None,
+                label: None,
+            })
+            .chain([QueryField {
+                field_name: "pass".to_string(),
+                table_alias: Some("u".to_string()),
+                label: None,
+            }])
+            .collect();
+    }
+    definition
+}
+
+/// POST an ad hoc gather as the holder of `cookies` (empty for anonymous).
+async fn post_adhoc(
+    app: &TestApp,
+    definition: &QueryDefinition,
+    cookies: &str,
+    bucket: &str,
+) -> (StatusCode, String) {
+    let body = serde_json::json!({
+        "definition": definition,
+        "display": display(25),
+    });
+    let response = app
+        .request_with_cookies(
+            Request::post("/api/gather/query")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", test_ip_for(bucket))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// (a) An anonymous caller cannot run an ad hoc gather at all, and the refusal
+/// is a JSON body, not an HTML redirect.
+#[test]
+fn adhoc_gather_refuses_anonymous() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let marker = format!("GADHOC-anon-{}", Uuid::now_v7().simple());
+        let (status, body) = post_adhoc(
+            app,
+            &conference_definition(&marker, false),
+            "",
+            &username("gadhoc-anon"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("the 403 body is JSON");
+        assert!(json.get("error").is_some(), "JSON error body: {body}");
+    });
+}
+
+/// (b) An anonymous definition that joins the author's account row is refused,
+/// and nothing of the stored hash reaches the response.
+#[test]
+fn adhoc_gather_anonymous_users_join_leaks_nothing() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let marker = format!("GADHOC-leak-{}", Uuid::now_v7().simple());
+        let (_author, hash) = conference_by_real_author(app, &marker).await;
+        let (status, body) = post_adhoc(
+            app,
+            &conference_definition(&marker, true),
+            "",
+            &username("gadhoc-leak"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+        assert!(!body.contains(&hash), "the author's hash leaked: {body}");
+        assert!(!body.contains("$argon2"), "a password hash leaked: {body}");
+    });
+}
+
+/// (c) Logging in is not enough; the endpoint takes `administer site`.
+#[test]
+fn adhoc_gather_refuses_user_without_permission() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let (_id, cookies) = user_holding(app, "gadhoc-norole", &[]).await;
+        let marker = format!("GADHOC-norole-{}", Uuid::now_v7().simple());
+        let (status, body) = post_adhoc(
+            app,
+            &conference_definition(&marker, false),
+            &cookies,
+            &username("gadhoc-norole"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+    });
+}
+
+/// (d) A role that grants `administer site` runs a plain content gather.
+#[test]
+fn adhoc_gather_allows_administer_site() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+        let marker = format!("GADHOC-site-{}", Uuid::now_v7().simple());
+        let conference = make_conference(app, &admin, &marker, 1).await;
+        let (_id, cookies) = user_holding(app, "gadhoc-site", &["administer site"]).await;
+        let (status, body) = post_adhoc(
+            app,
+            &conference_definition(&marker, false),
+            &cookies,
+            &username("gadhoc-site"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(
+            body.contains(&conference.to_string()),
+            "the conference is listed: {body}"
+        );
+    });
+}
+
+/// (e) A superuser runs a plain content gather.
+#[test]
+fn adhoc_gather_allows_superuser() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let name = username("gadhoc-super");
+        let cookies = app
+            .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+        let marker = format!("GADHOC-super-{}", Uuid::now_v7().simple());
+        let (status, body) =
+            post_adhoc(app, &conference_definition(&marker, false), &cookies, &name).await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+    });
+}
+
+/// (f) The table policy does not depend on who asks: the service refuses a
+/// join to `users` even for a superuser viewer.
+#[test]
+fn gather_service_refuses_users_join_for_superuser() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let marker = format!("GADHOC-svc-{}", Uuid::now_v7().simple());
+        conference_by_real_author(app, &marker).await;
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+        let ctx = QueryContext {
+            current_user_id: Some(Uuid::nil()),
+            viewer: Some(admin),
+            url_args: HashMap::new(),
+            language: None,
+        };
+        let result = app
+            .state
+            .gather()
+            .execute_definition(
+                &conference_definition(&marker, true),
+                &display(25),
+                1,
+                HashMap::new(),
+                LIVE_STAGE_ID,
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err(), "a users join must be refused: {result:?}");
+    });
+}
+
+/// (g) A named gather stored without passing through `register_query`, the way
+/// a plugin migration seeds one, is refused when it runs.
+#[test]
+fn named_gather_seeded_by_sql_cannot_read_users() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let marker = format!("GADHOC-named-{}", Uuid::now_v7().simple());
+        let (_author, hash) = conference_by_real_author(app, &marker).await;
+        let query_id = format!("gadhoc_named_{}", Uuid::now_v7().simple());
+        let definition = serde_json::to_value(conference_definition(&marker, true)).unwrap();
+        let display = serde_json::to_value(display(25)).unwrap();
+        sqlx::query(
+            "INSERT INTO gather_query \
+             (query_id, label, description, definition, display, plugin, created, changed) \
+             VALUES ($1, 'seeded', NULL, $2, $3, 'test', 0, 0)",
+        )
+        .bind(&query_id)
+        .bind(&definition)
+        .bind(&display)
+        .execute(&app.db)
+        .await
+        .expect("seed the named gather");
+        app.state.gather().reload_from_db().await.expect("reload");
+
+        let response = app
+            .request(
+                Request::get(format!("/api/query/{query_id}/execute"))
+                    .header("x-forwarded-for", test_ip_for(&query_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes).into_owned();
+
+        sqlx::query("DELETE FROM gather_query WHERE query_id = $1")
+            .bind(&query_id)
+            .execute(&app.db)
+            .await
+            .expect("remove the seeded gather");
+        app.state.gather().reload_from_db().await.expect("reload");
+
+        assert_ne!(status, StatusCode::OK, "body: {body}");
+        assert!(!body.contains(&hash), "the author's hash leaked: {body}");
+        assert!(!body.contains("$argon2"), "a password hash leaked: {body}");
     });
 }

@@ -357,6 +357,26 @@ Content-Type: application/json
 
 Returns the same response shape as Execute Query.
 
+Requires `administer site`. Any other caller, including an anonymous one, gets a
+403 with a JSON `error` body. The endpoint runs a definition the caller wrote, so
+it takes the permission that guards the gather builder screens whose preview
+calls it.
+
+What a definition may read is checked on every gather, not only this one: named
+gathers, plugin-seeded and config-imported gathers, and includes are held to the
+same rules, and a definition that breaks them is refused before any SQL runs.
+
+- `base_table` is `item`. A lightweight-record gather names its `record_type`
+  instead, and reads that record's table.
+- A relationship may join only `item`, `item_translation`, `category`,
+  `category_tag`, `category_tag_hierarchy`, `url_alias` or `file_managed`.
+- No definition may read account, credential, token, permission or secret
+  tables (`users`, `roles`, `api_tokens`, `oauth_client`, `webhook` and the
+  rest of the list in `gather_service.rs`), nor any `pg_` or `_sqlx` table,
+  whatever it names them as.
+- A field, filter or sort may not name a column called `pass`, `password`,
+  `secret` or `token`, or one ending in `_hash`, `_secret` or `_token`.
+
 ---
 
 ## Categories & Tags

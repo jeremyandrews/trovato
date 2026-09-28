@@ -14,7 +14,7 @@ use axum::{
     Extension, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{Html, Json},
+    response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use super::helpers::{JsonError, html_escape as escape_html};
+use super::helpers::{JsonError, html_escape as escape_html, require_permission_json};
 use crate::error::AppError;
 
 /// Determine the language for `QueryContext` from a resolved language extension.
@@ -215,7 +215,13 @@ async fn execute_adhoc_query(
     session: Session,
     Extension(resolved_lang): Extension<ResolvedLanguage>,
     Json(request): Json<AdhocQueryRequest>,
-) -> Result<Json<GatherResultResponse>, AppError> {
+) -> Result<Response, AppError> {
+    // An ad hoc gather runs a caller-built definition, so it takes the
+    // permission that guards the gather builder screens whose preview calls it.
+    if let Err(denied) = require_permission_json(&state, &session, "administer site").await {
+        return Ok(denied.into_response());
+    }
+
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let user_id = viewer.authenticated.then_some(viewer.id);
     let language = language_for_context(&resolved_lang, state.default_language());
@@ -256,7 +262,8 @@ async fn execute_adhoc_query(
         total_pages: result.total_pages,
         has_next: result.has_next,
         has_prev: result.has_prev,
-    }))
+    })
+    .into_response())
 }
 
 async fn render_query_html(
