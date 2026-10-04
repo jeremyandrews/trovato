@@ -282,6 +282,15 @@ fn the_permission_for_one_type_does_not_open_the_add_form_for_another() {
 
 const PUBLISH: &str = "publish content";
 
+/// Make sure `/admin/content` has at least one row.
+///
+/// The bulk form, and so the CSRF token these tests scrape, is inside
+/// `{% if items %}`: on a database with no content the screen renders no form
+/// at all and there is nothing to post.
+async fn ensure_some_content(app: &TestApp) {
+    app.ensure_conference_items().await;
+}
+
 /// Scrape a `_token` out of a rendered admin page.
 fn token_in(html: &str) -> Option<String> {
     let at = html.find(r#"name="_token""#)?;
@@ -338,6 +347,7 @@ async fn bulk(app: &TestApp, cookies: &str, bucket: &str, action: &str) -> (Stat
 fn bulk_publish_and_unpublish_are_refused_without_the_publish_permission() {
     run_test(async {
         let app = shared_app().await;
+        ensure_some_content(app).await;
         let (_, cookies) = user_holding(app, "bulkpub-no", &["edit any content"]).await;
 
         for action in ["publish", "unpublish"] {
@@ -355,6 +365,7 @@ fn bulk_publish_and_unpublish_are_refused_without_the_publish_permission() {
 fn bulk_publish_passes_the_permission_check_with_both_permissions() {
     run_test(async {
         let app = shared_app().await;
+        ensure_some_content(app).await;
         let (_, cookies) = user_holding(app, "bulkpub-yes", &["edit any content", PUBLISH]).await;
 
         for action in ["publish", "unpublish"] {
@@ -372,6 +383,7 @@ fn bulk_publish_passes_the_permission_check_with_both_permissions() {
 fn bulk_delete_still_asks_for_the_delete_permission_and_not_for_publish() {
     run_test(async {
         let app = shared_app().await;
+        ensure_some_content(app).await;
 
         // The arms did not collapse into one check: a role that may publish
         // still cannot delete, and a role that may delete needs no publish

@@ -376,3 +376,22 @@ async fn a_write_that_changes_no_fields_at_all_decides_nothing() {
         .expect("no submitted fields, nothing to refuse");
     assert_eq!(out, None);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_background_principal_writes_every_field() {
+    let items = item_service_with_ref_plugin();
+    // Cron and the queue worker write as nobody — no identity, no permissions
+    // — so every governed field would be denied to them and a scheduled job
+    // re-saving an item would fail. The marker is constructed by no web,
+    // session or auth path, so this is not a channel a user can reach.
+    let out = items
+        .gate_field_writes(
+            &UserContext::background(),
+            "person",
+            Some(&obj(&[("ssn", "999-99-9999")])),
+            Some(&obj(&[("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect("the background principal is not held to a human permission");
+    assert_eq!(out, Some(obj(&[("ssn", "999-99-9999")])));
+}

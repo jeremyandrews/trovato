@@ -1547,6 +1547,14 @@ impl ItemService {
         submitted: Option<&serde_json::Value>,
         stored: Option<&serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, WriteDenied> {
+        // The kernel-internal background principal (P11c / D-40) writes as
+        // nobody: it carries no human identity and holds no permissions, so
+        // every governed field would be denied to it and a cron job re-saving
+        // an item would fail. It is also constructed by no web, session or auth
+        // path, so this is not a channel a user can reach.
+        if user.is_background() {
+            return Ok(submitted.cloned());
+        }
         let Some(submitted) = submitted else {
             return Ok(None);
         };
@@ -1637,7 +1645,10 @@ impl ItemService {
         stored: Option<i16>,
     ) -> Result<Option<i16>, WriteDenied> {
         // `can` is the administrator bypass plus the role grant, spelled once.
-        if user.can(PUBLISH_CONTENT) {
+        // The background principal passes for the reason given in
+        // [`Self::gate_field_writes`]: it holds no permissions at all, and cron
+        // and the queue worker publish on the site's behalf, not a user's.
+        if user.is_background() || user.can(PUBLISH_CONTENT) {
             return Ok(submitted);
         }
         match stored {
@@ -2439,6 +2450,21 @@ mod tests {
         assert_eq!(
             ItemService::gate_publish(&admin, Some(1), None),
             Ok(Some(1))
+        );
+    }
+
+    #[test]
+    fn the_background_principal_publishes_and_is_not_asked_for_a_permission() {
+        // Cron and the queue worker write as nobody: no human identity, no
+        // permissions at all. Holding them to a human permission plane would
+        // mean a scheduled job could not publish what it was scheduled to
+        // publish. The marker is constructed by no web, session or auth path.
+        let bg = UserContext::background();
+        assert!(!bg.can(PUBLISH_CONTENT), "it holds no permissions");
+        assert_eq!(ItemService::gate_publish(&bg, Some(1), None), Ok(Some(1)));
+        assert_eq!(
+            ItemService::gate_publish(&bg, Some(0), Some(1)),
+            Ok(Some(0))
         );
     }
 }
