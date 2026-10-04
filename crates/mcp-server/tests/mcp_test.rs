@@ -706,3 +706,188 @@ fn update_changing_the_status_is_refused_without_publish_content() {
         Item::delete(ctx.state.db(), item.id).await.ok();
     });
 }
+
+// =============================================================================
+// Problem 7 — `list_items` returned rows, not answers.
+//
+// It forced `status >= 1` for a non-administrator and then handed back
+// `list_filtered` unchanged: no stage filter, no `tap_item_access`, no role
+// check. `get_item` in the same file already routes through
+// `load_for_view_filtered`, so the two tools disagreed about the same item — one
+// would hand over a published item on an internal stage that the other reported
+// as missing. `total` stays the pre-filter count, as the REST list endpoint
+// already documents.
+// =============================================================================
+
+/// A fixture content type of its own, so the assertions can be about exactly
+/// two items rather than about whatever else the database holds.
+const ACCESS_PROBE: &str = "mcp_access_probe";
+
+async fn ensure_access_probe_type(ctx: &common::TestContext) {
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+         VALUES ($1, 'MCP Access Probe', '', true, 'Title', 'mcp_test', '{\"fields\": []}'::jsonb) \
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(ACCESS_PROBE)
+    .execute(ctx.state.db())
+    .await
+    .expect("seed the probe type");
+
+    ctx.state
+        .content_types()
+        .create(
+            ACCESS_PROBE,
+            "MCP Access Probe",
+            None,
+            serde_json::json!({ "fields": [] }),
+        )
+        .await
+        .ok();
+}
+
+/// A stage of this test's own. `visibility: None` takes the column default,
+/// which is internal.
+async fn internal_stage(ctx: &common::TestContext) -> uuid::Uuid {
+    use trovato_kernel::models::stage::{CreateStage, Stage};
+
+    let suffix = &uuid::Uuid::now_v7().simple().to_string()[..8];
+    Stage::create(
+        ctx.state.db(),
+        CreateStage {
+            label: format!("MCP access {suffix}"),
+            machine_name: format!("mcp_access_{suffix}"),
+            description: None,
+            visibility: None,
+            is_default: None,
+            weight: None,
+        },
+    )
+    .await
+    .expect("create an internal stage")
+    .id
+}
+
+#[test]
+fn list_items_hides_what_get_item_would_refuse() {
+    run_test(async {
+        let ctx = shared_app().await;
+        ensure_access_probe_type(ctx).await;
+
+        // The probe type is this test's own, and `total` below is asserted
+        // exactly, so start from an empty set: a previous failing run of this
+        // test leaves its two items behind.
+        sqlx::query("DELETE FROM item WHERE type = $1")
+            .bind(ACCESS_PROBE)
+            .execute(ctx.state.db())
+            .await
+            .expect("clear the probe type");
+
+        // Both published; one on an internal stage.
+        let stage = internal_stage(ctx).await;
+        let hidden = Item::create(
+            ctx.state.db(),
+            CreateItem {
+                item_type: ACCESS_PROBE.to_string(),
+                title: "MCP internal stage item".to_string(),
+                author_id: ctx.admin_user.id,
+                status: Some(1),
+                promote: None,
+                sticky: None,
+                fields: None,
+                stage_id: Some(stage),
+                language: None,
+                log: Some("access probe".to_string()),
+            },
+        )
+        .await
+        .expect("create the internal-stage item");
+
+        let shown = Item::create(
+            ctx.state.db(),
+            CreateItem {
+                item_type: ACCESS_PROBE.to_string(),
+                title: "MCP live stage item".to_string(),
+                author_id: ctx.admin_user.id,
+                status: Some(1),
+                promote: None,
+                sticky: None,
+                fields: None,
+                stage_id: Some(LIVE_STAGE_ID),
+                language: None,
+                log: Some("access probe".to_string()),
+            },
+        )
+        .await
+        .expect("create the live-stage item");
+
+        let reader = user_with(ctx, &["access content"]);
+
+        // `get_item` already refuses the internal-stage item.
+        let refused = trovato_mcp::tools::items::get_item(
+            &ctx.state,
+            &reader,
+            GetItemParams {
+                id: hidden.id.to_string(),
+            },
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "get_item must refuse the internal-stage item, so list_items has to agree"
+        );
+
+        let result = trovato_mcp::tools::items::list_items(
+            &ctx.state,
+            &reader,
+            ListItemsParams {
+                content_type: Some(ACCESS_PROBE.to_string()),
+                status: None,
+                author_id: None,
+                page: Some(1),
+                per_page: Some(50),
+            },
+        )
+        .await
+        .expect("list_items should succeed");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&extract_text(&result)).expect("valid JSON");
+        let body = json.to_string();
+        assert!(
+            body.contains("MCP live stage item"),
+            "the published live item must still be listed, got {body}"
+        );
+        assert!(
+            !body.contains("MCP internal stage item"),
+            "the item get_item refuses must not be listed either, got {body}"
+        );
+        assert_eq!(
+            json["total"], 2,
+            "total stays the pre-filter count, as the REST list endpoint documents"
+        );
+
+        // An administrator still sees both.
+        let result = trovato_mcp::tools::items::list_items(
+            &ctx.state,
+            &ctx.admin_user_ctx,
+            ListItemsParams {
+                content_type: Some(ACCESS_PROBE.to_string()),
+                status: None,
+                author_id: None,
+                page: Some(1),
+                per_page: Some(50),
+            },
+        )
+        .await
+        .expect("list_items should succeed");
+        let body = extract_text(&result);
+        assert!(
+            body.contains("MCP internal stage item") && body.contains("MCP live stage item"),
+            "an administrator sees both, got {body}"
+        );
+
+        Item::delete(ctx.state.db(), hidden.id).await.ok();
+        Item::delete(ctx.state.db(), shown.id).await.ok();
+    });
+}

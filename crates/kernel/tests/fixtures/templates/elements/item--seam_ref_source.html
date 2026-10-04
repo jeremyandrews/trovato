@@ -1,0 +1,16 @@
+{#
+  Test fixture. The shipped theme renders neither `referenced_items` nor
+  `reverse_references`, so there is no page in the repository on which the
+  item-page reference titles can be observed; the tutorial theme under
+  `docs/tutorial/templates/` is the documented example of a theme that does.
+  This template is the smallest thing that puts both context keys on a page, so
+  `item_reference_access_test` can assert which titles reach it.
+#}
+<article class="seam-source">
+  <h1>{{ item.title }}</h1>
+  {% for field_name, refs in referenced_items %}
+    {% for ref in refs %}
+      <span class="forward-reference" data-field="{{ field_name }}">{{ ref.title }}</span>
+    {% endfor %}
+  {% endfor %}
+</article>

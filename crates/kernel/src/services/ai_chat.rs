@@ -18,6 +18,7 @@ use sqlx::PgPool;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::content::ItemService;
 use crate::models::SiteConfig;
 use crate::models::item::Item;
 use crate::models::stage::LIVE_STAGE_ID;
@@ -25,6 +26,7 @@ use crate::search::SearchService;
 use crate::services::ai_provider::{
     AiOperationType, AiProviderService, ProviderProtocol, ResolvedProvider,
 };
+use crate::tap::UserContext;
 
 // =============================================================================
 // Configuration types
@@ -254,15 +256,33 @@ impl ChatService {
     /// Search for relevant content and format as context text.
     ///
     /// Returns an empty string if RAG is disabled or no results match.
+    ///
+    /// # Access
+    ///
+    /// The context is built **as `viewer`**, through both tiers of the shared
+    /// seam ([`ItemService::filter_page_for_view`]): search's own SQL applies
+    /// only a coarse `status`/`author`/`stage` filter and no field-level
+    /// decision at all, so without this the full field set of every hit — a PII
+    /// field `tap_field_access` denies this viewer included — went into the
+    /// model prompt and could be quoted back in the answer.
+    ///
+    /// A hit that does not survive the seam is **dropped**, not degraded to its
+    /// search snippet: the snippet is built from the same field text.
     pub async fn search_for_context(
         &self,
         query: &str,
         config: &ChatConfig,
-        user_id: Option<Uuid>,
+        viewer: &UserContext,
+        items: &ItemService,
     ) -> String {
         if !config.rag_enabled {
             return String::new();
         }
+
+        // The coarse SQL's `status = 1 OR author_id = $user` arm, so a viewer's
+        // own drafts are candidates; the seam below decides what of that they
+        // may actually be told.
+        let user_id = viewer.authenticated.then_some(viewer.id);
 
         let stage_ids = vec![LIVE_STAGE_ID];
         let results = match self
@@ -293,44 +313,53 @@ impl ChatService {
             return String::new();
         }
 
-        // Load actual items to include full field data in context.
+        // Load the hits, then route them through the seam: the item tier drops
+        // a hit this viewer may not see at all, and the field tier drops the
+        // fields of the survivors they may not see.
         let ids: Vec<Uuid> = filtered.iter().map(|r| r.id).collect();
-        let items = match load_items_by_ids(&self.db, &ids).await {
-            Ok(items) => items,
+        let candidates = match load_items_by_ids(&self.db, &ids).await {
+            Ok(candidates) => candidates,
             Err(e) => {
-                warn!(error = %e, "failed to load items for RAG context, using snippets only");
-                Vec::new()
+                // No snippet fallback: the snippet is built from the same field
+                // text this viewer has not been cleared for.
+                warn!(error = %e, "failed to load items for RAG context, continuing without it");
+                return String::new();
             }
         };
+        let page_size = candidates.len();
+        let visible = items
+            .filter_page_for_view(candidates, viewer, "view", page_size)
+            .await;
 
         // Build a lookup from id → Item for fast access.
         let item_map: std::collections::HashMap<Uuid, &Item> =
-            items.iter().map(|item| (item.id, item)).collect();
+            visible.iter().map(|item| (item.id, item)).collect();
 
         let mut context = String::from("Relevant site content:\n\n");
-        for (i, r) in filtered.iter().enumerate() {
+        let mut shown = 0usize;
+        for r in &filtered {
             use std::fmt::Write;
-            let title = truncate_str(&r.title, 200);
+            // A hit the seam dropped is absent, not summarised.
+            let Some(item) = item_map.get(&r.id) else {
+                continue;
+            };
+            shown += 1;
+            let title = truncate_str(&item.title, 200);
             // Infallible: writing to String
-            writeln!(context, "{}. {} (type: {})", i + 1, title, r.item_type).unwrap_or_default();
+            writeln!(context, "{}. {} (type: {})", shown, title, item.item_type)
+                .unwrap_or_default();
 
-            // Include item field data if available.
-            if let Some(item) = item_map.get(&r.id) {
-                let fields_text = format_item_fields(&item.fields);
-                if !fields_text.is_empty() {
-                    // Truncate total field text to limit prompt size.
-                    let trimmed = truncate_str(&fields_text, 1000);
-                    // Infallible: writing to String
-                    writeln!(context, "{trimmed}").unwrap_or_default();
-                }
-            } else if let Some(ref snippet) = r.snippet {
-                // Fall back to search snippet if item load failed.
-                let clean = strip_html_tags(snippet);
-                let trimmed = truncate_str(&clean, 500);
+            let fields_text = format_item_fields(&item.fields);
+            if !fields_text.is_empty() {
+                // Truncate total field text to limit prompt size.
+                let trimmed = truncate_str(&fields_text, 1000);
                 // Infallible: writing to String
-                writeln!(context, "   {trimmed}").unwrap_or_default();
+                writeln!(context, "{trimmed}").unwrap_or_default();
             }
             context.push('\n');
+        }
+        if shown == 0 {
+            return String::new();
         }
         context
     }

@@ -845,3 +845,118 @@ fn the_permission_holder_publishes_through_both_paths() {
             .unwrap();
     });
 }
+
+// ============================================================================
+// Problem 4 — the edit form prefilled a reference title with an unchecked load.
+//
+// `edit_item_form` resolves each RecordReference target's title so the
+// autocomplete box comes back showing what the field points at. It loaded the
+// target with `ItemService::load`, which asks nobody anything, so an editor who
+// may edit this item learned the title of a target they may not view. The id
+// was always theirs — they can read it in the form value — but the title was
+// not.
+// ============================================================================
+
+#[test]
+fn a_reference_title_is_prefilled_only_when_the_editor_may_view_the_target() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+
+        // An editor of the referring type, with no view permission over the
+        // target type: the published fast path is the only way they see one.
+        let (_, cookies) =
+            common::user_holding(app, "k1refaccess", &[&format!("edit any {TYPE}")]).await;
+
+        let author: Uuid = sqlx::query_scalar("SELECT id FROM users ORDER BY created LIMIT 1")
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+
+        // Two targets, one unpublished and one published, each with a referring
+        // item of its own. Two pairs rather than one target published half way
+        // through: `ItemService::load` caches, so a raw `UPDATE` would not be
+        // seen and the second half of the test would be measuring the cache.
+        let mut ids = Vec::new();
+        for (n, (title, status)) in [("Secret Target Topic", 0i16), ("Open Target Topic", 1i16)]
+            .into_iter()
+            .enumerate()
+        {
+            let target = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO item (id, type, title, fields, status, author_id, created, changed) \
+                 VALUES ($1, $2, $3, '{}'::jsonb, $4, $5, 0, 0)",
+            )
+            .bind(target)
+            .bind(REF_TYPE)
+            .bind(title)
+            .bind(status)
+            .bind(author)
+            .execute(&app.db)
+            .await
+            .unwrap();
+
+            let item = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO item (id, type, title, fields, status, author_id, created, changed) \
+                 VALUES ($1, $2, $3, $4::jsonb, 1, $5, 0, 0)",
+            )
+            .bind(item)
+            .bind(TYPE)
+            .bind(format!("Referring Item {n}"))
+            .bind(json!({ "field_target": target.to_string() }).to_string())
+            .bind(author)
+            .execute(&app.db)
+            .await
+            .unwrap();
+
+            ids.push((item, target, title));
+        }
+
+        for (item, target, title) in &ids {
+            let html = body_string(
+                app.request_with_cookies(
+                    Request::builder()
+                        .uri(format!("/item/{item}/edit"))
+                        .header("x-forwarded-for", common::test_ip_for("k1refaccess"))
+                        .body(Body::empty())
+                        .unwrap(),
+                    &cookies,
+                )
+                .await,
+            )
+            .await;
+
+            // The editor's own stored value survives either way: the id was
+            // always theirs to read, it is in the form they are editing.
+            assert_eq!(
+                input_value(&html, "field_target").as_deref(),
+                Some(target.to_string().as_str()),
+                "the stored reference must survive, got {html}"
+            );
+
+            if *title == "Secret Target Topic" {
+                assert!(
+                    !html.contains(title),
+                    "the title of a target this editor may not view must not be \
+                     prefilled, got {html}"
+                );
+            } else {
+                assert!(
+                    html.contains(title),
+                    "a viewable target's title must still be prefilled, got {html}"
+                );
+            }
+        }
+
+        let to_delete: Vec<Uuid> = ids
+            .iter()
+            .flat_map(|(item, target, _)| [*item, *target])
+            .collect();
+        sqlx::query("DELETE FROM item WHERE id = ANY($1)")
+            .bind(to_delete)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    });
+}

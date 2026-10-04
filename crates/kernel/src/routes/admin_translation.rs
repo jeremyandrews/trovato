@@ -61,11 +61,21 @@ async fn translation_list(
     session: Session,
     Path(id): Path<Uuid>,
 ) -> Response {
-    let Ok(_user) = require_permission(&state, &session, "translate content").await else {
+    let Ok(user) = require_permission(&state, &session, "translate content").await else {
         return super::helpers::render_error("Permission denied");
     };
 
-    let Some(item) = state.items().load(id).await.ok().flatten() else {
+    // `translate content` says this user translates; it does not say *what*.
+    // The seam decides that, and drops the fields they may not see before the
+    // item reaches the template context.
+    let user_ctx = super::helpers::admin_user_context(&state, &user).await;
+    let Some(item) = state
+        .items()
+        .load_for_view_filtered(id, &user_ctx, "view")
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_not_found();
     };
 
@@ -109,11 +119,20 @@ async fn translation_edit(
     session: Session,
     Path((id, lang)): Path<(Uuid, String)>,
 ) -> Response {
-    let Ok(_user) = require_permission(&state, &session, "translate content").await else {
+    let Ok(user) = require_permission(&state, &session, "translate content").await else {
         return super::helpers::render_error("Permission denied");
     };
 
-    let Some(item) = state.items().load(id).await.ok().flatten() else {
+    // Same bar as the list, and the same field filtering: the side-by-side form
+    // puts every field of the original on the page.
+    let user_ctx = super::helpers::admin_user_context(&state, &user).await;
+    let Some(item) = state
+        .items()
+        .load_for_view_filtered(id, &user_ctx, "view")
+        .await
+        .ok()
+        .flatten()
+    else {
         return render_not_found();
     };
 
@@ -189,6 +208,21 @@ async fn translation_save(
         return render_not_found();
     };
 
+    // The user, so the save can refuse a translated value for a field this
+    // user may not edit: a translation writes field values like any other save.
+    let user_ctx = super::helpers::admin_user_context(&state, &user).await;
+
+    // An item this translator may not view is not one they may write a
+    // translation onto, and the refusal is the one a missing item produces.
+    if !state
+        .items()
+        .check_access(&item, "view", &user_ctx)
+        .await
+        .unwrap_or(false)
+    {
+        return render_not_found();
+    }
+
     // A language the site does not know is a 404, exactly as it is on the GET:
     // the two have to agree, or the form renders at a URL that refuses to save.
     if !state.known_languages().iter().any(|l| l == &lang) {
@@ -219,9 +253,6 @@ async fn translation_save(
     }
     let fields = serde_json::Value::Object(fields);
 
-    // The user, so the save can refuse a translated value for a field this
-    // user may not edit: a translation writes field values like any other save.
-    let user_ctx = super::helpers::admin_user_context(&state, &user).await;
     match state
         .items()
         .save_translation(id, &lang, title, &fields, &user_ctx)
@@ -251,12 +282,28 @@ async fn translation_delete(
     Path((id, lang)): Path<(Uuid, String)>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    let Ok(_user) = require_permission(&state, &session, "translate content").await else {
+    let Ok(user) = require_permission(&state, &session, "translate content").await else {
         return super::helpers::render_error("Permission denied");
     };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
+    }
+
+    // The item is loaded for one reason: to ask the seam about it. Removing a
+    // translation is a write to an item, and an item this translator may not
+    // view is not theirs to write to.
+    let user_ctx = super::helpers::admin_user_context(&state, &user).await;
+    let Some(item) = state.items().load(id).await.ok().flatten() else {
+        return render_not_found();
+    };
+    if !state
+        .items()
+        .check_access(&item, "view", &user_ctx)
+        .await
+        .unwrap_or(false)
+    {
+        return render_not_found();
     }
 
     match state.items().delete_translation(id, &lang).await {

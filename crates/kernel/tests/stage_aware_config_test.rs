@@ -11,26 +11,7 @@ use common::{TestApp, run_test, shared_app};
 use trovato_kernel::ConfigEntity;
 use trovato_kernel::config_storage::entity_types;
 use trovato_kernel::models::ItemType;
-use trovato_kernel::models::stage::{CreateStage, LIVE_STAGE_ID, Stage};
-
-/// Create a real stage (category_tag + stage_config) for FK-safe tests.
-async fn create_test_stage(app: &TestApp, prefix: &str) -> Uuid {
-    let suffix = &Uuid::now_v7().simple().to_string()[..8];
-    let stage = Stage::create(
-        &app.db,
-        CreateStage {
-            label: format!("{prefix} {suffix}"),
-            machine_name: format!("{prefix}_{suffix}"),
-            description: None,
-            visibility: None,
-            is_default: None,
-            weight: None,
-        },
-    )
-    .await
-    .expect("failed to create test stage");
-    stage.id
-}
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
 
 /// Test that live stage returns direct storage behavior.
 #[test]
@@ -56,7 +37,7 @@ fn stage_aware_create_in_stage() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "cfgcreate").await;
+        let stage_id = common::create_test_stage(app, "cfgcreate").await;
         let stage_storage = app.state.config_storage_for_stage(stage_id);
         let live_storage = app.state.config_storage_for_stage(LIVE_STAGE_ID);
 
@@ -108,7 +89,7 @@ fn stage_aware_staged_overrides_live() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "cfgoverride").await;
+        let stage_id = common::create_test_stage(app, "cfgoverride").await;
         let stage_storage = app.state.config_storage_for_stage(stage_id);
         let live_storage = app.state.config_storage_for_stage(LIVE_STAGE_ID);
 
@@ -179,7 +160,7 @@ fn stage_aware_delete_marks_for_deletion() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "cfgdelete").await;
+        let stage_id = common::create_test_stage(app, "cfgdelete").await;
         let stage_storage = app.state.config_storage_for_stage(stage_id);
         let live_storage = app.state.config_storage_for_stage(LIVE_STAGE_ID);
 
@@ -241,7 +222,7 @@ fn stage_aware_list_merges_stage_and_live() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "cfglist").await;
+        let stage_id = common::create_test_stage(app, "cfglist").await;
         let stage_storage = app.state.config_storage_for_stage(stage_id);
         let live_storage = app.state.config_storage_for_stage(LIVE_STAGE_ID);
 

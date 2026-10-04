@@ -428,3 +428,180 @@ fn a_written_translation_reaches_the_reader() {
 //
 // Adding a carrier would mean changing a WIT function signature or an SDK type,
 // which this work is fenced against. Recorded as a finding instead.
+
+// =============================================================================
+// Problem 8, the write half — `translation_save` and `translation_delete` asked
+// for `translate content` and nothing else, so a translation could be written
+// to, or removed from, an item the translator may not view.
+// =============================================================================
+
+#[test]
+fn a_translation_cannot_be_written_to_an_item_the_translator_cannot_view() {
+    run_test(async {
+        let app = shared_app().await;
+        common::ensure_translation_table(app);
+        app.ensure_plugin_enabled("trovato_content_translation")
+            .await;
+
+        let tag = Uuid::now_v7().simple().to_string();
+        let draft = create_draft(app, &format!("Write Draft {tag}")).await;
+        let visible = create_item(app, &format!("Write Public {tag}")).await;
+
+        let (_, cookies) = common::user_holding(app, "transwaccess", &["translate content"]).await;
+
+        // The token comes off a page this translator may read; tokens are pooled
+        // per session, not bound to a path, so this is the token the save would
+        // have carried.
+        let token = csrf_token(
+            app,
+            &cookies,
+            &format!("/admin/content/{visible}/translate/it"),
+        )
+        .await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/content/{draft}/translate/it"),
+            format!(
+                "_token={}&_form_build_id=x&title=Tradotto+di+nascosto",
+                urlencoding::encode(&token)
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "saving a translation onto an unviewable item must answer as for a missing one"
+        );
+        assert!(
+            stored(app, draft, "it").await.is_none(),
+            "and nothing may have been written"
+        );
+
+        // The same translator can still save against the item they may view.
+        let token = csrf_token(
+            app,
+            &cookies,
+            &format!("/admin/content/{visible}/translate/it"),
+        )
+        .await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/content/{visible}/translate/it"),
+            format!(
+                "_token={}&_form_build_id=x&title=Tradotto+alla+luce",
+                urlencoding::encode(&token)
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::SEE_OTHER,
+            "a translator must still save a translation they are allowed to"
+        );
+        assert!(
+            stored(app, visible, "it").await.is_some(),
+            "the allowed save must have landed"
+        );
+    });
+}
+
+#[test]
+fn a_translation_cannot_be_deleted_from_an_item_the_translator_cannot_view() {
+    run_test(async {
+        let app = shared_app().await;
+        common::ensure_translation_table(app);
+        app.ensure_plugin_enabled("trovato_content_translation")
+            .await;
+
+        let tag = Uuid::now_v7().simple().to_string();
+        let draft = create_draft(app, &format!("Delete Draft {tag}")).await;
+        let visible = create_item(app, &format!("Delete Public {tag}")).await;
+
+        for item in [draft, visible] {
+            sqlx::query(
+                "INSERT INTO item_translation (item_id, language, title, fields) \
+                 VALUES ($1, 'it', 'Da rimuovere', '{}'::jsonb) \
+                 ON CONFLICT (item_id, language) DO NOTHING",
+            )
+            .bind(item)
+            .execute(&app.db)
+            .await
+            .expect("seed a translation to remove");
+        }
+
+        let (_, cookies) = common::user_holding(app, "transdaccess", &["translate content"]).await;
+
+        let token = csrf_token(
+            app,
+            &cookies,
+            &format!("/admin/content/{visible}/translate/it"),
+        )
+        .await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/content/{draft}/translate/it/delete"),
+            format!("_token={}", urlencoding::encode(&token)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "deleting a translation off an unviewable item must answer as for a missing one"
+        );
+        assert!(
+            stored(app, draft, "it").await.is_some(),
+            "and the translation must still be there"
+        );
+
+        // The allowed delete still works.
+        let token = csrf_token(
+            app,
+            &cookies,
+            &format!("/admin/content/{visible}/translate/it"),
+        )
+        .await;
+        let status = post(
+            app,
+            &cookies,
+            &format!("/admin/content/{visible}/translate/it/delete"),
+            format!("_token={}", urlencoding::encode(&token)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::SEE_OTHER,
+            "a translator must still remove a translation they are allowed to"
+        );
+        assert!(
+            stored(app, visible, "it").await.is_none(),
+            "the allowed delete must have landed"
+        );
+    });
+}
+
+/// An unpublished item, which a translator with no view permission may not see.
+async fn create_draft(app: &TestApp, title: &str) -> Uuid {
+    app.state
+        .items()
+        .create(
+            CreateItem {
+                item_type: "page".to_string(),
+                title: title.to_string(),
+                author_id: Uuid::nil(),
+                status: Some(0),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({})),
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("translation write access test".to_string()),
+            },
+            &UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]),
+        )
+        .await
+        .expect("create draft")
+        .id
+}

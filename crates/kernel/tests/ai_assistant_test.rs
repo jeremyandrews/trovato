@@ -1895,3 +1895,79 @@ fn the_launcher_appears_on_an_item_of_a_named_type_and_nowhere_else() {
             .ok();
     });
 }
+
+// =============================================================================
+// Problem 10 — `validate_scope_id` accepted any item id whose *type* the scope
+// listed, and never asked whether the caller may view that item. An assistant
+// conversation could be opened on a draft, and the scope plugin was then asked
+// for context about it.
+// =============================================================================
+
+#[test]
+fn an_item_scope_id_the_caller_cannot_view_is_a_404() {
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        set_config(app, base_config()).await;
+        app.ensure_conference_type().await;
+
+        // A user who may use this assistant, and who may read published content
+        // and nothing else.
+        let (author, cookies) =
+            common::user_holding(app, "asstview", &["use ai", "use ai assistant", PERM]).await;
+
+        let draft = Uuid::now_v7();
+        let published = Uuid::now_v7();
+        for (id, status) in [(draft, 0), (published, 1)] {
+            sqlx::query(
+                "INSERT INTO item (id, type, title, fields, status, author_id, stage_id, created, changed) \
+                 VALUES ($1, 'conference', 'Assistant access conference', '{}'::jsonb, $2, $3, \
+                         $4::uuid, $5, $5)",
+            )
+            .bind(id)
+            .bind(status as i16)
+            .bind(author)
+            .bind(Uuid::parse_str(trovato_sdk::types::LIVE_STAGE_UUID).unwrap())
+            .bind(chrono::Utc::now().timestamp())
+            .execute(&app.db)
+            .await
+            .expect("seed a conference");
+        }
+
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/ai/assistant/{ITEM_SCOPE}/{draft}"))
+                    .header("x-forwarded-for", common::test_ip_for("asstview"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "an item this caller cannot view is not something this assistant configures"
+        );
+
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/ai/assistant/{ITEM_SCOPE}/{published}"))
+                    .header("x-forwarded-for", common::test_ip_for("asstview"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a published item of a named type still opens"
+        );
+
+        sqlx::query("DELETE FROM item WHERE id = ANY($1)")
+            .bind(vec![draft, published])
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}

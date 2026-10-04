@@ -401,6 +401,24 @@ async fn create_comment_inner(
             )
         })?;
 
+    // And the commenter has to be able to *see* the item. `post comments` used
+    // to be the whole rule here, so it was also a way to learn that a draft
+    // exists: the refusal is the one a missing item produces, word for word.
+    let user_ctx = crate::routes::item::get_user_context(session, state).await;
+    if !state
+        .items()
+        .check_access(&item, "view", &user_ctx)
+        .await
+        .unwrap_or(false)
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(JsonError {
+                error: "Item not found".to_string(),
+            }),
+        ));
+    }
+
     // Verify parent comment exists if specified
     if let Some(parent_id) = request.parent_id {
         let parent = state.comments().load(parent_id).await.map_err(|e| {
@@ -608,6 +626,19 @@ async fn get_comment(
                 .await
                 .unwrap_or(false) => {}
         _ => return Err(not_found()),
+    }
+
+    // And the comment's own status. `Comment::list_for_item` filters on it, so
+    // the listing never showed a held, unpublished or spam comment; this
+    // endpoint returned one to anyone who could see the parent item, one id at
+    // a time. The three exceptions are the ones that already exist elsewhere:
+    // its author (who has to see what they posted while it waits), an
+    // administrator, and a holder of the moderation permission.
+    if comment.status != CommentStatus::Published.as_i16() {
+        let is_author = user.authenticated && user.id == comment.author_id;
+        if !is_author && !user.can("administer comments") {
+            return Err(not_found());
+        }
     }
 
     let include_author = query

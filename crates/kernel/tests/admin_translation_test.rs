@@ -231,3 +231,84 @@ fn every_template_the_kernel_renders_exists() {
         missing.join("\n")
     );
 }
+
+// =============================================================================
+// Problem 8 — the translation screens asked for `translate content` and nothing
+// else.
+//
+// Both GET pages put the item, with every field, into the template context, and
+// neither asked the access seam whether this translator may see the item at all.
+// A translator could read the title, the log and every field of any draft on the
+// site by guessing its id. The pages now require `view` on the item and load it
+// through the field-filtering seam.
+// =============================================================================
+
+/// An unpublished item, which a translator with no view permission may not see.
+async fn create_draft(app: &TestApp, title: &str) -> Uuid {
+    app.state
+        .items()
+        .create(
+            CreateItem {
+                item_type: "page".to_string(),
+                title: title.to_string(),
+                author_id: Uuid::nil(),
+                status: Some(0),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({})),
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("admin translation access test".to_string()),
+            },
+            &UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]),
+        )
+        .await
+        .expect("create draft")
+        .id
+}
+
+#[test]
+fn the_translation_pages_require_view_on_the_item() {
+    run_test(async {
+        let app = shared_app().await;
+        common::ensure_translation_table(app);
+        app.ensure_plugin_enabled("trovato_content_translation")
+            .await;
+
+        let tag = Uuid::now_v7().simple().to_string();
+        let draft = create_draft(app, &format!("Translator Draft {tag}")).await;
+        let published = create_item(app, &format!("Translator Public {tag}")).await;
+
+        // A translator and nothing more.
+        let (_, cookies) = common::user_holding(app, "transaccess", &["translate content"]).await;
+
+        for path in [
+            format!("/admin/content/{draft}/translate"),
+            format!("/admin/content/{draft}/translate/it"),
+        ] {
+            let (status, html) = get(app, &cookies, &path).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "{path} must answer as for a missing item"
+            );
+            assert!(
+                !html.contains(&format!("Translator Draft {tag}")),
+                "the draft's title must not reach the page, got {html}"
+            );
+        }
+
+        // The same translator still works on an item they may see.
+        for path in [
+            format!("/admin/content/{published}/translate"),
+            format!("/admin/content/{published}/translate/it"),
+        ] {
+            let (status, html) = get(app, &cookies, &path).await;
+            assert_eq!(status, StatusCode::OK, "{path} must still render: {html}");
+            assert!(
+                html.contains(&format!("Translator Public {tag}")),
+                "the page must still name the item, got {html}"
+            );
+        }
+    });
+}

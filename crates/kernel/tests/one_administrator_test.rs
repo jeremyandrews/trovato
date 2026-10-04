@@ -29,50 +29,11 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{TestApp, run_test, shared_app, test_ip_for};
-use trovato_kernel::models::Role;
-use uuid::Uuid;
-
-/// Unique username, so parallel test binaries never share a user, a rate-limit
-/// bucket, or a password.
-fn username(prefix: &str) -> String {
-    format!("{prefix}-{}", Uuid::now_v7().simple())
-}
-
-async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
-    sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
-        .bind(name)
-        .fetch_one(&app.db)
-        .await
-        .expect("test user should exist")
-}
-
-/// Grant `permissions` to `user_id` through a role, the way a real site does.
-async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
-    let role = Role::create(&app.db, &format!("onadmin-{}", Uuid::now_v7().simple()))
-        .await
-        .expect("create role");
-    for permission in permissions {
-        Role::add_permission(&app.db, role.id, permission)
-            .await
-            .expect("add permission to role");
-    }
-    Role::assign_to_user(&app.db, user_id, role.id)
-        .await
-        .expect("assign role to user");
-    app.state.permissions().invalidate_user(user_id);
-}
+use common::{TestApp, run_test, shared_app, test_ip_for, username};
 
 /// Create a **non-superuser** holding exactly `permissions`, and log them in.
 async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> String {
-    let name = username(prefix);
-    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
-        .await;
-    let id = user_id_of(app, &name).await;
-    if !permissions.is_empty() {
-        grant_via_role(app, id, permissions).await;
-    }
-    app.login(&name, "test-password-123").await
+    common::user_holding(app, prefix, permissions).await.1
 }
 
 /// Create a superuser (the `users.is_admin` column) with **no** roles, and log

@@ -198,11 +198,15 @@ async fn page_error(
 /// Check a `scope_id` against what the scope says one is.
 ///
 /// Returns the id to store, or `Err` when the path does not describe anything
-/// this scope could be opened on.
+/// this scope could be opened on — an item the caller may not **view**
+/// included. Without that check an item-kind scope accepted any id whose type
+/// the scope listed, so a conversation could be opened on a draft and the scope
+/// plugin was then asked for context about it.
 async fn validate_scope_id(
     state: &AppState,
     scope: &RegisteredScope,
     scope_id: Option<String>,
+    user: &UserContext,
 ) -> Result<Option<String>, ()> {
     match scope.scope.id_kind {
         AssistantIdKind::None => match scope_id {
@@ -223,7 +227,16 @@ async fn validate_scope_id(
                 return Err(());
             };
             match state.items().load(uuid).await {
-                Ok(Some(item)) if scope.scope.item_types.contains(&item.item_type) => Ok(Some(id)),
+                Ok(Some(item))
+                    if scope.scope.item_types.contains(&item.item_type)
+                        && state
+                            .items()
+                            .check_access(&item, "view", user)
+                            .await
+                            .unwrap_or(false) =>
+                {
+                    Ok(Some(id))
+                }
                 _ => Err(()),
             }
         }
@@ -402,7 +415,7 @@ async fn conversation_page(
         .await;
     }
 
-    let Ok(scope_id) = validate_scope_id(&state, &scope, scope_id).await else {
+    let Ok(scope_id) = validate_scope_id(&state, &scope, scope_id, &user).await else {
         return page_error(
             &state,
             &session,

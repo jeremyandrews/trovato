@@ -260,9 +260,10 @@ async fn chat_handler(
     let system_prompt = config.system_prompt.replace("{site_name}", &site_name);
 
     // RAG context
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let rag_context = state
         .ai_chat()
-        .search_for_context(&message, &config, Some(uid))
+        .search_for_context(&message, &config, &viewer, state.items())
         .await;
 
     // Build messages

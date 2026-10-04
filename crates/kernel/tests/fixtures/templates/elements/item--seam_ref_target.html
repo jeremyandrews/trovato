@@ -1,0 +1,9 @@
+{# Test fixture; see item--seam_ref_source.html. #}
+<article class="seam-target">
+  <h1>{{ item.title }}</h1>
+  {% for type_name, refs in reverse_references %}
+    {% for ref in refs %}
+      <span class="reverse-reference" data-type="{{ type_name }}">{{ ref.title }}</span>
+    {% endfor %}
+  {% endfor %}
+</article>

@@ -222,3 +222,281 @@ fn search_snippet_escapes_html_in_source() {
         );
     });
 }
+
+// =============================================================================
+// The two read paths that formatted item fields for somebody else to read:
+// the AI chat's RAG context, and the Pagefind static index.
+//
+// Both went straight from SQL to text with no access decision at either tier,
+// so a field `tap_field_access` denies the viewer was written into the model
+// prompt, and into a static index any visitor can download. These run the real
+// reference plugin (`plugins/trovato_field_access_ref`) over the live test pool,
+// because fail-open is the shared app's answer for every governed field and a
+// test needs a real denial.
+// =============================================================================
+
+/// The reference plugin's rules deny `ssn` on type `person` without `view pii`.
+const PII_TYPE: &str = "person";
+
+async fn ensure_person_type(app: &common::TestApp) {
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+         VALUES ($1, 'Person', 'Field-access fixture', true, 'Name', 'seam_test', '{\"fields\": []}'::jsonb) \
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(PII_TYPE)
+    .execute(&app.db)
+    .await
+    .expect("seed the person type");
+
+    app.state
+        .content_types()
+        .create(
+            PII_TYPE,
+            "Person",
+            Some("Field-access fixture"),
+            serde_json::json!({ "fields": [] }),
+        )
+        .await
+        .ok();
+
+    // Both fields are searchable, so the Pagefind exporter reaches for both and
+    // the field tier is what decides between them.
+    for field in ["ssn", "bio"] {
+        sqlx::query(
+            "INSERT INTO search_field_config (id, bundle, field_name, weight) \
+             VALUES ($1, $2, $3, 'C') ON CONFLICT (bundle, field_name) DO NOTHING",
+        )
+        .bind(Uuid::now_v7())
+        .bind(PII_TYPE)
+        .bind(field)
+        .execute(&app.db)
+        .await
+        .expect("configure a searchable field");
+    }
+}
+
+/// A published person carrying one governed field and one ungoverned one.
+async fn make_person(app: &common::TestApp, name: &str, ssn: &str, bio: &str) -> Uuid {
+    let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+    app.state
+        .items()
+        .create(
+            CreateItem {
+                item_type: PII_TYPE.to_string(),
+                title: name.to_string(),
+                author_id: Uuid::nil(),
+                status: Some(1),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({ "ssn": ssn, "bio": bio })),
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("field-access read-path test".to_string()),
+            },
+            &admin,
+        )
+        .await
+        .expect("create")
+        .id
+}
+
+fn viewer(perms: &[&str]) -> UserContext {
+    UserContext::authenticated(
+        Uuid::now_v7(),
+        perms.iter().map(|s| (*s).to_string()).collect(),
+    )
+}
+
+/// Problem 5 — the chat's RAG context is built from the fields the viewer may
+/// see, through both tiers of the shared seam.
+#[test]
+fn the_chat_rag_context_drops_fields_the_viewer_may_not_see() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_person_type(app).await;
+        let items = common::item_service_with_ref_plugin(app.db.clone());
+
+        let tag = format!("zqxrag{}", Uuid::now_v7().simple());
+        let ssn = format!("ssn-{tag}");
+        let bio = format!("bio-{tag} writes about the kernel");
+        let person = make_person(app, &format!("{tag} person"), &ssn, &bio).await;
+        assert_ne!(person, Uuid::nil());
+
+        let config = trovato_kernel::services::ai_chat::ChatConfig {
+            rag_enabled: true,
+            rag_max_results: 10,
+            rag_min_score: 0.0,
+            ..Default::default()
+        };
+
+        // A reader with no `view pii`.
+        let context = app
+            .state
+            .ai_chat()
+            .search_for_context(&tag, &config, &viewer(&["access content"]), &items)
+            .await;
+        assert!(
+            context.contains(&bio),
+            "the fields this reader may see must still reach the model, got {context}"
+        );
+        assert!(
+            !context.contains(&ssn),
+            "a denied field must not be written into the model prompt, got {context}"
+        );
+
+        // A reader who holds it sees it.
+        let context = app
+            .state
+            .ai_chat()
+            .search_for_context(
+                &tag,
+                &config,
+                &viewer(&["access content", "view pii"]),
+                &items,
+            )
+            .await;
+        assert!(
+            context.contains(&ssn),
+            "a holder of `view pii` must still get the field, got {context}"
+        );
+    });
+}
+
+/// Problem 5, item tier — a hit the viewer may not see at all is dropped, and
+/// its snippet is not used as a fallback.
+///
+/// The draft is the viewer's **own**, which is the case the coarse SQL cannot
+/// answer: its `status = 1 OR author_id = $user` arm puts an author's own drafts
+/// in the result set, and whether they may read one back is a question only
+/// `check_access` answers — `view own content`, which this viewer does not hold.
+#[test]
+fn the_chat_rag_context_drops_items_the_viewer_may_not_see() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let items = common::item_service_with_ref_plugin(app.db.clone());
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+
+        // A real user, because an item's author is a foreign key.
+        let (author, _) = common::user_holding(app, "ragowner", &[]).await;
+        let reader = UserContext::authenticated(author, vec!["access content".to_string()]);
+
+        let tag = format!("zqxragitem{}", Uuid::now_v7().simple());
+        let published = make_item(app, &admin, &format!("{tag} public"), 1).await;
+        let draft = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: "conference".to_string(),
+                    title: format!("{tag} draft"),
+                    author_id: author,
+                    status: Some(0),
+                    promote: Some(0),
+                    sticky: Some(0),
+                    fields: Some(serde_json::json!({
+                        "field_body": { "value": format!("{tag} draft body detail") }
+                    })),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: Some("en".to_string()),
+                    log: Some("rag item tier test".to_string()),
+                },
+                &admin,
+            )
+            .await
+            .expect("create")
+            .id;
+        assert_ne!(published, draft);
+
+        let config = trovato_kernel::services::ai_chat::ChatConfig {
+            rag_enabled: true,
+            rag_max_results: 10,
+            rag_min_score: 0.0,
+            ..Default::default()
+        };
+
+        let context = app
+            .state
+            .ai_chat()
+            .search_for_context(&tag, &config, &reader, &items)
+            .await;
+        assert!(
+            context.contains(&format!("{tag} public")),
+            "the published item must still be context, got {context}"
+        );
+        assert!(
+            !context.contains("draft"),
+            "an item this reader cannot see must not reach the model at all, got {context}"
+        );
+    });
+}
+
+/// Problem 9 — the static Pagefind index is built as the anonymous visitor, who
+/// is who downloads it.
+#[test]
+fn the_pagefind_export_is_built_as_the_anonymous_visitor() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_person_type(app).await;
+        let items = common::item_service_with_ref_plugin(app.db.clone());
+
+        let tag = format!("zqxpf{}", Uuid::now_v7().simple());
+        let ssn = format!("ssn-{tag}");
+        let bio = format!("bio-{tag} writes about the kernel");
+        let person = make_person(app, &format!("{tag} person"), &ssn, &bio).await;
+
+        let docs = trovato_kernel::cron::indexable_documents(&app.db, &items)
+            .await
+            .expect("build the export list");
+
+        let doc = docs
+            .iter()
+            .find(|d| d.id == person)
+            .expect("a published live item is still exported");
+        assert!(
+            doc.body.contains(&bio),
+            "the fields an anonymous visitor may see are still indexed, got {}",
+            doc.body
+        );
+        assert!(
+            !doc.body.contains(&ssn),
+            "a field denied to anonymous visitors must not be indexed, got {}",
+            doc.body
+        );
+        assert!(
+            !doc.description.contains(&ssn) && !doc.location.contains(&ssn),
+            "nor may it reach a meta value"
+        );
+
+        // And an unpublished item is not in the export at all, as before.
+        let draft = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: PII_TYPE.to_string(),
+                    title: format!("{tag} draft person"),
+                    author_id: Uuid::nil(),
+                    status: Some(0),
+                    promote: Some(0),
+                    sticky: Some(0),
+                    fields: Some(serde_json::json!({ "bio": "unpublished" })),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: Some("en".to_string()),
+                    log: Some("pagefind test".to_string()),
+                },
+                &UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]),
+            )
+            .await
+            .expect("create")
+            .id;
+        let docs = trovato_kernel::cron::indexable_documents(&app.db, &items)
+            .await
+            .expect("build the export list");
+        assert!(
+            !docs.iter().any(|d| d.id == draft),
+            "an unpublished item is not exported"
+        );
+    });
+}

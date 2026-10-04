@@ -16,21 +16,45 @@ use sqlx::PgPool;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::content::ItemService;
+use crate::models::Item;
+use crate::models::Role;
+use crate::models::role::well_known::ANONYMOUS_ROLE_ID;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::helpers::html_escape;
+use crate::tap::UserContext;
 
 /// Maximum time allowed for the pagefind CLI to run (2 minutes).
 const PAGEFIND_CLI_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Row type for items to index.
-#[derive(sqlx::FromRow)]
-struct IndexableItem {
-    id: Uuid,
-    #[sqlx(rename = "type")]
-    item_type: String,
-    title: String,
-    fields: serde_json::Value,
-    created: i64,
+/// One item's contribution to the static index: the text and the meta values,
+/// already decided.
+///
+/// Exposed (`#[doc(hidden)]`, re-exported from `cron`) so an integration test
+/// can assert **which items and which text** without a Pagefind CLI on the
+/// path. The module itself stays private; this type and
+/// [`indexable_documents`] are the whole seam.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct IndexDocument {
+    /// The item this document describes.
+    pub id: Uuid,
+    /// Its content type.
+    pub item_type: String,
+    /// Its title, which is a column and not a field.
+    pub title: String,
+    /// The URL the result card links to: the alias when there is one.
+    pub url: String,
+    /// The indexed body text, built from the fields that survived the seam.
+    pub body: String,
+    /// The `description` meta value, likewise.
+    pub description: String,
+    /// The `location` meta value, likewise.
+    pub location: String,
+    /// The `event_dates` meta value, likewise.
+    pub event_dates: String,
+    /// The human-readable created date.
+    pub created_display: String,
 }
 
 /// Row type for URL alias lookup.
@@ -55,7 +79,11 @@ struct FieldConfigRow {
 /// `static_dir` is the base directory the generated index is written into,
 /// supplied by the caller from the configured static search path rather than
 /// read back out of the environment here.
-pub async fn maybe_rebuild_index(pool: &PgPool, static_dir: &Path) -> Result<bool> {
+pub async fn maybe_rebuild_index(
+    pool: &PgPool,
+    static_dir: &Path,
+    items: &ItemService,
+) -> Result<bool> {
     // Check if the signal table exists and a rebuild is requested.
     // If the table doesn't exist (plugin not installed), return early.
     let requested: Option<bool> =
@@ -82,7 +110,7 @@ pub async fn maybe_rebuild_index(pool: &PgPool, static_dir: &Path) -> Result<boo
         .context("failed to clear pagefind rebuild signal")?;
 
     // Run the actual build, recording errors in the status table
-    match build_index(pool, static_dir).await {
+    match build_index(pool, static_dir, items).await {
         Ok(count) => {
             sqlx::query(
                 "UPDATE pagefind_index_status SET last_indexed_at = $1, last_error = NULL WHERE id = 1",
@@ -113,7 +141,7 @@ pub async fn maybe_rebuild_index(pool: &PgPool, static_dir: &Path) -> Result<boo
 ///
 /// `static_dir` is the base (first) entry of the static search path, chosen by
 /// `CronService::apply_runtime_config`: the index needs exactly one destination.
-async fn build_index(pool: &PgPool, static_dir: &Path) -> Result<usize> {
+async fn build_index(pool: &PgPool, static_dir: &Path, items: &ItemService) -> Result<usize> {
     // Create a temp directory inside static/ (same filesystem for atomic rename)
     let temp_dir = static_dir.join(format!(".pagefind_build_{}", std::process::id()));
     tokio::fs::create_dir_all(&temp_dir)
@@ -121,7 +149,7 @@ async fn build_index(pool: &PgPool, static_dir: &Path) -> Result<usize> {
         .context("failed to create pagefind temp directory")?;
 
     // Ensure cleanup on both success and failure
-    let result = build_index_inner(pool, static_dir, &temp_dir).await;
+    let result = build_index_inner(pool, static_dir, &temp_dir, items).await;
 
     // Clean up temp directory
     if let Err(e) = tokio::fs::remove_dir_all(&temp_dir).await {
@@ -131,12 +159,28 @@ async fn build_index(pool: &PgPool, static_dir: &Path) -> Result<usize> {
     result
 }
 
-/// Inner build logic, separated for cleanup guarantee.
-async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) -> Result<usize> {
-    // Query all published live-stage items
-    let items = sqlx::query_as::<_, IndexableItem>(
+/// The items this index may carry, and the text each contributes.
+///
+/// The index is a **static file any visitor downloads**, so it is built as the
+/// anonymous visitor: [`UserContext::anonymous`] carrying the permissions the
+/// anonymous role actually holds, routed through
+/// [`ItemService::filter_page_for_view`]. Both tiers matter here. The item tier
+/// is why a site whose anonymous role does not hold `access content` no longer
+/// publishes its content in a world-readable index; the field tier is why a
+/// field `tap_field_access` denies an anonymous visitor is not indexed,
+/// searchable, or quoted back in an excerpt.
+///
+/// Every value below — the body text and all four meta values — is built from
+/// the **filtered** fields, so there is no second path to the field the first
+/// one dropped. `title` is a column rather than a field and is not governed.
+#[doc(hidden)]
+pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<Vec<IndexDocument>> {
+    // The coarse candidate set: published, live stage. Exactly what the seam is
+    // then asked about, rather than what it is trusted to have already been.
+    let candidates = sqlx::query_as::<_, Item>(
         r#"
-        SELECT id, type, title, fields, created
+        SELECT id, current_revision_id, type, title, author_id, status, created, changed,
+               promote, sticky, fields, stage_id, language, item_group_id, retention_days
         FROM item
         WHERE status = 1 AND stage_id = $1
         "#,
@@ -145,6 +189,20 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
     .fetch_all(pool)
     .await
     .context("failed to query items for pagefind index")?;
+
+    // The anonymous visitor, with the anonymous role's real permission set — not
+    // a bare `UserContext::anonymous()`, whose empty set would deny everything
+    // and quietly publish an empty index.
+    let anon_permissions = Role::get_permissions(pool, ANONYMOUS_ROLE_ID)
+        .await
+        .context("failed to read the anonymous role's permissions")?;
+    let mut anonymous = UserContext::anonymous();
+    anonymous.permissions = anon_permissions;
+
+    let page_size = candidates.len();
+    let visible = items
+        .filter_page_for_view(candidates, &anonymous, "view", page_size)
+        .await;
 
     // Query search field configs so we export all searchable fields,
     // not just field_body (consistent with the trigger's indexing).
@@ -175,11 +233,8 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
         .map(|r| (r.source, r.alias))
         .collect();
 
-    let count = items.len();
-    debug!(count = count, "exporting items for pagefind");
-
-    // Write each item as an HTML fragment with rich metadata
-    for item in &items {
+    let mut documents = Vec::with_capacity(visible.len());
+    for item in &visible {
         let body = extract_searchable_text(&item.fields, &item.item_type, &config_map);
 
         // Use friendly URL alias if available, otherwise /item/{id}
@@ -194,37 +249,60 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
             .unwrap_or_default();
         // Strip HTML and truncate for a clean description meta
         let description_clean = ammonia::clean(&description);
-        let description_meta = truncate_meta(&description_clean, 200);
 
-        let location = build_location_meta(&item.fields);
-        let date_range = build_date_range_meta(&item.fields);
+        documents.push(IndexDocument {
+            id: item.id,
+            item_type: item.item_type.clone(),
+            title: item.title.clone(),
+            url,
+            body,
+            description: truncate_meta(&description_clean, 200),
+            location: build_location_meta(&item.fields),
+            event_dates: build_date_range_meta(&item.fields),
+            created_display: format_unix_date(item.created),
+        });
+    }
 
-        // Format created date as human-readable
-        let created_display = format_unix_date(item.created);
+    Ok(documents)
+}
 
+/// Inner build logic, separated for cleanup guarantee.
+async fn build_index_inner(
+    pool: &PgPool,
+    static_dir: &Path,
+    temp_dir: &Path,
+    items: &ItemService,
+) -> Result<usize> {
+    let documents = indexable_documents(pool, items).await?;
+
+    let count = documents.len();
+    debug!(count = count, "exporting items for pagefind");
+
+    // Write each item as an HTML fragment with rich metadata
+    for document in &documents {
         let mut meta_tags = format!(
             "<meta data-pagefind-meta=\"type:{}\" />\n\
              <meta data-pagefind-meta=\"date:{}\" />",
-            html_escape(&item.item_type),
-            html_escape(&created_display),
+            html_escape(&document.item_type),
+            html_escape(&document.created_display),
         );
 
-        if !description_meta.is_empty() {
+        if !document.description.is_empty() {
             meta_tags.push_str(&format!(
                 "\n<meta data-pagefind-meta=\"description:{}\" />",
-                html_escape(&description_meta)
+                html_escape(&document.description)
             ));
         }
-        if !location.is_empty() {
+        if !document.location.is_empty() {
             meta_tags.push_str(&format!(
                 "\n<meta data-pagefind-meta=\"location:{}\" />",
-                html_escape(&location)
+                html_escape(&document.location)
             ));
         }
-        if !date_range.is_empty() {
+        if !document.event_dates.is_empty() {
             meta_tags.push_str(&format!(
                 "\n<meta data-pagefind-meta=\"event_dates:{}\" />",
-                html_escape(&date_range)
+                html_escape(&document.event_dates)
             ));
         }
 
@@ -232,7 +310,7 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
         // a special key that overrides the auto-detected file URL.
         meta_tags.push_str(&format!(
             "\n<meta data-pagefind-meta=\"url:{}\" />",
-            html_escape(&url)
+            html_escape(&document.url)
         ));
 
         let html = format!(
@@ -242,12 +320,12 @@ async fn build_index_inner(pool: &PgPool, static_dir: &Path, temp_dir: &Path) ->
              <div data-pagefind-body>{body}</div>\n\
              {meta_tags}\n\
              </body></html>",
-            title = html_escape(&item.title),
-            body = html_escape(&body),
+            title = html_escape(&document.title),
+            body = html_escape(&document.body),
             meta_tags = meta_tags,
         );
 
-        let file_path = temp_dir.join(format!("{}.html", item.id));
+        let file_path = temp_dir.join(format!("{}.html", document.id));
         tokio::fs::write(&file_path, html)
             .await
             .context("failed to write pagefind HTML fragment")?;

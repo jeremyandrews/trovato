@@ -394,8 +394,15 @@ impl Item {
 
     /// Get all revisions for an item.
     pub async fn get_revisions(pool: &PgPool, item_id: Uuid) -> Result<Vec<ItemRevision>> {
+        // Every column the struct declares. `change_summary` and `ai_generated`
+        // were added to `ItemRevision` and to the table (migrations
+        // 20260330000004/5) and these two lists were not: `FromRow` wants a
+        // column per field, so both of them failed at runtime for every caller,
+        // which is why the revision list page answered 500 to everybody.
         let revisions = sqlx::query_as::<_, ItemRevision>(
-            "SELECT id, item_id, author_id, title, status, fields, created, log FROM item_revision WHERE item_id = $1 ORDER BY created DESC"
+            "SELECT id, item_id, author_id, title, status, fields, created, log, \
+             change_summary, ai_generated FROM item_revision WHERE item_id = $1 \
+             ORDER BY created DESC",
         )
         .bind(item_id)
         .fetch_all(pool)
@@ -408,7 +415,8 @@ impl Item {
     /// Get a specific revision.
     pub async fn get_revision(pool: &PgPool, revision_id: Uuid) -> Result<Option<ItemRevision>> {
         let revision = sqlx::query_as::<_, ItemRevision>(
-            "SELECT id, item_id, author_id, title, status, fields, created, log FROM item_revision WHERE id = $1"
+            "SELECT id, item_id, author_id, title, status, fields, created, log, \
+             change_summary, ai_generated FROM item_revision WHERE id = $1",
         )
         .bind(revision_id)
         .fetch_optional(pool)

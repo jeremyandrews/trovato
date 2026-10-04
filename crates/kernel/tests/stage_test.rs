@@ -10,27 +10,8 @@ use uuid::Uuid;
 mod common;
 use common::{run_test, shared_app};
 
-use trovato_kernel::models::stage::{CreateStage, LIVE_STAGE_ID, Stage};
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::{ConflictResolution, ConflictType, PublishPhase};
-
-/// Create a test stage in the DB and return its UUID.
-async fn create_test_stage(app: &common::TestApp, prefix: &str) -> Uuid {
-    let suffix = &Uuid::now_v7().simple().to_string()[..8];
-    let stage = Stage::create(
-        &app.db,
-        CreateStage {
-            label: format!("{prefix} {suffix}"),
-            machine_name: format!("{prefix}_{suffix}"),
-            description: None,
-            visibility: None,
-            is_default: None,
-            weight: None,
-        },
-    )
-    .await
-    .expect("failed to create test stage");
-    stage.id
-}
 
 /// Clean up a test stage (category_tag cascades to stage_config).
 async fn cleanup_stage(app: &common::TestApp, stage_id: Uuid) {
@@ -65,7 +46,7 @@ fn stage_publish_empty_stage() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "empty").await;
+        let stage_id = common::create_test_stage(app, "empty").await;
 
         let result = app
             .stage()
@@ -87,7 +68,7 @@ fn stage_publish_moves_items_to_live() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "pub").await;
+        let stage_id = common::create_test_stage(app, "pub").await;
 
         // Create a test item in the stage
         let item_id = Uuid::now_v7();
@@ -155,7 +136,7 @@ fn stage_has_changes_with_items() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "chg").await;
+        let stage_id = common::create_test_stage(app, "chg").await;
 
         // Initially should have no changes
         let has_changes = app
@@ -208,7 +189,7 @@ fn stage_has_changes_with_deletions() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "del").await;
+        let stage_id = common::create_test_stage(app, "del").await;
 
         // Create a deletion record
         let item_id = Uuid::now_v7();
@@ -263,7 +244,7 @@ fn stage_publish_processes_deletions() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "pdel").await;
+        let stage_id = common::create_test_stage(app, "pdel").await;
 
         // Create an item to be deleted (in live stage)
         let item_id = Uuid::now_v7();
@@ -364,7 +345,7 @@ async fn create_test_author(app: &common::TestApp) -> Uuid {
 fn conflict_detection_empty_stage() {
     run_test(async {
         let app = shared_app().await;
-        let stage_id = create_test_stage(app, "conf_empty").await;
+        let stage_id = common::create_test_stage(app, "conf_empty").await;
 
         let conflicts = app
             .stage()
@@ -398,8 +379,8 @@ fn conflict_detection_cross_stage_config() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_a = create_test_stage(app, "conf_a").await;
-        let stage_b = create_test_stage(app, "conf_b").await;
+        let stage_a = common::create_test_stage(app, "conf_a").await;
+        let stage_b = common::create_test_stage(app, "conf_b").await;
 
         // Create a shared config entity revision
         let revision_id_a = Uuid::now_v7();
@@ -497,8 +478,8 @@ fn publish_with_resolution_cancel_on_conflict() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_a = create_test_stage(app, "res_a").await;
-        let stage_b = create_test_stage(app, "res_b").await;
+        let stage_a = common::create_test_stage(app, "res_a").await;
+        let stage_b = common::create_test_stage(app, "res_b").await;
 
         // Set up cross-stage conflict (same as above)
         let revision_id_a = Uuid::now_v7();
@@ -578,8 +559,8 @@ fn publish_with_resolution_overwrite_all() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_a = create_test_stage(app, "ow_a").await;
-        let stage_b = create_test_stage(app, "ow_b").await;
+        let stage_a = common::create_test_stage(app, "ow_a").await;
+        let stage_b = common::create_test_stage(app, "ow_b").await;
 
         // Set up cross-stage conflict
         let revision_id_a = Uuid::now_v7();
@@ -656,7 +637,7 @@ fn conflict_detection_live_modified_config() {
     run_test(async {
         let app = shared_app().await;
 
-        let stage_id = create_test_stage(app, "lm").await;
+        let stage_id = common::create_test_stage(app, "lm").await;
         let author_id = create_test_author(app).await;
 
         // Create a staged revision at T1
@@ -752,7 +733,7 @@ fn conflict_detection_live_modified_config() {
 fn stage_has_changes_with_config() {
     run_test(async {
         let app = shared_app().await;
-        let stage_id = create_test_stage(app, "cfg_chg").await;
+        let stage_id = common::create_test_stage(app, "cfg_chg").await;
 
         // Initially no changes
         let has_changes = app.stage().has_changes(stage_id).await.expect("check");
