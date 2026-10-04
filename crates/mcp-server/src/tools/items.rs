@@ -30,14 +30,29 @@ fn parse_uuid(s: &str) -> Result<Uuid, McpError> {
 
 /// Map an anyhow error from `ItemService` to an MCP error.
 ///
-/// Access-denied errors are mapped to "item not found" to avoid revealing
-/// item existence (consistent with `get_item`). All other errors become
-/// generic internal errors.
+/// A write the field or publish gate refused is reported as the permission
+/// error it is, the way [`require_mcp_permission`] reports one: the caller
+/// already knows the item exists — they are editing it — so hiding the reason
+/// behind "not found" would only leave them unable to fix the request.
+///
+/// Item-level access denial still maps to "item not found", to avoid revealing
+/// item existence (consistent with `get_item`). All other errors become generic
+/// internal errors.
 fn map_service_err(e: anyhow::Error, id: Uuid) -> McpError {
+    if let Some(refusal) = write_denied(&e) {
+        return refusal;
+    }
     if e.to_string().contains(ACCESS_DENIED_MSG) {
         return McpError::invalid_params(format!("item not found: {id}"), None);
     }
     internal_err(e)
+}
+
+/// The MCP error for a write one of the item write gates refused, or `None`
+/// when this error is something else.
+fn write_denied(e: &anyhow::Error) -> Option<McpError> {
+    e.downcast_ref::<trovato_kernel::content::WriteDenied>()
+        .map(|denied| McpError::invalid_request(format!("permission denied: {denied}"), None))
 }
 
 /// List items with optional filtering.
@@ -161,11 +176,14 @@ pub async fn create_item(
         log: Some("Created via MCP".to_string()),
     };
 
+    // `ItemService::create` runs the field and publish gates: a field this
+    // caller may not edit, or `status: 1` without `publish content`, is refused
+    // there rather than here, so the MCP surface cannot drift from the HTTP one.
     let item = state
         .items()
         .create(input, user_ctx)
         .await
-        .map_err(internal_err)?;
+        .map_err(|e| write_denied(&e).unwrap_or_else(|| internal_err(e)))?;
 
     let json = to_json(&item)?;
     Ok(CallToolResult::success(vec![Content::text(json)]))

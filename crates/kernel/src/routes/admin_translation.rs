@@ -175,7 +175,7 @@ async fn translation_save(
     Path((id, lang)): Path<(Uuid, String)>,
     Form(form): Form<TranslationFormData>,
 ) -> Response {
-    let Ok(_user) = require_permission(&state, &session, "translate content").await else {
+    let Ok(user) = require_permission(&state, &session, "translate content").await else {
         return super::helpers::render_error("Permission denied");
     };
 
@@ -219,9 +219,12 @@ async fn translation_save(
     }
     let fields = serde_json::Value::Object(fields);
 
+    // The user, so the save can refuse a translated value for a field this
+    // user may not edit: a translation writes field values like any other save.
+    let user_ctx = super::helpers::admin_user_context(&state, &user).await;
     match state
         .items()
-        .save_translation(id, &lang, title, &fields)
+        .save_translation(id, &lang, title, &fields, &user_ctx)
         .await
     {
         Ok(_) => {

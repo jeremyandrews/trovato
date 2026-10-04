@@ -7,6 +7,67 @@ use crate::models::Item;
 use crate::routes::helpers::html_escape;
 use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 
+/// How one field is rendered on an item form.
+///
+/// A form used to render every field of the type with its current value, which
+/// made the edit form a read of every field the viewer might not be allowed to
+/// see: field-level access was enforced on the view paths and nowhere near the
+/// form. The mode is set from the two field-access decisions the route asks
+/// for, `"view"` and `"edit"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldMode {
+    /// Rendered as an input the browser submits. The default, so a type whose
+    /// fields nothing governs renders exactly as it did.
+    #[default]
+    Editable,
+    /// Rendered with its value and the `disabled` attribute. A browser does not
+    /// submit a disabled control, so the value arrives absent and
+    /// `ItemService::gate_field_writes` copies the stored one back.
+    ReadOnly,
+    /// Not rendered at all — no label, no input, no value. A field the viewer
+    /// may not see must not reach the page even as a disabled control.
+    Hidden,
+}
+
+impl FieldMode {
+    /// The mode for one field, from its two decisions.
+    ///
+    /// Denied for view ⇒ [`Hidden`](Self::Hidden), whether or not it may be
+    /// edited: the form cannot ask someone to edit what it must not show them,
+    /// and leaving the field out keeps the stored value through the write
+    /// gate's copy-back. Visible but not editable ⇒ [`ReadOnly`](Self::ReadOnly)
+    /// on an edit form, and [`Hidden`](Self::Hidden) on an add form, where
+    /// there is no stored value to show and a disabled empty box says nothing.
+    pub fn from_decisions(may_view: bool, may_edit: bool, creating: bool) -> Self {
+        match (may_view, may_edit) {
+            (false, _) => Self::Hidden,
+            (true, false) if creating => Self::Hidden,
+            (true, false) => Self::ReadOnly,
+            (true, true) => Self::Editable,
+        }
+    }
+
+    /// The template-facing name of this mode.
+    ///
+    /// The admin forms are Tera templates rather than `FormBuilder` output, so
+    /// they read the mode as a string from the render context.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Editable => "editable",
+            Self::ReadOnly => "readonly",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    /// The attribute this mode adds to an input: `disabled`, or nothing.
+    fn disabled_attr(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "disabled",
+            _ => "",
+        }
+    }
+}
+
 /// Builder for auto-generated forms.
 pub struct FormBuilder {
     content_type: ContentTypeDefinition,
@@ -33,6 +94,16 @@ pub struct FormBuilder {
     /// survives, and the editor could not see what the field points at. The
     /// route resolves the titles and passes them here.
     reference_titles: std::collections::HashMap<String, String>,
+    /// Per-field render mode, keyed by field name. A field with no entry is
+    /// [`FieldMode::Editable`].
+    field_modes: std::collections::HashMap<String, FieldMode>,
+    /// Whether this user may decide the item's published state.
+    ///
+    /// Defaults to **false**, so a route that does not say renders no status
+    /// control at all. The control used to be rendered unconditionally, and a
+    /// missing checkbox reads as "unpublished" on submit, so the honest default
+    /// is to omit it and let the submission say nothing about status.
+    publish_allowed: bool,
 }
 
 impl FormBuilder {
@@ -44,7 +115,58 @@ impl FormBuilder {
             csrf_token: String::new(),
             extra_html: String::new(),
             reference_titles: std::collections::HashMap::new(),
+            field_modes: std::collections::HashMap::new(),
+            publish_allowed: false,
         }
+    }
+
+    /// Set the per-field render modes, from the route's field-access decisions.
+    pub fn with_field_modes(mut self, modes: std::collections::HashMap<String, FieldMode>) -> Self {
+        self.field_modes = modes;
+        self
+    }
+
+    /// Say whether this user may set the item's published state.
+    ///
+    /// When they may not, the status checkbox and its `_status_rendered`
+    /// marker are both omitted, and the submission then says nothing about
+    /// status rather than saying "unpublished".
+    pub fn with_publish_allowed(mut self, allowed: bool) -> Self {
+        self.publish_allowed = allowed;
+        self
+    }
+
+    /// The mode for one field: what [`with_field_modes`](Self::with_field_modes)
+    /// was told, or editable.
+    fn mode_of(&self, field_name: &str) -> FieldMode {
+        self.field_modes
+            .get(field_name)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// The published checkbox plus the hidden input that says it was rendered,
+    /// or nothing at all when this user may not publish.
+    ///
+    /// `_status_rendered` is what lets the submission distinguish "the user
+    /// unchecked the box" from "there was no box": an unchecked checkbox posts
+    /// nothing, so without the marker the two are the same request.
+    fn status_control(&self, checked: bool) -> String {
+        if !self.publish_allowed {
+            return String::new();
+        }
+        let checked = if checked { "checked" } else { "" };
+        format!(
+            r#"
+            <div class="form-group">
+                <input type="hidden" name="_status_rendered" value="1">
+                <label>
+                    <input type="checkbox" name="status" value="1" {checked}>
+                    Published
+                </label>
+            </div>
+            "#
+        )
     }
 
     /// Supply display titles for `RecordReference` targets, keyed by uuid.
@@ -120,22 +242,17 @@ impl FormBuilder {
         "#,
         );
 
-        // Dynamic fields
+        // Dynamic fields. A hidden field is not rendered at all.
         for field in &self.content_type.fields {
-            html.push_str(&self.render_field(field, None));
+            let mode = self.mode_of(&field.field_name);
+            if mode == FieldMode::Hidden {
+                continue;
+            }
+            html.push_str(&self.render_field(field, None, mode));
         }
 
-        // Status field
-        html.push_str(
-            r#"
-            <div class="form-group">
-                <label>
-                    <input type="checkbox" name="status" value="1" checked>
-                    Published
-                </label>
-            </div>
-        "#,
-        );
+        // Status field, only when this user may publish.
+        html.push_str(&self.status_control(true));
 
         // Caller-supplied controls, inside the form so they are submitted.
         html.push_str(&self.extra_html);
@@ -174,24 +291,19 @@ impl FormBuilder {
             html_escape(&item.title)
         ));
 
-        // Dynamic fields with existing values
+        // Dynamic fields with existing values. A field this viewer may not see
+        // is not rendered, value included.
         for field in &self.content_type.fields {
+            let mode = self.mode_of(&field.field_name);
+            if mode == FieldMode::Hidden {
+                continue;
+            }
             let value = item.fields.get(&field.field_name);
-            html.push_str(&self.render_field(field, value));
+            html.push_str(&self.render_field(field, value, mode));
         }
 
-        // Status field
-        let checked = if item.is_published() { "checked" } else { "" };
-        html.push_str(&format!(
-            r#"
-            <div class="form-group">
-                <label>
-                    <input type="checkbox" name="status" value="1" {checked}>
-                    Published
-                </label>
-            </div>
-            "#
-        ));
+        // Status field, only when this user may publish.
+        html.push_str(&self.status_control(item.is_published()));
 
         // Revision log
         html.push_str(r#"
@@ -218,11 +330,22 @@ impl FormBuilder {
     }
 
     /// Render a single field based on its type.
-    fn render_field(&self, field: &FieldDefinition, value: Option<&serde_json::Value>) -> String {
+    ///
+    /// `mode` is never [`FieldMode::Hidden`] here — the callers skip those
+    /// fields entirely rather than render them in any form. A `ReadOnly` field
+    /// carries `disabled` on every control it renders, which is what keeps a
+    /// browser from submitting it.
+    fn render_field(
+        &self,
+        field: &FieldDefinition,
+        value: Option<&serde_json::Value>,
+        mode: FieldMode,
+    ) -> String {
         let field_name = &field.field_name;
         let label = &field.label;
         let required = if field.required { "required" } else { "" };
         let required_star = if field.required { " *" } else { "" };
+        let disabled = mode.disabled_attr();
 
         match &field.field_type {
             FieldType::Text { max_length } => {
@@ -234,7 +357,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="text" id="{field_name}" name="{field_name}" value="{val}" {required} {max} class="form-control">
+                        <input type="text" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} {max} class="form-control">
                     </div>
                     "#
                 )
@@ -281,9 +404,9 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <textarea id="{field_name}" name="{field_name}" rows="10" {required} class="form-control">{val}</textarea>
+                        <textarea id="{field_name}" name="{field_name}" rows="10" {required} {disabled} class="form-control">{val}</textarea>
                         <div class="form-help">
-                            <select name="{field_name}_format" class="form-control-sm">
+                            <select name="{field_name}_format" {disabled} class="form-control-sm">
                                 {format_options}
                             </select>
                         </div>
@@ -300,7 +423,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="number" id="{field_name}" name="{field_name}" value="{val}" {required} class="form-control">
+                        <input type="number" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} class="form-control">
                     </div>
                     "#
                 )
@@ -314,7 +437,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="number" id="{field_name}" name="{field_name}" value="{val}" step="any" {required} class="form-control">
+                        <input type="number" id="{field_name}" name="{field_name}" value="{val}" step="any" {required} {disabled} class="form-control">
                     </div>
                     "#
                 )
@@ -329,7 +452,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label>
-                            <input type="checkbox" id="{field_name}" name="{field_name}" value="1" {checked_attr}>
+                            <input type="checkbox" id="{field_name}" name="{field_name}" value="1" {checked_attr} {disabled}>
                             {label}
                         </label>
                     </div>
@@ -343,7 +466,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="date" id="{field_name}" name="{field_name}" value="{val}" {required} class="form-control">
+                        <input type="date" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} class="form-control">
                     </div>
                     "#
                 )
@@ -355,7 +478,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="email" id="{field_name}" name="{field_name}" value="{val}" {required} class="form-control">
+                        <input type="email" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} class="form-control">
                     </div>
                     "#
                 )
@@ -383,7 +506,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group record-reference-field">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="hidden" id="{field_name}" name="{field_name}" value="{escaped_val}">
+                        <input type="hidden" id="{field_name}" name="{field_name}" value="{escaped_val}" {disabled}>
                         <input type="text" id="{field_name}_autocomplete"
                                class="form-control record-ref-autocomplete"
                                data-target-type="{escaped_type}"
@@ -391,7 +514,7 @@ impl FormBuilder {
                                value="{escaped_display}"
                                placeholder="Search {escaped_type}..."
                                autocomplete="off"
-                               {required}>
+                               {required} {disabled}>
                         <div class="record-ref-results" id="{field_name}_results"></div>
                     </div>
                     "#
@@ -404,7 +527,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label for="{field_name}">{label}{required_star}</label>
-                        <input type="file" id="{field_name}" name="{field_name}" {required} class="form-control">
+                        <input type="file" id="{field_name}" name="{field_name}" {required} {disabled} class="form-control">
                     </div>
                     "#
                 )
@@ -421,7 +544,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label>{label}{required_star}</label>
-                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}">
+                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}" {disabled}>
                         <div data-block-editor data-block-editor-input="{field_name}"></div>
                     </div>
                     "#
@@ -439,7 +562,7 @@ impl FormBuilder {
                     r#"
                     <div class="form-group">
                         <label>{label}{required_star}</label>
-                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}">
+                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}" {disabled}>
                         <div data-page-builder data-page-builder-input="{field_name}"
                              data-components-url="/api/v1/page-builder/components"></div>
                     </div>
@@ -478,7 +601,7 @@ impl FormBuilder {
                         <label>{label}{required_star}</label>
                         <div class="compound-field" id="compound-{field_name}" data-field="{field_name}" data-config="{config_json}" data-section-types="{section_types_json}">
                             <div class="compound-field__sections"></div>
-                            <input type="hidden" name="{field_name}" class="compound-field__value" value="{existing_escaped}">
+                            <input type="hidden" name="{field_name}" class="compound-field__value" value="{existing_escaped}" {disabled}>
                             <div class="compound-field__actions">
                                 <button type="button" class="button compound-field__add">Add section</button>
                             </div>
@@ -677,7 +800,10 @@ mod tests {
 
     #[test]
     fn build_add_form_has_status_checkbox() {
-        let builder = FormBuilder::new(test_content_type());
+        // The control is rendered only for a user who may publish, so this test
+        // says so. Its absence by default is the new behaviour, pinned in
+        // `tests/item_test.rs`.
+        let builder = FormBuilder::new(test_content_type()).with_publish_allowed(true);
         let form = builder.build_add_form("/item/add/blog");
         assert!(form.contains(r#"name="status""#));
         assert!(form.contains("Published"));

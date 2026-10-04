@@ -345,6 +345,11 @@ pub enum FieldAccessOperation {
 /// (`user_id` / `authenticated` / `permissions`), nested here so the batch
 /// payload reads as `{ "user": { … }, … }`.
 ///
+/// `permissions` is what a type-level rule should decide from. `user_id` and
+/// `authenticated` are here because `tap_item_access` carries them, and a
+/// decision that reads them is per user rather than per permission set — which
+/// the kernel's decision cache accounts for, keying on all three.
+///
 /// SYNC: An identical struct exists in
 /// `crates/kernel/src/content/item_service.rs`. The kernel serializes its copy;
 /// plugins deserialize this one. Both must have the same fields and serde
@@ -366,10 +371,19 @@ pub struct FieldAccessUser {
 /// A single dispatch carries the viewer, exactly **one** `item_type`, one
 /// `operation` (`"view"` / `"edit"`, mirroring `ItemAccessInput.operation`), and
 /// a **batch of field names**. The plugin returns a [`FieldAccessBatchResult`]
-/// deciding every field in one call. Granularity is deliberately **type-level**:
-/// a decision is a pure function of `(permissions, item_type, field, operation)`,
-/// which is what lets the kernel batch per result-set-per-type and cache the
-/// result. See design `fr-8-field-access-and-retrieval-layer.md` §2.
+/// deciding every field in one call. Both operations are live: the kernel asks
+/// for `"view"` on every read path and for `"edit"` before it persists a field
+/// on every write path, so a rule that only makes sense for one of them has to
+/// test `operation`.
+///
+/// Granularity is deliberately **type-level**, and a decision is *asked* to be a
+/// pure function of `(permissions, item_type, field, operation)`, which is what
+/// lets the kernel batch per result-set-per-type. Treat that as **advice about
+/// batching, not a safety property**: the kernel's decision cache is keyed on the
+/// viewer's id and authenticated flag as well as their permissions, so a plugin
+/// that does decide from [`FieldAccessUser::user_id`] gets a per-user answer
+/// rather than having one user's decision served to the next. See design
+/// `fr-8-field-access-and-retrieval-layer.md` §2.
 ///
 /// post-1.0: an additive optional `item` block
 /// (`#[serde(default)] item: Option<FieldItemContext>`) extends this to per-item

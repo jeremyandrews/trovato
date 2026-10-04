@@ -223,9 +223,17 @@ pub struct FieldAccessUser {
 ///
 /// One dispatch carries the viewer, exactly one `item_type`, one `operation`
 /// (`"view"` / `"edit"`, mirroring [`ItemAccessInput::operation`]), and a batch
-/// of `fields`. Granularity is deliberately **type-level** (a decision is a pure
-/// function of `(permissions, item_type, field, operation)`), which is what lets
-/// the kernel batch per result-set-per-type and cache the result. See design
+/// of `fields`. Both operations are live: every read path asks for `"view"`,
+/// and every item write path asks for `"edit"` before it persists a field.
+///
+/// Granularity is deliberately **type-level**, and a decision is *asked* to be a
+/// pure function of `(permissions, item_type, field, operation)`, which is what
+/// lets the kernel batch one dispatch per result-set-per-type. That is **advice
+/// about batching, not a safety property**: the kernel's decision cache is keyed
+/// on the viewer as well (`user_id` and `authenticated` alongside the permission
+/// hash — see `ItemService::field_access_cache_key`), so a plugin that does read
+/// the `user` block's identity gets a per-user answer rather than leaking one
+/// user's decision to the next. See design
 /// `fr-8-field-access-and-retrieval-layer.md` §2.
 ///
 /// post-1.0: an additive optional `item` block extends this to per-item
@@ -302,6 +310,53 @@ fn apply_field_decisions(fields: &mut serde_json::Value, decisions: &HashMap<Str
     }
 }
 
+/// The permission that decides whether a user may set an item's published
+/// state.
+///
+/// Site-wide rather than per type, matching `create content`, `edit own
+/// content` and `edit any content`. Publishing is one authority over what the
+/// site shows the world; a per-type split would need a permission for every
+/// type a plugin declares, with nothing in the kernel to enumerate them
+/// against, and no screen asks the question per type. A site that wants it
+/// narrower gives its per-type editors a role that does not hold this.
+pub const PUBLISH_CONTENT: &str = "publish content";
+
+/// A write refused by one of the two item write gates.
+///
+/// Returned inside `anyhow::Error` so every caller finds it the same way —
+/// `anyhow::Error::downcast_ref::<WriteDenied>()` — and maps it to 403 rather
+/// than to the 500 an unrecognized service error gets. It deliberately does
+/// **not** say "access denied": that string is the item-level denial, which
+/// [`ItemService::update`] `bail!`s and the MCP layer maps to "not found" so
+/// item existence does not leak. A field or publish refusal is a different
+/// answer and should read as one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteDenied {
+    /// The listed field keys would have been changed by a user who may not edit
+    /// them. Sorted, so the message a client sees is stable.
+    Fields(Vec<String>),
+    /// The write would have changed whether the item is published, and the user
+    /// does not hold [`PUBLISH_CONTENT`].
+    Publish,
+}
+
+impl std::fmt::Display for WriteDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Field names are already public through `/api/content-types`, so
+            // naming the refused ones costs nothing and is the only way a client
+            // can fix its request.
+            Self::Fields(keys) => write!(f, "you may not edit the field(s): {}", keys.join(", ")),
+            Self::Publish => write!(
+                f,
+                "changing whether an item is published requires `{PUBLISH_CONTENT}`"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WriteDenied {}
+
 impl ItemService {
     /// Create a new item service.
     ///
@@ -351,6 +406,15 @@ impl ItemService {
     /// to modify fields (e.g., AI content enrichment). The insert tap fires
     /// after persistence for post-save side effects.
     pub async fn create(&self, mut input: CreateItem, user: &UserContext) -> Result<Item> {
+        // The two write gates, on the client's own submission and before the
+        // presave tap: a plugin's presave edits are trusted code, not user
+        // input. Both return `WriteDenied`, which every caller maps to 403.
+        input.status = Self::gate_publish(user, input.status, None)?;
+        let gated_fields = self
+            .gate_field_writes(user, &input.item_type, input.fields.as_ref(), None)
+            .await?;
+        input.fields = gated_fields;
+
         // Invoke tap_item_presave — plugins can modify fields before save.
         // Serialize the input as a JSON object so plugins can read/modify fields.
         let presave_json = serde_json::json!({
@@ -510,7 +574,26 @@ impl ItemService {
         language: &str,
         title: &str,
         fields: &serde_json::Value,
+        user: &UserContext,
     ) -> Result<ItemTranslation> {
+        // A translation writes field values, so field-level edit access applies
+        // to it like to any other write ([`Self::gate_field_writes`] has the
+        // rules). The decision is keyed on the item's type; an item that is not
+        // there has no type to decide against, and whether `item_id` names an
+        // item stays the caller's to check, as documented above.
+        let gated = match self.load(item_id).await? {
+            Some(item) => {
+                let stored = self
+                    .load_translation(item_id, language)
+                    .await?
+                    .map(|t| t.fields);
+                self.gate_field_writes(user, &item.item_type, Some(fields), stored.as_ref())
+                    .await?
+            }
+            None => None,
+        };
+        let fields = gated.as_ref().unwrap_or(fields);
+
         let row = sqlx::query_as::<_, ItemTranslation>(
             "INSERT INTO item_translation (item_id, language, title, fields) \
              VALUES ($1, $2, $3, $4) \
@@ -677,6 +760,20 @@ impl ItemService {
         if !self.check_access(&existing, "edit", user).await? {
             anyhow::bail!("access denied");
         }
+
+        // Field-level and publish gates, after item-level access and before the
+        // presave tap. A denied field the submission left out is copied back
+        // here, so a partial `fields` object cannot erase it.
+        input.status = Self::gate_publish(user, input.status, Some(existing.status))?;
+        let gated_fields = self
+            .gate_field_writes(
+                user,
+                &existing.item_type,
+                input.fields.as_ref(),
+                Some(&existing.fields),
+            )
+            .await?;
+        input.fields = gated_fields;
 
         // Invoke tap_item_presave — plugins can modify fields before save.
         let presave_json = serde_json::json!({
@@ -1247,6 +1344,36 @@ impl ItemService {
         hasher.finish()
     }
 
+    /// The field-access cache key for one decision.
+    ///
+    /// Keyed on the **viewer**, not only on their permission set: the payload a
+    /// plugin receives ([`FieldAccessUser`]) carries `user_id` and
+    /// `authenticated` as well as `permissions`, and nothing stops a plugin
+    /// reading them. The documented contract asks a plugin to decide from
+    /// `(permissions, item_type, field, operation)` alone, and the in-tree
+    /// reference plugin does — but a contract is not an enforcement. With the
+    /// key on the permission hash alone, one plugin author taking the payload
+    /// at face value meant one user's answer was served to every other user
+    /// holding the same permissions for up to five minutes, an anonymous
+    /// visitor and a logged-in user with the same effective set included.
+    ///
+    /// Every anonymous viewer carries the nil id and `authenticated = false`,
+    /// so they still share entries with each other, which is where the cache
+    /// does most of its work.
+    fn field_access_cache_key(
+        user: &UserContext,
+        item_type: &str,
+        field: &str,
+        operation: &str,
+    ) -> String {
+        let perm_hash = Self::perm_hash(user);
+        let authenticated = u8::from(user.authenticated);
+        format!(
+            "{perm_hash:x}:{}:{authenticated}:{item_type}:{field}:{operation}",
+            user.id
+        )
+    }
+
     /// Decide access for a **batch** of fields in one `tap_field_access`
     /// dispatch — the type-level, deny-wins, fail-open core (design §2).
     ///
@@ -1277,10 +1404,9 @@ impl ItemService {
         }
 
         // Split into cache hits (resolved now) and misses (need a dispatch).
-        let perm_hash = Self::perm_hash(user);
         let mut missing: Vec<String> = Vec::new();
         for name in field_names {
-            let cache_key = format!("{perm_hash:x}:{item_type}:{name}:{operation}");
+            let cache_key = Self::field_access_cache_key(user, item_type, name, operation);
             if let Some(allowed) = self.inner.field_access_cache.get(&cache_key) {
                 decisions.insert(name.clone(), allowed);
             } else if !missing.contains(name) {
@@ -1325,7 +1451,7 @@ impl ItemService {
         // Batch-fill the cache for every missed field and merge into the result.
         for name in &missing {
             let allowed = resolved.get(name).copied().unwrap_or(true);
-            let cache_key = format!("{perm_hash:x}:{item_type}:{name}:{operation}");
+            let cache_key = Self::field_access_cache_key(user, item_type, name, operation);
             self.inner.field_access_cache.insert(cache_key, allowed);
             decisions.insert(name.clone(), allowed);
         }
@@ -1376,6 +1502,155 @@ impl ItemService {
             .filter(|name| decisions.get(*name).copied().unwrap_or(true))
             .cloned()
             .collect()
+    }
+
+    /// Refuse a write that would change a field this user may not edit, and
+    /// copy back the ones they may not touch but did not submit.
+    ///
+    /// The field-access decision has always taken an `operation` and the design
+    /// has always named two, `"view"` and `"edit"` — but every caller asked for
+    /// `"view"` and no write path asked at all. A user who could edit an item
+    /// could therefore overwrite a field they were not even allowed to see.
+    /// This is the one place `"edit"` is consulted: [`Self::create`],
+    /// [`Self::update`], [`Self::revert_to_revision`] and
+    /// [`Self::save_translation`] all run it on the **client-supplied** fields,
+    /// before `tap_item_presave`, because a plugin's presave edits are trusted
+    /// code rather than user input.
+    ///
+    /// `submitted` is the incoming `fields` object; `None` means the caller is
+    /// not changing fields at all, and nothing is decided. `stored` is the
+    /// item's current `fields`, `None` on a create. The return value is the
+    /// object to persist.
+    ///
+    /// Per key the user may not edit:
+    ///
+    /// - submitted with a value that differs from the stored one ⇒ **refused**;
+    /// - submitted with the identical value ⇒ accepted, so a form that
+    ///   round-tripped a value is not an error;
+    /// - **absent** ⇒ copied back from `stored`, because a JSON update replaces
+    ///   the whole object and leaving a field out would otherwise erase it;
+    /// - submitted as `null` where the stored value is not ⇒ a different value
+    ///   like any other, so refused: an explicit removal is still a change.
+    ///
+    /// **Refused, not silently dropped.** A client whose field is quietly
+    /// discarded is told its save succeeded when part of it was thrown away. On
+    /// the HTML forms a field the user may not edit is never rendered as an
+    /// input at all ([`crate::content::FieldMode`]), so a refusal here means
+    /// the request was built by hand.
+    ///
+    /// The administrator bypass is the one in [`Self::field_access_decisions`],
+    /// so it is the same bypass the read paths get, spelled once.
+    pub async fn gate_field_writes(
+        &self,
+        user: &UserContext,
+        item_type: &str,
+        submitted: Option<&serde_json::Value>,
+        stored: Option<&serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, WriteDenied> {
+        let Some(submitted) = submitted else {
+            return Ok(None);
+        };
+        let Some(submitted_obj) = submitted.as_object() else {
+            // Not a JSON object, so it has no field keys to decide. The model
+            // layer stores it as it always did.
+            return Ok(Some(submitted.clone()));
+        };
+        let stored_obj = stored.and_then(|v| v.as_object());
+
+        // The union of both key sets. A key only in the *stored* item has to be
+        // decided too: its absence from the submission is what has to be copied
+        // back rather than erased.
+        let mut names: Vec<String> = submitted_obj.keys().cloned().collect();
+        for key in stored_obj.iter().flat_map(|o| o.keys()) {
+            if !names.contains(key) {
+                names.push(key.clone());
+            }
+        }
+        if names.is_empty() {
+            return Ok(Some(submitted.clone()));
+        }
+
+        let decisions = self
+            .field_access_decisions(user, item_type, &names, "edit")
+            .await;
+
+        let mut out = submitted_obj.clone();
+        let mut refused: Vec<String> = Vec::new();
+        for name in &names {
+            // Fail-open default, as everywhere else: a field no plugin decided
+            // is editable.
+            if decisions.get(name).copied().unwrap_or(true) {
+                continue;
+            }
+            match (
+                submitted_obj.get(name),
+                stored_obj.and_then(|o| o.get(name)),
+            ) {
+                // Submitted unchanged: nothing is being written.
+                (Some(new), Some(old)) if new == old => {}
+                // Submitted as anything else: a change to a denied field.
+                (Some(_), _) => refused.push(name.clone()),
+                // Not submitted: keep what is stored.
+                (None, Some(old)) => {
+                    out.insert(name.clone(), old.clone());
+                }
+                (None, None) => {}
+            }
+        }
+
+        if !refused.is_empty() {
+            refused.sort();
+            return Err(WriteDenied::Fields(refused));
+        }
+        Ok(Some(serde_json::Value::Object(out)))
+    }
+
+    /// Decide the `status` an item write may store, refusing a published state
+    /// this user may not set.
+    ///
+    /// Whether an item is published came straight from the client — a `status`
+    /// key in a JSON body, a checkbox in a form — and no permission stood
+    /// behind it, so anyone who could create content could put it on the live
+    /// site. [`PUBLISH_CONTENT`] is that permission, and this is the one place
+    /// it is checked; author, promote, sticky and stage were already server
+    /// controlled on these paths, and status was the last client-controlled one.
+    ///
+    /// `submitted` is the status the caller asked for (`None` = said nothing);
+    /// `stored` is the item's current status, `None` on a create. The return
+    /// value is the status to store, where `None` means "leave it".
+    ///
+    /// Without the permission:
+    ///
+    /// - on a create, an explicit published state is **refused**, and saying
+    ///   nothing stores `0` — because [`crate::models::Item::create`] defaults a
+    ///   missing status to published, so silence has to be answered explicitly
+    ///   or the default publishes for a user who may not;
+    /// - on an update or a revert, **any** change is refused, in either
+    ///   direction (unpublishing someone else's live page is a change too), and
+    ///   an unchanged status is accepted so an ordinary edit still saves.
+    ///
+    /// Pure and `&self`-free: the answer cannot differ between the paths that
+    /// ask it, and it needs no dispatch.
+    pub fn gate_publish(
+        user: &UserContext,
+        submitted: Option<i16>,
+        stored: Option<i16>,
+    ) -> Result<Option<i16>, WriteDenied> {
+        // `can` is the administrator bypass plus the role grant, spelled once.
+        if user.can(PUBLISH_CONTENT) {
+            return Ok(submitted);
+        }
+        match stored {
+            None => match submitted {
+                None | Some(0) => Ok(Some(0)),
+                Some(_) => Err(WriteDenied::Publish),
+            },
+            Some(current) => match submitted {
+                None => Ok(None),
+                Some(new) if new == current => Ok(Some(new)),
+                Some(_) => Err(WriteDenied::Publish),
+            },
+        }
     }
 
     /// Flush the entire field-access decision cache (design amendment α).
@@ -1566,8 +1841,47 @@ impl ItemService {
             anyhow::bail!("access denied");
         }
 
-        let updated =
-            Item::revert_to_revision(&self.inner.pool, item_id, revision_id, user.id).await?;
+        // A revert is a write, so it runs both gates — on the revision's own
+        // content, which is what it is asking to store. Reverting to a revision
+        // whose published state differs needs `publish content`, and reverting a
+        // field the user may not edit to an older value is refused.
+        let revision = Item::get_revision(&self.inner.pool, revision_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("revision not found"))?;
+        if revision.item_id != item_id {
+            anyhow::bail!("revision does not belong to this item");
+        }
+
+        let status = Self::gate_publish(user, Some(revision.status), Some(item.status))?;
+        let fields = self
+            .gate_field_writes(
+                user,
+                &item.item_type,
+                Some(&revision.fields),
+                Some(&item.fields),
+            )
+            .await?;
+
+        // The gated input is applied here rather than through
+        // `Item::revert_to_revision`, which restores the revision's fields
+        // verbatim and would undo the copy-back above. That model method, like
+        // `Item::create` and `Item::update`, enforces nothing by design — the
+        // service is where the gates live.
+        let updated = Item::update(
+            &self.inner.pool,
+            item_id,
+            user.id,
+            UpdateItem {
+                title: Some(revision.title),
+                status,
+                promote: None,
+                sticky: None,
+                fields,
+                log: Some(format!("Reverted to revision {revision_id}")),
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("failed to revert item"))?;
 
         // Invalidate cache
         self.invalidate(item_id);
@@ -1962,5 +2276,169 @@ mod tests {
         cache.run_pending_tasks();
         assert!(cache.get("k1").is_none(), "flush must empty the cache");
         assert!(cache.get("k2").is_none());
+    }
+    // =======================================================================
+    // S4 — the decision cache is keyed on the viewer, not only on their
+    // permission set.
+    //
+    // The key was `{perm_hash}:{type}:{field}:{operation}` and the payload a
+    // plugin receives carries `user_id` and `authenticated` as well. The
+    // documented contract asks a plugin to ignore those; nothing enforced it,
+    // so one plugin author reading the payload literally meant one user's
+    // decision was served to every other user with the same permissions for
+    // up to five minutes.
+    // =======================================================================
+
+    fn key(user: &UserContext, field: &str) -> String {
+        ItemService::field_access_cache_key(user, "person", field, "view")
+    }
+
+    #[test]
+    fn two_users_with_the_same_permissions_get_different_cache_keys() {
+        let perms = vec!["view pii".to_string()];
+        let a = UserContext::authenticated(Uuid::now_v7(), perms.clone());
+        let b = UserContext::authenticated(Uuid::now_v7(), perms);
+        assert_ne!(
+            key(&a, "ssn"),
+            key(&b, "ssn"),
+            "one user's decision must not be served to another"
+        );
+    }
+
+    #[test]
+    fn an_anonymous_and_an_authenticated_viewer_do_not_share_a_cache_key() {
+        // The sharpest case: the same (nil) id and the same empty permission
+        // set, differing only in being logged in.
+        let anon = UserContext::anonymous();
+        let authed = UserContext::authenticated(Uuid::nil(), Vec::new());
+        assert_ne!(key(&anon, "ssn"), key(&authed, "ssn"));
+    }
+
+    #[test]
+    fn two_anonymous_viewers_still_share_a_cache_key() {
+        // What keeps the cache worth having: every anonymous visitor carries
+        // the nil id and the same flag, so they share entries with each other.
+        assert_eq!(
+            key(&UserContext::anonymous(), "ssn"),
+            key(&UserContext::anonymous(), "ssn")
+        );
+    }
+
+    #[test]
+    fn the_key_still_separates_type_field_and_operation() {
+        let user = UserContext::authenticated(Uuid::now_v7(), vec!["view pii".to_string()]);
+        let view = ItemService::field_access_cache_key(&user, "person", "ssn", "view");
+        let edit = ItemService::field_access_cache_key(&user, "person", "ssn", "edit");
+        let other_field = ItemService::field_access_cache_key(&user, "person", "salary", "view");
+        let other_type = ItemService::field_access_cache_key(&user, "record", "ssn", "view");
+        assert_ne!(view, edit, "view and edit are different questions");
+        assert_ne!(view, other_field);
+        assert_ne!(view, other_type);
+    }
+
+    #[test]
+    fn a_permission_change_still_changes_the_key() {
+        let id = Uuid::now_v7();
+        let before = UserContext::authenticated(id, Vec::new());
+        let after = UserContext::authenticated(id, vec!["view pii".to_string()]);
+        assert_ne!(key(&before, "ssn"), key(&after, "ssn"));
+    }
+
+    // =======================================================================
+    // S4 — the publish gate. Whether an item is published came from the client
+    // with no permission behind it, so anyone who could create content could
+    // put it on the live site.
+    // =======================================================================
+
+    fn creator() -> UserContext {
+        UserContext::authenticated(Uuid::now_v7(), vec!["create content".to_string()])
+    }
+
+    fn publisher() -> UserContext {
+        UserContext::authenticated(
+            Uuid::now_v7(),
+            vec!["create content".to_string(), PUBLISH_CONTENT.to_string()],
+        )
+    }
+
+    #[test]
+    fn a_create_that_says_nothing_is_stored_unpublished_without_the_permission() {
+        // `Item::create` defaults a missing status to published, so silence has
+        // to be answered with an explicit 0 or the default publishes for a user
+        // who may not.
+        assert_eq!(
+            ItemService::gate_publish(&creator(), None, None),
+            Ok(Some(0))
+        );
+    }
+
+    #[test]
+    fn a_create_asking_to_publish_is_refused_without_the_permission() {
+        assert_eq!(
+            ItemService::gate_publish(&creator(), Some(1), None),
+            Err(WriteDenied::Publish)
+        );
+    }
+
+    #[test]
+    fn a_create_asking_for_a_draft_is_allowed_without_the_permission() {
+        assert_eq!(
+            ItemService::gate_publish(&creator(), Some(0), None),
+            Ok(Some(0))
+        );
+    }
+
+    #[test]
+    fn an_update_leaving_the_status_alone_is_allowed_without_the_permission() {
+        // The ordinary case: editing a published page without touching whether
+        // it is published has to keep working.
+        assert_eq!(
+            ItemService::gate_publish(&creator(), None, Some(1)),
+            Ok(None)
+        );
+        assert_eq!(
+            ItemService::gate_publish(&creator(), Some(1), Some(1)),
+            Ok(Some(1))
+        );
+    }
+
+    #[test]
+    fn an_update_changing_the_status_either_way_is_refused_without_the_permission() {
+        assert_eq!(
+            ItemService::gate_publish(&creator(), Some(1), Some(0)),
+            Err(WriteDenied::Publish),
+            "publishing a draft needs the permission"
+        );
+        assert_eq!(
+            ItemService::gate_publish(&creator(), Some(0), Some(1)),
+            Err(WriteDenied::Publish),
+            "unpublishing a live item is a change too"
+        );
+    }
+
+    #[test]
+    fn the_permission_holder_gets_the_status_they_asked_for() {
+        assert_eq!(
+            ItemService::gate_publish(&publisher(), Some(1), None),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            ItemService::gate_publish(&publisher(), Some(0), Some(1)),
+            Ok(Some(0))
+        );
+        // And saying nothing still means "leave it", not "unpublish".
+        assert_eq!(
+            ItemService::gate_publish(&publisher(), None, Some(1)),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn the_administrator_bypass_applies_to_the_publish_gate() {
+        let admin = UserContext::administrator(Uuid::now_v7(), vec!["administer site".to_string()]);
+        assert_eq!(
+            ItemService::gate_publish(&admin, Some(1), None),
+            Ok(Some(1))
+        );
     }
 }

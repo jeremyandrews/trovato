@@ -49,6 +49,14 @@
         </div>
 
         {% for field in content_type.fields %}
+        {# Field-level access. A field this user may not view is not rendered at
+           all, value included; one they may view but not edit is rendered
+           `disabled`, which a browser does not submit, so the stored value is
+           kept by the write gate's copy-back. #}
+        {% set_global field_mode = field_modes[field.field_name] | default(value="editable") %}
+        {% set_global field_disabled = "" %}
+        {% if field_mode == "readonly" %}{% set_global field_disabled = "disabled" %}{% endif %}
+        {% if field_mode != "hidden" %}
         <div class="form-item">
             <label for="{{ field.field_name }}" class="form-item__label {% if field.required %}form-item__label--required{% endif %}">
                 {{ field.label }}
@@ -56,38 +64,38 @@
             {% if field.field_type.Text %}
             <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
-                   {% if field.required %}required{% endif %}>
+                   {% if field.required %}required{% endif %} {{ field_disabled }}>
             {% if ai_assist_enabled %}<button type="button" class="ai-assist-btn" data-field="{{ field.field_name }}" title="AI Assist">AI Assist</button>{% endif %}
             {% elif field.field_type == "TextLong" %}
             <textarea id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-textarea" rows="5"
-                      {% if field.required %}required{% endif %}>{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}</textarea>
+                      {% if field.required %}required{% endif %} {{ field_disabled }}>{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}</textarea>
             {% if ai_assist_enabled %}<button type="button" class="ai-assist-btn" data-field="{{ field.field_name }}" title="AI Assist">AI Assist</button>{% endif %}
             {% elif field.field_type == "Boolean" %}
             <div class="form-checkbox-wrapper">
                 <input type="checkbox" id="{{ field.field_name }}" name="{{ field.field_name }}" value="1"
-                       {% if values.fields[field.field_name] or (item and item.fields[field.field_name]) %}checked{% endif %}>
+                       {% if values.fields[field.field_name] or (item and item.fields[field.field_name]) %}checked{% endif %} {{ field_disabled }}>
             </div>
             {% elif field.field_type == "Integer" %}
             <input type="number" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
-                   {% if field.required %}required{% endif %}>
+                   {% if field.required %}required{% endif %} {{ field_disabled }}>
             {% elif field.field_type == "Float" %}
             <input type="number" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" step="any"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
-                   {% if field.required %}required{% endif %}>
+                   {% if field.required %}required{% endif %} {{ field_disabled }}>
             {% elif field.field_type == "Date" %}
             <input type="date" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
-                   {% if field.required %}required{% endif %}>
+                   {% if field.required %}required{% endif %} {{ field_disabled }}>
             {% elif field.field_type == "Email" %}
             <input type="email" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
-                   {% if field.required %}required{% endif %}>
+                   {% if field.required %}required{% endif %} {{ field_disabled }}>
             {% elif field.field_type == "File" %}
             {% set file_val = "" %}
             {% if values.fields[field.field_name] is defined %}{% set file_val = values.fields[field.field_name] %}{% elif item and item.fields[field.field_name] is defined %}{% set file_val = item.fields[field.field_name] %}{% endif %}
             <div class="file-upload-widget" data-field="{{ field.field_name }}">
-                <input type="hidden" id="{{ field.field_name }}" name="{{ field.field_name }}" value="{{ file_val }}">
+                <input type="hidden" id="{{ field.field_name }}" name="{{ field.field_name }}" value="{{ file_val }}" {{ field_disabled }}>
                 <div class="file-upload-widget__preview" {% if not file_val %}style="display:none"{% endif %}>
                     {% if file_val %}<span class="file-upload-widget__filename">File attached</span>{% endif %}
                     <button type="button" class="button button--small file-upload-widget__remove">Remove</button>
@@ -102,10 +110,10 @@
             {% elif field.field_type.RecordReference %}
             <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text" placeholder="UUID"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
-                   {% if field.required %}required{% endif %}>
+                   {% if field.required %}required{% endif %} {{ field_disabled }}>
             {% elif field.field_type == "Blocks" %}
             <input type="hidden" id="{{ field.field_name }}" name="{{ field.field_name }}"
-                   value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}[]{% endif %}">
+                   value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}[]{% endif %}" {{ field_disabled }}>
             <div data-block-editor data-block-editor-input="{{ field.field_name }}"></div>
             {% elif field.field_type.Compound %}
             <div class="compound-field" id="compound-{{ field.field_name }}"
@@ -115,7 +123,7 @@
                 <div class="compound-field__sections">
                 </div>
                 <input type="hidden" name="{{ field.field_name }}" class="compound-field__value"
-                       value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}{&quot;sections&quot;:[]}{% endif %}">
+                       value="{% if values.fields[field.field_name] %}{{ values.fields[field.field_name] | json_encode() | escape }}{% elif item and item.fields[field.field_name] %}{{ item.fields[field.field_name] | json_encode() | escape }}{% else %}{&quot;sections&quot;:[]}{% endif %}" {{ field_disabled }}>
                 <div class="compound-field__actions">
                     <button type="button" class="button compound-field__add">Add section</button>
                 </div>
@@ -123,17 +131,24 @@
             {% else %}
             <input type="text" id="{{ field.field_name }}" name="{{ field.field_name }}" class="form-text"
                    value="{% if values.fields %}{{ values.fields[field.field_name] | default(value='') }}{% elif item %}{{ item.fields[field.field_name] | default(value='') }}{% endif %}"
-                   {% if field.required %}required{% endif %}>
+                   {% if field.required %}required{% endif %} {{ field_disabled }}>
             {% endif %}
             {% if field.description %}
             <p class="form-item__description">{{ field.description }}</p>
             {% endif %}
         </div>
+        {% endif %}
         {% endfor %}
 
+        {# The published control, and the marker that says it was rendered. An
+           unchecked checkbox posts nothing, so without `_status_rendered` the
+           handler cannot tell "unchecked" from "never offered" and read both as
+           unpublish. #}
+        {% if may_publish %}
         <fieldset class="fieldset">
             <legend>Publishing options</legend>
             <div class="fieldset__content">
+                <input type="hidden" name="_status_rendered" value="1">
                 <div class="form-item form-item--checkbox">
                     <div class="form-checkbox-wrapper">
                         <input type="checkbox" id="status" name="status" value="1"
@@ -143,6 +158,7 @@
                 </div>
             </div>
         </fieldset>
+        {% endif %}
 
         <div class="form-actions">
             <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create content{% endif %}</button>

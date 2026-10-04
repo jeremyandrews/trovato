@@ -42,7 +42,7 @@ routes check, so the two ways into the same operation agree.
 | `/admin/content/add/{type}` | GET, POST | `create {type} content` |
 | `/admin/content/{id}/edit` | GET, POST | `edit any content` |
 | `/admin/content/{id}/delete` | POST | `delete any content` |
-| `/admin/content/bulk` | POST | `edit any content`, or `delete any content` when the action is `delete` |
+| `/admin/content/bulk` | POST | `edit any content`; plus `publish content` when the action is `publish` or `unpublish`; `delete any content` when it is `delete` |
 
 `/admin/content/add/{type}` builds its permission from the type in the path,
 which is the convention `/item/add/{type}` already used, and is what makes a
@@ -50,6 +50,34 @@ plugin's content types reachable from the admin UI by a role rather than only by
 a superuser. `/admin/content/bulk` is gated on the action it was asked to
 perform, so a role that may publish cannot obtain a delete by routing it through
 the bulk endpoint.
+
+### Publishing is its own permission
+
+`publish content` decides whether a user may set an item's published state, and
+it is checked on every item write — the admin forms, `/item/add/{type}`,
+`/item/{id}/edit`, a revert, and the MCP `create_item` and `update_item` tools.
+Without it:
+
+- a create that asks to publish is refused, and a create that says nothing
+  stores a draft (the model layer's default is published, so silence has to be
+  answered rather than passed on);
+- an update or a revert that changes the published state is refused in either
+  direction, and one that leaves it alone saves normally;
+- the forms render no published checkbox at all, so the ordinary case never
+  produces a refusal.
+
+It is site-wide, like `create content` and `edit any content`: a per-type split
+would need a permission for every type a plugin declares. A migration
+(`20261004000001_grant_publish_content.sql`) grants it once to every role that
+already held `create content`, `edit own content`, `edit any content` or a
+per-type `create … content`, so no existing site loses the ability to publish on
+upgrade. Like the admission grant above, that is a one-time correction and not a
+rule: nothing makes those permissions imply this one afterwards.
+
+Field-level edit access is enforced on the same writes. A field a
+`tap_field_access` plugin denies this user for the `edit` operation cannot be
+changed by them, the forms do not render it as an input, and a submission that
+leaves it out keeps the stored value rather than erasing it.
 
 ## Comments, files and media
 

@@ -87,8 +87,57 @@ struct ContentFormData {
     form_build_id: String,
     title: String,
     status: Option<String>,
+    /// The marker the form stamps beside the published checkbox, present only
+    /// when the form rendered that checkbox for a user who may publish.
+    ///
+    /// An unchecked checkbox posts nothing, so without this an absent `status`
+    /// and a form that never offered one are the same request — and the handler
+    /// read both as "unpublish".
+    #[serde(rename = "_status_rendered")]
+    status_rendered: Option<String>,
     #[serde(flatten)]
     fields: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl ContentFormData {
+    /// The status this submission asks for, or `None` when it said nothing.
+    ///
+    /// `None` goes to the service as "leave it", which is the only honest
+    /// reading of a form that carried no published control.
+    fn requested_status(&self) -> Option<i16> {
+        self.status_rendered
+            .is_some()
+            .then(|| i16::from(self.status.is_some()))
+    }
+}
+
+/// Add the per-field render modes and the publish flag to a form context.
+///
+/// The admin content form rendered every field of the type with its stored
+/// value and a published checkbox, whoever was looking: field-level access was
+/// enforced on the read paths and nowhere on this screen. `field_modes` is the
+/// same pair of decisions `/item/{id}/edit` asks for, as strings the template
+/// can read; `may_publish` is what decides whether the published checkbox and
+/// its `_status_rendered` marker are rendered at all.
+async fn insert_field_access(
+    state: &AppState,
+    context: &mut tera::Context,
+    user_ctx: &crate::tap::UserContext,
+    type_name: &str,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    creating: bool,
+) {
+    let modes =
+        super::item::field_modes_for(state, user_ctx, type_name, content_type, creating).await;
+    let modes: serde_json::Map<String, serde_json::Value> = modes
+        .into_iter()
+        .map(|(name, mode)| (name, serde_json::Value::String(mode.as_str().to_string())))
+        .collect();
+    context.insert("field_modes", &modes);
+    context.insert(
+        "may_publish",
+        &user_ctx.can(crate::content::PUBLISH_CONTENT),
+    );
 }
 
 /// List all content.
@@ -185,17 +234,45 @@ async fn add_content_form(
     // ways into the same form agree. Gating this on `is_admin` was what made a
     // role holding a plugin's own content permissions unable to use the admin
     // UI to create that plugin's content.
-    if let Err(redirect) =
-        require_permission(&state, &session, &format!("create {type_name} content")).await
-    {
-        return redirect;
-    }
+    let user =
+        match require_permission(&state, &session, &format!("create {type_name} content")).await {
+            Ok(user) => user,
+            Err(redirect) => return redirect,
+        };
 
     let Some(content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
+    let user_ctx = admin_user_context(&state, &user).await;
+    render_add_form(
+        &state,
+        &session,
+        &user_ctx,
+        &type_name,
+        &content_type,
+        serde_json::json!({}),
+        &[],
+    )
+    .await
+}
+
+/// Render the add form, with whatever values and errors the caller has.
+///
+/// One body for the three callers — the GET, a validation failure, and a write
+/// the field or publish gate refused — so the three cannot disagree about what
+/// the page shows, which is how the published checkbox came to be rendered on a
+/// screen whose POST would refuse it.
+async fn render_add_form(
+    state: &AppState,
+    session: &Session,
+    user_ctx: &crate::tap::UserContext,
+    type_name: &str,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    values: serde_json::Value,
+    errors: &[String],
+) -> Response {
+    let csrf_token = generate_csrf_token(session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
@@ -203,12 +280,16 @@ async fn add_content_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
-    context.insert("content_type", &content_type);
-    context.insert("values", &serde_json::json!({}));
+    context.insert("content_type", content_type);
+    context.insert("values", &values);
     context.insert("path", &format!("/admin/content/add/{type_name}"));
     context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
+    if !errors.is_empty() {
+        context.insert("errors", &errors);
+    }
+    insert_field_access(state, &mut context, user_ctx, type_name, content_type, true).await;
 
-    render_admin_template(&state, "admin/content-form.html", context).await
+    render_admin_template(state, "admin/content-form.html", context).await
 }
 
 /// Handle add content form submission.
@@ -265,29 +346,26 @@ async fn add_content_submit(
         &content_type.fields,
     ));
 
+    let user_ctx = admin_user_context(&state, &user).await;
+    // Cloned: `fields_json` is moved into the `CreateItem` below, and this is
+    // what re-renders the form if anything refuses the write.
+    let submitted_values = serde_json::json!({
+        "title": form.title,
+        "status": form.status.is_some(),
+        "fields": fields_json.clone(),
+    });
+
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/content/add/{type_name}"));
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &false);
-        context.insert("content_type", &content_type);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "title": form.title,
-                "status": form.status.is_some(),
-                "fields": fields_json,
-            }),
-        );
-        context.insert("path", &format!("/admin/content/add/{type_name}"));
-        context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
-
-        return render_admin_template(&state, "admin/content-form.html", context).await;
+        return render_add_form(
+            &state,
+            &session,
+            &user_ctx,
+            &type_name,
+            &content_type,
+            submitted_values,
+            &errors,
+        )
+        .await;
     }
 
     let file_ids = extract_file_ids(&state, &fields_json, &type_name);
@@ -295,7 +373,7 @@ async fn add_content_submit(
         item_type: type_name.clone(),
         title: form.title.clone(),
         author_id: user.id,
-        status: Some(if form.status.is_some() { 1 } else { 0 }),
+        status: form.requested_status(),
         promote: None,
         sticky: None,
         fields: Some(serde_json::Value::Object(fields_json)),
@@ -304,7 +382,6 @@ async fn add_content_submit(
         log: Some("Created via admin UI".to_string()),
     };
 
-    let user_ctx = admin_user_context(&state, &user).await;
     match state.items().create(input, &user_ctx).await {
         Ok(item) => {
             // Promote temporary file uploads to permanent
@@ -344,6 +421,20 @@ async fn add_content_submit(
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
+            // A write the field or publish gate refused is the user's to fix,
+            // so the form comes back with the reason on it rather than a 500.
+            if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+                return render_add_form(
+                    &state,
+                    &session,
+                    &user_ctx,
+                    &type_name,
+                    &content_type,
+                    submitted_values,
+                    &[denied.to_string()],
+                )
+                .await;
+            }
             tracing::error!(error = %e, "failed to create content");
             render_server_error("Failed to create content.")
         }
@@ -358,9 +449,10 @@ async fn edit_content_form(
     session: Session,
     Path(item_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "edit any content").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "edit any content").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(item) = state.items().load(item_id).await.ok().flatten() else {
         return render_not_found();
@@ -370,46 +462,85 @@ async fn edit_content_form(
         return render_server_error("Content type not found.");
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
+    let user_ctx = admin_user_context(&state, &user).await;
+    let values = serde_json::json!({
+        "title": item.title,
+        "status": item.status == 1,
+        "fields": item.fields,
+    });
+    render_edit_form(
+        &state,
+        &session,
+        &user_ctx,
+        &item,
+        &content_type,
+        values,
+        &[],
+    )
+    .await
+}
+
+/// Render the edit form, with whatever values and errors the caller has.
+///
+/// One body for the three callers, for the same reason as
+/// [`render_add_form`]. The item is still passed whole, because the template
+/// falls back to its stored values — `field_modes` is what keeps a field this
+/// user may not see from being rendered out of it.
+async fn render_edit_form(
+    state: &AppState,
+    session: &Session,
+    user_ctx: &crate::tap::UserContext,
+    item: &crate::models::Item,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    values: serde_json::Value,
+    errors: &[String],
+) -> Response {
+    let item_id = item.id;
+    let csrf_token = generate_csrf_token(session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
+    let current_path = format!("/admin/content/{item_id}/edit");
 
     let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/content/{item_id}/edit"));
+    context.insert("action", &current_path);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
     context.insert("item_id", &item_id.to_string());
-    context.insert("content_type", &content_type);
-    context.insert("item", &item);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "title": item.title,
-            "status": item.status == 1,
-            "fields": item.fields,
-        }),
-    );
-    context.insert("path", &format!("/admin/content/{item_id}/edit"));
+    context.insert("content_type", content_type);
+    context.insert("item", item);
+    context.insert("values", &values);
+    context.insert("path", &current_path);
+    if !errors.is_empty() {
+        context.insert("errors", &errors);
+    }
 
     // Local task tabs for item edit pages (hardcoded + plugin-registered)
-    let current_path = format!("/admin/content/{item_id}/edit");
     context.insert(
         "local_tasks",
         &build_local_tasks(
-            &state,
+            state,
             "/admin/content/:id",
             &current_path,
             Some(&item_id.to_string()),
             vec![
                 serde_json::json!({"title": "View", "path": format!("/item/{item_id}"), "active": false}),
-                serde_json::json!({"title": "Edit", "path": current_path, "active": true}),
+                serde_json::json!({"title": "Edit", "path": &current_path, "active": true}),
                 serde_json::json!({"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false}),
             ],
         ),
     );
     context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
+    insert_field_access(
+        state,
+        &mut context,
+        user_ctx,
+        &item.item_type,
+        content_type,
+        false,
+    )
+    .await;
 
-    render_admin_template(&state, "admin/content-form.html", context).await
+    render_admin_template(state, "admin/content-form.html", context).await
 }
 
 /// Handle edit content form submission.
@@ -466,59 +597,38 @@ async fn edit_content_submit(
         &content_type.fields,
     ));
 
+    let user_ctx = admin_user_context(&state, &user).await;
+    // Cloned: `fields_json` is moved into the `UpdateItem` below, and this is
+    // what re-renders the form if anything refuses the write.
+    let submitted_values = serde_json::json!({
+        "title": form.title,
+        "status": form.status.is_some(),
+        "fields": fields_json.clone(),
+    });
+
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/content/{item_id}/edit"));
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &true);
-        context.insert("item_id", &item_id.to_string());
-        context.insert("content_type", &content_type);
-        context.insert("item", &item);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "title": form.title,
-                "status": form.status.is_some(),
-                "fields": fields_json,
-            }),
-        );
-        let current_path = format!("/admin/content/{item_id}/edit");
-        context.insert("path", &current_path);
-        context.insert(
-            "local_tasks",
-            &build_local_tasks(
-                &state,
-                "/admin/content/:id",
-                &current_path,
-                Some(&item_id.to_string()),
-                vec![
-                    serde_json::json!({"title": "View", "path": format!("/item/{item_id}"), "active": false}),
-                    serde_json::json!({"title": "Edit", "path": &current_path, "active": true}),
-                    serde_json::json!({"title": "Revisions", "path": format!("/item/{item_id}/revisions"), "active": false}),
-                ],
-            ),
-        );
-        context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
-
-        return render_admin_template(&state, "admin/content-form.html", context).await;
+        return render_edit_form(
+            &state,
+            &session,
+            &user_ctx,
+            &item,
+            &content_type,
+            submitted_values,
+            &errors,
+        )
+        .await;
     }
 
     let file_ids = extract_file_ids(&state, &fields_json, &item.item_type);
     let input = crate::models::UpdateItem {
         title: Some(form.title.clone()),
-        status: Some(if form.status.is_some() { 1 } else { 0 }),
+        status: form.requested_status(),
         promote: None,
         sticky: None,
         fields: Some(serde_json::Value::Object(fields_json)),
         log: Some("Updated via admin UI".to_string()),
     };
 
-    let user_ctx = admin_user_context(&state, &user).await;
     match state.items().update(item_id, input, &user_ctx).await {
         Ok(updated) => {
             // Promote temporary file uploads to permanent
@@ -560,6 +670,20 @@ async fn edit_content_submit(
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
+            // As on the add path: a gate refusal belongs on the form, not in a
+            // 500.
+            if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+                return render_edit_form(
+                    &state,
+                    &session,
+                    &user_ctx,
+                    &item,
+                    &content_type,
+                    submitted_values,
+                    &[denied.to_string()],
+                )
+                .await;
+            }
             tracing::error!(error = %e, "failed to update content");
             render_server_error("Failed to update content.")
         }
@@ -622,18 +746,30 @@ async fn bulk_content_action(
     session: Session,
     Form(form): Form<BulkActionForm>,
 ) -> Response {
-    // A bulk action is gated on the permission for the action it performs, not
+    // A bulk action is gated on the permissions for the action it performs, not
     // on one permission for the whole screen: bulk delete is a delete, and a
     // role that may publish must not get a delete for free by routing it
-    // through this endpoint. An unrecognized action asks for the publish
+    // through this endpoint. Bulk publish and unpublish each change an item's
+    // published state, so they need `publish content` on top of the edit
+    // permission — the same answer `ItemService::gate_publish` would give one
+    // item at a time, asked once here so the screen refuses rather than
+    // reporting every item as failed. An unrecognized action asks for the edit
     // permission and is then rejected as unknown below.
-    let required = match form.action.as_str() {
-        "delete" => "delete any content",
-        _ => "edit any content",
+    let required: &[&str] = match form.action.as_str() {
+        "delete" => &["delete any content"],
+        "publish" | "unpublish" => &["edit any content", crate::content::PUBLISH_CONTENT],
+        _ => &["edit any content"],
     };
-    let user = match require_permission(&state, &session, required).await {
-        Ok(user) => user,
-        Err(redirect) => return redirect,
+    let mut holder = None;
+    for permission in required {
+        match require_permission(&state, &session, permission).await {
+            Ok(user) => holder = Some(user),
+            Err(redirect) => return redirect,
+        }
+    }
+    let Some(user) = holder else {
+        // Unreachable: every arm above names at least one permission.
+        return render_server_error("No permission to check for this action.");
     };
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
