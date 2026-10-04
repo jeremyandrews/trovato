@@ -44,6 +44,13 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "create content",
     "edit own content",
     "edit any content",
+    // Whether an item is published. Site-wide, like the three above it: it is
+    // one authority over what the site shows the world, and a per-type split
+    // would need a permission per type a plugin declares. A migration grants it
+    // once to every role that could already create or edit content, so no
+    // existing site loses the ability to publish on upgrade; nothing implies it
+    // afterwards.
+    "publish content",
     "delete own content",
     "delete any content",
     "access user profiles",

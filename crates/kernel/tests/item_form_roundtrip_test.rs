@@ -456,3 +456,392 @@ fn a_record_reference_survives_an_edit() {
             .unwrap();
     });
 }
+
+// ============================================================================
+// S4 — the published state is a permission, and the form says so.
+//
+// `status` came straight off the form and out of the JSON body, with no
+// permission behind it: anyone who could create content could put it live. The
+// control is now rendered only for a holder of `publish content`, and the
+// submission carries `_status_rendered` to say it was rendered — without which
+// an absent checkbox would read as "unpublish" on every save by a user who was
+// never offered one.
+// ============================================================================
+
+use trovato_kernel::models::Role;
+
+const PUBLISH: &str = "publish content";
+
+/// Grant `permissions` through a role, the way a real site does.
+async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
+    let role = Role::create(&app.db, &format!("k1pub-{}", Uuid::now_v7().simple()))
+        .await
+        .expect("create role");
+    for permission in permissions {
+        Role::add_permission(&app.db, role.id, permission)
+            .await
+            .expect("add permission to role");
+    }
+    Role::assign_to_user(&app.db, user_id, role.id)
+        .await
+        .expect("assign role to user");
+    app.state.permissions().invalidate_user(user_id);
+}
+
+/// A logged-in non-superuser holding exactly `permissions`.
+async fn editor_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> String {
+    let name = format!("{prefix}-{}", Uuid::now_v7().simple());
+    app.create_test_user(&name, "test-password-123", &format!("{name}@test.local"))
+        .await;
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+        .bind(&name)
+        .fetch_one(&app.db)
+        .await
+        .expect("the test user exists");
+    grant_via_role(app, id, permissions).await;
+    app.login(&name, "test-password-123").await
+}
+
+/// The permissions a content editor holds, with or without `publish content`.
+fn editor_perms(may_publish: bool) -> Vec<&'static str> {
+    let mut perms = vec![
+        "create k1_form_probe content",
+        "edit any content",
+        "access content",
+    ];
+    if may_publish {
+        perms.push(PUBLISH);
+    }
+    perms
+}
+
+async fn get_page(app: &TestApp, path: &str, cookies: &str) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::builder().uri(path).body(Body::empty()).unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_string(response).await)
+}
+
+async fn post_form(app: &TestApp, path: &str, cookies: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_string(response).await)
+}
+
+async fn post_json(
+    app: &TestApp,
+    path: &str,
+    cookies: &str,
+    csrf: &str,
+    body: serde_json::Value,
+) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", csrf)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_string(response).await)
+}
+
+async fn status_of(app: &TestApp, id: Uuid) -> i16 {
+    sqlx::query_scalar("SELECT status FROM item WHERE id = $1")
+        .bind(id)
+        .fetch_one(&app.db)
+        .await
+        .expect("read stored status")
+}
+
+async fn id_of(app: &TestApp, title: &str) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM item WHERE type = $1 AND title = $2")
+        .bind(TYPE)
+        .bind(title)
+        .fetch_one(&app.db)
+        .await
+        .expect("the submitted item exists")
+}
+
+#[test]
+fn the_rendered_add_form_offers_no_published_control_without_the_permission() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+        let cookies = editor_holding(app, "k1pubno", &editor_perms(false)).await;
+
+        let (status, html) = get_page(app, &format!("/item/add/{TYPE}"), &cookies).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            !html.contains(r#"name="status""#),
+            "a user who may not publish is offered no published checkbox"
+        );
+        assert!(!html.contains("_status_rendered"));
+
+        // And submitting the page as rendered creates an unpublished item,
+        // rather than the published one `Item::create`'s default would have
+        // made of a submission that said nothing.
+        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let title = format!("Draft by an editor {}", Uuid::now_v7().simple());
+        let (status, body) = post_form(
+            app,
+            &format!("/item/add/{TYPE}"),
+            &cookies,
+            format!(
+                "_csrf={}&title={}&field_headline=hi",
+                urlencoding::encode(&csrf),
+                urlencoding::encode(&title)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the form must still submit: {body}");
+
+        let id = id_of(app, &title).await;
+        assert_eq!(
+            status_of(app, id).await,
+            0,
+            "a user who may not publish creates a draft"
+        );
+
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn editing_a_published_item_through_the_rendered_form_leaves_it_published() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+        let cookies = editor_holding(app, "k1pubkeep", &editor_perms(false)).await;
+
+        // A published item, as an administrator left it.
+        let title = format!("Published already {}", Uuid::now_v7().simple());
+        let admin_ctx = trovato_kernel::tap::UserContext::administrator(
+            Uuid::nil(),
+            vec!["administer site".to_string()],
+        );
+        let item = app
+            .state
+            .items()
+            .create(
+                trovato_kernel::models::CreateItem {
+                    item_type: TYPE.to_string(),
+                    title: title.clone(),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: None,
+                    sticky: None,
+                    fields: Some(json!({"field_headline": "live"})),
+                    stage_id: None,
+                    language: Some("en".to_string()),
+                    log: Some("S4 publish test".to_string()),
+                },
+                &admin_ctx,
+            )
+            .await
+            .expect("seed a published item");
+
+        // The editor saves the form as rendered: no status control, so the
+        // submission says nothing about it — and the item stays published.
+        // Before `_status_rendered`, this request unpublished the page.
+        let (_, html) = get_page(app, &format!("/item/{}/edit", item.id), &cookies).await;
+        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let (status, body) = post_form(
+            app,
+            &format!("/item/{}/edit", item.id),
+            &cookies,
+            format!(
+                "_csrf={}&title={}&field_headline=edited",
+                urlencoding::encode(&csrf),
+                urlencoding::encode(&title)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the edit must save: {body}");
+        assert_eq!(
+            status_of(app, item.id).await,
+            1,
+            "an editor saving a published page must not unpublish it"
+        );
+
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item.id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn a_json_create_asking_to_publish_is_refused_without_the_permission() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+        let cookies = editor_holding(app, "k1pubjson", &editor_perms(false)).await;
+
+        let (_, html) = get_page(app, &format!("/item/add/{TYPE}"), &cookies).await;
+        let csrf = input_value(&html, "_csrf").expect("csrf token");
+
+        let (status, body) = post_json(
+            app,
+            &format!("/item/add/{TYPE}"),
+            &cookies,
+            &csrf,
+            json!({"title": "Published by API", "status": 1}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "`status: 1` without `{PUBLISH}` must be 403, got {status}: {body}"
+        );
+
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM item WHERE type = $1 AND title = 'Published by API')",
+        )
+        .bind(TYPE)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert!(!exists, "the refused create must not have landed");
+    });
+}
+
+#[test]
+fn a_json_update_changing_the_published_state_is_refused_without_the_permission() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+        let cookies = editor_holding(app, "k1pubunpub", &editor_perms(false)).await;
+
+        let title = format!("Live page {}", Uuid::now_v7().simple());
+        let admin_ctx = trovato_kernel::tap::UserContext::administrator(
+            Uuid::nil(),
+            vec!["administer site".to_string()],
+        );
+        let item = app
+            .state
+            .items()
+            .create(
+                trovato_kernel::models::CreateItem {
+                    item_type: TYPE.to_string(),
+                    title: title.clone(),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: None,
+                    sticky: None,
+                    fields: None,
+                    stage_id: None,
+                    language: Some("en".to_string()),
+                    log: Some("S4 publish test".to_string()),
+                },
+                &admin_ctx,
+            )
+            .await
+            .expect("seed a published item");
+
+        let (_, html) = get_page(app, &format!("/item/{}/edit", item.id), &cookies).await;
+        let csrf = input_value(&html, "_csrf").expect("csrf token");
+
+        let (status, body) = post_json(
+            app,
+            &format!("/item/{}/edit", item.id),
+            &cookies,
+            &csrf,
+            json!({"title": title, "status": 0}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "unpublishing without `{PUBLISH}` must be 403, got {status}: {body}"
+        );
+        assert_eq!(
+            status_of(app, item.id).await,
+            1,
+            "the page must still be published"
+        );
+
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item.id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn the_permission_holder_publishes_through_both_paths() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+        let cookies = editor_holding(app, "k1pubyes", &editor_perms(true)).await;
+
+        // The form offers the control, and checking it publishes.
+        let (status, html) = get_page(app, &format!("/item/add/{TYPE}"), &cookies).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            html.contains(r#"name="status""#) && html.contains("_status_rendered"),
+            "`{PUBLISH}` is offered the control"
+        );
+        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let title = format!("Published by a publisher {}", Uuid::now_v7().simple());
+        let (status, body) = post_form(
+            app,
+            &format!("/item/add/{TYPE}"),
+            &cookies,
+            format!(
+                "_csrf={}&title={}&field_headline=hi&_status_rendered=1&status=1",
+                urlencoding::encode(&csrf),
+                urlencoding::encode(&title)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id = id_of(app, &title).await;
+        assert_eq!(status_of(app, id).await, 1, "the publisher published it");
+
+        // And unpublishing over JSON works for them.
+        let (_, html) = get_page(app, &format!("/item/{id}/edit"), &cookies).await;
+        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let (status, body) = post_json(
+            app,
+            &format!("/item/{id}/edit"),
+            &cookies,
+            &csrf,
+            json!({"title": title, "status": 0}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(status_of(app, id).await, 0, "and unpublished it again");
+
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    });
+}

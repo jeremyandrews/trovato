@@ -251,3 +251,163 @@ fn the_permission_for_one_type_does_not_open_the_add_form_for_another() {
         );
     });
 }
+
+// ============================================================================
+// S4 — bulk publish and unpublish need `publish content` too.
+//
+// The endpoint is gated on the permission for the action it performs, which is
+// why bulk delete asks for a delete. Publishing was the one action whose
+// authority did not exist: `edit any content` was enough to put every selected
+// item on the live site. Asked once, here, so the screen refuses rather than
+// reporting every item as failed.
+//
+// # Why these post an empty selection
+//
+// `POST /admin/content/bulk` cannot parse a selection **at all**, on `main` and
+// before it: `BulkActionForm::ids` is a `Vec<Uuid>` read from the repeated
+// `ids[]` key, and `axum::Form` deserializes with `serde_urlencoded`, which
+// refuses a sequence — `Failed to deserialize form body: ids[]: invalid type:
+// string "…", expected a sequence`, a 422 before the handler runs. Every bulk
+// action a browser has ever submitted with something selected has failed that
+// way. It is a pre-existing defect with its own fix (and its own changelog
+// entry) to write, and it is not this change's.
+//
+// An empty selection does parse (`#[serde(default)]`), so the handler runs, the
+// permission check happens, and the action then reports "No items selected".
+// That is exactly the check this change added, tested through the real
+// endpoint. What each selected item's write would do is pinned on
+// `ItemService::gate_publish` directly, in `item_service.rs`'s own tests and
+// over HTTP in `item_form_roundtrip_test.rs`.
+// ============================================================================
+
+const PUBLISH: &str = "publish content";
+
+/// Make sure `/admin/content` has at least one row.
+///
+/// The bulk form, and so the CSRF token these tests scrape, is inside
+/// `{% if items %}`: on a database with no content the screen renders no form
+/// at all and there is nothing to post.
+async fn ensure_some_content(app: &TestApp) {
+    app.ensure_conference_items().await;
+}
+
+/// Scrape a `_token` out of a rendered admin page.
+fn token_in(html: &str) -> Option<String> {
+    let at = html.find(r#"name="_token""#)?;
+    let start = html[..at].rfind('<')?;
+    let end = at + html[at..].find('>')?;
+    let tag = &html[start..end];
+    let vat = tag.find(r#"value=""#)? + 7;
+    let vend = tag[vat..].find('"')? + vat;
+    Some(tag[vat..vend].to_string())
+}
+
+async fn body_of(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("read body");
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+/// POST a bulk action with nothing selected, scraping the screen's own CSRF
+/// token first. See this section's header for why nothing is selected.
+async fn bulk(app: &TestApp, cookies: &str, bucket: &str, action: &str) -> (StatusCode, String) {
+    let page = app
+        .request_with_cookies(
+            Request::get("/admin/content")
+                .header("x-forwarded-for", test_ip_for(bucket))
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let token = token_in(&body_of(page).await).expect("the bulk form carries a token");
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/admin/content/bulk")
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .header("x-forwarded-for", test_ip_for(bucket))
+                .body(Body::from(format!(
+                    "_token={}&action={action}",
+                    urlencoding::encode(&token)
+                )))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_of(response).await)
+}
+
+#[test]
+fn bulk_publish_and_unpublish_are_refused_without_the_publish_permission() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_some_content(app).await;
+        let (_, cookies) = user_holding(app, "bulkpub-no", &["edit any content"]).await;
+
+        for action in ["publish", "unpublish"] {
+            let (status, body) = bulk(app, &cookies, "bulkpub-no-bucket", action).await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "bulk {action} without `{PUBLISH}` must be refused, got {status}: {body}"
+            );
+        }
+    });
+}
+
+#[test]
+fn bulk_publish_passes_the_permission_check_with_both_permissions() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_some_content(app).await;
+        let (_, cookies) = user_holding(app, "bulkpub-yes", &["edit any content", PUBLISH]).await;
+
+        for action in ["publish", "unpublish"] {
+            let (status, body) = bulk(app, &cookies, "bulkpub-yes-bucket", action).await;
+            assert_eq!(
+                status,
+                StatusCode::SEE_OTHER,
+                "a holder of both permissions reaches the handler, got {status}: {body}"
+            );
+        }
+    });
+}
+
+#[test]
+fn bulk_delete_still_asks_for_the_delete_permission_and_not_for_publish() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_some_content(app).await;
+
+        // The arms did not collapse into one check: a role that may publish
+        // still cannot delete, and a role that may delete needs no publish
+        // permission. (`edit any content` is here only to open
+        // `/admin/content`, which is where the screen's CSRF token comes from.)
+        let (_, publisher) = user_holding(app, "bulkdel-no", &["edit any content", PUBLISH]).await;
+        let (status, body) = bulk(app, &publisher, "bulkdel-no-bucket", "delete").await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "`{PUBLISH}` must not buy a delete, got {status}: {body}"
+        );
+
+        let (_, deleter) = user_holding(
+            app,
+            "bulkdel-yes",
+            &["edit any content", "delete any content"],
+        )
+        .await;
+        let (status, body) = bulk(app, &deleter, "bulkdel-yes-bucket", "delete").await;
+        assert_eq!(
+            status,
+            StatusCode::SEE_OTHER,
+            "`delete any content` still reaches the delete arm, got {status}: {body}"
+        );
+    });
+}

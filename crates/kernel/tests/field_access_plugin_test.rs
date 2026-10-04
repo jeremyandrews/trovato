@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use std::time::Duration;
-use trovato_kernel::content::ItemService;
+use trovato_kernel::content::{ItemService, WriteDenied};
 use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
 use trovato_kernel::tap::{RequestServices, TapDispatcher, TapRegistry, UserContext};
 
@@ -177,4 +177,221 @@ async fn accessible_fields_drops_denied_through_the_seam() {
         )
         .await;
     assert_eq!(visible, vec!["salary".to_string(), "bio".to_string()]);
+}
+
+// ===========================================================================
+// S4 — the write side: the same decision, asked for `"edit"`, on the way in.
+//
+// Field access was built and tested for reading. `field_access_decisions` has
+// always taken an `operation` and the design has always named two, but every
+// caller asked for `"view"` and no write path asked at all — so a user who
+// could edit an item could overwrite a field they were not allowed to see.
+//
+// `ItemService::gate_field_writes` is the gate `create`, `update`,
+// `revert_to_revision` and `save_translation` all run. It needs no database:
+// it decides from the submitted and stored `fields` objects and the plugin's
+// answer, which is why it can be driven here through the real reference plugin
+// on the same never-connected pool as the tests above.
+//
+// The reference plugin decides on permissions and ignores `operation`, so with
+// it enabled an edit decision equals a view decision. That is what makes these
+// assertions readable: `ssn` needs `view pii` either way.
+// ===========================================================================
+
+/// A `fields` object of flat string values, the shape the forms write.
+fn obj(pairs: &[(&str, &str)]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (k, v) in pairs {
+        map.insert(
+            (*k).to_string(),
+            serde_json::Value::String((*v).to_string()),
+        );
+    }
+    serde_json::Value::Object(map)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_edit_operation_is_asked_for_and_answered() {
+    let items = item_service_with_ref_plugin();
+    // The first assertion in this file on `"edit"`: before S4 nothing but a
+    // unit test ever passed that operation, which is the defect stated as a
+    // test.
+    let d = items
+        .field_access_decisions(
+            &user(&["view salary"]),
+            "person",
+            &fields(&["ssn", "salary", "bio"]),
+            "edit",
+        )
+        .await;
+    assert_eq!(
+        d.get("ssn"),
+        Some(&false),
+        "no 'view pii' ⇒ ssn not editable"
+    );
+    assert_eq!(d.get("salary"), Some(&true), "'view salary' ⇒ editable");
+    assert_eq!(d.get("bio"), Some(&true), "ungoverned ⇒ fail-open editable");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_create_submitting_a_denied_field_is_refused() {
+    let items = item_service_with_ref_plugin();
+    let err = items
+        .gate_field_writes(
+            &user(&["create person content"]),
+            "person",
+            Some(&obj(&[("bio", "hi"), ("ssn", "123-45-6789")])),
+            None,
+        )
+        .await
+        .expect_err("writing ssn without 'view pii' must be refused");
+    assert_eq!(err, WriteDenied::Fields(vec!["ssn".to_string()]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_create_without_the_denied_field_is_accepted() {
+    let items = item_service_with_ref_plugin();
+    let out = items
+        .gate_field_writes(
+            &user(&["create person content"]),
+            "person",
+            Some(&obj(&[("bio", "hi")])),
+            None,
+        )
+        .await
+        .expect("a create touching no denied field is fine");
+    assert_eq!(out, Some(obj(&[("bio", "hi")])));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_leaving_a_denied_field_out_copies_it_back() {
+    let items = item_service_with_ref_plugin();
+    // A JSON update replaces the whole `fields` object, so without the copy-back
+    // a partial submission would erase the field it was never allowed to see.
+    let out = items
+        .gate_field_writes(
+            &user(&["edit any content"]),
+            "person",
+            Some(&obj(&[("bio", "edited")])),
+            Some(&obj(&[("bio", "old"), ("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect("leaving a denied field out is not a change")
+        .expect("fields were submitted");
+    assert_eq!(out, obj(&[("bio", "edited"), ("ssn", "123-45-6789")]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_resubmitting_the_denied_value_unchanged_is_accepted() {
+    let items = item_service_with_ref_plugin();
+    let stored = obj(&[("bio", "old"), ("ssn", "123-45-6789")]);
+    let out = items
+        .gate_field_writes(
+            &user(&["edit any content"]),
+            "person",
+            Some(&obj(&[("bio", "edited"), ("ssn", "123-45-6789")])),
+            Some(&stored),
+        )
+        .await
+        .expect("an identical value is not a change");
+    assert_eq!(out, Some(obj(&[("bio", "edited"), ("ssn", "123-45-6789")])));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_changing_a_denied_field_is_refused() {
+    let items = item_service_with_ref_plugin();
+    let err = items
+        .gate_field_writes(
+            &user(&["edit any content"]),
+            "person",
+            Some(&obj(&[("ssn", "999-99-9999")])),
+            Some(&obj(&[("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect_err("overwriting a field the user may not see must be refused");
+    assert_eq!(err, WriteDenied::Fields(vec!["ssn".to_string()]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_denied_field_is_a_change_and_is_refused() {
+    let items = item_service_with_ref_plugin();
+    // Explicit `null`, as opposed to leaving the key out: a deletion is a write.
+    let mut submitted = serde_json::Map::new();
+    submitted.insert("ssn".to_string(), serde_json::Value::Null);
+    let err = items
+        .gate_field_writes(
+            &user(&["edit any content"]),
+            "person",
+            Some(&serde_json::Value::Object(submitted)),
+            Some(&obj(&[("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect_err("nulling a denied field must be refused");
+    assert_eq!(err, WriteDenied::Fields(vec!["ssn".to_string()]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_permission_holder_may_write_the_field() {
+    let items = item_service_with_ref_plugin();
+    let out = items
+        .gate_field_writes(
+            &user(&["edit any content", "view pii"]),
+            "person",
+            Some(&obj(&[("ssn", "999-99-9999")])),
+            Some(&obj(&[("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect("'view pii' may write ssn");
+    assert_eq!(out, Some(obj(&[("ssn", "999-99-9999")])));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_administrator_may_write_the_field() {
+    let items = item_service_with_ref_plugin();
+    let out = items
+        .gate_field_writes(
+            &UserContext::administrator(uuid::Uuid::now_v7(), vec!["administer site".to_string()]),
+            "person",
+            Some(&obj(&[("ssn", "999-99-9999")])),
+            Some(&obj(&[("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect("the administrator bypass is the one in field_access_decisions");
+    assert_eq!(out, Some(obj(&[("ssn", "999-99-9999")])));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_that_changes_no_fields_at_all_decides_nothing() {
+    let items = item_service_with_ref_plugin();
+    // `None` is "I am not touching fields" — a bulk status change, say — and it
+    // must stay `None` so the model layer leaves the stored object alone.
+    let out = items
+        .gate_field_writes(
+            &user(&["edit any content"]),
+            "person",
+            None,
+            Some(&obj(&[("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect("no submitted fields, nothing to refuse");
+    assert_eq!(out, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_background_principal_writes_every_field() {
+    let items = item_service_with_ref_plugin();
+    // Cron and the queue worker write as nobody — no identity, no permissions
+    // — so every governed field would be denied to them and a scheduled job
+    // re-saving an item would fail. The marker is constructed by no web,
+    // session or auth path, so this is not a channel a user can reach.
+    let out = items
+        .gate_field_writes(
+            &UserContext::background(),
+            "person",
+            Some(&obj(&[("ssn", "999-99-9999")])),
+            Some(&obj(&[("ssn", "123-45-6789")])),
+        )
+        .await
+        .expect("the background principal is not held to a human permission");
+    assert_eq!(out, Some(obj(&[("ssn", "999-99-9999")])));
 }

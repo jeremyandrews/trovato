@@ -3,7 +3,7 @@
 //!
 //! These tests verify the Item model, ItemService, and related functionality.
 
-use trovato_kernel::content::{FilterPipeline, FormBuilder};
+use trovato_kernel::content::{FieldMode, FilterPipeline, FormBuilder};
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::{
     CreateItem, CreateItemType, Item, ItemRevision, ItemType, UpdateItem,
@@ -627,7 +627,9 @@ fn form_builder_renders_all_field_types() {
 
 #[test]
 fn form_builder_edit_form_populates_all_types() {
-    let builder = FormBuilder::new(comprehensive_content_type());
+    // The published control is rendered only for a user who may publish, which
+    // this test asserts below, so the builder is told so.
+    let builder = FormBuilder::new(comprehensive_content_type()).with_publish_allowed(true);
 
     let item = Item {
         id: Uuid::now_v7(),
@@ -893,4 +895,166 @@ fn field_type_serialization() {
     let rr = FieldType::RecordReference("article".to_string());
     let json = serde_json::to_string(&rr).unwrap();
     assert!(json.contains("article"));
+}
+
+// ============================================================================
+// S4 — the form renders only what the user may see, and offers the published
+// control only to a user who may publish.
+//
+// `FormBuilder` rendered every field of the type with its stored value and a
+// published checkbox, whoever was looking. The modes come from the two
+// field-access decisions the route asks for; the status control comes from the
+// publish permission.
+// ============================================================================
+
+/// A `blog` item carrying a value in every field of [`test_content_type`].
+fn populated_blog_item(status: i16) -> Item {
+    Item {
+        id: Uuid::now_v7(),
+        current_revision_id: Some(Uuid::now_v7()),
+        item_type: "blog".to_string(),
+        title: "Test Post".to_string(),
+        author_id: Uuid::nil(),
+        status,
+        created: 0,
+        changed: 0,
+        promote: 0,
+        sticky: 0,
+        fields: serde_json::json!({
+            "body": {"value": "Hello world", "format": "filtered_html"},
+            "summary": {"value": "A secret summary"},
+            "featured": {"value": true}
+        }),
+        stage_id: LIVE_STAGE_ID,
+        language: "en".to_string(),
+        item_group_id: Uuid::now_v7(),
+        retention_days: None,
+    }
+}
+
+fn modes(pairs: &[(&str, FieldMode)]) -> std::collections::HashMap<String, FieldMode> {
+    pairs
+        .iter()
+        .map(|(name, mode)| ((*name).to_string(), *mode))
+        .collect()
+}
+
+#[test]
+fn form_builder_renders_a_read_only_field_disabled_with_its_value() {
+    let builder = FormBuilder::new(test_content_type())
+        .with_field_modes(modes(&[("summary", FieldMode::ReadOnly)]));
+    let form = builder.build_edit_form(&populated_blog_item(1), "/item/123/edit");
+
+    assert!(
+        form.contains(r#"name="summary""#),
+        "a read-only field is still rendered"
+    );
+    assert!(
+        form.contains("A secret summary"),
+        "with its value, which the user may see"
+    );
+    // The input is disabled, so the browser does not submit it and the write
+    // gate copies the stored value back.
+    let at = form.find(r#"name="summary""#).unwrap();
+    let tag_end = at + form[at..].find('>').unwrap();
+    assert!(
+        form[at..tag_end].contains("disabled"),
+        "the summary input must carry `disabled`, got {}",
+        &form[at..tag_end]
+    );
+}
+
+#[test]
+fn form_builder_renders_nothing_at_all_for_a_hidden_field() {
+    let builder = FormBuilder::new(test_content_type())
+        .with_field_modes(modes(&[("summary", FieldMode::Hidden)]));
+    let form = builder.build_edit_form(&populated_blog_item(1), "/item/123/edit");
+
+    assert!(
+        !form.contains(r#"name="summary""#),
+        "a hidden field has no input"
+    );
+    assert!(
+        !form.contains("A secret summary"),
+        "and its value is nowhere on the page"
+    );
+    assert!(
+        !form.contains("Summary"),
+        "not even its label, which would say the field exists"
+    );
+    assert!(
+        form.contains(r#"name="body""#),
+        "the other fields are untouched"
+    );
+}
+
+#[test]
+fn form_builder_hides_a_field_denied_for_edit_on_the_add_form() {
+    // There is no stored value to show on a create, so a disabled empty box
+    // would say nothing: `FieldMode::from_decisions` hides it instead.
+    assert_eq!(
+        FieldMode::from_decisions(true, false, true),
+        FieldMode::Hidden
+    );
+    assert_eq!(
+        FieldMode::from_decisions(true, false, false),
+        FieldMode::ReadOnly
+    );
+    assert_eq!(
+        FieldMode::from_decisions(false, true, false),
+        FieldMode::Hidden,
+        "denied for view is hidden however editable it is"
+    );
+    assert_eq!(
+        FieldMode::from_decisions(true, true, false),
+        FieldMode::Editable
+    );
+}
+
+#[test]
+fn form_builder_omits_the_status_control_when_the_user_may_not_publish() {
+    // The default, so a route that does not say renders no control. An absent
+    // checkbox reads as "unpublished" on submit, which is why the marker and
+    // the checkbox travel together or not at all.
+    let add = FormBuilder::new(test_content_type()).build_add_form("/item/add/blog");
+    assert!(!add.contains(r#"name="status""#));
+    assert!(!add.contains("_status_rendered"));
+
+    let edit = FormBuilder::new(test_content_type())
+        .build_edit_form(&populated_blog_item(1), "/item/123/edit");
+    assert!(!edit.contains(r#"name="status""#));
+    assert!(!edit.contains("_status_rendered"));
+}
+
+#[test]
+fn form_builder_offers_the_status_control_when_the_user_may_publish() {
+    let add = FormBuilder::new(test_content_type())
+        .with_publish_allowed(true)
+        .build_add_form("/item/add/blog");
+    assert!(add.contains(r#"name="status""#));
+    assert!(
+        add.contains(r#"name="_status_rendered""#),
+        "the marker says the control was on the page"
+    );
+
+    // And it reflects the item's current state on an edit form. Scanned
+    // tag-by-tag because the type's Boolean field renders `checked` too.
+    let published = FormBuilder::new(test_content_type())
+        .with_publish_allowed(true)
+        .build_edit_form(&populated_blog_item(1), "/item/123/edit");
+    let at = published.find(r#"name="status""#).unwrap();
+    let tag_end = at + published[at..].find('>').unwrap();
+    assert!(
+        published[at..tag_end].contains("checked"),
+        "a published item's box is checked"
+    );
+    let draft = FormBuilder::new(test_content_type())
+        .with_publish_allowed(true)
+        .build_edit_form(&populated_blog_item(0), "/item/123/edit");
+    let at = draft.find(r#"name="status""#).unwrap();
+    let tag_end = at + draft[at..].find('>').unwrap();
+    assert!(
+        !draft[at..tag_end].contains("checked"),
+        "an unpublished item's box is not checked"
+    );
 }

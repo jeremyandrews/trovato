@@ -521,3 +521,188 @@ fn extract_text(result: &CallToolResult) -> String {
         .collect::<Vec<_>>()
         .join("")
 }
+
+// =============================================================================
+// S4 — the publish permission on the MCP surface
+//
+// `create_item` and `update_item` passed `params.status` straight through, so an
+// MCP client holding `create content` could put an item on the live site. The
+// gate lives in `ItemService`, so the MCP tools inherit it; these pin that the
+// refusal reaches the client as a permission error rather than as "not found"
+// (which is how an item-level denial is reported, to avoid leaking existence)
+// or as a generic internal error.
+// =============================================================================
+
+/// `unprivileged_user_ctx` plus the named permissions, which is a real user id
+/// with a permission set of this test's choosing.
+fn user_with(ctx: &common::TestContext, permissions: &[&str]) -> trovato_kernel::tap::UserContext {
+    let mut user = ctx.unprivileged_user_ctx.clone();
+    for permission in permissions {
+        user.permissions.push((*permission).to_string());
+    }
+    user
+}
+
+#[test]
+fn create_asking_to_publish_is_refused_without_publish_content() {
+    run_test(async {
+        let ctx = shared_app().await;
+        let creator = user_with(ctx, &["create content"]);
+
+        let result = trovato_mcp::tools::items::create_item(
+            &ctx.state,
+            &creator,
+            CreateItemParams {
+                content_type: "page".to_string(),
+                title: "MCP publish attempt".to_string(),
+                status: Some(1),
+                fields: None,
+            },
+        )
+        .await;
+
+        let err = result.expect_err("`status: 1` without `publish content` must be refused");
+        assert!(
+            err.to_string().contains("permission denied"),
+            "the client should be told it is a permission problem, got {err}"
+        );
+
+        let landed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM item WHERE title = 'MCP publish attempt')",
+        )
+        .fetch_one(ctx.state.db())
+        .await
+        .unwrap();
+        assert!(!landed, "the refused create must not have landed");
+    });
+}
+
+#[test]
+fn create_asking_to_publish_succeeds_with_publish_content() {
+    run_test(async {
+        let ctx = shared_app().await;
+        let publisher = user_with(ctx, &["create content", "publish content"]);
+
+        let result = trovato_mcp::tools::items::create_item(
+            &ctx.state,
+            &publisher,
+            CreateItemParams {
+                content_type: "page".to_string(),
+                title: "MCP publish allowed".to_string(),
+                status: Some(1),
+                fields: None,
+            },
+        )
+        .await
+        .expect("a holder of `publish content` may publish");
+
+        let text = extract_text(&result);
+        let created: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(created["status"], 1);
+
+        let id: uuid::Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+        Item::delete(ctx.state.db(), id).await.ok();
+    });
+}
+
+#[test]
+fn a_create_that_says_nothing_about_status_is_a_draft_without_the_permission() {
+    run_test(async {
+        let ctx = shared_app().await;
+        let creator = user_with(ctx, &["create content"]);
+
+        let result = trovato_mcp::tools::items::create_item(
+            &ctx.state,
+            &creator,
+            CreateItemParams {
+                content_type: "page".to_string(),
+                title: "MCP silent create".to_string(),
+                status: None,
+                fields: None,
+            },
+        )
+        .await
+        .expect("saying nothing is not a refusal");
+
+        // `Item::create` defaults a missing status to published, so this is the
+        // case where the gate has to answer rather than pass the silence on.
+        let created: serde_json::Value =
+            serde_json::from_str(&extract_text(&result)).expect("valid JSON");
+        assert_eq!(
+            created["status"], 0,
+            "a creator without the permission drafts"
+        );
+
+        let id: uuid::Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+        Item::delete(ctx.state.db(), id).await.ok();
+    });
+}
+
+#[test]
+fn update_changing_the_status_is_refused_without_publish_content() {
+    run_test(async {
+        let ctx = shared_app().await;
+
+        let item = Item::create(
+            ctx.state.db(),
+            CreateItem {
+                item_type: "page".to_string(),
+                title: "MCP published page".to_string(),
+                author_id: ctx.admin_user.id,
+                status: Some(1),
+                promote: None,
+                sticky: None,
+                fields: None,
+                stage_id: Some(LIVE_STAGE_ID),
+                language: None,
+                log: Some("test".to_string()),
+            },
+        )
+        .await
+        .expect("create item");
+
+        let editor = user_with(ctx, &["edit any content"]);
+
+        let err = trovato_mcp::tools::items::update_item(
+            &ctx.state,
+            &editor,
+            UpdateItemParams {
+                id: item.id.to_string(),
+                title: None,
+                status: Some(0),
+                fields: None,
+                log: None,
+            },
+        )
+        .await
+        .expect_err("unpublishing without `publish content` must be refused");
+        assert!(
+            err.to_string().contains("permission denied"),
+            "a gate refusal must not be reported as 'not found', got {err}"
+        );
+
+        let status: i16 = sqlx::query_scalar("SELECT status FROM item WHERE id = $1")
+            .bind(item.id)
+            .fetch_one(ctx.state.db())
+            .await
+            .unwrap();
+        assert_eq!(status, 1, "the page must still be published");
+
+        // The same edit that leaves the status alone still saves.
+        trovato_mcp::tools::items::update_item(
+            &ctx.state,
+            &editor,
+            UpdateItemParams {
+                id: item.id.to_string(),
+                title: Some("MCP edited page".to_string()),
+                status: None,
+                fields: None,
+                log: None,
+            },
+        )
+        .await
+        .expect("an ordinary edit is untouched by the publish gate");
+
+        Item::delete(ctx.state.db(), item.id).await.ok();
+    });
+}

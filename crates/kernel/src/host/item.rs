@@ -133,6 +133,24 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
         .into_anyhow()?;
 
     // save-item(item_json, out) -> i32 (bytes written or error)
+    //
+    // **Deliberately ungated**, and not an oversight: this writes through
+    // `Item::create` / `Item::update` directly, with no item-level access
+    // check, no field-level edit check and no publish check, under the request
+    // user's id.
+    //
+    // Plugins are trusted code loaded by an administrator, and this function is
+    // how one maintains its own content — an importer writing a feed's items, a
+    // workflow setting a status. Several in-tree plugins write fields no end
+    // user is allowed to edit, which is the point of them. Enforcing the
+    // request user's permissions here would break those plugins without closing
+    // anything a user controls: a user cannot reach this host function except
+    // through a plugin whose author decided what it does, and that decision is
+    // made at install time by an administrator.
+    //
+    // What a plugin must not do is take a field value from the request and pass
+    // it here on the user's behalf; a plugin that wants the user's own
+    // authority calls the gated service path instead.
     linker
         .func_wrap_async_traced(
             "trovato:kernel/item-api",

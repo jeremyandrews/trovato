@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::content::{FilterPipeline, FormBuilder};
+use crate::content::{FieldMode, FilterPipeline, FormBuilder, PUBLISH_CONTENT};
 use crate::error::AppError;
 use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::ResolvedLanguage;
@@ -133,6 +133,11 @@ pub struct UpdateItemRequest {
 /// works, so the two agree about what a field is.
 const RESERVED_FORM_KEYS: &[&str] = &["title", "status", "log", "url_alias"];
 
+/// The hidden input `FormBuilder` emits beside the published checkbox.
+///
+/// `_`-prefixed, so it is form machinery and never stored as a field.
+const STATUS_RENDERED_KEY: &str = "_status_rendered";
+
 /// One item create/update submission, however it arrived.
 ///
 /// `GET /item/add/{type}` renders an HTML `<form>`, and an HTML form posts
@@ -201,10 +206,15 @@ impl ItemSubmission {
 
         Self {
             title: form.get("title").map(|t| t.to_string()),
-            // A checkbox posts nothing when unchecked, so absence is the
-            // unpublished answer rather than "no opinion" — the form always
-            // renders the control.
-            status: Some(i16::from(form.contains_key("status"))),
+            // A checkbox posts nothing when unchecked, so an absent `status`
+            // means "unpublished" — but only if the control was on the page at
+            // all. The form renders it only for a user who may publish, and
+            // stamps `_status_rendered` beside it; without that marker the
+            // submission says nothing about status rather than silently
+            // unpublishing the item.
+            status: form
+                .contains_key(STATUS_RENDERED_KEY)
+                .then(|| i16::from(form.contains_key("status"))),
             fields: Some(serde_json::Value::Object(fields)),
             log: form
                 .get("log")
@@ -262,6 +272,25 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for ItemSubmission {
     }
 }
 
+/// Map a service error to its response, turning a write the gates refused into
+/// a 403 that names what was refused.
+///
+/// `WriteDenied` is the typed error both item write gates return
+/// (`ItemService::gate_field_writes` and `ItemService::gate_publish`); the
+/// field names it carries are already public through `/api/content-types`, so
+/// naming them is what lets a client fix its request. Everything else keeps the
+/// behaviour it had: the item-level `access denied` bail is a 403, and an
+/// unrecognized error is a 500 with `context`.
+fn write_error(e: anyhow::Error, context: &'static str) -> AppError {
+    if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+        return AppError::forbidden(denied.to_string());
+    }
+    if e.to_string().contains("access denied") {
+        return AppError::forbidden("Access denied");
+    }
+    AppError::internal_ctx(e, context)
+}
+
 /// Create the item router.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -298,6 +327,45 @@ pub(crate) use super::helpers::get_user_context;
 /// Admins get all formats. Other users get formats based on their
 /// `"use filtered_html"` and `"use full_html"` permissions.
 /// `plain_text` is always allowed (handled by FormBuilder).
+/// The render mode for every field of `content_type`, for this viewer.
+///
+/// Two batched field-access decisions — `"view"` and `"edit"` — one dispatch
+/// each, and [`FieldMode::from_decisions`] turns the pair into a mode. The edit
+/// form used to render every field of the type with its stored value, which
+/// showed a viewer the contents of fields the read paths were careful to drop.
+pub(crate) async fn field_modes_for(
+    state: &AppState,
+    user: &UserContext,
+    item_type: &str,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    creating: bool,
+) -> std::collections::HashMap<String, FieldMode> {
+    let names: Vec<String> = content_type
+        .fields
+        .iter()
+        .map(|f| f.field_name.clone())
+        .collect();
+    let may_view = state
+        .items()
+        .field_access_decisions(user, item_type, &names, "view")
+        .await;
+    let may_edit = state
+        .items()
+        .field_access_decisions(user, item_type, &names, "edit")
+        .await;
+    names
+        .into_iter()
+        .map(|name| {
+            let mode = FieldMode::from_decisions(
+                may_view.get(&name).copied().unwrap_or(true),
+                may_edit.get(&name).copied().unwrap_or(true),
+                creating,
+            );
+            (name, mode)
+        })
+        .collect()
+}
+
 fn permitted_text_formats(user: &UserContext) -> Vec<String> {
     // `can` carries the administrator bypass, so the two formats need no
     // separate admin arm: an administrator answers `true` to both.
@@ -875,9 +943,12 @@ async fn add_item_form(
     // so without it this page could be rendered but never submitted.
     let permitted_formats = permitted_text_formats(&user);
     let csrf_token = generate_csrf_token(&session).await;
+    let field_modes = field_modes_for(&state, &user, &item_type, &content_type, true).await;
     let form_builder = FormBuilder::new(content_type.clone())
         .with_permitted_formats(permitted_formats)
-        .with_csrf_token(csrf_token);
+        .with_csrf_token(csrf_token)
+        .with_field_modes(field_modes)
+        .with_publish_allowed(user.can(PUBLISH_CONTENT));
     let form_html = form_builder.build_add_form(&format!("/item/add/{item_type}"));
 
     let html = format!(
@@ -957,7 +1028,7 @@ async fn create_item(
         .items()
         .create(input, &user)
         .await
-        .map_err(|e| AppError::internal_ctx(e, "create item"))?;
+        .map_err(|e| write_error(e, "create item"))?;
 
     // Auto-generate URL alias if pattern configured for this type
     if let Err(e) = crate::services::pathauto::auto_alias_item(
@@ -1081,11 +1152,14 @@ async fn edit_item_form(
     // field *inside* the form.
     let permitted_formats = permitted_text_formats(&user);
     let csrf_token = generate_csrf_token(&session).await;
+    let field_modes = field_modes_for(&state, &user, &item.item_type, &content_type, false).await;
     let form_builder = FormBuilder::new(content_type.clone())
         .with_permitted_formats(permitted_formats)
         .with_csrf_token(csrf_token)
         .with_reference_titles(reference_titles)
-        .with_extra_html(alias_field);
+        .with_extra_html(alias_field)
+        .with_field_modes(field_modes)
+        .with_publish_allowed(user.can(PUBLISH_CONTENT));
     let form_html = form_builder.build_edit_form(&item, &format!("/item/{id}/edit"));
 
     let html = format!(
@@ -1191,14 +1265,7 @@ async fn update_item(
             }))
         }
         Ok(None) => Err(AppError::not_found_id("item", id)),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("access denied") {
-                Err(AppError::forbidden("Access denied"))
-            } else {
-                Err(AppError::internal_ctx(e, "update item"))
-            }
-        }
+        Err(e) => Err(write_error(e, "update item")),
     }
 }
 
@@ -1305,14 +1372,7 @@ async fn revert_revision(
 
     match state.items().revert_to_revision(id, rev_id, &user).await {
         Ok(_) => Ok(Redirect::to(&format!("/item/{id}/revisions"))),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("access denied") {
-                Err(AppError::forbidden("Access denied"))
-            } else {
-                Err(AppError::internal_ctx(e, "revert revision"))
-            }
-        }
+        Err(e) => Err(write_error(e, "revert revision")),
     }
 }
 
