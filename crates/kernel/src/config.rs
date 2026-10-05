@@ -187,6 +187,16 @@ impl crate::plugin::PluginConfig {
                     "PLUGIN_BACKGROUND_TAP_DEADLINE_SECS",
                     lim_defaults.background_tap_epoch_deadline_secs,
                 ),
+                request_wallclock_ceiling_secs: parse_or(
+                    lookup,
+                    "PLUGIN_REQUEST_WALLCLOCK_SECS",
+                    lim_defaults.request_wallclock_ceiling_secs,
+                ),
+                background_wallclock_ceiling_secs: parse_or(
+                    lookup,
+                    "PLUGIN_BACKGROUND_WALLCLOCK_SECS",
+                    lim_defaults.background_wallclock_ceiling_secs,
+                ),
             },
         }
     }

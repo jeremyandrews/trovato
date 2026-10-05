@@ -9,6 +9,75 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### `item-api` acts as the requesting user, and needs a capability in the background
+
+**Who is affected:** a plugin that imports the `item-api` interface —
+`get-item`, `save-item`, `delete-item`, `query-items`. No in-tree plugin does;
+the SDK has no binding for it, so this is plugins that hand-roll the imports,
+which in practice means Argus and Netgrasp. Find out with
+`wasm-tools print <plugin>.wasm | grep item-api`, or look for `item-api` in the
+plugin's import section.
+
+**What changed.** These four functions decided nothing. They called the `Item`
+model directly and used the requesting user only as an author id, so a plugin
+handling an anonymous visitor's request could read unpublished items and
+restricted fields through it, and rewrite or delete any item by id.
+
+They are decided as the requesting user now. A request-scoped call — any user
+that is not the background principal, anonymous included — gets that user's own
+answer: `get-item` requires `view` and drops fields the user may not see,
+`query-items` returns only what the user may view, `save-item` requires `edit`
+on an update and `create {type} content` on a create, and `delete-item`
+requires `delete`. A denied read is indistinguishable from a missing item and
+writes `null`, exactly as a missing id does. A denied write returns
+`ERR_ITEM_ACCESS_DENIED` (-60).
+
+Writes still go straight to the model, so the insert, update and delete taps
+still do not fire from `item-api`. That is deliberate and unchanged: dispatching
+a tap from inside a tap is the re-entrancy this module exists to avoid. Only the
+access decision is new.
+
+**Background contexts need a capability.** Cron and the queue worker run under
+the kernel-internal background principal, which has no identity and no
+permissions, so there is no user whose authority an `item-api` call could act
+with. A plugin that calls these functions from `tap_cron` or `tap_queue_worker`
+must declare the new manifest capability:
+
+```toml
+[capabilities]
+item_background = true
+```
+
+With it, a background call behaves as it did before, with kernel authority.
+Without it, every `item-api` function returns `ERR_ITEM_BACKGROUND_DENIED`
+(-61). This is the same declared, auditable manifest plane `ai_background`
+already uses, and for the same reason.
+
+**What to do.** If your plugin writes items from a request path on a user's
+behalf, check that the user it is acting for actually has the rights you were
+relying on the kernel not to check. If it touches items from cron or the queue
+worker, add `item_background = true` before you upgrade, or those jobs start
+failing on the first run.
+
+### A plugin call now has a wall clock ceiling
+
+**Who is affected:** any site; in practice only a plugin that makes many slow
+host calls in one invocation.
+
+**What changed.** Guest CPU was already bounded by epoch interruption, and the
+deadline callback extended that budget by however long a call had spent parked
+inside host functions, so that waiting on an AI provider or a feed fetch was
+not billed as computing. The extension had no ceiling, so a guest looping over
+slow host calls was never interrupted and could hold a request open
+indefinitely.
+
+Total elapsed time per call is now bounded too, separately from CPU: 120
+seconds for a request-scoped call and 900 seconds for a background one, both
+far above the epoch budgets they sit beside, and both overridable with
+`PLUGIN_REQUEST_WALLCLOCK_SECS` and `PLUGIN_BACKGROUND_WALLCLOCK_SECS`. A call
+stopped by this bound is logged distinctly from one that exhausted its CPU, so
+the two are separable.
+
 ### Plugin raw SQL is parsed, and some tables are off limits to every plugin
 
 **Who is affected:** a site running a plugin that declares `raw_sql = true` or

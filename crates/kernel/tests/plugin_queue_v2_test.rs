@@ -112,6 +112,39 @@ fn dispatcher() -> Arc<TapDispatcher> {
         .clone()
 }
 
+/// A deliberately small wall clock ceiling, for the one test that has to
+/// observe it. The shipped background ceiling is 900 seconds — far above the
+/// epoch budget on purpose, so that a job which legitimately spends its whole
+/// CPU allowance still ends by exhausting CPU — and far too long to wait for
+/// in a test.
+const TEST_WALLCLOCK_CEILING_SECS: u64 = 4;
+
+/// A second dispatcher, identical to [`dispatcher`] but with the wall clock
+/// ceiling lowered. Kept apart from the cached one so every other test in this
+/// file keeps running against the shipped ceiling.
+fn capped_dispatcher() -> Arc<TapDispatcher> {
+    static CAPPED: std::sync::OnceLock<Arc<TapDispatcher>> = std::sync::OnceLock::new();
+    CAPPED
+        .get_or_init(|| {
+            let config = PluginConfig {
+                limits: trovato_kernel::plugin::limits::ResourceLimits {
+                    background_tap_epoch_deadline_secs: TEST_TAP_BUDGET_SECS,
+                    background_wallclock_ceiling_secs: TEST_WALLCLOCK_CEILING_SECS,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut runtime = PluginRuntime::new(&config).expect("create runtime");
+            runtime
+                .load_plugin(&plugins_dir().join(FIXTURE))
+                .unwrap_or_else(|e| panic!("failed to load fixture '{FIXTURE}': {e:#}"));
+            let runtime = Arc::new(runtime);
+            let registry = Arc::new(TapRegistry::from_plugins(&runtime));
+            Arc::new(TapDispatcher::new(runtime, registry))
+        })
+        .clone()
+}
+
 /// Connect a pool to the test DB and ensure migrations are applied (idempotent).
 async fn fresh_pool() -> PgPool {
     trovato_test_utils::env::load_dotenv();
@@ -1518,6 +1551,61 @@ fn a_job_that_only_waited_is_retried_not_dead_lettered() {
             stats.dead_lettered, 0,
             "the drain counted a waiting job as CPU-exhausted"
         );
+
+        clean_queue(&pool).await;
+    });
+}
+
+/// The ceiling the extension never had.
+///
+/// Crediting host-call time back to the epoch budget is right — waiting is not
+/// burning, which is what the test above is about — but it was unbounded. A
+/// guest that loops over slow host calls buys another second of deadline for
+/// every second it waits, so it is never interrupted, and a request-scoped
+/// dispatch has no other clock at all.
+///
+/// Here the total waiting passes a deliberately small ceiling. The job is cut
+/// off, and the row says which bound ended it: a reader who cannot tell this
+/// from CPU exhaustion cannot tell a runaway loop from a wedged provider.
+#[test]
+fn a_job_that_waits_past_the_wall_clock_ceiling_is_cut_off() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean_queue(&pool).await;
+
+        // Four host calls of 3s against a 4s ceiling: twelve seconds of
+        // waiting and essentially no guest execution, so nothing here can be
+        // mistaken for CPU exhaustion. The guest returns to WASM between
+        // calls, which is where an epoch interrupt can land.
+        let id = insert_job(
+            &pool,
+            serde_json::json!({"outcome": "slow_host", "calls": 4, "seconds": 3}),
+            0,
+            5,
+            now(),
+        )
+        .await;
+
+        let cron = cron_with(pool.clone(), capped_dispatcher());
+        let stats = cron.drain_plugin_queues().await.unwrap();
+
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT status, dead_reason FROM plugin_queue WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        let (status, dead_reason) = row.expect("a cut-off job leaves its row behind");
+        assert_eq!(
+            status, "dead",
+            "a worker past the wall clock ceiling must be cut off, not left to run"
+        );
+        let reason = dead_reason.unwrap_or_default();
+        assert!(
+            reason.contains("wall clock"),
+            "the row must name the bound that fired rather than blaming CPU: {reason}"
+        );
+        assert_eq!(stats.dead_lettered, 1);
 
         clean_queue(&pool).await;
     });

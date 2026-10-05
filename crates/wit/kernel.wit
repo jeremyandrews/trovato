@@ -4,6 +4,27 @@ package trovato:kernel;
 /// Plugins receive and return complete item JSON, avoiding multiple
 /// boundary crossings. Phase 0 benchmarks proved this is 1.2-1.6x faster
 /// than handle-based field access.
+///
+/// Every call is decided as the user the plugin is acting for. A request-scoped
+/// call — any user that is not the background principal, anonymous included —
+/// gets that user's own answer: get-item requires `view` and drops the fields
+/// the user may not see, query-items returns what the user may view, save-item
+/// requires `edit` on an update and `create {type} content` on a create, and
+/// delete-item requires `delete`. A denied read is indistinguishable from a
+/// missing item and returns null; a denied write returns host error code -60
+/// (ERR_ITEM_ACCESS_DENIED).
+///
+/// A background call — cron or the queue worker, under the kernel-internal
+/// background principal — has no user whose authority it could act with, so it
+/// needs the `item_background = true` manifest capability. With it the call
+/// acts with kernel authority; without it, host error code -61
+/// (ERR_ITEM_BACKGROUND_DENIED).
+///
+/// Writes still go straight to the item model: the insert, update and delete
+/// taps do NOT fire from this interface, because dispatching a tap from inside
+/// a tap is the re-entrancy it exists to avoid. Only the access decision is
+/// made through the item service, and a call made while an access decision is
+/// already in progress fails closed.
 interface item-api {
     /// Get an item by ID, returns full item JSON.
     get-item: func(id: string) -> result<string, string>;

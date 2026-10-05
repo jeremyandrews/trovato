@@ -252,6 +252,7 @@ mod tests {
                 db_tables: tables.iter().map(|t| t.to_string()).collect(),
                 raw_sql: false,
                 ai_background: false,
+                item_background: false,
                 http_max_transfer: None,
                 public_functions: vec![],
             }),

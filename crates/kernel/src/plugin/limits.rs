@@ -65,6 +65,29 @@ pub const BACKGROUND_TAP_EPOCH_DEADLINE_SECS: u64 = 150;
 /// same request-scoped deadline tap dispatch uses for non-background taps.
 pub const INVOKE_EPOCH_DEADLINE_SECS: u64 = 10;
 
+/// Wall clock ceiling (seconds) for one request-scoped plugin call.
+///
+/// Distinct from the epoch budget, which bounds **guest compute**: the deadline
+/// callback extends the epoch by however long a call has spent parked inside
+/// host functions, so waiting is deliberately not billed as computing. That
+/// extension had no ceiling, so a guest looping over slow host calls — each one
+/// bounded only by its own timeout — was never interrupted, and a request-scoped
+/// dispatch has no other clock.
+///
+/// 120 seconds is twelve times the 10-second epoch budget and far longer than
+/// any legitimate request-path plugin call: the point is to end an unbounded
+/// one, not to tighten the CPU bound.
+pub const REQUEST_WALLCLOCK_CEILING_SECS: u64 = 120;
+
+/// Wall clock ceiling (seconds) for one background plugin call.
+///
+/// 900 seconds, six times the 150-second background epoch budget. It has to sit
+/// well above that budget: a background job that legitimately spends its whole
+/// epoch allowance plus host-call time must still end by exhausting CPU — the
+/// behaviour that decides whether a slow job is retried or dead-lettered — and
+/// not by tripping this ceiling first.
+pub const BACKGROUND_WALLCLOCK_CEILING_SECS: u64 = 900;
+
 /// Whether per-`Store` fuel metering is enabled by default (off).
 ///
 /// Epoch interruption remains the primary CPU bound. Fuel is a deterministic,
@@ -107,6 +130,13 @@ pub struct ResourceLimits {
     /// lower it, and so a test can make the exhaustion path observable in
     /// seconds instead of two and a half minutes.
     pub background_tap_epoch_deadline_secs: u64,
+    /// Wall clock ceiling (seconds) for one request-scoped plugin call, total
+    /// elapsed time rather than guest compute. See
+    /// [`REQUEST_WALLCLOCK_CEILING_SECS`].
+    pub request_wallclock_ceiling_secs: u64,
+    /// Wall clock ceiling (seconds) for one background plugin call. See
+    /// [`BACKGROUND_WALLCLOCK_CEILING_SECS`].
+    pub background_wallclock_ceiling_secs: u64,
 }
 
 impl Default for ResourceLimits {
@@ -120,6 +150,8 @@ impl Default for ResourceLimits {
             enable_fuel: DEFAULT_ENABLE_FUEL,
             fuel_limit: DEFAULT_FUEL_LIMIT,
             background_tap_epoch_deadline_secs: BACKGROUND_TAP_EPOCH_DEADLINE_SECS,
+            request_wallclock_ceiling_secs: REQUEST_WALLCLOCK_CEILING_SECS,
+            background_wallclock_ceiling_secs: BACKGROUND_WALLCLOCK_CEILING_SECS,
         }
     }
 }

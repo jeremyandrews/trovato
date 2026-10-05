@@ -282,6 +282,10 @@ pub(crate) async fn do_invoke(
         payload,
         child,
         INVOKE_EPOCH_DEADLINE,
+        // An invoked target is request-scoped work, whoever invoked it: the
+        // chain is bounded by the caller's own ceiling as well, so a nested
+        // call cannot buy the chain more wall clock than one call gets.
+        std::time::Duration::from_secs(runtime.limits().request_wallclock_ceiling_secs),
     )
     .await
     {
@@ -294,6 +298,14 @@ pub(crate) async fn do_invoke(
             // caller's side; the frozen prefix is unchanged.
             return Err(format!(
                 "{ERR_TARGET_ERRORED}: {target}::{function} used its whole CPU budget"
+            ));
+        }
+        Err(ExportCallError::WallClockExceeded) => {
+            // Same shape of answer as CPU exhaustion from the caller's side:
+            // the target did not return. The frozen prefix is unchanged; only
+            // the detail says which bound ended it.
+            return Err(format!(
+                "{ERR_TARGET_ERRORED}: {target}::{function} ran past its wall clock ceiling"
             ));
         }
         Err(ExportCallError::Failed(e)) => {
