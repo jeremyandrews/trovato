@@ -1352,3 +1352,354 @@ async fn db_select_inside_allowlist_passes_gate() {
         "a migration-owned table must pass the allowlist gate"
     );
 }
+
+// =============================================================================
+// The raw-SQL guard, driven through the real host functions against a real
+// database.
+//
+// The unit tests in `host::db` prove the guard refuses each statement. These
+// prove the refusal is wired into the host function and, where it matters, that
+// the thing the statement wanted to do did not happen: the row is still there,
+// the table is still there. A guard that returns the right code while the
+// server runs the statement anyway would pass the unit tests and fail these.
+// =============================================================================
+
+/// A `query-raw` probe. The SQL is written into linear memory at 0 and its
+/// byte length passed, the way the SDK does it.
+fn query_raw_wat(sql: &str) -> String {
+    raw_wat("query-raw", sql, "(result i32)", "i32")
+}
+
+/// An `execute-raw` probe. `execute-raw` returns rows-affected as an i64, so the
+/// probe truncates it to i32 for a uniform harness; the tests here only ever
+/// compare it against a negative error code or zero.
+fn execute_raw_wat(sql: &str) -> String {
+    raw_wat("execute-raw", sql, "(result i64)", "i64")
+}
+
+fn raw_wat(func: &str, sql: &str, result: &str, ty: &str) -> String {
+    // WAT string literals take the same escapes as the ones already in this
+    // file; the shipped statements contain quotes and backslashes.
+    let escaped = sql.replace('\\', "\\\\").replace('"', "\\\"");
+    let len = sql.len();
+    // `execute-raw` answers i64 (rows affected); the probe narrows it so both
+    // host functions drive one harness. These tests only compare the result
+    // against a negative error code or a small row count.
+    // The two host functions differ in arity as well as result type:
+    // `query-raw` writes rows into an output buffer, `execute-raw` returns a
+    // count and takes none.
+    let (open, close, params, args) = if ty == "i64" {
+        ("(i32.wrap_i64", ")", "i32 i32 i32 i32", String::new())
+    } else {
+        (
+            "",
+            "",
+            "i32 i32 i32 i32 i32 i32",
+            "\n        (i32.const 8192) (i32.const 4096)".to_string(),
+        )
+    };
+    format!(
+        r#"
+(module
+  (import "trovato:kernel/db" "{func}"
+    (func $raw (param {params}) {result}))
+  (memory (export "memory") 4)
+  (data (i32.const 0) "{escaped}")
+  (data (i32.const 4096) "[]")
+  (func (export "run") (result i32)
+    {open}
+      (call $raw
+        (i32.const 0) (i32.const {len})
+        (i32.const 4096) (i32.const 2){args}){close}))
+"#
+    )
+}
+
+/// `db_probe_state`, but with raw SQL declared and a **live** pool, so a
+/// statement the guard allows actually reaches PostgreSQL.
+async fn raw_probe_state(plugin: &str) -> PluginState {
+    use trovato_kernel::plugin::{MigrationConfig, PluginCapabilities, TapConfig};
+
+    let info = PluginInfo {
+        name: plugin.to_string(),
+        description: "raw sql probe".to_string(),
+        version: "1.0.0".to_string(),
+        api_version: "0.2".to_string(),
+        default_enabled: true,
+        dependencies: vec![],
+        taps: TapConfig::default(),
+        migrations: MigrationConfig::default(),
+        capabilities: Some(PluginCapabilities {
+            host_interfaces: vec!["db".to_string()],
+            db_tables: vec![],
+            raw_sql: true,
+            ai_background: false,
+            http_max_transfer: None,
+            public_functions: vec![],
+        }),
+        record_types: vec![],
+    };
+    let policy = DbPolicy::derive(&info, Path::new("/nonexistent"));
+
+    trovato_test_utils::env::load_dotenv();
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:5432/trovato".to_string());
+    let db = sqlx::postgres::PgPool::connect(&url)
+        .await
+        .expect("connect test DB");
+    trovato_kernel::db::run_migrations(&db)
+        .await
+        .expect("run migrations");
+
+    let services = RequestServices::for_background(db, None, None, reqwest::Client::new());
+    let request = RequestState::new(UserContext::anonymous(), services);
+    PluginState::with_db_policy(
+        request,
+        plugin.to_string(),
+        Arc::new(policy),
+        ResourceLimits::default(),
+    )
+}
+
+/// Run one raw-SQL probe through the real `host::register_all` linker against a
+/// live pool, returning the host function's code.
+async fn run_raw_probe(wat: &str) -> i32 {
+    let engine = Engine::new(&wasmtime::Config::new()).unwrap();
+    let mut linker: Linker<PluginState> = Linker::new(&engine);
+    host::register_all(&mut linker).expect("register host functions");
+
+    let module = Module::new(&engine, wat).expect("compile raw-SQL probe WAT");
+    let mut store = Store::new(&engine, raw_probe_state("rawsql_probe").await);
+    let instance = linker
+        .instantiate_async(&mut store, &module)
+        .await
+        .expect("module instantiates against the kernel linker");
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .expect("module exports run");
+    run.call_async(&mut store, ()).await.expect("run completes")
+}
+
+async fn probe_pool() -> sqlx::PgPool {
+    trovato_test_utils::env::load_dotenv();
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:5432/trovato".to_string());
+    sqlx::postgres::PgPool::connect(&url)
+        .await
+        .expect("connect test DB")
+}
+
+/// A writable CTE through `query-raw`: refused, **and the row is still there**.
+///
+/// The second half is the point. The old `is_read_only` saw the leading `WITH`
+/// and allowed the statement, and PostgreSQL ran the `DELETE` inside it.
+#[tokio::test]
+async fn query_raw_cannot_delete_through_a_cte() {
+    let pool = probe_pool().await;
+    sqlx::query("CREATE TABLE IF NOT EXISTS rawguard_victim (id int primary key)")
+        .execute(&pool)
+        .await
+        .expect("create victim table");
+    sqlx::query("INSERT INTO rawguard_victim (id) VALUES (1) ON CONFLICT DO NOTHING")
+        .execute(&pool)
+        .await
+        .expect("seed victim row");
+
+    let code = run_raw_probe(&query_raw_wat(
+        "WITH gone AS (DELETE FROM rawguard_victim RETURNING *) SELECT * FROM gone",
+    ))
+    .await;
+    assert_eq!(
+        code,
+        trovato_sdk::host_errors::ERR_DDL_REJECTED,
+        "a writable CTE must be refused by query-raw"
+    );
+
+    let survivors: i64 = sqlx::query_scalar("SELECT count(*) FROM rawguard_victim")
+        .fetch_one(&pool)
+        .await
+        .expect("count survivors");
+    assert_eq!(
+        survivors, 1,
+        "the row the CTE wanted to delete must survive"
+    );
+
+    sqlx::query("DROP TABLE rawguard_victim")
+        .execute(&pool)
+        .await
+        .ok();
+}
+
+/// The nested-comment statement, through both raw paths: refused, **and the
+/// table is still there**. PostgreSQL nests block comments and the old scanner
+/// did not, so it read `SELECT` where the server read `DROP TABLE`.
+#[tokio::test]
+async fn neither_raw_path_drops_a_table_behind_a_nested_comment() {
+    let pool = probe_pool().await;
+    sqlx::query("CREATE TABLE IF NOT EXISTS rawguard_target (id int primary key)")
+        .execute(&pool)
+        .await
+        .expect("create target table");
+
+    let sql = "/* /* */ SELECT 1 */ DROP TABLE rawguard_target";
+    assert_eq!(
+        run_raw_probe(&query_raw_wat(sql)).await,
+        trovato_sdk::host_errors::ERR_DDL_REJECTED,
+        "query-raw must refuse it"
+    );
+    assert_eq!(
+        run_raw_probe(&execute_raw_wat(sql)).await,
+        trovato_sdk::host_errors::ERR_DDL_REJECTED,
+        "execute-raw must refuse it"
+    );
+
+    let still_there: bool = sqlx::query_scalar("SELECT to_regclass('rawguard_target') IS NOT NULL")
+        .fetch_one(&pool)
+        .await
+        .expect("check table");
+    assert!(still_there, "the table must not have been dropped");
+
+    sqlx::query("DROP TABLE rawguard_target")
+        .execute(&pool)
+        .await
+        .ok();
+}
+
+/// `raw_sql = true` used to be a read of every table. The users table is on the
+/// protected floor now, and raw SQL is checked against it.
+#[tokio::test]
+async fn query_raw_cannot_read_the_credential_tables() {
+    for sql in [
+        "SELECT id FROM users LIMIT 1",
+        "SELECT value FROM site_config LIMIT 1",
+        "WITH u AS (SELECT id FROM users) SELECT * FROM u",
+    ] {
+        assert_eq!(
+            run_raw_probe(&query_raw_wat(sql)).await,
+            trovato_sdk::host_errors::ERR_TABLE_NOT_DECLARED,
+            "query-raw must refuse a protected table: {sql}"
+        );
+    }
+}
+
+/// `SET` is not scoped to the transaction the host wraps the statement in, so
+/// one `execute-raw` call changed the session every later kernel query on that
+/// pooled connection ran under.
+#[tokio::test]
+async fn execute_raw_cannot_change_the_session() {
+    for sql in [
+        "SET search_path TO public",
+        "DO $$ BEGIN PERFORM 1; END $$",
+        "LOCK TABLE item",
+    ] {
+        assert_eq!(
+            run_raw_probe(&execute_raw_wat(sql)).await,
+            trovato_sdk::host_errors::ERR_DDL_REJECTED,
+            "execute-raw must refuse: {sql}"
+        );
+    }
+    assert_eq!(
+        run_raw_probe(&query_raw_wat(
+            "SELECT set_config('search_path', 'public', false)"
+        ))
+        .await,
+        trovato_sdk::host_errors::ERR_DDL_REJECTED,
+        "query-raw must refuse the function form too"
+    );
+}
+
+/// The database control, on its own.
+///
+/// `SELECT nextval(...)` is a read to the parser and a write to the server. The
+/// guard allows it; the `BEGIN READ ONLY` transaction is what refuses it. This
+/// is the test that would still fail the attack if the parser were wrong, which
+/// is the whole reason the transaction is there.
+#[tokio::test]
+async fn a_read_that_writes_is_stopped_by_the_read_only_transaction() {
+    let pool = probe_pool().await;
+    sqlx::query("CREATE SEQUENCE IF NOT EXISTS rawguard_seq")
+        .execute(&pool)
+        .await
+        .expect("create sequence");
+    let before: i64 = sqlx::query_scalar("SELECT last_value FROM rawguard_seq")
+        .fetch_one(&pool)
+        .await
+        .expect("read sequence");
+
+    // The parser is happy with this one: it is a SELECT of a function call, and
+    // the function is not on the denylist.
+    assert!(
+        trovato_kernel::host::sql_guard::check_query_raw("SELECT nextval('rawguard_seq')").is_ok(),
+        "the parser must accept this, or the test is not testing the transaction"
+    );
+
+    let code = run_raw_probe(&query_raw_wat("SELECT nextval('rawguard_seq')")).await;
+    assert_eq!(
+        code,
+        trovato_sdk::host_errors::ERR_SQL_FAILED,
+        "the server must refuse the write inside a read-only transaction"
+    );
+
+    let after: i64 = sqlx::query_scalar("SELECT last_value FROM rawguard_seq")
+        .fetch_one(&pool)
+        .await
+        .expect("read sequence");
+    assert_eq!(before, after, "the sequence must not have advanced");
+
+    sqlx::query("DROP SEQUENCE rawguard_seq")
+        .execute(&pool)
+        .await
+        .ok();
+}
+
+/// The shipped statement that must keep working, run for real:
+/// `trovato_scheduled_publishing`'s publish UPDATE, through the real
+/// `execute-raw` host function, against an item with a past `field_publish_on`.
+#[tokio::test]
+async fn the_scheduled_publishing_update_still_publishes_an_item() {
+    let pool = probe_pool().await;
+    let id = uuid::Uuid::now_v7();
+    let stage_id = trovato_kernel::models::stage::LIVE_STAGE_ID;
+
+    let author_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("a user exists after migrations");
+
+    sqlx::query(
+        "INSERT INTO item (id, type, title, status, author_id, created, changed, stage_id, fields) \
+         VALUES ($1, 'page', 'scheduled probe', 0, $3, 1, 1, $2, \
+                 jsonb_build_object('field_publish_on', '1'))",
+    )
+    .bind(id)
+    .bind(stage_id)
+    .bind(author_id)
+    .execute(&pool)
+    .await
+    .expect("seed an unpublished, due item");
+
+    let now = 2_000_000_000i64;
+    let sql = format!(
+        "UPDATE item SET status = 1, changed = {now} \
+         WHERE status = 0 \
+         AND id = '{id}' \
+         AND fields->>'field_publish_on' IS NOT NULL \
+         AND (fields->>'field_publish_on') ~ '^[0-9]+$' \
+         AND (fields->>'field_publish_on')::bigint <= {now}"
+    );
+    let affected = run_raw_probe(&execute_raw_wat(&sql)).await;
+    assert_eq!(affected, 1, "the publish UPDATE must still affect its row");
+
+    let status: i16 = sqlx::query_scalar("SELECT status FROM item WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .expect("read status");
+    assert_eq!(status, 1, "the item must have been published");
+
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .ok();
+}

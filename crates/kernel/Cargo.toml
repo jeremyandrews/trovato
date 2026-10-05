@@ -46,6 +46,7 @@ hmac = { workspace = true }
 infer = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
+sqlparser = { workspace = true }
 sha2 = { workspace = true }
 hostname = { workspace = true }
 async-trait = { workspace = true }

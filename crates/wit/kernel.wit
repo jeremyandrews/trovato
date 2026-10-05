@@ -25,11 +25,29 @@ interface item-api {
 /// allowlist* — the tables its own migrations CREATE, unioned with the explicit
 /// `db_tables` in its `[capabilities]` manifest. A structured call targeting a
 /// table outside that set is rejected (host error code -16, `table-not-declared`)
-/// before any query runs. The raw calls (query-raw/execute-raw) are gated on the
-/// declared `raw_sql = true` capability (host error code -17,
-/// `raw-sql-not-declared`); they are NOT parsed against the allowlist — holding
-/// `raw_sql` is the documented, auditable escape hatch that weakens the table
-/// guarantee for that plugin.
+/// before any query runs.
+///
+/// Underneath that allowlist is a protected floor, checked first and applying
+/// whatever the manifest or the migrations say: the credential, authorization
+/// and plugin-control tables (users, roles, permission grants, tokens of every
+/// kind, passkeys, the security audit log, plugin status and migrations, the
+/// form-state cache, site_config, oauth_client, webhook). A call to one of
+/// those is rejected with the same -16 code; the host log distinguishes it as
+/// `table-protected`.
+///
+/// The raw calls (query-raw/execute-raw) are gated on the declared
+/// `raw_sql = true` capability (host error code -17, `raw-sql-not-declared`),
+/// and they ARE parsed. Each statement is parsed with the PostgreSQL dialect
+/// and judged as a tree: query-raw takes a read and nothing else and runs in a
+/// transaction the server opens READ ONLY, execute-raw takes exactly one
+/// INSERT, UPDATE or DELETE, neither may name a protected table or call a
+/// function that changes session state, reaches the server's files or takes a
+/// table by name, and a statement that does not parse is refused.
+///
+/// Raw SQL is still a declared trust grant rather than a closed door: a plugin
+/// holding `raw_sql` can read any table the protected floor does not cover. The
+/// parser and the read-only transaction close the paths that ran past that
+/// grant. A per-plugin database role remains the stronger post-1.0 option.
 interface db {
     select: func(query-json: string) -> result<string, string>;
     insert: func(table: string, data-json: string) -> result<string, string>;

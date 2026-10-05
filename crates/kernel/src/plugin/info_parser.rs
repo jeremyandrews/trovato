@@ -187,11 +187,27 @@ pub struct PluginCapabilities {
     /// is gated behind this separately-declared capability rather than dropped,
     /// because `ritrovo_importer` (the reference importer) legitimately needs it.
     ///
-    /// **Declaring `raw_sql = true` weakens the table-allowlist guarantee for this
-    /// plugin.** The kernel cannot reliably parse arbitrary SQL to confine it to
-    /// [`Self::db_tables`] (the SQLI-1 surface), so a raw-SQL plugin can reach any
-    /// table its DB role can. This is an accepted, **declared, auditable** risk —
-    /// visible in the manifest and reviewable at install time.
+    /// **Declaring `raw_sql = true` weakens the table-allowlist guarantee for
+    /// this plugin**, and it still does. Raw statements are not confined to
+    /// [`Self::db_tables`]: a raw-SQL plugin can read any table the protected
+    /// floor does not cover, which is most of them. That remains an accepted,
+    /// **declared, auditable** risk, visible in the manifest and reviewable at
+    /// install time.
+    ///
+    /// What the kernel does check, since the raw guard
+    /// ([`crate::host::sql_guard`]), is the shape of the statement and the
+    /// names in it. Each one is parsed with the PostgreSQL dialect and judged
+    /// as a tree rather than by its first keyword: `query-raw` takes a read and
+    /// nothing else and runs in a transaction the server opens `READ ONLY`,
+    /// `execute-raw` takes one INSERT, UPDATE or DELETE and nothing else,
+    /// neither may name a table on the protected floor
+    /// ([`crate::plugin::db_policy::is_protected_table`]) or call a function
+    /// that changes session state, reads the server's files or takes a table by
+    /// name, and a statement that does not parse is refused.
+    ///
+    /// So the grant is narrower than it was rather than closed. A per-plugin
+    /// database role, with its own `GRANT`s, remains the stronger answer and
+    /// stays a post-1.0 option.
     #[serde(default)]
     pub raw_sql: bool,
 
