@@ -1,8 +1,14 @@
 //! Database host functions for WASM plugins.
 //!
-//! Provides both raw and structured database access with DDL guards
-//! to prevent schema modification from plugins. All queries use
+//! Provides both raw and structured database access. All queries use
 //! JSON-encoded parameters and return JSON results.
+//!
+//! Structured calls (`select`/`insert`/`update`/`delete`) are confined to the
+//! plugin's effective table allowlist, under the protected-table floor in
+//! [`crate::plugin::db_policy`]. Raw calls are parsed and judged as a tree by
+//! [`super::sql_guard`], and `query-raw` additionally runs inside a read-only
+//! transaction, which is the control that does not depend on the parser being
+//! right.
 
 use anyhow::Result;
 use regex::Regex;
@@ -13,6 +19,7 @@ use tracing::warn;
 use trovato_sdk::host_errors;
 use wasmtime::Linker;
 
+use super::sql_guard;
 use super::trace::TracedLinker;
 
 use crate::plugin::WasmtimeExt;
@@ -31,43 +38,6 @@ use crate::plugin::{DbPolicy, PluginState};
 #[allow(clippy::expect_used)]
 static VALID_IDENTIFIER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("valid regex literal"));
-
-/// DDL keywords that `execute-raw` must reject.
-const DDL_KEYWORDS: &[&str] = &["CREATE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE"];
-
-/// Extract the first SQL keyword, skipping leading comments and whitespace.
-///
-/// Handles `-- line comments` and `/* block comments */` that could be
-/// used to disguise the true first keyword.
-fn first_sql_keyword(sql: &str) -> &str {
-    let mut s = sql.trim();
-    loop {
-        if s.starts_with("--") {
-            // Line comment — skip to end of line
-            s = s.find('\n').map_or("", |i| &s[i + 1..]).trim();
-        } else if s.starts_with("/*") {
-            // Block comment — skip to closing */
-            s = s.find("*/").map_or("", |i| &s[i + 2..]).trim();
-        } else {
-            break;
-        }
-    }
-    s.split_whitespace().next().unwrap_or("")
-}
-
-/// Check if SQL starts with one of the DDL keywords (after stripping comments).
-fn is_ddl(sql: &str) -> bool {
-    let first_word = first_sql_keyword(sql);
-    DDL_KEYWORDS
-        .iter()
-        .any(|kw| first_word.eq_ignore_ascii_case(kw))
-}
-
-/// Check if SQL is a read-only statement (SELECT or WITH), after stripping comments.
-fn is_read_only(sql: &str) -> bool {
-    let first_word = first_sql_keyword(sql);
-    first_word.eq_ignore_ascii_case("SELECT") || first_word.eq_ignore_ascii_case("WITH")
-}
 
 /// Check if SQL contains semicolons (potential multi-statement injection).
 fn has_semicolons(sql: &str) -> bool {
@@ -168,33 +138,86 @@ async fn do_query_raw(
     sql: &str,
     params: &[serde_json::Value],
 ) -> std::result::Result<String, i32> {
-    if !is_read_only(sql) {
-        return Err(host_errors::ERR_DDL_REJECTED);
-    }
     if has_semicolons(sql) {
         return Err(host_errors::ERR_DDL_REJECTED);
     }
+    guard_raw(sql, sql_guard::check_query_raw(sql))?;
 
-    fetch_rows_as_json(pool, sql, params).await
+    // Read only from the transaction's first statement. The parser above is the
+    // first control and this is the second: a write the parser somehow blessed
+    // is refused by the server, which does not depend on this kernel being
+    // right about PostgreSQL's grammar.
+    fetch_rows(pool, sql, params, Access::ReadOnly).await
+}
+
+/// Map a raw-SQL rejection onto the ABI, logging which rule refused it.
+///
+/// A protected table reports as `table-not-declared`, the code a structured
+/// call to the same table already returns; everything else keeps the
+/// `ddl-rejected` code raw SQL has always used on refusal. Neither is new, so
+/// the SDK is unchanged.
+fn guard_raw(
+    sql: &str,
+    outcome: std::result::Result<(), sql_guard::RawSqlReject>,
+) -> std::result::Result<(), i32> {
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(reject) => {
+            warn!(denied = %reject, sql = sql, "plugin raw SQL rejected");
+            Err(match reject {
+                sql_guard::RawSqlReject::ProtectedTable(_) => host_errors::ERR_TABLE_NOT_DECLARED,
+                _ => host_errors::ERR_DDL_REJECTED,
+            })
+        }
+    }
+}
+
+/// Whether the transaction a statement runs in may write.
+///
+/// `query-raw` is [`Access::ReadOnly`]; `do_insert`'s `RETURNING *` runs the
+/// same row-fetching code and must stay [`Access::ReadWrite`], which is why
+/// this is a parameter rather than a property of the function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    ReadOnly,
+    ReadWrite,
+}
+
+impl Access {
+    /// The statement that opens the transaction.
+    ///
+    /// `BEGIN READ ONLY` makes the server the authority on whether anything
+    /// wrote, from the transaction's first statement rather than after some
+    /// first statement has already run.
+    fn begin(self) -> &'static str {
+        match self {
+            Access::ReadOnly => "BEGIN READ ONLY",
+            Access::ReadWrite => "BEGIN",
+        }
+    }
 }
 
 /// Execute a SQL statement that returns rows and serialize them as JSON.
 ///
-/// Shared implementation for `do_query_raw` (after guard) and `do_insert` (RETURNING *).
-/// Wraps the query in an explicit transaction so `SET LOCAL statement_timeout`
-/// is scoped correctly (it has no effect outside a transaction).
-async fn fetch_rows_as_json(
+/// Shared implementation for `do_query_raw` (after the guard, read only) and
+/// `do_insert` (`RETURNING *`, read write). Wraps the query in an explicit
+/// transaction so `SET LOCAL statement_timeout` is scoped correctly (it has no
+/// effect outside a transaction).
+async fn fetch_rows(
     pool: &PgPool,
     sql: &str,
     params: &[serde_json::Value],
+    access: Access,
 ) -> std::result::Result<String, i32> {
     let mut conn = pool.acquire().await.map_err(|e| {
         warn!(error = %e, "failed to acquire DB connection for plugin query");
         host_errors::ERR_SQL_FAILED
     })?;
 
-    // Wrap in explicit transaction so SET LOCAL is properly scoped.
-    conn.execute("BEGIN").await.map_err(|e| {
+    // Wrap in explicit transaction so SET LOCAL is properly scoped. The access
+    // mode is set by BEGIN itself, before any other statement in the
+    // transaction, so there is no window in which a write would be accepted.
+    conn.execute(access.begin()).await.map_err(|e| {
         warn!(error = %e, "failed to begin transaction for plugin query");
         host_errors::ERR_SQL_FAILED
     })?;
@@ -230,18 +253,17 @@ async fn fetch_rows_as_json(
 /// Execute a DML statement and return rows affected.
 ///
 /// Wraps the statement in an explicit transaction so `SET LOCAL statement_timeout`
-/// is scoped correctly. Rejects DDL keywords and semicolons (multi-statement).
+/// is scoped correctly. Accepts exactly one INSERT, UPDATE or DELETE and
+/// nothing else — see [`super::sql_guard`] for what that excludes and why.
 async fn do_execute_raw(
     pool: &PgPool,
     sql: &str,
     params: &[serde_json::Value],
 ) -> std::result::Result<u64, i32> {
-    if is_ddl(sql) {
-        return Err(host_errors::ERR_DDL_REJECTED);
-    }
     if has_semicolons(sql) {
         return Err(host_errors::ERR_DDL_REJECTED);
     }
+    guard_raw(sql, sql_guard::check_execute_raw(sql))?;
 
     let mut conn = pool.acquire().await.map_err(|e| {
         warn!(error = %e, "failed to acquire DB connection for plugin execute");
@@ -410,7 +432,7 @@ async fn do_insert(
     );
 
     // Bypass read-only guard since INSERT RETURNING needs row results.
-    fetch_rows_as_json(pool, &sql, &params).await
+    fetch_rows(pool, &sql, &params, Access::ReadWrite).await
 }
 
 /// Build and execute a structured UPDATE.
@@ -853,33 +875,285 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // ---- the raw-SQL guard ----
+    //
+    // These replace the three keyword-scanner tests (`ddl_guard_rejects_ddl`,
+    // `ddl_guard_allows_dml`, `read_only_guard`), whose subject no longer
+    // exists: the scanner they tested was the defect.
+
+    /// The first defect the keyword scanner could not see: a statement that
+    /// begins with `WITH` and writes in the middle of itself. PostgreSQL runs
+    /// the `DELETE`; the old `is_read_only` saw the `WITH` and called it a read.
     #[test]
-    fn ddl_guard_rejects_ddl() {
-        assert!(is_ddl("CREATE TABLE foo (id int)"));
-        assert!(is_ddl("  DROP TABLE foo"));
-        assert!(is_ddl("ALTER TABLE foo ADD COLUMN bar int"));
-        assert!(is_ddl("TRUNCATE foo"));
-        assert!(is_ddl("GRANT ALL ON foo TO bar"));
-        assert!(is_ddl("REVOKE ALL ON foo FROM bar"));
+    fn query_raw_refuses_a_data_modifying_cte() {
+        let err = sql_guard::check_query_raw(
+            "WITH gone AS (DELETE FROM item RETURNING *) SELECT * FROM gone",
+        )
+        .expect_err("a writable CTE is not a read");
+        assert_eq!(err, sql_guard::RawSqlReject::WriteInsideQuery);
     }
 
+    /// The second: PostgreSQL nests block comments and the old scanner stopped
+    /// at the first `*/`, so in this statement it read `SELECT` where the
+    /// server reads `DROP TABLE`. Refused on both paths now, for the plain
+    /// reason that it is neither a query nor a row change.
     #[test]
-    fn ddl_guard_allows_dml() {
-        assert!(!is_ddl("INSERT INTO foo VALUES (1)"));
-        assert!(!is_ddl("UPDATE foo SET bar = 1"));
-        assert!(!is_ddl("DELETE FROM foo WHERE id = 1"));
-        assert!(!is_ddl("SELECT * FROM foo"));
-        assert!(!is_ddl("WITH cte AS (SELECT 1) SELECT * FROM cte"));
+    fn both_paths_refuse_the_nested_comment_statement() {
+        let sql = "/* /* */ SELECT 1 */ DROP TABLE item";
+        assert_eq!(
+            sql_guard::check_query_raw(sql).expect_err("DROP is not a read"),
+            sql_guard::RawSqlReject::NotAQuery
+        );
+        assert_eq!(
+            sql_guard::check_execute_raw(sql).expect_err("DROP is not a row change"),
+            sql_guard::RawSqlReject::NotARowChange
+        );
     }
 
+    /// `execute-raw` used to take anything whose first word was not DDL, so a
+    /// plain `SET` changed the session every later kernel query on that pooled
+    /// connection ran under — the statement outlives the `COMMIT` the host
+    /// wraps it in.
     #[test]
-    fn read_only_guard() {
-        assert!(is_read_only("SELECT * FROM foo"));
-        assert!(is_read_only("  SELECT 1"));
-        assert!(is_read_only("WITH cte AS (SELECT 1) SELECT * FROM cte"));
-        assert!(!is_read_only("INSERT INTO foo VALUES (1)"));
-        assert!(!is_read_only("UPDATE foo SET bar = 1"));
-        assert!(!is_read_only("DELETE FROM foo"));
+    fn execute_raw_takes_only_one_row_change() {
+        for refused in [
+            "SET search_path TO public",
+            "SET ROLE postgres",
+            "RESET ALL",
+            "DO $$ BEGIN PERFORM 1; END $$",
+            "LOCK TABLE item",
+            "COPY item FROM '/etc/passwd'",
+            "COMMENT ON TABLE item IS 'x'",
+            "COMMIT",
+            "VACUUM item",
+            "TRUNCATE item",
+            "CREATE TABLE sneaky (id int)",
+            "SELECT 1",
+        ] {
+            assert!(
+                sql_guard::check_execute_raw(refused).is_err(),
+                "execute-raw must refuse: {refused}"
+            );
+        }
+    }
+
+    /// The same session change, reached through the read path: `set_config`
+    /// with `is_local = false` outlives the transaction exactly as `SET` does.
+    #[test]
+    fn query_raw_refuses_the_session_changing_functions() {
+        for refused in [
+            "SELECT set_config('search_path', 'public', false)",
+            "SELECT pg_advisory_lock(1)",
+            "SELECT pg_read_file('/etc/passwd')",
+            "SELECT pg_ls_dir('/')",
+            "SELECT query_to_xml('select * from users', true, false, '')",
+            "SELECT lo_import('/etc/passwd')",
+            "SELECT pg_terminate_backend(1)",
+        ] {
+            assert!(
+                sql_guard::check_query_raw(refused).is_err(),
+                "query-raw must refuse: {refused}"
+            );
+        }
+    }
+
+    /// The allowed neighbours of those, so the denylist is a list and not a
+    /// prefix sweep: the transaction-scoped advisory lock ends with the
+    /// transaction, and a plugin is allowed to be slow.
+    #[test]
+    fn query_raw_allows_the_harmless_neighbours() {
+        assert!(sql_guard::check_query_raw("SELECT pg_advisory_xact_lock(1)").is_ok());
+        assert!(sql_guard::check_query_raw("SELECT pg_sleep(4)").is_ok());
+    }
+
+    /// A read that is not quite a read: `FOR UPDATE` takes a row lock, and
+    /// `SELECT ... INTO` creates a table.
+    #[test]
+    fn query_raw_refuses_locks_and_select_into() {
+        assert_eq!(
+            sql_guard::check_query_raw("SELECT * FROM item FOR UPDATE").expect_err("lock"),
+            sql_guard::RawSqlReject::RowLock
+        );
+        assert_eq!(
+            sql_guard::check_query_raw("SELECT * INTO copied FROM item").expect_err("into"),
+            sql_guard::RawSqlReject::SelectInto
+        );
+    }
+
+    /// Raw SQL was never checked against any table list, so `raw_sql = true`
+    /// was a credential read. It is checked now, anywhere in the tree —
+    /// including inside a CTE, which is where a table name hides best.
+    #[test]
+    fn raw_sql_refuses_protected_tables_anywhere_in_the_tree() {
+        for refused in [
+            "SELECT * FROM users",
+            "SELECT * FROM public.users",
+            "WITH u AS (SELECT * FROM users) SELECT * FROM u",
+            "SELECT * FROM item JOIN user_roles ON true",
+            "SELECT value FROM site_config WHERE key = $1",
+            "SELECT (SELECT count(*) FROM api_tokens) AS n",
+        ] {
+            assert!(
+                matches!(
+                    sql_guard::check_query_raw(refused),
+                    Err(sql_guard::RawSqlReject::ProtectedTable(_))
+                ),
+                "query-raw must refuse: {refused}"
+            );
+        }
+        assert!(matches!(
+            sql_guard::check_execute_raw("UPDATE users SET name = 'x'"),
+            Err(sql_guard::RawSqlReject::ProtectedTable(_))
+        ));
+    }
+
+    /// Every raw statement a shipped plugin or test fixture sends, copied
+    /// verbatim, accepted by the function that sends it.
+    ///
+    /// This is the test that says the guard did not break the site. The
+    /// statements were collected by grepping `plugins/` for `query_raw` and
+    /// `execute_raw`; a plugin that grows a new one and is not added here is a
+    /// plugin whose SQL nobody checked.
+    #[test]
+    fn every_shipped_plugin_statement_is_still_accepted() {
+        // query-raw
+        for (plugin, sql) in [
+            (
+                "trovato_search",
+                "SELECT COALESCE(MAX(changed), 0) as max_changed \
+                 FROM item WHERE status = 1 AND stage_id = $1::uuid",
+            ),
+            (
+                "trovato_search",
+                "SELECT last_indexed_at, rebuild_requested \
+                 FROM pagefind_index_status WHERE id = 1",
+            ),
+            (
+                "trovato_series",
+                "SELECT id::text, title FROM item \
+                 WHERE type = 'blog' \
+                 AND status = 1 \
+                 AND fields->>'field_series_title' = $1 \
+                 ORDER BY created ASC",
+            ),
+            (
+                "trovato_book",
+                "SELECT bp.item_id, bp.book_id, bp.parent_item_id, bp.weight, i.title \
+                 FROM book_page bp JOIN item i ON i.id = bp.item_id \
+                 WHERE bp.item_id = $1::uuid",
+            ),
+            (
+                "trovato_book",
+                "SELECT bp.item_id, bp.book_id, bp.parent_item_id, bp.weight, i.title \
+                 FROM book_page bp JOIN item i ON i.id = bp.item_id \
+                 WHERE bp.book_id = $1::uuid ORDER BY bp.weight, i.title",
+            ),
+            (
+                "trovato_book",
+                "SELECT bp.book_id, i.title, COUNT(*) AS pages \
+                 FROM book_page bp JOIN item i ON i.id = bp.book_id \
+                 GROUP BY bp.book_id, i.title ORDER BY i.title",
+            ),
+            ("trovato_book", "SELECT id FROM item WHERE id = $1::uuid"),
+            (
+                "test_plugin_api",
+                "SELECT slug, text, method FROM tpa_notes WHERE user_id = $1::uuid ORDER BY slug",
+            ),
+            ("test_queue_worker", "SELECT pg_sleep(4)"),
+            ("test_e2e_callee", "SELECT 1 FROM undeclared_table"),
+        ] {
+            assert!(
+                sql_guard::check_query_raw(sql).is_ok(),
+                "{plugin} sends this through query-raw and it must still run: {sql}"
+            );
+        }
+
+        // execute-raw
+        for (plugin, sql) in [
+            (
+                "trovato_scheduled_publishing",
+                "UPDATE item SET status = 1, changed = $1 \
+                 WHERE status = 0 \
+                 AND fields->>'field_publish_on' IS NOT NULL \
+                 AND (fields->>'field_publish_on') ~ '^[0-9]+$' \
+                 AND (fields->>'field_publish_on')::bigint <= $1",
+            ),
+            (
+                "trovato_scheduled_publishing",
+                "UPDATE item SET status = 0, changed = $1 \
+                 WHERE status = 1 \
+                 AND fields->>'field_unpublish_on' IS NOT NULL \
+                 AND (fields->>'field_unpublish_on') ~ '^[0-9]+$' \
+                 AND (fields->>'field_unpublish_on')::bigint <= $1",
+            ),
+            (
+                "trovato_search",
+                "UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1",
+            ),
+            (
+                "trovato_book",
+                "INSERT INTO book_page (item_id, book_id, parent_item_id, weight) \
+                 VALUES ($1::uuid, $1::uuid, NULL, 0)",
+            ),
+            (
+                "trovato_book",
+                "INSERT INTO book_page (item_id, book_id, parent_item_id, weight) \
+                 VALUES ($1::uuid, $2::uuid, $3::uuid, $4) \
+                 ON CONFLICT (item_id) DO UPDATE SET \
+                 book_id = EXCLUDED.book_id, parent_item_id = EXCLUDED.parent_item_id, \
+                 weight = EXCLUDED.weight",
+            ),
+            (
+                "trovato_book",
+                "DELETE FROM book_page WHERE book_id = $1::uuid",
+            ),
+            (
+                "trovato_book",
+                "UPDATE book_page SET parent_item_id = $1::uuid WHERE parent_item_id = $2::uuid",
+            ),
+            (
+                "trovato_book",
+                "DELETE FROM book_page WHERE item_id = $1::uuid",
+            ),
+            (
+                "test_plugin_api",
+                "INSERT INTO tpa_notes (user_id, slug, text, method) VALUES ($1::uuid, $2, $3, $4) \
+                 ON CONFLICT (user_id, slug) DO UPDATE SET text = EXCLUDED.text",
+            ),
+        ] {
+            assert!(
+                sql_guard::check_execute_raw(sql).is_ok(),
+                "{plugin} sends this through execute-raw and it must still run: {sql}"
+            );
+        }
+    }
+
+    /// The one shipped statement this change does stop. `trovato_ai` reads its
+    /// field rules from `site_config`, which holds the SMTP password, so the
+    /// table is on the protected floor and the read is refused. The plugin
+    /// already handles the error (it logs the code and returns no rules), and
+    /// the query was already failing for its own reason: it filters on a column
+    /// named `name` and the column is `key`.
+    #[test]
+    fn the_trovato_ai_site_config_read_is_refused_and_this_is_deliberate() {
+        assert!(matches!(
+            sql_guard::check_query_raw("SELECT value FROM site_config WHERE name = $1"),
+            Err(sql_guard::RawSqlReject::ProtectedTable(_))
+        ));
+    }
+
+    /// A statement the guard cannot parse is refused rather than passed to the
+    /// server to interpret: if this kernel cannot say what a statement does,
+    /// it is not in a position to allow it.
+    #[test]
+    fn unparseable_and_multiple_statements_are_refused() {
+        assert!(matches!(
+            sql_guard::check_query_raw("SELEKT 1"),
+            Err(sql_guard::RawSqlReject::Unparseable(_))
+        ));
+        // The semicolon check in `do_query_raw` catches this first in
+        // production; the guard refuses it on its own too.
+        assert!(sql_guard::check_query_raw("SELECT 1; SELECT 2").is_err());
     }
 
     /// A lazy, never-connected pool: the WASM-2 table gate rejects before any

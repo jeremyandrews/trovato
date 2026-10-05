@@ -9,6 +9,59 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Plugin raw SQL is parsed, and some tables are off limits to every plugin
+
+**Who is affected:** a site running a plugin that declares `raw_sql = true` or
+names a kernel table in `db_tables`. Find out with
+`SELECT name FROM plugin_status WHERE status = 1;` and read those plugins'
+`.info.toml` files; a site running only the shipped plugins is affected in
+exactly one place, described below.
+
+**What changed.** Two things, both narrowing what a plugin's database access
+reaches.
+
+A protected list now sits under the structured table allowlist and is checked
+before it, whatever a plugin's manifest or migrations say: `users`,
+`user_roles`, `roles`, `role_permissions`, `plugin_permission`, `api_tokens`,
+`password_reset_tokens`, `email_verification_tokens`, `recovery_codes`,
+`recovery_email_challenges`, `webauthn_credentials`, `security_audit_log`,
+`site_config`, `plugin_status`, `plugin_migration`, `_sqlx_migrations`,
+`form_state_cache`, `user_tenant`, `oauth_client` and `webhook`. A call to one
+of these is refused with the same `table-not-declared` ABI code an undeclared
+table has always returned; the host log says `table-protected` so the two are
+separable. Raw SQL is checked against the same list, which it never was before.
+
+And raw statements are parsed rather than scanned for their first keyword.
+`query-raw` takes a read and nothing else, and runs in a transaction the server
+opens `READ ONLY`. `execute-raw` takes one INSERT, UPDATE or DELETE and nothing
+else — narrower than before by `SET`, `RESET`, `DO`, `CALL`, `COPY`, `LOCK`,
+`COMMENT`, transaction control, `VACUUM`, `REFRESH` and `DISCARD`. A statement
+that does not parse is refused.
+
+**`site_config` deserves its own line.** It holds the SMTP password. The
+configuration form writes whatever an administrator types into the
+`smtp_password` key, in the clear, unless they used the `env:` indirection, so
+a plugin reading the table was reading a credential. If you have ever typed an
+SMTP password into `/admin/config` rather than setting `SMTP_PASSWORD` in the
+environment, that password is sitting in your database in plain text today;
+protecting the table stops plugins reading it but does not remove it. Move it
+to the environment and re-save the form.
+
+**What to do.** Nothing, for the shipped plugins. Every raw statement they send
+is pinned in a kernel test and still runs, with one exception: `trovato_ai`'s
+field-rules read from `site_config` is refused now. That read was already
+failing for its own reason — it filters on a column named `name` and the column
+is `key` — so no behaviour a site relies on changes; the plugin logs the error
+code and returns no rules, as it did before.
+
+For a plugin of your own: if it reads a protected table through raw SQL, it
+stops getting rows. If it uses `execute-raw` for anything but one row change,
+it stops. Neither is recoverable by a manifest change, which is the point —
+raw SQL remains a declared trust grant, but the grant no longer carries the
+ability to write through the read path, run DDL through the write path, or
+change the session every later kernel query on that pooled connection runs
+under.
+
 ### The image no longer ships the `argus` plugin
 
 **Who is affected:** a site that runs Argus from the published image, which is

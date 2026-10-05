@@ -11,9 +11,20 @@
 //! # Effective table allowlist (D-19 §1)
 //!
 //! ```text
-//! allowlist = { tables the plugin's own migrations CREATE }
-//!           ∪ { explicit db_tables in the manifest }
+//! allowlist = ({ tables the plugin's own migrations CREATE }
+//!           ∪ { explicit db_tables in the manifest })
+//!           ∖ { protected tables }
 //! ```
+//!
+//! # The protected-table floor
+//!
+//! The first two sets are both written by the plugin, so on their own they are
+//! a request, not a limit: a manifest saying `db_tables = ["users"]` put the
+//! users table in reach of a structured `select`, and a plugin migration
+//! reading `CREATE TABLE IF NOT EXISTS users` was taken as owning the table the
+//! kernel had already created. [`is_protected_table`] is the floor underneath
+//! them — the credential, authorization and plugin-control tables, refused
+//! whatever the plugin declares, and refused to raw SQL as well.
 //!
 //! Migration-owned tables are parsed from the `CREATE TABLE` statements in the
 //! plugin's declared `migrations/*.sql` files ([`extract_created_tables`],
@@ -23,11 +34,24 @@
 //!
 //! # Raw SQL (D-19 §3)
 //!
-//! `query-raw` / `execute-raw` are **gated, not parsed**: a plugin may call them
-//! only if it declared `raw_sql = true`. The kernel deliberately does not attempt
-//! to SQL-parse raw statements against the allowlist — the declared `raw_sql`
-//! capability is the documented, auditable escape hatch, and holding it weakens
-//! the table guarantee for that plugin (the SQLI-1 surface).
+//! `query-raw` / `execute-raw` are gated on the declared `raw_sql = true`
+//! capability, and they are parsed. [`crate::host::sql_guard`] parses each
+//! statement with the PostgreSQL dialect and judges the whole tree, not its
+//! first keyword: `query-raw` takes a read and nothing else, `execute-raw`
+//! takes one INSERT, UPDATE or DELETE and nothing else, neither may name a
+//! protected table, and `query-raw` runs in a transaction the server opens
+//! `READ ONLY`.
+//!
+//! Raw SQL is still a declared trust grant, and a narrower one than it was
+//! rather than a closed one. A plugin holding `raw_sql` can read any table
+//! this floor does not protect, which is most of them, so the capability
+//! remains the thing an administrator audits before installing a plugin. The
+//! parser and the read-only transaction close the paths that were reachable
+//! *past* that grant — writing through `query-raw`, running DDL through
+//! `execute-raw`, changing the session every later kernel query on that pooled
+//! connection runs under. A per-plugin database role, with its own `GRANT`s,
+//! remains the stronger answer and stays a post-1.0 option: it would make the
+//! database the only authority instead of the second one.
 //!
 //! # Deny semantics (D-19 §4)
 //!
@@ -42,7 +66,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::info_parser::PluginInfo;
 
@@ -106,6 +130,81 @@ pub fn extract_created_tables(sql: &str) -> Vec<String> {
     tables
 }
 
+/// Declarative error prefix for a call to a table on the protected floor,
+/// whatever the plugin's manifest or migrations claim. Frozen surface.
+///
+/// The full message is `table-protected: <table> (plugin <name>)`. It crosses
+/// the ABI as the same [`trovato_sdk::host_errors::ERR_TABLE_NOT_DECLARED`] an
+/// undeclared table returns — the plugin learns it may not have the table
+/// either way, and the host log says which rule refused it.
+pub const TABLE_PROTECTED: &str = "table-protected";
+/// Tables no plugin may reach through any `db` host function, whatever its
+/// manifest or its migrations say.
+///
+/// The effective allowlist above is built from what a plugin declares, and a
+/// plugin declares its own manifest, so before this list there was no floor:
+/// `db_tables = ["users"]` put the users table in reach of structured `select`,
+/// and a plugin migration reading `CREATE TABLE IF NOT EXISTS users` was taken
+/// as owning the table the kernel had already created. The allowlist answers
+/// "what did this plugin ask for"; this list answers "what is not on offer".
+///
+/// What is on it: the credential and authorization tables (accounts, roles,
+/// permission grants, API tokens, every kind of reset, verification and
+/// recovery token, passkeys), the audit trail that would record tampering with
+/// them, the tables that decide which plugins run and which migrations have
+/// been applied, the form-state cache (it holds the server side of a form,
+/// including fields the user was never shown), the tenant grant, and the two
+/// plugin-owned tables that hold secrets of their own: `oauth_client` and
+/// `webhook`.
+///
+/// `site_config` is on it, and that one is a behaviour change for raw SQL.
+/// The table holds the SMTP password: `/admin/config` writes whatever the
+/// administrator types into the `smtp_password` key, in the clear, unless they
+/// used the `env:` indirection. One `SELECT value FROM site_config` is
+/// therefore a credential read, which is the criterion every other name here
+/// meets. The one shipped plugin that reads the table, `trovato_ai`, is
+/// refused now; see `UPGRADING.md`.
+const PROTECTED_TABLES: &[&str] = &[
+    "_sqlx_migrations",
+    "api_tokens",
+    "email_verification_tokens",
+    "form_state_cache",
+    "oauth_client",
+    "password_reset_tokens",
+    "plugin_migration",
+    "plugin_permission",
+    "plugin_status",
+    "recovery_codes",
+    "recovery_email_challenges",
+    "role_permissions",
+    "roles",
+    "security_audit_log",
+    "site_config",
+    "user_roles",
+    "user_tenant",
+    "users",
+    "webauthn_credentials",
+    "webhook",
+];
+
+/// Is this table off limits to every plugin?
+///
+/// Compares the bare table name, case-insensitively, with any quoting and any
+/// schema qualifier stripped: `"Users"`, `public.users` and `users` are one
+/// table, and a check that only matched the last spelling would be no check.
+pub fn is_protected_table(table: &str) -> bool {
+    let bare = bare_table_name(table);
+    PROTECTED_TABLES
+        .iter()
+        .any(|p| bare.eq_ignore_ascii_case(p))
+}
+
+/// Strip a schema qualifier and any quoting from a table reference.
+fn bare_table_name(table: &str) -> &str {
+    let last = table.rsplit('.').next().unwrap_or(table);
+    last.trim().trim_matches('"').trim_matches('`').trim()
+}
+
 /// The database-scoping policy enforced against one plugin's `db` host calls.
 ///
 /// Built once at load ([`DbPolicy::derive`]); cheap to clone into per-request
@@ -167,6 +266,23 @@ impl DbPolicy {
             tables.extend(caps.db_tables.iter().cloned());
         }
 
+        // Drop anything protected before it is ever an allowlist entry, and say
+        // so: a plugin asking for one of these is either confused about which
+        // table it owns or testing the fence, and both are worth a line in the
+        // log at load time rather than a denial per call.
+        tables.retain(|table| {
+            if is_protected_table(table) {
+                warn!(
+                    plugin = %info.name,
+                    table = %table,
+                    "plugin declared or created a protected table; dropping it from the allowlist",
+                );
+                false
+            } else {
+                true
+            }
+        });
+
         Self::from_parts(info.name.clone(), tables, raw_sql)
     }
 
@@ -175,6 +291,15 @@ impl DbPolicy {
     /// `Ok(())` if `table` is in the effective allowlist; otherwise `Err` with the
     /// frozen [`TABLE_NOT_DECLARED`] message.
     pub fn check_table(&self, table: &str) -> Result<(), String> {
+        // The floor comes first and does not consult the allowlist: the
+        // allowlist is built from what the plugin declared, so asking it about
+        // a protected table would be asking the plugin.
+        if is_protected_table(table) {
+            return Err(format!(
+                "{TABLE_PROTECTED}: {table} (plugin {})",
+                self.plugin
+            ));
+        }
         if self.tables.contains(table) {
             Ok(())
         } else {
@@ -251,13 +376,140 @@ mod tests {
         assert!(extract_created_tables(sql).is_empty());
     }
 
+    // ---- the protected-table floor ----
+
+    /// The defect: the allowlist was built from what the plugin declared, so a
+    /// manifest naming a kernel credential table put it in reach.
+    #[test]
+    fn a_manifest_cannot_declare_its_way_into_a_protected_table() {
+        let policy = DbPolicy::from_parts("greedy", ["users".to_string()], false);
+        assert_eq!(
+            policy.check_table("users").unwrap_err(),
+            "table-protected: users (plugin greedy)"
+        );
+    }
+
+    /// The other half of the same defect: a migration saying
+    /// `CREATE TABLE IF NOT EXISTS users` succeeds silently against the table
+    /// the kernel already created, and was then taken as owning it.
+    #[test]
+    fn derive_drops_a_protected_table_a_migration_claims() {
+        use crate::plugin::info_parser::{MigrationConfig, PluginCapabilities, TapConfig};
+
+        let dir = std::env::temp_dir().join("trovato_db_policy_protected_claim");
+        std::fs::create_dir_all(dir.join("migrations")).unwrap();
+        std::fs::write(
+            dir.join("migrations/001_claim.sql"),
+            "CREATE TABLE IF NOT EXISTS users (id uuid primary key);\n\
+             CREATE TABLE mine_only (id int);",
+        )
+        .unwrap();
+
+        let info = PluginInfo {
+            name: "claimant".to_string(),
+            description: "d".to_string(),
+            version: "1.0.0".to_string(),
+            api_version: "0.2".to_string(),
+            default_enabled: true,
+            dependencies: vec![],
+            taps: TapConfig::default(),
+            migrations: MigrationConfig {
+                files: vec!["migrations/001_claim.sql".to_string()],
+                depends_on: vec![],
+            },
+            capabilities: Some(PluginCapabilities {
+                host_interfaces: vec!["db".to_string()],
+                db_tables: vec!["roles".to_string()],
+                raw_sql: false,
+                ai_background: false,
+                http_max_transfer: None,
+                public_functions: vec![],
+            }),
+            record_types: vec![],
+        };
+
+        let policy = DbPolicy::derive(&info, &dir);
+        assert!(
+            policy.check_table("users").is_err(),
+            "a migration claim must not confer ownership of a kernel table"
+        );
+        assert!(
+            policy.check_table("roles").is_err(),
+            "nor may the manifest declare one"
+        );
+        assert!(
+            policy.check_table("mine_only").is_ok(),
+            "the plugin's own table is still its own"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every name on the floor is refused, so a later edit that drops one from
+    /// the list fails here rather than in production.
+    #[test]
+    fn every_protected_table_is_refused() {
+        let policy = DbPolicy::from_parts(
+            "greedy",
+            PROTECTED_TABLES.iter().map(|t| (*t).to_string()),
+            false,
+        );
+        for table in PROTECTED_TABLES {
+            assert!(
+                policy.check_table(table).is_err(),
+                "{table} must be refused even when declared"
+            );
+        }
+    }
+
+    /// Quoting, case and a schema qualifier are spellings of one table, so the
+    /// check normalises before comparing. A check that only matched `users`
+    /// would be no check at all.
+    #[test]
+    fn protected_match_ignores_case_quoting_and_schema() {
+        for spelling in [
+            "users",
+            "USERS",
+            "Users",
+            "public.users",
+            "\"users\"",
+            "public.\"Users\"",
+        ] {
+            assert!(
+                is_protected_table(spelling),
+                "{spelling} names the protected users table"
+            );
+        }
+        assert!(!is_protected_table("user_subscriptions"));
+        assert!(!is_protected_table("comment"));
+        assert!(!is_protected_table("item"));
+    }
+
+    /// The tables shipped plugins legitimately declare stay reachable: the
+    /// floor is a floor, not a new allowlist.
+    #[test]
+    fn the_tables_shipped_plugins_declare_are_not_protected() {
+        for table in [
+            "comment",
+            "item",
+            "book_page",
+            "tpa_notes",
+            "pagefind_index_status",
+        ] {
+            assert!(!is_protected_table(table), "{table} must stay reachable");
+        }
+    }
+
     #[test]
     fn check_table_allows_listed_and_rejects_others_with_exact_message() {
         let policy = DbPolicy::from_parts("importer", ["importer_jobs".to_string()], false);
         assert!(policy.check_table("importer_jobs").is_ok());
+        // An ordinary undeclared table: not on the protected floor, just not
+        // this plugin's. `users` used to stand here and now answers with the
+        // floor's message instead, which the protected-table tests above pin.
         assert_eq!(
-            policy.check_table("users").unwrap_err(),
-            "table-not-declared: users (plugin importer)"
+            policy.check_table("item").unwrap_err(),
+            "table-not-declared: item (plugin importer)"
         );
     }
 
