@@ -108,13 +108,7 @@ async fn post_form(
 /// A role with `members` users holding it and one permission granted.
 async fn seed_role(app: &TestApp, members: usize) -> (Uuid, String, Vec<Uuid>) {
     let name = format!("role_{}", Uuid::now_v7().simple());
-    let role_id = Uuid::now_v7();
-    sqlx::query("INSERT INTO roles (id, name) VALUES ($1, $2)")
-        .bind(role_id)
-        .bind(&name)
-        .execute(&app.db)
-        .await
-        .expect("insert role");
+    let role_id = common::create_test_role(app, &name).await;
     sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, 'access content')")
         .bind(role_id)
         .execute(&app.db)
@@ -402,13 +396,7 @@ fn a_delete_without_a_valid_csrf_token_is_rejected() {
 /// of the delegate and their role, for [`cleanup`].
 async fn delegate_session(app: &TestApp, extra: &[&str]) -> (String, Uuid, Uuid) {
     let name = format!("roledlg_{}", Uuid::now_v7().simple());
-    let role_id = Uuid::now_v7();
-    sqlx::query("INSERT INTO roles (id, name) VALUES ($1, $2)")
-        .bind(role_id)
-        .bind(&name)
-        .execute(&app.db)
-        .await
-        .expect("insert role");
+    let role_id = common::create_test_role(app, &name).await;
     for permission in std::iter::once(&"administer users").chain(extra) {
         sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)")
             .bind(role_id)

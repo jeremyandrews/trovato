@@ -22,71 +22,36 @@
 
 use axum::Json;
 use axum::routing::get;
-use sqlx::{Connection, Executor, PgConnection, PgPool};
+use sqlx::PgPool;
 use trovato_kernel::cron::{CronService, UpdateCheckConfig};
 use trovato_kernel::models::SiteConfig;
 use trovato_kernel::update_status::{self, UPDATE_CHECK_KEY, UPDATE_STATUS_KEY};
 
 /// A database created for one test and dropped when it ends.
-struct ScratchDb {
-    server_url: String,
-    name: String,
-    pool: Option<PgPool>,
-}
+///
+/// The create-and-drop half is `trovato_test_utils::ScratchDb`, which drops the
+/// database in `Drop`: the teardown this file used to run on the last line of
+/// each body was skipped by every failing run, and left a migrated database on
+/// the server each time.
+struct ScratchDb(trovato_test_utils::ScratchDb);
 
 impl ScratchDb {
     async fn new(label: &str) -> Self {
-        trovato_test_utils::env::load_dotenv();
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run these tests");
-        let without_query = database_url
-            .split_once('?')
-            .map_or(database_url.as_str(), |(base, _)| base);
-        let cut = without_query
-            .rfind('/')
-            .expect("DATABASE_URL must include a database name");
-        let server_url = without_query[..cut].to_string();
-        let name = format!("trovato_update_{label}_{}", uuid::Uuid::now_v7().simple());
-
-        let mut admin = PgConnection::connect(&format!("{server_url}/postgres"))
-            .await
-            .expect("connect to the maintenance database");
-        admin
-            .execute(format!(r#"CREATE DATABASE "{name}""#).as_str())
-            .await
-            .expect("create the scratch database");
-        drop(admin);
-
-        let pool = PgPool::connect(&format!("{server_url}/{name}"))
-            .await
-            .expect("connect to the scratch database");
-        trovato_kernel::db::run_migrations(&pool)
+        let db = trovato_test_utils::ScratchDb::create(&format!("update_{label}")).await;
+        trovato_kernel::db::run_migrations(db.pool())
             .await
             .expect("migrate the scratch database");
-
-        Self {
-            server_url,
-            name,
-            pool: Some(pool),
-        }
+        Self(db)
     }
 
     fn pool(&self) -> &PgPool {
-        self.pool.as_ref().expect("pool already closed")
+        self.0.pool()
     }
 
-    async fn cleanup(mut self) {
-        if let Some(pool) = self.pool.take() {
-            pool.close().await;
-        }
-        if let Ok(mut admin) = PgConnection::connect(&format!("{}/postgres", self.server_url)).await
-        {
-            let _ = admin
-                .execute(
-                    format!(r#"DROP DATABASE IF EXISTS "{}" WITH (FORCE)"#, self.name).as_str(),
-                )
-                .await;
-        }
+    /// Drop the database at a chosen point; `Drop` does the same work for a
+    /// test that fails before reaching it.
+    async fn cleanup(self) {
+        drop(self);
     }
 }
 
@@ -136,10 +101,7 @@ fn release(tag: &str, title: &str) -> serde_json::Value {
 
 /// Build the real cron service against a scratch database and a local endpoint.
 fn cron_with(pool: &PgPool, endpoint: &str, interval_secs: u64) -> CronService {
-    let redis = redis::Client::open(
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
-    )
-    .expect("redis client");
+    let redis = redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
     let mut cron = CronService::new(redis, pool.clone());
     cron.set_update_check(Some(UpdateCheckConfig {
         endpoint: endpoint.to_string(),

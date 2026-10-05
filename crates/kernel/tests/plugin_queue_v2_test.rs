@@ -159,7 +159,7 @@ async fn fresh_pool() -> PgPool {
 
 /// Build a `CronService` wired to the fixture dispatcher on `pool`.
 fn cron_with(pool: PgPool, disp: Arc<TapDispatcher>) -> Arc<CronService> {
-    let redis = redis::Client::open("redis://127.0.0.1:6379").expect("redis client");
+    let redis = redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
     let mut cron = CronService::new(redis, pool);
     cron.set_tap_dispatcher(disp);
     Arc::new(cron)
@@ -1375,7 +1375,7 @@ fn a_drain_pass_stops_at_its_time_budget() {
         }
 
         let mut cron = CronService::new(
-            redis::Client::open("redis://127.0.0.1:6379").expect("redis client"),
+            redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client"),
             pool.clone(),
         );
         cron.set_tap_dispatcher(dispatcher());
@@ -1455,7 +1455,8 @@ fn a_job_that_will_not_return_is_abandoned_and_requeued() {
 
         let id = insert_job(&pool, serde_json::json!({"outcome": "spin"}), 0, 5, now()).await;
 
-        let redis = redis::Client::open("redis://127.0.0.1:6379").expect("redis client");
+        let redis =
+            redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
         let mut cron = CronService::new(redis, pool.clone());
         cron.set_tap_dispatcher(dispatcher());
         // Below TEST_TAP_BUDGET_SECS, so the drain reaches its ceiling first.

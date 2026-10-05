@@ -321,7 +321,7 @@ mod tests {
     async fn test_cache_layer_creation() {
         // This test requires Redis, so we just verify the struct can be created
         // In a real test environment, we'd use a mock or test Redis instance
-        let client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
+        let client = RedisClient::open(trovato_test_utils::env::redis_url()).unwrap();
         let cache = CacheLayer::new(client);
 
         let stats = cache.stats().await;

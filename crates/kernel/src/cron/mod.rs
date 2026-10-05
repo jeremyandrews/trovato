@@ -2263,7 +2263,7 @@ mod tests {
     /// renewals stop: with no bound the count grows without limit.
     #[tokio::test]
     async fn the_heartbeat_stops_renewing_past_its_maximum() {
-        let Ok(client) = redis::Client::open("redis://127.0.0.1:6379") else {
+        let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
             return;
         };
         let Ok(mut conn) = client.get_multiplexed_async_connection().await else {

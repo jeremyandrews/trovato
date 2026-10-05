@@ -108,7 +108,7 @@ fn background_state(pool: &PgPool, runtime: Arc<PluginRuntime>) -> RequestState 
 }
 
 fn cron_with(pool: PgPool, disp: Arc<TapDispatcher>) -> Arc<CronService> {
-    let redis = redis::Client::open("redis://127.0.0.1:6379").expect("redis client");
+    let redis = redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
     let mut cron = CronService::new(redis, pool);
     cron.set_tap_dispatcher(disp);
     Arc::new(cron)

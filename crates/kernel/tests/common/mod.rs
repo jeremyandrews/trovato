@@ -94,8 +94,84 @@ pub fn shared_runtime_handle() -> tokio::runtime::Handle {
 /// Using a single runtime for all tests prevents the "Tokio context is being
 /// shutdown" error that occurs when PgPool connections opened on one
 /// `#[tokio::test]` runtime are reused by another after the first shuts down.
+///
+/// It is also where anything the test registered with [`defer_cleanup`] is
+/// awaited, including while a failing assert unwinds — which is the point:
+/// teardown written at the bottom of a test body is teardown that is skipped on
+/// exactly the run where it mattered.
 pub fn run_test<F: std::future::Future<Output = ()> + Send>(f: F) {
-    SHARED_RT.block_on(f);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| SHARED_RT.block_on(f)));
+    run_deferred_cleanups();
+    if let Err(payload) = outcome {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+// =============================================================================
+// Cleanup that runs even when the test fails
+// =============================================================================
+
+/// A cleanup the running test registered, awaited once that test ends.
+///
+/// An `FnOnce` returning a boxed future rather than a stored future: a future
+/// built at registration time would have to be polled to do anything, and the
+/// whole point is that it is polled later, after the body has either finished
+/// or unwound.
+type DeferredCleanup =
+    Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
+
+thread_local! {
+    /// Cleanups registered by the test running on this thread.
+    ///
+    /// Thread-local rather than global: [`run_test`] polls the body on the
+    /// calling thread, which is libtest's own per-test thread, so two tests
+    /// running in parallel never see each other's entries and neither can tear
+    /// down rows the other is still using.
+    static DEFERRED_CLEANUPS: std::cell::RefCell<Vec<DeferredCleanup>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Register `f` to run when the current test ends, whether it passes or fails.
+///
+/// For state that outlives a test and that the kernel will not reclaim on its
+/// own: a role, an AI usage row, a per-user budget override. Register it
+/// immediately after creating the thing, not at the bottom of the body — a
+/// cleanup below a failing assert never runs, and the next run of the suite
+/// inherits the mess.
+///
+/// Cleanups run last-registered-first, like nested `Drop`s, so one that depends
+/// on another's rows still finds them.
+pub fn defer_cleanup<F, Fut>(f: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    DEFERRED_CLEANUPS.with(|pending| pending.borrow_mut().push(Box::new(move || Box::pin(f()))));
+}
+
+/// Drain and await every cleanup the finished test registered.
+///
+/// One at a time, with the borrow released around each `block_on`, so a cleanup
+/// is free to register another.
+fn run_deferred_cleanups() {
+    while let Some(cleanup) = DEFERRED_CLEANUPS.with(|pending| pending.borrow_mut().pop()) {
+        SHARED_RT.block_on(cleanup());
+    }
+}
+
+/// Delete `role_id` when the current test ends.
+///
+/// Every role a test creates has to go again, because
+/// `/admin/people/permissions` renders every permission for every role on one
+/// page. Left to accumulate at roughly a hundred a run, the grid outgrew the
+/// 4 MB body cap its own tests read it under, and the suite stopped being
+/// runnable twice against one database — a page size limit standing in for the
+/// real defect, which is that tests did not own their state.
+pub fn track_test_role(pool: &PgPool, role_id: Uuid) {
+    let pool = pool.clone();
+    defer_cleanup(move || async move {
+        let _ = trovato_kernel::models::Role::delete(&pool, role_id).await;
+    });
 }
 
 /// Test application wrapper using the REAL kernel routes and state.
@@ -130,6 +206,42 @@ pub fn project_root() -> std::path::PathBuf {
 /// default.
 const EXTRA_TEST_LANGUAGES: &[(&str, &str, &str)] =
     &[("it", "Italian", "ltr"), ("he", "Hebrew", "rtl")];
+
+/// Applied once per test binary; see [`ensure_database_migrated`].
+static DATABASE_MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+/// Bring the test database up to date, before anything here reads a table.
+///
+/// `AppState::new` runs the migrations itself, which looks like enough and is
+/// not: the fixtures around it touch the database *first*. This module seeds
+/// `language` before building the app, because `AppState` snapshots the known
+/// languages at construction, and several test files install a plugin before
+/// that again, because `AppState` resolves its enabled plugin set at
+/// construction too. On a database that has never been migrated every one of
+/// those fails on a table that does not exist yet, and `cargo test` after a
+/// bare `createdb` collapsed at the first target that needed the shared app.
+///
+/// CI hid it by running `sqlx migrate run` before the test job, so the property
+/// nobody could check was the one a new contributor hits first.
+///
+/// Idempotent and cheap to call: the `OnceCell` makes it one statement per test
+/// binary, and `MIGRATOR` takes its own advisory lock, so the binaries sharing a
+/// database cannot race each other.
+pub async fn ensure_database_migrated(database_url: &str) {
+    DATABASE_MIGRATED
+        .get_or_init(|| async {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(database_url)
+                .await
+                .unwrap_or_else(|e| panic!("connect to migrate the test database: {e}"));
+            trovato_kernel::db::run_migrations(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("migrate the test database: {e}"));
+            pool.close().await;
+        })
+        .await;
+}
 
 /// Insert [`EXTRA_TEST_LANGUAGES`], idempotently, on a short-lived pool.
 ///
@@ -215,6 +327,11 @@ impl TestApp {
         }
 
         customize(&mut config);
+
+        // Migrate before seeding, not after: `AppState::new` below runs the
+        // migrations, and the seed on the next line writes to a table one of
+        // them creates.
+        ensure_database_migrated(&config.database_url).await;
 
         // Seed the extra languages before the app reads them. `AppState` snapshots
         // `known_languages` and `default_language` once at construction, so a
@@ -882,6 +999,30 @@ pub async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
         .expect("test user should exist")
 }
 
+/// Create a role named `name`, and delete it again when the test ends.
+///
+/// The one way a test should make a role. Several files grew their own copy of
+/// this insert, each with its own name prefix and none of them removing what it
+/// made; routing them all through here is what keeps the role table from
+/// growing by a hundred rows a run. See [`track_test_role`] for why that
+/// matters.
+///
+/// Upserts on the name, like the hand-written copies it replaces, so a fixture
+/// that derives a role name from a user it already created is idempotent.
+pub async fn create_test_role(app: &TestApp, name: &str) -> Uuid {
+    let role_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO roles (id, name) VALUES ($1, $2) \
+         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+    )
+    .bind(Uuid::now_v7())
+    .bind(name)
+    .fetch_one(&app.db)
+    .await
+    .unwrap_or_else(|e| panic!("create test role '{name}': {e}"));
+    track_test_role(&app.db, role_id);
+    role_id
+}
+
 /// Grant `permissions` to `user_id` through a role, the way a real site does.
 pub async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
     use trovato_kernel::models::Role;
@@ -889,6 +1030,7 @@ pub async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) 
     let role = Role::create(&app.db, &format!("testrole-{}", Uuid::now_v7().simple()))
         .await
         .expect("create role");
+    track_test_role(&app.db, role.id);
     for permission in permissions {
         Role::add_permission(&app.db, role.id, permission)
             .await

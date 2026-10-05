@@ -30,7 +30,6 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{TestApp, run_test, shared_app};
-use trovato_kernel::models::Role;
 use trovato_kernel::routes::helpers::{admin_user_context, user_context_for};
 use uuid::Uuid;
 
@@ -50,20 +49,6 @@ async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
         .fetch_one(&app.db)
         .await
         .expect("test user should exist")
-}
-
-/// Grant `permission` to `user_id` through a role, the way a real site does.
-async fn grant_via_role(app: &TestApp, user_id: Uuid, permission: &str) {
-    let role = Role::create(&app.db, &format!("uctx-{}", Uuid::now_v7().simple()))
-        .await
-        .expect("create role");
-    Role::add_permission(&app.db, role.id, permission)
-        .await
-        .expect("add permission to role");
-    Role::assign_to_user(&app.db, user_id, role.id)
-        .await
-        .expect("assign role to user");
-    app.state.permissions().invalidate_user(user_id);
 }
 
 async fn load_user(app: &TestApp, user_id: Uuid) -> trovato_kernel::models::User {
@@ -112,7 +97,7 @@ fn an_admins_context_carries_their_real_permissions_and_the_admin_marker() {
         app.create_test_admin(&name, "test-password-123", &format!("{name}@example.com"))
             .await;
         let id = user_id_of(app, &name).await;
-        grant_via_role(app, id, GRANTED).await;
+        common::grant_via_role(app, id, &[GRANTED]).await;
 
         let ctx = admin_user_context(&app.state, &load_user(app, id).await).await;
 
@@ -140,7 +125,7 @@ fn a_non_admin_context_carries_role_permissions_without_the_admin_marker() {
         app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
             .await;
         let id = user_id_of(app, &name).await;
-        grant_via_role(app, id, GRANTED).await;
+        common::grant_via_role(app, id, &[GRANTED]).await;
 
         let ctx = user_context_for(&app.state, &load_user(app, id).await).await;
 

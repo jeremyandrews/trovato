@@ -24,7 +24,6 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use common::{TestApp, run_test, shared_app, test_ip_for};
 use trovato_kernel::models::CreateItem;
-use trovato_kernel::models::Role;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
@@ -368,6 +367,7 @@ fn styles_fixture() -> &'static (TestApp, std::path::PathBuf) {
 async fn build_styles_app() -> (TestApp, std::path::PathBuf) {
     trovato_test_utils::env::load_dotenv();
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    common::ensure_database_migrated(&database_url).await;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
         .connect(&database_url)
@@ -475,22 +475,6 @@ async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
         .expect("test user should exist")
 }
 
-/// Grant `permissions` to `user_id` through a role, the way a real site does.
-async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
-    let role = Role::create(&app.db, &format!("filegate-{}", Uuid::now_v7().simple()))
-        .await
-        .expect("create role");
-    for permission in permissions {
-        Role::add_permission(&app.db, role.id, permission)
-            .await
-            .expect("add permission to role");
-    }
-    Role::assign_to_user(&app.db, user_id, role.id)
-        .await
-        .expect("assign role to user");
-    app.state.permissions().invalidate_user(user_id);
-}
-
 /// Create a non-superuser holding exactly `permissions`, and log them in.
 /// Returns (id, cookies, rate-limit bucket).
 async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> (Uuid, String, String) {
@@ -499,7 +483,7 @@ async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> (Uui
         .await;
     let id = user_id_of(app, &name).await;
     if !permissions.is_empty() {
-        grant_via_role(app, id, permissions).await;
+        common::grant_via_role(app, id, permissions).await;
     }
     let cookies = app.login(&name, "test-password-123").await;
     (id, cookies, name)

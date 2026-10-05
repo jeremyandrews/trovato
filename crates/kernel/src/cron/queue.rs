@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_queue_key() {
-        let client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
+        let client = RedisClient::open(trovato_test_utils::env::redis_url()).unwrap();
         let queue = RedisQueue::new(client);
         assert_eq!(queue.queue_key("test"), "queue:test");
         assert_eq!(queue.queue_key("email:send"), "queue:email:send");

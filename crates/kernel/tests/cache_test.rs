@@ -57,7 +57,7 @@ fn test_stage_key_empty_key() {
 async fn test_cache_layer_creation() {
     // This test verifies the CacheLayer can be created
     // Actual caching tests require Redis
-    let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+    let client = redis::Client::open(trovato_test_utils::env::redis_url()).unwrap();
     let cache = CacheLayer::new(client);
 
     let stats = cache.stats().await;

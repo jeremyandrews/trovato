@@ -108,6 +108,12 @@ jobs:
   # contamination guard after its targets. Anyone changing shared test fixtures
   # should run `cargo test --all` locally — CI will not catch it for you.
   #
+  # One thing this job DOES now catch that a single local run does not: each
+  # shard runs its targets TWICE against one database, and fails if a pass left
+  # roles behind. The database is not migrated beforehand either, so the harness
+  # has to prepare it. Those two properties — runnable again, runnable from a
+  # bare `createdb` — were invisible to every job here until they were added.
+  #
   # CAPACITY, when this job starts running out of disk again. Shard 1 also
   # carries the unit and doc tests and finishes at ~13 GB free, against 19-20 GB
   # for shards 2 and 3, so it is the one that tips first. The recorded remedy is
@@ -183,16 +189,19 @@ jobs:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
 
-      # NOT switched to taiki-e/install-action: it has no sqlx-cli manifest
-      # (verified 2026-07-27 — manifests/sqlx-cli.json 404s), so this stays a
-      # from-source build. The --no-default-features/--features flags matter
-      # here precisely because it IS built from source: they keep the dependency
-      # tree small.
-      - name: Install sqlx-cli
-        run: cargo install sqlx-cli --no-default-features --features rustls,postgres
-
-      - name: Run migrations
-        run: sqlx migrate run --source crates/kernel/migrations
+      # NO `sqlx migrate run` STEP, deliberately, and no sqlx-cli to run it
+      # with. The test harness migrates the database itself, before it seeds
+      # anything (`ensure_database_migrated`, crates/kernel/tests/common/mod.rs),
+      # which is the behaviour a contributor gets after a bare `createdb`. A
+      # migrate step here would run the suite against a database the harness
+      # never had to prepare, so the one path everybody takes locally would be
+      # the one path CI never exercised — and it was: `cargo test` on an
+      # unmigrated database collapsed at the first target needing the shared
+      # app, for months, green all the while.
+      #
+      # If something here ever does need the schema before `cargo test`, add
+      # sqlx-cli back for that step alone and say why; do not restore a blanket
+      # migrate.
 
       - name: Build WASM plugins
         run: |
@@ -253,65 +262,89 @@ jobs:
           cargo test --all --doc
 
       # Integration tests, split across shards so no single runner has to link
-      # all 50+ test binaries onto one 33 GB volume.
+      # all 50+ test binaries onto one 33 GB volume. The enumeration and the
+      # partition live in `scripts/ci-test-shard.sh` — a script rather than
+      # inline YAML because it is now run twice, and because a CI script nobody
+      # can execute locally is a script that only gets debugged by pushing.
       #
-      # The target list is enumerated from `cargo metadata` rather than
-      # hard-coded, and partitioned by index modulo TOTAL_SHARDS over a sorted
-      # list. That matters: with a hard-coded list, adding a test file and
-      # forgetting to register it would leave it silently unrun and CI green,
-      # which is a worse failure than a red build. Here every discovered target
-      # lands in exactly one shard by construction.
-      #
-      # The enumeration itself is the one thing that could fail open, so it is
-      # checked: an empty workspace list, or an empty shard, fails the job.
+      # The database is NOT migrated beforehand (see the note above the WASM
+      # step): this first pass starts from the bare database the Postgres
+      # service created, so the harness's own migration is exercised on every
+      # run.
       - name: Run integration tests (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
+        run: ./scripts/ci-test-shard.sh
+
+      # The role count between the two passes, for the guard after them.
+      #
+      # `/admin/people/permissions` renders every permission for every role on
+      # one page, so roles left behind are not inert: they grow a page the suite
+      # reads under a 4 MB cap until it no longer fits, which is how this
+      # failure announced itself. Counting is how the fix stays fixed — green
+      # twice says nothing about the fifth run.
+      - name: Record the role count between passes
         run: |
           set -euo pipefail
+          command -v psql >/dev/null 2>&1 || sudo apt-get install -y -qq postgresql-client
+          echo "ROLES_BETWEEN_PASSES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM roles')" \
+            >> "$GITHUB_ENV"
 
-          # Deliberately free of bash-4isms (no mapfile, no associative arrays)
-          # so this same script can be run and verified on a developer machine,
-          # including macOS's bash 3.2. A CI script nobody can execute locally
-          # is a script that only gets debugged by pushing.
-          ALL=$(
-            cargo metadata --no-deps --format-version 1 \
-              | jq -r '.packages[] | .name as $p
-                       | .targets[] | select(.kind[] == "test")
-                       | "\($p) \(.name)"' \
-              | sort
-          )
+      # THE SECOND PASS, against the SAME database. This is the property, and
+      # it is not "the suite passes" — it is "the suite passes again".
+      #
+      # A test that creates a role, a user with a fixed name, an AI usage row or
+      # a per-user override and does not remove it passes the first time and
+      # fails the second, and until this step existed no CI job could see that:
+      # every job started from a database nobody had run the suite against. It
+      # was visible only to whoever ran the suite twice locally and remembered
+      # not to drop the database in between, and CONTRIBUTING.md told people to
+      # drop it, so in practice nobody.
+      #
+      # COST, measured on run 37310835359 (the merge-base of this change):
+      # the integration step is 6.1, 6.3 and 7.8 minutes across the three
+      # shards, 20.2 job-minutes. Nothing is rebuilt for the second pass, so it
+      # adds about the same again — roughly 58 -> 78 job-minutes for the whole
+      # workflow. Wall clock barely moves: the slowest shard goes from about 12
+      # to about 18 minutes, which is what the Coverage job already takes, so
+      # the workflow finishes when it finished before.
+      #
+      # That is cheap enough to run on every pull request, which is why this is
+      # a step here rather than the nightly it could have been: a nightly finds
+      # the regression after it is merged, and the branch that caused it has
+      # already moved on.
+      - name: Re-run integration tests on the same database (shard ${{ matrix.shard }}/3)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: ./scripts/ci-test-shard.sh
 
-          TOTAL=$(printf '%s\n' "$ALL" | grep -c . || true)
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "::error::enumerated zero integration test targets — refusing to pass vacuously"
+      # A pass must not leave roles behind.
+      #
+      # Two green passes prove the suite survives one repetition; they say
+      # nothing about the fifth, and the grid outgrew its 4 MB cap at around
+      # five hundred roles rather than at the second run. So the guard is on the
+      # growth, not on the symptom: a pass that adds roles is a pass that has
+      # stopped cleaning up after itself, whoever notices first.
+      #
+      # A small allowance rather than zero, for the fixed-name roles a few tests
+      # upsert and share (`ai_config_role`, `comment_test_role`); those are
+      # bounded by the number of such tests and do not grow run over run.
+      - name: Roles must not accumulate across a pass
+        run: |
+          set -euo pipefail
+          command -v psql >/dev/null 2>&1 || sudo apt-get install -y -qq postgresql-client
+          AFTER=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM roles')
+          BEFORE="$ROLES_BETWEEN_PASSES"
+          echo "roles after pass 1: $BEFORE; after pass 2: $AFTER"
+          if [ "$AFTER" -gt "$((BEFORE + 5))" ]; then
+            echo "::error::a pass added $((AFTER - BEFORE)) roles ($BEFORE -> $AFTER)."
+            echo "A test created a role and did not remove it. Make it go through"
+            echo "common::create_test_role, or register common::track_test_role."
+            psql "$DATABASE_URL" -c \
+              "SELECT name, created FROM roles ORDER BY created DESC LIMIT 20"
             exit 1
           fi
-          echo "Discovered $TOTAL integration test targets across the workspace."
-
-          MINE=$(printf '%s\n' "$ALL" \
-            | awk -v s="$SHARD" -v n="$TOTAL_SHARDS" '(NR - 1) % n == (s - 1)')
-
-          COUNT=$(printf '%s\n' "$MINE" | grep -c . || true)
-          if [ "$COUNT" -eq 0 ]; then
-            echo "::error::shard $SHARD selected no targets out of $TOTAL"
-            exit 1
-          fi
-          echo "shard $SHARD runs $COUNT of $TOTAL target(s):"
-          printf '%s\n' "$MINE" | sed 's/^/  /'
-
-          # One cargo invocation per package, with all of that package's
-          # selected test targets.
-          for pkg in $(printf '%s\n' "$MINE" | awk '{print $1}' | sort -u); do
-            FLAGS=$(printf '%s\n' "$MINE" | awk -v p="$pkg" '$1 == p {printf " --test %s", $2}')
-            echo "::group::cargo test -p $pkg$FLAGS"
-            # Unquoted on purpose: FLAGS is a built-up list of --test arguments.
-            # shellcheck disable=SC2086
-            cargo test -p "$pkg" $FLAGS -- --test-threads=1
-            echo "::endgroup::"
-          done
-
-          df -h /
+          echo "roles did not accumulate across the second pass."
 
       # Shared-fixture contamination guard.
       #

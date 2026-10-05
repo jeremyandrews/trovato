@@ -26,8 +26,8 @@ use trovato_kernel::gather::{
     DisplayFormat, FilterOperator, FilterValue, JoinType, PagerConfig, PagerStyle, QueryContext,
     QueryDefinition, QueryDisplay, QueryField, QueryFilter, QueryRelationship,
 };
+use trovato_kernel::models::CreateItem;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
-use trovato_kernel::models::{CreateItem, Role};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
@@ -296,28 +296,13 @@ async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
         .expect("test user should exist")
 }
 
-async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
-    let role = Role::create(&app.db, &format!("gatheradhoc-{}", Uuid::now_v7().simple()))
-        .await
-        .expect("create role");
-    for permission in permissions {
-        Role::add_permission(&app.db, role.id, permission)
-            .await
-            .expect("add permission to role");
-    }
-    Role::assign_to_user(&app.db, user_id, role.id)
-        .await
-        .expect("assign role to user");
-    app.state.permissions().invalidate_user(user_id);
-}
-
 async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> (Uuid, String) {
     let name = username(prefix);
     app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
         .await;
     let id = user_id_of(app, &name).await;
     if !permissions.is_empty() {
-        grant_via_role(app, id, permissions).await;
+        common::grant_via_role(app, id, permissions).await;
     }
     let cookies = app.login(&name, "test-password-123").await;
     (id, cookies)

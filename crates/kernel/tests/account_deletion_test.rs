@@ -775,31 +775,14 @@ fn a_step_up_ceremony_is_scoped_to_the_account_that_started_it() {
 /// pure function tested beside the code (`blocks_last_admin`).
 #[tokio::test]
 async fn the_active_admin_count_is_exact_and_excludes_the_anonymous_sentinel() {
-    trovato_test_utils::env::load_dotenv();
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
-    let without_query = database_url
-        .split_once('?')
-        .map_or(database_url.as_str(), |(base, _)| base);
-    let cut = without_query.rfind('/').expect("a database name");
-    let server_url = without_query[..cut].to_string();
-    let name = format!("trovato_admincount_{}", Uuid::now_v7().simple());
-
-    {
-        use sqlx::{Connection, Executor};
-        let mut admin = sqlx::PgConnection::connect(&format!("{server_url}/postgres"))
-            .await
-            .expect("connect");
-        admin
-            .execute(format!(r#"CREATE DATABASE "{name}""#).as_str())
-            .await
-            .expect("create");
-    }
-    let pool = sqlx::PgPool::connect(&format!("{server_url}/{name}"))
-        .await
-        .expect("connect");
-    trovato_kernel::db::run_migrations(&pool)
+    // `ScratchDb` drops the database in `Drop`, so a failing assertion below
+    // does not leave one on the server — which is what the hand-rolled
+    // create-use-drop this replaced did on every red run.
+    let scratch = trovato_test_utils::ScratchDb::create("admincount").await;
+    trovato_kernel::db::run_migrations(scratch.pool())
         .await
         .expect("migrate");
+    let pool = scratch.pool().clone();
 
     // A fresh site has no administrator at all: the installer makes the first one.
     let count = trovato_kernel::models::User::active_admin_count(&pool)
@@ -839,15 +822,6 @@ async fn the_active_admin_count_is_exact_and_excludes_the_anonymous_sentinel() {
     }
 
     pool.close().await;
-    {
-        use sqlx::{Connection, Executor};
-        if let Ok(mut admin) = sqlx::PgConnection::connect(&format!("{server_url}/postgres")).await
-        {
-            let _ = admin
-                .execute(format!(r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#).as_str())
-                .await;
-        }
-    }
 }
 
 /// An administrator who is not the last one can delete themselves.

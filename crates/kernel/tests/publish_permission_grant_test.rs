@@ -52,6 +52,7 @@ async fn role_with(app: &TestApp, permission: &str) -> Role {
     let role = Role::create(&app.db, &format!("prepublish-{}", Uuid::now_v7().simple()))
         .await
         .expect("create role");
+    common::track_test_role(&app.db, role.id);
     Role::add_permission(&app.db, role.id, permission)
         .await
         .unwrap_or_else(|e| panic!("grant `{permission}`: {e}"));

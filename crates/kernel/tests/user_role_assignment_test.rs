@@ -103,6 +103,7 @@ async fn login_delegate(
     let role = Role::create(&app.db, &format!("{prefix}_{tag}"))
         .await
         .expect("create role");
+    common::track_test_role(&app.db, role.id);
     for permission in std::iter::once(&"administer users").chain(extra) {
         Role::add_permission(&app.db, role.id, permission)
             .await
@@ -143,6 +144,7 @@ async fn fixture(app: &TestApp) -> (String, String, Uuid, Role, String) {
     let role = Role::create(&app.db, &format!("network_admin_{tag}"))
         .await
         .expect("create role");
+    common::track_test_role(&app.db, role.id);
 
     (cookies, target, target_id, role, tag)
 }
@@ -341,6 +343,7 @@ fn a_delegated_administrator_cannot_grant_a_role_beyond_their_own_permissions() 
         let powerful = Role::create(&app.db, &format!("powerful_{tag}"))
             .await
             .expect("create role");
+        common::track_test_role(&app.db, powerful.id);
         Role::add_permission(&app.db, powerful.id, "administer site")
             .await
             .expect("grant");
@@ -391,6 +394,7 @@ fn a_delegated_administrator_can_grant_a_role_within_their_permissions() {
         let modest = Role::create(&app.db, &format!("modest_{tag}"))
             .await
             .expect("create role");
+        common::track_test_role(&app.db, modest.id);
         Role::add_permission(&app.db, modest.id, "access content")
             .await
             .expect("grant");
@@ -704,6 +708,7 @@ fn a_delegate_cannot_reset_the_password_of_someone_holding_more_than_they_do() {
         let site_role = Role::create(&app.db, &format!("dlgmoresite_{tag}"))
             .await
             .expect("create role");
+        common::track_test_role(&app.db, site_role.id);
         Role::add_permission(&app.db, site_role.id, "administer site")
             .await
             .expect("grant");

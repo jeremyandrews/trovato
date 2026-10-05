@@ -13,87 +13,47 @@
 
 use std::path::{Path, PathBuf};
 
-use sqlx::{Connection, Executor, PgConnection, PgPool};
+use sqlx::PgPool;
 use trovato_kernel::config_storage::yaml::{ConfigImportFailed, export_config, import_config};
 use trovato_kernel::config_storage::{ConfigStorage, DirectConfigStorage, entity_types};
 
 /// A database created for one test and dropped when the test ends.
 ///
 /// "Imports clean against a fresh database" is the claim under test, so the test
-/// gets an actually fresh database: created, migrated, used, dropped.
-struct ScratchDb {
-    /// Connection URL of the server, without the database name.
-    server_url: String,
-    name: String,
-    pool: Option<PgPool>,
-}
+/// gets an actually fresh database: created, migrated, used, dropped. The
+/// create-and-drop half is `trovato_test_utils::ScratchDb`, which drops the
+/// database in `Drop` rather than on the last line of the test body — this file
+/// used to leave one behind on the server for every test that failed part way.
+struct ScratchDb(trovato_test_utils::ScratchDb);
 
 impl ScratchDb {
     async fn new(label: &str) -> Self {
-        trovato_test_utils::env::load_dotenv();
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run these tests");
-
-        // Split `postgres://user:pass@host:port/dbname` into server and name,
-        // tolerating a query string after the database name.
-        let without_query = database_url
-            .split_once('?')
-            .map_or(database_url.as_str(), |(base, _)| base);
-        let cut = without_query
-            .rfind('/')
-            .expect("DATABASE_URL must include a database name");
-        let server_url = without_query[..cut].to_string();
-
-        let name = format!(
-            "trovato_cfgimport_{label}_{}",
-            uuid::Uuid::now_v7().simple()
-        );
-
-        let mut admin = PgConnection::connect(&format!("{server_url}/postgres"))
-            .await
-            .expect("failed to connect to the postgres maintenance database");
-        admin
-            .execute(format!(r#"CREATE DATABASE "{name}""#).as_str())
-            .await
-            .unwrap_or_else(|e| panic!("failed to create scratch database {name}: {e}"));
-        drop(admin);
-
-        let pool = PgPool::connect(&format!("{server_url}/{name}"))
-            .await
-            .expect("failed to connect to the scratch database");
-        trovato_kernel::db::run_migrations(&pool)
+        let db = trovato_test_utils::ScratchDb::create(&format!("cfgimport_{label}")).await;
+        trovato_kernel::db::run_migrations(db.pool())
             .await
             .expect("failed to migrate the scratch database");
-
-        Self {
-            server_url,
-            name,
-            pool: Some(pool),
-        }
+        Self(db)
     }
 
     fn pool(&self) -> &PgPool {
-        self.pool.as_ref().expect("scratch pool was already closed")
+        self.0.pool()
     }
 
     fn storage(&self) -> DirectConfigStorage {
         DirectConfigStorage::new(self.pool().clone())
     }
 
-    /// Drop the database. Explicit rather than in `Drop` because dropping a
-    /// database is async and needs the pool closed first.
-    async fn cleanup(mut self) {
-        if let Some(pool) = self.pool.take() {
-            pool.close().await;
-        }
-        if let Ok(mut admin) = PgConnection::connect(&format!("{}/postgres", self.server_url)).await
-        {
-            let _ = admin
-                .execute(
-                    format!(r#"DROP DATABASE IF EXISTS "{}" WITH (FORCE)"#, self.name).as_str(),
-                )
-                .await;
-        }
+    /// This database's own connection URL, for the one test that drives the
+    /// `trovato` binary as a subprocess.
+    fn url(&self) -> String {
+        self.0.url()
+    }
+
+    /// Drop the database at a chosen point. `Drop` does the same work for a
+    /// test that fails before reaching it, so this is a convenience rather than
+    /// the guarantee it used to be.
+    async fn cleanup(self) {
+        drop(self);
     }
 }
 
@@ -420,7 +380,7 @@ async fn config_import_cli_exits_non_zero_and_names_the_bad_file() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_trovato"))
         .args(["config", "import"])
         .arg(dir.path())
-        .env("DATABASE_URL", format!("{}/{}", db.server_url, db.name))
+        .env("DATABASE_URL", db.url())
         .output()
         .expect("failed to run the trovato binary");
 

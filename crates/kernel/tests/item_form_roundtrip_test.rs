@@ -468,25 +468,7 @@ fn a_record_reference_survives_an_edit() {
 // never offered one.
 // ============================================================================
 
-use trovato_kernel::models::Role;
-
 const PUBLISH: &str = "publish content";
-
-/// Grant `permissions` through a role, the way a real site does.
-async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
-    let role = Role::create(&app.db, &format!("k1pub-{}", Uuid::now_v7().simple()))
-        .await
-        .expect("create role");
-    for permission in permissions {
-        Role::add_permission(&app.db, role.id, permission)
-            .await
-            .expect("add permission to role");
-    }
-    Role::assign_to_user(&app.db, user_id, role.id)
-        .await
-        .expect("assign role to user");
-    app.state.permissions().invalidate_user(user_id);
-}
 
 /// A logged-in non-superuser holding exactly `permissions`.
 async fn editor_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> String {
@@ -498,7 +480,7 @@ async fn editor_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> St
         .fetch_one(&app.db)
         .await
         .expect("the test user exists");
-    grant_via_role(app, id, permissions).await;
+    common::grant_via_role(app, id, permissions).await;
     app.login(&name, "test-password-123").await
 }
 

@@ -100,9 +100,7 @@ async fn fresh_pool() -> PgPool {
 }
 
 fn redis_client() -> redis::Client {
-    trovato_test_utils::env::load_dotenv();
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    redis::Client::open(url).expect("redis client")
+    redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client")
 }
 
 /// A limiter with the mail bucket set to `limit` a minute.

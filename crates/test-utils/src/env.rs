@@ -230,6 +230,30 @@ pub fn load_dotenv() {
     let _ = dotenvy::dotenv();
 }
 
+/// The Redis the test suite is pointed at: `REDIS_URL`, or the compose default.
+///
+/// Every fixture that needs Redis should go through here rather than writing
+/// the address out. Several had `redis://127.0.0.1:6379` baked in while the
+/// rest read `REDIS_URL`, so pointing the suite at another instance — a second
+/// checkout, a non-default port, a CI service on a different host — moved some
+/// of it and not the others, and the ones left behind failed in whatever way a
+/// foreign Redis happened to produce.
+///
+/// Loads `.env` first, so a bare `cargo test` sees the same address the rest of
+/// the suite does.
+pub fn redis_url() -> String {
+    load_dotenv();
+    std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
+/// The database the test suite is pointed at: `DATABASE_URL`, or the compose
+/// default. The counterpart of [`redis_url`], for the same reason.
+pub fn database_url() -> String {
+    load_dotenv();
+    std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:5432/trovato".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{EnvGuard, set_env_default};

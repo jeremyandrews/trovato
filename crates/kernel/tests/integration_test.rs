@@ -1533,6 +1533,20 @@ fn e2e_admin_create_role() {
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let role_name = format!("TestRole_{}", &unique_id[..16]);
 
+        // The admin form makes this role, so there is no id to hand
+        // `track_test_role`; the name is what the test knows. Registered before
+        // the post, so the row goes even if an assertion below fires.
+        {
+            let pool = app.db.clone();
+            let name = role_name.clone();
+            common::defer_cleanup(move || async move {
+                let _ = sqlx::query("DELETE FROM roles WHERE name = $1")
+                    .bind(name)
+                    .execute(&pool)
+                    .await;
+            });
+        }
+
         let cookies = app
             .create_and_login_admin("admin_roles_2", "password123", "roles2@test.com")
             .await;
@@ -1598,13 +1612,7 @@ fn e2e_admin_delete_role() {
         let role_name = format!("DelRole_{}", &unique_id[..16]);
 
         // Create role to delete
-        let role_id = uuid::Uuid::now_v7();
-        sqlx::query("INSERT INTO roles (id, name) VALUES ($1, $2)")
-            .bind(role_id)
-            .bind(&role_name)
-            .execute(&app.db)
-            .await
-            .expect("Failed to create test role");
+        let role_id = common::create_test_role(app, &role_name).await;
 
         let cookies = app
             .create_and_login_admin("admin_roles_3", "password123", "roles3@test.com")
@@ -7123,6 +7131,32 @@ fn e2e_search_snippet_includes_body() {
 // AI Token Budget Tests
 // =============================================================================
 
+/// Remove the AI site-config keys and any usage rows for `provider` when the
+/// current test ends, pass or fail.
+///
+/// Every one of these tests used to delete its rows on the last line of the
+/// body, which is where teardown is not when it matters: a failing assertion
+/// above it left `ai_token_budgets` set and `ai_usage_log` rows behind, and the
+/// next run of the suite — and the next test holding `AI_BUDGET_LOCK` — read
+/// them as its own.
+fn defer_ai_config_cleanup(app: &common::TestApp, provider: Option<&str>) {
+    let pool = app.db.clone();
+    let provider = provider.map(str::to_string);
+    common::defer_cleanup(move || async move {
+        if let Some(provider) = provider {
+            let _ = sqlx::query("DELETE FROM ai_usage_log WHERE provider_id = $1")
+                .bind(provider)
+                .execute(&pool)
+                .await;
+        }
+        let _ = sqlx::query(
+            "DELETE FROM site_config WHERE key IN ('ai_token_budgets', 'ai_timeouts', 'ai_pricing')",
+        )
+        .execute(&pool)
+        .await;
+    });
+}
+
 #[test]
 fn e2e_admin_ai_budgets_page_loads() {
     run_test(async {
@@ -7190,6 +7224,7 @@ fn e2e_admin_ai_budgets_save_config() {
     run_test(async {
         let _lock = AI_BUDGET_LOCK.lock().await;
         let app = shared_app().await;
+        defer_ai_config_cleanup(app, None);
 
         let cookies = app
             .create_and_login_admin("admin_budget_2", "password123!", "budget2@test.com")
@@ -7240,11 +7275,7 @@ fn e2e_admin_ai_budgets_save_config() {
         let config = config.unwrap();
         assert_eq!(config.period.to_string(), "daily");
 
-        // Cleanup: reset config
-        sqlx::query("DELETE FROM site_config WHERE key = 'ai_token_budgets'")
-            .execute(&app.db)
-            .await
-            .ok();
+        // Cleanup is the deferred block at the top of this test.
     });
 }
 
@@ -7320,6 +7351,7 @@ fn e2e_ai_budget_service_record_and_query() {
     run_test(async {
         let _lock = AI_BUDGET_LOCK.lock().await;
         let app = shared_app().await;
+        defer_ai_config_cleanup(app, Some("test-provider-budget"));
 
         let budget_svc = app.state.ai_budgets();
         let test_user = uuid::Uuid::new_v4();
@@ -7357,12 +7389,7 @@ fn e2e_ai_budget_service_record_and_query() {
             .unwrap();
         assert!(result.allowed, "Should be allowed with no config");
 
-        // Cleanup
-        sqlx::query("DELETE FROM ai_usage_log WHERE user_id = $1")
-            .bind(test_user)
-            .execute(&app.db)
-            .await
-            .ok();
+        // Cleanup is the deferred block at the top of this test.
     });
 }
 
@@ -7380,6 +7407,7 @@ fn e2e_ai_cost_estimate_reflects_pricing_config() {
     run_test(async {
         let _lock = AI_BUDGET_LOCK.lock().await;
         let app = shared_app().await;
+        defer_ai_config_cleanup(app, None);
         let budget_svc = app.state.ai_budgets();
 
         use trovato_kernel::services::ai_token_budget::{AiPricingConfig, ModelPrice};
@@ -7410,11 +7438,10 @@ fn e2e_ai_cost_estimate_reflects_pricing_config() {
             .await;
         assert_eq!(none, None, "an unpriced model surfaces no cost, not $0.00");
 
-        // Cleanup: clear the pricing config so other tests see the default.
-        budget_svc
-            .save_pricing_config(&AiPricingConfig::default())
-            .await
-            .unwrap();
+        // Cleanup is the deferred block at the top of this test; it removes the
+        // `ai_pricing` row rather than overwriting it with a default, which is
+        // the same thing to every reader and happens even when an assertion
+        // above fires.
     });
 }
 
@@ -7452,15 +7479,45 @@ fn e2e_ai_budget_enforcement_deny() {
         let budget_svc = app.state.ai_budgets();
         let test_provider = "test-provider-enforce";
 
-        // Create a real user so override writes and role lookups work
+        // Create a real user so override writes and role lookups work.
+        //
+        // A per-run name, not the fixed `admin_budget_enforce` this used to
+        // have. `create_test_user` upserts on the name, so a fixed one keeps
+        // the id it was given on the first run — and with it that run's
+        // `ai_usage_log` rows. The assertions below are on a usage total, so
+        // the second run against the same database metered 220 tokens against
+        // a limit of 100 it had already been handed an override for.
+        let username = common::username("admin_budget_enforce");
         let _cookies = app
-            .create_and_login_admin("admin_budget_enforce", "password123!", "budgetenf@test.com")
+            .create_and_login_admin(&username, "password123!", &format!("{username}@test.com"))
             .await;
-        let user = trovato_kernel::models::User::find_by_name(&app.db, "admin_budget_enforce")
+        let user = trovato_kernel::models::User::find_by_name(&app.db, &username)
             .await
             .unwrap()
             .expect("user should exist");
         let test_user = user.id;
+
+        // Teardown registered here, before the first assertion, rather than at
+        // the bottom of the body: the run that leaves state behind is the run
+        // that failed part way, and that is exactly the run whose trailing
+        // cleanup never executes. See `common::defer_cleanup`.
+        {
+            let pool = app.db.clone();
+            let budgets = app.state.ai_budgets().clone();
+            let provider = test_provider.to_string();
+            common::defer_cleanup(move || async move {
+                let _ = sqlx::query("DELETE FROM ai_usage_log WHERE user_id = $1")
+                    .bind(test_user)
+                    .execute(&pool)
+                    .await;
+                let _ = sqlx::query("DELETE FROM site_config WHERE key = 'ai_token_budgets'")
+                    .execute(&pool)
+                    .await;
+                let _ = budgets
+                    .remove_user_override(&pool, test_user, &provider)
+                    .await;
+            });
+        }
 
         // Set a budget config with a low limit and deny action
         use std::collections::HashMap;
@@ -7543,20 +7600,7 @@ fn e2e_ai_budget_enforcement_deny() {
         assert_eq!(result3.limit, 500);
         assert_eq!(result3.remaining, Some(390));
 
-        // Cleanup
-        sqlx::query("DELETE FROM ai_usage_log WHERE user_id = $1")
-            .bind(test_user)
-            .execute(&app.db)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM site_config WHERE key = 'ai_token_budgets'")
-            .execute(&app.db)
-            .await
-            .ok();
-        budget_svc
-            .remove_user_override(&app.db, test_user, test_provider)
-            .await
-            .ok();
+        // Cleanup is the deferred block at the top of this test.
     });
 }
 
@@ -7569,6 +7613,7 @@ fn e2e_ai_plugin_background_budget_enforcement_deny() {
     run_test(async {
         let _lock = AI_BUDGET_LOCK.lock().await;
         let app = shared_app().await;
+        defer_ai_config_cleanup(app, Some("test-provider-plugin-budget"));
 
         let budget_svc = app.state.ai_budgets();
         let test_provider = "test-provider-plugin-budget";
@@ -7661,16 +7706,7 @@ fn e2e_ai_plugin_background_budget_enforcement_deny() {
         assert!(free.allowed, "unconfigured plugin must be unlimited");
         assert_eq!(free.limit, 0);
 
-        // Cleanup: usage rows + budget config so the shared app stays pristine.
-        sqlx::query("DELETE FROM ai_usage_log WHERE provider_id = $1")
-            .bind(test_provider)
-            .execute(&app.db)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM site_config WHERE key = 'ai_token_budgets'")
-            .execute(&app.db)
-            .await
-            .ok();
+        // Cleanup is the deferred block at the top of this test.
     });
 }
 
@@ -7682,6 +7718,7 @@ fn e2e_ai_timeout_config_read_and_resolution() {
     run_test(async {
         let _lock = AI_BUDGET_LOCK.lock().await;
         let app = shared_app().await;
+        defer_ai_config_cleanup(app, None);
         let ai = app.state.ai_providers();
 
         use std::collections::HashMap;
@@ -7726,11 +7763,7 @@ fn e2e_ai_timeout_config_read_and_resolution() {
             "an over-ceiling provider override is clamped to the 150s epoch budget"
         );
 
-        // Cleanup.
-        sqlx::query("DELETE FROM site_config WHERE key = 'ai_timeouts'")
-            .execute(&app.db)
-            .await
-            .ok();
+        // Cleanup is the deferred block at the top of this test.
     });
 }
 
@@ -7742,6 +7775,7 @@ fn e2e_ai_cost_accounting_and_currency_budget() {
     run_test(async {
         let _lock = AI_BUDGET_LOCK.lock().await;
         let app = shared_app().await;
+        defer_ai_config_cleanup(app, Some("test-provider-cost"));
         let budget_svc = app.state.ai_budgets();
         let test_provider = "test-provider-cost";
         let plugin = "test_cost_plugin";
@@ -7855,16 +7889,7 @@ fn e2e_ai_cost_accounting_and_currency_budget() {
         assert!(free.allowed);
         assert_eq!(free.limit, 0.0);
 
-        // Cleanup.
-        sqlx::query("DELETE FROM ai_usage_log WHERE provider_id = $1")
-            .bind(test_provider)
-            .execute(&app.db)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM site_config WHERE key IN ('ai_token_budgets', 'ai_pricing')")
-            .execute(&app.db)
-            .await
-            .ok();
+        // Cleanup is the deferred block at the top of this test.
     });
 }
 
