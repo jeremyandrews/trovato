@@ -301,18 +301,18 @@ jobs:
       # not to drop the database in between, and CONTRIBUTING.md told people to
       # drop it, so in practice nobody.
       #
-      # COST, measured on run 37310835359 (the merge-base of this change):
-      # the integration step is 6.1, 6.3 and 7.8 minutes across the three
-      # shards, 20.2 job-minutes. Nothing is rebuilt for the second pass, so it
-      # adds about the same again — roughly 58 -> 78 job-minutes for the whole
-      # workflow. Wall clock barely moves: the slowest shard goes from about 12
-      # to about 18 minutes, which is what the Coverage job already takes, so
-      # the workflow finishes when it finished before.
+      # COST, measured rather than estimated. On run 37366851513 (shard 1, the
+      # heaviest — it also carries the unit and doc tests) the first integration
+      # pass took 9.2 minutes and this second one took **2.2**, because the
+      # 9.2 includes compiling and linking 34 test binaries and the 2.2 is the
+      # tests alone. Across three shards that is about 6.6 job-minutes added to
+      # roughly 58, and about two minutes of wall clock on the critical path,
+      # which the 18-minute Coverage job already owns.
       #
-      # That is cheap enough to run on every pull request, which is why this is
-      # a step here rather than the nightly it could have been: a nightly finds
-      # the regression after it is merged, and the branch that caused it has
-      # already moved on.
+      # So this is a step on every pull request rather than the nightly it could
+      # have been. A nightly finds the regression after it is merged, by which
+      # time the branch that caused it has moved on — and at two minutes a shard
+      # there is nothing to buy by waiting.
       - name: Re-run integration tests on the same database (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
