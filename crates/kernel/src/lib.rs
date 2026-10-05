@@ -26,6 +26,7 @@ pub mod menu;
 pub mod metrics;
 pub mod middleware;
 pub mod models;
+pub(crate) mod net_policy;
 pub mod permissions;
 pub mod plugin;
 pub mod recovery;
