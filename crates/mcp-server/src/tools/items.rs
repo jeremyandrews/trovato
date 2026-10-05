@@ -60,6 +60,16 @@ fn write_denied(e: &anyhow::Error) -> Option<McpError> {
 /// Uses [`ItemService::list_filtered`](trovato_kernel::content::ItemService::list_filtered) which returns `(Vec<Item>, i64)`
 /// in a single logical operation. Non-admin users only see published items
 /// unless they explicitly filter by status and have appropriate permissions.
+///
+/// The page then goes through
+/// [`ItemService::filter_page_for_view`](trovato_kernel::content::ItemService::filter_page_for_view),
+/// the seam `get_item` in this file already uses: the coarse `status` default
+/// is not a stage filter, a `tap_item_access` deny, or a role check, so without
+/// it the two tools disagreed about the same item — `list_items` handed over a
+/// published item on an internal stage that `get_item` reported as missing.
+///
+/// `total` stays the **pre-filter** count, as the REST `list_items_api` already
+/// documents: it is the size of the matching set, not of this viewer's page.
 pub async fn list_items(
     state: &AppState,
     user_ctx: &UserContext,
@@ -93,8 +103,14 @@ pub async fn list_items(
         .await
         .map_err(internal_err)?;
 
+    let page_size = usize::try_from(per_page).unwrap_or(0);
+    let visible = state
+        .items()
+        .filter_page_for_view(items, user_ctx, "view", page_size)
+        .await;
+
     let result = serde_json::json!({
-        "items": items.iter().map(item_summary).collect::<Vec<_>>(),
+        "items": visible.iter().map(item_summary).collect::<Vec<_>>(),
         "total": total,
         "page": page,
         "per_page": per_page,

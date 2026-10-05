@@ -879,6 +879,11 @@ impl AppState {
         // Create cron service with file service for proper cleanup
         let mut cron = CronService::with_file_service(redis.clone(), db.clone(), files.clone());
 
+        // The item-access seam, so the Pagefind export is filtered as the
+        // anonymous visitor who downloads it. The one `ItemService`, not a
+        // second one: a second would carry its own field-access cache.
+        cron.set_item_service(items.clone());
+
         // Create metrics
         let metrics = Arc::new(Metrics::new());
 

@@ -857,3 +857,141 @@ pub fn ensure_translation_table(app: &TestApp) {
     .join()
     .expect("translation migration thread panicked");
 }
+
+// =============================================================================
+// Users, roles and stages
+//
+// These four were private copies in several test files each (`user_holding` and
+// `grant_via_role` in three, `create_test_stage` in two). The read-path access
+// work needed them in more files again, so they live here once rather than
+// becoming a fourth and third copy.
+// =============================================================================
+
+/// A unique username, so parallel test binaries never share a user, a
+/// rate-limit bucket, or a password.
+pub fn username(prefix: &str) -> String {
+    format!("{prefix}-{}", Uuid::now_v7().simple())
+}
+
+/// The id of an already-created test user.
+pub async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+        .bind(name)
+        .fetch_one(&app.db)
+        .await
+        .expect("test user should exist")
+}
+
+/// Grant `permissions` to `user_id` through a role, the way a real site does.
+pub async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
+    use trovato_kernel::models::Role;
+
+    let role = Role::create(&app.db, &format!("testrole-{}", Uuid::now_v7().simple()))
+        .await
+        .expect("create role");
+    for permission in permissions {
+        Role::add_permission(&app.db, role.id, permission)
+            .await
+            .expect("add permission to role");
+    }
+    Role::assign_to_user(&app.db, user_id, role.id)
+        .await
+        .expect("assign role to user");
+    app.state.permissions().invalidate_user(user_id);
+}
+
+/// Create a non-superuser holding exactly `permissions`, and log them in.
+///
+/// Returns the user's id and their session cookies.
+pub async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> (Uuid, String) {
+    let name = username(prefix);
+    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let id = user_id_of(app, &name).await;
+    if !permissions.is_empty() {
+        grant_via_role(app, id, permissions).await;
+    }
+    let cookies = app.login(&name, "test-password-123").await;
+    (id, cookies)
+}
+
+/// Create a stage with a unique label and machine name.
+///
+/// `visibility: None` takes the column default, which is **internal** — the
+/// property the autocomplete and MCP list tests rely on.
+pub async fn create_test_stage(app: &TestApp, prefix: &str) -> Uuid {
+    use trovato_kernel::models::stage::{CreateStage, Stage};
+
+    let suffix = &Uuid::now_v7().simple().to_string()[..8];
+    let stage = Stage::create(
+        &app.db,
+        CreateStage {
+            label: format!("{prefix} {suffix}"),
+            machine_name: format!("{prefix}_{suffix}"),
+            description: None,
+            visibility: None,
+            is_default: None,
+            weight: None,
+        },
+    )
+    .await
+    .expect("failed to create test stage");
+    stage.id
+}
+
+// =============================================================================
+// An ItemService with the field-access reference plugin loaded
+// =============================================================================
+
+/// Build an [`ItemService`] whose dispatcher has `trovato_field_access_ref`
+/// loaded, over `pool`.
+///
+/// Its default rules deny `ssn` on type `person` to a viewer without
+/// `view pii`, which is how a test asks for a real field-access **denial**: the
+/// shared `TestApp` loads no field-access plugin, so every governed field there
+/// fails open.
+///
+/// `pool` is the caller's: `field_access_plugin_test` passes a lazy,
+/// never-connected pool (the plugin's `variables_get` then falls back to its
+/// baked-in rules, so that file needs no infrastructure), while the AI chat and
+/// Pagefind tests pass the live test pool because the kernel code under test
+/// reads items out of it.
+///
+/// Panics with a build hint if the fixture `.wasm` is missing — CI builds it
+/// before the test job; locally `cargo build -p trovato_field_access_ref
+/// --target wasm32-wasip1 --release && cp …` is the same step.
+pub fn item_service_with_ref_plugin(pool: PgPool) -> trovato_kernel::content::ItemService {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use trovato_kernel::content::ItemService;
+    use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
+    use trovato_kernel::tap::{RequestServices, TapDispatcher, TapRegistry};
+
+    let name = "trovato_field_access_ref";
+    let mut runtime = PluginRuntime::new(&PluginConfig::default()).expect("create runtime");
+    runtime
+        .load_plugin(&project_root().join("plugins").join(name))
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to load fixture '{name}': {e:#}\n\
+                 build it first: cargo build -p {name} --target wasm32-wasip1 --release \
+                 && cp target/wasm32-wasip1/release/{name}.wasm plugins/{name}/"
+            )
+        });
+    let runtime = Arc::new(runtime);
+    let registry = Arc::new(TapRegistry::from_plugins(&runtime));
+    let dispatcher = Arc::new(TapDispatcher::new(Arc::clone(&runtime), registry));
+
+    let services =
+        RequestServices::for_background(pool.clone(), None, None, reqwest::Client::new())
+            .with_plugin_runtime(Arc::clone(&runtime));
+
+    ItemService::new(
+        pool,
+        dispatcher,
+        services,
+        Duration::from_secs(60),
+        None,
+        None,
+    )
+}

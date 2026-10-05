@@ -139,3 +139,131 @@ fn the_client_file_defaults_to_the_kernel_endpoints() {
 /// builds where only the file-reading test runs.
 #[allow(dead_code)]
 fn _uses_test_app(_: &TestApp) {}
+
+// =============================================================================
+// Reference autocomplete
+//
+// `/api/v1/items/autocomplete` took no session at all and ran a bare
+// `status = 1` query, so an anonymous caller could enumerate the titles of
+// published items on internal stages a prefix at a time. It now answers from the
+// shared seam, as the viewer.
+// =============================================================================
+
+/// A content type of this file's own.
+///
+/// Not `conference`: this test needs a **published item on an internal stage**,
+/// and `tutorial_test` asserts that every published `conference` in the database
+/// is on the live stage. One shared type and one global invariant over it is all
+/// it takes for two test files to fail each other.
+const PROBE_TYPE: &str = "autocomplete_access_probe";
+
+async fn ensure_probe_type(app: &TestApp) {
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+         VALUES ($1, 'Autocomplete Access Probe', '', true, 'Title', 'seam_test', '{\"fields\": []}'::jsonb) \
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(PROBE_TYPE)
+    .execute(&app.db)
+    .await
+    .expect("seed the probe type");
+
+    app.state
+        .content_types()
+        .create(
+            PROBE_TYPE,
+            "Autocomplete Access Probe",
+            None,
+            serde_json::json!({ "fields": [] }),
+        )
+        .await
+        .ok();
+}
+
+/// Problem 2 — autocomplete answers as the viewer, not as the database.
+#[test]
+fn autocomplete_only_offers_items_the_viewer_may_see() {
+    common::run_test(async {
+        let app = shared_app().await;
+        ensure_probe_type(app).await;
+
+        let admin = trovato_kernel::tap::UserContext::administrator(
+            uuid::Uuid::nil(),
+            vec!["administer site".to_string()],
+        );
+        let internal = common::create_test_stage(app, "acseamstage").await;
+        let tag = format!("acseam{}", uuid::Uuid::now_v7().simple());
+
+        // Both published. One is on an internal stage, which is exactly the set
+        // the old query could not tell apart from the live one.
+        let hidden = make_item(app, &admin, &format!("{tag} internal"), Some(internal)).await;
+        let shown = make_item(app, &admin, &format!("{tag} live"), None).await;
+
+        // A logged-in reader: internal stage, no per-type view permission.
+        let (_, cookies) = common::user_holding(app, "acseam", &[]).await;
+        let body = autocomplete_as(app, &cookies, &tag).await;
+        assert!(
+            !body.contains(&hidden.to_string()) && !body.contains("internal"),
+            "a published item on an internal stage must not be offered, got {body}"
+        );
+        assert!(
+            body.contains(&shown.to_string()),
+            "a published live item must still be offered, got {body}"
+        );
+
+        // And an anonymous caller, who used to get both.
+        let body = autocomplete_as(app, "", &tag).await;
+        assert!(
+            !body.contains(&hidden.to_string()),
+            "an anonymous caller must not enumerate internal-stage titles, got {body}"
+        );
+    });
+}
+
+async fn make_item(
+    app: &TestApp,
+    admin: &trovato_kernel::tap::UserContext,
+    title: &str,
+    stage: Option<uuid::Uuid>,
+) -> uuid::Uuid {
+    app.state
+        .items()
+        .create(
+            trovato_kernel::models::CreateItem {
+                item_type: PROBE_TYPE.to_string(),
+                title: title.to_string(),
+                author_id: uuid::Uuid::nil(),
+                status: Some(1),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({})),
+                stage_id: Some(stage.unwrap_or(trovato_kernel::models::stage::LIVE_STAGE_ID)),
+                language: Some("en".to_string()),
+                log: Some("autocomplete seam test".to_string()),
+            },
+            admin,
+        )
+        .await
+        .expect("create")
+        .id
+}
+
+async fn autocomplete_as(app: &TestApp, cookies: &str, query: &str) -> String {
+    let response = app
+        .request_with_cookies(
+            Request::get(format!(
+                "/api/v1/items/autocomplete?type={PROBE_TYPE}&q={query}"
+            ))
+            .header("x-forwarded-for", common::test_ip_for("acseam"))
+            .body(Body::empty())
+            .unwrap(),
+            cookies,
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "autocomplete should answer"
+    );
+    text_of(response).await
+}

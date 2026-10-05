@@ -7,6 +7,12 @@ mod pagefind;
 mod queue;
 mod tasks;
 
+/// The Pagefind export seam, for tests that assert which items and which text
+/// reach the static index without a Pagefind CLI on the path. The module itself
+/// is private.
+#[doc(hidden)]
+pub use pagefind::{IndexDocument, indexable_documents};
+
 pub use tasks::UpdateCheckConfig;
 
 pub use queue::{Queue, RedisQueue};
@@ -24,6 +30,7 @@ use sqlx::PgPool;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
+use crate::content::ItemService;
 use crate::file::FileService;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::ai_token_budget::AiTokenBudgetService;
@@ -661,6 +668,11 @@ pub struct CronService {
     vector_store: Option<Arc<PgVectorStore>>,
     http: reqwest::Client,
     pagefind_enabled: bool,
+    /// The item-access seam the Pagefind export is filtered through. `None` in a
+    /// harness that builds a `CronService` on its own, where the export is
+    /// skipped rather than written unfiltered — the index is a world-readable
+    /// file, so "no access model available" has to mean "publish nothing".
+    items: Option<Arc<ItemService>>,
     /// Base directory the generated Pagefind index is written into.
     ///
     /// Defaults to `./static` so a harness without a `Config` still has a
@@ -697,6 +709,7 @@ impl CronService {
             ai_budgets: None,
             vector_store: None,
             http: build_http_client(),
+            items: None,
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
@@ -720,6 +733,7 @@ impl CronService {
             ai_budgets: None,
             vector_store: None,
             http: build_http_client(),
+            items: None,
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
@@ -801,6 +815,15 @@ impl CronService {
     /// Set the pgvector store for the native embed drain (P11f).
     pub fn set_vector_store(&mut self, vector_store: Arc<PgVectorStore>) {
         self.vector_store = Some(vector_store);
+    }
+
+    /// Set the item-access seam the Pagefind export is filtered through.
+    ///
+    /// Wired from `AppState`, which already owns the one `ItemService` the rest
+    /// of the site uses: a second one built here would carry its own
+    /// field-access cache and a different tap dispatcher.
+    pub fn set_item_service(&mut self, items: Arc<ItemService>) {
+        self.items = Some(items);
     }
 
     /// Enable pagefind index rebuilding (requires `trovato_search` plugin).
@@ -1083,10 +1106,20 @@ impl CronService {
 
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
-            match pagefind::maybe_rebuild_index(&self.pool, &self.pagefind_static_dir).await {
-                Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
-                Ok(false) => {}
-                Err(e) => warn!(error = %e, "pagefind index rebuild failed"),
+            if let Some(items) = self.items.clone() {
+                match pagefind::maybe_rebuild_index(&self.pool, &self.pagefind_static_dir, &items)
+                    .await
+                {
+                    Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
+                    Ok(false) => {}
+                    Err(e) => warn!(error = %e, "pagefind index rebuild failed"),
+                }
+            } else {
+                warn!(
+                    "pagefind rebuild skipped: no item service is wired into this cron \
+                     service, and the index is a world-readable file that may not be \
+                     written without an access decision"
+                );
             }
         }
 

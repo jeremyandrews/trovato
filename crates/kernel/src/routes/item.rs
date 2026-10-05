@@ -661,8 +661,17 @@ async fn view_item(
                 };
                 let mut refs = Vec::new();
                 for id_str in ids {
+                    // The viewer passed `check_access` for *this* item, which
+                    // says nothing about the items it points at: a reference to
+                    // a draft used to render that draft's title to anyone who
+                    // could see the referring page.
                     if let Ok(ref_id) = id_str.parse::<Uuid>()
                         && let Ok(Some(ref_item)) = state.items().load(ref_id).await
+                        && state
+                            .items()
+                            .check_access(&ref_item, "view", &user)
+                            .await
+                            .unwrap_or(false)
                     {
                         refs.push(serde_json::json!({
                             "id": ref_item.id,
@@ -701,6 +710,15 @@ async fn view_item(
                 .find_referencing(Some(&ct.machine_name), &field_def.field_name, item.id)
                 .await
             {
+                // Every referrer, through the shared seam: a draft pointing at
+                // a published item used to name itself on that item's page.
+                // `found.len()` as the page size keeps the superset-correct
+                // shape — the filter is an access decision, not a cap.
+                let page_size = found.len();
+                let found = state
+                    .items()
+                    .filter_page_for_view(found, &user, "view", page_size)
+                    .await;
                 for found_item in found {
                     reverse_references
                         .entry(ct.machine_name.clone())
@@ -1141,8 +1159,16 @@ async fn edit_item_form(
         if target.is_empty() {
             continue;
         }
+        // Only a target this editor may *view*. Editing this item says
+        // nothing about reading the one it points at, so a target they may not
+        // see is left with its id and no title, exactly as a missing one is.
         if let Ok(target_id) = target.parse::<Uuid>()
             && let Ok(Some(referenced)) = state.items().load(target_id).await
+            && state
+                .items()
+                .check_access(&referenced, "view", &user)
+                .await
+                .unwrap_or(false)
         {
             reference_titles.insert(target, referenced.title);
         }
@@ -1309,6 +1335,7 @@ async fn list_revisions(
     if let Err(redirect) = super::helpers::require_login(&state, &session).await {
         return redirect;
     }
+    let user = get_user_context(&session, &state).await;
 
     let item = match state.items().load(id).await {
         Ok(Some(i)) => i,
@@ -1318,6 +1345,31 @@ async fn list_revisions(
             return super::helpers::render_server_error("Failed to load item");
         }
     };
+
+    // The history is an editor's view of the item, so it answers to the same
+    // two questions the revert button on this very page already answers to:
+    // `view` decides whether the item exists for this caller at all, and `edit`
+    // decides whether they may read how it got here. Without them a login was
+    // the whole gate, and the titles and log messages of every draft on the
+    // site were readable by anyone with an account.
+    if !state
+        .items()
+        .check_access(&item, "view", &user)
+        .await
+        .unwrap_or(false)
+    {
+        return super::helpers::render_not_found();
+    }
+    if !state
+        .items()
+        .check_access(&item, "edit", &user)
+        .await
+        .unwrap_or(false)
+    {
+        return super::helpers::render_forbidden(
+            "You do not have permission to read this item's revision history.",
+        );
+    }
 
     let revisions = match state.items().get_revisions(id).await {
         Ok(r) => r,

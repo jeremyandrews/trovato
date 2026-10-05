@@ -17,60 +17,21 @@
 //! [`DEFAULT_RULES`], so these assertions exercise the default rule set without
 //! Postgres/Redis. The tests therefore always run; CI builds the fixture.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+mod common;
 
-use std::time::Duration;
 use trovato_kernel::content::{ItemService, WriteDenied};
-use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
-use trovato_kernel::tap::{RequestServices, TapDispatcher, TapRegistry, UserContext};
+use trovato_kernel::tap::UserContext;
 
-/// Repo `plugins/` directory (two levels up from this crate).
-fn plugins_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("plugins")
-}
-
-/// Build an `ItemService` whose dispatcher has the reference plugin loaded.
+/// Build an `ItemService` with the reference plugin over a lazy, never-connected
+/// pool: the plugin's `variables_get` falls back to its baked-in `DEFAULT_RULES`
+/// when the read errors, so these assertions need no live Postgres.
 ///
-/// Panics with a build hint if the fixture `.wasm` is missing — CI builds it
-/// before the test job; locally `cargo build -p trovato_field_access_ref
-/// --target wasm32-wasip1 --release && cp …` is the same step.
+/// The builder itself is shared (`tests/common`), because the AI chat and
+/// Pagefind read-path tests need the same plugin over the **live** pool.
 fn item_service_with_ref_plugin() -> ItemService {
-    let name = "trovato_field_access_ref";
-    let mut runtime = PluginRuntime::new(&PluginConfig::default()).expect("create runtime");
-    runtime
-        .load_plugin(&plugins_dir().join(name))
-        .unwrap_or_else(|e| {
-            panic!(
-                "failed to load fixture '{name}': {e:#}\n\
-                 build it first: cargo build -p {name} --target wasm32-wasip1 --release \
-                 && cp target/wasm32-wasip1/release/{name}.wasm plugins/{name}/"
-            )
-        });
-    let runtime = Arc::new(runtime);
-    let registry = Arc::new(TapRegistry::from_plugins(&runtime));
-    let dispatcher = Arc::new(TapDispatcher::new(Arc::clone(&runtime), registry));
-
-    // Lazy pool: the plugin's variables_get falls back to DEFAULT_RULES when the
-    // read errors, so no live Postgres is needed.
     let db =
         sqlx::postgres::PgPool::connect_lazy("postgres://localhost/trovato").expect("lazy pool");
-    let services = RequestServices::for_background(db.clone(), None, None, reqwest::Client::new())
-        .with_plugin_runtime(Arc::clone(&runtime));
-
-    ItemService::new(
-        db,
-        dispatcher,
-        services,
-        Duration::from_secs(60),
-        None,
-        None,
-    )
+    common::item_service_with_ref_plugin(db)
 }
 
 fn user(perms: &[&str]) -> UserContext {

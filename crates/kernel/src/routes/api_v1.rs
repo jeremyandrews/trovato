@@ -346,8 +346,17 @@ async fn export_user_data(
 /// `GET /api/v1/items/autocomplete?type=article&q=rust&limit=10`
 ///
 /// Returns `[{"id": "uuid", "title": "..."}]` for items matching the query.
+///
+/// Answers as the viewer. The query is a coarse candidate filter — type, title
+/// prefix, published — and
+/// [`filter_page_for_view`](crate::content::ItemService::filter_page_for_view)
+/// decides what
+/// of that the caller may actually see. Without it the endpoint took no session
+/// at all and `status = 1` was the whole rule, so any caller could enumerate
+/// the titles of published items on internal stages a prefix at a time.
 async fn autocomplete_items(
     State(state): State<AppState>,
+    session: Session,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let item_type = params.get("type").map(String::as_str).unwrap_or("");
@@ -365,22 +374,35 @@ async fn autocomplete_items(
     // Search by title using ILIKE for case-insensitive prefix matching
     let pattern = format!("{}%", query.replace('%', "\\%").replace('_', "\\_"));
 
-    match sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id, title FROM item WHERE type = $1 AND title ILIKE $2 AND status = 1 ORDER BY title LIMIT $3",
+    // Over-fetch, bounded, so a page the seam thins out still has something in
+    // it. Three times the asked-for page, capped: the cost of an access
+    // decision is paid per candidate, and this is a keystroke-rate endpoint.
+    let candidate_limit = (limit * 3).min(150);
+    let user = crate::routes::item::get_user_context(&session, &state).await;
+
+    match sqlx::query_as::<_, crate::models::Item>(
+        "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+         promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+         FROM item WHERE type = $1 AND title ILIKE $2 AND status = 1 ORDER BY title LIMIT $3",
     )
     .bind(item_type)
     .bind(&pattern)
-    .bind(limit)
+    .bind(candidate_limit)
     .fetch_all(state.db())
     .await
     {
-        Ok(rows) => {
-            let results: Vec<serde_json::Value> = rows
+        Ok(candidates) => {
+            let page_size = usize::try_from(limit).unwrap_or(0);
+            let visible = state
+                .items()
+                .filter_page_for_view(candidates, &user, "view", page_size)
+                .await;
+            let results: Vec<serde_json::Value> = visible
                 .iter()
-                .map(|(id, title)| {
+                .map(|item| {
                     serde_json::json!({
-                        "id": id,
-                        "title": title
+                        "id": item.id,
+                        "title": item.title
                     })
                 })
                 .collect();

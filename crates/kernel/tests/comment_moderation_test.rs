@@ -467,3 +467,133 @@ fn pending_comments_are_listable_by_status() {
         set_default_status(app, None).await;
     });
 }
+
+// =============================================================================
+// Problem 6 — a held comment was readable by id.
+//
+// The listing endpoint filters on status, so a pending, unpublished or spam
+// comment never appears in it. `GET /api/comment/{id}` checked the parent item
+// and then returned the comment whatever its status, so anyone who could see the
+// item could read every held comment on it one id at a time. The two endpoints
+// now agree, with the three exceptions that already exist elsewhere: the
+// comment's author, an administrator, and a holder of `administer comments`.
+// =============================================================================
+
+#[test]
+fn a_held_comment_is_not_readable_by_id() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = DEFAULT_STATUS.lock().await;
+        ensure_item_type(app).await;
+        set_default_status(app, Some("pending")).await;
+
+        let (author_cookies, _) = commenter_with(app, &["post comments", "access content"]).await;
+        let item_id = create_item(app, Uuid::nil()).await;
+        let created = post_comment(app, &author_cookies, item_id).await;
+        assert_eq!(
+            created["status"].as_i64(),
+            Some(i64::from(CommentStatus::Pending.as_i16())),
+            "the fixture must produce a held comment, got {created}"
+        );
+        let comment_id = created["id"].as_str().expect("comment id").to_string();
+
+        // Another reader, who can see the item perfectly well.
+        let (reader_cookies, _) = commenter_with(app, &["access content"]).await;
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/api/comment/{comment_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &reader_cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a held comment must not be readable by a bystander"
+        );
+
+        // The item itself is still readable, so the 404 above is about the
+        // comment and not about the parent.
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/api/item/{item_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &reader_cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the parent item is visible; only the held comment is not"
+        );
+
+        // Its own author may still read it back — that is how they see what they
+        // posted while it waits.
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/api/comment/{comment_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &author_cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the comment's own author must still read their held comment"
+        );
+
+        // And a moderator, who has to read it to judge it.
+        let (moderator_cookies, _) =
+            commenter_with(app, &["access content", "administer comments"]).await;
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/api/comment/{comment_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &moderator_cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a holder of `administer comments` must still read a held comment"
+        );
+
+        set_default_status(app, None).await;
+    });
+}
+
+#[test]
+fn a_published_comment_is_still_readable_by_id() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = DEFAULT_STATUS.lock().await;
+        ensure_item_type(app).await;
+        set_default_status(app, Some("published")).await;
+
+        let (cookies, _) = commenter_with(app, &["post comments", "access content"]).await;
+        let item_id = create_item(app, Uuid::nil()).await;
+        let created = post_comment(app, &cookies, item_id).await;
+        let comment_id = created["id"].as_str().expect("comment id").to_string();
+
+        let (reader_cookies, _) = commenter_with(app, &["access content"]).await;
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/api/comment/{comment_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &reader_cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a published comment is readable by id, as it always was"
+        );
+
+        set_default_status(app, None).await;
+    });
+}

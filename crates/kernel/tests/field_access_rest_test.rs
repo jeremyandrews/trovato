@@ -167,3 +167,188 @@ fn rest_comments_hidden_for_inaccessible_parent() {
         );
     });
 }
+
+// =============================================================================
+// The read paths that loaded an item and never asked the seam about it.
+//
+// Every test below pairs a negative with a positive: the fix has to hide what
+// the viewer may not see *and* still show what they may, or it could pass by
+// returning nothing at all.
+// =============================================================================
+
+async fn get_as(
+    app: &common::TestApp,
+    path: &str,
+    cookies: &str,
+    bucket: &str,
+) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::get(path)
+                .header("x-forwarded-for", common::test_ip_for(bucket))
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Problem 1 — the revision list required a login and nothing else, so the
+/// titles and log messages of every draft were readable by anyone with an
+/// account. It is now the same bar the revert button on the same page applies.
+#[test]
+fn the_revision_list_is_held_to_view_then_edit() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+
+        let draft = make_item(app, "Revision Seam Draft", 0).await;
+
+        // A logged-in user who cannot view the draft is told it does not exist.
+        let (_, nosy) = common::user_holding(app, "revseam-nosy", &[]).await;
+        let (status, html) = get_as(
+            app,
+            &format!("/item/{draft}/revisions"),
+            &nosy,
+            "revseam-nosy",
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "a user who cannot view the draft must not read its revision history, got {html}"
+        );
+
+        // A user who may view it but not edit it is refused, as the revert
+        // button on the same page already refuses them.
+        let (_, reader) = common::user_holding(app, "revseam-reader", &["view any content"]).await;
+        let (status, html) = get_as(
+            app,
+            &format!("/item/{draft}/revisions"),
+            &reader,
+            "revseam-reader",
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "reading the revision history is an editor's view, not a reader's, got {html}"
+        );
+
+        // And an editor still gets the page.
+        let (_, editor) = common::user_holding(
+            app,
+            "revseam-editor",
+            &["view any content", "edit any content"],
+        )
+        .await;
+        let (status, html) = get_as(
+            app,
+            &format!("/item/{draft}/revisions"),
+            &editor,
+            "revseam-editor",
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an editor must still see the history, got {html}"
+        );
+        assert!(
+            html.contains("Revision Seam Draft"),
+            "the editor's page must name the item, got {html}"
+        );
+    });
+}
+
+/// Problem 6 — `create_comment_inner` loaded the item to notify its author and
+/// never asked whether the commenter may see it, so `post comments` was enough
+/// to comment on (and learn the existence of) a draft.
+#[test]
+fn a_comment_cannot_be_posted_on_an_item_the_author_cannot_see() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        app.ensure_plugin_enabled("trovato_comments").await;
+
+        let draft = make_item(app, "Comment Seam Draft", 0).await;
+        let published = make_item(app, "Comment Seam Public", 1).await;
+
+        let (_, cookies) = common::user_holding(app, "cmtseam", &["post comments"]).await;
+
+        // The draft answers exactly as a missing item does.
+        let (status, body) = post_comment_to(app, &cookies, draft).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "commenting on an unviewable item must answer as for a missing one, got {body}"
+        );
+        assert!(
+            body.contains("Item not found"),
+            "the refusal must not distinguish denied from missing, got {body}"
+        );
+
+        // The same user may still comment on the published item.
+        let (status, body) = post_comment_to(app, &cookies, published).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the same commenter must still reach a published item, got {body}"
+        );
+    });
+}
+
+/// POST a comment, returning the status and body.
+async fn post_comment_to(
+    app: &common::TestApp,
+    cookies: &str,
+    item_id: Uuid,
+) -> (StatusCode, String) {
+    // A CSRF token, read off a rendered page in this session.
+    let response = app
+        .request_with_cookies(
+            Request::get("/")
+                .header("x-forwarded-for", common::test_ip_for("cmtseam"))
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let fresh = common::extract_cookies(&response);
+    let cookies = if fresh.is_empty() {
+        cookies.to_string()
+    } else {
+        fresh
+    };
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(&bytes).into_owned();
+    let marker = "name=\"csrf-token\" content=\"";
+    let start = html.find(marker).expect("csrf meta tag") + marker.len();
+    let token = html[start..].split('"').next().expect("token").to_string();
+
+    let response = app
+        .request_with_cookies(
+            Request::post(format!("/api/item/{item_id}/comments"))
+                .header("content-type", "application/json")
+                .header("X-CSRF-Token", &token)
+                .header("x-forwarded-for", common::test_ip_for("cmtseam"))
+                .body(Body::from(
+                    serde_json::json!({ "body": "Is this item even here?" }).to_string(),
+                ))
+                .unwrap(),
+            &cookies,
+        )
+        .await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
