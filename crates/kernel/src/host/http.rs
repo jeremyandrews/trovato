@@ -30,6 +30,11 @@
 //! streaming `http-open`, and the queue-worker / cron dispatch clients) is built
 //! from [`build_outbound_client`] / [`hardened_outbound_builder`], so the fence
 //! is shared, not duplicated.
+//!
+//! All three layers classify addresses through the one shared policy in
+//! [`crate::net_policy`], and they classify the host `url` already parsed
+//! rather than re-parsing its string form — which is what let bracketed IPv6
+//! literals past every one of them at once.
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -44,6 +49,7 @@ use wasmtime::Linker;
 
 use super::trace::{HostCallGuard, TracedLinker};
 
+use crate::net_policy::is_disallowed_ip;
 use crate::plugin::{PluginState, WasmtimeExt};
 use trovato_sdk::host_errors;
 
@@ -366,23 +372,35 @@ fn check_url_policy(parsed: &Url) -> std::result::Result<(), UrlPolicyReject> {
         _ => return Err(UrlPolicyReject::Scheme),
     }
 
-    let Some(host) = parsed.host_str() else {
+    // Classify through `Url::host()`, not by re-parsing `host_str()`. For an
+    // IPv6 literal `host_str()` hands back the bracketed form (`[::1]`), which
+    // never parses as an `IpAddr`, so every IPv6 literal used to fall through
+    // the address check as though it were a hostname.
+    let Some(host) = parsed.host() else {
         return Err(UrlPolicyReject::NoHost);
     };
 
-    let host_lower = host.to_ascii_lowercase();
-    if host_lower == "localhost"
-        || host_lower.ends_with(".local")
-        || host_lower.ends_with(".internal")
-        || host_lower.ends_with(".localhost")
-    {
-        return Err(UrlPolicyReject::InternalHost);
-    }
-
-    if let Ok(ip) = host.parse::<IpAddr>()
-        && is_private_ip(ip)
-    {
-        return Err(UrlPolicyReject::PrivateIpLiteral);
+    match host {
+        url::Host::Domain(name) => {
+            let host_lower = name.to_ascii_lowercase();
+            if host_lower == "localhost"
+                || host_lower.ends_with(".local")
+                || host_lower.ends_with(".internal")
+                || host_lower.ends_with(".localhost")
+            {
+                return Err(UrlPolicyReject::InternalHost);
+            }
+        }
+        url::Host::Ipv4(v4) => {
+            if is_disallowed_ip(IpAddr::V4(v4)) {
+                return Err(UrlPolicyReject::PrivateIpLiteral);
+            }
+        }
+        url::Host::Ipv6(v6) => {
+            if is_disallowed_ip(IpAddr::V6(v6)) {
+                return Err(UrlPolicyReject::PrivateIpLiteral);
+            }
+        }
     }
 
     Ok(())
@@ -412,27 +430,6 @@ fn validate_url(raw_url: &str, plugin_name: &str) -> std::result::Result<(), i32
         warn!(plugin = %plugin_name, url = %raw_url, "{detail}");
         host_errors::ERR_HTTP_INVALID_URL
     })
-}
-
-/// Check if an IP address is private, loopback, link-local, or otherwise
-/// internal (RFC 1918, RFC 4193, cloud metadata endpoints, etc.).
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()             // 127.0.0.0/8
-                || v4.is_private()       // 10/8, 172.16/12, 192.168/16
-                || v4.is_link_local()    // 169.254.0.0/16 (includes metadata)
-                || v4.is_broadcast()     // 255.255.255.255
-                || v4.is_unspecified()   // 0.0.0.0
-                || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // 100.64/10 (CGNAT)
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()             // ::1
-                || v6.is_unspecified()   // ::
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
-        }
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -538,7 +535,7 @@ impl reqwest::dns::Resolve for ValidatingResolver {
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
             for ip in &ips {
-                if is_private_ip(*ip) {
+                if is_disallowed_ip(*ip) {
                     // Rebinding: the name cleared the string check but resolves
                     // to a private address. Deny the whole request.
                     return Err(Box::new(SsrfBlocked) as Box<dyn std::error::Error + Send + Sync>);
@@ -1232,13 +1229,19 @@ mod tests {
     async fn open_applies_the_ssrf_fence() {
         let client = reqwest::Client::new();
         for blocked in [
-            "http://localhost:8080/admin",   // localhost sidecar
-            "http://127.0.0.1:8080/",        // loopback IP literal
-            "http://10.1.2.3/",              // RFC 1918 private
-            "http://192.168.0.1/",           // RFC 1918 private
-            "http://169.254.169.254/latest", // link-local / cloud metadata
-            "http://service.internal/",      // internal suffix
-            "ftp://example.com/",            // non-HTTP scheme
+            "http://localhost:8080/admin",      // localhost sidecar
+            "http://127.0.0.1:8080/",           // loopback IP literal
+            "http://10.1.2.3/",                 // RFC 1918 private
+            "http://192.168.0.1/",              // RFC 1918 private
+            "http://169.254.169.254/latest",    // link-local / cloud metadata
+            "http://service.internal/",         // internal suffix
+            "ftp://example.com/",               // non-HTTP scheme
+            "http://[::1]/",                    // IPv6 loopback literal
+            "http://[::1]:8080/",               // IPv6 loopback literal with a port
+            "http://[fd00::1]/",                // IPv6 unique-local
+            "http://[fe80::1]/",                // IPv6 link-local
+            "http://[::ffff:127.0.0.1]/",       // IPv4-mapped loopback
+            "http://[::ffff:169.254.169.254]/", // IPv4-mapped cloud metadata
         ] {
             let err = open_stream(&client, &get(blocked), "test", DEFAULT_TRANSFER_CEILING)
                 .await
@@ -1249,8 +1252,12 @@ mod tests {
                 "expected block for {blocked}"
             );
         }
-        // A public host clears the shared fence (validated without connecting).
+        // A public host clears the shared fence (validated without connecting),
+        // and so does a public IPv6 literal and a public IPv4 one — the fix
+        // must not turn "IPv6 literals are checked" into "IPv6 is refused".
         assert!(validate_url("https://confs.tech/api", "test").is_ok());
+        assert!(validate_url("https://[2606:4700:4700::1111]/", "test").is_ok());
+        assert!(validate_url("https://93.184.216.34/", "test").is_ok());
     }
 
     /// D-49 handle scoping: handles live in the per-call `PluginState`, so a fresh
@@ -1402,6 +1409,38 @@ mod tests {
         let err = execute_http_request(&client, &get(&base), "test")
             .await
             .expect_err("a redirect to a private target must be denied");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// Redirect hop to a bracketed IPv6 loopback literal. The redirect policy
+    /// runs the same `check_url_policy` as the entry gate, so before the fix
+    /// this hop was followed: the bracketed form never parsed as an address, so
+    /// the hop read as an ordinary hostname with no matching internal suffix.
+    #[tokio::test]
+    async fn one_shot_denies_redirect_to_ipv6_loopback_literal() {
+        // Port 9 (discard) is closed on the loopback interface in practice, so
+        // a regression shows up as the SSRF code being absent, never as a hang.
+        let base = redirect_server("http://[::1]:9/".to_string()).await;
+        let client = build_outbound_client();
+        let err = execute_http_request(&client, &get(&base), "test")
+            .await
+            .expect_err("a redirect to an IPv6 loopback literal must be denied");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// Rebinding onto an IPv4-mapped IPv6 address: a hostname whose AAAA record
+    /// answers `::ffff:127.0.0.1`. The resolver saw a v6 address and read its
+    /// high bits as global unicast, so the embedded loopback went unnoticed.
+    #[tokio::test]
+    async fn one_shot_denies_rebinding_to_an_ipv4_mapped_address() {
+        let client = builder_with_resolver(Arc::new(StubResolver {
+            ips: vec!["::ffff:127.0.0.1".parse().expect("mapped address parses")],
+        }))
+        .build()
+        .expect("hardened client builds");
+        let err = execute_http_request(&client, &get("http://mapped.invalid/"), "test")
+            .await
+            .expect_err("an IPv4-mapped loopback answer must be denied");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
     }
 

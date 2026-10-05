@@ -27,6 +27,7 @@ use tokio::sync::Mutex;
 
 use crate::circuit_breaker::{BreakerConfig, CircuitBreaker};
 use crate::models::SiteConfig;
+use crate::net_policy::is_disallowed_ip;
 
 // =============================================================================
 // Data types
@@ -399,48 +400,45 @@ pub fn validate_base_url(url: &str) -> Result<(), String> {
         other => return Err(format!("URL scheme must be http or https, got '{other}'.")),
     }
 
-    let Some(host) = parsed.host_str() else {
+    // Classify the host `url` already parsed. Re-parsing `host_str()` cannot
+    // see an IPv6 literal, because that form keeps its brackets.
+    let Some(host) = parsed.host() else {
         return Err("URL must include a host.".to_string());
     };
 
-    // Check if host is a literal IP in a blocked range
-    if let Ok(ip) = host.parse::<IpAddr>()
-        && is_private_ip(ip)
-    {
-        return Err("URL must not target private, loopback, or link-local addresses.".to_string());
-    }
+    let blocked_address =
+        "URL must not target private, loopback, or link-local addresses.".to_string();
 
-    // Block well-known local hostnames
-    if host == "localhost" || host.ends_with(".localhost") {
-        return Err("URL must not target private, loopback, or link-local addresses.".to_string());
-    }
+    match host {
+        url::Host::Ipv4(v4) => {
+            if is_disallowed_ip(IpAddr::V4(v4)) {
+                return Err(blocked_address);
+            }
+        }
+        url::Host::Ipv6(v6) => {
+            if is_disallowed_ip(IpAddr::V6(v6)) {
+                return Err(blocked_address);
+            }
+        }
+        url::Host::Domain(name) => {
+            // Block well-known local hostnames. This list is deliberately
+            // narrower than the plugin fence's: an administrator pointing the
+            // kernel at an on-premises model server legitimately uses a
+            // `.internal` or `.local` name, and blocking those would break
+            // working setups to no end, since the address behind the name is
+            // checked by the resolver either way.
+            if name == "localhost" || name.ends_with(".localhost") {
+                return Err(blocked_address);
+            }
 
-    // Check for common metadata endpoint hostnames
-    if host == "metadata.google.internal" || host == "metadata.google.com" {
-        return Err("URL must not target cloud metadata services.".to_string());
+            // Check for common metadata endpoint hostnames
+            if name == "metadata.google.internal" || name == "metadata.google.com" {
+                return Err("URL must not target cloud metadata services.".to_string());
+            }
+        }
     }
 
     Ok(())
-}
-
-/// Check if an IP address is in a private, loopback, or link-local range.
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()         // 127.0.0.0/8
-                || v4.is_private()   // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-                || v4.is_link_local() // 169.254.0.0/16
-                || v4.octets()[0] == 0 // 0.0.0.0/8
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback() // ::1
-                || v6.is_unspecified() // ::
-                // fe80::/10 link-local — check first 10 bits
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-                // fc00::/7 unique-local — check first 7 bits
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-        }
-    }
 }
 
 // =============================================================================
@@ -1315,6 +1313,60 @@ mod tests {
         assert!(validate_base_url("http://169.254.169.254/latest").is_err());
     }
 
+    /// The bracketed IPv6 forms. `host_str()` keeps the brackets, so none of
+    /// these ever reached the address check: an administrator URL (or anything
+    /// that could set one) pointed straight at a loopback sidecar.
+    #[test]
+    fn base_url_rejects_ipv6_literals() {
+        for blocked in [
+            "http://[::1]/v1",
+            "http://[::1]:8080/v1",
+            "http://[fd00::1]/v1",
+            "http://[fe80::1]/v1",
+            "http://[::ffff:127.0.0.1]/v1",
+            "http://[::ffff:169.254.169.254]/latest",
+        ] {
+            assert!(
+                validate_base_url(blocked).is_err(),
+                "expected {blocked} to be rejected"
+            );
+        }
+    }
+
+    /// A public IPv6 literal still works: the fix checks IPv6, it does not ban it.
+    #[test]
+    fn base_url_allows_public_ipv6_literals() {
+        assert!(validate_base_url("https://[2606:4700:4700::1111]/v1").is_ok());
+    }
+
+    /// The ranges only the plugin fence used to block are blocked here too, now
+    /// that both sides share one list.
+    #[test]
+    fn base_url_rejects_the_ranges_this_copy_used_to_miss() {
+        for blocked in [
+            "http://100.64.0.1/v1",      // carrier-grade NAT
+            "http://255.255.255.255/v1", // broadcast
+            "http://224.0.0.1/v1",       // multicast
+            "http://198.18.0.1/v1",      // benchmarking
+            "http://192.0.0.1/v1",       // IETF protocol assignments
+        ] {
+            assert!(
+                validate_base_url(blocked).is_err(),
+                "expected {blocked} to be rejected"
+            );
+        }
+    }
+
+    /// An on-premises model server on a `.internal` or `.local` name keeps
+    /// working: this URL is administrator-set, and the address behind the name
+    /// is checked regardless. Pinning it in a test so the narrower hostname
+    /// list is not "fixed" into the plugin fence's by a later reader.
+    #[test]
+    fn base_url_allows_internal_hostnames_deliberately() {
+        assert!(validate_base_url("http://ollama.internal/v1").is_ok());
+        assert!(validate_base_url("http://ollama.local/v1").is_ok());
+    }
+
     #[test]
     fn base_url_rejects_cloud_metadata() {
         assert!(validate_base_url("http://metadata.google.internal/v1").is_err());
@@ -1325,18 +1377,18 @@ mod tests {
         assert!(validate_base_url("not-a-url").is_err());
     }
 
-    // ---- is_private_ip ----
+    // ---- the shared address policy, as this file reaches it ----
 
     #[test]
     fn private_ip_detection() {
-        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
-        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
-        assert!(is_private_ip("192.168.1.1".parse().unwrap()));
-        assert!(is_private_ip("172.16.0.1".parse().unwrap()));
-        assert!(is_private_ip("169.254.1.1".parse().unwrap()));
-        assert!(is_private_ip("::1".parse().unwrap()));
-        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
-        assert!(!is_private_ip("1.1.1.1".parse().unwrap()));
+        assert!(is_disallowed_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_disallowed_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_disallowed_ip("192.168.1.1".parse().unwrap()));
+        assert!(is_disallowed_ip("172.16.0.1".parse().unwrap()));
+        assert!(is_disallowed_ip("169.254.1.1".parse().unwrap()));
+        assert!(is_disallowed_ip("::1".parse().unwrap()));
+        assert!(!is_disallowed_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_disallowed_ip("1.1.1.1".parse().unwrap()));
     }
 
     // ---- serde roundtrips ----

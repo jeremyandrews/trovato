@@ -27,6 +27,7 @@ mod menu;
 mod metrics;
 mod middleware;
 mod models;
+mod net_policy;
 mod permissions;
 mod plugin;
 mod recovery;
