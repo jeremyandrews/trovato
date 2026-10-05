@@ -228,6 +228,28 @@ pub struct PluginCapabilities {
     #[serde(default)]
     pub ai_background: bool,
 
+    /// Whether this plugin may call the `item-api` host functions — `get-item`,
+    /// `save-item`, `delete-item`, `query-items` — from a **background**
+    /// dispatch context: cron (`tap_cron`) or the queue worker
+    /// (`tap_queue_worker`). Defaults to `false`.
+    ///
+    /// `item-api` decides every call as the user the plugin is acting for. A
+    /// background context carries the kernel-internal background principal,
+    /// which has no identity and holds no permissions, so there is no user
+    /// whose authority the call could act with. Rather than quietly fall back
+    /// to kernel authority — which is what these functions used to do for
+    /// every caller — the kernel asks the plugin to declare that it needs it,
+    /// on the same manifest plane as [`Self::ai_background`] and for the same
+    /// reason: a background grant should be visible in the manifest and
+    /// reviewable at install time.
+    ///
+    /// Without it, an `item-api` call from a background context is denied
+    /// ([`trovato_sdk::host_errors::ERR_ITEM_BACKGROUND_DENIED`]). With it, the
+    /// call proceeds with kernel authority, which is how these functions
+    /// behaved everywhere before.
+    #[serde(default)]
+    pub item_background: bool,
+
     /// Maximum total bytes a single streaming HTTP fetch (`http-open` /
     /// `http-read`, P11e / D-50) may transfer over the wire, in bytes.
     ///
@@ -1280,6 +1302,50 @@ host_interfaces = ["db"]
         let caps = info.capabilities.expect("capabilities present");
         assert!(!caps.raw_sql);
         assert!(caps.db_tables.is_empty());
+    }
+
+    /// The background grant is deny-by-default, like every other manifest
+    /// capability: a plugin that says nothing gets nothing.
+    #[test]
+    fn item_background_defaults_false_when_omitted() {
+        let toml = r#"
+name = "reader"
+description = "Reads items on a request path"
+version = "1.0.0"
+
+[capabilities]
+host_interfaces = ["item-api"]
+"#;
+
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        let caps = info.capabilities.expect("capabilities present");
+        assert!(
+            !caps.item_background,
+            "a plugin that did not ask for background item access must not have it"
+        );
+    }
+
+    /// And it parses when declared, independently of `ai_background`: the two
+    /// are separate grants on the same plane, and a plugin may hold either.
+    #[test]
+    fn item_background_parses_and_is_independent_of_ai_background() {
+        let toml = r#"
+name = "importer"
+description = "Writes items from cron"
+version = "1.0.0"
+
+[capabilities]
+host_interfaces = ["item-api"]
+item_background = true
+"#;
+
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        let caps = info.capabilities.expect("capabilities present");
+        assert!(caps.item_background);
+        assert!(
+            !caps.ai_background,
+            "declaring one background grant must not confer the other"
+        );
     }
 
     #[test]

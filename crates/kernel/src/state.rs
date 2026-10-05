@@ -859,6 +859,17 @@ impl AppState {
             Some(vector_store.clone()),
         ));
 
+        // Late-bind the item-access seam into the tap services template, so
+        // the `item-api` host functions can decide a request-scoped call as the
+        // user the plugin is acting for.
+        //
+        // After `ItemService::new`, necessarily: the service is built *from*
+        // this template. That is also why the template holds the handle behind
+        // a shared cell and holds it weakly — the clone the service took a few
+        // lines above sees this binding, and neither side keeps the other
+        // alive.
+        tap_services.set_item_service(&items);
+
         // Late-bind the item-access seam into the gather service (Story 3.4):
         // gather is constructed before ItemService, so it holds a OnceLock the
         // item service fills here. Every gather read path now runs the shared

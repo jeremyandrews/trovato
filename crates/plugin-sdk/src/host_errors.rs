@@ -286,6 +286,32 @@ pub const ERR_AI_BACKGROUND_DENIED: i32 = -28;
 /// code is what makes that failure legible.
 pub const ERR_AI_OPERATION_UNSUPPORTED: i32 = -41;
 
+/// An `item-api` call was refused by the access decision: the requesting user
+/// may not `view`, `edit` or `delete` that item, or may not create content of
+/// that type.
+///
+/// `item-api` acts as the user the plugin is handling a request for, so this is
+/// that user's own answer, not a statement about the plugin. A plugin that
+/// needs an authority its caller does not have is a plugin that should not be
+/// doing the work on a request path.
+///
+/// `get-item` does **not** return this: a denied read is indistinguishable from
+/// a missing item there, and writes `null` exactly as a missing id does, so a
+/// plugin cannot use the error to confirm that a draft exists.
+pub const ERR_ITEM_ACCESS_DENIED: i32 = -60;
+
+/// An `item-api` call was made from a **background** dispatch context — cron
+/// (`tap_cron`) or the queue worker (`tap_queue_worker`) — by a plugin that did
+/// not declare the `item_background` manifest capability.
+///
+/// A background context carries the kernel-internal background principal, which
+/// has no identity and no permissions, so there is no user whose authority the
+/// call could act with. Rather than fall back to kernel authority silently, the
+/// kernel asks the plugin to say it needs it, on the same declared, auditable
+/// manifest plane as [`ERR_AI_BACKGROUND_DENIED`]. With the capability, a
+/// background call proceeds with kernel authority; without it, this.
+pub const ERR_ITEM_BACKGROUND_DENIED: i32 = -61;
+
 // =============================================================================
 // HTTP API errors (`trovato:kernel/http`)
 // =============================================================================

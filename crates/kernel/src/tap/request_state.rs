@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::cache::CacheLayer;
+use crate::content::ItemService;
 use crate::lockout::LockoutService;
 use crate::plugin::PluginRuntime;
 use crate::services::ai_provider::AiProviderService;
@@ -231,6 +232,25 @@ pub struct RequestServices {
     /// reports it rather than pretending to send.
     pub email: Option<Arc<crate::services::email::EmailService>>,
 
+    /// The item service, for the access decision the `item-api` host functions
+    /// make — and for nothing else.
+    ///
+    /// **`Weak` on purpose.** `ItemService` holds a `RequestServices` of its
+    /// own (`inner.tap_services`, which it clones for every tap dispatch), so
+    /// an `Arc` here would close a reference cycle that never frees: the
+    /// service would keep the services alive and the services the service.
+    /// A `Weak` handle, set once by `AppState` after the service is built,
+    /// breaks it. The host function upgrades per call and reports
+    /// `ERR_NO_SERVICES` when it cannot, which is the same answer a
+    /// serviceless context already gives.
+    ///
+    /// A `OnceLock` because the binding is late and happens once: `AppState`
+    /// builds the services template before it builds the service, the same
+    /// ordering `GatherService` and `CronService` resolve with their own
+    /// `set_item_service`. Theirs take `Arc`, correctly — neither of them is
+    /// held by `ItemService` in turn.
+    pub(crate) item_service: Arc<std::sync::OnceLock<std::sync::Weak<ItemService>>>,
+
     /// The site's rate limiter, for the per-plugin `mail` bucket.
     ///
     /// Carried on **every** dispatch path rather than only the request one,
@@ -264,6 +284,7 @@ impl RequestServices {
             field_access_cache: Arc::new(new_field_access_cache()),
             email: None,
             rate_limiter: None,
+            item_service: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -285,6 +306,7 @@ impl RequestServices {
             field_access_cache: Arc::new(new_field_access_cache()),
             email: None,
             rate_limiter: None,
+            item_service: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -325,6 +347,27 @@ impl RequestServices {
     /// Builder-style, applied on the `AppState` template and on every background
     /// dispatch path. Without it the `mail` host function is unbounded, which is
     /// what this exists to stop.
+    /// Late-bind the item service the `item-api` host functions decide with.
+    ///
+    /// Called once by `AppState::new` after `ItemService` is constructed, on
+    /// the template every production dispatch clones. A second call is a no-op
+    /// (first binding wins), so wiring is idempotent — the same contract
+    /// `GatherService::set_item_service` has.
+    ///
+    /// Takes an `Arc` and stores a `Weak`: see the field's own note for why the
+    /// strong reference cannot live here.
+    pub fn set_item_service(&self, items: &Arc<ItemService>) {
+        let _ = self.item_service.set(Arc::downgrade(items));
+    }
+
+    /// The item service, if one was bound and is still alive.
+    ///
+    /// `None` in a serviceless or test context that never wired one, and after
+    /// `AppState` is dropped. Callers refuse rather than deciding without it.
+    pub fn item_service(&self) -> Option<Arc<ItemService>> {
+        self.item_service.get().and_then(std::sync::Weak::upgrade)
+    }
+
     #[must_use]
     pub fn with_rate_limiter(mut self, limiter: Arc<crate::middleware::RateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);

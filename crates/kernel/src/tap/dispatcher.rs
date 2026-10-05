@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tracing::{debug, error, warn};
@@ -189,6 +190,14 @@ impl TapDispatcher {
                 );
                 DispatchOutcome::CpuExhausted
             }
+            Err(ExportCallError::WallClockExceeded) => {
+                error!(
+                    plugin = %plugin_name,
+                    tap = %tap_name,
+                    "tap invocation cut off: call ran past its wall clock ceiling"
+                );
+                DispatchOutcome::WallClockExceeded
+            }
             Err(e) => {
                 error!(
                     plugin = %plugin_name,
@@ -215,11 +224,21 @@ impl TapDispatcher {
         // The background budget is carried on the runtime's `ResourceLimits` so a
         // deployment can lower it; the request-scoped one is still a constant.
         // Both defaults are unchanged.
-        let epoch_deadline = if BACKGROUND_TAPS.contains(&tap_name) {
-            self.runtime.limits().background_tap_epoch_deadline_secs
+        let limits = self.runtime.limits();
+        let background = BACKGROUND_TAPS.contains(&tap_name);
+        let epoch_deadline = if background {
+            limits.background_tap_epoch_deadline_secs
         } else {
             crate::plugin::limits::TAP_EPOCH_DEADLINE_SECS
         };
+        // The wall clock ceiling follows the same request/background split as
+        // the epoch budget, and sits far above it on both sides: it is there to
+        // end a call that never ends, not to tighten the CPU bound.
+        let wallclock_ceiling = Duration::from_secs(if background {
+            limits.background_wallclock_ceiling_secs
+        } else {
+            limits.request_wallclock_ceiling_secs
+        });
 
         match instantiate_and_call_export(
             &self.runtime,
@@ -228,6 +247,7 @@ impl TapDispatcher {
             input_json,
             state,
             epoch_deadline,
+            wallclock_ceiling,
         )
         .await
         {
@@ -247,6 +267,9 @@ pub enum DispatchOutcome {
     NoHandler,
     /// The guest was cut off having used its whole CPU budget.
     CpuExhausted,
+    /// The call was cut off at its total wall clock ceiling, having spent most
+    /// of that time waiting in host calls rather than computing.
+    WallClockExceeded,
     /// Anything else: a trap, a memory-protocol violation, a missing export.
     Failed,
 }
@@ -281,6 +304,15 @@ pub(crate) enum ExportCallError {
     /// caller used to tell them apart by how long the call ran, which charged a
     /// slow provider as though it were a runaway loop.
     CpuExhausted,
+    /// The call ran past its total wall clock ceiling and was cut off.
+    ///
+    /// Distinct from [`Self::CpuExhausted`] because the two describe opposite
+    /// shapes of runaway. A CPU-exhausted guest was computing; this one was
+    /// mostly waiting, in host calls that each extended the epoch budget by
+    /// however long they took. The extension exists so a slow provider is not
+    /// charged as a runaway loop, and it had no ceiling, so a guest looping
+    /// over slow host calls was never interrupted at all.
+    WallClockExceeded,
     /// Instantiation or execution failed (trap, memory-protocol violation, etc.).
     Failed(anyhow::Error),
 }
@@ -290,6 +322,7 @@ impl std::fmt::Display for ExportCallError {
         match self {
             Self::ExportMissing => write!(f, "tap not exported"),
             Self::CpuExhausted => write!(f, "guest used its whole CPU budget"),
+            Self::WallClockExceeded => write!(f, "call ran past its wall clock ceiling"),
             Self::Failed(e) => write!(f, "{e:#}"),
         }
     }
@@ -303,7 +336,9 @@ impl std::fmt::Display for ExportCallError {
 /// plugin-to-plugin invocation (`host::plugin_api::invoke`, which resolves an
 /// arbitrary published function name — see FR-4a / Story 2.2). It performs no
 /// permission or payload-size checks; callers enforce their own policy before and
-/// after calling. `epoch_deadline` is the per-call epoch budget (seconds of CPU).
+/// after calling. `epoch_deadline` is the per-call epoch budget (seconds of CPU);
+/// `wallclock_ceiling` bounds the call's total elapsed time, which the epoch
+/// budget does not, because every second spent inside a host call extends it.
 pub(crate) async fn instantiate_and_call_export(
     runtime: &PluginRuntime,
     plugin: &CompiledPlugin,
@@ -311,6 +346,7 @@ pub(crate) async fn instantiate_and_call_export(
     input_json: &str,
     state: RequestState,
     epoch_deadline: u64,
+    wallclock_ceiling: Duration,
 ) -> std::result::Result<String, ExportCallError> {
     let engine = runtime.engine();
 
@@ -324,6 +360,7 @@ pub(crate) async fn instantiate_and_call_export(
         limits,
     )
     .with_ai_background(plugin.ai_background())
+    .with_item_background(plugin.item_background())
     .with_http_max_transfer(plugin.http_max_transfer());
     let mut store = Store::new(engine, plugin_state);
 
@@ -357,11 +394,28 @@ pub(crate) async fn instantiate_and_call_export(
     // long this call has spent inside host functions since it was last asked,
     // so only guest execution counts down. When nothing new has been spent
     // waiting, the guest really is burning CPU, and the deadline stands.
+    //
+    // The extension is bounded in turn. Crediting host-call time without a
+    // ceiling means a guest that loops over slow host calls — `query-raw` with
+    // a `pg_sleep`, say, each one bounded only by the statement timeout — buys
+    // itself another second of deadline for every second it waits, and is
+    // never interrupted. Request-scoped dispatch has no other clock, so one
+    // plugin could hold a request open for as long as it liked. Past the
+    // ceiling the call is cut off whatever it was doing, and the reason is
+    // recorded separately from CPU exhaustion so the log says which bound
+    // fired.
     let host_call_nanos = store.data().host_call_nanos.clone();
     let cpu_exhausted = Arc::new(AtomicBool::new(false));
     let exhausted_flag = cpu_exhausted.clone();
+    let wallclock_exceeded = Arc::new(AtomicBool::new(false));
+    let wallclock_flag = wallclock_exceeded.clone();
+    let call_started = Instant::now();
     let mut credited_secs: u64 = 0;
     store.epoch_deadline_callback(move |_ctx| {
+        if call_started.elapsed() >= wallclock_ceiling {
+            wallclock_flag.store(true, Ordering::Relaxed);
+            return Ok(UpdateDeadline::Interrupt);
+        }
         let waited_secs = host_call_nanos.load(Ordering::Relaxed) / 1_000_000_000;
         if waited_secs > credited_secs {
             let extra = waited_secs - credited_secs;
@@ -398,7 +452,9 @@ pub(crate) async fn instantiate_and_call_export(
         .map_err(|e| {
             // The epoch callback records CPU exhaustion as it interrupts, so
             // the reason is known here rather than guessed from the clock.
-            if cpu_exhausted.load(Ordering::Relaxed) {
+            if wallclock_exceeded.load(Ordering::Relaxed) {
+                ExportCallError::WallClockExceeded
+            } else if cpu_exhausted.load(Ordering::Relaxed) {
                 ExportCallError::CpuExhausted
             } else {
                 ExportCallError::Failed(e)
@@ -579,6 +635,7 @@ mod tests {
             "{}",
             RequestState::default(),
             10,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
         )
         .await
         {
@@ -598,6 +655,7 @@ mod tests {
             "{}",
             RequestState::default(),
             10,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
         )
         .await
         .expect("kernel must serve the next call after a limiter trap");
@@ -620,6 +678,7 @@ mod tests {
             "{}",
             RequestState::default(),
             10,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
         )
         .await
         {
@@ -641,8 +700,15 @@ mod tests {
         let plugin = load_wat_plugin(&mut runtime, "spinner", SPIN_LOOP_WAT);
         let engine = runtime.engine().clone();
 
-        let call =
-            instantiate_and_call_export(&runtime, &plugin, "run", "{}", RequestState::default(), 1);
+        let call = instantiate_and_call_export(
+            &runtime,
+            &plugin,
+            "run",
+            "{}",
+            RequestState::default(),
+            1,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
+        );
         let bump = async {
             for _ in 0..20 {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -677,6 +743,7 @@ mod tests {
             "{}",
             RequestState::default(),
             10,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
         );
         let b = instantiate_and_call_export(
             &runtime,
@@ -685,6 +752,7 @@ mod tests {
             "{}",
             RequestState::default(),
             10,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
         );
         let (gr, br) = tokio::join!(g, b);
         assert!(
@@ -724,6 +792,7 @@ mod tests {
             "{}",
             RequestState::default(),
             10,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
         )
         .await;
         assert!(

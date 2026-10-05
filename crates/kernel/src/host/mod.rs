@@ -8,7 +8,7 @@ mod cache;
 mod crypto;
 mod db;
 pub(crate) mod http;
-mod item;
+pub mod item;
 mod logging;
 mod mail;
 mod plugin_api;

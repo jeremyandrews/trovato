@@ -368,6 +368,14 @@ async fn run_queue_job(
         DispatchOutcome::CpuExhausted => {
             mark_job_cpu_exhausted(&pool, &job, &plugin_name, budget).await
         }
+        // Ran past the wall clock ceiling, mostly waiting rather than
+        // computing. Retrying buys another full ceiling against the same wall,
+        // so it dies now for the same reason CPU exhaustion does — but it is
+        // recorded as its own outcome, because the two say different things
+        // about what the plugin was doing.
+        DispatchOutcome::WallClockExceeded => {
+            mark_job_wallclock_exceeded(&pool, &job, &plugin_name).await
+        }
         DispatchOutcome::NoHandler | DispatchOutcome::Failed => {
             let err = "tap_queue_worker failed (trap or error result)";
             mark_job_failed(&pool, &job, &plugin_name, err).await
@@ -437,6 +445,43 @@ async fn mark_job_cpu_exhausted(
         attempts = job.attempts,
         budget_secs = budget_secs,
         "queue item dead-lettered: it spent its whole CPU budget"
+    );
+    Ok(JobOutcome::DeadLettered)
+}
+
+/// Dead-letter a queue item whose worker ran past its wall clock ceiling.
+///
+/// Separate from [`mark_job_cpu_exhausted`] because the two describe different
+/// runaways and the operator reading `dead_reason` has to tell them apart: one
+/// job was computing and used its budget, this one was waiting in host calls
+/// that each extended that budget. The disposition is the same — retrying buys
+/// another full ceiling against the same wall — but the reason is not.
+async fn mark_job_wallclock_exceeded(
+    pool: &PgPool,
+    job: &ClaimedJob,
+    plugin_name: &str,
+) -> Result<JobOutcome> {
+    let now = chrono::Utc::now().timestamp();
+    let reason = "tap_queue_worker ran past its wall clock ceiling and was cut off".to_string();
+    sqlx::query(
+        r#"
+        UPDATE plugin_queue
+        SET status = 'dead', dead_reason = $2, dead_at = $3,
+            last_error = $2, locked_until = 0
+        WHERE id = $1
+        "#,
+    )
+    .bind(job.id)
+    .bind(&reason)
+    .bind(now)
+    .execute(pool)
+    .await
+    .context("failed to dead-letter a wall-clock-exceeded queue item")?;
+    warn!(
+        plugin = %plugin_name,
+        item_id = job.id,
+        attempts = job.attempts,
+        "queue item dead-lettered: it ran past its wall clock ceiling"
     );
     Ok(JobOutcome::DeadLettered)
 }
