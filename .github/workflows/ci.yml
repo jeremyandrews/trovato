@@ -319,18 +319,23 @@ jobs:
       # not to drop the database in between, and CONTRIBUTING.md told people to
       # drop it, so in practice nobody.
       #
-      # COST, measured rather than estimated. On run 37366851513 (shard 1, the
-      # heaviest — it also carries the unit and doc tests) the first integration
-      # pass took 9.2 minutes and this second one took **2.2**, because the
-      # 9.2 includes compiling and linking 34 test binaries and the 2.2 is the
-      # tests alone. Across three shards that is about 6.6 job-minutes added to
-      # roughly 58, and about two minutes of wall clock on the critical path,
-      # which the 18-minute Coverage job already owns.
+      # COST, measured end to end rather than estimated. The second pass is the
+      # tests alone — nothing is rebuilt and nothing is relinked — so it is a
+      # fraction of the first, which carries the compile and the link of the
+      # shard's test binaries. Run 37411105400 against its merge base
+      # (37310835359):
+      #
+      #   first pass    8.9, 8.5, 5.8 min across the three shards
+      #   second pass   2.5, 3.1, 2.1 min  =  7.7 job-minutes added
+      #   workflow      61 -> 71 job-minutes
+      #   wall clock    18 -> 17 min, i.e. unchanged: the critical path is the
+      #                 Coverage job, and the slowest shard still finishes inside
+      #                 it.
       #
       # So this is a step on every pull request rather than the nightly it could
       # have been. A nightly finds the regression after it is merged, by which
-      # time the branch that caused it has moved on — and at two minutes a shard
-      # there is nothing to buy by waiting.
+      # time the branch that caused it has moved on — and at three minutes a
+      # shard, off the critical path, there is nothing to buy by waiting.
       - name: Re-run integration tests on the same database (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
