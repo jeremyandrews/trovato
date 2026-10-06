@@ -54,8 +54,10 @@ why. Each entry has reasoning; none is suppressed silently. The open ones:
 
 Every wasmtime and cranelift advisory is **fixed rather than suppressed**:
 RUSTSEC-2026-0085 through -0096, -0114 and -0222 all cleared by upgrading the
-runtime to wasmtime 47.0.3, and RUSTSEC-2026-0268 and -0269 by 47.0.4, which is
-what the runtime is on. Nothing about the plugin sandbox is being carried on a
+runtime to wasmtime 47.0.3, RUSTSEC-2026-0268 and -0269 by 47.0.4, and
+RUSTSEC-2026-0315, -0316, -0325, -0326 and -0327 by 49.0.2, which is what the
+runtime is on. No 47.x release fixed that last batch, which is why the major
+version moved. Nothing about the plugin sandbox is being carried on a
 justification.
 
 Five suppressions remain, none of them in the WASM runtime:

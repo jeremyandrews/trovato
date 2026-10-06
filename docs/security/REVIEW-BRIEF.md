@@ -46,8 +46,8 @@ review, not as a statement of fact.
 `plugin/db_policy.rs` (table allowlist), `crates/kernel/src/host/*.rs` (the 13
 host interfaces), `crates/wit/` (the WIT world).
 
-**Runtime.** wasmtime is declared once as `wasmtime = "47"`
-(`Cargo.toml:112`) and resolves to **47.0.4** (`Cargo.lock`). Only the kernel
+**Runtime.** wasmtime is declared once as `wasmtime = "49"`
+(`Cargo.toml:109`) and resolves to **49.0.2** (`Cargo.lock`). Only the kernel
 and the phase0 benchmark consume it, both through the workspace pin, both with
 default features. `wasmtime-wasi` is **not** in the dependency graph at all:
 WASI is five hand written stubs that return `ENOSYS`
@@ -55,7 +55,8 @@ WASI is five hand written stubs that return `ENOSYS`
 threads off (the comment names RUSTSEC-2025-0118 as the reason), epoch
 interruption on, fuel conditional, Cranelift `Speed`, and the pooling
 allocator. SIMD, bulk memory, reference types and the wasm stack size keep
-wasmtime 47 defaults; nothing configures them.
+wasmtime 49 defaults; nothing configures them. Wide arithmetic is on as well,
+which 49.0.0 made a default for every embedder.
 
 **Resource limits** (`plugin/limits.rs:39-76`), all overridable by environment
 variable with a documented fallback (`config.rs:120-192`):

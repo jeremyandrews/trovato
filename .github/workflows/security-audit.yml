@@ -26,7 +26,14 @@ permissions:
   issues: write
 
 env:
-  CARGO_TERM_COLOR: always
+  # Deliberately NOT `CARGO_TERM_COLOR: always`. This job parses cargo-audit's
+  # output to name the advisories, and asking cargo to decorate that output is
+  # what broke it: cargo-audit wraps every label, so the line a reader sees as
+  # `Crate:     wasmtime` is really `ESC[0mESC[0mESC[1mESC[31mCrate:    ESC[0m
+  # wasmtime`, and an anchored `/^Crate:/` never matches. Every run from
+  # 2026-09-29 on filed "no vulnerability block" while the block was right there
+  # in the log. The parse step strips escapes anyway, so this is the second of
+  # two independent guards rather than the only one.
   # Kept in lock-step with ci.yml's RUST_TOOLCHAIN and rust-toolchain.toml's
   # channel; dtolnay/rust-toolchain does not read rust-toolchain.toml.
   RUST_TOOLCHAIN: "1.96.0"
@@ -66,6 +73,14 @@ jobs:
 
       - name: Name the advisories
         run: |
+          # Parse a copy with ANSI escapes removed, never the raw log. Whether
+          # cargo colourises depends on CARGO_TERM_COLOR, a cargo config, or a
+          # future cargo-audit default, none of which this parser should be
+          # answerable to. The escapes sit between the start of the line and the
+          # label, so they defeat every `^Label:` anchor below. Bash expands the
+          # \033 here, so the expression is the same under GNU and BSD sed.
+          sed $'s/\033\\[[0-9;?]*[ -\/]*[@-~]//g' audit.log > audit-plain.log
+
           # A vulnerability block carries no `Warning:` line; an unmaintained,
           # unsound or yanked block does. Only the vulnerabilities are worth
           # waking someone for, and they are what the issue names.
@@ -85,7 +100,7 @@ jobs:
                 if (solution != "") line = line ". " solution
                 print line
             }
-          ' audit.log > findings.md
+          ' audit-plain.log > findings.md
           if [ ! -s findings.md ]; then
             echo "The audit failed with no vulnerability block in its output; read the full log below." > findings.md
           fi
@@ -117,7 +132,7 @@ jobs:
             echo "<details><summary>Full audit output</summary>"
             echo
             echo '```'
-            cat audit.log
+            cat audit-plain.log
             echo '```'
             echo
             echo "</details>"
