@@ -29,4 +29,4 @@ pub use form::{FieldMode, FormBuilder, extract_reference_id};
 pub use item_service::{ItemService, PUBLISH_CONTENT, WriteDenied, decode_view_output};
 pub use page_meta::PageMeta;
 pub use record_type::{RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry};
-pub use type_registry::ContentTypeRegistry;
+pub use type_registry::{AddFieldError, ContentTypeRegistry};

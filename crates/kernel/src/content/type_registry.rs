@@ -35,6 +35,65 @@ struct ContentTypeRegistryInner {
     types: Cache<String, ContentTypeDefinition>,
 }
 
+/// Why a field could not be added to a content type.
+///
+/// The first two are things a person does at the admin screen, so both admin
+/// routes turn them into a message that names what was wrong. Everything else
+/// is a load or database failure and stays opaque to the user.
+#[derive(Debug, thiserror::Error)]
+pub enum AddFieldError {
+    /// The content type already has a field with this machine name.
+    ///
+    /// The `Display` text is what the admin screens show, so the wording lives
+    /// here rather than being written out again at each route.
+    #[error("A field with machine name {field_name} already exists on this type.")]
+    DuplicateFieldName {
+        /// The machine name that was already taken.
+        field_name: String,
+    },
+
+    /// The `field_type` string is not one the kernel knows.
+    ///
+    /// This used to fall through to `Text`, so a typo or a stale option in the
+    /// template silently stored a field of the wrong type.
+    #[error("Unknown field type: {field_type}")]
+    UnknownFieldType {
+        /// The unrecognised type string, as submitted.
+        field_type: String,
+    },
+
+    /// Loading the content type, or writing the new field list, failed.
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+/// Map a `field_type` form value to the field type it names.
+///
+/// `None` for anything unrecognised: the caller refuses rather than guessing.
+/// The strings are the `value` attributes of the Type select in
+/// `templates/admin/field-list.html`.
+fn parse_field_type(field_type: &str) -> Option<trovato_sdk::types::FieldType> {
+    use trovato_sdk::types::FieldType;
+
+    Some(match field_type {
+        "text" => FieldType::Text { max_length: None },
+        "text_long" => FieldType::TextLong,
+        "integer" => FieldType::Integer,
+        "float" => FieldType::Float,
+        "boolean" => FieldType::Boolean,
+        "date" => FieldType::Date,
+        "email" => FieldType::Email,
+        "record_reference" => FieldType::RecordReference(String::new()),
+        "compound" => FieldType::Compound {
+            allowed_types: vec![],
+            min_items: None,
+            max_items: None,
+        },
+        "blocks" => FieldType::Blocks,
+        _ => return None,
+    })
+}
+
 /// Name the JSON shape of a value, for diagnostics.
 fn json_shape(value: &serde_json::Value) -> &'static str {
     match value {
@@ -354,67 +413,53 @@ impl ContentTypeRegistry {
     }
 
     /// Add a field to a content type.
+    ///
+    /// This is the single place the "no two fields with one machine name" rule
+    /// lives. Both admin routes call it and map [`AddFieldError`] to a message;
+    /// anything else that adds a field inherits the same refusal rather than
+    /// repeating the check.
     pub async fn add_field(
         &self,
         type_name: &str,
         field_name: &str,
         field_label: &str,
         field_type: &str,
-    ) -> Result<()> {
-        use trovato_sdk::types::FieldType;
-
+    ) -> Result<(), AddFieldError> {
         let mut def = self
             .get_or_load(type_name)
             .await?
             .context("content type not found")?;
 
-        // Parse field type
-        let ft = match field_type {
-            "text" => FieldType::Text { max_length: None },
-            "text_long" => FieldType::TextLong,
-            "integer" => FieldType::Integer,
-            "float" => FieldType::Float,
-            "boolean" => FieldType::Boolean,
-            "date" => FieldType::Date,
-            "email" => FieldType::Email,
-            "record_reference" => FieldType::RecordReference(String::new()),
-            "compound" => FieldType::Compound {
-                allowed_types: vec![],
-                min_items: None,
-                max_items: None,
-            },
-            "blocks" => FieldType::Blocks,
-            _ => FieldType::Text { max_length: None },
-        };
+        // Compared with `==`, which is how `update_field`, `delete_field` and
+        // every other field lookup in the kernel compares a machine name.
+        // `is_valid_machine_name` confines admin-supplied names to lowercase
+        // ASCII before they get here, so there is no case to fold.
+        if def.fields.iter().any(|f| f.field_name == field_name) {
+            return Err(AddFieldError::DuplicateFieldName {
+                field_name: field_name.to_string(),
+            });
+        }
 
-        // Create field definition
-        let field = FieldDefinition {
+        let field_type =
+            parse_field_type(field_type).ok_or_else(|| AddFieldError::UnknownFieldType {
+                field_type: field_type.to_string(),
+            })?;
+
+        def.fields.push(FieldDefinition {
             field_name: field_name.to_string(),
-            field_type: ft,
+            field_type,
             label: field_label.to_string(),
             required: false,
             cardinality: 1,
             settings: serde_json::Value::Object(serde_json::Map::new()),
             personal_data: false,
-        };
-
-        // Add to existing fields
-        def.fields.push(field);
-
-        // Update database
-        let settings = serde_json::json!({
-            "fields": def.fields,
         });
 
-        sqlx::query("UPDATE item_type SET settings = $1 WHERE type = $2")
-            .bind(&settings)
-            .bind(type_name)
-            .execute(&self.inner.pool)
-            .await
-            .context("failed to update item_type")?;
-
-        // Update cache
-        self.inner.types.insert(type_name.to_string(), def);
+        // Through `persist_fields`, which merges into the existing settings.
+        // This used to build `{"fields": ...}` and write it over the whole
+        // column, so adding a field dropped `title_label`, `published_default`
+        // and every other settings key the type carried.
+        self.persist_fields(type_name, &def).await?;
 
         info!(type_name = %type_name, field = %field_name, "field added");
         Ok(())
