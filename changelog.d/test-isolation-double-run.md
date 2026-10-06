@@ -24,8 +24,10 @@ shared `page` content type through the admin field form, which appends to
 `settings->fields` without checking for a name already there, and never took it
 away; three copies of that field in, the content-translation form rendered none
 of the type's fields and a test with nothing to do with search configuration
-failed. Two other tests created a content type per run and left it, and every
-content type shows on `/admin/structure/types` and `/admin/content/add`.
+failed. Six other tests made a content type per run and left it, and every content
+type shows on `/admin/structure/types` and `/admin/content/add`; four of those
+six were found by the new CI guard on this branch's own first run, after both
+passes had gone green.
 
 The fixes are at those causes rather than at the symptoms. `common::defer_cleanup`
 registers teardown where the state is created and runs it from `run_test`,

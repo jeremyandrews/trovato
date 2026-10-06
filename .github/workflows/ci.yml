@@ -344,11 +344,13 @@ jobs:
       # on the symptom: a pass that adds rows is a pass that has stopped cleaning
       # up after itself, however long the page it feeds takes to give out.
       #
-      # A small allowance on the counts rather than zero, for the fixed-name
-      # roles a few tests upsert and share (`ai_config_role`,
-      # `comment_test_role`) and for a type a new test may legitimately add once.
-      # Neither grows run over run. `page`'s field list gets no allowance: it is
-      # a fixed shape that a test has no business changing permanently.
+      # No allowance on any of the three: measured flat on all three shards once
+      # the leaks were fixed (roles 7 -> 7, item_type 13 -> 13, 11 -> 11 and
+      # 10 -> 10, page fields 1 -> 1). A fixture that a test needs permanently is
+      # created on the first pass and found on the second, so it is flat too —
+      # growth between two passes means something was not cleaned up, and the
+      # `check` calls keep an allowance argument only so that a future exception
+      # has somewhere to be written down with its reason.
       - name: The shared fixture must not grow across a pass
         run: |
           set -euo pipefail
@@ -364,16 +366,16 @@ jobs:
           }
 
           AFTER_ROLES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM roles')
-          check roles "$SNAP_ROLES" "$AFTER_ROLES" 5 \
+          check roles "$SNAP_ROLES" "$AFTER_ROLES" 0 \
             "A test created a role and did not remove it: make it go through common::create_test_role."
-          if [ "$AFTER_ROLES" -gt "$((SNAP_ROLES + 5))" ]; then
+          if [ "$AFTER_ROLES" -gt "$SNAP_ROLES" ]; then
             psql "$DATABASE_URL" -c "SELECT name, created FROM roles ORDER BY created DESC LIMIT 20"
           fi
 
           AFTER_TYPES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM item_type')
-          check item_type "$SNAP_TYPES" "$AFTER_TYPES" 1 \
+          check item_type "$SNAP_TYPES" "$AFTER_TYPES" 0 \
             "A test created a content type and did not remove it: register TestApp::cleanup_content_type_on_exit."
-          if [ "$AFTER_TYPES" -gt "$((SNAP_TYPES + 1))" ]; then
+          if [ "$AFTER_TYPES" -gt "$SNAP_TYPES" ]; then
             psql "$DATABASE_URL" -c "SELECT type, plugin FROM item_type ORDER BY type"
           fi
 

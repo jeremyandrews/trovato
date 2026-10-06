@@ -3813,6 +3813,7 @@ fn e2e_api_comment_crud() {
 
         // Ensure content type exists
         let type_name = format!("commenttest_{}", &uuid::Uuid::now_v7().to_string()[..8]);
+        app.cleanup_content_type_on_exit(&type_name);
         sqlx::query(
             "INSERT INTO item_type (type, label, description, plugin, settings)
          VALUES ($1, 'Comment Test', 'For testing', 'test', '{}'::jsonb)
@@ -4041,6 +4042,7 @@ fn e2e_api_comment_validation() {
 
         // Ensure content type exists
         let type_name = format!("commentval_{}", &uuid::Uuid::now_v7().to_string()[..8]);
+        app.cleanup_content_type_on_exit(&type_name);
         sqlx::query(
             "INSERT INTO item_type (type, label, description, plugin, settings)
          VALUES ($1, 'Comment Val', 'For testing', 'test', '{}'::jsonb)
@@ -4161,6 +4163,7 @@ fn e2e_admin_comment_moderation() {
 
         // Create content type and item
         let type_name = format!("commentmod_{}", &uuid::Uuid::now_v7().to_string()[..8]);
+        app.cleanup_content_type_on_exit(&type_name);
         sqlx::query(
             "INSERT INTO item_type (type, label, description, plugin, settings)
          VALUES ($1, 'Comment Mod', 'For testing', 'test', '{}'::jsonb)
