@@ -69,7 +69,7 @@ async fn fresh_pool() -> PgPool {
 
 /// A cron service with the native embed drain wired (provider + vector store).
 async fn embed_cron(pool: PgPool) -> CronService {
-    let redis = redis::Client::open("redis://127.0.0.1:6379").expect("redis client");
+    let redis = redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
     let mut cron = CronService::new(redis, pool.clone());
     cron.set_ai_providers(std::sync::Arc::new(AiProviderService::new(pool.clone())));
     // Construct a pgvector store (self-reports availability; unavailable in CI).

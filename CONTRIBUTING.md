@@ -75,10 +75,14 @@ lock, as the existing seeders do.
 
 Integration tests need PostgreSQL and Redis. `docker compose up` starts both.
 
-Run them against a **fresh** database, and drop and recreate it between full
-runs. A few tests use fixed fixture names and assert exact row counts without
-cleaning up, so they pass the first time and fail the second. See
-KNOWN-ISSUES.md.
+The database does not have to be fresh, and you do not have to migrate it:
+`createdb trovato_test`, point `DATABASE_URL` at it, and `cargo test --all` does
+the rest. Running the suite twice against that same database has to pass too —
+CI runs each shard's targets twice for exactly that reason — so a test owns
+whatever it creates. Give fixtures unique names (`common::username`), make roles
+with `common::create_test_role` so they are removed again, and register anything
+else that outlives the test with `common::defer_cleanup` at the point you create
+it rather than at the bottom of the body, where a failing assertion skips it.
 
 ## Changelog entries
 

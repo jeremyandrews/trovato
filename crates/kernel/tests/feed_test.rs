@@ -173,8 +173,7 @@ async fn delete_items(app: &TestApp, ids: &[Uuid]) {
 /// `SessionManagerLayer` the application wraps its router in; without it every
 /// request fails extraction rather than being treated as anonymous.
 async fn feed_router(app: &TestApp, query: &GatherQuery) -> axum::Router {
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis_url = trovato_test_utils::env::redis_url();
     let session_layer = trovato_kernel::session::create_session_layer(
         &redis_url,
         tower_sessions::cookie::SameSite::Strict,

@@ -32,9 +32,9 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use common::{TestApp, run_test, test_ip_for};
+use common::{TestApp, run_test, test_ip_for, user_holding};
+use trovato_kernel::models::CreateItem;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
-use trovato_kernel::models::{CreateItem, Role};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
@@ -65,6 +65,7 @@ async fn build_app() -> TestApp {
     trovato_test_utils::env::load_dotenv();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    common::ensure_database_migrated(&database_url).await;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
         .connect(&database_url)
@@ -135,53 +136,6 @@ async fn ensure_person_type(app: &TestApp) {
         )
         .await
         .ok();
-}
-
-/// Unique username, so parallel test binaries never share a user, a rate-limit
-/// bucket, or a password.
-fn username(prefix: &str) -> String {
-    format!("{prefix}-{}", Uuid::now_v7().simple())
-}
-
-async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
-    sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
-        .bind(name)
-        .fetch_one(&app.db)
-        .await
-        .expect("test user should exist")
-}
-
-/// Grant `permissions` to `user_id` through a role, the way a real site does.
-///
-/// The same two helpers `admin_permission_gates_test.rs` uses, copied rather
-/// than moved into `common/mod.rs`: that module is shared by every integration
-/// binary, and this change has no business recompiling all of them.
-async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) {
-    let role = Role::create(&app.db, &format!("fieldwrite-{}", Uuid::now_v7().simple()))
-        .await
-        .expect("create role");
-    for permission in permissions {
-        Role::add_permission(&app.db, role.id, permission)
-            .await
-            .expect("add permission to role");
-    }
-    Role::assign_to_user(&app.db, user_id, role.id)
-        .await
-        .expect("assign role to user");
-    app.state.permissions().invalidate_user(user_id);
-}
-
-/// Create a non-superuser holding exactly `permissions`, and log them in.
-async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> (Uuid, String) {
-    let name = username(prefix);
-    app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
-        .await;
-    let id = user_id_of(app, &name).await;
-    if !permissions.is_empty() {
-        grant_via_role(app, id, permissions).await;
-    }
-    let cookies = app.login(&name, "test-password-123").await;
-    (id, cookies)
 }
 
 /// The permissions a content editor who may not see PII holds.

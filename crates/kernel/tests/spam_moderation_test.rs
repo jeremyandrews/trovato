@@ -108,7 +108,7 @@ fn background_state(pool: &PgPool, runtime: Arc<PluginRuntime>) -> RequestState 
 }
 
 fn cron_with(pool: PgPool, disp: Arc<TapDispatcher>) -> Arc<CronService> {
-    let redis = redis::Client::open("redis://127.0.0.1:6379").expect("redis client");
+    let redis = redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
     let mut cron = CronService::new(redis, pool);
     cron.set_tap_dispatcher(disp);
     Arc::new(cron)
@@ -127,8 +127,14 @@ async fn clean_queue(pool: &PgPool) {
 /// Written with plain SQL rather than the services, because this binary builds its
 /// own runtime and pool rather than using the shared `TestApp`.
 async fn seed_comment(pool: &PgPool, status: i16) -> uuid::Uuid {
-    let suffix = uuid::Uuid::now_v7().simple().to_string();
-    let item_type = format!("spam_test_{}", &suffix[..8]);
+    // ONE fixture type for the whole file, not one per call. The name used to
+    // carry a per-call suffix, which bought nothing — nothing here reads the
+    // type back and the comment is found by its id — while leaving another
+    // `item_type` row behind on every run, and every content type shows on
+    // `/admin/structure/types` and `/admin/content/add`. This file builds its
+    // own runtime rather than using `run_test`, so it has no `defer_cleanup` to
+    // register with; not creating the row is better than cleaning it up.
+    let item_type = "spam_test_fixture";
     let now = chrono::Utc::now().timestamp();
 
     sqlx::query(
@@ -136,7 +142,7 @@ async fn seed_comment(pool: &PgPool, status: i16) -> uuid::Uuid {
          VALUES ($1, 'Spam Test', 'fixture', true, 'Title', 'core', '{}'::jsonb) \
          ON CONFLICT (type) DO NOTHING",
     )
-    .bind(&item_type)
+    .bind(item_type)
     .execute(pool)
     .await
     .expect("seed item type");
@@ -155,7 +161,7 @@ async fn seed_comment(pool: &PgPool, status: i16) -> uuid::Uuid {
          VALUES ($1, $2, 'Spam Test Item', 1, $3, $4, $4, 0, 0, '{}'::jsonb, $5, 'en')",
     )
     .bind(item_id)
-    .bind(&item_type)
+    .bind(item_type)
     .bind(author)
     .bind(now)
     .bind(trovato_kernel::models::stage::LIVE_STAGE_ID)

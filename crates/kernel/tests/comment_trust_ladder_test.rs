@@ -100,15 +100,8 @@ async fn commenter(app: &TestApp) -> (String, Uuid) {
         .await
         .expect("find user");
 
-    let role_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO roles (id, name) VALUES ($1, $2) \
-         ON CONFLICT (name) DO UPDATE SET name = $2 RETURNING id",
-    )
-    .bind(Uuid::now_v7())
-    .bind(format!("ladder_role_{}", Uuid::now_v7().simple()))
-    .fetch_one(&app.db)
-    .await
-    .expect("create role");
+    let role_id =
+        common::create_test_role(app, &format!("ladder_role_{}", Uuid::now_v7().simple())).await;
 
     for permission in ["post comments", "access content"] {
         sqlx::query(

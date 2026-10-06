@@ -56,6 +56,7 @@ static SITE_MAIL_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 async fn install_fixture() {
     trovato_test_utils::env::load_dotenv();
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    common::ensure_database_migrated(&database_url).await;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
         .connect(&database_url)

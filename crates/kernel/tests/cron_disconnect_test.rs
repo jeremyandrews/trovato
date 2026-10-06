@@ -29,9 +29,8 @@ fn a_disconnected_client_does_not_cancel_the_cron_run() {
         let app = common::shared_app().await;
         let key = app.state.runtime().cron_key.clone();
 
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let client = redis::Client::open(redis_url).expect("redis client");
+        let client =
+            redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
         let mut conn = client
             .get_multiplexed_async_connection()
             .await

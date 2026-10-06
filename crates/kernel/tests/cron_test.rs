@@ -24,7 +24,7 @@ fn test_last_cron_run_serde() {
 
 #[test]
 fn test_queue_key_format() {
-    let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+    let client = redis::Client::open(trovato_test_utils::env::redis_url()).unwrap();
     let queue = RedisQueue::new(client);
 
     // Test that queue creation doesn't panic

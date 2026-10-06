@@ -44,6 +44,7 @@ async fn build_app() -> TestApp {
     trovato_test_utils::env::load_dotenv();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    common::ensure_database_migrated(&database_url).await;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
         .connect(&database_url)
@@ -91,15 +92,7 @@ async fn plain_reader(app: &TestApp) -> String {
 /// being an administrator, who holds everything implicitly.
 async fn grant_permission(app: &TestApp, user: Uuid, permission: &str) {
     let role = format!("book_role_{user}");
-    let role_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO roles (id, name) VALUES ($1, $2) \
-         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
-    )
-    .bind(Uuid::now_v7())
-    .bind(&role)
-    .fetch_one(&app.db)
-    .await
-    .unwrap();
+    let role_id = common::create_test_role(app, &role).await;
     sqlx::query(
         "INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) \
          ON CONFLICT DO NOTHING",

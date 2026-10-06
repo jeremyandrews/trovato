@@ -11,6 +11,10 @@
 //! test instead.
 
 pub mod env;
+/// A Postgres database created for one test and dropped when that test ends.
+pub mod scratch_db;
+
+pub use scratch_db::ScratchDb;
 
 use serde_json::Value as JsonValue;
 use uuid::Uuid;

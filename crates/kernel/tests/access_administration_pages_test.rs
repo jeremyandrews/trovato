@@ -213,6 +213,7 @@ fn the_migration_grants_admission_to_a_role_holding_administer_site() {
         )
         .await
         .expect("create role");
+        common::track_test_role(&app.db, role.id);
         Role::add_permission(&app.db, role.id, "administer site")
             .await
             .expect("grant administer site");

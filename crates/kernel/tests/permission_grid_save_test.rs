@@ -201,6 +201,7 @@ async fn fixture(app: &TestApp) -> (String, Uuid, String) {
     let role = Role::create(&app.db, &format!("gridsave_{tag}"))
         .await
         .expect("create role");
+    common::track_test_role(&app.db, role.id);
     let name = format!("gridsave_{tag}");
     let cookies = app
         .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
@@ -353,6 +354,7 @@ async fn login_delegate(app: &TestApp, prefix: &str, extra: &[&str]) -> (String,
     let role = Role::create(&app.db, &format!("{prefix}_{tag}"))
         .await
         .expect("create role");
+    common::track_test_role(&app.db, role.id);
     for permission in std::iter::once(&"administer users").chain(extra) {
         seed_grant(app, role.id, permission).await;
     }
@@ -414,6 +416,7 @@ fn a_delegate_cannot_revoke_a_permission_they_lack() {
         let other = Role::create(&app.db, &format!("griddlgrevother_{tag}"))
             .await
             .expect("create role");
+        common::track_test_role(&app.db, other.id);
         seed_grant(app, other.id, "administer site").await;
 
         let status = save_grid(app, &cookies, other.id, |_| false).await;
@@ -460,6 +463,7 @@ fn a_delegate_can_still_grant_a_permission_they_hold() {
         let target = Role::create(&app.db, &format!("griddlgoktarget_{tag}"))
             .await
             .expect("create role");
+        common::track_test_role(&app.db, target.id);
 
         let status = save_grid(app, &cookies, target.id, |name| name == "access content").await;
         assert_eq!(status, StatusCode::SEE_OTHER);

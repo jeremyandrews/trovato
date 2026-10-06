@@ -360,3 +360,52 @@ CI splits the integration tests across three shards with three separate
 databases. A local `cargo test --all` runs every target against one database, so
 it catches cross-file interference through shared fixtures that CI can miss. The
 local run is the stronger gate; see CONTRIBUTING.md.
+
+Two things run the other way, and CI is the stronger gate for them: each shard
+runs its targets **twice** against one database and fails if a pass grew the
+shared fixture, and the database it starts from is never migrated, so the harness
+has to prepare it. A single local `cargo test --all` demonstrates neither.
+
+### The admin field form accepts a field name the type already has
+
+`POST /admin/structure/types/{type}/fields/add` appends to `settings->fields`
+without checking whether that `field_name` is already in the list, so a type can
+end up with two or three fields of the same name. Found 2026-10-05 from the test
+side: a test that added `search_test_field` to `page` on every run reached three
+copies, and at that point the content-translation form rendered none of the
+type's fields at all. The test now puts the type back, so the suite is not
+affected; the form still takes the duplicate, and whoever does that screen next
+should make it refuse. Not fixed here because this was a test-isolation change
+and the fix belongs to the form.
+
+### What the suite needs, and what it waits for
+
+Re-inventoried 2026-10-05, when `cargo test --all` was made runnable twice:
+
+**No test reaches the network.** Postgres and Redis are the only services, and
+everything else is served in-process: `update_status_test` and
+`ai_cost_pricing_test` bind an axum app to `127.0.0.1:0` and point the kernel at
+it, which is why `RuntimeConfig::update_check_endpoint` is configurable at all.
+`embed_async_test` names `http://10.255.255.1`, which is deliberate and opens no
+socket — it is rejected by the SSRF guard inside `embed` before the request is
+made. An earlier version of this list named two tests in `argus_notify_test.rs`
+and `argus_pipeline_test.rs`; Argus has its own repository and those files are
+gone. There are therefore no `#[ignore]`d network tests either: the only two
+`#[ignore]`s in the tree are the volume benchmarks in
+`record_reference_bench.rs`.
+
+**Two tests sleep, both bounded.** `url_alias_test` waits 10ms so that two
+aliases get different UUIDv7 milliseconds, which is a real ordering dependency on
+the clock rather than a guess about speed. `cron_disconnect_test` polls a Redis
+key every 100ms for at most 100 tries, which is a poll with a ceiling rather than
+a fixed wait. Neither is a timing assumption that a loaded machine can break.
+
+**Three assertions do measure elapsed time**, all in `plugin_queue_v2_test`: that
+a CPU-burning job really ran to its 5-second budget (floor 3.5s), that a drain
+pass stops at its own budget (ceiling 12.5s), and that the drain abandons a job
+that will not return (ceiling 5s). Measured on an 18-core machine at load
+average 3.7 and again at 44.8, they came in at 4.97/4.85s, 4.96/4.93s and
+2.02/2.29s — the same values at both loads, so they are measuring the code. If
+they ever do start failing on a loaded machine, the margins to widen are the two
+ceilings, not the floor: load delays a job, which pushes the first measurement
+away from its bound and the other two toward theirs.

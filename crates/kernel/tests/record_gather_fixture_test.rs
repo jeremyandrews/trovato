@@ -44,6 +44,7 @@ fn plugins_dir() -> PathBuf {
 }
 
 fn database_url() -> String {
+    trovato_test_utils::env::load_dotenv();
     std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:5432/trovato".to_string())
 }
@@ -183,6 +184,13 @@ async fn lightweight_record_gather_enforces_published_and_field_access() {
     let pool = sqlx::postgres::PgPool::connect(&database_url())
         .await
         .expect("connect to test database");
+    // This file builds no `TestApp`, so nothing else here would migrate: on a
+    // database that has never been migrated it is `record_event` that does not
+    // exist, and the failure reads as a missing fixture rather than a missing
+    // schema. Idempotent, and the migrator takes its own lock.
+    trovato_kernel::db::run_migrations(&pool)
+        .await
+        .expect("migrate the test database");
     let published = Uuid::now_v7();
     let unpublished = Uuid::now_v7();
     seed(&pool, published, unpublished).await;
