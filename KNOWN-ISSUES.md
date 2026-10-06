@@ -366,18 +366,6 @@ runs its targets **twice** against one database and fails if a pass grew the
 shared fixture, and the database it starts from is never migrated, so the harness
 has to prepare it. A single local `cargo test --all` demonstrates neither.
 
-### The admin field form accepts a field name the type already has
-
-`POST /admin/structure/types/{type}/fields/add` appends to `settings->fields`
-without checking whether that `field_name` is already in the list, so a type can
-end up with two or three fields of the same name. Found 2026-10-05 from the test
-side: a test that added `search_test_field` to `page` on every run reached three
-copies, and at that point the content-translation form rendered none of the
-type's fields at all. The test now puts the type back, so the suite is not
-affected; the form still takes the duplicate, and whoever does that screen next
-should make it refuse. Not fixed here because this was a test-isolation change
-and the fix belongs to the form.
-
 ### What the suite needs, and what it waits for
 
 Re-inventoried 2026-10-05, when `cargo test --all` was made runnable twice:

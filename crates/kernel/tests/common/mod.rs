@@ -549,11 +549,14 @@ impl TestApp {
     /// current test ends, row and registry entry alike.
     ///
     /// For a test that modifies a type the whole suite shares. `page` is the one
-    /// that matters: the admin field form appends to `settings->fields` without
-    /// checking for a name it already has, so a test that adds a field there and
-    /// does not take it away again adds another copy on every run. Four runs in
-    /// gave `page` three `search_test_field` entries, and the translation form
-    /// stopped rendering any of the type's fields at all.
+    /// that matters: a test that adds a field there and does not take it away
+    /// again leaves it for every later test and every later run. It used to
+    /// leave another copy of the same field each time, because the admin form
+    /// appended without checking for a name the type already had, and four runs
+    /// in `page` had three `search_test_field` entries and the translation form
+    /// stopped rendering any of the type's fields at all. The registry refuses
+    /// the duplicate now, so the second add fails rather than accumulating; the
+    /// field still has to go away again, which is what this does.
     pub async fn restore_content_type_on_exit(&self, machine_name: &str) {
         let row: Option<(String, Option<String>, serde_json::Value)> =
             sqlx::query_as("SELECT label, description, settings FROM item_type WHERE type = $1")

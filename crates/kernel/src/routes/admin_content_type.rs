@@ -7,6 +7,7 @@ use axum::{Form, Json, Router};
 use serde::Deserialize;
 use tower_sessions::Session;
 
+use crate::content::AddFieldError;
 use crate::form::csrf::generate_csrf_token;
 use crate::state::AppState;
 
@@ -422,41 +423,7 @@ async fn add_field(
     }
 
     if !errors.is_empty() {
-        let Some(content_type) = state.content_types().get(&type_name) else {
-            return render_not_found();
-        };
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        // Save form state for AJAX callbacks
-        let form_state = crate::form::FormState::new(
-            format!("manage_fields_{type_name}"),
-            form_build_id.clone(),
-        );
-        if let Err(e) = state.forms().save_state(&form_build_id, &form_state).await {
-            tracing::warn!(error = %e, "failed to save form state");
-        }
-
-        let mut context = tera::Context::new();
-        context.insert("content_type", &content_type);
-        context.insert("fields", &content_type.fields);
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "label": form.label,
-                "name": form.name,
-                "field_type": form.field_type,
-            }),
-        );
-        context.insert(
-            "path",
-            &format!("/admin/structure/types/{type_name}/fields"),
-        );
-
-        return render_admin_template(&state, "admin/field-list.html", context).await;
+        return rerender_field_list(&state, &session, &type_name, &form, errors).await;
     }
 
     // Add the field
@@ -473,11 +440,60 @@ async fn add_field(
             );
             Redirect::to(&format!("/admin/structure/types/{type_name}/fields")).into_response()
         }
+        // The two the person at the screen can fix are shown to them. The
+        // registry owns the wording, so it is not written out again here.
+        Err(
+            e @ (AddFieldError::DuplicateFieldName { .. } | AddFieldError::UnknownFieldType { .. }),
+        ) => rerender_field_list(&state, &session, &type_name, &form, vec![e.to_string()]).await,
         Err(e) => {
             tracing::error!(error = %e, "failed to add field");
             render_server_error("Failed to add field.")
         }
     }
+}
+
+/// Re-render the manage-fields page with `errors` shown and the submitted
+/// values kept, so a refused add does not make the person type it again.
+async fn rerender_field_list(
+    state: &AppState,
+    session: &Session,
+    type_name: &str,
+    form: &FieldFormData,
+    errors: Vec<String>,
+) -> Response {
+    let Some(content_type) = state.content_types().get(type_name) else {
+        return render_not_found();
+    };
+    let csrf_token = generate_csrf_token(session).await;
+    let form_build_id = uuid::Uuid::new_v4().to_string();
+
+    // Save form state for AJAX callbacks
+    let form_state =
+        crate::form::FormState::new(format!("manage_fields_{type_name}"), form_build_id.clone());
+    if let Err(e) = state.forms().save_state(&form_build_id, &form_state).await {
+        tracing::warn!(error = %e, "failed to save form state");
+    }
+
+    let mut context = tera::Context::new();
+    context.insert("content_type", &content_type);
+    context.insert("fields", &content_type.fields);
+    context.insert("csrf_token", &csrf_token);
+    context.insert("form_build_id", &form_build_id);
+    context.insert("errors", &errors);
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "label": form.label,
+            "name": form.name,
+            "field_type": form.field_type,
+        }),
+    );
+    context.insert(
+        "path",
+        &format!("/admin/structure/types/{type_name}/fields"),
+    );
+
+    render_admin_template(state, "admin/field-list.html", context).await
 }
 
 // =============================================================================
@@ -913,13 +929,23 @@ pub(crate) async fn handle_ajax_add_field(
     }
 
     // Add the field
-    if let Err(e) = state
+    match state
         .content_types()
         .add_field(type_name, name, label, field_type)
         .await
     {
-        tracing::error!(error = %e, "failed to add field via AJAX");
-        return Json(AjaxResponse::new().alert("Failed to add field.")).into_response();
+        Ok(()) => {}
+        // Same two user-fixable refusals as the form post, same wording: the
+        // registry owns the message.
+        Err(
+            e @ (AddFieldError::DuplicateFieldName { .. } | AddFieldError::UnknownFieldType { .. }),
+        ) => {
+            return Json(AjaxResponse::new().alert(e.to_string())).into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to add field via AJAX");
+            return Json(AjaxResponse::new().alert("Failed to add field.")).into_response();
+        }
     }
 
     tracing::info!(content_type = %type_name, field = %name, "field added via AJAX");

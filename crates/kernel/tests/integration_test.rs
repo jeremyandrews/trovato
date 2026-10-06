@@ -2686,11 +2686,23 @@ fn e2e_admin_add_search_config() {
         let field_name = "search_test_field";
 
         // STEP 0: arrange to give `page` back. This test adds a field to a type
-        // the whole suite shares, through a form that appends without checking
-        // for a field name it already has, so without this the type grows a
-        // duplicate `search_test_field` on every run — and at three copies the
-        // translation form rendered none of the type's fields at all.
+        // the whole suite shares, so without this the field is left behind for
+        // every later test and every later run. It used to leave another copy of
+        // it each time, because the form appended without checking for a name
+        // the type already had, and four runs in `page` had three
+        // `search_test_field` entries.
         app.restore_content_type_on_exit(type_name).await;
+
+        // And take the field away before adding it, so STEP 1 exercises the add
+        // rather than colliding with a copy an earlier run left behind. The form
+        // refuses a name the type already has, so on a database that ran this
+        // test before the refusal landed the add would be the thing that fails.
+        // The snapshot above is already taken, so whatever was there comes back.
+        let _ = app
+            .state
+            .content_types()
+            .delete_field(type_name, field_name)
+            .await;
 
         let cookies = app
             .create_and_login_admin("admin_search_2", "password123", "search2@test.com")
