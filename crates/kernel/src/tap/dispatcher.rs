@@ -777,6 +777,18 @@ mod tests {
     async fn fuel_exhaustion_traps_when_enabled() {
         // Tiny fuel budget: a spin loop exhausts it and traps well before the
         // generous epoch deadline, proving fuel works when opted in.
+        //
+        // The assertion names wasmtime's out-of-fuel trap rather than accepting
+        // any `Failed`, because `Failed` is also what a memory-limit breach, a
+        // failed instantiation and every ordinary guest trap produce. Accepting
+        // all of them cannot distinguish "the fuel bound fired" from "the call
+        // broke for some other reason", which is the single thing this test
+        // exists to establish. Two of the advisories that moved the runtime to
+        // wasmtime 49 were fuel accounting being dropped on some paths
+        // (RUSTSEC-2026-0315, RUSTSEC-2026-0316), and this is the test that has
+        // to notice if that ever regresses: a spin loop whose fuel stopped
+        // being charged would run on to the wall clock ceiling instead, which
+        // is a different error entirely.
         let limits = ResourceLimits {
             enable_fuel: true,
             fuel_limit: 10_000,
@@ -785,7 +797,7 @@ mod tests {
         let mut runtime = PluginRuntime::new(&config_with_limits(limits)).unwrap();
         let plugin = load_wat_plugin(&mut runtime, "fuel_spin", SPIN_LOOP_WAT);
 
-        let res = instantiate_and_call_export(
+        let err = match instantiate_and_call_export(
             &runtime,
             &plugin,
             "run",
@@ -794,10 +806,15 @@ mod tests {
             10,
             std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
         )
-        .await;
+        .await
+        {
+            Err(ExportCallError::Failed(e)) => format!("{e:#}"),
+            other => panic!("fuel exhaustion must trap the call, got {other:?}"),
+        };
         assert!(
-            matches!(res, Err(ExportCallError::Failed(_))),
-            "fuel exhaustion must trap the call"
+            err.contains("all fuel consumed by WebAssembly"),
+            "the trap must be wasmtime's out-of-fuel trap and not some other \
+             failure dressed as one, got: {err}"
         );
     }
 
