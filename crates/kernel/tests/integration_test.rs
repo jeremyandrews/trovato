@@ -424,6 +424,9 @@ fn e2e_create_content_type() {
         // Use unique name per test run to avoid conflicts with parallel tests
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let machine_name = format!("test_{}", &unique_id[..16]);
+        // Unique per run means one more of them in the database per run, and
+        // every content type shows on `/admin/structure/types`.
+        app.cleanup_content_type_on_exit(&machine_name);
 
         // Login first
         let login_cookies = app
@@ -517,6 +520,7 @@ fn e2e_add_field_to_content_type() {
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let type_name = format!("test_{}", &unique_id[..16]);
         let field_name = format!("field_{}", &unique_id[8..16]);
+        app.cleanup_content_type_on_exit(&type_name);
 
         // Login first
         let login_cookies = app
@@ -2680,6 +2684,13 @@ fn e2e_admin_add_search_config() {
         // Use the existing 'page' content type
         let type_name = "page";
         let field_name = "search_test_field";
+
+        // STEP 0: arrange to give `page` back. This test adds a field to a type
+        // the whole suite shares, through a form that appends without checking
+        // for a field name it already has, so without this the type grows a
+        // duplicate `search_test_field` on every run — and at three copies the
+        // translation form rendered none of the type's fields at all.
+        app.restore_content_type_on_exit(type_name).await;
 
         let cookies = app
             .create_and_login_admin("admin_search_2", "password123", "search2@test.com")

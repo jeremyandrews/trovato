@@ -109,10 +109,11 @@ jobs:
   # should run `cargo test --all` locally — CI will not catch it for you.
   #
   # One thing this job DOES now catch that a single local run does not: each
-  # shard runs its targets TWICE against one database, and fails if a pass left
-  # roles behind. The database is not migrated beforehand either, so the harness
-  # has to prepare it. Those two properties — runnable again, runnable from a
-  # bare `createdb` — were invisible to every job here until they were added.
+  # shard runs its targets TWICE against one database, and fails if a pass
+  # grew the shared fixture. The database is not migrated beforehand either,
+  # so the harness has to prepare it. Those two properties — runnable again,
+  # runnable from a bare `createdb` — were invisible to every job here until
+  # they were added.
   #
   # CAPACITY, when this job starts running out of disk again. Shard 1 also
   # carries the unit and doc tests and finishes at ~13 GB free, against 19-20 GB
@@ -276,19 +277,36 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: ./scripts/ci-test-shard.sh
 
-      # The role count between the two passes, for the guard after them.
+      # A snapshot of the rows that a pass must not add to, for the guard after
+      # the second pass.
       #
-      # `/admin/people/permissions` renders every permission for every role on
-      # one page, so roles left behind are not inert: they grow a page the suite
-      # reads under a 4 MB cap until it no longer fits, which is how this
-      # failure announced itself. Counting is how the fix stays fixed — green
-      # twice says nothing about the fifth run.
-      - name: Record the role count between passes
+      # The point is that two green passes say nothing about the fifth. Each of
+      # these three is something a pass was quietly growing, and each fed a page
+      # or a form that eventually broke on the size of it rather than on
+      # anything to do with the test that failed:
+      #
+      #   roles        `/admin/people/permissions` renders every permission for
+      #                every role on one page, read under a 4 MB cap. About a
+      #                hundred roles a run; the cap gave out near five hundred.
+      #   item_type    `/admin/structure/types` and `/admin/content/add` list
+      #                every type there is, and two tests made one per run.
+      #   page fields  the admin field form appends to `settings->fields`
+      #                without checking for a name already there, so a test that
+      #                added a field to the shared `page` type added another copy
+      #                every run. Three copies in, the content-translation form
+      #                rendered none of the type's fields at all — four passes
+      #                was what it took to show up, which is exactly why this is
+      #                a guard on the growth and not on the symptom.
+      - name: Snapshot the shared fixture between passes
         run: |
           set -euo pipefail
           command -v psql >/dev/null 2>&1 || sudo apt-get install -y -qq postgresql-client
-          echo "ROLES_BETWEEN_PASSES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM roles')" \
-            >> "$GITHUB_ENV"
+          {
+            echo "SNAP_ROLES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM roles')"
+            echo "SNAP_TYPES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM item_type')"
+            echo "SNAP_PAGE_FIELDS=$(psql "$DATABASE_URL" -tAc \
+              "SELECT coalesce(jsonb_array_length(settings->'fields'), 0) FROM item_type WHERE type = 'page'")"
+          } >> "$GITHUB_ENV"
 
       # THE SECOND PASS, against the SAME database. This is the property, and
       # it is not "the suite passes" — it is "the suite passes again".
@@ -318,33 +336,58 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: ./scripts/ci-test-shard.sh
 
-      # A pass must not leave roles behind.
+      # A pass must not leave state behind.
       #
       # Two green passes prove the suite survives one repetition; they say
-      # nothing about the fifth, and the grid outgrew its 4 MB cap at around
-      # five hundred roles rather than at the second run. So the guard is on the
-      # growth, not on the symptom: a pass that adds roles is a pass that has
-      # stopped cleaning up after itself, whoever notices first.
+      # nothing about the fifth, and none of the three failures this guards
+      # against showed up on the second run. So the guard is on the growth, not
+      # on the symptom: a pass that adds rows is a pass that has stopped cleaning
+      # up after itself, however long the page it feeds takes to give out.
       #
-      # A small allowance rather than zero, for the fixed-name roles a few tests
-      # upsert and share (`ai_config_role`, `comment_test_role`); those are
-      # bounded by the number of such tests and do not grow run over run.
-      - name: Roles must not accumulate across a pass
+      # A small allowance on the counts rather than zero, for the fixed-name
+      # roles a few tests upsert and share (`ai_config_role`,
+      # `comment_test_role`) and for a type a new test may legitimately add once.
+      # Neither grows run over run. `page`'s field list gets no allowance: it is
+      # a fixed shape that a test has no business changing permanently.
+      - name: The shared fixture must not grow across a pass
         run: |
           set -euo pipefail
           command -v psql >/dev/null 2>&1 || sudo apt-get install -y -qq postgresql-client
-          AFTER=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM roles')
-          BEFORE="$ROLES_BETWEEN_PASSES"
-          echo "roles after pass 1: $BEFORE; after pass 2: $AFTER"
-          if [ "$AFTER" -gt "$((BEFORE + 5))" ]; then
-            echo "::error::a pass added $((AFTER - BEFORE)) roles ($BEFORE -> $AFTER)."
-            echo "A test created a role and did not remove it. Make it go through"
-            echo "common::create_test_role, or register common::track_test_role."
-            psql "$DATABASE_URL" -c \
-              "SELECT name, created FROM roles ORDER BY created DESC LIMIT 20"
-            exit 1
+          fail=0
+
+          check() {  # name before after allowance hint
+            echo "$1 after pass 1: $2; after pass 2: $3"
+            if [ "$3" -gt "$(($2 + $4))" ]; then
+              echo "::error::a pass added $(($3 - $2)) to $1 ($2 -> $3). $5"
+              fail=1
+            fi
+          }
+
+          AFTER_ROLES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM roles')
+          check roles "$SNAP_ROLES" "$AFTER_ROLES" 5 \
+            "A test created a role and did not remove it: make it go through common::create_test_role."
+          if [ "$AFTER_ROLES" -gt "$((SNAP_ROLES + 5))" ]; then
+            psql "$DATABASE_URL" -c "SELECT name, created FROM roles ORDER BY created DESC LIMIT 20"
           fi
-          echo "roles did not accumulate across the second pass."
+
+          AFTER_TYPES=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM item_type')
+          check item_type "$SNAP_TYPES" "$AFTER_TYPES" 1 \
+            "A test created a content type and did not remove it: register TestApp::cleanup_content_type_on_exit."
+          if [ "$AFTER_TYPES" -gt "$((SNAP_TYPES + 1))" ]; then
+            psql "$DATABASE_URL" -c "SELECT type, plugin FROM item_type ORDER BY type"
+          fi
+
+          AFTER_PAGE=$(psql "$DATABASE_URL" -tAc \
+            "SELECT coalesce(jsonb_array_length(settings->'fields'), 0) FROM item_type WHERE type = 'page'")
+          check "page fields" "$SNAP_PAGE_FIELDS" "$AFTER_PAGE" 0 \
+            "A test changed the shared 'page' type and did not put it back: register TestApp::restore_content_type_on_exit."
+          if [ "$AFTER_PAGE" -gt "$SNAP_PAGE_FIELDS" ]; then
+            psql "$DATABASE_URL" -c \
+              "SELECT f->>'field_name' FROM item_type, jsonb_array_elements(settings->'fields') f WHERE type = 'page'"
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "the shared fixture did not grow across the second pass."
 
       # Shared-fixture contamination guard.
       #

@@ -512,12 +512,71 @@ impl TestApp {
     }
 
     /// Clean up a specific test content type by machine name.
+    ///
+    /// The registry entry goes with the row: `AppState` fills the registry from
+    /// the database at construction and `/admin/structure/types` lists the
+    /// registry, so deleting only the row would leave this app advertising a
+    /// type that no longer exists.
     pub async fn cleanup_content_type(&self, machine_name: &str) {
         sqlx::query("DELETE FROM item_type WHERE type = $1")
             .bind(machine_name)
             .execute(&self.db)
             .await
             .ok();
+        self.state.content_types().invalidate(machine_name);
+    }
+
+    /// Delete the content type `machine_name` when the current test ends.
+    ///
+    /// For the tests that create a type through the admin UI: they name it
+    /// uniquely so they cannot collide, which also means every run leaves
+    /// another one behind, and `/admin/structure/types` and
+    /// `/admin/content/add` both list every type there is.
+    pub fn cleanup_content_type_on_exit(&self, machine_name: &str) {
+        let pool = self.db.clone();
+        let registry = std::sync::Arc::clone(self.state.content_types());
+        let machine_name = machine_name.to_string();
+        defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM item_type WHERE type = $1")
+                .bind(&machine_name)
+                .execute(&pool)
+                .await;
+            registry.invalidate(&machine_name);
+        });
+    }
+
+    /// Put the content type `machine_name` back the way it is now when the
+    /// current test ends, row and registry entry alike.
+    ///
+    /// For a test that modifies a type the whole suite shares. `page` is the one
+    /// that matters: the admin field form appends to `settings->fields` without
+    /// checking for a name it already has, so a test that adds a field there and
+    /// does not take it away again adds another copy on every run. Four runs in
+    /// gave `page` three `search_test_field` entries, and the translation form
+    /// stopped rendering any of the type's fields at all.
+    pub async fn restore_content_type_on_exit(&self, machine_name: &str) {
+        let row: Option<(String, Option<String>, serde_json::Value)> =
+            sqlx::query_as("SELECT label, description, settings FROM item_type WHERE type = $1")
+                .bind(machine_name)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or_else(|e| panic!("read '{machine_name}' before changing it: {e}"));
+
+        let Some((label, description, settings)) = row else {
+            // No such type yet: removing it again is the right restoration.
+            self.cleanup_content_type_on_exit(machine_name);
+            return;
+        };
+
+        let registry = std::sync::Arc::clone(self.state.content_types());
+        let machine_name = machine_name.to_string();
+        defer_cleanup(move || async move {
+            // `create` upserts the row AND refreshes the cached definition,
+            // which is what makes this a restoration rather than half of one.
+            let _ = registry
+                .create(&machine_name, &label, description.as_deref(), settings)
+                .await;
+        });
     }
 
     /// Send a request to the test application.

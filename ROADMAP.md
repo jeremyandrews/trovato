@@ -132,7 +132,7 @@ path, where it is rate-limited; from a cron tap or a queue worker it always fail
 database that was never dropped, starting from a database that was never
 migrated, and each CI shard runs its targets twice to keep it that way.
 
-Four things were in the way, and only the first was the one this entry
+Five things were in the way, and only the first was the one this entry
 described. Tests created roles and never removed them, about a hundred a run,
 and `/admin/people/permissions` renders every permission for every role on one
 page — so the page the permission-grid tests read under a 4 MB cap outgrew the
@@ -146,6 +146,13 @@ so `createdb` followed by `cargo test` collapsed at the first target that needed
 the shared app — CI hid that by migrating first, which it no longer does. And
 three files created a scratch database per test and dropped it on the last line,
 which left one behind on the server for every red run.
+
+A fifth only appeared on the fourth consecutive pass, and is why CI guards the
+growth rather than the green run: a test added a field to the shared `page`
+content type and never took it away, and three copies in, the
+content-translation form stopped rendering any of that type's fields. Each shard
+now snapshots the role count, the content type count and `page`'s field list
+between its two passes and fails if any of them climbed.
 
 ### The committed plugin binary
 
