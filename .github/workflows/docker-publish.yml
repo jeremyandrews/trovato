@@ -14,6 +14,18 @@ on:
       - '**/*.md'
   workflow_dispatch:
 
+# One publish per ref. A second run for the same ref would race the first over
+# the mutable tags (`nightly`, `latest`, `<major>.<minor>`) and the winner is
+# whichever finishes last, not whichever is newer. A single `v0.104.0` push
+# started two runs that raced on `0.104.0`, `0.104` and `latest`.
+#
+# Branch pushes cancel: only the newest commit on `main` is worth publishing.
+# Tag pushes do not, because a release is published once and cancelling it
+# leaves a half-pushed manifest behind.
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -47,6 +59,11 @@ jobs:
       - name: Compute version
         id: version
         run: |
+          # SC2193: shellcheck cannot see that `${{ github.ref }}` is a
+          # placeholder, so it reads the comparison as two fixed strings.
+          # SC2086: $GITHUB_OUTPUT and the version parts never contain spaces.
+          # SC2001: the sed call is clearer here than a parameter expansion.
+          # shellcheck disable=SC2193,SC2086,SC2001
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
             echo "is_release=true" >> $GITHUB_OUTPUT
@@ -63,7 +80,7 @@ jobs:
             echo "version=${NEXT}" >> $GITHUB_OUTPUT
             echo "is_release=false" >> $GITHUB_OUTPUT
           fi
-          echo "Computed version: $(cat $GITHUB_OUTPUT | grep version)"
+          echo "Computed version: $(grep version "$GITHUB_OUTPUT")"
 
   # Build per-platform images and push by digest
   build:
@@ -79,29 +96,21 @@ jobs:
         include:
           - platform: linux/amd64
             runner: ubuntu-latest
-          # arm64 only for release tags — too slow for nightlies
+          # Both platforms build on every run, nightly and release alike. arm64
+          # used to be release-only because it cross-built under QEMU and took
+          # over three hours; nightlies were published under release-shaped
+          # version tags carrying amd64 alone, and an arm64 consumer that
+          # tracks versions pulled one and got `no match for platform in
+          # manifest`. A native arm64 runner removes the reason to skip it.
           - platform: linux/arm64
-            runner: ubuntu-latest
-            release_only: true
+            runner: ubuntu-24.04-arm
     steps:
-      - name: Skip arm64 on nightly
-        if: matrix.release_only && needs.version.outputs.is_release != 'true'
-        run: echo "Skipping arm64 for nightly build" && exit 0
-        id: skip_check
-
       - uses: actions/checkout@v4
-        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
-
-      - name: Set up QEMU
-        if: "matrix.platform == 'linux/arm64' && !(matrix.release_only && needs.version.outputs.is_release != 'true')"
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
-        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -109,7 +118,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest
-        if: "!(matrix.release_only && needs.version.outputs.is_release != 'true')"
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -118,17 +126,15 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max
-        timeout-minutes: ${{ matrix.platform == 'linux/arm64' && 240 || 60 }}
+        timeout-minutes: 60
 
       - name: Export digest
-        if: steps.build.outcome == 'success'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
@@ -145,12 +151,37 @@ jobs:
       contents: read
       packages: write
     steps:
+      # Each artifact keeps its own directory, so the check below can tell
+      # which platform a digest came from. Merged into one directory they are
+      # just two opaque filenames.
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
           pattern: digests-*
-          merge-multiple: true
+
+      - name: Require a digest from both platforms
+        # `build` has `fail-fast: false` and this job needed only `build`, so a
+        # single failed or skipped leg used to reach here and publish a
+        # single-platform image under the full tag set. Nothing downstream
+        # noticed. Refuse to publish anything but a complete pair.
+        run: |
+          total=0
+          missing=""
+          for arch in amd64 arm64; do
+            dir="/tmp/digests/digests-${arch}"
+            count=$(find "$dir" -type f 2>/dev/null | wc -l | tr -d ' ')
+            echo "digests-${arch}: ${count} digest(s)"
+            total=$((total + count))
+            if [ "$count" -ne 1 ]; then
+              missing="${missing} digests-${arch} (${count})"
+            fi
+          done
+          if [ -n "$missing" ] || [ "$total" -ne 2 ]; then
+            echo "::error::Refusing to publish an incomplete manifest. Expected exactly two digests, one from digests-amd64 and one from digests-arm64; got ${total} total, wrong count for:${missing:- none}. Check the Build (linux/amd64) and Build (linux/arm64) jobs."
+            find /tmp/digests -type f -o -type d | sort >&2
+            exit 1
+          fi
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -173,11 +204,37 @@ jobs:
             type=raw,value=latest,enable=${{ needs.version.outputs.is_release }}
 
       - name: Create manifest list and push
-        working-directory: /tmp/digests
         run: |
+          # Each digest is an empty file named after the digest it stands for,
+          # one per platform directory.
+          refs=""
+          for digest in /tmp/digests/digests-*/*; do
+            refs="${refs} ${REGISTRY}/${IMAGE_NAME}@sha256:$(basename "$digest")"
+          done
+          echo "Merging:${refs}"
+          # SC2046/SC2086: both are argument lists and must word-split.
+          # shellcheck disable=SC2046,SC2086
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+            ${refs}
 
-      - name: Inspect image
+      - name: Verify the published image carries both platforms
+        # The last line of defence: assert against the registry what was
+        # actually published, not against what this run intended to publish.
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}
+          ref="${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+          docker buildx imagetools inspect "$ref" | tee /tmp/inspect.txt
+          missing=""
+          for platform in linux/amd64 linux/arm64; do
+            # `unknown/unknown` entries are provenance attestations and are
+            # expected alongside the real platforms; they are simply not matched.
+            if ! grep -qE "^[[:space:]]*Platform:[[:space:]]+${platform}[[:space:]]*$" /tmp/inspect.txt; then
+              missing="${missing} ${platform}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::${ref} is missing platform(s):${missing}. A version tag must carry both linux/amd64 and linux/arm64; a consumer on the missing architecture gets 'no match for platform in manifest'."
+            exit 1
+          fi
+          echo "${ref} carries linux/amd64 and linux/arm64."
