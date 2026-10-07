@@ -13,8 +13,7 @@ built on it, verified against the code and classified as blocking 1.0, due in
 ## The road to 1.0
 
 1.0 means the CMS is finished to the standard the plugin contract already meets:
-a site can be built, configured and operated through the interface, and the
-security work has been reviewed by someone other than the person who wrote it.
+a site can be built, configured and operated through the interface.
 
 ### What Ritrovo gates
 
@@ -42,12 +41,14 @@ addition now and a default at 2.0.
 ### Security review, in public
 
 The security findings from private development were addressed but not
-independently verified. Re-reviewing them against a public codebase is the first
-piece of work, and it is the one that most benefits from being public. Two
-concrete items are already scoped: restricting the page-builder CSS allowlist
-(`crates/kernel/src/content/page_builder.rs:91`) and extracting inline styles so
-`style-src 'unsafe-inline'` can come out of the CSP. Those two are related and
-land together.
+independently verified. An independent review of them against a public codebase
+is welcome, and [docs/security/REVIEW-BRIEF.md](docs/security/REVIEW-BRIEF.md)
+is written for one: it maps the surfaces, states the invariant each is supposed
+to hold and names what already pins it. That review does not gate 1.0. Two
+concrete items are already scoped and block 1.0 on their own: restricting the
+page-builder CSS allowlist (`crates/kernel/src/content/page_builder.rs:91`) and
+extracting inline styles so `style-src 'unsafe-inline'` can come out of the CSP.
+Those two are related and land together.
 
 ### Dependency advisories
 

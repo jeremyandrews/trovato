@@ -12,11 +12,12 @@ release `v0.104.0` (tagged 2026-09-24).
 **Why this exists.** `KNOWN-ISSUES.md` says it plainly: "Treat the security
 posture as 'reviewed once, by the author' until that changes." Getting the
 security findings from private development independently verified on a public
-codebase is recorded as a 1.0 blocker (BL-66 in `docs/BACKLOG.md`). This brief
-is the response to an issue the project files against itself. Nothing here is a
-claim that the code is sound. It is a map of where the boundaries are, what
-each is supposed to guarantee, and what already pins it, so a reviewer spends
-their time on judgment rather than on orientation.
+codebase is welcome rather than required: BL-66 in `docs/BACKLOG.md` records it
+and classes it post, so it gates neither 1.0 nor any release. This brief is the
+response to an issue the project files against itself. Nothing here is a claim
+that the code is sound. It is a map of where the boundaries are, what each is
+supposed to guarantee, and what already pins it, so a reviewer spends their time
+on judgment rather than on orientation.
 
 **Prior art, linked rather than repeated.**
 [`docs/security-audit.md`](../security-audit.md) is the dependency advisory
@@ -834,6 +835,18 @@ earlier is private development and has no public commit.
 | 2026-08-18 | `0d6146b` | h2 0.4.13 to 0.4.16, lockfile only. **No CHANGELOG entry exists for this one** | RUSTSEC-2026-0258 |
 | 2026-09-01 | `a3357b5` | **wasmtime 47.0.3 to 47.0.4**, lockfile only, inside the existing `"47"` range | RUSTSEC-2026-0269 (8.8 high, filesystem sandbox escape via trailing slashes on paths and symlinks); RUSTSEC-2026-0268 (6.9 medium, guest driven host heap allocation through WASIp3 streams) |
 | 2026-09-18 | `e2f6225` | rustls 0.23.37 to 0.23.45, rustls-webpki 0.103.13 to 0.103.15, lockfile only | RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted across encryption level boundaries) |
+| 2026-10-06 | `e0474d3` | **wasmtime 47.0.4 to 49.0.2**, cranelift 0.134.4 to 0.136.2. No 47.x release fixes any of the five, which is why the major version moved rather than the patch. No kernel source change; the fuel regression test now asserts wasmtime's out-of-fuel trap by name instead of accepting any failure | RUSTSEC-2026-0327 (9.3 critical, unvalidated result count on a component model async lifted callback overflows the native stack); RUSTSEC-2026-0325 (5.9 medium, mis-typed tag imports corrupt the GC heap); RUSTSEC-2026-0326 (5.7 medium, missing rooting for GC values live across `try_call`); RUSTSEC-2026-0315 (5.7 medium, fuel amplification through `call_ref` and exception `catch`); RUSTSEC-2026-0316 (1.0 low, component model record lifting past the hostcall fuel limit) |
+
+**Reachability in Trovato of the five taken on 2026-10-06**, as measured during
+the upgrade. RUSTSEC-2026-0327: not reachable, the kernel builds core `Module`s
+and never a `Component`. RUSTSEC-2026-0325: not reachable, the host linker
+defines no tags and rejects imports outside the declared kernel interfaces and
+`wasi_snapshot_preview1`. RUSTSEC-2026-0326: not reachable, there is no
+`try_call` anywhere. RUSTSEC-2026-0315: reachable only with
+`PLUGIN_ENABLE_FUEL=true`, which is off by default, and epoch interruption
+bounds CPU regardless. RUSTSEC-2026-0316: not reachable, component model only.
+Each is a claim to check rather than a result to trust, like everything else in
+this brief.
 
 No CVE ids appear anywhere in the tree; only RUSTSEC ids.
 
@@ -960,7 +973,8 @@ in the document itself.
 From `KNOWN-ISSUES.md`, scoped to 0.104.0:
 
 - Security findings from private development are not independently verified.
-  **1.0 blocker** (BL-66). This is the reason for this review.
+  Open (BL-66), classed post: an independent review is welcome and does not
+  block 1.0. This is the reason for this review.
 - Page builder components accept arbitrary inline CSS. Open (BL-67).
 - CSP `style-src` keeps `'unsafe-inline'` for 305 inline `style=` attributes
   across 44 templates, plus 22 `<style>` blocks. Open, 1.0.

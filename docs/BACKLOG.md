@@ -15,7 +15,7 @@ Trovato.
 A line number is where the thing is at `d3f4cd7`; the source documents' own line
 numbers are often stale and are not repeated.
 
-In short: 117 distinct findings, 88 of them open, and 24 proposed as blocking the
+In short: 117 distinct findings, 88 of them open, and 23 proposed as blocking the
 1.0 tag, plus 25 marked as a Ritrovo gate by the ruling of 2026-09-17. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
 argues each.
 
@@ -46,8 +46,8 @@ shows as fixed at `2ff3a62`.
 - **1.0**: blocks the 1.0 tag. The test: would a competent stranger deploying a
   public site on the released image hit it on day one, or does it contradict the
   1.0 definition in ROADMAP.md (a site can be built, configured and operated
-  through the interface, and the security work has been reviewed by someone other
-  than its author)? Each of these is argued in [Why these block 1.0](#why-these-block-10).
+  through the interface)? Each of these is argued in
+  [Why these block 1.0](#why-these-block-10).
 - **1.0.x**: should ship in a 1.0 patch or minor release. Real, but a stranger
   building a public site does not meet it on day one.
 - **post**: after 1.0. A capability rather than a defect, or a defect only a
@@ -192,7 +192,7 @@ the local test run is a stronger gate than CI, which is advice rather than a def
 
 | ID | Finding | Where | Status | Class | Surface |
 |---|---|---|---|---|---|
-| BL-66 (security review) | The security findings from private development were fixed by their author and never independently re-verified. Nothing in the tree records a review; `docs/security-audit.md` is the cargo-audit suppression policy. | `KNOWN-ISSUES.md` "Security"; `ROADMAP.md` "Security review, in public" | open | 1.0 | n/a (process) |
+| BL-66 (security review) | The security findings from private development were fixed by their author and never independently re-verified. Nothing in the tree records a review; `docs/security-audit.md` is the cargo-audit suppression policy. | `KNOWN-ISSUES.md` "Security"; `ROADMAP.md` "Security review, in public" | open | post | n/a (process) |
 | BL-67 (page-builder CSS) | The page-builder sanitizer allows the `style` attribute wholesale; the TODO to restrict it to a property allowlist is the only real TODO in `crates/kernel/src` (the other three are the plugin scaffold's template text). `trovato_page_builder` is off by default. | `crates/kernel/src/content/page_builder.rs:91-92` | open | 1.0 | additive; may refuse stored content that uses other properties |
 | BL-68 (CSP `style-src`) | `style-src` keeps `'unsafe-inline'` for 305 inline `style=` attributes and 22 `<style>` blocks across the stock templates. KNOWN-ISSUES.md said `script-src` no longer needs an inline exception; the scripts that need one are simply blocked (BL-08). | `crates/kernel/src/middleware/security_headers.rs:37`; `templates/` | open | 1.0 | additive to the plugin contract; tightening it breaks any theme or plugin markup that carries `style=` |
 | BL-69 (`tap_perm`) | `tap_perm` was declared and never dispatched, so the kernel knew no plugin's permissions: config import refused one no role already held, and the permission grid could not show or grant one. It is now dispatched at boot and stored in `plugin_permission`, the grid renders each with the plugin that declared it, and config import accepts a declared name. A plugin enabled while the server runs registers on the next restart, which KNOWN-ISSUES.md records. | `crates/kernel/src/plugin/permission_registry.rs`; `crates/kernel/src/state.rs`; `crates/kernel/src/config_storage/yaml.rs` | fixed (#93) | closed | n/a |
@@ -484,7 +484,7 @@ should get a row when the next pass runs.
 
 117 distinct findings after merging duplicates. By status: 82 open, 4 partly fixed
 (BL-03, BL-07, BL-21, BL-25), 28 fixed, 2 that do not reproduce, and 1 decided
-(BL-109). By class: 24 proposed to block 1.0, 30 to ship in 1.0.x, 34 to wait until
+(BL-109). By class: 23 proposed to block 1.0, 30 to ship in 1.0.x, 35 to wait until
 after 1.0, and 29 closed. The two partitions cross at three rows: of the two that do
 not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
 on one database confirm it; and BL-02 is fixed in the kernel and stays in 1.0 for
@@ -493,17 +493,19 @@ BL-109. Everything not closed — 88 rows — is what "open" means in the paragr
 above, and the four partly fixed rows are inside it, each one open on the half its
 row names.
 
-The 24: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-66,
-BL-67, BL-68, BL-73, BL-74, BL-85, BL-87, BL-91, BL-92, BL-93, BL-98, BL-99,
-BL-100, BL-104, BL-112.
+The 23: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-67,
+BL-68, BL-73, BL-74, BL-85, BL-87, BL-91, BL-92, BL-93, BL-98, BL-99, BL-100,
+BL-104, BL-112.
 
 Four of the 30 that stood here before closed in the fix series — BL-09, BL-11,
 BL-12 and BL-15 — and BL-112 is new, so that list was three shorter. Three more
-have closed since and are gone from it: BL-41 (#92), BL-69 and BL-90 (#93). The
-fix series has also closed BL-33 (#96) and BL-116 (#97), neither of which was in
-this list. BL-116 and BL-117 are new, which is why the total is 117 rather than
-115. These counts were last recomputed from the rows themselves at #97; the four
-closes before #96 had updated their own rows without the tally.
+have closed since and are gone from it: BL-41 (#92), BL-69 and BL-90 (#93). BL-66
+left the list without closing: the 1.0 definition no longer names the security
+review, so the row is classed post and the review is welcome rather than
+required. The fix series has also closed BL-33 (#96) and BL-116 (#97), neither of
+which was in this list. BL-116 and BL-117 are new, which is why the total is 117
+rather than 115. These counts were last recomputed from the rows themselves at
+#97; the four closes before #96 had updated their own rows without the tally.
 
 The eight Ritrovo added to that list are argued in
 [Why these block 1.0](#why-these-block-10) with the rest. Twenty-five findings
@@ -579,24 +581,21 @@ publishing, enabled by default, silently never publishes. The 1.0 fix need not b
 scheduler; a poker service and a paragraph in the install guide are enough, and an
 in-process scheduler can follow as an addition. Small.
 
-**BL-57, the AI provider URL policy.** Both halves. The security clause: the SSRF
+**BL-57, the AI provider URL policy.** Two halves. The security half: the SSRF
 check the author wrote runs on two of eight outbound paths, misses IPv6 literals and
-never resolves hostnames, which is what an independent review will find first. And
-day one: anyone running a local model, which the design document describes as
+never resolves hostnames, which is what any reviewer will find first. And day
+one: anyone running a local model, which the design document describes as
 pointing `base_url` at localhost, is refused with no allowance. One policy: private
 addresses refused everywhere unless an operator allows them, enforced at the
 resolver. That also gives BL-51 its test allowance. Medium.
 
-**BL-66, the security review.** The definition names it.
-
 **BL-67 and BL-68, the page-builder allowlist and inline styles.** Neither is a day
 one problem: the page builder is off by default, and `'unsafe-inline'` for styles is
-defence in depth. They block for two other reasons. The definition's security clause
-scopes them into the review. And removing `'unsafe-inline'` after 1.0 would break
-every theme and plugin fragment carrying `style=`, including the page builder's own
-output, which is why the two have to be designed together and before the tag. If the
-review decides inline styles stay, that becomes a recorded permanent decision and
-both rows move to post.
+defence in depth. They block for another reason: removing `'unsafe-inline'` after
+1.0 would break every theme and plugin fragment carrying `style=`, including the
+page builder's own output, which is why the two have to be designed together and
+before the tag. If inline styles are decided to stay, that becomes a recorded
+permanent decision and both rows move to post.
 
 **BL-69, `tap_perm` not dispatched.** Day one for any site with a non-admin role that
 uses a stock plugin with its own permission (comments, media, translation): the only
