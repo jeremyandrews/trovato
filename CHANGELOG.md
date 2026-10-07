@@ -102,8 +102,9 @@ security relevant changelog entries and every advisory taken, with commit ids;
 states the threat model as five attackers and what each must not be able to do;
 and says what "done" means, which is a findings table where every row's status
 reads `fixed <commit>` or `accepted: <reason>`. `KNOWN-ISSUES.md` records that
-the security posture is "reviewed once, by the author" and calls independent
-verification a 1.0 blocker (BL-66); this is the document that unblocks it.
+the security posture is "reviewed once, by the author"; an independent review of
+those findings is welcome, and this is the document written for one. It does not
+gate 1.0 (BL-66).
 
 Writing it turned up twelve places where the repository's own documentation
 claims more than the code does, collected in section 6 of the brief rather than

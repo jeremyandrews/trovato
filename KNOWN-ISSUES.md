@@ -20,8 +20,10 @@ Ritrovo row waits on it.
 Several security audits were run during private development and their findings
 were addressed, but the fixes have not been re-verified by anyone other than the
 person who made them, and the audits themselves were not independent. Treat the
-security posture as "reviewed once, by the author" until that changes. Reviewing
-those findings on a public codebase is a 1.0 blocker.
+security posture as "reviewed once, by the author" until that changes. An
+independent review of those findings is welcome; the brief written for one is
+[docs/security/REVIEW-BRIEF.md](docs/security/REVIEW-BRIEF.md). It does not
+block 1.0.
 
 ### Page-builder components accept arbitrary inline CSS
 
