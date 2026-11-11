@@ -444,7 +444,7 @@ impl ContentTypeRegistry {
     /// Update an existing content type's label, description and settings.
     ///
     /// `settings` is merged into the row's current settings key by key, by
-    /// the rule in [`merge_settings_sql`]; any key it does not name stays as
+    /// the rule in `merge_settings_sql`; any key it does not name stays as
     /// it is. A `fields` key in `settings` is ignored: the field list belongs
     /// to `add_field`, `update_field` and `delete_field`. This used to write
     /// `settings` over the whole column, so saving the edit form deleted every
