@@ -53,7 +53,7 @@ async fn ensure_item_type(app: &TestApp) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             ITEM_TYPE,
             "Comment Front End Test",
             Some("Fixture type"),

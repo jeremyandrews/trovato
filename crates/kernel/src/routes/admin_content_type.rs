@@ -7,7 +7,7 @@ use axum::{Form, Json, Router};
 use serde::Deserialize;
 use tower_sessions::Session;
 
-use crate::content::AddFieldError;
+use crate::content::{AddFieldError, CreateContentTypeError};
 use crate::form::csrf::generate_csrf_token;
 use crate::state::AppState;
 
@@ -131,43 +131,24 @@ async fn add_content_type_submit(
         errors.push(MACHINE_NAME_ERROR.to_string());
     }
 
-    // Check if machine name already exists
+    // Check if machine name already exists. The cache answers the common
+    // case; `create` refuses a name only the database knows.
     if state.content_types().get(&form.machine_name).is_some() {
-        errors.push(format!(
-            "A content type with machine name '{}' already exists.",
-            form.machine_name
-        ));
+        errors.push(
+            CreateContentTypeError::AlreadyExists {
+                machine_name: form.machine_name.clone(),
+            }
+            .to_string(),
+        );
     }
 
     if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", "/admin/structure/types/add");
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &false);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "label": form.label,
-                "machine_name": form.machine_name,
-                "description": form.description,
-                "title_label": form.title_label,
-                "published_default": form.published_default.is_some(),
-                "revision_default": form.revision_default.is_some(),
-            }),
-        );
-        context.insert("path", "/admin/structure/types/add");
-
-        return render_admin_template(&state, "admin/content-type-form.html", context).await;
+        return render_add_form_with_errors(&state, &session, &form, &errors).await;
     }
 
     // Create the content type
     let settings = serde_json::json!({
-        "title_label": form.title_label.unwrap_or_else(|| "Title".to_string()),
+        "title_label": form.title_label.clone().unwrap_or_else(|| "Title".to_string()),
         "published_default": form.published_default.is_some(),
         "revision_default": form.revision_default.is_some(),
     });
@@ -182,15 +163,51 @@ async fn add_content_type_submit(
         )
         .await
     {
-        Ok(_) => {
+        Ok(()) => {
             tracing::info!(machine_name = %form.machine_name, "content type created");
             Redirect::to("/admin/structure/types").into_response()
         }
-        Err(e) => {
+        Err(e @ CreateContentTypeError::AlreadyExists { .. }) => {
+            render_add_form_with_errors(&state, &session, &form, &[e.to_string()]).await
+        }
+        Err(CreateContentTypeError::Other(e)) => {
             tracing::error!(error = %e, "failed to create content type");
             render_server_error("Failed to create content type.")
         }
     }
+}
+
+/// Render the add content type form again, with `errors` and the submitted
+/// values.
+async fn render_add_form_with_errors(
+    state: &AppState,
+    session: &Session,
+    form: &ContentTypeFormData,
+    errors: &[String],
+) -> Response {
+    let csrf_token = generate_csrf_token(session).await;
+    let form_build_id = uuid::Uuid::new_v4().to_string();
+
+    let mut context = tera::Context::new();
+    context.insert("action", "/admin/structure/types/add");
+    context.insert("csrf_token", &csrf_token);
+    context.insert("form_build_id", &form_build_id);
+    context.insert("editing", &false);
+    context.insert("errors", &errors);
+    context.insert(
+        "values",
+        &serde_json::json!({
+            "label": form.label,
+            "machine_name": form.machine_name,
+            "description": form.description,
+            "title_label": form.title_label,
+            "published_default": form.published_default.is_some(),
+            "revision_default": form.revision_default.is_some(),
+        }),
+    );
+    context.insert("path", "/admin/structure/types/add");
+
+    render_admin_template(state, "admin/content-type-form.html", context).await
 }
 
 /// Show edit content type form.

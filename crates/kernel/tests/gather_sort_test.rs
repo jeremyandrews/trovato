@@ -73,7 +73,7 @@ async fn ensure_item_type(app: &TestApp) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             ITEM_TYPE,
             "Gather Sort Test",
             Some("Fixture type for gather sort tests"),

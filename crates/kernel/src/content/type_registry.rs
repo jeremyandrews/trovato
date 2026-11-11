@@ -67,6 +67,46 @@ pub enum AddFieldError {
     Other(#[from] anyhow::Error),
 }
 
+/// Why a content type could not be created.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateContentTypeError {
+    /// A row with this machine name already exists in the database.
+    ///
+    /// The `Display` text is what the add form shows, so the wording lives
+    /// here and nowhere else.
+    #[error("A content type with machine name '{machine_name}' already exists.")]
+    AlreadyExists {
+        /// The machine name that was already taken.
+        machine_name: String,
+    },
+
+    /// Writing the row failed.
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+/// The columns every statement here reads back, in `ItemType`'s shape.
+const RETURNING_ITEM_TYPE: &str =
+    "RETURNING type AS type_name, label, description, has_title, title_label, plugin, settings";
+
+/// The one rule for writing into `item_type.settings`: the top-level keys of
+/// the bound patch replace those keys, and every other key the row holds stays.
+///
+/// A column that is not an object (a bare array from an old writer, or null)
+/// cannot hold keys to keep, so it is read as `{}`.
+///
+/// It is a SQL expression rather than Rust so that the read and the write are
+/// one statement: a writer that read the column, merged in memory and wrote it
+/// back could lose a key another writer stored in between. Both writers use it:
+/// [`ContentTypeRegistry::update`], which owns every key but `fields`, and
+/// `persist_fields`, which owns `fields` alone.
+fn merge_settings_sql(patch_param: &str) -> String {
+    format!(
+        "(CASE WHEN jsonb_typeof(item_type.settings) = 'object' \
+         THEN item_type.settings ELSE '{{}}'::jsonb END) || {patch_param}::jsonb"
+    )
+}
+
 /// Map a `field_type` form value to the field type it names.
 ///
 /// `None` for anything unrecognised: the caller refuses rather than guessing.
@@ -109,19 +149,20 @@ fn json_shape(value: &serde_json::Value) -> &'static str {
 /// Resolve the title label, normalizing empty strings to None and
 /// falling back to "Title" if no value is provided.
 fn resolve_title_label(primary: Option<&str>, fallback: Option<&str>) -> Option<String> {
-    let normalize = |s: &str| {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    };
-
     primary
-        .and_then(normalize)
-        .or_else(|| fallback.and_then(normalize))
+        .and_then(normalize_label)
+        .or_else(|| fallback.and_then(normalize_label))
         .or_else(|| Some("Title".to_string()))
+}
+
+/// Trim a label, reading an empty one as absent.
+fn normalize_label(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 impl ContentTypeRegistry {
@@ -185,15 +226,7 @@ impl ContentTypeRegistry {
         // Also load types from database (including 'core' types)
         let db_types = ItemType::list(&self.inner.pool).await?;
         for db_type in db_types {
-            // Convert ItemType to ContentTypeDefinition for cache
-            let def = ContentTypeDefinition {
-                machine_name: db_type.type_name.clone(),
-                label: db_type.label.clone(),
-                description: db_type.description.clone().unwrap_or_default(),
-                title_label: db_type.title_label.clone(),
-                fields: self.parse_fields_from_settings(&db_type.type_name, &db_type.settings),
-            };
-            self.inner.types.insert(db_type.type_name, def);
+            self.cache_row(&db_type);
         }
 
         info!(count = synced_count, "content types synced from plugins");
@@ -277,14 +310,7 @@ impl ContentTypeRegistry {
     pub async fn reload_from_db(&self) -> Result<()> {
         let db_types = ItemType::list(&self.inner.pool).await?;
         for db_type in db_types {
-            let def = ContentTypeDefinition {
-                machine_name: db_type.type_name.clone(),
-                label: db_type.label.clone(),
-                description: db_type.description.clone().unwrap_or_default(),
-                title_label: db_type.title_label.clone(),
-                fields: self.parse_fields_from_settings(&db_type.type_name, &db_type.settings),
-            };
-            self.inner.types.insert(db_type.type_name, def);
+            self.cache_row(&db_type);
         }
         Ok(())
     }
@@ -303,13 +329,7 @@ impl ContentTypeRegistry {
         // Cache miss — load from database
         let db_type = ItemType::find_by_type(&self.inner.pool, type_name).await?;
         if let Some(db_type) = db_type {
-            let def = ContentTypeDefinition {
-                machine_name: db_type.type_name.clone(),
-                label: db_type.label.clone(),
-                description: db_type.description.clone().unwrap_or_default(),
-                title_label: db_type.title_label.clone(),
-                fields: self.parse_fields_from_settings(&db_type.type_name, &db_type.settings),
-            };
+            let def = self.definition_from_row(&db_type);
             self.inner.types.insert(type_name.to_string(), def.clone());
             Ok(Some(def))
         } else {
@@ -332,45 +352,104 @@ impl ContentTypeRegistry {
         self.list()
     }
 
+    /// Build the cached definition from a row as the database holds it.
+    fn definition_from_row(&self, row: &ItemType) -> ContentTypeDefinition {
+        ContentTypeDefinition {
+            machine_name: row.type_name.clone(),
+            label: row.label.clone(),
+            description: row.description.clone().unwrap_or_default(),
+            title_label: row.title_label.clone(),
+            fields: self.parse_fields_from_settings(&row.type_name, &row.settings),
+        }
+    }
+
+    /// Cache the definition a write just returned.
+    fn cache_row(&self, row: &ItemType) {
+        self.inner
+            .types
+            .insert(row.type_name.clone(), self.definition_from_row(row));
+    }
+
+    /// The row input `create` and `replace` both write.
+    fn core_type_input(
+        machine_name: &str,
+        label: &str,
+        description: Option<&str>,
+        settings: serde_json::Value,
+    ) -> CreateItemType {
+        CreateItemType {
+            type_name: machine_name.to_string(),
+            label: label.to_string(),
+            description: description.map(|s| s.to_string()),
+            has_title: Some(true),
+            title_label: resolve_title_label(
+                settings.get("title_label").and_then(|v| v.as_str()),
+                None,
+            ),
+            plugin: "core".to_string(),
+            settings: Some(settings),
+        }
+    }
+
     /// Create a new content type.
+    ///
+    /// Refuses a machine name that already has a row, with
+    /// [`CreateContentTypeError::AlreadyExists`]. The database decides, so a
+    /// row this process has not cached yet (written by a second server, or by
+    /// a config import before the next reload) is refused rather than
+    /// overwritten. To overwrite on purpose, use [`Self::replace`].
     pub async fn create(
         &self,
         machine_name: &str,
         label: &str,
         description: Option<&str>,
         settings: serde_json::Value,
-    ) -> Result<()> {
-        let title_label =
-            resolve_title_label(settings.get("title_label").and_then(|v| v.as_str()), None);
+    ) -> Result<(), CreateContentTypeError> {
+        let input = Self::core_type_input(machine_name, label, description, settings);
 
-        let input = CreateItemType {
-            type_name: machine_name.to_string(),
-            label: label.to_string(),
-            description: description.map(|s| s.to_string()),
-            has_title: Some(true),
-            title_label: title_label.clone(),
-            plugin: "core".to_string(),
-            settings: Some(settings.clone()),
+        let Some(row) = ItemType::insert_if_absent(&self.inner.pool, input).await? else {
+            return Err(CreateContentTypeError::AlreadyExists {
+                machine_name: machine_name.to_string(),
+            });
         };
 
-        ItemType::upsert(&self.inner.pool, input).await?;
-
-        // Update cache (parse fields from settings if present)
-        let fields = self.parse_fields_from_settings(machine_name, &settings);
-        let def = ContentTypeDefinition {
-            machine_name: machine_name.to_string(),
-            label: label.to_string(),
-            description: description.unwrap_or("").to_string(),
-            title_label,
-            fields,
-        };
-        self.inner.types.insert(machine_name.to_string(), def);
-
+        self.cache_row(&row);
         info!(type_name = %machine_name, "content type created");
         Ok(())
     }
 
-    /// Update an existing content type.
+    /// Write a whole content type definition, creating the row or
+    /// overwriting every column of an existing one, `settings` included.
+    ///
+    /// A fixture and import tool: whatever fields and settings the row held
+    /// before are gone afterwards, replaced by `settings` as given. Tests use
+    /// it to put a shared type into a known shape at the start of each run.
+    /// Admin forms must not: adding a type goes through [`Self::create`], and
+    /// editing one through [`Self::update`].
+    pub async fn replace(
+        &self,
+        machine_name: &str,
+        label: &str,
+        description: Option<&str>,
+        settings: serde_json::Value,
+    ) -> Result<()> {
+        let input = Self::core_type_input(machine_name, label, description, settings);
+        let row = ItemType::upsert(&self.inner.pool, input).await?;
+
+        self.cache_row(&row);
+        info!(type_name = %machine_name, "content type replaced");
+        Ok(())
+    }
+
+    /// Update an existing content type's label, description and settings.
+    ///
+    /// `settings` is merged into the row's current settings key by key, by
+    /// the rule in `merge_settings_sql`; any key it does not name stays as
+    /// it is. A `fields` key in `settings` is ignored: the field list belongs
+    /// to `add_field`, `update_field` and `delete_field`. This used to write
+    /// `settings` over the whole column, so saving the edit form deleted every
+    /// field the type declared, and the cache, rebuilt from the previous cache
+    /// entry, hid the loss until the next reload from the database.
     pub async fn update(
         &self,
         machine_name: &str,
@@ -378,36 +457,45 @@ impl ContentTypeRegistry {
         description: Option<&str>,
         settings: serde_json::Value,
     ) -> Result<()> {
-        // Get existing type to preserve fields
-        let existing = self.get(machine_name);
+        let serde_json::Value::Object(mut patch) = settings else {
+            anyhow::bail!(
+                "settings for content type '{machine_name}' must be an object, got {}",
+                json_shape(&settings)
+            );
+        };
+        patch.remove("fields");
 
-        let title_label = resolve_title_label(
-            settings.get("title_label").and_then(|v| v.as_str()),
-            existing.as_ref().and_then(|e| e.title_label.as_deref()),
+        let title_label = patch
+            .get("title_label")
+            .and_then(|v| v.as_str())
+            .and_then(normalize_label);
+
+        // One statement: the merge reads the column as it stands when the row
+        // is written, so a field added concurrently is not lost between a read
+        // here and a write.
+        let sql = format!(
+            "UPDATE item_type SET \
+                label = $2, \
+                description = $3, \
+                has_title = true, \
+                title_label = COALESCE($4, item_type.title_label, 'Title'), \
+                settings = {merge} \
+             WHERE type = $1 \
+             {RETURNING_ITEM_TYPE}",
+            merge = merge_settings_sql("$5"),
         );
+        let row = sqlx::query_as::<_, ItemType>(&sql)
+            .bind(machine_name)
+            .bind(label)
+            .bind(description)
+            .bind(title_label)
+            .bind(serde_json::Value::Object(patch))
+            .fetch_optional(&self.inner.pool)
+            .await
+            .context("failed to update item_type")?
+            .with_context(|| format!("content type '{machine_name}' not found"))?;
 
-        let input = CreateItemType {
-            type_name: machine_name.to_string(),
-            label: label.to_string(),
-            description: description.map(|s| s.to_string()),
-            has_title: Some(true),
-            title_label: title_label.clone(),
-            plugin: "core".to_string(),
-            settings: Some(settings.clone()),
-        };
-
-        ItemType::upsert(&self.inner.pool, input).await?;
-
-        // Update cache
-        let def = ContentTypeDefinition {
-            machine_name: machine_name.to_string(),
-            label: label.to_string(),
-            description: description.unwrap_or("").to_string(),
-            title_label,
-            fields: existing.map(|e| e.fields).unwrap_or_default(),
-        };
-        self.inner.types.insert(machine_name.to_string(), def);
-
+        self.cache_row(&row);
         info!(type_name = %machine_name, "content type updated");
         Ok(())
     }
@@ -465,40 +553,32 @@ impl ContentTypeRegistry {
         Ok(())
     }
 
-    /// Persist the field list for a content type, merging into existing
+    /// Persist the field list for a content type, merging it into the existing
     /// settings so that non-field keys (`title_label`, `published_default`,
     /// etc.) are preserved.
+    ///
+    /// Through [`merge_settings_sql`], the same rule `update` writes by. A
+    /// column that is not an object becomes the canonical object shape: it
+    /// cannot carry a "fields" key, and leaving it alone is how a field edit
+    /// used to report success while writing nothing.
     async fn persist_fields(&self, type_name: &str, def: &ContentTypeDefinition) -> Result<()> {
-        // Load current settings from DB to preserve non-field keys
-        let current: Option<serde_json::Value> =
-            sqlx::query_scalar("SELECT settings FROM item_type WHERE type = $1")
-                .bind(type_name)
-                .fetch_optional(&self.inner.pool)
-                .await
-                .context("failed to read item_type settings")?;
+        let patch = serde_json::json!({
+            "fields": serde_json::to_value(&def.fields).context("serialize fields")?,
+        });
 
-        // Anything that is not an object cannot carry a "fields" key, and
-        // silently leaving it alone is how a field edit used to report success
-        // while writing nothing. Replace it with the canonical object shape,
-        // keeping any other settings keys an object already holds.
-        let mut obj = match current {
-            Some(serde_json::Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        obj.insert(
-            "fields".to_string(),
-            serde_json::to_value(&def.fields).context("serialize fields")?,
+        let sql = format!(
+            "UPDATE item_type SET settings = {merge} WHERE type = $1 {RETURNING_ITEM_TYPE}",
+            merge = merge_settings_sql("$2"),
         );
-        let settings = serde_json::Value::Object(obj);
-
-        sqlx::query("UPDATE item_type SET settings = $1 WHERE type = $2")
-            .bind(&settings)
+        let row = sqlx::query_as::<_, ItemType>(&sql)
             .bind(type_name)
-            .execute(&self.inner.pool)
+            .bind(&patch)
+            .fetch_optional(&self.inner.pool)
             .await
-            .context("failed to update item_type")?;
+            .context("failed to update item_type")?
+            .with_context(|| format!("content type '{type_name}' not found"))?;
 
-        self.inner.types.insert(type_name.to_string(), def.clone());
+        self.cache_row(&row);
         Ok(())
     }
 

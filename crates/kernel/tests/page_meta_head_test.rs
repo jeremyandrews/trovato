@@ -69,7 +69,7 @@ async fn ensure_item_type(app: &TestApp, machine_name: &str, label: &str) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             machine_name,
             label,
             Some("Fixture type for head metadata tests"),

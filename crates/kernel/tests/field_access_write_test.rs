@@ -128,7 +128,7 @@ async fn ensure_person_type(app: &TestApp) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             TYPE,
             "Person",
             Some("A person, for field-access tests"),

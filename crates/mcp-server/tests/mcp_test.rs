@@ -736,7 +736,7 @@ async fn ensure_access_probe_type(ctx: &common::TestContext) {
 
     ctx.state
         .content_types()
-        .create(
+        .replace(
             ACCESS_PROBE,
             "MCP Access Probe",
             None,

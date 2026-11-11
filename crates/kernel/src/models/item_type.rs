@@ -107,7 +107,39 @@ impl ItemType {
         Ok(item_type)
     }
 
+    /// Insert a content type unless a row with its machine name already exists.
+    ///
+    /// `None` means the name was taken and nothing was written. The database
+    /// decides, not a cache, so a row another process wrote is refused too.
+    pub async fn insert_if_absent(pool: &PgPool, input: CreateItemType) -> Result<Option<Self>> {
+        let item_type = sqlx::query_as::<_, ItemType>(
+            r#"
+            INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (type) DO NOTHING
+            RETURNING type as type_name, label, description, has_title, title_label, plugin, settings
+            "#,
+        )
+        .bind(&input.type_name)
+        .bind(&input.label)
+        .bind(&input.description)
+        .bind(input.has_title.unwrap_or(true))
+        .bind(&input.title_label)
+        .bind(&input.plugin)
+        .bind(input.settings.unwrap_or(serde_json::json!({})))
+        .fetch_optional(pool)
+        .await
+        .context("failed to insert item type")?;
+
+        Ok(item_type)
+    }
+
     /// Create or update a content type (upsert).
+    ///
+    /// On conflict this replaces the label, description and the whole
+    /// `settings` column, `fields` included. Only for callers that mean to
+    /// overwrite a definition: plugin registration, config import and
+    /// [`ContentTypeRegistry::replace`](crate::content::ContentTypeRegistry::replace).
     pub async fn upsert(pool: &PgPool, input: CreateItemType) -> Result<Self> {
         let item_type = sqlx::query_as::<_, ItemType>(
             r#"

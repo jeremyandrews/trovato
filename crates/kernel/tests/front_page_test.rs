@@ -70,7 +70,7 @@ async fn ensure_item_type(app: &TestApp) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             ITEM_TYPE,
             "Front Page Test",
             Some("Fixture type for front page tests"),

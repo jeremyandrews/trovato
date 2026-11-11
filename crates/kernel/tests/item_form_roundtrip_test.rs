@@ -73,7 +73,7 @@ async fn ensure_types(app: &TestApp) {
 
         app.state
             .content_types()
-            .create(name, label, None, settings)
+            .replace(name, label, None, settings)
             .await
             .ok();
     }
