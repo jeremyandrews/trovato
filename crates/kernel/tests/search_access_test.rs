@@ -251,7 +251,7 @@ async fn ensure_person_type(app: &common::TestApp) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             PII_TYPE,
             "Person",
             Some("Field-access fixture"),

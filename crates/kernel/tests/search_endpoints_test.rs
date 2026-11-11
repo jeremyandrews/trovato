@@ -170,7 +170,7 @@ async fn ensure_probe_type(app: &TestApp) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             PROBE_TYPE,
             "Autocomplete Access Probe",
             None,

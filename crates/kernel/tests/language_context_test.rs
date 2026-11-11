@@ -63,7 +63,7 @@ async fn ensure_item_type(app: &TestApp) {
 
     app.state
         .content_types()
-        .create(
+        .replace(
             ITEM_TYPE,
             "Language Context Test",
             Some("Fixture type for language context tests"),

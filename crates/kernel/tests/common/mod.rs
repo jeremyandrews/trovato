@@ -574,10 +574,11 @@ impl TestApp {
         let registry = std::sync::Arc::clone(self.state.content_types());
         let machine_name = machine_name.to_string();
         defer_cleanup(move || async move {
-            // `create` upserts the row AND refreshes the cached definition,
-            // which is what makes this a restoration rather than half of one.
+            // `replace` overwrites the row AND refreshes the cached
+            // definition, which is what makes this a restoration rather than
+            // half of one.
             let _ = registry
-                .create(&machine_name, &label, description.as_deref(), settings)
+                .replace(&machine_name, &label, description.as_deref(), settings)
                 .await;
         });
     }
@@ -774,14 +775,14 @@ impl TestApp {
         // Register in the content type cache so API endpoints see it
         self.state
             .content_types()
-            .create(
+            .replace(
                 "conference",
                 "Conference",
                 Some("A tech conference or meetup event"),
                 settings,
             )
             .await
-            .ok(); // Ignore error if already cached
+            .ok(); // Overwrites the row and the cache entry alike
     }
 
     /// Seed the 3 tutorial conferences (RustConf 2026, EuroRust 2026,
