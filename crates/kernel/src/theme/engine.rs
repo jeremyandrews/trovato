@@ -517,14 +517,21 @@ impl ThemeEngine {
 
         // Filter for rendering Blocks fields (JSON array of Editor.js blocks) to HTML.
         // Usage: {{ item.fields.field_description | render_blocks | safe }}
+        //
+        // The output goes out under `| safe`, so everything it returns must
+        // already be safe. Blocks are structured and `block_render` sanitizes
+        // them. A string is not blocks and is not markup: whatever wrote it (a
+        // plugin's raw SQL, a config import, a TextLong value) never passed
+        // through a sanitizer, so it is escaped and renders as text. Content
+        // that is meant to be markup belongs to the `markdown` or `text_format`
+        // filter, not this one.
         tera.register_filter(
             "render_blocks",
             |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
                 if let Some(blocks) = value.as_array() {
                     Ok(tera::Value::String(crate::content::render_blocks(blocks)))
                 } else if let Some(s) = value.as_str() {
-                    // Plain string fallback — return as-is (handles TextLong values)
-                    Ok(tera::Value::String(s.to_string()))
+                    Ok(tera::Value::String(crate::routes::helpers::html_escape(s)))
                 } else {
                     Ok(tera::Value::String(String::new()))
                 }
