@@ -1530,4 +1530,41 @@ mod tests {
     fn empty_search_path_is_rejected() {
         assert!(ThemeEngine::new(&[], None).is_err());
     }
+
+    /// Render `{{ v | render_blocks | safe }}` with `v` bound to `value`.
+    fn render_blocks_filter(value: serde_json::Value) -> String {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+        tera.add_raw_template("t", "{{ v | render_blocks | safe }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("v", &value);
+        tera.render("t", &ctx).unwrap()
+    }
+
+    /// A string reaching `render_blocks` is not blocks, and it is not markup:
+    /// it renders as text, so nothing in it can execute under `| safe`.
+    #[test]
+    fn render_blocks_filter_escapes_a_plain_string() {
+        let html = render_blocks_filter(serde_json::json!(
+            "Hi <script>alert(1)</script> and <img src=x onerror=alert(1)>"
+        ));
+        assert!(!html.contains("<script"), "a script tag survived: {html}");
+        assert!(!html.contains("<img"), "an img tag survived: {html}");
+        assert_eq!(
+            html,
+            "Hi &lt;script&gt;alert(1)&lt;/script&gt; and &lt;img src=x onerror=alert(1)&gt;"
+        );
+    }
+
+    /// An array of blocks still renders exactly as `block_render` renders it
+    /// (the `render_paragraph_with_inline_html` fixture).
+    #[test]
+    fn render_blocks_filter_renders_blocks_unchanged() {
+        let html = render_blocks_filter(serde_json::json!([{
+            "type": "paragraph",
+            "data": { "text": "This is <b>bold</b> and <i>italic</i>." }
+        }]));
+        assert_eq!(html, "<p>This is <b>bold</b> and <i>italic</i>.</p>");
+    }
 }
