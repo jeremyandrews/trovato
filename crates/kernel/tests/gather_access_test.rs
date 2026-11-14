@@ -600,3 +600,291 @@ fn named_gather_seeded_by_sql_cannot_read_users() {
         assert!(!body.contains("$argon2"), "a password hash leaked: {body}");
     });
 }
+
+// -------------------------------------------------------------------------
+// A projection of the whole `fields` column is field-access filtered
+// -------------------------------------------------------------------------
+//
+// `SELECT item.*` drops the fields `tap_field_access` denies from the nested
+// `fields` object. A definition that projects the column named exactly
+// `fields` returns that same object, and must drop the same fields.
+//
+// The shared app loads no field-access plugin, so this builds its own app with
+// the reference plugin (`plugins/trovato_field_access_ref`) loaded, the way
+// `recovery_plugin_flow_test` builds one with its fixtures: its default rules
+// deny `ssn` on type `person` to a viewer without `view pii` and leave `bio`
+// ungoverned (visible).
+
+const FIELD_ACCESS_PLUGIN: &str = "trovato_field_access_ref";
+const PERSON_TYPE: &str = "person";
+
+/// The app with the field-access reference plugin loaded. Built once.
+static FIELD_ACCESS_APP: std::sync::OnceLock<TestApp> = std::sync::OnceLock::new();
+
+fn app_with_field_access() -> &'static TestApp {
+    FIELD_ACCESS_APP.get_or_init(|| {
+        let handle = common::shared_runtime_handle();
+        std::thread::spawn(move || handle.block_on(build_app_with_field_access()))
+            .join()
+            .expect("field-access fixture app init thread panicked")
+    })
+}
+
+/// Enable the reference plugin, build an app that loads it and nothing else,
+/// then put the plugin's status back so no later app anywhere picks it up.
+///
+/// `AppState` resolves its enabled plugin set at construction, so the row has to
+/// say "enabled" while the app is built and nothing longer. The plugin is copied
+/// alone into a temporary plugins directory so the app loads only this plugin.
+async fn build_app_with_field_access() -> TestApp {
+    // Two `AppState`s built concurrently race on plugin migrations; the shared
+    // app other tests in this file use is built first.
+    let shared = shared_app().await;
+
+    let source = common::project_root()
+        .join("plugins")
+        .join(FIELD_ACCESS_PLUGIN);
+    let wasm = format!("{FIELD_ACCESS_PLUGIN}.wasm");
+    let info = format!("{FIELD_ACCESS_PLUGIN}.info.toml");
+    assert!(
+        source.join(&wasm).exists(),
+        "fixture '{FIELD_ACCESS_PLUGIN}' is not built: cargo build -p {FIELD_ACCESS_PLUGIN} \
+         --target wasm32-wasip1 --release && cp target/wasm32-wasip1/release/{wasm} \
+         plugins/{FIELD_ACCESS_PLUGIN}/"
+    );
+    let plugins_dir =
+        std::env::temp_dir().join(format!("trovato-gather-fa-{}", Uuid::now_v7().simple()));
+    let target = plugins_dir.join(FIELD_ACCESS_PLUGIN);
+    std::fs::create_dir_all(&target).expect("create the temporary plugins directory");
+    for file in [&wasm, &info] {
+        std::fs::copy(source.join(file), target.join(file)).expect("copy the fixture plugin");
+    }
+
+    let previous: Option<i16> =
+        sqlx::query_scalar("SELECT status FROM plugin_status WHERE name = $1")
+            .bind(FIELD_ACCESS_PLUGIN)
+            .fetch_optional(&shared.db)
+            .await
+            .expect("read the plugin status");
+    trovato_kernel::plugin::status::install_plugin(&shared.db, FIELD_ACCESS_PLUGIN, "1.0.0")
+        .await
+        .expect("enable the field-access fixture");
+
+    let dir = plugins_dir.clone();
+    let app = TestApp::with_config(move |config| config.plugins_dirs = vec![dir]).await;
+
+    match previous {
+        Some(status) => {
+            sqlx::query("UPDATE plugin_status SET status = $1 WHERE name = $2")
+                .bind(status)
+                .bind(FIELD_ACCESS_PLUGIN)
+                .execute(&shared.db)
+                .await
+                .expect("restore the plugin status");
+        }
+        None => {
+            sqlx::query("DELETE FROM plugin_status WHERE name = $1")
+                .bind(FIELD_ACCESS_PLUGIN)
+                .execute(&shared.db)
+                .await
+                .expect("remove the plugin status");
+        }
+    }
+    std::fs::remove_dir_all(&plugins_dir).ok();
+    app
+}
+
+/// A published person carrying the governed `ssn` and the ungoverned `bio`,
+/// deleted again when the test ends.
+async fn make_person(app: &TestApp, marker: &str, ssn: &str, bio: &str) -> Uuid {
+    let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+    let id = app
+        .state
+        .items()
+        .create(
+            CreateItem {
+                item_type: PERSON_TYPE.to_string(),
+                title: format!("{marker} {}", Uuid::now_v7().simple()),
+                author_id: Uuid::nil(),
+                status: Some(1),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({ "ssn": ssn, "bio": bio })),
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("whole fields projection test".to_string()),
+            },
+            &admin,
+        )
+        .await
+        .expect("create the person")
+        .id;
+    let items = std::sync::Arc::clone(app.state.items());
+    common::defer_cleanup(move || async move {
+        let _ = items.delete(id, &admin).await;
+    });
+    id
+}
+
+/// The `person` type, put back the way it was (or removed) when the test ends.
+async fn ensure_person_type(app: &TestApp) {
+    app.restore_content_type_on_exit(PERSON_TYPE).await;
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+         VALUES ($1, 'Person', 'Field-access fixture', true, 'Name', 'seam_test', '{\"fields\": []}'::jsonb) \
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(PERSON_TYPE)
+    .execute(&app.db)
+    .await
+    .expect("seed the person type");
+    app.state
+        .content_types()
+        .replace(
+            PERSON_TYPE,
+            "Person",
+            Some("Field-access fixture"),
+            serde_json::json!({ "fields": [] }),
+        )
+        .await
+        .ok();
+}
+
+/// People whose title carries `marker`, projecting `title` and the whole
+/// `fields` column, under `label` when one is given.
+fn whole_fields_definition(marker: &str, label: Option<&str>) -> QueryDefinition {
+    QueryDefinition {
+        base_table: "item".to_string(),
+        item_type: Some(PERSON_TYPE.to_string()),
+        filters: vec![QueryFilter {
+            field: "title".to_string(),
+            operator: FilterOperator::Contains,
+            value: FilterValue::String(marker.to_string()),
+            exposed: false,
+            exposed_label: None,
+            widget: Default::default(),
+        }],
+        fields: vec![
+            QueryField {
+                field_name: "title".to_string(),
+                table_alias: None,
+                label: None,
+            },
+            QueryField {
+                field_name: "fields".to_string(),
+                table_alias: None,
+                label: label.map(str::to_string),
+            },
+        ],
+        stage_aware: true,
+        ..Default::default()
+    }
+}
+
+/// A definition projecting the whole `fields` column drops the fields
+/// `tap_field_access` denies, through the ad hoc endpoint and through a public
+/// named gather run anonymously, exactly as a `SELECT item.*` gather does.
+///
+/// The ad hoc caller holds `administer site` through a role, not superuser: a
+/// superuser bypasses field access on every read path, `item.*` included, so it
+/// is asserted here only to see what `item.*` shows it.
+#[test]
+fn whole_fields_projection_drops_denied_fields() {
+    run_test(async {
+        let app = app_with_field_access();
+        ensure_person_type(app).await;
+
+        let marker = format!("GFIELDS-{}", Uuid::now_v7().simple());
+        let ssn = format!("ssn-{marker}");
+        let bio = format!("bio-{marker}");
+        make_person(app, &marker, &ssn, &bio).await;
+
+        // (a) The ad hoc endpoint, as a holder of `administer site` without
+        // `view pii`.
+        let (_id, cookies) = user_holding(app, "gfields-site", &["administer site"]).await;
+        let (status, body) = post_adhoc(
+            app,
+            &whole_fields_definition(&marker, None),
+            &cookies,
+            &username("gfields-site"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(body.contains(&bio), "the allowed field is returned: {body}");
+        assert!(!body.contains(&ssn), "the denied field leaked: {body}");
+
+        // The same caller's `item.*` gather, for the parity claim.
+        let mut star = whole_fields_definition(&marker, None);
+        star.fields.clear();
+        let (status, body) = post_adhoc(app, &star, &cookies, &username("gfields-star")).await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(
+            body.contains(&bio),
+            "item.* returns the allowed field: {body}"
+        );
+        assert!(
+            !body.contains(&ssn),
+            "item.* drops the denied field: {body}"
+        );
+
+        // A superuser sees every field through both, by the admin bypass.
+        let name = username("gfields-super");
+        let super_cookies = app
+            .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+        for definition in [whole_fields_definition(&marker, None), star] {
+            let (status, body) =
+                post_adhoc(app, &definition, &super_cookies, &username("gfields-super")).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert!(
+                body.contains(&bio) && body.contains(&ssn),
+                "superuser: {body}"
+            );
+        }
+
+        // (b) A public named gather projecting `fields` under a label, run
+        // anonymously.
+        let query_id = format!("gfields_named_{}", Uuid::now_v7().simple());
+        let definition =
+            serde_json::to_value(whole_fields_definition(&marker, Some("All"))).unwrap();
+        let display = serde_json::to_value(display(25)).unwrap();
+        sqlx::query(
+            "INSERT INTO gather_query \
+             (query_id, label, description, definition, display, plugin, created, changed) \
+             VALUES ($1, 'whole fields', NULL, $2, $3, 'test', 0, 0)",
+        )
+        .bind(&query_id)
+        .bind(&definition)
+        .bind(&display)
+        .execute(&app.db)
+        .await
+        .expect("seed the named gather");
+        let gather = app.state.clone();
+        let cleanup_id = query_id.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM gather_query WHERE query_id = $1")
+                .bind(&cleanup_id)
+                .execute(gather.db())
+                .await;
+            let _ = gather.gather().reload_from_db().await;
+        });
+        app.state.gather().reload_from_db().await.expect("reload");
+
+        let response = app
+            .request(
+                Request::get(format!("/api/query/{query_id}/execute"))
+                    .header("x-forwarded-for", test_ip_for(&query_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes).into_owned();
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(body.contains(&bio), "the allowed field is returned: {body}");
+        assert!(!body.contains(&ssn), "the denied field leaked: {body}");
+    });
+}

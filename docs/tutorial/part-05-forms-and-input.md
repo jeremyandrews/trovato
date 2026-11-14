@@ -372,7 +372,7 @@ For templates that access Blocks fields directly (such as Gather query templates
 {{ row.fields.field_description | render_blocks | safe }}
 ```
 
-The filter accepts either a JSON array of blocks (producing rendered HTML via the same pipeline described above) or a plain string (returned as-is for backward compatibility with TextLong fields). The `| safe` is required because the output is pre-sanitized HTML from ammonia. The conference card template (`templates/gather/includes/conf-card.html`) uses this pattern.
+The filter accepts either a JSON array of blocks (producing rendered HTML via the same pipeline described above, sanitized by ammonia) or a plain string, which is not markup and is HTML-escaped so it renders as text. The `| safe` is required because the output is already safe HTML: sanitized blocks, or an escaped string. A field whose string value is meant to be markup should use the `markdown` or `text_format` filter instead. The conference card template (`templates/gather/includes/conf-card.html`) uses this pattern.
 
 ### 3.2: Syntax Highlighting for Code Blocks
 

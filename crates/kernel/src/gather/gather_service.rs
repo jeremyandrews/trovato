@@ -733,6 +733,8 @@ impl GatherService {
         // captured before `final_definition` is moved into the builder def.
         let is_star = final_definition.fields.is_empty();
         let field_map = access::field_projection_map(&final_definition.fields);
+        // A projection of the whole `fields` column is filtered like `item.*`.
+        let whole_fields_keys = access::whole_fields_projection_keys(&final_definition.fields);
         // The keys the projection actually produces. A plain column is projected
         // unaliased, so its key is its field name and NOT its label; taking the
         // label here meant the row-rebuild below retained a key no row had, and
@@ -803,6 +805,7 @@ impl GatherService {
                 &mut tx,
                 is_star,
                 &field_map,
+                &whole_fields_keys,
                 &output_keys,
             )
             .await?
@@ -907,6 +910,7 @@ impl GatherService {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         is_star: bool,
         field_map: &[(String, String)],
+        whole_fields_keys: &[String],
         output_keys: &[String],
     ) -> Result<(Vec<serde_json::Value>, bool)> {
         let Some(items) = self.item_access.get() else {
@@ -974,8 +978,16 @@ impl GatherService {
         // rather than exhausting the candidate source.
         let access_capped = visible.len() < page_size && !exhausted;
 
-        self.apply_field_filtering(items, viewer, &mut visible, is_star, field_map, output_keys)
-            .await;
+        self.apply_field_filtering(
+            items,
+            viewer,
+            &mut visible,
+            is_star,
+            field_map,
+            whole_fields_keys,
+            output_keys,
+        )
+        .await;
 
         Ok((visible, access_capped))
     }
@@ -986,7 +998,10 @@ impl GatherService {
     /// For `SELECT item.*` rows, denied keys are dropped from the row's `fields`
     /// object. For explicit-field gathers, each row is rebuilt to only its
     /// originally-requested output keys minus denied dynamic fields — which also
-    /// strips the access columns injected for the item-access pass.
+    /// strips the access columns injected for the item-access pass. A
+    /// projection of the whole `fields` column is filtered like `item.*`: its
+    /// nested object loses the denied keys.
+    #[allow(clippy::too_many_arguments)] // Threaded query state; a struct would only obscure it.
     async fn apply_field_filtering(
         &self,
         items: &ItemService,
@@ -994,6 +1009,7 @@ impl GatherService {
         rows: &mut [serde_json::Value],
         is_star: bool,
         field_map: &[(String, String)],
+        whole_fields_keys: &[String],
         output_keys: &[String],
     ) {
         if rows.is_empty() {
@@ -1017,6 +1033,15 @@ impl GatherService {
                 for (_out, item_field) in field_map {
                     entry.insert(item_field.clone());
                 }
+                // A whole `fields` projection is decided per nested key, as the
+                // star case is.
+                for key in whole_fields_keys {
+                    if let Some(obj) = row.get(key).and_then(|v| v.as_object()) {
+                        for k in obj.keys() {
+                            entry.insert(k.clone());
+                        }
+                    }
+                }
             }
         }
 
@@ -1037,7 +1062,14 @@ impl GatherService {
                 .unwrap_or_default()
                 .to_string();
             let decisions = decisions_by_type.get(&item_type);
-            access::filter_row_fields(row, is_star, field_map, output_keys, decisions);
+            access::filter_row_fields(
+                row,
+                is_star,
+                field_map,
+                whole_fields_keys,
+                output_keys,
+                decisions,
+            );
         }
     }
 

@@ -11,7 +11,9 @@
 //!   `add_access_columns`).
 //! - [`field_projection_map`] maps a gather's explicit `fields.*` projections
 //!   back to the item field name the field-access decision is keyed on, so
-//!   restricted fields can be dropped from the projected columns.
+//!   restricted fields can be dropped from the projected columns, and
+//!   [`whole_fields_projection_keys`] finds a projection of the whole `fields`
+//!   column, which is filtered key by key like a `SELECT item.*` row.
 //! - The tuning constants back the D-26 over-fetch/geometric-backfill loop
 //!   (`GatherService::execute_definition_with_stages`).
 //!
@@ -169,6 +171,33 @@ pub(crate) fn field_projection_map(fields: &[QueryField]) -> Vec<(String, String
     map
 }
 
+/// For a gather that projects an **explicit** field list, the output keys of the
+/// projections of the whole `fields` column (the field named exactly `fields`,
+/// with or without a label).
+///
+/// Such a projection carries the same nested object `SELECT item.*` does, so it
+/// is filtered the same way: per key of the nested object, not per projection.
+/// [`field_projection_map`] cannot express that (it maps one output key to one
+/// item field), which is why a whole `fields` projection used to map to nothing
+/// and come back unfiltered. The key is the projection's
+/// [`QueryField::result_key`], the same rule the query builder aliases by.
+pub(crate) fn whole_fields_projection_keys(fields: &[QueryField]) -> Vec<String> {
+    fields
+        .iter()
+        .filter(|field| field.field_name == "fields")
+        .map(|field| field.result_key().to_string())
+        .collect()
+}
+
+/// Remove every key `decisions` denies from a nested `fields` object; a field
+/// with no decision is kept (fail-open).
+fn retain_allowed_fields(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    decisions: &HashMap<String, bool>,
+) {
+    fields.retain(|k, _| decisions.get(k).copied().unwrap_or(true));
+}
+
 /// Drop the fields the viewer may not see from one projected gather row
 /// (Story 3.4 tier-2), given the per-type field-access `decisions` (a `false`
 /// value = deny). Pure so the drop mechanics are unit-tested without a DB or a
@@ -178,11 +207,15 @@ pub(crate) fn field_projection_map(fields: &[QueryField]) -> Vec<(String, String
 ///   nested `fields` object; every other key is untouched.
 /// - Explicit-field rows: the row is rebuilt to only its originally-requested
 ///   `output_keys`, minus any whose backing dynamic field was denied — which
-///   also strips the access columns injected for the item-access pass.
+///   also strips the access columns injected for the item-access pass. A
+///   projection of the whole `fields` column (its output key in
+///   `whole_fields_keys`, see [`whole_fields_projection_keys`]) is filtered
+///   exactly like the star case: denied keys are removed from its object.
 pub(crate) fn filter_row_fields(
     row: &mut serde_json::Value,
     is_star: bool,
     field_map: &[(String, String)],
+    whole_fields_keys: &[String],
     output_keys: &[String],
     decisions: Option<&HashMap<String, bool>>,
 ) {
@@ -190,9 +223,16 @@ pub(crate) fn filter_row_fields(
         if let Some(fields) = row.get_mut("fields").and_then(|v| v.as_object_mut())
             && let Some(decisions) = decisions
         {
-            fields.retain(|k, _| decisions.get(k).copied().unwrap_or(true));
+            retain_allowed_fields(fields, decisions);
         }
     } else if let Some(obj) = row.as_object_mut() {
+        if let Some(decisions) = decisions {
+            for key in whole_fields_keys {
+                if let Some(fields) = obj.get_mut(key).and_then(|v| v.as_object_mut()) {
+                    retain_allowed_fields(fields, decisions);
+                }
+            }
+        }
         let denied: HashSet<&str> = field_map
             .iter()
             .filter(|(_out, item_field)| {
@@ -327,7 +367,7 @@ mod tests {
         decisions.insert("ssn".to_string(), false); // deny
         decisions.insert("salary".to_string(), true); // allow
         // "name" absent from decisions ⇒ fail-open keep.
-        filter_row_fields(&mut row, true, &[], &[], Some(&decisions));
+        filter_row_fields(&mut row, true, &[], &[], &[], Some(&decisions));
         let fields = row.get("fields").unwrap().as_object().unwrap();
         assert!(!fields.contains_key("ssn"), "denied field must be dropped");
         assert!(fields.contains_key("salary"));
@@ -353,7 +393,14 @@ mod tests {
         let output_keys = vec!["title".to_string(), "ssn".to_string()];
         let mut decisions = HashMap::new();
         decisions.insert("ssn".to_string(), false); // deny ssn
-        filter_row_fields(&mut row, false, &field_map, &output_keys, Some(&decisions));
+        filter_row_fields(
+            &mut row,
+            false,
+            &field_map,
+            &[],
+            &output_keys,
+            Some(&decisions),
+        );
         let obj = row.as_object().unwrap();
         assert!(obj.contains_key("title"), "requested non-field column kept");
         assert!(!obj.contains_key("ssn"), "denied projected field dropped");
@@ -374,7 +421,7 @@ mod tests {
         let field_map = vec![("ssn".to_string(), "ssn".to_string())];
         let output_keys = vec!["ssn".to_string()];
         // No decision / allow ⇒ kept; access columns still stripped.
-        filter_row_fields(&mut row, false, &field_map, &output_keys, None);
+        filter_row_fields(&mut row, false, &field_map, &[], &output_keys, None);
         let obj = row.as_object().unwrap();
         assert!(obj.contains_key("ssn"));
         assert!(!obj.contains_key("id"));
@@ -398,5 +445,70 @@ mod tests {
                 ("m".to_string(), "meta".to_string()),
             ]
         );
+    }
+
+    /// The whole `fields` column, unlabelled: its output key is `fields`, and
+    /// `field_projection_map` still maps nothing for it.
+    #[test]
+    fn whole_fields_projection_unlabelled_is_recognised() {
+        let fields = vec![field("title", None), field("fields", None)];
+        assert_eq!(whole_fields_projection_keys(&fields), vec!["fields"]);
+        assert!(field_projection_map(&fields).is_empty());
+    }
+
+    /// Labelled, a plain column keeps its own name as its key (it is projected
+    /// unaliased), so the label does not hide it from the filter.
+    #[test]
+    fn whole_fields_projection_labelled_is_recognised() {
+        let fields = vec![field("fields", Some("All"))];
+        assert_eq!(whole_fields_projection_keys(&fields), vec!["fields"]);
+        assert!(whole_fields_projection_keys(&[field("fields.ssn", None)]).is_empty());
+    }
+
+    fn whole_fields_row_filtered(label: Option<&str>) -> serde_json::Value {
+        let projected = vec![field("title", None), field("fields", label)];
+        let mut row = serde_json::json!({
+            "title": "T",
+            "fields": { "name": "Ada", "ssn": "123", "salary": "9" },
+            "id": "abc", "type": "person", "status": 1,
+            "author_id": "a", "stage_id": "s",
+        });
+        let output_keys: Vec<String> = projected
+            .iter()
+            .map(|f| f.result_key().to_string())
+            .collect();
+        let mut decisions = HashMap::new();
+        decisions.insert("ssn".to_string(), false);
+        decisions.insert("salary".to_string(), true);
+        filter_row_fields(
+            &mut row,
+            false,
+            &field_projection_map(&projected),
+            &whole_fields_projection_keys(&projected),
+            &output_keys,
+            Some(&decisions),
+        );
+        row
+    }
+
+    #[test]
+    fn filter_row_whole_fields_unlabelled_drops_denied_fields() {
+        let row = whole_fields_row_filtered(None);
+        let fields = row.get("fields").unwrap().as_object().unwrap();
+        assert!(!fields.contains_key("ssn"), "denied field must be dropped");
+        assert!(fields.contains_key("salary"));
+        assert!(fields.contains_key("name"), "un-opinioned field kept");
+        let obj = row.as_object().unwrap();
+        assert!(obj.contains_key("title"));
+        assert!(!obj.contains_key("id"), "access columns still stripped");
+    }
+
+    #[test]
+    fn filter_row_whole_fields_labelled_drops_denied_fields() {
+        let row = whole_fields_row_filtered(Some("All"));
+        let fields = row.get("fields").unwrap().as_object().unwrap();
+        assert!(!fields.contains_key("ssn"), "denied field must be dropped");
+        assert!(fields.contains_key("salary"));
+        assert!(fields.contains_key("name"));
     }
 }
