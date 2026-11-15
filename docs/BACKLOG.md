@@ -15,7 +15,7 @@ Trovato.
 A line number is where the thing is at `d3f4cd7`; the source documents' own line
 numbers are often stale and are not repeated.
 
-In short: 117 distinct findings, 88 of them open, and 23 proposed as blocking the
+In short: 123 distinct findings, 94 of them open, and 25 proposed as blocking the
 1.0 tag, plus 25 marked as a Ritrovo gate by the ruling of 2026-09-17. The [Tally](#tally) lists them and [Why these block 1.0](#why-these-block-10)
 argues each.
 
@@ -29,6 +29,7 @@ argues each.
 | Ritrovo | `FRICTION.md` and `docs/ritrovo/STATUS.md` in [ritrovo](https://github.com/jeremyandrews/ritrovo), 34 findings and 48 blocked rows | v0.102.0 |
 | This tree's plans | the open items in `ROADMAP.md` and `KNOWN-ISSUES.md` | 0.102.0 |
 | AI assistant work | four candidates reported during the 0.102 assistant implementation and never written down | 0.102.0 |
+| tag1.com relaunch audit | `docs/RELAUNCH-PLAN.md` section 9 in tag1consulting/tag1-trovato, the 2026-11-14 audit, six kernel findings K1 to K6 | v0.104.0 (`6177ba6`) and `main` at `7931030` |
 
 Where two sources describe one defect the row keeps every identifier. A source
 identifier is how to find the original write-up; the `BL-` number is how the fixes
@@ -81,12 +82,12 @@ who made it. Nothing is waived here. The 25 marked findings are listed in
 
 | ID | Finding | Where | Status | Class | Surface |
 |---|---|---|---|---|---|
-| BL-01 (SITE-1) | Every GET that is not a special category, static assets and HTML pages included, draws on one `api` bucket of 100 requests a minute per client. `/static` is not exempt and no environment variable or setting changes the limits. Behind a proxy with `TRUSTED_PROXIES` unset, every visitor shares the proxy's bucket. | `crates/kernel/src/middleware/rate_limit.rs:99-117` (defaults), `:251-273` (`categorize_path` falls through to `api`); `crates/kernel/src/state.rs:789-793` (`RateLimitConfig::default()`) | open | 1.0 | additive |
+| BL-01 (SITE-1) | Every GET that is not a special category, HTML pages included, draws on one `api` bucket of 100 requests a minute per client, shared with the real API. Behind a proxy with `TRUSTED_PROXIES` unset, every visitor shares the proxy's bucket. Two parts of the original text no longer hold (the tag1.com relaunch audit found both at v0.104.0, rechecked at `3c0c0d9`): `/static`, the `FILES_URL` prefix and `/favicon.ico` have their own `static` bucket of 2000 a minute, and every bucket's limit can be changed with `TROVATO_RATE_LIMIT_<BUCKET>` or the `rate_limit.<bucket>` site setting, environment first, read once at startup. What is left is HTML pages in the `api` bucket and the proxy default. | `crates/kernel/src/middleware/rate_limit.rs:179` (`api` default), `:193` (`static` default), `:454-462,478-479` (the `static` category), `:495-498` (other GETs fall through to `api`); `crates/kernel/src/middleware/rate_limit.rs:165-167,265-290` and `crates/kernel/src/state.rs:324` (where `TROVATO_RATE_LIMIT_<BUCKET>` is read); `crates/kernel/src/state.rs:336` (static prefixes) | open | 1.0 | additive |
 | BL-02 (SITE-2) | Nothing could write a content translation: the kernel read and overlaid `item_translation` and no route, API, config import path, host function or shipped plugin inserted into it. Two of the three write paths now exist. `POST /admin/content/{id}/translate/{lang}` saves one from the admin form with the usual `_token` protection, and a delete route withdraws it; `item_translation.<uuid>.<lang>.yml` is a config entity, so a set can ship translations and a translated site exports and re-imports. The SDK path is **not** added and is a finding: no WIT item write can carry a language, so it would need a signature change. | `crates/kernel/src/content/item_service.rs` (`save_translation`, `delete_translation`); `crates/kernel/src/routes/admin_translation.rs`; `crates/kernel/src/config_storage/direct.rs` | fixed (#94), SDK path open | 1.0, **Ritrovo gate** for the SDK path | additive |
 | BL-03 (SITE-3, G-VARIABLES-DOUBLE-NAMESPACE) | `variables-get` and `variables-set` prefix every key with `plugin.{name}.` and a missing key returns the caller's default without a log line. Neither the WIT nor the SDK mentions the namespace, so a plugin cannot read a site-wide variable and an operator cannot see which key a plugin variable lives under. | `crates/kernel/src/host/variables.rs:46-48,58,106-107`; `crates/wit/kernel.wit:42-46`; `crates/plugin-sdk/src/host.rs:720-729` | partly fixed: the host now logs at warn level on the first miss per key per process, naming both the key asked for and the namespaced key it resolved to, so an operator can see where a plugin variable lives and a silent default is no longer silent. The other half is **open**: a plugin still cannot tell an unset variable from a set one, because the WIT declares `get -> string` with no `option` or `result`, and the SDK reads every negative return as a host failure — a sentinel for "unset" would make an ordinary unset variable look like a failure to every plugin already compiled. That is a contract change, so it needs an opt-in addition in a later minor: a second function returning `option<string>`, leaving `get` as it is. | 1.0.x | the log half was additive; the unset signal is frozen, and so is `get` reading outside the namespace |
 | BL-04 (SITE-4) | `<html lang>` and `text_direction` were overwritten with the site default after the route set them. | `crates/kernel/src/routes/helpers.rs:211-229` | fixed `406ec63` | closed | n/a |
 | BL-05 (SITE-5) | The front page never applied the translation overlay. The configured front-page item now does. The promoted-items fallback listing still takes no language (`crates/kernel/src/routes/front.rs:63,298`). | `crates/kernel/src/routes/front.rs:201-222` | fixed `406ec63`, switcher `4ff80e3` | closed | n/a |
-| BL-06 (SITE-6, SITE-18 residual) | The kernel emits relative URLs where the protocols require absolute ones: sitemap `<loc>`, the `Sitemap:` line in robots.txt, and `hreflang` alternates. The sitemap lists items only. A plugin `api` route on a path a kernel route already serves makes axum panic at startup instead of being refused. | `crates/kernel/src/routes/sitemap.rs:64-73,141`; `crates/kernel/src/routes/helpers.rs:1017-1035`; `crates/kernel/src/routes/plugin_api.rs:144-180` (duplicates checked among plugins only) | open | 1.0 | additive |
+| BL-06 (SITE-6, SITE-18 residual) | The kernel emitted relative URLs where the protocols require absolute ones: sitemap `<loc>`, the `Sitemap:` line in robots.txt, and `hreflang` alternates. The sitemap and robots.txt now build on `SITE_URL`, alternates in the sitemap included. Still open: the `hreflang` links in a page's `<head>` carry bare paths; the sitemap lists items only; and a plugin `api` route on a path a kernel route already serves makes axum panic at startup instead of being refused. The tag1.com relaunch audit saw `localhost` in the sitemap's addresses: that is `SITE_URL` left unset, which defaults to `http://localhost:{PORT}`, so the remaining symptom there is site configuration, not a kernel defect. | `crates/kernel/src/routes/sitemap.rs:117-118,138-139,155,341` (absolute, fixed); `crates/kernel/src/config.rs:639` (the `SITE_URL` default); `crates/kernel/src/routes/helpers.rs:1040-1061`, `templates/base.html:7-8` (head alternates, open); `crates/kernel/src/routes/sitemap.rs:165` (items only); `crates/kernel/src/routes/plugin_api.rs:136-177` (duplicates checked among plugins only) | partly fixed: sitemap and robots.txt at `6b5c9b0` (#84). Head `hreflang`, sitemap coverage and the route panic are **open** | 1.0 | additive |
 | BL-07 (SITE-7) | The login page's "Forgot password?" linked to `/user/password-reset`, which is registered POST only and takes JSON, so it was a 405. `a48a7ec` repoints the link at `/user/recover`, which is a real HTML page, so the link no longer lands on a 405. That is all it changes: `/user/recover` runs on an inline script the enforcing CSP blocks (BL-08), the link in the reset email still returns JSON, and no part of the email reset flow is a page a browser can complete. How the reset flow should work has not been ruled on, so the row stays open. | `templates/user/login.html:39`; `crates/kernel/src/routes/password_reset.rs:33,104-121,173`; `crates/kernel/src/routes/recovery.rs` | partly fixed: the link at `a48a7ec`. The flow itself is **open** | 1.0 | additive |
 | BL-08 (SITE-8) | The enforcing CSP has no `'unsafe-inline'`, nonce or hash for scripts, and four stock templates depend on inline `<script>` blocks: account recovery, sessions, passkeys and admin recovery settings. (Login was the fifth; its passkey script moved to `static/js/passkey-login.js`.) Five more carry inline `on*=` handlers, two of them the `confirm()` guard on a delete, so those deletes happen without confirmation. The only workaround is `CSP_REPORT_ONLY=true`. | `crates/kernel/src/middleware/security_headers.rs:34-42`; `templates/user/recover.html:53`, `sessions.html:84`, `passkeys.html:109`, `templates/admin/recovery.html:53`; handlers in `templates/admin/field-list.html:43`, `admin/ai-providers.html:62`, `admin/tile-form.html:41`, `form/fieldset.html:6`, `elements/comments.html:60` | open | 1.0 | additive |
 | BL-09 (SITE-9) | `mime_from_path` served every extension it did not know as `application/octet-stream` under `nosniff`, which makes a browser download a file rather than display or use it. All eight extensions the report named now have arms: `.md`, `.txt` and `.xml`, then `.webp`, `.avif`, `.pdf`, `.webmanifest` and `.otf`. An extension outside the table is still `application/octet-stream`, deliberately. | `crates/kernel/src/routes/static_files.rs`, `mime_from_path` | fixed `c4dffc5` (`.md`, `.txt`, `.xml`) and #90 (`.webp`, `.avif`, `.pdf`, `.webmanifest`, `.otf`) | closed | additive |
@@ -441,6 +442,24 @@ not fix. Each names a location checked at `28a029b` or later.
 | BL-116 (G-ADMIN-DASHBOARD-NOT-DELEGABLE) | #92 gave every admin screen its own permission and left `/admin` itself on `administer site`, so a role granted only `administer comments` reached `/admin/content/comments` by typing the address and got 403 on the dashboard that would have linked to it. `docs/admin-permissions.md` recorded it as a known gap. `/admin` now takes `access administration pages`, the weakest permission in `KERNEL_PERMISSIONS`: admission to the section, no authority inside it. A migration grants it once to every role already holding `administer site`; nothing implies it afterwards. The dashboard's cards are filtered to what the viewer may open. The admin layout's sidebar is still unfiltered, which #92 introduced and this did not fix — see BL-117. | `crates/kernel/src/models/role.rs` (`KERNEL_PERMISSIONS`); `crates/kernel/src/routes/admin.rs` (`dashboard`); `crates/kernel/migrations/20260920000001_grant_access_administration_pages.sql`; `docs/admin-permissions.md` | fixed (#97) | closed | n/a |
 | BL-117 (G-ADMIN-SIDEBAR-UNFILTERED) | The admin layout's sidebar (`templates/page--admin.html`) lists every administration screen unconditionally, so a delegated role sees a column of links that answer 403. Harmless but hollow: it has been so since #92 made those screens delegable, and #97 made it visible by letting a delegated role through the front door. Filtering it needs the viewer inside `render_admin_template`, which takes no session and has 80 call sites, so it is a signature change rather than a template edit. | `templates/page--admin.html:177-209`; `crates/kernel/src/routes/helpers.rs:351` (`render_admin_template`, no session) | open | 1.0.x | additive |
 
+## From the tag1.com relaunch audit
+
+Six kernel findings from the 2026-11-14 audit for the tag1.com relaunch, written
+against v0.104.0 (`6177ba6`) and `main` at `7931030`. Its source is
+`docs/RELAUNCH-PLAN.md` section 9 in tag1consulting/tag1-trovato, where they are
+K1 to K6. Each was checked against `main` at `3c0c0d9` by reading the code, and
+every line number below is at that revision. All six are still present; BL-121
+reproduces only by measurement, and BL-122 is narrower than the audit described.
+
+| ID | Finding | Where | Status | Class | Surface |
+|---|---|---|---|---|---|
+| BL-118 (tag1 audit K1) | The kernel's WASI stubs provide `fd_write`, `random_get`, `environ_get`, `environ_sizes_get` and `proc_exit` from `wasi_snapshot_preview1`, and nothing else. A plugin built with current stable Rust (1.100) imports `clock_time_get`, which the same source built on 1.96 does not, and every tap it exports then fails at dispatch with `unknown import: wasi_snapshot_preview1::clock_time_get`. Loading does not catch it: the import pre-check skips WASI imports, the linker is built without instantiating, and the loader reports `loaded=N failed=0`, so the break first shows on the first request that dispatches to the plugin. The stock plugins escape it only because the image builds them on the pinned 1.96.0; bumping the pin would break all of them the same way. | `crates/kernel/src/plugin/runtime.rs:946-1032` (`add_wasi_stubs`), `:891-898` (the pre-check excludes WASI), `:707-711` (the load summary); `crates/kernel/src/tap/dispatcher.rs:437` (instantiation, per dispatch); `rust-toolchain.toml:27` (the pin) | open | 1.0 | additive |
+| BL-119 (tag1 audit K2) | Two plugins may declare the same content type through `tap_item_info`, and neither is refused or warned about. Each declaration upserts the `item_type` row: label, description and fields are overwritten by whichever plugin is dispatched last, while `item_type.plugin` keeps the first, because the upsert does not update that column. The second plugin's `tap_perm` declarations for the type carry the same names as the first's and are dropped as duplicates, with a warning that names the permission and not the type collision behind it. Seen with `trovato_blog` and a site plugin both declaring `blog`. | `crates/kernel/src/content/type_registry.rs:186-234` (`sync_from_plugins`), `:237-266` (`register_type`, no ownership check); `crates/kernel/src/models/item_type.rs:143-169` (`upsert`, `plugin` not in `DO UPDATE SET`); `crates/kernel/src/plugin/permission_registry.rs:128-134` | open | 1.0.x | additive to warn; frozen if the second declaration is refused, since that changes what an existing `tap_item_info` answer does |
+| BL-120 (tag1 audit K3) | The anonymous user's id is the nil UUID, and the kernel honours a `Grant` from a plugin's `tap_item_access` for any operation, writes included, whether or not the user is authenticated. Items written by config import carry the nil UUID as their author, so a plugin rule granting authors their own items treats every anonymous visitor as the author of every imported item. Measured on `7931030`, after #122 and #123: an anonymous `POST /item/<id>/edit` saved. The plugin's rule is the proximate fault, but the kernel is what turns the natural form of that rule into anonymous edit rights. Refusing a plugin grant of a write to an unauthenticated user, or no longer letting the anonymous id match an author, would close it whatever the plugin does. | `crates/kernel/src/models/user.rs:13`; `crates/kernel/src/content/item_service.rs:1276-1299` (grant aggregation, no authentication check), `:1308` (`is_own` compares the same ids); `crates/kernel/src/config_storage/direct.rs:916` (config-imported items get the nil author) | open | 1.0 | frozen if the kernel overrides a plugin's grant (it changes what a `tap_item_access` answer means); additive if config-imported items get a real author |
+| BL-121 (tag1 audit K4) | Gather queries inserted into `gather_query` after boot (by `config import` from the CLI, or a direct insert) are not served until the process restarts. Measured on `main` at `7931030`; v0.104.0 served them live, so this is a regression since the last release. The cause is not isolated. A background task re-reads the table every `CACHE_TTL_GATHER_QUERIES` seconds (default 60) and inserts every row into the query cache, and reading that path at `3c0c0d9` does not show why a new row would stay unserved; the gather changes since v0.104.0 are to validation (#118) and table rendering (#114), not to the reload. It needs a reproduction before a fix. | `crates/kernel/src/state.rs:1073-1085` (the reload task); `crates/kernel/src/gather/gather_service.rs:509-552` (`load_queries`), `:561-565` (`reload_from_db`); `crates/kernel/src/config.rs:10,43-45` (the interval) | open | 1.0.x | additive |
+| BL-122 (tag1 audit K5) | The release image ships the in-tree test and reference plugins as installable plugins. The Dockerfile builds WebAssembly only for the stock plugins, then makes a directory under `/app/plugins` for every directory in `plugins/` and copies in its `.info.toml` and migrations. So `test_ai_background`, `test_assistant_scope`, `test_e2e_callee`, `test_e2e_caller`, `test_e2e_nocaps`, `test_plugin_api`, `test_queue_worker`, `test_recovery_bystander`, `trovato_field_access_ref`, `trovato_record_ref` and `trovato_recovery_ref` are discovered with no module behind them; all are `default_enabled = false`, so none loads unless an operator enables it, and then it fails. `test_e2e_bystander` and `ritrovo_importer` have no `.info.toml`, so each becomes an empty directory that discovery warns about, and discovery runs twice per boot. The audit described this as shipping test plugins; at `3c0c0d9` it is their manifests and migrations that ship, not their code. | `Dockerfile:20-31` (the build list), `:55-68` (every `plugins/` directory copied); `crates/kernel/src/plugin/runtime.rs:612-614` (the warning); `crates/kernel/src/state.rs:362` and `crates/kernel/src/plugin/runtime.rs:651` (the two discovery passes) | open | 1.0.x | additive (image build only) |
+| BL-123 (tag1 audit K6) | On first boot the kernel dispatches `tap_install` to every enabled plugin that has not had it, and logs `tap_install not implemented or failed` at WARN for each one that returns nothing. No in-tree plugin declares `tap_install`, so a stock first boot logs one warning per enabled plugin, and a real install failure reads the same as a missing export. The dispatcher already tells the two apart: `dispatch_to_plugin_outcome` returns `NoHandler` for a plugin that does not implement the tap, and the boot code calls `dispatch_to_plugin`, which folds that into `None`. | `crates/kernel/src/state.rs:488-503`; `crates/kernel/src/tap/dispatcher.rs:146-175` | open | 1.0.x | additive |
+
 ## The fix series against this page
 
 Eleven of the twelve pull requests that were open against rows on this page have
@@ -482,20 +501,20 @@ should get a row when the next pass runs.
 
 ## Tally
 
-117 distinct findings after merging duplicates. By status: 82 open, 4 partly fixed
-(BL-03, BL-07, BL-21, BL-25), 28 fixed, 2 that do not reproduce, and 1 decided
-(BL-109). By class: 23 proposed to block 1.0, 30 to ship in 1.0.x, 35 to wait until
+123 distinct findings after merging duplicates. By status: 87 open, 5 partly fixed
+(BL-03, BL-06, BL-07, BL-21, BL-25), 28 fixed, 2 that do not reproduce, and 1 decided
+(BL-109). By class: 25 proposed to block 1.0, 34 to ship in 1.0.x, 35 to wait until
 after 1.0, and 29 closed. The two partitions cross at three rows: of the two that do
 not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
 on one database confirm it; and BL-02 is fixed in the kernel and stays in 1.0 for
 the SDK half its row names. So the 29 closed are 27 of the 28 fixed, plus BL-14 and
-BL-109. Everything not closed — 88 rows — is what "open" means in the paragraph
-above, and the four partly fixed rows are inside it, each one open on the half its
+BL-109. Everything not closed — 94 rows — is what "open" means in the paragraph
+above, and the five partly fixed rows are inside it, each one open on the half its
 row names.
 
-The 23: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-67,
+The 25: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-67,
 BL-68, BL-73, BL-74, BL-85, BL-87, BL-91, BL-92, BL-93, BL-98, BL-99, BL-100,
-BL-104, BL-112.
+BL-104, BL-112, BL-118, BL-120.
 
 Four of the 30 that stood here before closed in the fix series — BL-09, BL-11,
 BL-12 and BL-15 — and BL-112 is new, so that list was three shorter. Three more
@@ -506,6 +525,11 @@ required. The fix series has also closed BL-33 (#96) and BL-116 (#97), neither o
 which was in this list. BL-116 and BL-117 are new, which is why the total is 117
 rather than 115. These counts were last recomputed from the rows themselves at
 #97; the four closes before #96 had updated their own rows without the tally.
+
+The tag1.com relaunch audit added six rows, BL-118 to BL-123: two to the 1.0 list
+above and four to 1.0.x, which is why the total is 123. BL-06 moved from open to
+partly fixed in the same pass, because #84 had made the sitemap and robots.txt
+absolute without the row saying so. Recomputed from the rows at `3c0c0d9`.
 
 The eight Ritrovo added to that list are argued in
 [Why these block 1.0](#why-these-block-10) with the rest. Twenty-five findings
@@ -519,12 +543,12 @@ until `dcb7b35` closed it; Ritrovo row 38.3 now waits on BL-02 alone.
 Each is argued against the test in [How to read a row](#how-to-read-a-row). Effort
 is a rough size: small is an afternoon, medium a few days.
 
-**BL-01, static assets rate-limited as API calls.** Day one. A public deployment
-sits behind a TLS proxy, and with `TRUSTED_PROXIES` unset (the default) every visitor
-shares the proxy's single budget of 100 GETs a minute, pages and assets together.
-With it set, crawlers and cold-cache visitors on asset-heavy pages still meet 429s,
-and an operator cannot tune it without rebuilding. Exempt `/static` and read the
-limits from configuration. Small.
+**BL-01, pages rate-limited as API calls.** Day one. A public deployment sits
+behind a TLS proxy, and with `TRUSTED_PROXIES` unset (the default) every visitor
+shares the proxy's single budget of 100 page GETs a minute. Static assets now have
+their own bucket and every limit can be set from the environment or site
+configuration, so the operator can tune around it; what is left is that HTML pages
+share the API's bucket and the proxy default. Small.
 
 **BL-02, content translation.** Contradicts the definition: a site configured in
 two languages cannot be given translated content through the interface, only by
@@ -670,6 +694,19 @@ learning Trovato meets a 404 in the shipped menu, Italian aliases that answer on
 a doubled prefix, and a form save that drops a field the same set's importer writes.
 Three files and a decision about who owns the set. Small.
 
+**BL-118, the missing `clock_time_get` stub.** Day one for anyone who writes a site
+plugin, which the tag1.com relaunch did first thing: a plugin built with current
+stable Rust loads cleanly and fails on every tap, and nothing at startup says so.
+It is also a trap for the kernel's own image, which stays working only while the
+toolchain pin stays at 1.96. Stub the import, and make the load fail on any WASI
+import the linker cannot satisfy. Small.
+
+**BL-120, anonymous edits through a plugin grant.** Day one on a site that imports
+its content and has an access plugin: every imported item's author is the
+anonymous user, so the obvious author rule hands anonymous visitors write access.
+A kernel that lets one ordinary plugin rule open writes to the public should not
+ship as 1.0, whatever the plugin got wrong. Small.
+
 ### Considered and not blocking
 
 - **BL-16**, themed plugin pages without an `<h1>`: a real accessibility defect and a
@@ -684,6 +721,12 @@ Three files and a decision about who owns the set. Small.
   grants `execute-raw` anyway. Documenting it is 1.0.x; tightening it is a 2.0
   question.
 - **BL-82**, `robots_txt_custom` without a screen: config import sets it. 1.0.x.
+- **BL-119**, two plugins declaring one content type: only a site that redeclares a
+  stock plugin's type meets it, and the outcome is muddled metadata, not lost data.
+  1.0.x.
+- **BL-121**, gather queries not reloaded: a regression worth fixing before the next
+  release, but the admin screens update the cache directly, so only an import into a
+  running site meets it. 1.0.x.
 
 ## Ritrovo unblock order
 
