@@ -53,6 +53,18 @@ pub async fn track_session(
         .unwrap_or("")
         .to_string();
 
+    // A request an API token authenticated is not a browser session, and its
+    // session is an ephemeral one that is never saved (see
+    // `middleware::api_token`). Indexing it would list a "device" that cannot
+    // be revoked and does not exist.
+    if req
+        .extensions()
+        .get::<crate::middleware::api_token::ApiTokenAuth>()
+        .is_some()
+    {
+        return next.run(req).await;
+    }
+
     let response = next.run(req).await;
 
     // Anonymous traffic is the overwhelming majority and touches nothing here.
