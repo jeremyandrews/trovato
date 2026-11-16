@@ -422,11 +422,13 @@ pub fn validate_base_url(url: &str) -> Result<(), String> {
         }
         url::Host::Domain(name) => {
             // Block well-known local hostnames. This list is deliberately
-            // narrower than the plugin fence's: an administrator pointing the
-            // kernel at an on-premises model server legitimately uses a
-            // `.internal` or `.local` name, and blocking those would break
-            // working setups to no end, since the address behind the name is
-            // checked by the resolver either way.
+            // narrower than the plugin fence's: a `.internal` or `.local` name
+            // passes this string check. The address behind the name is
+            // checked when the request connects: the provider client is built
+            // from `hardened_outbound_builder()`, whose resolver refuses the
+            // connection if the name resolves to any address `net_policy`
+            // refuses (private, loopback, link-local and the other reserved
+            // ranges).
             if name == "localhost" || name.ends_with(".localhost") {
                 return Err(blocked_address);
             }
@@ -464,16 +466,30 @@ pub struct AiProviderService {
 
 impl AiProviderService {
     /// Create a new AI provider service.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the SSRF-hardened HTTP client fails to build (TLS backend
+    /// init). This is fail-closed: AI requests must never silently go out on
+    /// an unhardened client.
     pub fn new(db: PgPool) -> Self {
         // The client-level timeout is the request-scoped default and the backstop
         // for any path that does not set a per-request timeout (embedding,
         // connection test). The AI request path overrides it per request with the
         // per-operation / per-provider timeout resolved from `ai_timeouts`
         // (P11c / D-43); a `RequestBuilder::timeout` overrides this default.
-        let http = reqwest::Client::builder()
+        //
+        // Built from the shared SSRF-hardened builder, so every AI send path
+        // (chat, streaming chat, tool calling, embeddings, the connection test
+        // and the plugin `ai-request` call, all of which take this client from
+        // `http()`) gets the resolve-time address check and per-hop redirect
+        // revalidation that plugin HTTP has. Fail-closed: a build failure must
+        // never fall back to an unhardened default client.
+        #[allow(clippy::expect_used)]
+        let http = crate::host::http::hardened_outbound_builder()
             .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
             .build()
-            .unwrap_or_default();
+            .expect("SSRF-hardened AI provider HTTP client must build");
         Self {
             db,
             http,
@@ -1357,10 +1373,14 @@ mod tests {
         }
     }
 
-    /// An on-premises model server on a `.internal` or `.local` name keeps
-    /// working: this URL is administrator-set, and the address behind the name
-    /// is checked regardless. Pinning it in a test so the narrower hostname
-    /// list is not "fixed" into the plugin fence's by a later reader.
+    /// A `.internal` or `.local` name passes this string check: the hostname
+    /// list is deliberately narrower than the plugin fence's. The address
+    /// behind the name is checked when the request connects, where the provider
+    /// client's hardened resolver refuses the connection if the name resolves to
+    /// an address `net_policy` refuses (so a name pointing at a private or
+    /// loopback model server is refused there). Pinning the string rule in a
+    /// test so the narrower list is not "fixed" into the plugin fence's by a
+    /// later reader.
     #[test]
     fn base_url_allows_internal_hostnames_deliberately() {
         assert!(validate_base_url("http://ollama.internal/v1").is_ok());
