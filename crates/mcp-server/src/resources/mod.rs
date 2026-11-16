@@ -33,32 +33,18 @@ pub fn list_resources() -> Result<ListResourcesResult, McpError> {
         ),
     ];
 
-    Ok(ListResourcesResult {
-        resources,
-        next_cursor: None,
-        meta: None,
-    })
+    Ok(ListResourcesResult::with_all_items(resources))
 }
 
 /// List resource templates (URI patterns with placeholders).
 pub fn list_resource_templates() -> Result<ListResourceTemplatesResult, McpError> {
     let templates = vec![
-        RawResourceTemplate {
-            uri_template: "trovato://content-type/{name}".into(),
-            name: "content-type".into(),
-            title: None,
-            description: Some("Schema for a specific content type by machine name".into()),
-            mime_type: Some("application/json".into()),
-            icons: None,
-        }
-        .no_annotation(),
+        ResourceTemplate::new("trovato://content-type/{name}", "content-type")
+            .with_description("Schema for a specific content type by machine name")
+            .with_mime_type("application/json"),
     ];
 
-    Ok(ListResourceTemplatesResult {
-        resource_templates: templates,
-        next_cursor: None,
-        meta: None,
-    })
+    Ok(ListResourceTemplatesResult::with_all_items(templates))
 }
 
 /// Read a resource by URI.
@@ -90,17 +76,9 @@ pub async fn read_resource(
 
 /// Helper to build a resource with description and JSON mime type.
 fn resource(uri: &str, name: &str, description: &str) -> Resource {
-    RawResource {
-        uri: uri.into(),
-        name: name.into(),
-        title: None,
-        description: Some(description.into()),
-        mime_type: Some("application/json".into()),
-        size: None,
-        icons: None,
-        meta: None,
-    }
-    .no_annotation()
+    Resource::new(uri, name)
+        .with_description(description)
+        .with_mime_type("application/json")
 }
 
 #[cfg(test)]

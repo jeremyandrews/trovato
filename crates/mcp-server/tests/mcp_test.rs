@@ -2,7 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for the Trovato MCP server.
 //!
-//! Tests exercise tool and resource handlers directly (no STDIO transport)
+//! Tests exercise tool and resource handlers directly (no STDIO transport,
+//! except the one wire-level `tools/list` check).
 //! using a real kernel AppState with a test database.
 
 mod common;
@@ -386,10 +387,7 @@ fn read_site_config_resource() {
         let result = trovato_mcp::resources::read_resource(
             &ctx.state,
             &ctx.admin_user_ctx,
-            ReadResourceRequestParams {
-                uri: "trovato://site-config".into(),
-                meta: None,
-            },
+            ReadResourceRequestParams::new("trovato://site-config"),
         )
         .await
         .expect("read site-config");
@@ -413,10 +411,7 @@ fn read_content_types_resource() {
         let result = trovato_mcp::resources::read_resource(
             &ctx.state,
             &ctx.admin_user_ctx,
-            ReadResourceRequestParams {
-                uri: "trovato://content-types".into(),
-                meta: None,
-            },
+            ReadResourceRequestParams::new("trovato://content-types"),
         )
         .await
         .expect("read content-types");
@@ -433,10 +428,7 @@ fn read_recent_items_resource() {
         let result = trovato_mcp::resources::read_resource(
             &ctx.state,
             &ctx.admin_user_ctx,
-            ReadResourceRequestParams {
-                uri: "trovato://recent-items".into(),
-                meta: None,
-            },
+            ReadResourceRequestParams::new("trovato://recent-items"),
         )
         .await
         .expect("read recent-items");
@@ -463,10 +455,7 @@ fn read_single_content_type_resource() {
         let result = trovato_mcp::resources::read_resource(
             &ctx.state,
             &ctx.admin_user_ctx,
-            ReadResourceRequestParams {
-                uri: "trovato://content-type/page".into(),
-                meta: None,
-            },
+            ReadResourceRequestParams::new("trovato://content-type/page"),
         )
         .await
         .expect("read content-type/page");
@@ -512,7 +501,7 @@ fn extract_text(result: &CallToolResult) -> String {
         .content
         .iter()
         .filter_map(|c| {
-            if let RawContent::Text(t) = &c.raw {
+            if let ContentBlock::Text(t) = c {
                 Some(t.text.clone())
             } else {
                 None
@@ -520,6 +509,142 @@ fn extract_text(result: &CallToolResult) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// The tool list as a client sees it over the wire: the server is served on
+/// one end of an in-process byte pipe, exactly as `main.rs` serves it on
+/// STDIO, and the test speaks raw JSON-RPC on the other end. This is the
+/// check that survives an rmcp upgrade, because it does not go through any
+/// rmcp API on the client side: if a new rmcp renamed, dropped or added a
+/// tool, or stopped answering `tools/list` with the handshake a client sends,
+/// this fails where the handler-level test above would not.
+#[test]
+fn tools_list_over_stdio_pipe_matches_the_published_tool_names() {
+    use rmcp::ServiceExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    async fn send(w: &mut (impl AsyncWriteExt + Unpin), msg: serde_json::Value) {
+        let mut line = serde_json::to_vec(&msg).unwrap();
+        line.push(b'\n');
+        w.write_all(&line).await.unwrap();
+        w.flush().await.unwrap();
+    }
+
+    async fn response(r: &mut (impl AsyncBufReadExt + Unpin), id: u64) -> serde_json::Value {
+        loop {
+            let mut line = String::new();
+            let n = r.read_line(&mut line).await.unwrap();
+            assert!(
+                n > 0,
+                "server closed the pipe before answering request {id}"
+            );
+            let msg: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if msg.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+                return msg;
+            }
+        }
+    }
+
+    run_test(async {
+        let ctx = shared_app().await;
+        let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server_end);
+        let server = tokio::spawn(async move {
+            let running = ctx
+                .mcp_server()
+                .serve((server_read, server_write))
+                .await
+                .expect("server should complete the handshake");
+            let _ = running.waiting().await;
+        });
+
+        let (client_read, mut client_write) = tokio::io::split(client_end);
+        let mut client_read = BufReader::new(client_read);
+
+        send(
+            &mut client_write,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "trovato-mcp-test", "version": "0"}
+                }
+            }),
+        )
+        .await;
+        let init = response(&mut client_read, 1).await;
+        assert!(
+            init.get("result").is_some(),
+            "initialize must succeed, got {init}"
+        );
+        send(
+            &mut client_write,
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        )
+        .await;
+        send(
+            &mut client_write,
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        )
+        .await;
+        let list = response(&mut client_read, 2).await;
+
+        let tools = list["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("tools/list must return a tool array, got {list}"));
+        let mut names: Vec<&str> = tools
+            .iter()
+            .map(|t| t["name"].as_str().expect("every tool has a name"))
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "create_item",
+                "delete_item",
+                "get_item",
+                "list_categories",
+                "list_content_types",
+                "list_items",
+                "list_tags",
+                "run_gather",
+                "search",
+                "update_item",
+            ]
+        );
+        for tool in tools {
+            assert_eq!(
+                tool["inputSchema"]["type"], "object",
+                "every tool takes a JSON object, got {tool}"
+            );
+        }
+
+        // The schema form the server has always published: the parameter
+        // type's title at the root, and an optional parameter as a nullable
+        // single type rather than rmcp 3's `["integer", "null"]` union. See
+        // `published_input_schema`.
+        let list_items = tools
+            .iter()
+            .find(|t| t["name"] == "list_items")
+            .expect("list_items is listed");
+        let schema = &list_items["inputSchema"];
+        assert_eq!(schema["title"], "ListItemsParams", "got {schema}");
+        assert_eq!(
+            schema["properties"]["page"]["type"], "integer",
+            "got {schema}"
+        );
+        assert_eq!(
+            schema["properties"]["page"]["nullable"], true,
+            "got {schema}"
+        );
+
+        drop(client_write);
+        drop(client_read);
+        server.await.unwrap();
+    });
 }
 
 // =============================================================================

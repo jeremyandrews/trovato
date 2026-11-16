@@ -53,17 +53,14 @@ ignore = [
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 
-    # rmcp 0.16.0 DNS rebinding in the Streamable HTTP server transport
-    # (RUSTSEC-2026-0189, CVSS 8.8).
-    # NOT COMPILED. The vulnerable transport is behind rmcp's
-    # `transport-streamable-http-server` feature. trovato-mcp declares
-    # `features = ["transport-io"]` and serves over STDIO
-    # (`rmcp::transport::stdio()`, crates/mcp-server/src/main.rs); the resolved
-    # feature set is base64, default, macros, server, transport-async-rw,
-    # transport-io. There is no HTTP listener in the MCP server at all, so
-    # there is nothing to rebind against.
-    # The fix is rmcp >=1.4.0, a 0.x -> 1.x bump with breaking API changes.
-    # Worth taking on its own merits, but it is not a live exposure here.
-    # Review date: 2026-11-01
-    "RUSTSEC-2026-0189",
+    # NOTE: RUSTSEC-2026-0189 (rmcp 0.16 DNS rebinding in the Streamable HTTP
+    # server transport) is no longer suppressed. It was never compiled here,
+    # since trovato-mcp serves over STDIO with `transport-io` only, and it is now
+    # fixed outright: trovato-mcp moved from rmcp 0.16 to 3.10, past the
+    # >=1.4.0 fix, with the same feature set (the default server, macros and
+    # base64, plus transport-io). RUSTSEC-2026-0462 (unbounded response
+    # buffering in the 0.16 Streamable HTTP clients, equally never compiled)
+    # cleared with it. `cargo audit` with this whole ignore list removed
+    # reports no rmcp advisory. Do not re-add entries here for either; if one
+    # reappears, rmcp needs upgrading again.
 ]

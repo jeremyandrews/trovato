@@ -59,7 +59,7 @@ pub async fn run_gather(
         .map_err(internal_err)?;
 
     let json = to_json(&result)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
 /// Convert a `serde_json::Value` to a Gather `FilterValue`.

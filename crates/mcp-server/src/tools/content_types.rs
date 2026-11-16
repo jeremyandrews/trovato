@@ -19,5 +19,5 @@ pub async fn list_content_types(
 
     let types = state.content_types().list();
     let json = to_json(&types)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }

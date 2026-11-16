@@ -15,9 +15,10 @@ pub async fn read_all(state: &AppState) -> Result<ReadResourceResult, McpError> 
     let types = state.content_types().list();
     let json = to_json(&types)?;
 
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(json, "trovato://content-types")],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        json,
+        "trovato://content-types",
+    )]))
 }
 
 /// Read a single content type definition by machine name.
@@ -29,7 +30,7 @@ pub async fn read_one(state: &AppState, name: &str) -> Result<ReadResourceResult
     let json = to_json(&ct)?;
     let uri = format!("trovato://content-type/{name}");
 
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(json, uri)],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        json, uri,
+    )]))
 }

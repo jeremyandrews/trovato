@@ -149,6 +149,31 @@ impl std::fmt::Debug for TrovatoMcpServer {
     }
 }
 
+/// The input schema a tool publishes for its parameter type `T`, generated the
+/// way the server has always published it.
+///
+/// rmcp 0.16 generated tool input schemas as JSON Schema 2020-12 with schemars'
+/// `AddNullable` transform, so an `Option<T>` parameter is `"type": "T",
+/// "nullable": true`, and it kept the parameter type's `title` and doc comment
+/// at the schema root. rmcp 3 dropped the transform (an optional parameter
+/// becomes `"type": ["T", "null"]`) and strips the root title and description.
+/// Both describe the same accepted input, but clients see the schema itself,
+/// so every parameterized tool passes this to `#[tool(input_schema = ...)]`
+/// and the published schemas stay byte-for-byte what they were. Moving to
+/// rmcp's own form is a separate, deliberate change to the tool contract.
+fn published_input_schema<T: schemars::JsonSchema>() -> Arc<JsonObject> {
+    let mut settings = schemars::generate::SchemaSettings::draft2020_12();
+    settings.transforms = vec![Box::new(schemars::transform::AddNullable::default())];
+    let schema = settings.into_generator().into_root_schema_for::<T>();
+    match serde_json::to_value(schema) {
+        Ok(serde_json::Value::Object(object)) => Arc::new(object),
+        // A derived `JsonSchema` for a struct always serializes to an object;
+        // anything else would be a schemars bug, and an empty schema is the
+        // least surprising thing to publish if it ever happens.
+        _ => Arc::new(JsonObject::new()),
+    }
+}
+
 #[tool_router]
 impl TrovatoMcpServer {
     /// Create a new MCP server instance.
@@ -209,7 +234,8 @@ impl TrovatoMcpServer {
     /// List content items with optional filtering by type, status, and author.
     /// Returns paginated results.
     #[tool(
-        description = "List content items with optional filtering by content type, status, and author. Returns paginated results with item ID, title, type, status, and timestamps."
+        description = "List content items with optional filtering by content type, status, and author. Returns paginated results with item ID, title, type, status, and timestamps.",
+        input_schema = published_input_schema::<ListItemsParams>(),
     )]
     async fn list_items(
         &self,
@@ -221,7 +247,8 @@ impl TrovatoMcpServer {
 
     /// Get a single content item by its UUID, including all fields.
     #[tool(
-        description = "Get a single content item by its UUID. Returns the full item including title, type, status, author, timestamps, and all dynamic fields."
+        description = "Get a single content item by its UUID. Returns the full item including title, type, status, author, timestamps, and all dynamic fields.",
+        input_schema = published_input_schema::<GetItemParams>(),
     )]
     async fn get_item(
         &self,
@@ -233,7 +260,8 @@ impl TrovatoMcpServer {
 
     /// Create a new content item.
     #[tool(
-        description = "Create a new content item. Requires specifying the content type and title. Dynamic fields depend on the content type schema. Returns the created item."
+        description = "Create a new content item. Requires specifying the content type and title. Dynamic fields depend on the content type schema. Returns the created item.",
+        input_schema = published_input_schema::<CreateItemParams>(),
     )]
     async fn create_item(
         &self,
@@ -245,7 +273,8 @@ impl TrovatoMcpServer {
 
     /// Update an existing content item by UUID.
     #[tool(
-        description = "Update an existing content item by UUID. All fields are optional — only provided fields will be changed. Returns the updated item."
+        description = "Update an existing content item by UUID. All fields are optional — only provided fields will be changed. Returns the updated item.",
+        input_schema = published_input_schema::<UpdateItemParams>(),
     )]
     async fn update_item(
         &self,
@@ -257,7 +286,8 @@ impl TrovatoMcpServer {
 
     /// Delete a content item by UUID.
     #[tool(
-        description = "Delete a content item by UUID. This is permanent and cannot be undone. Returns success or error."
+        description = "Delete a content item by UUID. This is permanent and cannot be undone. Returns success or error.",
+        input_schema = published_input_schema::<DeleteItemParams>(),
     )]
     async fn delete_item(
         &self,
@@ -269,7 +299,8 @@ impl TrovatoMcpServer {
 
     /// Full-text search across all published content.
     #[tool(
-        description = "Full-text search across all published content. Returns matching items with relevance scores and text snippets highlighting matches."
+        description = "Full-text search across all published content. Returns matching items with relevance scores and text snippets highlighting matches.",
+        input_schema = published_input_schema::<SearchParams>(),
     )]
     async fn search(
         &self,
@@ -303,7 +334,8 @@ impl TrovatoMcpServer {
 
     /// List tags in a specific category.
     #[tool(
-        description = "List all tags within a specific category. Provide the category machine name. Returns tag ID, label, description, and weight."
+        description = "List all tags within a specific category. Provide the category machine name. Returns tag ID, label, description, and weight.",
+        input_schema = published_input_schema::<ListTagsParams>(),
     )]
     async fn list_tags(
         &self,
@@ -315,7 +347,8 @@ impl TrovatoMcpServer {
 
     /// Execute a named Gather query.
     #[tool(
-        description = "Execute a named Gather query definition. Gather queries are pre-defined content queries with filters, sorts, and pagination. Returns the query results as JSON."
+        description = "Execute a named Gather query definition. Gather queries are pre-defined content queries with filters, sorts, and pagination. Returns the query results as JSON.",
+        input_schema = published_input_schema::<RunGatherParams>(),
     )]
     async fn run_gather(
         &self,
@@ -326,24 +359,22 @@ impl TrovatoMcpServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for TrovatoMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "Trovato CMS MCP server. Provides tools for content management \
-                 (CRUD, search, categories) and resources for schema introspection. \
-                 All operations respect the authenticated user's permissions."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities::builder()
+    fn get_info(&self) -> ServerConfig {
+        // server_info defaults to Implementation::from_build_env()
+        // which uses CARGO_CRATE_NAME ("trovato_mcp") and CARGO_PKG_VERSION
+        ServerConfig::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .build(),
-            // server_info defaults to Implementation::from_build_env()
-            // which uses CARGO_CRATE_NAME ("trovato_mcp") and CARGO_PKG_VERSION
-            ..Default::default()
-        }
+        )
+        .with_instructions(
+            "Trovato CMS MCP server. Provides tools for content management \
+             (CRUD, search, categories) and resources for schema introspection. \
+             All operations respect the authenticated user's permissions.",
+        )
     }
 
     async fn list_resources(
@@ -366,8 +397,10 @@ impl ServerHandler for TrovatoMcpServer {
         &self,
         request: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        resources::read_resource(&self.state, &self.user_ctx, request).await
+    ) -> Result<ReadResourceResponse, McpError> {
+        resources::read_resource(&self.state, &self.user_ctx, request)
+            .await
+            .map(Into::into)
     }
 }
 

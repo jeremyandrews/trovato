@@ -54,7 +54,7 @@ pub async fn search(
         .await;
 
     let json = to_json(&results)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
 #[cfg(test)]
