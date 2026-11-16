@@ -869,14 +869,16 @@ async fn bulk_content_action(
         return Redirect::to("/admin/content").into_response();
     }
 
-    // Never act on part of a selection the browser did not send cleanly.
+    // Never act on part of a selection the browser did not send cleanly. The
+    // value is echoed escaped and cut short: it is whatever the client sent.
     if let Some(value) = invalid_id {
+        let shown: String = value.chars().take(64).collect();
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
                 format!(
                     "Nothing was changed: \"{}\" is not a valid item id.",
-                    html_escape(&value)
+                    html_escape(&shown)
                 ),
             )
             .await
