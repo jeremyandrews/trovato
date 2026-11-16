@@ -622,6 +622,25 @@ fn tools_list_over_stdio_pipe_matches_the_published_tool_names() {
             );
         }
 
+        // The schema form the server has always published: the parameter
+        // type's title at the root, and an optional parameter as a nullable
+        // single type rather than rmcp 3's `["integer", "null"]` union. See
+        // `published_input_schema`.
+        let list_items = tools
+            .iter()
+            .find(|t| t["name"] == "list_items")
+            .expect("list_items is listed");
+        let schema = &list_items["inputSchema"];
+        assert_eq!(schema["title"], "ListItemsParams", "got {schema}");
+        assert_eq!(
+            schema["properties"]["page"]["type"], "integer",
+            "got {schema}"
+        );
+        assert_eq!(
+            schema["properties"]["page"]["nullable"], true,
+            "got {schema}"
+        );
+
         drop(client_write);
         drop(client_read);
         server.await.unwrap();

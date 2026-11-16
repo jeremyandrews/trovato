@@ -5,7 +5,12 @@ server transport and RUSTSEC-2026-0462 in the Streamable HTTP clients, and
 features plus `transport-io`, and it still does. The major version was overdue
 anyway, and staying on 0.16 meant keeping a suppression for an advisory with a
 fix available. The ten tools keep their names, input schemas and result shapes,
-and the three resources and one resource template keep their URIs. A new test
+and the three resources and one resource template keep their URIs. rmcp 3
+generates tool input schemas in a different form: an optional parameter
+becomes a `["integer", "null"]` union instead of a nullable `integer`, and the
+schema root loses its title and description. The server therefore generates
+the schemas itself, exactly as 0.16 did, so a client sees the same schemas
+byte for byte. A new test
 serves the server over an in-process byte pipe the way `main.rs` serves it on
 STDIO, sends `tools/list` as raw JSON-RPC, and checks the tool names, so a
 future rmcp upgrade that drops, renames or adds a tool fails a test rather than
