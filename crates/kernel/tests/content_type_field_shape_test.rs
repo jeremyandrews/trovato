@@ -366,3 +366,229 @@ fn the_migration_repairs_a_legacy_array_shaped_row() {
         assert!(fields[0].required);
     });
 }
+
+/// Read `blog`'s `settings` column as the database stores it, both as text (for
+/// byte comparison between boots) and as a value.
+async fn blog_settings(app: &TestApp) -> (String, serde_json::Value) {
+    let text: String = sqlx::query_scalar("SELECT settings::text FROM item_type WHERE type = $1")
+        .bind(TYPE)
+        .fetch_one(&app.db)
+        .await
+        .expect("read blog's settings");
+    let value = serde_json::from_str(&text).expect("settings is JSON");
+    (text, value)
+}
+
+/// The field names in a settings object, in stored order.
+fn field_names(settings: &serde_json::Value) -> Vec<String> {
+    settings
+        .get("fields")
+        .and_then(|v| v.as_array())
+        .expect("settings must carry a 'fields' array")
+        .iter()
+        .map(|f| f["field_name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// `blog` as a fresh registry reads it from the database.
+async fn blog_from_a_fresh_registry(app: &TestApp) -> trovato_sdk::types::ContentTypeDefinition {
+    let registry = ContentTypeRegistry::new(app.db.clone(), Duration::from_secs(60));
+    registry
+        .reload_from_db()
+        .await
+        .expect("reload content types from the database");
+    registry.get(TYPE).expect("'blog' must be in the registry")
+}
+
+/// Plugin registration runs on every boot. It used to write the declared field
+/// list over the whole `settings` column, so every boot dropped the settings
+/// keys an admin saved and every field an admin added to a plugin type.
+#[test]
+fn plugin_registration_keeps_admin_settings_and_fields_across_boots() {
+    run_test(async {
+        let app = shared_app().await;
+        app.restore_content_type_on_exit(TYPE).await;
+
+        // Boot once.
+        register_through_the_real_writer(app).await;
+
+        // Change the type through the real admin paths.
+        let registry = app.state.content_types();
+        registry.invalidate(TYPE);
+        let def = registry
+            .get_or_load(TYPE)
+            .await
+            .expect("load blog")
+            .expect("blog exists after registration");
+        registry
+            .update(
+                TYPE,
+                &def.label,
+                Some(&def.description),
+                serde_json::json!({
+                    "published_default": false,
+                    "revision_default": true,
+                    "probe_key": "b34-probe",
+                }),
+            )
+            .await
+            .expect("update blog through the admin path");
+        registry
+            .add_field(TYPE, "field_admin_note", "Admin note", "text")
+            .await
+            .expect("add an admin field to blog");
+
+        let mut previous: Option<String> = None;
+        for boot in 2..=3 {
+            register_through_the_real_writer(app).await;
+
+            let (text, settings) = blog_settings(app).await;
+            assert_eq!(
+                settings.get("probe_key"),
+                Some(&serde_json::json!("b34-probe")),
+                "boot {boot} dropped the admin settings key 'probe_key': {text}"
+            );
+            assert_eq!(
+                settings.get("published_default"),
+                Some(&serde_json::json!(false)),
+                "boot {boot} dropped 'published_default': {text}"
+            );
+            assert_eq!(
+                settings.get("revision_default"),
+                Some(&serde_json::json!(true)),
+                "boot {boot} dropped 'revision_default': {text}"
+            );
+            let names = field_names(&settings);
+            for name in ["field_body", "field_tags", "field_admin_note"] {
+                assert!(
+                    names.iter().any(|n| n == name),
+                    "boot {boot} left blog without {name} in settings: {names:?}"
+                );
+            }
+
+            let def = blog_from_a_fresh_registry(app).await;
+            let cached: Vec<&str> = def.fields.iter().map(|f| f.field_name.as_str()).collect();
+            for name in ["field_body", "field_tags", "field_admin_note"] {
+                assert!(
+                    cached.contains(&name),
+                    "boot {boot}: a fresh registry reads blog without {name}: {cached:?}"
+                );
+            }
+
+            if let Some(previous) = &previous {
+                assert_eq!(
+                    previous, &text,
+                    "registering the same declaration again must not change settings"
+                );
+            }
+            previous = Some(text);
+        }
+    });
+}
+
+/// A plugin reads and writes its own fields by name, so on a field name it
+/// declares, its definition wins over an admin edit at the next boot.
+#[test]
+fn plugin_registration_wins_on_its_own_field_names() {
+    run_test(async {
+        let app = shared_app().await;
+        app.restore_content_type_on_exit(TYPE).await;
+
+        register_through_the_real_writer(app).await;
+        let (_, declared) = blog_settings(app).await;
+        let declared_order = field_names(&declared);
+        let declared_body = declared["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["field_name"] == "field_body")
+            .expect("blog declares field_body")
+            .clone();
+        assert_eq!(declared_body["required"], serde_json::json!(true));
+
+        let registry = app.state.content_types();
+        registry.invalidate(TYPE);
+        registry
+            .update_field(TYPE, "field_body", "Edited by an admin", false, 1)
+            .await
+            .expect("edit field_body through the admin path");
+        let (_, edited) = blog_settings(app).await;
+        assert_ne!(
+            edited["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["field_name"] == "field_body"),
+            Some(&declared_body),
+            "the admin edit must have changed field_body before the next boot"
+        );
+
+        register_through_the_real_writer(app).await;
+
+        let (text, settings) = blog_settings(app).await;
+        let body = settings["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["field_name"] == "field_body")
+            .cloned();
+        assert_eq!(
+            body,
+            Some(declared_body),
+            "field_body must be the plugin's declared definition again: {text}"
+        );
+        assert_eq!(
+            field_names(&settings),
+            declared_order,
+            "registration must keep the field order"
+        );
+    });
+}
+
+/// `trovato_blog` declares no title label, so the label an admin set on `blog`
+/// is the row's to keep; registration used to reset it to "Title".
+#[test]
+fn plugin_registration_keeps_an_admin_title_label() {
+    run_test(async {
+        let app = shared_app().await;
+        app.restore_content_type_on_exit(TYPE).await;
+
+        register_through_the_real_writer(app).await;
+
+        let registry = app.state.content_types();
+        registry.invalidate(TYPE);
+        let def = registry
+            .get_or_load(TYPE)
+            .await
+            .expect("load blog")
+            .expect("blog exists after registration");
+        registry
+            .update(
+                TYPE,
+                &def.label,
+                Some(&def.description),
+                serde_json::json!({ "title_label": "Headline" }),
+            )
+            .await
+            .expect("set a title label through the admin path");
+
+        register_through_the_real_writer(app).await;
+
+        let column: Option<String> =
+            sqlx::query_scalar("SELECT title_label FROM item_type WHERE type = $1")
+                .bind(TYPE)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            column.as_deref(),
+            Some("Headline"),
+            "registration reset the admin's title label"
+        );
+        assert_eq!(
+            blog_from_a_fresh_registry(app).await.title_label.as_deref(),
+            Some("Headline"),
+            "a fresh registry must read the admin's title label"
+        );
+    });
+}
