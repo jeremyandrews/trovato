@@ -914,8 +914,11 @@ async fn bulk_content_action(
                     sticky: None,
                     log: Some(format!("Bulk {}", form.action)),
                 };
+                // `Ok(None)` is an id that names no item: a failure, as the
+                // delete arm's `Ok(false)` is, not a success.
                 match state.items().update(*id, update, &user_ctx).await {
-                    Ok(_) => success_count += 1,
+                    Ok(Some(_)) => success_count += 1,
+                    Ok(None) => fail_count += 1,
                     Err(e) => {
                         tracing::warn!(item_id = %id, error = %e, "bulk action failed");
                         fail_count += 1;
