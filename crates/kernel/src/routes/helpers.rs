@@ -509,7 +509,7 @@ fn is_form_urlencoded(headers: &axum::http::HeaderMap) -> bool {
 /// function would otherwise keep whichever it was written to keep — and a
 /// security check should not depend on that choice. Two tokens in one body is a
 /// malformed request, so it is treated as one.
-fn single_form_field(body: &str, field: &str) -> Option<String> {
+pub(crate) fn single_form_field(body: &str, field: &str) -> Option<String> {
     let mut found = None;
     for (key, value) in url::form_urlencoded::parse(body.as_bytes()) {
         if key != field {

@@ -13,7 +13,8 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, html_escape, render_admin_template,
-    render_not_found, render_server_error, require_csrf, require_permission,
+    render_error, render_not_found, render_server_error, require_csrf, require_permission,
+    single_form_field,
 };
 
 /// Session key for flash messages on the content list page.
@@ -728,14 +729,67 @@ async fn delete_content(
     }
 }
 
-/// Bulk action form data.
-#[derive(Debug, Deserialize)]
+/// Bulk action form data, read from the body the content list screen posts.
+///
+/// The screen posts one `ids[]` pair per checked box. That shape is read by
+/// [`BulkActionForm::parse`] rather than by `axum::Form`: `Form` deserializes
+/// with `serde_urlencoded`, which does not gather repeated keys into a
+/// sequence, so a `Vec` field fed by `ids[]` refused every request that
+/// selected anything, with a 422, before the handler ran.
+#[derive(Debug, PartialEq)]
 struct BulkActionForm {
-    #[serde(rename = "_token")]
     token: String,
     action: String,
-    #[serde(rename = "ids[]", default)]
     ids: Vec<uuid::Uuid>,
+}
+
+/// Why a bulk action body was not turned into a [`BulkActionForm`].
+#[derive(Debug, PartialEq)]
+enum BulkFormError {
+    /// `_token` or `action` is missing or appears more than once. Refused with
+    /// a 400 before any permission lookup: there is no single action to gate.
+    Malformed(&'static str),
+    /// An `ids[]` value is not a UUID. The token and action are carried so the
+    /// handler can still run its permission and CSRF checks before refusing
+    /// the whole selection.
+    InvalidId {
+        token: String,
+        action: String,
+        value: String,
+    },
+}
+
+impl BulkActionForm {
+    /// Parse an `application/x-www-form-urlencoded` bulk action body.
+    ///
+    /// `_token` and `action` must each appear exactly once (the same rule
+    /// [`single_form_field`] applies to the CSRF token everywhere else). Every
+    /// `ids[]` value must be a UUID; a repeated id is kept once, at the
+    /// position it was first seen. No `ids[]` at all is an empty selection.
+    fn parse(body: &str) -> Result<Self, BulkFormError> {
+        let token = single_form_field(body, "_token")
+            .ok_or(BulkFormError::Malformed("missing or repeated _token"))?;
+        let action = single_form_field(body, "action")
+            .ok_or(BulkFormError::Malformed("missing or repeated action"))?;
+
+        let mut ids: Vec<uuid::Uuid> = Vec::new();
+        for (key, value) in url::form_urlencoded::parse(body.as_bytes()) {
+            if key != "ids[]" {
+                continue;
+            }
+            let Ok(id) = uuid::Uuid::parse_str(&value) else {
+                return Err(BulkFormError::InvalidId {
+                    token,
+                    action,
+                    value: value.into_owned(),
+                });
+            };
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        Ok(Self { token, action, ids })
+    }
 }
 
 /// Bulk operations on content items.
@@ -744,8 +798,34 @@ struct BulkActionForm {
 async fn bulk_content_action(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<BulkActionForm>,
+    body: axum::body::Bytes,
 ) -> Response {
+    let Ok(body) = std::str::from_utf8(&body) else {
+        return render_error("The form could not be read.");
+    };
+    // An unreadable id does not refuse the request here: the permission and
+    // CSRF checks still run first, and the selection is refused below them,
+    // before any write.
+    let (form, invalid_id) = match BulkActionForm::parse(body) {
+        Ok(form) => (form, None),
+        Err(BulkFormError::InvalidId {
+            token,
+            action,
+            value,
+        }) => (
+            BulkActionForm {
+                token,
+                action,
+                ids: Vec::new(),
+            },
+            Some(value),
+        ),
+        Err(BulkFormError::Malformed(reason)) => {
+            tracing::debug!(reason, "bulk action body refused");
+            return render_error("The form could not be read.");
+        }
+    };
+
     // A bulk action is gated on the permissions for the action it performs, not
     // on one permission for the whole screen: bulk delete is a delete, and a
     // role that may publish must not get a delete for free by routing it
@@ -781,6 +861,23 @@ async fn bulk_content_action(
             .insert(
                 CONTENT_FLASH_KEY,
                 format!("Unknown action: {}", html_escape(&form.action)),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set flash message");
+        }
+        return Redirect::to("/admin/content").into_response();
+    }
+
+    // Never act on part of a selection the browser did not send cleanly.
+    if let Some(value) = invalid_id {
+        if let Err(e) = session
+            .insert(
+                CONTENT_FLASH_KEY,
+                format!(
+                    "Nothing was changed: \"{}\" is not a valid item id.",
+                    html_escape(&value)
+                ),
             )
             .await
         {
@@ -872,4 +969,87 @@ pub fn router() -> Router<AppState> {
         )
         .route("/admin/content/{id}/delete", post(delete_content))
         .route("/admin/content/bulk", post(bulk_content_action))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    const A: &str = "0190a0b0-0000-7000-8000-00000000000a";
+    const B: &str = "0190a0b0-0000-7000-8000-00000000000b";
+    const C: &str = "0190a0b0-0000-7000-8000-00000000000c";
+
+    fn uuid(s: &str) -> uuid::Uuid {
+        uuid::Uuid::parse_str(s).unwrap()
+    }
+
+    #[test]
+    fn several_ids_are_read_in_the_order_they_were_sent() {
+        let body = format!("_token=t&action=publish&ids%5B%5D={B}&ids%5B%5D={A}&ids[]={C}");
+        let form = BulkActionForm::parse(&body).unwrap();
+        assert_eq!(form.ids, vec![uuid(B), uuid(A), uuid(C)]);
+        assert_eq!(form.action, "publish");
+        assert_eq!(form.token, "t");
+    }
+
+    #[test]
+    fn a_token_with_reserved_characters_round_trips_exactly() {
+        // `+`, `/` and `=` percent encoded, and a literal `+` for a space, as a
+        // browser encodes the form.
+        let body = format!("_token=a%2Bb%2Fc%3D%3D+d&action=delete&ids%5B%5D={A}");
+        let form = BulkActionForm::parse(&body).unwrap();
+        assert_eq!(form.token, "a+b/c== d");
+        assert_eq!(form.action, "delete");
+    }
+
+    #[test]
+    fn an_unreadable_id_is_an_error_that_keeps_the_token_and_action() {
+        let body = format!("_token=t&action=publish&ids%5B%5D={A}&ids%5B%5D=not-a-uuid");
+        assert_eq!(
+            BulkActionForm::parse(&body),
+            Err(BulkFormError::InvalidId {
+                token: "t".to_string(),
+                action: "publish".to_string(),
+                value: "not-a-uuid".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_repeated_id_is_kept_once_at_its_first_position() {
+        let body = format!("_token=t&action=publish&ids[]={A}&ids[]={B}&ids[]={A}");
+        let form = BulkActionForm::parse(&body).unwrap();
+        assert_eq!(form.ids, vec![uuid(A), uuid(B)]);
+    }
+
+    #[test]
+    fn a_repeated_token_or_action_is_malformed() {
+        assert!(matches!(
+            BulkActionForm::parse("_token=t&_token=t&action=publish"),
+            Err(BulkFormError::Malformed(_))
+        ));
+        assert!(matches!(
+            BulkActionForm::parse("_token=t&action=publish&action=delete"),
+            Err(BulkFormError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_missing_token_or_action_is_malformed() {
+        assert!(matches!(
+            BulkActionForm::parse("action=publish"),
+            Err(BulkFormError::Malformed(_))
+        ));
+        assert!(matches!(
+            BulkActionForm::parse("_token=t"),
+            Err(BulkFormError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn no_ids_is_an_empty_selection() {
+        let form = BulkActionForm::parse("_token=t&action=unpublish").unwrap();
+        assert!(form.ids.is_empty());
+    }
 }
