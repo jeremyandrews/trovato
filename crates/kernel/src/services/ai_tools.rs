@@ -839,6 +839,8 @@ pub mod scripted_provider {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::sync::Arc;
+
     use super::scripted_provider::{Scripted, start};
     use super::*;
     use crate::services::ai_provider::AiProviderConfig;
@@ -1461,6 +1463,117 @@ mod tests {
         );
         // The breaker stopped the call before it left the process.
         assert_eq!(recorder.request_count(), 3);
+    }
+
+    // -------------------------------------------------------------------------
+    // Outbound fence: the provider client is the hardened outbound client
+    // -------------------------------------------------------------------------
+
+    /// A provider configured by a host name that resolves to loopback is
+    /// refused at resolve time, before any byte reaches it. The base URL is
+    /// written straight into the resolved provider, the way a config row
+    /// written without the admin form would carry it, so `validate_base_url`
+    /// never runs: the client alone has to refuse it.
+    #[tokio::test]
+    async fn a_provider_name_resolving_to_loopback_is_refused() {
+        let (base, recorder) = start().await;
+        recorder.push(Scripted::ok(openai_text("should never be sent")));
+        let by_name = base.replacen("127.0.0.1", "localhost", 1);
+        assert!(by_name.starts_with("http://localhost:"), "{by_name}");
+
+        let result = complete(
+            &by_name,
+            ProviderProtocol::OpenAiCompatible,
+            &[ChatMessage::User("hi".into())],
+            &[],
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a name resolving to loopback must be refused, got {result:?}"
+        );
+        assert_eq!(
+            recorder.request_count(),
+            0,
+            "the provider behind the loopback name must never be reached"
+        );
+    }
+
+    /// Bind a loopback server that counts the connections it accepts and
+    /// answers each with an empty 200. Returns its base URL and the counter.
+    async fn counting_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+        (format!("http://{addr}"), hits)
+    }
+
+    /// Bind a loopback server that answers every request with a `302 Found` to
+    /// `location`.
+    async fn redirect_server(location: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let resp = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let resp = resp.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// A redirect hop from a provider to a loopback address is refused by the
+    /// provider client's redirect policy, and the target is never contacted.
+    #[tokio::test]
+    async fn a_provider_redirect_to_loopback_is_refused() {
+        let (target, hits) = counting_server().await;
+        let first = redirect_server(format!("{target}/latest/meta-data/")).await;
+
+        let service = provider_service();
+        let result = service.http().get(&first).send().await;
+
+        assert!(
+            result.is_err(),
+            "a redirect to a loopback target must be refused, got {result:?}"
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the redirect target must never be contacted"
+        );
     }
 
     #[test]
