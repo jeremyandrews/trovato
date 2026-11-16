@@ -27,9 +27,12 @@
 //!    metadata endpoint is denied mid-chain. The 10-hop cap is preserved.
 //!
 //! Every kernel path that issues plugin-influenced HTTP (one-shot `request`,
-//! streaming `http-open`, and the queue-worker / cron dispatch clients) is built
-//! from [`build_outbound_client`] / [`hardened_outbound_builder`], so the fence
-//! is shared, not duplicated.
+//! streaming `http-open`, and the queue-worker / cron dispatch clients), and the
+//! administrator-configured AI provider client
+//! ([`crate::services::ai_provider::AiProviderService`], used for chat,
+//! streaming chat, tool calling, embeddings, the connection test and the plugin
+//! `ai-request` call), is built from [`build_outbound_client`] /
+//! [`hardened_outbound_builder`], so the fence is shared, not duplicated.
 //!
 //! All three layers classify addresses through the one shared policy in
 //! [`crate::net_policy`], and they classify the host `url` already parsed
