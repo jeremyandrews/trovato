@@ -25,6 +25,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{TestApp, run_test, shared_app, test_ip_for, user_holding, username};
+use uuid::Uuid;
 
 /// GET `path` as the holder of `cookies`, in that user's own rate-limit bucket.
 async fn get_as(app: &TestApp, path: &str, cookies: &str, bucket: &str) -> StatusCode {
@@ -216,22 +217,22 @@ fn the_permission_for_one_type_does_not_open_the_add_form_for_another() {
 // item on the live site. Asked once, here, so the screen refuses rather than
 // reporting every item as failed.
 //
-// # Why these post an empty selection
+// # The empty selection tests and the selection tests
 //
-// `POST /admin/content/bulk` cannot parse a selection **at all**, on `main` and
-// before it: `BulkActionForm::ids` is a `Vec<Uuid>` read from the repeated
-// `ids[]` key, and `axum::Form` deserializes with `serde_urlencoded`, which
-// refuses a sequence — `Failed to deserialize form body: ids[]: invalid type:
-// string "…", expected a sequence`, a 422 before the handler runs. Every bulk
-// action a browser has ever submitted with something selected has failed that
-// way. It is a pre-existing defect with its own fix (and its own changelog
-// entry) to write, and it is not this change's.
+// The first three tests below post nothing selected. The handler still runs
+// the permission check before it looks at the selection, so an empty
+// selection is the narrowest request that proves the action level check
+// through the real endpoint: refused without the permission, and past it (to
+// "No items selected", a 303) with it.
 //
-// An empty selection does parse (`#[serde(default)]`), so the handler runs, the
-// permission check happens, and the action then reports "No items selected".
-// That is exactly the check this change added, tested through the real
-// endpoint. What each selected item's write would do is pinned on
-// `ItemService::gate_publish` directly, in `item_service.rs`'s own tests and
+// The tests after them post a real selection, one `ids[]` key per checked box
+// exactly as `templates/admin/content-list.html` does, and read the items back
+// from the database: what a bulk action does to the items it names, that an id
+// naming no item is counted as failed rather than sinking the rest, and that a
+// selection the browser did not send cleanly is refused without a write. Each
+// selected item is still decided by `ItemService::update` or
+// `ItemService::delete` as the acting user; what those per item gates answer
+// is pinned on `ItemService` directly, in `item_service.rs`'s own tests and
 // over HTTP in `item_form_roundtrip_test.rs`.
 // ============================================================================
 
@@ -264,9 +265,25 @@ async fn body_of(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-/// POST a bulk action with nothing selected, scraping the screen's own CSRF
-/// token first. See this section's header for why nothing is selected.
-async fn bulk(app: &TestApp, cookies: &str, bucket: &str, action: &str) -> (StatusCode, String) {
+/// The body the list screen's form sends: the token, the action, then one
+/// `ids[]` pair per checked box.
+fn bulk_body(token: &str, action: &str, ids: &[Uuid]) -> String {
+    let mut body = format!("_token={}&action={action}", urlencoding::encode(token));
+    for id in ids {
+        body.push_str(&format!("&ids%5B%5D={id}"));
+    }
+    body
+}
+
+/// POST a bulk action selecting `ids`, scraping the screen's own CSRF token
+/// first. One `ids[]` pair per id, the way the list screen's checkboxes post.
+async fn bulk(
+    app: &TestApp,
+    cookies: &str,
+    bucket: &str,
+    action: &str,
+    ids: &[Uuid],
+) -> (StatusCode, String) {
     let page = app
         .request_with_cookies(
             Request::get("/admin/content")
@@ -286,10 +303,7 @@ async fn bulk(app: &TestApp, cookies: &str, bucket: &str, action: &str) -> (Stat
                     "application/x-www-form-urlencoded",
                 )
                 .header("x-forwarded-for", test_ip_for(bucket))
-                .body(Body::from(format!(
-                    "_token={}&action={action}",
-                    urlencoding::encode(&token)
-                )))
+                .body(Body::from(bulk_body(&token, action, ids)))
                 .unwrap(),
             cookies,
         )
@@ -306,7 +320,7 @@ fn bulk_publish_and_unpublish_are_refused_without_the_publish_permission() {
         let (_, cookies) = user_holding(app, "bulkpub-no", &["edit any content"]).await;
 
         for action in ["publish", "unpublish"] {
-            let (status, body) = bulk(app, &cookies, "bulkpub-no-bucket", action).await;
+            let (status, body) = bulk(app, &cookies, "bulkpub-no-bucket", action, &[]).await;
             assert_eq!(
                 status,
                 StatusCode::FORBIDDEN,
@@ -324,7 +338,7 @@ fn bulk_publish_passes_the_permission_check_with_both_permissions() {
         let (_, cookies) = user_holding(app, "bulkpub-yes", &["edit any content", PUBLISH]).await;
 
         for action in ["publish", "unpublish"] {
-            let (status, body) = bulk(app, &cookies, "bulkpub-yes-bucket", action).await;
+            let (status, body) = bulk(app, &cookies, "bulkpub-yes-bucket", action, &[]).await;
             assert_eq!(
                 status,
                 StatusCode::SEE_OTHER,
@@ -345,7 +359,7 @@ fn bulk_delete_still_asks_for_the_delete_permission_and_not_for_publish() {
         // permission. (`edit any content` is here only to open
         // `/admin/content`, which is where the screen's CSRF token comes from.)
         let (_, publisher) = user_holding(app, "bulkdel-no", &["edit any content", PUBLISH]).await;
-        let (status, body) = bulk(app, &publisher, "bulkdel-no-bucket", "delete").await;
+        let (status, body) = bulk(app, &publisher, "bulkdel-no-bucket", "delete", &[]).await;
         assert_eq!(
             status,
             StatusCode::FORBIDDEN,
@@ -358,11 +372,223 @@ fn bulk_delete_still_asks_for_the_delete_permission_and_not_for_publish() {
             &["edit any content", "delete any content"],
         )
         .await;
-        let (status, body) = bulk(app, &deleter, "bulkdel-yes-bucket", "delete").await;
+        let (status, body) = bulk(app, &deleter, "bulkdel-yes-bucket", "delete", &[]).await;
         assert_eq!(
             status,
             StatusCode::SEE_OTHER,
             "`delete any content` still reaches the delete arm, got {status}: {body}"
+        );
+    });
+}
+
+// ----------------------------------------------------------------------------
+// A real selection
+// ----------------------------------------------------------------------------
+
+/// Create a `conference` item for a selection test, removed when the test ends
+/// whether or not the bulk action already removed it.
+async fn selectable_item(app: &TestApp, marker: &str, status: i16) -> Uuid {
+    use trovato_kernel::models::CreateItem;
+    use trovato_kernel::tap::UserContext;
+
+    app.ensure_conference_type().await;
+    let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+    let id = app
+        .state
+        .items()
+        .create(
+            CreateItem {
+                item_type: "conference".to_string(),
+                title: format!("{marker} {}", Uuid::now_v7().simple()),
+                author_id: Uuid::nil(),
+                status: Some(status),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({})),
+                stage_id: None,
+                language: Some("en".to_string()),
+                log: Some("bulk selection test".to_string()),
+            },
+            &admin,
+        )
+        .await
+        .expect("create a selectable item")
+        .id;
+    let items = std::sync::Arc::clone(app.state.items());
+    common::defer_cleanup(move || async move {
+        let _ = items.delete(id, &admin).await;
+    });
+    id
+}
+
+/// An item's published state as stored, or `None` once it is gone.
+async fn stored_status(app: &TestApp, id: Uuid) -> Option<i16> {
+    sqlx::query_scalar("SELECT status FROM item WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&app.db)
+        .await
+        .expect("read the item's status")
+}
+
+/// The flash the next `GET /admin/content` shows, which is where the bulk
+/// action reports what it did.
+async fn flash_after(app: &TestApp, cookies: &str, bucket: &str) -> String {
+    let page = app
+        .request_with_cookies(
+            Request::get("/admin/content")
+                .header("x-forwarded-for", test_ip_for(bucket))
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let html = body_of(page).await;
+    let Some(at) = html.find("message--status") else {
+        return String::new();
+    };
+    let start = at + html[at..].find('>').map_or(0, |i| i + 1);
+    let end = start + html[start..].find('<').unwrap_or(0);
+    html[start..end].trim().to_string()
+}
+
+#[test]
+fn bulk_publish_and_unpublish_change_exactly_the_selected_items() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_some_content(app).await;
+        let first = selectable_item(app, "bulksel-pub", 0).await;
+        let second = selectable_item(app, "bulksel-pub", 0).await;
+        let bystander = selectable_item(app, "bulksel-pub-bystander", 0).await;
+        let (_, cookies) = user_holding(app, "bulksel-pub", &["edit any content", PUBLISH]).await;
+        let bucket = "bulksel-pub-bucket";
+
+        let (status, body) = bulk(app, &cookies, bucket, "publish", &[first, second]).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "bulk publish: {body}");
+        assert_eq!(stored_status(app, first).await, Some(1));
+        assert_eq!(stored_status(app, second).await, Some(1));
+        assert_eq!(
+            stored_status(app, bystander).await,
+            Some(0),
+            "an item that was not selected must not change"
+        );
+        assert_eq!(
+            flash_after(app, &cookies, bucket).await,
+            "2 item(s) published."
+        );
+
+        let (status, body) = bulk(app, &cookies, bucket, "unpublish", &[first, second]).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "bulk unpublish: {body}");
+        assert_eq!(stored_status(app, first).await, Some(0));
+        assert_eq!(stored_status(app, second).await, Some(0));
+        assert_eq!(
+            flash_after(app, &cookies, bucket).await,
+            "2 item(s) unpublished."
+        );
+    });
+}
+
+#[test]
+fn bulk_delete_removes_exactly_the_selected_items() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_some_content(app).await;
+        let first = selectable_item(app, "bulksel-del", 1).await;
+        let second = selectable_item(app, "bulksel-del", 0).await;
+        let bystander = selectable_item(app, "bulksel-del-bystander", 0).await;
+        let (_, cookies) = user_holding(
+            app,
+            "bulksel-del",
+            &["edit any content", "delete any content"],
+        )
+        .await;
+        let bucket = "bulksel-del-bucket";
+
+        let (status, body) = bulk(app, &cookies, bucket, "delete", &[first, second]).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "bulk delete: {body}");
+        assert_eq!(stored_status(app, first).await, None, "first still exists");
+        assert_eq!(
+            stored_status(app, second).await,
+            None,
+            "second still exists"
+        );
+        assert_eq!(
+            stored_status(app, bystander).await,
+            Some(0),
+            "an item that was not selected must not be deleted"
+        );
+        assert_eq!(
+            flash_after(app, &cookies, bucket).await,
+            "2 item(s) deleted."
+        );
+    });
+}
+
+#[test]
+fn an_id_naming_no_item_is_counted_as_failed_and_the_rest_still_happen() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_some_content(app).await;
+        let real = selectable_item(app, "bulksel-ghost", 0).await;
+        let ghost = Uuid::now_v7();
+        let (_, cookies) = user_holding(app, "bulksel-ghost", &["edit any content", PUBLISH]).await;
+        let bucket = "bulksel-ghost-bucket";
+
+        let (status, body) = bulk(app, &cookies, bucket, "publish", &[real, ghost]).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "bulk publish: {body}");
+        assert_eq!(stored_status(app, real).await, Some(1));
+        assert_eq!(
+            flash_after(app, &cookies, bucket).await,
+            "1 item(s) published. 1 item(s) failed."
+        );
+    });
+}
+
+#[test]
+fn a_selection_with_an_unreadable_id_writes_nothing() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_some_content(app).await;
+        let real = selectable_item(app, "bulksel-bad", 0).await;
+        let (_, cookies) = user_holding(app, "bulksel-bad", &["edit any content", PUBLISH]).await;
+        let bucket = "bulksel-bad-bucket";
+
+        let page = app
+            .request_with_cookies(
+                Request::get("/admin/content")
+                    .header("x-forwarded-for", test_ip_for(bucket))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let token = token_in(&body_of(page).await).expect("the bulk form carries a token");
+        let body = format!(
+            "{}&ids%5B%5D=not-a-uuid",
+            bulk_body(&token, "publish", &[real])
+        );
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/content/bulk")
+                    .header(
+                        axum::http::header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded",
+                    )
+                    .header("x-forwarded-for", test_ip_for(bucket))
+                    .body(Body::from(body))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            stored_status(app, real).await,
+            Some(0),
+            "no part of a selection with an unreadable id may be acted on"
+        );
+        let flash = flash_after(app, &cookies, bucket).await;
+        assert!(
+            flash.contains("not a valid item id"),
+            "the refusal is reported on the list screen, got {flash:?}"
         );
     });
 }
