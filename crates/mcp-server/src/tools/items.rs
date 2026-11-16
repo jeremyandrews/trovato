@@ -116,7 +116,7 @@ pub async fn list_items(
         "per_page": per_page,
     });
 
-    Ok(CallToolResult::success(vec![Content::text(to_json(
+    Ok(CallToolResult::success(vec![ContentBlock::text(to_json(
         &result,
     )?)]))
 }
@@ -148,7 +148,7 @@ pub async fn get_item(
         .ok_or_else(|| McpError::invalid_params(format!("item not found: {id}"), None))?;
 
     let json = to_json(&item)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
 /// Create a new item.
@@ -202,7 +202,7 @@ pub async fn create_item(
         .map_err(|e| write_denied(&e).unwrap_or_else(|| internal_err(e)))?;
 
     let json = to_json(&item)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
 /// Update an existing item.
@@ -247,7 +247,7 @@ pub async fn update_item(
         .ok_or_else(|| McpError::invalid_params(format!("item not found: {id}"), None))?;
 
     let json = to_json(&item)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
 /// Delete an item.
@@ -272,7 +272,7 @@ pub async fn delete_item(
         .map_err(|e| map_service_err(e, id))?;
 
     if deleted {
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "Item {id} deleted successfully"
         ))]))
     } else {

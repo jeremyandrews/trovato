@@ -326,24 +326,22 @@ impl TrovatoMcpServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for TrovatoMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "Trovato CMS MCP server. Provides tools for content management \
-                 (CRUD, search, categories) and resources for schema introspection. \
-                 All operations respect the authenticated user's permissions."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities::builder()
+    fn get_info(&self) -> ServerConfig {
+        // server_info defaults to Implementation::from_build_env()
+        // which uses CARGO_CRATE_NAME ("trovato_mcp") and CARGO_PKG_VERSION
+        ServerConfig::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .build(),
-            // server_info defaults to Implementation::from_build_env()
-            // which uses CARGO_CRATE_NAME ("trovato_mcp") and CARGO_PKG_VERSION
-            ..Default::default()
-        }
+        )
+        .with_instructions(
+            "Trovato CMS MCP server. Provides tools for content management \
+             (CRUD, search, categories) and resources for schema introspection. \
+             All operations respect the authenticated user's permissions.",
+        )
     }
 
     async fn list_resources(
@@ -366,8 +364,10 @@ impl ServerHandler for TrovatoMcpServer {
         &self,
         request: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        resources::read_resource(&self.state, &self.user_ctx, request).await
+    ) -> Result<ReadResourceResponse, McpError> {
+        resources::read_resource(&self.state, &self.user_ctx, request)
+            .await
+            .map(Into::into)
     }
 }
 

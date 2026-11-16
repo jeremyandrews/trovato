@@ -5,5 +5,15 @@
 #
 # One 40-character commit id, nothing else. Everything above it is commentary.
 #
-# Set 2026-10-06. advisory-db HEAD of 2026-10-06.
-ef6173cbc5c50ec8166f9a5b28f07834144373ee
+# Set 2026-11-16, to advisory-db commit 4505c66d of 2026-11-09 (10:49:23 +0100).
+# Chosen as the newest commit at which this tree audits with zero
+# vulnerabilities under the suppression list in audit.toml, not as HEAD: the
+# very next commit, c5ed5561 ("Assigned ... RUSTSEC-2026-0459 to
+# libsqlite3-sys"), is the one that makes RUSTSEC-2026-0459 visible to cargo
+# audit, and that advisory has no fix a dependency upgrade can reach (every
+# released sqlx caps libsqlite3-sys below the fixed 0.39) and is not
+# suppressed. 4505c66d already carries the advisory's text under the
+# placeholder id RUSTSEC-0000-0000, which cargo audit does not load; audited
+# at this commit, it reports nothing. Moving past c5ed5561 waits on that
+# advisory being answered.
+4505c66d4e5cf133719d1c3c983e61ca326de6b8

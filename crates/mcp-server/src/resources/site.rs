@@ -37,9 +37,10 @@ pub async fn read_site_config(state: &AppState) -> Result<ReadResourceResult, Mc
 
     let json = to_json(&config)?;
 
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(json, "trovato://site-config")],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        json,
+        "trovato://site-config",
+    )]))
 }
 
 /// Read the 20 most recently published items.
@@ -71,7 +72,8 @@ pub async fn read_recent_items(state: &AppState) -> Result<ReadResourceResult, M
 
     let json = to_json(&summaries)?;
 
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(json, "trovato://recent-items")],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        json,
+        "trovato://recent-items",
+    )]))
 }

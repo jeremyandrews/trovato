@@ -25,7 +25,7 @@ pub async fn list_categories(
         .map_err(internal_err)?;
 
     let json = to_json(&categories)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
 /// List tags in a category.
@@ -44,5 +44,5 @@ pub async fn list_tags(
         .map_err(internal_err)?;
 
     let json = to_json(&tags)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
