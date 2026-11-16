@@ -138,8 +138,10 @@ impl ItemType {
     ///
     /// On conflict this replaces the label, description and the whole
     /// `settings` column, `fields` included. Only for callers that mean to
-    /// overwrite a definition: plugin registration, config import and
+    /// overwrite a definition: config import and
     /// [`ContentTypeRegistry::replace`](crate::content::ContentTypeRegistry::replace).
+    /// Plugin registration does not: it keeps what an admin saved, through
+    /// [`Self::upsert_plugin_declared`].
     pub async fn upsert(pool: &PgPool, input: CreateItemType) -> Result<Self> {
         let item_type = sqlx::query_as::<_, ItemType>(
             r#"
@@ -164,6 +166,49 @@ impl ItemType {
         .fetch_one(pool)
         .await
         .context("failed to upsert item type")?;
+
+        Ok(item_type)
+    }
+
+    /// Create or update a content type a plugin declares, in one statement.
+    ///
+    /// `input.settings` is bound as `$7` and must be the declaration's
+    /// `{"fields": [...]}` object. A new row is written with it as given. On
+    /// conflict, `merged_settings_sql` is the expression the existing row's
+    /// `settings` becomes; it may read `item_type.settings` (the row as it
+    /// stands) and `$7`, so the read and the write are one statement. Label and
+    /// description come from the declaration; `title_label` is the declared
+    /// one when the input carries it, otherwise the row's, otherwise "Title".
+    /// `plugin` is left as the row has it.
+    pub async fn upsert_plugin_declared(
+        pool: &PgPool,
+        input: CreateItemType,
+        merged_settings_sql: &str,
+    ) -> Result<Self> {
+        let sql = format!(
+            r#"
+            INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings)
+            VALUES ($1, $2, $3, $4, COALESCE($5, 'Title'), $6, $7::jsonb)
+            ON CONFLICT (type) DO UPDATE SET
+                label = EXCLUDED.label,
+                description = EXCLUDED.description,
+                has_title = EXCLUDED.has_title,
+                title_label = COALESCE($5, item_type.title_label, 'Title'),
+                settings = {merged_settings_sql}
+            RETURNING type as type_name, label, description, has_title, title_label, plugin, settings
+            "#
+        );
+        let item_type = sqlx::query_as::<_, ItemType>(&sql)
+            .bind(&input.type_name)
+            .bind(&input.label)
+            .bind(&input.description)
+            .bind(input.has_title.unwrap_or(true))
+            .bind(&input.title_label)
+            .bind(&input.plugin)
+            .bind(input.settings.unwrap_or(serde_json::json!({"fields": []})))
+            .fetch_one(pool)
+            .await
+            .context("failed to upsert plugin-declared item type")?;
 
         Ok(item_type)
     }

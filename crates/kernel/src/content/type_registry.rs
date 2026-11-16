@@ -97,13 +97,58 @@ const RETURNING_ITEM_TYPE: &str =
 ///
 /// It is a SQL expression rather than Rust so that the read and the write are
 /// one statement: a writer that read the column, merged in memory and wrote it
-/// back could lose a key another writer stored in between. Both writers use it:
-/// [`ContentTypeRegistry::update`], which owns every key but `fields`, and
-/// `persist_fields`, which owns `fields` alone.
+/// back could lose a key another writer stored in between. Three writers use
+/// it: [`ContentTypeRegistry::update`], which owns every key but `fields`;
+/// `persist_fields`, which owns `fields` alone; and plugin registration
+/// (`register_type`), which writes only `fields`, merged by
+/// [`merge_declared_fields_sql`].
 fn merge_settings_sql(patch_param: &str) -> String {
     format!(
         "(CASE WHEN jsonb_typeof(item_type.settings) = 'object' \
          THEN item_type.settings ELSE '{{}}'::jsonb END) || {patch_param}::jsonb"
+    )
+}
+
+/// The one rule for merging a plugin's declared fields into the field list a
+/// row already holds: the plugin wins on the names it declares and is silent
+/// about every other field.
+///
+/// `declared_param` is a bound `{"fields": [...]}` object. The result is a
+/// JSON array that keeps the row's field order; each existing field whose
+/// `field_name` the plugin declares is replaced whole by the declared one,
+/// each existing field it does not declare (one an admin added, or one a newer
+/// plugin version stopped declaring) stays unchanged, and declared fields the
+/// row lacks are appended in declared order. A column that is not an object,
+/// or a `fields` that is not an array, is read as no fields, so a fresh or
+/// unreadable row gets the declared list as it is.
+///
+/// SQL for the same reason as [`merge_settings_sql`]: it reads the row as it
+/// stands when the statement writes it.
+fn merge_declared_fields_sql(declared_param: &str) -> String {
+    let existing = "(CASE WHEN jsonb_typeof(item_type.settings) = 'object' \
+         AND jsonb_typeof(item_type.settings -> 'fields') = 'array' \
+         THEN item_type.settings -> 'fields' ELSE '[]'::jsonb END)";
+    let declared = format!(
+        "(CASE WHEN jsonb_typeof({declared_param}::jsonb -> 'fields') = 'array' \
+         THEN {declared_param}::jsonb -> 'fields' ELSE '[]'::jsonb END)"
+    );
+    format!(
+        "COALESCE((SELECT jsonb_agg(m.field ORDER BY m.grp, m.ord) FROM ( \
+           SELECT COALESCE( \
+                    (SELECT d.field FROM jsonb_array_elements({declared}) \
+                       WITH ORDINALITY AS d(field, ord) \
+                     WHERE d.field ->> 'field_name' = e.field ->> 'field_name' \
+                     ORDER BY d.ord LIMIT 1), \
+                    e.field) AS field, \
+                  0 AS grp, e.ord \
+           FROM jsonb_array_elements({existing}) WITH ORDINALITY AS e(field, ord) \
+           UNION ALL \
+           SELECT d.field, 1 AS grp, d.ord \
+           FROM jsonb_array_elements({declared}) WITH ORDINALITY AS d(field, ord) \
+           WHERE NOT EXISTS ( \
+             SELECT 1 FROM jsonb_array_elements({existing}) AS x(field) \
+             WHERE x.field ->> 'field_name' = d.field ->> 'field_name') \
+         ) AS m), '[]'::jsonb)"
     )
 }
 
@@ -234,30 +279,46 @@ impl ContentTypeRegistry {
     }
 
     /// Register a content type definition from a plugin.
+    ///
+    /// Runs on every boot, so it must leave what an admin saved alone. The
+    /// declaration is authoritative for what it declares and silent about the
+    /// rest: label and description are written from it, `title_label` only
+    /// when it declares one, and of `settings` only `fields`, merged by
+    /// [`merge_declared_fields_sql`] into the row's list through
+    /// [`merge_settings_sql`]. Every other settings key, and every field the
+    /// plugin does not declare, stays. This used to write
+    /// `{"fields": <declared>}` over the whole column through a whole-row
+    /// upsert, so each boot dropped `published_default`, `revision_default`,
+    /// every other saved key and every admin-added field, and reset the title
+    /// label to "Title".
     async fn register_type(&self, def: &ContentTypeDefinition, plugin_name: &str) -> Result<()> {
-        // Upsert to database
         let input = CreateItemType {
             type_name: def.machine_name.clone(),
             label: def.label.clone(),
             description: Some(def.description.clone()),
             has_title: Some(true),
-            title_label: resolve_title_label(def.title_label.as_deref(), None),
+            // `None` keeps the row's label; a new row gets "Title".
+            title_label: def.title_label.as_deref().and_then(normalize_label),
             plugin: plugin_name.to_string(),
             // The object shape `{"fields": [...]}` is the one canonical layout
             // for this column, and the one `parse_fields_from_settings` reads.
-            // Writing the bare array here is what made every plugin-declared
-            // type come back from the database with zero fields.
+            // A new row is written with it as is; an existing row merges it.
             settings: Some(serde_json::json!({
                 "fields": serde_json::to_value(&def.fields).context("serialize fields")?,
             })),
         };
 
-        ItemType::upsert(&self.inner.pool, input).await?;
+        let patch = format!(
+            "(jsonb_build_object('fields', {}))",
+            merge_declared_fields_sql("$7")
+        );
+        let row =
+            ItemType::upsert_plugin_declared(&self.inner.pool, input, &merge_settings_sql(&patch))
+                .await?;
 
-        // Update cache
-        self.inner
-            .types
-            .insert(def.machine_name.clone(), def.clone());
+        // Cache the row as the database now holds it, not the declaration: the
+        // row also carries the fields and title label an admin set.
+        self.cache_row(&row);
 
         info!(type_name = %def.machine_name, "registered content type");
         Ok(())
