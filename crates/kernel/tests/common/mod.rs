@@ -443,6 +443,16 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::authenticate_api_token,
             ))
+            // The OAuth JWT bearer middleware, outer to the API token one
+            // exactly as in `main.rs`, so it sees every `Authorization: Bearer`
+            // header first. Without it the harness could not see that this
+            // middleware once answered 401 to every API token before the token
+            // middleware was reached, which is how a production-only outage
+            // passed every test here.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::authenticate_bearer_token,
+            ))
             .layer(session_layer)
             // Resolve the trusted-proxy-gated client IP (RATE-1) so handlers see
             // the `ClientIp` extension exactly as in production.

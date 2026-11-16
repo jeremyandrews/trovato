@@ -172,6 +172,60 @@ mod tests {
         assert_eq!(hash1.len(), 64);
     }
 
+    /// A token deleted after it was looked up is not served again.
+    ///
+    /// The lookup used to go through a process-local cache that kept a hit for
+    /// a minute, so revocation took up to a minute to take effect — and never
+    /// took effect in another process (the MCP server, a second instance) any
+    /// sooner. Needs a database; without `DATABASE_URL` there is nothing to
+    /// look a token up in, and the test says so and returns.
+    #[tokio::test]
+    async fn a_deleted_token_is_not_served_from_a_cache() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("DATABASE_URL unset; skipping the database-backed token test");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect to the test database");
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("migrate the test database");
+
+        let user_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, name, pass, mail, status) VALUES ($1, $2, '', $3, 1)")
+            .bind(user_id)
+            .bind(format!("api-token-unit-{}", user_id.simple()))
+            .bind(format!("{}@example.com", user_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("create the token owner");
+
+        let (token, raw) = ApiToken::create(&pool, user_id, "unit", None)
+            .await
+            .expect("mint");
+        let first = ApiToken::find_by_token(&pool, &raw).await.expect("lookup");
+        let deleted = ApiToken::delete(&pool, token.id, user_id)
+            .await
+            .expect("delete");
+        let second = ApiToken::find_by_token(&pool, &raw).await.expect("lookup");
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("remove the token owner");
+
+        assert!(first.is_some(), "the live token is found");
+        assert!(deleted, "delete reports that it removed the token");
+        assert!(
+            second.is_none(),
+            "a deleted token must not be served from a cache"
+        );
+    }
+
     #[test]
     fn test_token_generation() {
         let t1 = generate_token();
