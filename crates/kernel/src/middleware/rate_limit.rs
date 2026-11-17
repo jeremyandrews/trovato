@@ -125,6 +125,15 @@ pub struct RateLimitConfig {
     /// thousands, and a limit measured per minute would still let one through
     /// every minute all day.
     pub mail: (u32, Duration),
+
+    /// Password reset mails, per destination address.
+    ///
+    /// Not a path bucket: `routes::password_reset` checks it with the
+    /// lower-cased address a reset was asked for, alongside a per-client check
+    /// on the `recovery` bucket. The per-client limit stops one source sending
+    /// many mails; this one stops many sources flooding one inbox, which no
+    /// per-client limit can see.
+    pub reset_mail: (u32, Duration),
 }
 
 /// Every rate-limit bucket, by the name used to key it, configure it and
@@ -133,7 +142,7 @@ pub struct RateLimitConfig {
 /// The one list: [`RateLimitConfig::bucket`] and its private `bucket_mut` twin
 /// resolve each of these to a field, and `every_bucket_resolves_to_a_field` fails
 /// if a name here has no field behind it.
-pub const BUCKETS: [&str; 17] = [
+pub const BUCKETS: [&str; 18] = [
     "login",
     "forms",
     "api",
@@ -151,6 +160,7 @@ pub const BUCKETS: [&str; 17] = [
     "search_followup",
     "static",
     "mail",
+    "reset_mail",
 ];
 
 /// Path prefixes served as static assets.
@@ -192,6 +202,7 @@ impl Default for RateLimitConfig {
             search_followup: (5, Duration::from_secs(60)), // 5 per minute
             static_assets: (2000, Duration::from_secs(60)), // 2000 per minute
             mail: (100, Duration::from_secs(3600)),       // 100 per hour, per plugin
+            reset_mail: (3, Duration::from_secs(3600)),   // 3 per hour, per address
         }
     }
 }
@@ -217,6 +228,7 @@ impl RateLimitConfig {
             "search_followup" => self.search_followup,
             "static" => self.static_assets,
             "mail" => self.mail,
+            "reset_mail" => self.reset_mail,
             _ => return None,
         })
     }
@@ -241,6 +253,7 @@ impl RateLimitConfig {
             "search_followup" => &mut self.search_followup,
             "static" => &mut self.static_assets,
             "mail" => &mut self.mail,
+            "reset_mail" => &mut self.reset_mail,
             _ => return None,
         })
     }
@@ -532,6 +545,10 @@ fn is_comment_write(path: &str, method: &str) -> bool {
 
 /// Resolve the client identifier (IP address) for rate limiting.
 ///
+/// `X-Forwarded-For` is read from the right: the client is the first entry that
+/// is not itself a trusted proxy, so every proxy hop in front of the site must
+/// be listed in `trusted_proxies`.
+///
 /// `X-Forwarded-For` / `X-Real-IP` are honored **only** when the direct socket
 /// peer (`addr`) is in the `trusted_proxies` allowlist (RATE-1). Otherwise the
 /// socket peer IP is used and the forwarding headers are ignored — this stops a
@@ -547,15 +564,26 @@ pub fn get_client_id(
 
     // Only a trusted proxy's forwarding headers are believed.
     if peer.is_some_and(|ip| trusted_proxies.contains(&ip)) {
-        // X-Forwarded-For: the first (client-most) entry.
+        // X-Forwarded-For, read from the right. Each proxy appends the address
+        // it received the request from, so the rightmost entries are the
+        // trusted proxies' own observations and everything to the left of the
+        // first untrusted one is whatever the client chose to send. The first
+        // entry from the right that is not itself a trusted proxy is the
+        // client. Reading the leftmost entry instead let a client behind an
+        // appending proxy pick its own identity.
         if let Some(forwarded) = headers.get("x-forwarded-for")
             && let Ok(value) = forwarded.to_str()
-            && let Some(first) = value.split(',').next()
+            && let Some(client) = value
+                .rsplit(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .find(|entry| {
+                    entry
+                        .parse::<IpAddr>()
+                        .map_or(true, |ip| !trusted_proxies.contains(&ip))
+                })
         {
-            let first = first.trim();
-            if !first.is_empty() {
-                return first.to_string();
-            }
+            return client.to_string();
         }
         // X-Real-IP fallback.
         if let Some(real_ip) = headers.get("x-real-ip")
@@ -1137,13 +1165,14 @@ mod tests {
         "10.9.8.7:443".parse().unwrap()
     }
 
-    /// From a TRUSTED proxy, X-Forwarded-For (first entry) is honored.
+    /// From a TRUSTED proxy, X-Forwarded-For is honored: the entry the proxy
+    /// appended (the rightmost untrusted one).
     #[test]
     fn trusted_proxy_honors_x_forwarded_for() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
         let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "1.2.3.4");
+        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "5.6.7.8");
     }
 
     /// From a trusted proxy, X-Real-IP is honored when XFF is absent.
@@ -1194,24 +1223,39 @@ mod tests {
         );
     }
 
-    /// Trusted proxy with a multi-hop XFF: the first (client-most) IP wins.
+    /// Trusted proxy with a multi-hop XFF: the rightmost entry that is not a
+    /// trusted proxy wins, whatever sits to its left.
     #[test]
-    fn trusted_proxy_x_forwarded_for_takes_first_ip() {
+    fn trusted_proxy_x_forwarded_for_takes_the_rightmost_untrusted_ip() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             "x-forwarded-for",
             "1.1.1.1, 2.2.2.2, 3.3.3.3".parse().unwrap(),
         );
         let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "1.1.1.1");
+        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "3.3.3.3");
     }
 
     #[test]
-    fn trusted_proxy_xff_trims_whitespace() {
+    fn trusted_proxy_xff_trims_whitespace_and_skips_empty_entries() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", " 1.2.3.4 , 5.6.7.8".parse().unwrap());
+        headers.insert("x-forwarded-for", " 1.2.3.4 , 5.6.7.8 , ".parse().unwrap());
         let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "1.2.3.4");
+        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "5.6.7.8");
+    }
+
+    /// Every entry a trusted proxy: fall back to X-Real-IP, then the peer.
+    #[test]
+    fn an_xff_of_only_trusted_proxies_falls_back() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "10.9.8.7".parse().unwrap());
+        let trusted = [proxy().ip()];
+        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "10.9.8.7");
+        headers.insert("x-real-ip", "198.51.100.9".parse().unwrap());
+        assert_eq!(
+            get_client_id(Some(proxy()), &headers, &trusted),
+            "198.51.100.9"
+        );
     }
 
     /// A proxy that appends to `X-Forwarded-For` passes on whatever the client

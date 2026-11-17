@@ -164,7 +164,7 @@ async fn login_form_submit(
     };
 
     // Perform login
-    match do_login(&state, &session, &request).await {
+    match do_login(&state, &session, &request, &client_id).await {
         Ok(_) => Redirect::to("/").into_response(),
         Err(e) => render_login_error(&state, &session, e.message()).await,
     }
@@ -260,13 +260,18 @@ async fn do_login(
     state: &AppState,
     session: &Session,
     request: &LoginRequest,
+    client_ip: &str,
 ) -> Result<(), LoginError> {
-    // Check if account is locked
-    match state.lockout().is_locked(&request.username).await {
+    // Check if sign-in is locked, for this address or for the account
+    match state
+        .lockout()
+        .is_locked(&request.username, client_ip)
+        .await
+    {
         Ok(true) => {
             let remaining = state
                 .lockout()
-                .get_lockout_remaining(&request.username)
+                .get_lockout_remaining(&request.username, client_ip)
                 .await
                 .unwrap_or(None);
 
@@ -290,9 +295,12 @@ async fn do_login(
     let user = match state.users().find_by_name(&request.username).await {
         Ok(Some(user)) => user,
         Ok(None) => {
+            // The same Argon2 work a real verification costs, so an unknown
+            // username is not told apart by how long the answer takes.
+            crate::models::User::verify_password_or_dummy(None, &request.password);
             if let Err(e) = state
                 .lockout()
-                .record_failed_attempt(&request.username)
+                .record_failed_attempt(&request.username, client_ip)
                 .await
             {
                 tracing::warn!(error = %e, "failed to record failed login attempt");
@@ -307,9 +315,11 @@ async fn do_login(
 
     // Check if user is active
     if !user.is_active() {
+        // As for an unknown username: one Argon2 verification, result unused.
+        crate::models::User::verify_password_or_dummy(None, &request.password);
         if let Err(e) = state
             .lockout()
-            .record_failed_attempt(&request.username)
+            .record_failed_attempt(&request.username, client_ip)
             .await
         {
             tracing::warn!(error = %e, user_id = %user.id, "failed to record failed login attempt");
@@ -317,11 +327,12 @@ async fn do_login(
         return Err(LoginError::InvalidCredentials);
     }
 
-    // Verify password
-    if !user.verify_password(&request.password) {
+    // Verify password (one Argon2 verification, as on the two paths above;
+    // an account with no password verifies against the dummy hash)
+    if !crate::models::User::verify_password_or_dummy(Some(&user), &request.password) {
         match state
             .lockout()
-            .record_failed_attempt(&request.username)
+            .record_failed_attempt(&request.username, client_ip)
             .await
         {
             Ok((locked, _)) => {
@@ -339,7 +350,11 @@ async fn do_login(
     }
 
     // Successful login - clear any failed attempts
-    if let Err(e) = state.lockout().clear_attempts(&request.username).await {
+    if let Err(e) = state
+        .lockout()
+        .clear_attempts(&request.username, client_ip)
+        .await
+    {
         tracing::warn!(error = %e, user_id = %user.id, "failed to clear login attempts");
     }
 
@@ -375,7 +390,7 @@ async fn login(
         });
     }
 
-    match do_login(&state, &session, &request).await {
+    match do_login(&state, &session, &request, &client_id).await {
         Ok(()) => Ok(Json(JsonSuccess {
             success: true,
             message: "Login successful".to_string(),
@@ -1228,6 +1243,7 @@ async fn profile_form(State(state): State<AppState>, session: Session) -> Respon
 async fn profile_update(
     State(state): State<AppState>,
     session: Session,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<ProfileFormRequest>,
 ) -> Response {
     let user = match get_current_user(&state, &session).await {
@@ -1281,14 +1297,18 @@ async fn profile_update(
     // Require current password when changing username or email (login credentials)
     if email_changing || name_changing {
         // Check lockout before attempting password verification
-        if let Ok(true) = state.lockout().is_locked(&user.name).await {
+        if let Ok(true) = state.lockout().is_locked(&user.name, &client_ip.0).await {
             errors.push("Account temporarily locked due to too many failed attempts.".to_string());
         } else if form.current_password.is_empty() {
             errors
                 .push("Current password is required to change your username or email.".to_string());
         } else if !user.verify_password(&form.current_password) {
             // Record failed attempt for lockout tracking
-            if let Err(e) = state.lockout().record_failed_attempt(&user.name).await {
+            if let Err(e) = state
+                .lockout()
+                .record_failed_attempt(&user.name, &client_ip.0)
+                .await
+            {
                 tracing::warn!(error = %e, "failed to record failed password attempt");
             }
             errors.push("Current password is incorrect.".to_string());
@@ -1490,6 +1510,7 @@ async fn profile_update(
 async fn password_change(
     State(state): State<AppState>,
     session: Session,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<PasswordChangeRequest>,
 ) -> Response {
     let user = match get_current_user(&state, &session).await {
@@ -1514,13 +1535,17 @@ async fn password_change(
     let mut errors = Vec::new();
 
     // Check lockout before attempting password verification
-    if let Ok(true) = state.lockout().is_locked(&user.name).await {
+    if let Ok(true) = state.lockout().is_locked(&user.name, &client_ip.0).await {
         errors.push("Account temporarily locked due to too many failed attempts.".to_string());
     } else if form.current_password.is_empty() {
         errors.push("Current password is required.".to_string());
     } else if !user.verify_password(&form.current_password) {
         // Record failed attempt for lockout tracking
-        if let Err(e) = state.lockout().record_failed_attempt(&user.name).await {
+        if let Err(e) = state
+            .lockout()
+            .record_failed_attempt(&user.name, &client_ip.0)
+            .await
+        {
             tracing::warn!(error = %e, "failed to record failed password attempt");
         }
         errors.push("Current password is incorrect.".to_string());

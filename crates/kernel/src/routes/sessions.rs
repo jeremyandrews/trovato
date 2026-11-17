@@ -66,17 +66,6 @@ fn json_error(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
-/// The client IP for an audit event on a login-gated management endpoint.
-fn client_ip_of(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
-}
-
 // ─── User self-service ───────────────────────────────────────────────────────
 
 /// `GET /user/sessions` — the caller's active sessions (AC-2).
@@ -168,6 +157,7 @@ async fn revoke_session(
     State(state): State<AppState>,
     session: Session,
     Path(device_id): Path<Uuid>,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: HeaderMap,
 ) -> Response {
     let user = match require_login(&state, &session).await {
@@ -177,7 +167,9 @@ async fn revoke_session(
     if let Err((status, body)) = require_csrf_header(&session, &headers).await {
         return (status, body).into_response();
     }
-    let ip = client_ip_of(&headers);
+    // The trusted-proxy-gated client address, not raw `X-Forwarded-For`,
+    // which a client writes for itself.
+    let ip = client_ip.0;
 
     // Scoped to the caller's own user id, so a device id belonging to another
     // account is simply not found.
@@ -217,6 +209,7 @@ async fn revoke_session(
 async fn revoke_other_sessions(
     State(state): State<AppState>,
     session: Session,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: HeaderMap,
 ) -> Response {
     let user = match require_login(&state, &session).await {
@@ -226,7 +219,9 @@ async fn revoke_other_sessions(
     if let Err((status, body)) = require_csrf_header(&session, &headers).await {
         return (status, body).into_response();
     }
-    let ip = client_ip_of(&headers);
+    // The trusted-proxy-gated client address, not raw `X-Forwarded-For`,
+    // which a client writes for itself.
+    let ip = client_ip.0;
     let current_device = session.get::<Uuid>(SESSION_DEVICE_ID).await.ok().flatten();
 
     match state
@@ -317,6 +312,7 @@ async fn admin_revoke_session(
     State(state): State<AppState>,
     session: Session,
     Path((user_id, device_id)): Path<(Uuid, Uuid)>,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: HeaderMap,
 ) -> Response {
     let admin = match require_permission(&state, &session, "administer users").await {
@@ -326,7 +322,9 @@ async fn admin_revoke_session(
     if let Err((status, body)) = require_csrf_header(&session, &headers).await {
         return (status, body).into_response();
     }
-    let ip = client_ip_of(&headers);
+    // The trusted-proxy-gated client address, not raw `X-Forwarded-For`,
+    // which a client writes for itself.
+    let ip = client_ip.0;
 
     match state.session_registry().revoke(user_id, device_id).await {
         Ok(Some(entry)) => {

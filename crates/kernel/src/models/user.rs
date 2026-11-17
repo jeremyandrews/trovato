@@ -438,6 +438,50 @@ impl User {
     }
 }
 
+/// A password hash nobody's password matches, built once with the production
+/// parameters, to verify against when there is no real hash to check.
+///
+/// Its only job is to cost exactly what a real verification costs.
+#[allow(clippy::expect_used)] // Hashing with hardcoded, valid params cannot fail.
+static DUMMY_HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    hash_password(&hex::encode(rand::random::<[u8; 32]>()))
+        .expect("hashing a random string with fixed parameters succeeds")
+});
+
+impl User {
+    /// Verify `password` for a sign-in, doing one full Argon2id verification
+    /// whatever the outcome.
+    ///
+    /// With a user that has a password hash, this is [`User::verify_password`].
+    /// With no user (an unknown username, or one the caller has already decided
+    /// to refuse, such as a blocked account), or a user with no password, it
+    /// verifies against `DUMMY_HASH` and returns `false`. The point is that
+    /// the three sign-in failures (no such user, blocked user, wrong password)
+    /// take the same time, so response time does not reveal which usernames
+    /// exist.
+    pub fn verify_password_or_dummy(user: Option<&User>, password: &str) -> bool {
+        match user {
+            Some(user) if !user.pass.is_empty() => user.verify_password(password),
+            _ => {
+                verify_against_dummy(password);
+                false
+            }
+        }
+    }
+}
+
+/// Spend one production-cost Argon2id verification on a hash no password
+/// matches. Returns whether it matched, which is never.
+fn verify_against_dummy(password: &str) -> bool {
+    PasswordHash::new(&DUMMY_HASH)
+        .map(|hash| {
+            argon2_instance()
+                .verify_password(password.as_bytes(), &hash)
+                .is_ok()
+        })
+        .unwrap_or(false)
+}
+
 /// Create an Argon2id instance with RFC 9106 recommended parameters.
 ///
 /// Parameters: 64 MiB memory, 3 iterations, 4 lanes of parallelism.
@@ -478,6 +522,24 @@ mod tests {
     //! findings from Epic 27. Do not remove without security review.
 
     use super::*;
+
+    /// The dummy hash costs what a real one costs: it is Argon2id with exactly
+    /// the production parameters, so verifying against it runs the full
+    /// Argon2 path. And it never matches.
+    #[test]
+    fn the_dummy_verification_runs_production_argon2_and_returns_false() {
+        let parsed = PasswordHash::new(&DUMMY_HASH).expect("the dummy hash parses");
+        assert_eq!(parsed.algorithm, argon2::Algorithm::Argon2id.ident());
+        let params = Params::try_from(&parsed).expect("the dummy hash carries Argon2 params");
+        let production = argon2_instance();
+        assert_eq!(params.m_cost(), production.params().m_cost());
+        assert_eq!(params.t_cost(), production.params().t_cost());
+        assert_eq!(params.p_cost(), production.params().p_cost());
+
+        assert!(!User::verify_password_or_dummy(None, "anything"));
+        assert!(!User::verify_password_or_dummy(None, ""));
+        assert!(!verify_against_dummy("password"));
+    }
 
     #[test]
     fn test_anonymous_user_id() {
