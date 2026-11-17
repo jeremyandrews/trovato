@@ -343,3 +343,42 @@ fn parse_anthropic_response(body: &str) -> (String, u32) {
 
     (content, (input_tokens + output_tokens) as u32)
 }
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::services::ai_provider::{AiProviderConfig, ResolvedProvider};
+
+    fn resolved(protocol: ProviderProtocol) -> ResolvedProvider {
+        ResolvedProvider {
+            config: AiProviderConfig {
+                id: "p".to_string(),
+                label: "P".to_string(),
+                protocol,
+                base_url: "https://provider.example/v1".to_string(),
+                api_key_env: String::new(),
+                models: Vec::new(),
+                rate_limit_rpm: 0,
+                enabled: true,
+            },
+            api_key: Some("sk-test".to_string()),
+            model: "claude-test".to_string(),
+        }
+    }
+
+    /// Nothing configures a temperature for the writing assistant, so none is
+    /// sent: a hard coded 0.7 made every current Claude model answer 400.
+    #[test]
+    fn the_writing_assistant_sends_no_temperature() {
+        for protocol in [
+            ProviderProtocol::Anthropic,
+            ProviderProtocol::OpenAiCompatible,
+        ] {
+            let (_, body, _) = build_provider_request(&resolved(protocol), "sys", "user");
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(body.get("temperature").is_none(), "{protocol:?}: {body}");
+        }
+    }
+}

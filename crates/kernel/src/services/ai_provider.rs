@@ -1045,6 +1045,70 @@ pub(crate) fn cap_embedding_input(text: &str) -> (std::borrow::Cow<'_, str>, Opt
 mod tests {
     use super::*;
 
+    /// A loopback server that answers every request with `status` and `body`,
+    /// and records the paths it was asked for.
+    async fn answering(
+        status: u16,
+        body: &'static str,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let paths: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let seen = paths.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let seen = seen.clone();
+            async move {
+                seen.lock().unwrap().push(uri.path().to_string());
+                (axum::http::StatusCode::from_u16(status).unwrap(), body)
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}/v1"), paths)
+    }
+
+    fn lazy_service() -> AiProviderService {
+        AiProviderService::new(
+            sqlx::postgres::PgPool::connect_lazy("postgres://localhost/trovato").unwrap(),
+        )
+    }
+
+    /// A 404 is a failed connection test, not a successful one.
+    ///
+    /// The Anthropic test treated any HTTP answer as proof of a working
+    /// provider, so a base URL with a typo, or a key that could not reach the
+    /// API, reported "Connected successfully (HTTP 404)".
+    #[tokio::test]
+    async fn the_anthropic_connection_test_fails_on_a_404() {
+        let (base, _) = answering(404, r#"{"error":{"message":"b2c: no such route"}}"#).await;
+        let result = lazy_service().test_anthropic(&base, Some("sk-test")).await;
+        let error = result.expect_err("a 404 must fail the connection test");
+        let message = error.to_string();
+        assert!(message.contains("404"), "{message}");
+        assert!(
+            message.contains("b2c: no such route"),
+            "says why: {message}"
+        );
+    }
+
+    /// Any non 2xx fails it, on both protocols, and a 401 says why.
+    #[tokio::test]
+    async fn every_non_2xx_fails_the_connection_test_on_both_protocols() {
+        for status in [401u16, 403, 404, 405, 500] {
+            let (base, _) = answering(status, r#"{"error":{"message":"b2c-why"}}"#).await;
+            let svc = lazy_service();
+            let anthropic = svc.test_anthropic(&base, Some("sk-test")).await;
+            assert!(anthropic.is_err(), "anthropic {status} must fail");
+            assert!(
+                anthropic.unwrap_err().to_string().contains("b2c-why"),
+                "anthropic {status} must say why"
+            );
+            let openai = svc.test_openai_compatible(&base, Some("sk-test")).await;
+            assert!(openai.is_err(), "openai {status} must fail");
+        }
+    }
+
     // ---- P11c / D-43 timeout + per-operation breaker ----
 
     #[test]

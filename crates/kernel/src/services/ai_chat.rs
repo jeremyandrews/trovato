@@ -1029,6 +1029,85 @@ mod tests {
         assert!((config.temperature - 0.7).abs() < f32::EPSILON);
     }
 
+    fn test_resolved(protocol: ProviderProtocol) -> ResolvedProvider {
+        ResolvedProvider {
+            config: crate::services::ai_provider::AiProviderConfig {
+                id: "p".to_string(),
+                label: "P".to_string(),
+                protocol,
+                base_url: "https://provider.example/v1".to_string(),
+                api_key_env: String::new(),
+                models: Vec::new(),
+                rate_limit_rpm: 0,
+                enabled: true,
+            },
+            api_key: Some("sk-test".to_string()),
+            model: "claude-test".to_string(),
+        }
+    }
+
+    fn test_messages() -> Vec<AiMessage> {
+        vec![
+            AiMessage {
+                role: ROLE_SYSTEM.to_string(),
+                content: "sys".to_string(),
+            },
+            AiMessage {
+                role: ROLE_USER.to_string(),
+                content: "hi".to_string(),
+            },
+        ]
+    }
+
+    /// A site that never chose a temperature sends none, on either protocol.
+    ///
+    /// Anthropic models newer than `claude-sonnet-4-6` answer 400 to any request
+    /// that carries `temperature`; the chat config defaulted it to 0.7, so the
+    /// key was on every request and chat could not use a current Claude model.
+    #[test]
+    fn default_chat_config_sends_no_temperature() {
+        let config = ChatConfig::default();
+        let (_, body, _) = build_streaming_anthropic_request(
+            &test_resolved(ProviderProtocol::Anthropic),
+            &test_messages(),
+            &config,
+        );
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(body.get("temperature").is_none(), "anthropic: {body}");
+
+        let (_, body, _) = build_streaming_openai_request(
+            &test_resolved(ProviderProtocol::OpenAiCompatible),
+            &test_messages(),
+            &config,
+        );
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(body.get("temperature").is_none(), "openai: {body}");
+    }
+
+    /// A stored config with a number in it keeps working and still sends it.
+    #[test]
+    fn stored_chat_temperature_still_loads_and_is_sent() {
+        let json = serde_json::json!({
+            "system_prompt": "hello",
+            "rag_enabled": true,
+            "rag_max_results": 3,
+            "rag_min_score": 0.2,
+            "max_history_turns": 5,
+            "rate_limit_per_hour": 10,
+            "max_tokens": 512,
+            "temperature": 0.4
+        });
+        let config: ChatConfig = serde_json::from_value(json).unwrap();
+        let (_, body, _) = build_streaming_anthropic_request(
+            &test_resolved(ProviderProtocol::Anthropic),
+            &test_messages(),
+            &config,
+        );
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let sent = body["temperature"].as_f64().expect("temperature sent");
+        assert!((sent - 0.4).abs() < 1e-6, "{sent}");
+    }
+
     #[test]
     fn chat_turn_serde_roundtrip() {
         let turn = ChatTurn {

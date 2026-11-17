@@ -8627,6 +8627,62 @@ fn e2e_ai_chat_admin_save_config() {
     });
 }
 
+/// Test: a blank temperature on the chat config form is saved as unset.
+///
+/// Anthropic models newer than `claude-sonnet-4-6` refuse a request that carries
+/// `temperature`, so "no temperature" has to be something a site can choose.
+/// The form field was an `f32`, so a blank box was a 422.
+#[test]
+fn e2e_ai_chat_admin_blank_temperature_saves_unset() {
+    run_test(async {
+        let _guard = AI_CHAT_LOCK.lock().await;
+        let app = shared_app().await;
+
+        let cookies = app
+            .create_and_login_admin("chat_blank_t", "password12345", "chatblankt@test.com")
+            .await;
+        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/system/ai-chat").await;
+
+        let form_body = format!(
+            "_token={}&system_prompt={}&rag_max_results=5&rag_min_score=0.5&max_history_turns=10&rate_limit_per_hour=60&max_tokens=2048&temperature=",
+            url_encode(&csrf_token),
+            url_encode("You are a helpful assistant for {site_name}.")
+        );
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/system/ai-chat")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_body))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "a blank temperature must save, not be refused"
+        );
+
+        let config = app.state.ai_chat().load_config().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["temperature"],
+            serde_json::Value::Null,
+            "a blank temperature must be stored as unset"
+        );
+
+        // The page still renders with the box empty.
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-chat")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    });
+}
+
 /// Test: rate limiting returns 429 after exceeding the per-hour limit.
 #[test]
 fn e2e_ai_chat_rate_limit_returns_429() {

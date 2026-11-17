@@ -527,6 +527,37 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
 mod tests {
     use super::*;
 
+    fn resolved(protocol: ProviderProtocol) -> crate::services::ai_provider::ResolvedProvider {
+        crate::services::ai_provider::ResolvedProvider {
+            config: crate::services::ai_provider::AiProviderConfig {
+                id: "p".to_string(),
+                label: "P".to_string(),
+                protocol,
+                base_url: "https://provider.example/v1".to_string(),
+                api_key_env: String::new(),
+                models: Vec::new(),
+                rate_limit_rpm: 0,
+                enabled: true,
+            },
+            api_key: Some("sk-test".to_string()),
+            model: "claude-test".to_string(),
+        }
+    }
+
+    /// Nothing configures a temperature for query expansion or summaries, so
+    /// none is sent: a hard coded 0.3 made every current Claude model answer 400.
+    #[test]
+    fn search_ai_requests_send_no_temperature() {
+        for protocol in [
+            ProviderProtocol::Anthropic,
+            ProviderProtocol::OpenAiCompatible,
+        ] {
+            let (_, body, _) = build_chat_request(&resolved(protocol), "sys", "user");
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(body.get("temperature").is_none(), "{protocol:?}: {body}");
+        }
+    }
+
     #[test]
     fn normalization_folds_case_and_whitespace() {
         assert_eq!(normalize_query("  Rust   Async "), "rust async");
