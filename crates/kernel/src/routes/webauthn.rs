@@ -584,7 +584,7 @@ async fn login_finish(
 
     // Clear failed-attempt state and run the same post-login bookkeeping a
     // password login does (this dispatches tap_user_login).
-    if let Err(e) = state.lockout().clear_attempts(&user.name).await {
+    if let Err(e) = state.lockout().clear_attempts(&user.name, &ip).await {
         warn!(error = %e, "failed to clear login attempts after passkey login");
     }
     if let Err(e) = state.users().record_login(&user).await {

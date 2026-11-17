@@ -9,6 +9,28 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### List every proxy hop in `TRUSTED_PROXIES`
+
+**Who is affected:** a site behind more than one proxy (for example a CDN in
+front of a load balancer) that sets `TRUSTED_PROXIES`. Find out by checking how
+many proxies a request passes through before it reaches Trovato, and whether
+`TRUSTED_PROXIES` names each of them.
+
+**What changed.** The client address is now read from the right of
+`X-Forwarded-For`: the first entry that is not a trusted proxy is the client.
+The leftmost entry was used before, and a client can write whatever it likes
+there. If only the proxy nearest Trovato is listed, the client address now
+resolves to the next proxy out, and every visitor behind that proxy shares one
+rate-limit bucket and one login lockout counter. List every proxy hop's address
+in `TRUSTED_PROXIES`. A site behind a single proxy needs no change.
+
+Related changes that need nothing from an operator:
+- The login lockout now counts five failures per username and client address,
+  plus fifty per username across all addresses.
+- Password reset requests have their own limits: five per client address per
+  fifteen minutes, and three mails per destination address per hour, the second
+  overridable as `TROVATO_RATE_LIMIT_RESET_MAIL`.
+
 ### API token requests no longer receive a session cookie
 
 **Who is affected:** any client that authenticates with an API token
