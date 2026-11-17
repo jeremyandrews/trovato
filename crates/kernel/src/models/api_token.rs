@@ -1,22 +1,17 @@
 //! API token model for headless CMS authentication.
 
-use std::sync::LazyLock;
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Short-TTL cache for token lookups to avoid per-request DB hits.
-/// Entries expire after 60 seconds. Revoked tokens may remain valid
-/// in the cache for up to this duration.
-static TOKEN_CACHE: LazyLock<moka::future::Cache<String, Option<ApiToken>>> = LazyLock::new(|| {
-    moka::future::Cache::builder()
-        .time_to_live(std::time::Duration::from_secs(60))
-        .max_capacity(10_000)
-        .build()
-});
+// No lookup cache, deliberately. A process-local cache of token lookups kept a
+// revoked token working until its entry expired, kept an expired token working
+// past `expires_at`, and could never be invalidated from another process (the
+// MCP server, a second instance). The lookup is a unique-index equality on
+// `token_hash`, so every request asks the database, and revocation takes effect
+// on the next request in every process.
 
 /// Maximum number of API tokens a single user may hold.
 pub const MAX_TOKENS_PER_USER: i64 = 25;
@@ -69,13 +64,10 @@ impl ApiToken {
 
     /// Look up a token by its raw value. Returns `None` if not found or expired.
     ///
-    /// Results are cached for 60 seconds to avoid per-request DB queries.
+    /// Always asks the database (see the note at the top of this module), so a
+    /// token deleted or expired a moment ago is refused now.
     pub async fn find_by_token(pool: &PgPool, raw_token: &str) -> Result<Option<Self>> {
         let token_hash = hash_token(raw_token);
-
-        if let Some(cached) = TOKEN_CACHE.get(&token_hash).await {
-            return Ok(cached);
-        }
 
         let token = sqlx::query_as::<_, ApiToken>(
             r#"
@@ -88,8 +80,6 @@ impl ApiToken {
         .fetch_optional(pool)
         .await
         .context("failed to find API token")?;
-
-        TOKEN_CACHE.insert(token_hash, token.clone()).await;
 
         Ok(token)
     }
@@ -128,6 +118,9 @@ impl ApiToken {
     }
 
     /// Delete (revoke) a token, scoped to the owning user.
+    ///
+    /// Returns whether a token was deleted. The next lookup of that token, in
+    /// any process, finds nothing.
     pub async fn delete(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool> {
         let result = sqlx::query("DELETE FROM api_tokens WHERE id = $1 AND user_id = $2")
             .bind(id)
@@ -137,6 +130,20 @@ impl ApiToken {
             .context("failed to delete API token")?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete (revoke) every token a user holds, returning how many went.
+    ///
+    /// For when the account itself changes in a way that should end all of its
+    /// credentials, such as being blocked.
+    pub async fn delete_all_for_user(pool: &PgPool, user_id: Uuid) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM api_tokens WHERE user_id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .context("failed to delete a user's API tokens")?;
+
+        Ok(result.rows_affected())
     }
 }
 
@@ -170,6 +177,60 @@ mod tests {
         assert_ne!(hash1, hash3);
 
         assert_eq!(hash1.len(), 64);
+    }
+
+    /// A token deleted after it was looked up is not served again.
+    ///
+    /// The lookup used to go through a process-local cache that kept a hit for
+    /// a minute, so revocation took up to a minute to take effect — and never
+    /// took effect in another process (the MCP server, a second instance) any
+    /// sooner. Needs a database; without `DATABASE_URL` there is nothing to
+    /// look a token up in, and the test says so and returns.
+    #[tokio::test]
+    async fn a_deleted_token_is_not_served_from_a_cache() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("DATABASE_URL unset; skipping the database-backed token test");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect to the test database");
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("migrate the test database");
+
+        let user_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, name, pass, mail, status) VALUES ($1, $2, '', $3, 1)")
+            .bind(user_id)
+            .bind(format!("api-token-unit-{}", user_id.simple()))
+            .bind(format!("{}@example.com", user_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("create the token owner");
+
+        let (token, raw) = ApiToken::create(&pool, user_id, "unit", None)
+            .await
+            .expect("mint");
+        let first = ApiToken::find_by_token(&pool, &raw).await.expect("lookup");
+        let deleted = ApiToken::delete(&pool, token.id, user_id)
+            .await
+            .expect("delete");
+        let second = ApiToken::find_by_token(&pool, &raw).await.expect("lookup");
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("remove the token owner");
+
+        assert!(first.is_some(), "the live token is found");
+        assert!(deleted, "delete reports that it removed the token");
+        assert!(
+            second.is_none(),
+            "a deleted token must not be served from a cache"
+        );
     }
 
     #[test]

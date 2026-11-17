@@ -404,10 +404,21 @@ pub async fn require_csrf(session: &Session, token: &str) -> Result<(), Response
 ///
 /// For use with JSON API endpoints that use cookie-based session auth.
 /// The client must include the token in a custom header rather than a form field.
+///
+/// A request authenticated by an API token passes without one. CSRF exists
+/// because a browser attaches a cookie to a cross-site request by itself; no
+/// browser attaches a bearer token, so a token request has nothing to forge.
+/// The decision rests on
+/// [`crate::middleware::api_token::is_token_authenticated`], which only the
+/// token middleware can make true and which no session can carry, so a
+/// cookie-authenticated request is refused exactly as before.
 pub async fn require_csrf_header(
     session: &Session,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+    if crate::middleware::api_token::is_token_authenticated() {
+        return Ok(());
+    }
     let token = headers
         .get("X-CSRF-Token")
         .and_then(|v| v.to_str().ok())
@@ -454,6 +465,9 @@ pub const CSRF_FORM_FIELD: &str = "_token";
 /// The body is only read when the content type says it is a form. A JSON caller
 /// that omits the header gets the same 403 it always got, rather than having its
 /// body scanned for a field that would not be there.
+///
+/// A token-authenticated request passes, for the reason given on
+/// [`require_csrf_header`], which this calls first.
 pub async fn require_csrf_header_or_field(
     session: &Session,
     headers: &axum::http::HeaderMap,

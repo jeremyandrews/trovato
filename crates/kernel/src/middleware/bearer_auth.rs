@@ -19,9 +19,18 @@ use crate::state::AppState;
 
 /// Middleware to authenticate Bearer JWT tokens.
 ///
-/// If a valid Bearer token is present, sets the user context in request
-/// extensions. If no token is present, passes through without modification.
-/// If an invalid token is present, returns 401.
+/// If a valid Bearer JWT is present, sets the user context in request
+/// extensions. If no bearer value is present, passes through without
+/// modification. If a JWT is present but invalid or revoked, returns 401.
+///
+/// Two kinds of credential share the `Authorization: Bearer` header: OAuth
+/// access tokens, which are JWTs, and kernel API tokens, which are opaque hex
+/// strings checked by [`crate::middleware::authenticate_api_token`]. This
+/// middleware runs first, so it must only claim the values that are its own. A
+/// value that does not have the shape of a compact JWS, and any value at all
+/// while OAuth is disabled, passes through untouched for the API token
+/// middleware to accept or refuse. Answering 401 to those here is what once made
+/// every API token unusable in production.
 pub async fn authenticate_bearer_token(
     State(state): State<AppState>,
     mut request: Request<Body>,
@@ -40,15 +49,16 @@ pub async fn authenticate_bearer_token(
         return next.run(request).await;
     };
 
-    // Check if OAuth service is available
+    // Not a JWT: an API token, or something the API token middleware will
+    // refuse. Either way it is not this middleware's to judge.
+    if !looks_like_compact_jws(token) {
+        return next.run(request).await;
+    }
+
+    // OAuth disabled: no JWT can be valid here, and the value may still be an
+    // API token, so leave the decision to the API token middleware.
     let Some(oauth) = state.oauth() else {
-        // Bearer token was presented but OAuth is disabled — reject
-        return (
-            StatusCode::UNAUTHORIZED,
-            [("WWW-Authenticate", "Bearer error=\"invalid_token\"")],
-            "OAuth service unavailable",
-        )
-            .into_response();
+        return next.run(request).await;
     };
 
     // Verify the JWT (must be an access token, not a refresh token)
@@ -108,6 +118,27 @@ pub async fn authenticate_bearer_token(
     next.run(request).await
 }
 
+/// Whether `value` has the shape of a compact JWS: three non-empty,
+/// dot-separated segments of base64url characters.
+///
+/// This is a shape test, not a verification. It only decides which middleware
+/// judges the value; a value that passes still goes through full JWT
+/// verification below. An API token (64 hex characters, no dots) never passes.
+fn looks_like_compact_jws(value: &str) -> bool {
+    let mut segments = 0;
+    for segment in value.split('.') {
+        segments += 1;
+        if segment.is_empty()
+            || !segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'=')
+        {
+            return false;
+        }
+    }
+    segments == 3
+}
+
 /// Bearer authentication info extracted from a valid JWT.
 #[derive(Debug, Clone)]
 pub struct BearerAuth {
@@ -118,4 +149,28 @@ pub struct BearerAuth {
     /// True for client_credentials tokens (machine-to-machine, no real user).
     /// Handlers should check this before treating `user_id` as a real user.
     pub is_client_credentials: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_compact_jws;
+
+    #[test]
+    fn a_jwt_is_recognised_by_shape() {
+        assert!(looks_like_compact_jws(
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl"
+        ));
+        assert!(looks_like_compact_jws("a.b.c"));
+    }
+
+    #[test]
+    fn an_api_token_and_other_values_are_not_jwts() {
+        // The shape `ApiToken` mints: 64 hex characters.
+        assert!(!looks_like_compact_jws(&"ab12".repeat(16)));
+        assert!(!looks_like_compact_jws(""));
+        assert!(!looks_like_compact_jws("a.b"));
+        assert!(!looks_like_compact_jws("a.b.c.d"));
+        assert!(!looks_like_compact_jws("a..c"));
+        assert!(!looks_like_compact_jws("a.b c.d"));
+    }
 }

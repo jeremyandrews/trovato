@@ -9,6 +9,25 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### API token requests no longer receive a session cookie
+
+**Who is affected:** any client that authenticates with an API token
+(`Authorization: Bearer <token>`) and then relied on the session cookie the
+response set, sending the cookie instead of the token on later requests. Find
+out by checking whether the client stores cookies from API responses and sends
+requests without the `Authorization` header afterwards.
+
+**What changed.** A token request is now stateless. It is authenticated for that
+request only: the response carries no `Set-Cookie`, nothing is stored in Redis,
+and nothing is added to the user's list of signed-in devices. A client must send
+its token on every request. A session the old behaviour created stays valid
+until it idles out (24 hours without use), but no new ones are created; such a
+session appears on its user's sessions page and can be ended there.
+
+Two related changes need nothing from an operator: revoking a token takes effect
+on the next request instead of up to a minute later, and a token-authenticated
+write no longer needs a CSRF token.
+
 ### `item-api` acts as the requesting user, and needs a capability in the background
 
 **Who is affected:** a plugin that imports the `item-api` interface —

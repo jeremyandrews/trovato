@@ -421,7 +421,7 @@ impl TestApp {
             })
             // Middleware layers (must match main.rs ordering):
             // MockConnectInfo → resolve_client_ip → TraceLayer → session →
-            // api_token → negotiate_language → routes
+            // bearer_auth → api_token → negotiate_language → routes
             // FR-7b: maintain the per-user session index. Inside the session
             // layer so it can read the session the handler just wrote.
             .layer(axum::middleware::from_fn_with_state(
@@ -437,11 +437,22 @@ impl TestApp {
             // observable: `routes::plugin_api` exempts a *bearer*-authenticated
             // write from CSRF (G-CSRF-NO-BEARER-BYPASS) and that posture cannot
             // be tested through a harness that never runs the middleware.
-            // Inside the session layer, which it writes the user id into; a
-            // request with no Authorization header passes straight through.
+            // Inside the session layer, whose session it replaces for the rest
+            // of a token request with an ephemeral one; a request with no
+            // Authorization header passes straight through.
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 trovato_kernel::middleware::authenticate_api_token,
+            ))
+            // The OAuth JWT bearer middleware, outer to the API token one
+            // exactly as in `main.rs`, so it sees every `Authorization: Bearer`
+            // header first. Without it the harness could not see that this
+            // middleware once answered 401 to every API token before the token
+            // middleware was reached, which is how a production-only outage
+            // passed every test here.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::authenticate_bearer_token,
             ))
             .layer(session_layer)
             // Resolve the trusted-proxy-gated client IP (RATE-1) so handlers see
