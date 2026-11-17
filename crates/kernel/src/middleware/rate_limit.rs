@@ -1214,6 +1214,40 @@ mod tests {
         assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "1.2.3.4");
     }
 
+    /// A proxy that appends to `X-Forwarded-For` passes on whatever the client
+    /// sent as the leftmost entries. Only the entry the trusted proxy appended
+    /// (the rightmost) is its own observation of the client.
+    #[test]
+    fn trusted_proxy_ignores_a_client_supplied_leftmost_entry() {
+        let mut headers = axum::http::HeaderMap::new();
+        // The client claimed 6.6.6.6; the proxy appended the real 198.51.100.7.
+        headers.insert("x-forwarded-for", "6.6.6.6, 198.51.100.7".parse().unwrap());
+        let trusted = [proxy().ip()];
+        assert_eq!(
+            get_client_id(Some(proxy()), &headers, &trusted),
+            "198.51.100.7"
+        );
+    }
+
+    /// Behind two trusted proxies, the client is the first entry from the right
+    /// that is not itself a trusted proxy.
+    #[test]
+    fn a_chain_of_two_trusted_proxies_resolves_to_the_client() {
+        let edge: std::net::IpAddr = "10.9.8.1".parse().unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        // client spoof, real client (added by the edge), edge (added by the
+        // inner proxy, which is the socket peer).
+        headers.insert(
+            "x-forwarded-for",
+            "6.6.6.6, 198.51.100.7, 10.9.8.1".parse().unwrap(),
+        );
+        let trusted = [proxy().ip(), edge];
+        assert_eq!(
+            get_client_id(Some(proxy()), &headers, &trusted),
+            "198.51.100.7"
+        );
+    }
+
     #[test]
     fn parse_trusted_proxies_filters_junk() {
         let list = parse_trusted_proxies("127.0.0.1, , 10.0.0.5 ,notanip,::1");

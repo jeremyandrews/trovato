@@ -155,3 +155,25 @@ fn attempts_key(username: &str) -> String {
 fn lockout_key(username: &str) -> String {
     format!("lockout:locked:{username}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Login matches usernames case-insensitively (`LOWER(name) = LOWER($1)`),
+    /// so the lockout must count every spelling of one account together, and a
+    /// stray space must not buy a fresh counter either.
+    #[test]
+    fn every_capitalisation_and_padding_of_a_username_shares_its_keys() {
+        for variant in ["Admin", "ADMIN", "admin", " admin", "admin ", "\tAdMiN\n"] {
+            assert_eq!(attempts_key(variant), attempts_key("admin"), "{variant:?}");
+            assert_eq!(lockout_key(variant), lockout_key("admin"), "{variant:?}");
+        }
+    }
+
+    #[test]
+    fn different_usernames_keep_different_keys() {
+        assert_ne!(attempts_key("alice"), attempts_key("bob"));
+        assert_ne!(lockout_key("alice"), lockout_key("bob"));
+    }
+}
