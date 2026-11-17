@@ -226,3 +226,100 @@ fn a_self_service_password_change_succeeds_for_the_owner() {
         app.login(&name, new_password).await;
     });
 }
+
+/// **A blocked user's session stops being theirs on the next request.**
+///
+/// `get_user_context` builds the viewer for every render and read handler
+/// (item, gather, search, file, comment and the rest). It loaded the session
+/// user without asking whether the account was still active, so a blocked
+/// superuser kept seeing what only a superuser may see. Now the next request
+/// gets the anonymous context, and the session is deleted, as `require_login`
+/// already did.
+#[test]
+fn a_blocked_users_session_gets_the_anonymous_context_and_is_deleted() {
+    run_test(async {
+        let app = shared_app().await;
+        let name = username("ctx-blocked");
+        let cookies = app
+            .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+        let user_id = user_id_of(app, &name).await;
+        assert!(load_user(app, user_id).await.is_active());
+
+        // An unpublished item: a superuser sees it, an anonymous visitor does not.
+        let item = trovato_kernel::models::Item::create(
+            &app.db,
+            trovato_kernel::models::item::CreateItem {
+                item_type: "page".to_string(),
+                title: format!("blocked-viewer draft {name}"),
+                author_id: Uuid::nil(),
+                status: Some(0),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({})),
+                stage_id: None,
+                language: None,
+                log: None,
+            },
+        )
+        .await
+        .expect("create a draft");
+        let pool = app.db.clone();
+        let item_id = item.id;
+        common::defer_cleanup(move || async move {
+            let _ = trovato_kernel::models::Item::delete(&pool, item_id).await;
+        });
+
+        let view = |cookies: String| async move {
+            app.request_with_cookies(
+                Request::get(format!("/item/{item_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await
+            .status()
+        };
+        assert_eq!(
+            view(cookies.clone()).await,
+            StatusCode::OK,
+            "the active superuser sees the draft"
+        );
+
+        let session_id = cookies
+            .split(';')
+            .filter_map(|kv| kv.trim().split_once('='))
+            .map(|(_, v)| v.to_string())
+            .next()
+            .expect("a session cookie");
+
+        sqlx::query("UPDATE users SET status = 0 WHERE id = $1")
+            .bind(user_id)
+            .execute(&app.db)
+            .await
+            .expect("block the user");
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("UPDATE users SET status = 1 WHERE id = $1")
+                .bind(user_id)
+                .execute(&pool)
+                .await;
+        });
+
+        assert_ne!(
+            view(cookies.clone()).await,
+            StatusCode::OK,
+            "a blocked user's session must get the anonymous context"
+        );
+        let mut conn = app
+            .state
+            .redis()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        let record: bool = redis::AsyncCommands::exists(&mut conn, &session_id)
+            .await
+            .unwrap();
+        assert!(!record, "a blocked user's session must be deleted");
+    });
+}

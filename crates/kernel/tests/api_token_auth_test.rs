@@ -330,3 +330,38 @@ fn a_token_write_needs_no_csrf_but_a_cookie_write_still_does() {
         assert!(!names.contains(&"made by a cookie".to_string()));
     });
 }
+
+/// **A token whose user is blocked is refused.**
+///
+/// Same 401 an unknown token gets: a blocked account has no credential that
+/// works, and the response does not say why.
+#[test]
+fn a_token_for_a_blocked_user_is_refused() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let (user_id, name) = fresh_user(app, "tok-blocked").await;
+        let (_id, raw) = mint(app, user_id, "blocked").await;
+        let ip = common::test_ip_for(&name);
+
+        assert_eq!(
+            list_with_token(app, &raw, &ip).await.status(),
+            StatusCode::OK
+        );
+
+        sqlx::query("UPDATE users SET status = 0 WHERE id = $1")
+            .bind(user_id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+
+        let response = list_with_token(app, &raw, &ip).await;
+        let status = response.status();
+        let body = json_body(response).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "a blocked user's token must be refused: {body}"
+        );
+        assert_eq!(body["error"], "Invalid or expired API token");
+    });
+}
