@@ -55,19 +55,18 @@ pub struct ChatConfig {
     /// Maximum tokens for the AI response.
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
-    /// Temperature for AI response generation (0.0–2.0).
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
+    /// Temperature for AI response generation (0.0–2.0), sent only when set.
+    ///
+    /// Unset by default: Anthropic models newer than `claude-sonnet-4-6` answer
+    /// 400 to any request that carries `temperature`. A config stored when this
+    /// was a plain number still loads, as `Some` of that number.
+    #[serde(default)]
+    pub temperature: Option<f32>,
 }
 
 /// Default max tokens for chat responses.
 fn default_max_tokens() -> u32 {
     1024
-}
-
-/// Default temperature for chat responses.
-fn default_temperature() -> f32 {
-    0.7
 }
 
 impl Default for ChatConfig {
@@ -80,7 +79,7 @@ impl Default for ChatConfig {
             max_history_turns: 5,
             rate_limit_per_hour: 20,
             max_tokens: default_max_tokens(),
-            temperature: default_temperature(),
+            temperature: None,
         }
     }
 }
@@ -208,20 +207,23 @@ impl ChatService {
     /// Validates that numeric fields are finite and within range before saving.
     pub async fn save_config(&self, config: &ChatConfig) -> Result<()> {
         // Validate float fields are finite (NaN/infinity pass through f32::clamp).
-        anyhow::ensure!(
-            config.temperature.is_finite(),
-            "temperature must be a finite number"
-        );
+        if let Some(temperature) = config.temperature {
+            anyhow::ensure!(
+                temperature.is_finite(),
+                "temperature must be a finite number"
+            );
+            // Range validation (defense in depth — admin form also clamps it).
+            anyhow::ensure!(
+                (0.0..=2.0).contains(&temperature),
+                "temperature must be between 0.0 and 2.0"
+            );
+        }
         anyhow::ensure!(
             config.rag_min_score.is_finite(),
             "rag_min_score must be a finite number"
         );
 
         // Range validation (defense in depth — admin form also clamps these).
-        anyhow::ensure!(
-            (0.0..=2.0).contains(&config.temperature),
-            "temperature must be between 0.0 and 2.0"
-        );
         anyhow::ensure!(
             (0.0..=1.0).contains(&config.rag_min_score),
             "rag_min_score must be between 0.0 and 1.0"
@@ -476,6 +478,12 @@ impl ChatService {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            crate::services::ai_provider::log_provider_failure(
+                "chat_stream",
+                resolved,
+                status.as_u16(),
+                &body,
+            );
             let truncated = if body.len() > 200 {
                 let mut end = 200;
                 while end > 0 && !body.is_char_boundary(end) {
@@ -533,14 +541,16 @@ fn build_streaming_openai_request(
         })
         .collect();
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": &resolved.model,
         "messages": msg_values,
         "stream": true,
         "stream_options": {"include_usage": true},
         "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
     });
+    if let Some(temperature) = config.temperature {
+        body["temperature"] = serde_json::json!(temperature);
+    }
 
     let mut headers = Vec::new();
     if let Some(ref key) = resolved.api_key {
@@ -585,8 +595,11 @@ fn build_streaming_anthropic_request(
         "messages": msg_values,
         "stream": true,
         "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
     });
+    // Only when a site set one: current Anthropic models refuse the key.
+    if let Some(temperature) = config.temperature {
+        body["temperature"] = serde_json::json!(temperature);
+    }
 
     if !system_parts.is_empty() {
         body["system"] = serde_json::json!(system_parts.join("\n"));
@@ -1010,10 +1023,14 @@ mod tests {
         assert_eq!(back.rate_limit_per_hour, 20);
         assert!(back.rag_enabled);
         assert_eq!(back.max_tokens, 1024);
-        assert!((back.temperature - 0.7).abs() < f32::EPSILON);
+        assert_eq!(
+            back.temperature, None,
+            "no temperature unless a site sets one"
+        );
     }
 
-    /// Configs saved before max_tokens/temperature existed deserialize with defaults.
+    /// Configs saved before max_tokens/temperature existed deserialize with
+    /// defaults, and the default temperature is none.
     #[test]
     fn chat_config_legacy_without_new_fields() {
         let json = serde_json::json!({
@@ -1026,7 +1043,7 @@ mod tests {
         });
         let config: ChatConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.max_tokens, 1024);
-        assert!((config.temperature - 0.7).abs() < f32::EPSILON);
+        assert_eq!(config.temperature, None);
     }
 
     fn test_resolved(protocol: ProviderProtocol) -> ResolvedProvider {

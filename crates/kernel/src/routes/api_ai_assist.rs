@@ -169,10 +169,11 @@ async fn ai_assist_handler(
     if !response.status().is_success() {
         let status = response.status();
         let body_text = response.text().await.unwrap_or_default();
-        tracing::error!(
-            http_status = %status,
-            body = %body_text.chars().take(200).collect::<String>(),
-            "AI provider error"
+        crate::services::ai_provider::log_provider_failure(
+            "ai_assist",
+            &resolved,
+            status.as_u16(),
+            &body_text,
         );
         return AppError::service_unavailable("AI", "AI provider returned an error")
             .into_response();
@@ -263,6 +264,10 @@ fn build_operation_prompt(body: &AiAssistRequest) -> String {
 }
 
 /// Build a non-streaming chat request for the given provider.
+///
+/// No `temperature`: nothing configures one for the writing assistant, and
+/// Anthropic models newer than `claude-sonnet-4-6` answer 400 to a request that
+/// carries it at all.
 fn build_provider_request(
     resolved: &crate::services::ai_provider::ResolvedProvider,
     system_prompt: &str,
@@ -282,8 +287,7 @@ fn build_provider_request(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "max_tokens": 1000,
-                "temperature": 0.7
+                "max_tokens": 1000
             });
             (url, body.to_string(), headers)
         }
@@ -299,8 +303,7 @@ fn build_provider_request(
                 "messages": [
                     {"role": "user", "content": user_prompt}
                 ],
-                "max_tokens": 1000,
-                "temperature": 0.7
+                "max_tokens": 1000
             });
             (url, body.to_string(), headers)
         }

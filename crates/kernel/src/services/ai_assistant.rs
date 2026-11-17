@@ -92,9 +92,6 @@ Rules:
 - When an instruction is ambiguous or the evidence is thin, say so and ask one clear question.
 - Be brief. Plain sentences, no headings, no lists longer than five items.";
 
-fn default_temperature() -> f32 {
-    0.2
-}
 fn default_turn_timeout_secs() -> u64 {
     60
 }
@@ -171,9 +168,14 @@ pub struct AssistantConfig {
     /// Model to use, or the provider's Chat model when unset.
     #[serde(default)]
     pub model: Option<String>,
-    /// Sampling temperature. Low on purpose: this is configuration work.
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
+    /// Sampling temperature, sent only when a site sets one.
+    ///
+    /// Unset by default: Anthropic models newer than `claude-sonnet-4-6` answer
+    /// 400 to any request that carries `temperature`, so the only value that
+    /// works on every model is none. A config stored when this was a plain
+    /// number still loads, as `Some` of that number.
+    #[serde(default)]
+    pub temperature: Option<f32>,
     /// Per-call provider timeout. The whole message gets three times this.
     #[serde(default = "default_turn_timeout_secs")]
     pub turn_timeout_secs: u64,
@@ -218,7 +220,7 @@ impl Default for AssistantConfig {
             enabled: false,
             provider_id: None,
             model: None,
-            temperature: default_temperature(),
+            temperature: None,
             turn_timeout_secs: default_turn_timeout_secs(),
             max_tool_calls_per_message: default_max_tool_calls(),
             max_messages: default_max_messages(),
@@ -242,10 +244,12 @@ impl AssistantConfig {
     /// older kernel with different bounds, must not be able to put a value the
     /// loop cannot survive in front of it.
     pub fn clamp(&mut self) {
-        if !self.temperature.is_finite() {
-            self.temperature = default_temperature();
-        }
-        self.temperature = self.temperature.clamp(0.0, 2.0);
+        // A number that is not one is dropped rather than clamped, which
+        // f32::clamp would not do for NaN.
+        self.temperature = self
+            .temperature
+            .filter(|t| t.is_finite())
+            .map(|t| t.clamp(0.0, 2.0));
         self.turn_timeout_secs = self.turn_timeout_secs.clamp(5, 150);
         self.max_tool_calls_per_message = self.max_tool_calls_per_message.clamp(1, 32);
         self.max_messages = self.max_messages.clamp(4, 400);
@@ -761,6 +765,12 @@ pub fn run_turn(
 
         let mut entries = conversation.entries();
         let mut tokens_used = conversation.tokens_used;
+        // What this message spent, across every model call in the turn: the
+        // same calls, and the same totals, the conversation adds to
+        // `tokens_used`, so `done` cannot disagree with the transcript.
+        let mut turn_prompt_tokens: u64 = 0;
+        let mut turn_completion_tokens: u64 = 0;
+        let mut turn_total_tokens: u64 = 0;
         let message_count = conversation.message_count;
         let mut tool_calls_made: u32 = 0;
         // The model that answered, which is what a proposal records. Starts as
@@ -813,6 +823,10 @@ pub fn run_turn(
 
             model_used = completion.model.clone();
             tokens_used = tokens_used.saturating_add(i64::from(completion.usage.2));
+            turn_prompt_tokens = turn_prompt_tokens.saturating_add(u64::from(completion.usage.0));
+            turn_completion_tokens =
+                turn_completion_tokens.saturating_add(u64::from(completion.usage.1));
+            turn_total_tokens = turn_total_tokens.saturating_add(u64::from(completion.usage.2));
             record_usage(&state, &db, &user, &resolved, &completion).await;
 
             if let Some(text) = completion.text.as_ref().filter(|t| !t.trim().is_empty()) {
@@ -1004,7 +1018,11 @@ pub fn run_turn(
         }
 
         yield event("done", json!({
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "usage": {
+                "prompt_tokens": turn_prompt_tokens,
+                "completion_tokens": turn_completion_tokens,
+                "total_tokens": turn_total_tokens,
+            },
             "tokens_used": tokens_used,
             "message_count": message_count,
         }));
@@ -1161,15 +1179,32 @@ mod tests {
             !config.enabled,
             "the assistant is off until a site turns it on"
         );
-        assert_eq!(config.temperature, 0.2);
+        assert_eq!(
+            config.temperature, None,
+            "no temperature unless a site sets one"
+        );
         assert_eq!(config.max_tool_calls_per_message, 8);
         assert_eq!(config.core_prompt, DEFAULT_CORE_PROMPT);
+    }
+
+    /// A config stored when temperature was a plain number still loads, as that
+    /// number, and an out-of-range one is clamped as before.
+    #[test]
+    fn a_stored_temperature_loads_as_set() {
+        let config: AssistantConfig = serde_json::from_str(r#"{"temperature": 0.5}"#).unwrap();
+        assert_eq!(config.temperature, Some(0.5));
+        let config: AssistantConfig = serde_json::from_str(r#"{"temperature": null}"#).unwrap();
+        assert_eq!(config.temperature, None);
+
+        let mut config: AssistantConfig = serde_json::from_str(r#"{"temperature": 5.0}"#).unwrap();
+        config.clamp();
+        assert_eq!(config.temperature, Some(2.0));
     }
 
     #[test]
     fn clamping_brings_every_field_into_range() {
         let mut config = AssistantConfig {
-            temperature: f32::NAN,
+            temperature: Some(f32::NAN),
             turn_timeout_secs: 10_000,
             max_tool_calls_per_message: 0,
             max_messages: 1,
@@ -1185,8 +1220,8 @@ mod tests {
         config.clamp();
 
         assert_eq!(
-            config.temperature, 0.2,
-            "NaN falls back rather than clamping"
+            config.temperature, None,
+            "NaN is dropped rather than clamped"
         );
         assert_eq!(config.turn_timeout_secs, 150);
         assert_eq!(config.max_tool_calls_per_message, 1);

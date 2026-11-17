@@ -595,6 +595,23 @@ pub struct MessageInput {
     pub message: String,
 }
 
+/// The response header a fresh CSRF token travels back in.
+pub const CSRF_TOKEN_HEADER: &str = "x-csrf-token";
+
+/// Hand back a fresh CSRF token with a response to a post that spent one.
+///
+/// Tokens are single use. The conversation page renders one, and the page's
+/// script posts more than once without reloading — a message, then Apply on the
+/// proposal it produced — so every response to a post whose token was accepted
+/// carries the next one, whatever its status: the old one is spent either way.
+async fn with_fresh_token(session: &Session, mut response: Response) -> Response {
+    let token = crate::form::csrf::generate_csrf_token(session).await;
+    if let Ok(value) = axum::http::HeaderValue::from_str(&token) {
+        response.headers_mut().insert(CSRF_TOKEN_HEADER, value);
+    }
+    response
+}
+
 async fn post_message(
     State(state): State<AppState>,
     session: Session,
@@ -608,8 +625,18 @@ async fn post_message(
     {
         return AppError::forbidden("Invalid or missing CSRF token").into_response();
     }
+    let response = run_message(state, &session, conversation_id, input).await;
+    with_fresh_token(&session, response).await
+}
 
-    let user = get_user_context(&session, &state).await;
+/// Everything [`post_message`] does once the CSRF token has been accepted.
+async fn run_message(
+    state: AppState,
+    session: &Session,
+    conversation_id: Uuid,
+    input: MessageInput,
+) -> Response {
+    let user = get_user_context(session, &state).await;
     if !user.authenticated {
         return AppError::unauthorized("Authentication required").into_response();
     }
@@ -869,8 +896,28 @@ async fn resolve_proposal(
     if !csrf_ok(&session, &headers, body_str).await {
         return AppError::forbidden("Invalid or missing CSRF token").into_response();
     }
+    let response = run_resolve(
+        state,
+        &session,
+        conversation_id,
+        proposal_id,
+        &headers,
+        apply,
+    )
+    .await;
+    with_fresh_token(&session, response).await
+}
 
-    let user = get_user_context(&session, &state).await;
+/// Everything [`resolve_proposal`] does once the CSRF token has been accepted.
+async fn run_resolve(
+    state: AppState,
+    session: &Session,
+    conversation_id: Uuid,
+    proposal_id: Uuid,
+    headers: &HeaderMap,
+    apply: bool,
+) -> Response {
+    let user = get_user_context(session, &state).await;
     if !user.authenticated {
         return AppError::unauthorized("Authentication required").into_response();
     }
@@ -945,7 +992,7 @@ async fn resolve_proposal(
         tracing::warn!(error = %e, "failed to note a proposal outcome in the transcript");
     }
 
-    if wants_json(&headers) {
+    if wants_json(headers) {
         let refreshed = Proposal::find_by_id(state.db(), proposal.id)
             .await
             .ok()
@@ -1031,8 +1078,18 @@ async fn reset_conversation(
     if !csrf_ok(&session, &headers, body_str).await {
         return AppError::forbidden("Invalid or missing CSRF token").into_response();
     }
+    let response = run_reset(state, &session, conversation_id, &headers).await;
+    with_fresh_token(&session, response).await
+}
 
-    let user = get_user_context(&session, &state).await;
+/// Everything [`reset_conversation`] does once the CSRF token has been accepted.
+async fn run_reset(
+    state: AppState,
+    session: &Session,
+    conversation_id: Uuid,
+    headers: &HeaderMap,
+) -> Response {
+    let user = get_user_context(session, &state).await;
     if !user.authenticated {
         return AppError::unauthorized("Authentication required").into_response();
     }
@@ -1074,7 +1131,7 @@ async fn reset_conversation(
         Err(e) => return AppError::internal_ctx(e, "create conversation").into_response(),
     };
 
-    if wants_json(&headers) {
+    if wants_json(headers) {
         return Json(serde_json::json!({
             "id": fresh.id,
             "title": fresh.title,

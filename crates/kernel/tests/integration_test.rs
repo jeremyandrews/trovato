@@ -8623,7 +8623,11 @@ fn e2e_ai_chat_admin_save_config() {
         assert_eq!(config.max_history_turns, 10);
         assert_eq!(config.rate_limit_per_hour, 60);
         assert_eq!(config.max_tokens, 2048);
-        assert!((config.temperature - 0.5).abs() < f32::EPSILON);
+        assert_eq!(
+            config.temperature,
+            Some(0.5),
+            "a number in the box is saved as set"
+        );
     });
 }
 

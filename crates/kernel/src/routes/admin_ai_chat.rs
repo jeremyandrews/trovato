@@ -12,7 +12,8 @@ use crate::services::ai_chat::ChatConfig;
 use crate::state::AppState;
 
 use super::helpers::{
-    render_admin_template, render_error, render_server_error, require_csrf, require_permission,
+    parse_optional_temperature, render_admin_template, render_error, render_server_error,
+    require_csrf, require_permission,
 };
 
 /// Session key for flash messages.
@@ -34,7 +35,9 @@ struct ChatConfigForm {
     max_history_turns: u32,
     rate_limit_per_hour: u32,
     max_tokens: u32,
-    temperature: f32,
+    /// Blank means unset, so this is read as text.
+    #[serde(default)]
+    temperature: String,
 }
 
 // =============================================================================
@@ -94,10 +97,11 @@ async fn save_chat_config(
     if form.system_prompt.len() > 10_000 {
         return render_error("System prompt is too long (max 10,000 characters).");
     }
+    let temperature = match parse_optional_temperature(&form.temperature) {
+        Ok(temperature) => temperature,
+        Err(message) => return render_error(message),
+    };
     // f32::clamp() does not reject NaN/infinity — check explicitly.
-    if !form.temperature.is_finite() {
-        return render_error("Temperature must be a number.");
-    }
     if !form.rag_min_score.is_finite() {
         return render_error("Minimum relevance score must be a number.");
     }
@@ -110,7 +114,7 @@ async fn save_chat_config(
         max_history_turns: form.max_history_turns.clamp(0, 20),
         rate_limit_per_hour: form.rate_limit_per_hour.clamp(0, 1000),
         max_tokens: form.max_tokens.clamp(64, 16384),
-        temperature: form.temperature.clamp(0.0, 2.0),
+        temperature,
     };
 
     if let Err(e) = state.ai_chat().save_config(&config).await {

@@ -184,7 +184,7 @@ pub async fn chat_complete(
     resolved: &ResolvedProvider,
     messages: &[ChatMessage],
     tools: &[ToolSpec],
-    temperature: f32,
+    temperature: Option<f32>,
     max_tokens: u32,
     timeout: Duration,
 ) -> Result<ChatCompletion, ChatError> {
@@ -225,7 +225,7 @@ async fn send_once(
     resolved: &ResolvedProvider,
     messages: &[ChatMessage],
     tools: &[ToolSpec],
-    temperature: f32,
+    temperature: Option<f32>,
     max_tokens: u32,
     timeout: Duration,
 ) -> Result<ChatCompletion, ChatError> {
@@ -266,8 +266,14 @@ async fn send_once(
 
     let status = response.status();
     if !status.is_success() {
-        let detail =
-            truncate_on_char_boundary(&response.text().await.unwrap_or_default(), ERROR_DETAIL_MAX);
+        let body = response.text().await.unwrap_or_default();
+        crate::services::ai_provider::log_provider_failure(
+            "chat",
+            resolved,
+            status.as_u16(),
+            &body,
+        );
+        let detail = truncate_on_char_boundary(&body, ERROR_DETAIL_MAX);
         return Err(match status.as_u16() {
             401 | 403 => ChatError::Unauthorized,
             429 => ChatError::RateLimited,
@@ -315,7 +321,7 @@ pub(crate) fn build_openai_body(
     model: &str,
     messages: &[ChatMessage],
     tools: &[ToolSpec],
-    temperature: f32,
+    temperature: Option<f32>,
     max_tokens: u32,
 ) -> Value {
     let wire: Vec<Value> = messages
@@ -363,9 +369,12 @@ pub(crate) fn build_openai_body(
     let mut body = json!({
         "model": model,
         "messages": wire,
-        "temperature": temperature,
         "max_tokens": max_tokens,
     });
+    // Only when a site set one: see `build_anthropic_body`.
+    if let Some(temperature) = temperature {
+        body["temperature"] = json!(temperature);
+    }
 
     if !tools.is_empty() {
         body["tools"] = Value::Array(
@@ -478,7 +487,7 @@ pub(crate) fn build_anthropic_body(
     model: &str,
     messages: &[ChatMessage],
     tools: &[ToolSpec],
-    temperature: f32,
+    temperature: Option<f32>,
     max_tokens: u32,
 ) -> Value {
     let mut system_parts: Vec<&str> = Vec::new();
@@ -543,9 +552,14 @@ pub(crate) fn build_anthropic_body(
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "messages": wire,
     });
+    // Only when a site set one. Anthropic models newer than `claude-sonnet-4-6`
+    // answer 400 to a request that carries `temperature` at all, so absent is
+    // the only value that works everywhere.
+    if let Some(temperature) = temperature {
+        body["temperature"] = json!(temperature);
+    }
 
     if !system_parts.is_empty() {
         body["system"] = json!(system_parts.join("\n\n"));
@@ -911,7 +925,7 @@ mod tests {
             &resolved(base.to_string(), protocol),
             messages,
             tools,
-            0.2,
+            Some(0.2),
             256,
             Duration::from_secs(5),
         )
@@ -1328,7 +1342,7 @@ mod tests {
                 ChatMessage::User("thanks, now do y".into()),
             ],
             &[],
-            0.2,
+            Some(0.2),
             64,
         );
         let messages = body["messages"].as_array().unwrap();
@@ -1352,7 +1366,7 @@ mod tests {
                 ChatMessage::User("[Trovato] Applied: x".into()),
             ],
             &[],
-            0.2,
+            Some(0.2),
             64,
         );
         let messages = body["messages"].as_array().unwrap();
@@ -1370,12 +1384,27 @@ mod tests {
                 tool_calls: Vec::new(),
             }],
             &[],
-            0.2,
+            Some(0.2),
             64,
         );
         let content = body["messages"][0]["content"].as_array().unwrap();
         assert_eq!(content.len(), 1, "{body}");
         assert_eq!(content[0]["type"], "text");
+    }
+
+    /// Temperature goes on the wire only when a site set one, on both protocols.
+    #[test]
+    fn temperature_is_sent_only_when_set() {
+        let messages = [ChatMessage::User("hi".into())];
+        let unset = build_anthropic_body("m", &messages, &[], None, 64);
+        assert!(unset.get("temperature").is_none(), "{unset}");
+        let unset = build_openai_body("m", &messages, &[], None, 64);
+        assert!(unset.get("temperature").is_none(), "{unset}");
+
+        let set = build_anthropic_body("m", &messages, &[], Some(0.5), 64);
+        assert_eq!(set["temperature"], json!(0.5));
+        let set = build_openai_body("m", &messages, &[], Some(0.5), 64);
+        assert_eq!(set["temperature"], json!(0.5));
     }
 
     // -------------------------------------------------------------------------
@@ -1422,7 +1451,7 @@ mod tests {
             &resolved(base, ProviderProtocol::OpenAiCompatible),
             &[ChatMessage::User("hi".into())],
             &[],
-            0.2,
+            Some(0.2),
             64,
             Duration::from_millis(150),
         )
@@ -1449,7 +1478,7 @@ mod tests {
                     &provider,
                     &[ChatMessage::User("hi".into())],
                     &[],
-                    0.2,
+                    Some(0.2),
                     64,
                     Duration::from_secs(5),
                 )
