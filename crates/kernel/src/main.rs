@@ -564,6 +564,35 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
     Ok(())
 }
 
+/// End every session of `user_id` through the session index in Redis, and say
+/// what happened in a line fit for the terminal.
+///
+/// Used by the command line password reset, which runs in its own process
+/// without an `AppState`. The site's session tracking refuses a session whose
+/// index entry is gone, so removing the entries here ends the sessions in the
+/// running site too.
+async fn end_sessions_from_cli(config: &Config, user_id: uuid::Uuid) -> String {
+    let registry = match redis::Client::open(config.redis_url.as_str()) {
+        Ok(client) => services::session_registry::SessionRegistry::new(
+            client,
+            session::DEFAULT_SESSION_EXPIRY_HOURS * 3600,
+        ),
+        Err(e) => {
+            return format!(
+                "Existing sessions were NOT ended: the Redis URL is not usable ({e}). \
+                 They end when they idle out, or from the user's sessions page."
+            );
+        }
+    };
+    match registry.revoke_all_except(user_id, None).await {
+        Ok(revoked) => format!("Ended {} existing session(s).", revoked.len()),
+        Err(e) => format!(
+            "Existing sessions were NOT ended: Redis could not be reached ({e:#}). \
+             They end when they idle out, or from the user's sessions page."
+        ),
+    }
+}
+
 /// Run a user CLI command with a minimal context (pool only).
 async fn run_user_command(action: UserAction) -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
@@ -604,6 +633,13 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             } else {
                 anyhow::bail!("Failed to update password for user '{username}'.");
             }
+
+            // A reset ends the account's existing sessions, as a reset through
+            // the site does. This process has no running site to ask, so it
+            // goes to the same Redis-backed session index directly. The
+            // password is already changed either way, so a Redis that cannot
+            // be reached is reported rather than turned into a failure.
+            println!("{}", end_sessions_from_cli(&config, user.id).await);
         }
         UserAction::RoleAdd { username, role } => {
             let (user, role) = find_user_and_role(&pool, &username, &role).await?;

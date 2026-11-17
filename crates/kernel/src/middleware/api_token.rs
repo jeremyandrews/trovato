@@ -44,7 +44,7 @@ use crate::state::AppState;
 /// - Valid token -> the rest of this request sees an ephemeral session holding
 ///   the token's user (see the module docs), [`ApiTokenAuth`] is inserted, and
 ///   `touch_last_used` fires in the background
-/// - Invalid/expired -> returns 401 JSON error
+/// - Invalid/expired, or the token's user is blocked -> returns 401 JSON error
 /// - No header -> passes through (session auth may still work)
 ///
 /// If the session already contains a user_id (cookie auth), that takes precedence
@@ -79,13 +79,7 @@ pub async fn authenticate_api_token(
 
     let token = match ApiToken::find_by_token(state.db(), raw_token).await {
         Ok(Some(t)) => t,
-        Ok(None) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                axum::Json(json!({"error": "Invalid or expired API token"})),
-            )
-                .into_response();
-        }
+        Ok(None) => return invalid_token(),
         Err(e) => {
             tracing::error!(error = %e, "failed to look up API token");
             return (
@@ -137,6 +131,16 @@ pub async fn authenticate_api_token(
     // session key: it exists only while this request's future runs, only this
     // middleware can set it, and no cookie session can ever carry it.
     TOKEN_AUTHENTICATED.scope((), next.run(request)).await
+}
+
+/// The 401 for a token that does not authenticate anyone: unknown, expired,
+/// revoked, or belonging to a blocked account.
+fn invalid_token() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(json!({"error": "Invalid or expired API token"})),
+    )
+        .into_response()
 }
 
 tokio::task_local! {

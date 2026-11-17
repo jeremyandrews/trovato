@@ -721,6 +721,17 @@ async fn recover_reset(
         }
     }
 
+    // A recovered account starts clean: every session it had before ends, and
+    // the only one left is the one `setup_session` establishes below.
+    crate::services::session_registry::end_user_sessions(
+        &state,
+        grant.user_id,
+        None,
+        None,
+        "account_recovered",
+    )
+    .await;
+
     // Spend the grant and burn the nonce: both single-use.
     let _ = session
         .remove::<RecoveryGrant>(SESSION_RECOVERY_GRANT)

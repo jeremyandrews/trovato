@@ -73,11 +73,11 @@ VALUES (
 
 ### Cross-User Session Invalidation
 
-**Issue:** When an admin changes another user's role or admin status, that user's active session should be invalidated. Currently only self-session rotation is implemented.
+**Issue:** When an admin changes another user's role or admin status, that user's active sessions keep running with the new privileges rather than being ended.
 
-**Requires:** A user→session index in Redis (mapping user IDs to their session keys). The current session store does not maintain this index.
+**Partly resolved:** The user→session index now exists (`services::session_registry`). A password change, a password reset, an account recovery, a password set by an administrator and a block all end the account's sessions through `end_user_sessions`, and a block also deletes the account's API tokens. A role or superuser-flag change still does not; permissions are re-read on each request, so the sessions carry the new privileges rather than stale ones.
 
-**Phase:** Deferred to when a multi-user admin workflow demands it.
+**Phase:** The remaining case is deferred until a workflow needs a privilege change to sign the user out.
 
 ### Full `tap_field_access` Integration
 

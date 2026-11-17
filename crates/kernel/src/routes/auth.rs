@@ -1559,6 +1559,24 @@ async fn password_change(
         .await
     {
         Ok(true) => {
+            // A changed password ends the account's sessions everywhere else:
+            // whoever else held one held it under the old password. The
+            // caller's own device is kept, so the change does not sign them
+            // out of the page they made it from.
+            let own_device = session
+                .get::<uuid::Uuid>(crate::services::session_registry::SESSION_DEVICE_ID)
+                .await
+                .ok()
+                .flatten();
+            crate::services::session_registry::end_user_sessions(
+                &state,
+                user.id,
+                own_device,
+                None,
+                "password_changed",
+            )
+            .await;
+
             // Rotate session ID so a stolen pre-change session is invalid
             if let Err(e) = session.cycle_id().await {
                 tracing::warn!(error = %e, "failed to cycle session after password change");
