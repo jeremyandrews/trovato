@@ -215,6 +215,129 @@ fn e2e_login_rate_limit_blocks_after_threshold() {
     });
 }
 
+/// One JSON login attempt from `ip`, with the per-IP `login` rate-limit bucket
+/// reset first so the rate limit (5 a minute) never masks the lockout these
+/// tests are about.
+async fn login_attempt_from(app: &TestApp, ip: &str, username: &str, password: &str) -> StatusCode {
+    app.state.rate_limiter().reset("login", ip).await.ok();
+    app.request(
+        Request::post("/user/login/json")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", ip)
+            .body(Body::from(
+                json!({ "username": username, "password": password }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await
+    .status()
+}
+
+/// A user for a lockout test, with no lockout state, and two addresses of its
+/// own: `(username, ip_a, ip_b)`.
+async fn lockout_user(app: &TestApp, prefix: &str) -> (String, String, String) {
+    let username = common::username(prefix);
+    app.create_test_user(
+        &username,
+        "right-password-1",
+        &format!("{username}@test.com"),
+    )
+    .await;
+    app.state.lockout().clear_all(&username).await.ok();
+    let a = common::test_ip_for(&format!("{username}-a"));
+    let b = common::test_ip_for(&format!("{username}-b"));
+    (username, a, b)
+}
+
+/// **Failures from one address lock that address, not the account.**
+///
+/// The lockout was keyed by the username alone, so five wrong guesses from
+/// anywhere locked the real owner out everywhere.
+#[test]
+fn e2e_lockout_from_one_ip_does_not_lock_the_owner_out_elsewhere() {
+    run_test(async {
+        let app = shared_app().await;
+        let (username, ip_a, ip_b) = lockout_user(app, "lock-pair").await;
+
+        for attempt in 1..=5 {
+            let status = login_attempt_from(app, &ip_a, &username, "wrong-password").await;
+            // The fifth failure is the one that locks, and says so.
+            let expected = if attempt < 5 {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            };
+            assert_eq!(status, expected, "failure {attempt}");
+        }
+        assert_eq!(
+            login_attempt_from(app, &ip_a, &username, "right-password-1").await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "the address that failed five times is locked out"
+        );
+        assert_eq!(
+            login_attempt_from(app, &ip_b, &username, "right-password-1").await,
+            StatusCode::OK,
+            "the owner still signs in from another address"
+        );
+    });
+}
+
+/// **Guard: enough failures across many addresses lock the account everywhere.**
+///
+/// Already true on `main`, where the first five failures from anywhere lock
+/// the username; kept so the per-address lockout cannot become a way around
+/// the per-account ceiling. Ten addresses fail five times each (fifty in all),
+/// and then a correct password from an eleventh is refused.
+#[test]
+fn e2e_lockout_per_username_threshold_locks_everywhere() {
+    run_test(async {
+        let app = shared_app().await;
+        let (username, _, fresh_ip) = lockout_user(app, "lock-user").await;
+
+        for n in 0..10 {
+            let ip = common::test_ip_for(&format!("{username}-spray-{n}"));
+            for _ in 0..5 {
+                login_attempt_from(app, &ip, &username, "wrong-password").await;
+            }
+        }
+        assert_eq!(
+            login_attempt_from(app, &fresh_ip, &username, "right-password-1").await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "past the per-account threshold the account is locked from every address"
+        );
+        app.state.lockout().clear_all(&username).await.ok();
+    });
+}
+
+/// **Every capitalisation of a username shares one counter.**
+///
+/// Usernames match case-insensitively at login, but the lockout key did not, so
+/// each capitalisation got its own five guesses.
+#[test]
+fn e2e_lockout_counts_every_capitalisation_together() {
+    run_test(async {
+        let app = shared_app().await;
+        let (username, ip_a, _) = lockout_user(app, "Lock-Case").await;
+        let variants = [
+            username.to_uppercase(),
+            username.to_lowercase(),
+            username.clone(),
+            format!(" {} ", username.to_uppercase()),
+            username.to_lowercase(),
+        ];
+
+        for variant in &variants {
+            login_attempt_from(app, &ip_a, variant, "wrong-password").await;
+        }
+        assert_eq!(
+            login_attempt_from(app, &ip_a, &username, "right-password-1").await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "five failures under any capitalisation are five failures"
+        );
+        app.state.lockout().clear_all(&username).await.ok();
+    });
+}
+
 /// TQ-F2 (test-quality gap) — session-fixation regression guard. Login must
 /// rotate the session id (`session.cycle_id()`), so the pre-auth anonymous
 /// session cookie must differ from the post-auth one. No test previously
