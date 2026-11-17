@@ -22,6 +22,22 @@
     var composer = document.getElementById('assistant-composer');
     var textarea = document.getElementById('assistant-message');
 
+    /* CSRF tokens are single use. Every response to a post carries the next
+     * one in an X-CSRF-Token header; take it, and give it to the plain forms
+     * too, so the no-JavaScript fallback of a card does not post a spent one. */
+    function takeFreshToken(response) {
+        var fresh = response.headers.get('X-CSRF-Token');
+        if (!fresh) {
+            return;
+        }
+        csrfToken = fresh;
+        root.setAttribute('data-csrf-token', fresh);
+        var inputs = document.querySelectorAll('.assistant input[name="_token"]');
+        for (var i = 0; i < inputs.length; i += 1) {
+            inputs[i].value = fresh;
+        }
+    }
+
     function el(tag, className, text) {
         var node = document.createElement(tag);
         if (className) {
@@ -119,6 +135,7 @@
                 credentials: 'same-origin'
             })
                 .then(function (response) {
+                    takeFreshToken(response);
                     if (!response.ok) {
                         throw new Error('proposal action failed');
                     }
@@ -192,6 +209,7 @@
             body: JSON.stringify({ message: text })
         })
             .then(function (response) {
+                takeFreshToken(response);
                 if (!response.ok || !response.body) {
                     throw new Error('the assistant could not be reached');
                 }

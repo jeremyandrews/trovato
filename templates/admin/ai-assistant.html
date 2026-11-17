@@ -56,8 +56,8 @@
         <div class="form-group">
             <label for="temperature">Temperature</label>
             <input type="number" id="temperature" name="temperature" class="form-control"
-                   style="width: 100px" value="{{ config.temperature }}" min="0" max="2" step="0.1">
-            <small class="form-help">Low is right for configuration work. Clamped to 0.0–2.0.</small>
+                   style="width: 100px" value="{% if config.temperature is number %}{{ config.temperature }}{% endif %}" min="0" max="2" step="0.1">
+            <small class="form-help">Leave blank to send none and let the model use its own default. Current Anthropic models (newer than Claude Sonnet 4.6) refuse a request that sets one. Clamped to 0.0–2.0.</small>
         </div>
 
         <div class="form-group">

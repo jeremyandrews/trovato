@@ -855,6 +855,7 @@ impl AiProviderService {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
+            log_provider_failure("embedding", &resolved, status.as_u16(), &body);
             anyhow::bail!(
                 "embedding provider returned HTTP {status}: {}",
                 truncate(&body, 200)
@@ -881,10 +882,11 @@ impl AiProviderService {
 
     /// Test the connection to a provider endpoint.
     ///
-    /// - `OpenAiCompatible`: `GET {base_url}/models`
-    /// - `Anthropic`: `GET {base_url}` (HEAD-like connectivity check)
+    /// Both protocols `GET {base_url}/models`, which needs a valid key and is
+    /// not billed. Only a 2xx is a success; any other status fails the test,
+    /// and the message carries the status and the provider's explanation.
     ///
-    /// Response bodies are truncated to 200 characters for safety.
+    /// The message is truncated to [`CONNECTION_TEST_MESSAGE_MAX`] characters.
     pub async fn test_connection(&self, config: &AiProviderConfig) -> ConnectionTestResult {
         // Validate URL before making any outbound request
         if let Err(msg) = validate_base_url(&config.base_url) {
@@ -931,14 +933,22 @@ impl AiProviderService {
         match result {
             Ok(msg) => ConnectionTestResult {
                 success: true,
-                message: truncate(&msg, 200),
+                message: truncate(&msg, CONNECTION_TEST_MESSAGE_MAX),
                 latency_ms,
             },
-            Err(e) => ConnectionTestResult {
-                success: false,
-                message: truncate(&e.to_string(), 200),
-                latency_ms,
-            },
+            Err(e) => {
+                let message = truncate(&e.to_string(), CONNECTION_TEST_MESSAGE_MAX);
+                tracing::warn!(
+                    provider = %config.id,
+                    error = %message,
+                    "AI provider connection test failed"
+                );
+                ConnectionTestResult {
+                    success: false,
+                    message,
+                    latency_ms,
+                }
+            }
         }
     }
 
@@ -959,17 +969,19 @@ impl AiProviderService {
             Ok(format!("Connected successfully (HTTP {status})"))
         } else {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {status}: {body}")
+            anyhow::bail!("HTTP {status}: {}", provider_error_excerpt(&body, api_key))
         }
     }
 
-    /// Test an Anthropic endpoint with a GET to verify connectivity.
+    /// Test an Anthropic endpoint by listing models.
     ///
-    /// Uses a simple GET request instead of POST /messages to avoid incurring
-    /// API billing charges on every test. Any HTTP response (including 404 or
-    /// 405) proves network connectivity and valid authentication headers.
+    /// `GET {base_url}/models` needs a valid key and costs nothing, so a 2xx
+    /// proves the URL, the network path and the key together. Anything else is
+    /// a failure, reported with the provider's own explanation: a 404 here used
+    /// to read "Connected successfully", because the test hit the bare base URL
+    /// and counted any answer at all as proof.
     async fn test_anthropic(&self, base_url: &str, api_key: Option<&str>) -> Result<String> {
-        let url = base_url.trim_end_matches('/').to_string();
+        let url = format!("{}/models", base_url.trim_end_matches('/'));
         let mut req = self
             .http
             .get(&url)
@@ -979,10 +991,12 @@ impl AiProviderService {
         }
         let resp = req.send().await.context("request failed")?;
         let status = resp.status();
-        // Any response proves connectivity. 404/405 are expected since we're
-        // hitting the base URL, not a real endpoint. Only network-level
-        // failures (DNS, TLS, timeout) are treated as errors.
-        Ok(format!("Connected successfully (HTTP {status})"))
+        if status.is_success() {
+            Ok(format!("Connected successfully (HTTP {status})"))
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("HTTP {status}: {}", provider_error_excerpt(&body, api_key))
+        }
     }
 }
 
@@ -1009,6 +1023,46 @@ pub(crate) fn parse_embedding_vector(json: &serde_json::Value) -> Result<Vec<f32
 }
 
 /// Truncate a string to at most `max` UTF-8 characters.
+/// Longest slice of a provider's error body that reaches the log, in characters.
+///
+/// Long enough for any provider's error object (Anthropic's names the parameter
+/// it refused), short enough that a provider answering an HTML error page does
+/// not put the whole page in one log line.
+pub const PROVIDER_ERROR_BODY_MAX: usize = 1_000;
+
+/// Longest connection test message shown on the admin page, in characters:
+/// room for the status line and a provider's error object.
+pub const CONNECTION_TEST_MESSAGE_MAX: usize = 500;
+
+/// A provider's error body as it may be logged: trimmed, cut to
+/// [`PROVIDER_ERROR_BODY_MAX`] characters, and with the request's own key
+/// removed should a provider ever echo it back.
+pub fn provider_error_excerpt(body: &str, api_key: Option<&str>) -> String {
+    let mut text = body.trim().to_string();
+    if let Some(key) = api_key.filter(|key| !key.is_empty()) {
+        text = text.replace(key, "[redacted]");
+    }
+    truncate(&text, PROVIDER_ERROR_BODY_MAX)
+}
+
+/// Log a provider call that came back with a non-2xx status.
+///
+/// Every outbound AI path calls this before turning the failure into whatever
+/// its caller sees, so the log always has the status and the provider's own
+/// explanation: a 400 from Anthropic names the parameter it refused, and a log
+/// line without that says nothing about why. The request is never logged, so
+/// neither is its key.
+pub fn log_provider_failure(operation: &str, resolved: &ResolvedProvider, status: u16, body: &str) {
+    tracing::warn!(
+        operation = %operation,
+        provider = %resolved.config.id,
+        model = %resolved.model,
+        http_status = status,
+        body = %provider_error_excerpt(body, resolved.api_key.as_deref()),
+        "AI provider call failed"
+    );
+}
+
 fn truncate(s: &str, max: usize) -> String {
     let char_count = s.chars().count();
     if char_count <= max {
@@ -1044,6 +1098,99 @@ pub(crate) fn cap_embedding_input(text: &str) -> (std::borrow::Cow<'_, str>, Opt
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A loopback server that answers every request with `status` and `body`,
+    /// and records the paths it was asked for.
+    async fn answering(
+        status: u16,
+        body: &'static str,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let paths: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let seen = paths.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let seen = seen.clone();
+            async move {
+                seen.lock().unwrap().push(uri.path().to_string());
+                (axum::http::StatusCode::from_u16(status).unwrap(), body)
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}/v1"), paths)
+    }
+
+    fn lazy_service() -> AiProviderService {
+        AiProviderService::new(
+            sqlx::postgres::PgPool::connect_lazy("postgres://localhost/trovato").unwrap(),
+        )
+    }
+
+    /// A 404 is a failed connection test, not a successful one.
+    ///
+    /// The Anthropic test treated any HTTP answer as proof of a working
+    /// provider, so a base URL with a typo, or a key that could not reach the
+    /// API, reported "Connected successfully (HTTP 404)".
+    #[tokio::test]
+    async fn the_anthropic_connection_test_fails_on_a_404() {
+        let (base, _) = answering(404, r#"{"error":{"message":"b2c: no such route"}}"#).await;
+        let result = lazy_service().test_anthropic(&base, Some("sk-test")).await;
+        let error = result.expect_err("a 404 must fail the connection test");
+        let message = error.to_string();
+        assert!(message.contains("404"), "{message}");
+        assert!(
+            message.contains("b2c: no such route"),
+            "says why: {message}"
+        );
+    }
+
+    /// A 2xx from `{base}/models` is the one answer that passes, on both
+    /// protocols, and it is `/models` that is asked: the bare base URL is not
+    /// an endpoint and proves nothing.
+    #[tokio::test]
+    async fn a_2xx_from_models_passes_the_connection_test() {
+        let (base, paths) = answering(200, r#"{"data":[]}"#).await;
+        let svc = lazy_service();
+        let message = svc.test_anthropic(&base, Some("sk-test")).await.unwrap();
+        assert!(message.contains("200"), "{message}");
+        svc.test_openai_compatible(&base, Some("sk-test"))
+            .await
+            .unwrap();
+        assert_eq!(*paths.lock().unwrap(), vec!["/v1/models", "/v1/models"]);
+    }
+
+    /// The logged excerpt is bounded and never carries the request's key.
+    #[test]
+    fn a_provider_error_excerpt_is_bounded_and_keyless() {
+        let excerpt = provider_error_excerpt("  bad key sk-secret-1 here  ", Some("sk-secret-1"));
+        assert_eq!(excerpt, "bad key [redacted] here");
+
+        let long = "é".repeat(PROVIDER_ERROR_BODY_MAX + 50);
+        let excerpt = provider_error_excerpt(&long, None);
+        assert_eq!(excerpt.chars().count(), PROVIDER_ERROR_BODY_MAX + 3);
+        assert!(excerpt.ends_with("..."));
+
+        assert_eq!(provider_error_excerpt("body", Some("")), "body");
+    }
+
+    /// Any non 2xx fails it, on both protocols, and a 401 says why.
+    #[tokio::test]
+    async fn every_non_2xx_fails_the_connection_test_on_both_protocols() {
+        for status in [401u16, 403, 404, 405, 500] {
+            let (base, _) = answering(status, r#"{"error":{"message":"b2c-why"}}"#).await;
+            let svc = lazy_service();
+            let anthropic = svc.test_anthropic(&base, Some("sk-test")).await;
+            assert!(anthropic.is_err(), "anthropic {status} must fail");
+            assert!(
+                anthropic.unwrap_err().to_string().contains("b2c-why"),
+                "anthropic {status} must say why"
+            );
+            let openai = svc.test_openai_compatible(&base, Some("sk-test")).await;
+            assert!(openai.is_err(), "openai {status} must fail");
+        }
+    }
 
     // ---- P11c / D-43 timeout + per-operation breaker ----
 

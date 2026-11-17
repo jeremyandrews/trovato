@@ -543,6 +543,23 @@ pub const MAX_SLUG_LENGTH: usize = 128;
 /// Error message for invalid slug format.
 pub const SLUG_FORMAT_ERROR: &str = "Slug must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens.";
 
+/// Read an optional sampling temperature from an admin form field.
+///
+/// Blank means unset: the request then carries no `temperature` at all, which
+/// is the only value every current model accepts. A number is clamped to
+/// 0.0–2.0. Anything else, NaN and infinity included (`f32::clamp` would let
+/// NaN through), is refused with a message for the form.
+pub fn parse_optional_temperature(raw: &str) -> Result<Option<f32>, &'static str> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match raw.parse::<f32>() {
+        Ok(value) if value.is_finite() => Ok(Some(value.clamp(0.0, 2.0))),
+        _ => Err("Temperature must be a number, or blank to leave it unset."),
+    }
+}
+
 /// Validate that a slug is URL-safe for use in gather route aliases.
 ///
 /// A valid slug starts with `[a-z0-9]` and contains only lowercase ASCII
@@ -1161,6 +1178,18 @@ pub async fn apply_translation_overlay(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blank_temperature_is_unset_and_a_number_is_clamped() {
+        assert_eq!(parse_optional_temperature(""), Ok(None));
+        assert_eq!(parse_optional_temperature("   "), Ok(None));
+        assert_eq!(parse_optional_temperature("0.3"), Ok(Some(0.3)));
+        assert_eq!(parse_optional_temperature("7"), Ok(Some(2.0)));
+        assert_eq!(parse_optional_temperature("-1"), Ok(Some(0.0)));
+        assert!(parse_optional_temperature("NaN").is_err());
+        assert!(parse_optional_temperature("inf").is_err());
+        assert!(parse_optional_temperature("warm").is_err());
+    }
 
     #[test]
     fn test_html_escape_special_chars() {

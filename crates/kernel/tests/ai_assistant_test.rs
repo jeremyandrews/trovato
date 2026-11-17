@@ -1964,3 +1964,405 @@ fn an_item_scope_id_the_caller_cannot_view_is_a_404() {
             .ok();
     });
 }
+
+// =============================================================================
+// B2c: provider defects (temperature, error bodies, `done` usage, CSRF)
+// =============================================================================
+
+/// The configured temperature of a stored config, as JSON: `null` when unset.
+///
+/// Read through serde rather than the field so the assertion means the same
+/// thing whatever Rust type holds it.
+async fn stored_temperature(app: &TestApp) -> serde_json::Value {
+    let config = app.state.ai_assistant().load_config().await.unwrap();
+    serde_json::to_value(&config).unwrap()["temperature"].clone()
+}
+
+/// A site that never set a temperature sends none.
+///
+/// Anthropic models newer than `claude-sonnet-4-6` answer 400 to a request that
+/// carries `temperature` at all, so a kernel default of 0.2 on every request
+/// made the assistant unusable on every current Claude model.
+#[test]
+fn an_unset_temperature_is_left_out_of_the_request() {
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        set_config(app, base_config()).await;
+        for protocol in ["open_ai_compatible", "anthropic"] {
+            let recorder = use_provider(app, protocol).await;
+            if protocol == "anthropic" {
+                recorder.push(anthropic_says("Hello."));
+            } else {
+                recorder.push(says("Hello."));
+            }
+
+            let admin = admin_who_may_configure(app, &format!("asst_notemp_{protocol}")).await;
+            let conversation =
+                open_conversation(app, &admin, &format!("w-notemp-{protocol}")).await;
+            send_message(app, &admin, conversation, "hi").await;
+
+            let requests = recorder.requests();
+            assert_eq!(requests.len(), 1, "{protocol}: one call");
+            assert!(
+                requests[0].get("temperature").is_none(),
+                "{protocol}: a default config must not send temperature: {}",
+                requests[0]
+            );
+        }
+    });
+}
+
+/// A config stored by an older kernel, with a number in it, still loads and its
+/// temperature is still sent: no migration rewrites anyone's settings.
+#[test]
+fn a_stored_temperature_still_loads_and_is_sent() {
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        set_config(app, base_config()).await;
+        let mut stored = serde_json::to_value(base_config()).unwrap();
+        stored["temperature"] = serde_json::json!(0.5);
+        SiteConfig::set(&app.db, "ai_assistant_config", stored)
+            .await
+            .unwrap();
+        let recorder = use_provider(app, "open_ai_compatible").await;
+        recorder.push(says("Hello."));
+
+        let admin = admin_who_may_configure(app, "asst_oldtemp").await;
+        let conversation = open_conversation(app, &admin, "w-oldtemp").await;
+        send_message(app, &admin, conversation, "hi").await;
+
+        let requests = recorder.requests();
+        let sent = requests[0]["temperature"]
+            .as_f64()
+            .expect("temperature sent");
+        assert!((sent - 0.5).abs() < 1e-6, "{sent}");
+        set_config(app, base_config()).await;
+    });
+}
+
+/// The admin form takes a blank temperature as "unset", not as "keep the old
+/// value" or as an error.
+#[test]
+fn a_blank_temperature_on_the_admin_form_saves_as_unset() {
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        let mut stored = serde_json::to_value(base_config()).unwrap();
+        stored["temperature"] = serde_json::json!(0.7);
+        SiteConfig::set(&app.db, "ai_assistant_config", stored)
+            .await
+            .unwrap();
+        let before = stored_temperature(app)
+            .await
+            .as_f64()
+            .expect("a stored number loads");
+        assert!((before - 0.7).abs() < 1e-6, "{before}");
+        let admin = app
+            .create_and_login_admin(
+                "asst_blanktemp",
+                "Password123!",
+                "asst_blanktemp@test.local",
+            )
+            .await;
+
+        let token = csrf_token(app, &admin).await;
+        let form = [
+            ("_token", token.as_str()),
+            ("enabled", "1"),
+            ("provider_id", ""),
+            ("model", ""),
+            ("temperature", ""),
+            ("turn_timeout_secs", "60"),
+            ("max_tool_calls_per_message", "8"),
+            ("max_messages", "40"),
+            ("max_tokens_per_conversation", "60000"),
+            ("max_history_exchanges", "12"),
+            ("max_response_tokens", "1024"),
+            ("snapshot_max_bytes", "12288"),
+            ("tool_result_max_bytes", "16384"),
+            ("rate_limit_per_hour", "0"),
+            ("conversation_ttl_hours", "24"),
+            ("core_prompt", ""),
+            ("scope_enabled[test_widget]", "1"),
+        ];
+        let body = form
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/system/ai-assistant")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(body))
+                    .unwrap(),
+                &admin,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            stored_temperature(app).await,
+            serde_json::Value::Null,
+            "a blank temperature must be stored as unset"
+        );
+
+        // And the page still renders with nothing in the box.
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/system/ai-assistant")
+                    .body(Body::empty())
+                    .unwrap(),
+                &admin,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        set_config(app, base_config()).await;
+    });
+}
+
+/// The `done` event reports the tokens this message spent, the same number the
+/// conversation adds to its running total, across every model call in the turn.
+#[test]
+fn done_reports_the_usage_the_conversation_records() {
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        set_config(app, base_config()).await;
+        clear_widget_color(app).await;
+        let recorder = use_provider(app, "open_ai_compatible").await;
+        // 20 + 5 = 25, then 10 + 4 = 14.
+        recorder.push(calls("c1", "read_widget", "{}"));
+        recorder.push(says("It is unset."));
+
+        let admin = admin_who_may_configure(app, "asst_doneusage").await;
+        let conversation = open_conversation(app, &admin, "w-doneusage").await;
+        let before: i64 =
+            sqlx::query_scalar("SELECT tokens_used FROM ai_conversation WHERE id = $1")
+                .bind(conversation)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        let sse = send_message(app, &admin, conversation, "what colour is it?").await;
+        let after: i64 =
+            sqlx::query_scalar("SELECT tokens_used FROM ai_conversation WHERE id = $1")
+                .bind(conversation)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+
+        let done = sse_events(&sse)
+            .into_iter()
+            .find(|event| event["type"] == "done")
+            .expect("a done event");
+        assert_eq!(after - before, 39, "the conversation recorded both calls");
+        assert_eq!(done["usage"]["prompt_tokens"], 30, "{done}");
+        assert_eq!(done["usage"]["completion_tokens"], 9, "{done}");
+        assert_eq!(
+            done["usage"]["total_tokens"].as_i64(),
+            Some(after - before),
+            "done must carry what the conversation recorded: {done}"
+        );
+        assert_eq!(done["tokens_used"].as_i64(), Some(after), "{done}");
+    });
+}
+
+/// Every log line the test binary emits, captured once for the whole binary.
+#[derive(Clone, Default)]
+struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn contents(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// The global subscriber: the model call runs on a runtime worker thread, so a
+/// thread-local default would not see it.
+static CAPTURE: std::sync::OnceLock<CapturedLogs> = std::sync::OnceLock::new();
+
+fn captured_logs() -> &'static CapturedLogs {
+    CAPTURE.get_or_init(|| {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("install the capturing subscriber");
+        logs
+    })
+}
+
+/// A provider that refuses a request says why, and the log keeps the why.
+///
+/// The log recorded "the AI provider returned HTTP 400" and dropped the body,
+/// which is where Anthropic says which parameter it refused.
+#[test]
+fn a_provider_refusal_is_logged_with_its_status_and_body() {
+    let logs = captured_logs();
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        set_config(app, base_config()).await;
+        let recorder = use_provider(app, "anthropic").await;
+        recorder.push(Scripted {
+            status: 400,
+            body: serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "b2c-sentinel: temperature is not supported by this model"
+                }
+            }),
+            delay: std::time::Duration::ZERO,
+        });
+
+        let admin = admin_who_may_configure(app, "asst_errbody").await;
+        let conversation = open_conversation(app, &admin, "w-errbody").await;
+        let sse = send_message(app, &admin, conversation, "hi").await;
+        assert!(event_types(&sse).contains(&"error".to_string()), "{sse}");
+        assert!(
+            !sse.contains("b2c-sentinel"),
+            "the provider's words are for the log, not the person: {sse}"
+        );
+
+        let contents = logs.contents();
+        let line = contents
+            .lines()
+            .find(|line| line.contains("b2c-sentinel"))
+            .unwrap_or_else(|| {
+                panic!("the provider's error body must reach the log; got:\n{contents}")
+            });
+        assert!(
+            line.contains("400"),
+            "the status belongs on the line: {line}"
+        );
+    });
+}
+
+/// Each response the page posts to hands back a fresh CSRF token, and that token
+/// is what makes the next post work.
+///
+/// Tokens are single use. The page rendered one, `assistant.js` sent it with the
+/// message, and then sent the same spent token with Apply, which was a 403 until
+/// the page was reloaded.
+#[test]
+fn every_post_returns_a_fresh_token_that_the_next_post_can_use() {
+    common::run_test(async {
+        let app = app();
+        let _guard = SITE_LOCK.lock().await;
+        set_config(app, base_config()).await;
+        clear_widget_color(app).await;
+        let recorder = use_provider(app, "open_ai_compatible").await;
+        recorder.push(calls("c1", "set_widget_color", r#"{"color":"teal"}"#));
+        recorder.push(says("Proposed."));
+
+        let admin = admin_who_may_configure(app, "asst_freshtoken").await;
+        let conversation = open_conversation(app, &admin, "w-freshtoken").await;
+
+        let token = csrf_token(app, &admin).await;
+        let response = app
+            .request_with_cookies(
+                Request::post(format!("/api/v1/assistant/{conversation}/message"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("X-CSRF-Token", &token)
+                    .body(Body::from(
+                        serde_json::json!({"message": "make it teal"}).to_string(),
+                    ))
+                    .unwrap(),
+                &admin,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let next = response
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .expect("the message response must carry a fresh X-CSRF-Token");
+        assert_ne!(next, token, "a spent token is not a fresh one");
+        body_string(response).await;
+
+        let proposal: Uuid =
+            sqlx::query_scalar("SELECT id FROM ai_proposal WHERE conversation_id = $1")
+                .bind(conversation)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+
+        // The spent token is refused, so the test is about the fresh one.
+        let response = app
+            .request_with_cookies(
+                Request::post(format!(
+                    "/api/v1/assistant/{conversation}/proposals/{proposal}/apply"
+                ))
+                .header("X-CSRF-Token", &token)
+                .body(Body::empty())
+                .unwrap(),
+                &admin,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = app
+            .request_with_cookies(
+                Request::post(format!(
+                    "/api/v1/assistant/{conversation}/proposals/{proposal}/apply"
+                ))
+                .header("X-CSRF-Token", &next)
+                .body(Body::empty())
+                .unwrap(),
+                &admin,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Apply after a message must work with the token the message returned"
+        );
+        let after_apply = response
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .expect("the apply response must carry a fresh X-CSRF-Token too");
+        assert_eq!(body_json(response).await["proposal"]["status"], "applied");
+        assert_eq!(widget_color(app).await.as_deref(), Some("teal"));
+
+        // And that one carries the next message.
+        recorder.push(says("Done."));
+        let response = app
+            .request_with_cookies(
+                Request::post(format!("/api/v1/assistant/{conversation}/message"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("X-CSRF-Token", &after_apply)
+                    .body(Body::from(
+                        serde_json::json!({"message": "thanks"}).to_string(),
+                    ))
+                    .unwrap(),
+                &admin,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    });
+}

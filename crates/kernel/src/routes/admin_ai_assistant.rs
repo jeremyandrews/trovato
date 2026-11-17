@@ -23,7 +23,8 @@ use crate::services::ai_provider::AiOperationType;
 use crate::state::AppState;
 
 use super::helpers::{
-    render_admin_template, render_error, render_server_error, require_csrf, require_permission,
+    parse_optional_temperature, render_admin_template, render_error, render_server_error,
+    require_csrf, require_permission,
 };
 
 /// Session key for the flash message.
@@ -211,11 +212,12 @@ async fn save_assistant_config(
 
     let existing = state.ai_assistant().load_config().await.unwrap_or_default();
 
-    let temperature: f32 = submitted.number("temperature", existing.temperature);
-    // f32::clamp does not reject NaN, so this is checked rather than clamped.
-    if !temperature.is_finite() {
-        return render_error("Temperature must be a number.");
-    }
+    // Blank is unset, not "keep the old value": clearing the box is how a site
+    // stops sending a temperature to a model that refuses one.
+    let temperature = match parse_optional_temperature(submitted.text("temperature")) {
+        Ok(temperature) => temperature,
+        Err(message) => return render_error(message),
+    };
     let core_prompt = submitted.text("core_prompt").to_string();
     if core_prompt.len() > 20_000 {
         return render_error("The core prompt is too long (max 20,000 characters).");

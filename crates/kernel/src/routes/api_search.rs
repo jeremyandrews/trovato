@@ -154,7 +154,14 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            crate::services::ai_provider::log_provider_failure("search", &resolved, status, &body);
+            return AppError::service_unavailable("AI", "AI request failed").into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "AI search request failed");
             return AppError::service_unavailable("AI", "AI request failed").into_response();
         }
     };
@@ -352,7 +359,14 @@ async fn json_ai_response_with_key(
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            crate::services::ai_provider::log_provider_failure("search", &resolved, status, &body);
+            return AppError::service_unavailable("AI", "AI request failed").into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "AI search request failed");
             return AppError::service_unavailable("AI", "AI request failed").into_response();
         }
     };
@@ -406,7 +420,14 @@ async fn stream_ai_response(
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            crate::services::ai_provider::log_provider_failure("search", &resolved, status, &body);
+            return AppError::service_unavailable("AI", "AI request failed").into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "AI search request failed");
             return AppError::service_unavailable("AI", "AI request failed").into_response();
         }
     };
@@ -432,6 +453,9 @@ async fn stream_ai_response(
 }
 
 /// Build a non-streaming chat request for the given provider.
+///
+/// No `temperature`: nothing configures one for search, and Anthropic models
+/// newer than `claude-sonnet-4-6` answer 400 to a request that carries it.
 fn build_chat_request(
     resolved: &crate::services::ai_provider::ResolvedProvider,
     system_prompt: &str,
@@ -451,8 +475,7 @@ fn build_chat_request(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "max_tokens": 500,
-                "temperature": 0.3
+                "max_tokens": 500
             });
             (url, body.to_string(), headers)
         }
@@ -468,8 +491,7 @@ fn build_chat_request(
                 "messages": [
                     {"role": "user", "content": user_prompt}
                 ],
-                "max_tokens": 500,
-                "temperature": 0.3
+                "max_tokens": 500
             });
             (url, body.to_string(), headers)
         }
@@ -526,6 +548,37 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn resolved(protocol: ProviderProtocol) -> crate::services::ai_provider::ResolvedProvider {
+        crate::services::ai_provider::ResolvedProvider {
+            config: crate::services::ai_provider::AiProviderConfig {
+                id: "p".to_string(),
+                label: "P".to_string(),
+                protocol,
+                base_url: "https://provider.example/v1".to_string(),
+                api_key_env: String::new(),
+                models: Vec::new(),
+                rate_limit_rpm: 0,
+                enabled: true,
+            },
+            api_key: Some("sk-test".to_string()),
+            model: "claude-test".to_string(),
+        }
+    }
+
+    /// Nothing configures a temperature for query expansion or summaries, so
+    /// none is sent: a hard coded 0.3 made every current Claude model answer 400.
+    #[test]
+    fn search_ai_requests_send_no_temperature() {
+        for protocol in [
+            ProviderProtocol::Anthropic,
+            ProviderProtocol::OpenAiCompatible,
+        ] {
+            let (_, body, _) = build_chat_request(&resolved(protocol), "sys", "user");
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(body.get("temperature").is_none(), "{protocol:?}: {body}");
+        }
+    }
 
     #[test]
     fn normalization_folds_case_and_whitespace() {

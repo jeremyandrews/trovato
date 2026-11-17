@@ -222,6 +222,15 @@ async fn execute_ai_request(
         )
     })?;
 
+    if !(200..=299).contains(&status) {
+        crate::services::ai_provider::log_provider_failure(
+            "plugin_ai_request",
+            resolved,
+            status,
+            &body,
+        );
+    }
+
     // Map HTTP errors to specific error codes
     match status {
         200..=299 => {}
