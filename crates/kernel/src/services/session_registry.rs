@@ -352,6 +352,74 @@ impl SessionRegistry {
     }
 }
 
+/// End every indexed session of `user_id` except the one on `keep_device`.
+///
+/// For a change to the account that should sign it out elsewhere: a password
+/// change (keeping the caller's own device), a password reset, an account
+/// recovery, a password set by an administrator, and a block (keeping none).
+/// Each ended session is audited the way `routes::sessions` audits a revocation:
+/// as revoked by the user when the account's owner caused it (`actor` is `None`
+/// or the user), and as revoked by an administrator otherwise, with the actor
+/// recorded. `reason` says which change it was.
+///
+/// Never fails the request. The password or status change has already been
+/// written by the time this runs, and refusing to report it because Redis was
+/// unreachable would leave the user believing nothing changed; the failure is
+/// logged instead. Returns how many sessions were ended.
+pub async fn end_user_sessions(
+    state: &crate::state::AppState,
+    user_id: Uuid,
+    keep_device: Option<Uuid>,
+    actor: Option<Uuid>,
+    reason: &'static str,
+) -> usize {
+    use crate::audit::{SecurityEvent, SecurityEventKind};
+
+    let revoked = match state
+        .session_registry()
+        .revoke_all_except(user_id, keep_device)
+        .await
+    {
+        Ok(revoked) => revoked,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                user_id = %user_id,
+                reason,
+                "failed to end the account's sessions"
+            );
+            return 0;
+        }
+    };
+
+    let by_admin = actor.filter(|a| *a != user_id);
+    for entry in &revoked {
+        let mut event = SecurityEvent::new(if by_admin.is_some() {
+            SecurityEventKind::SessionRevokedByAdmin
+        } else {
+            SecurityEventKind::SessionRevokedByUser
+        })
+        .user(user_id)
+        .subject(&entry.session_id)
+        .user_agent(entry.user_agent.clone())
+        .detail("device_id", entry.device_id.to_string())
+        .detail("device_name", entry.device_name.clone())
+        .detail("bulk", true)
+        .detail("reason", reason);
+        if let Some(admin) = by_admin {
+            event = event.actor(admin);
+        }
+        state.security_audit().emit(event).await;
+    }
+    tracing::info!(
+        user_id = %user_id,
+        count = revoked.len(),
+        reason,
+        "ended the account's sessions"
+    );
+    revoked.len()
+}
+
 impl std::fmt::Debug for SessionRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionRegistry")

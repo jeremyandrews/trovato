@@ -651,3 +651,350 @@ fn last_seen_writes_are_throttled() {
         );
     });
 }
+
+// ─── Sessions end when the account changes ──────────────────────────────────
+
+const NEW_PASSWORD: &str = "a-brand-new-password-9";
+
+/// `GET /user/profile` with `cookies`: 200 for a live session, 303 to the login
+/// page for one that has ended.
+async fn profile_status(app: &TestApp, cookies: &str, ua: &str) -> StatusCode {
+    app.request_with_cookies(
+        Request::get("/user/profile")
+            .header("user-agent", ua)
+            .body(Body::empty())
+            .unwrap(),
+        cookies,
+    )
+    .await
+    .status()
+}
+
+/// The `_token` value of the first form on `html`.
+fn form_token_from(html: &str) -> String {
+    let marker = r#"name="_token" value=""#;
+    let start = html.find(marker).expect("a CSRF form field") + marker.len();
+    let end = start + html[start..].find('"').unwrap();
+    html[start..end].to_string()
+}
+
+/// The cookies a response re-issued, or the ones the request carried.
+fn cookies_after(response: &axum::response::Response, before: &str) -> String {
+    let issued = common::extract_cookies(response);
+    if issued.is_empty() {
+        before.to_string()
+    } else {
+        issued
+    }
+}
+
+/// A logged-in superuser, unique per call.
+async fn admin_cookies(app: &TestApp, prefix: &str) -> String {
+    let name = common::username(prefix);
+    app.create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
+        .await
+}
+
+/// Save the admin user-edit form for `target`, optionally blocking it or
+/// setting its password.
+async fn admin_edit(
+    app: &TestApp,
+    admin: &str,
+    target_id: uuid::Uuid,
+    target_name: &str,
+    active: bool,
+    password: Option<&str>,
+) -> StatusCode {
+    let path = format!("/admin/people/{target_id}/edit");
+    let page = app
+        .request_with_cookies(Request::get(&path).body(Body::empty()).unwrap(), admin)
+        .await;
+    assert_eq!(page.status(), StatusCode::OK, "the edit form renders");
+    let token = form_token_from(&html_of(page).await);
+    let mut body = format!(
+        "_token={}&_form_build_id=x&name={}&mail={}",
+        urlencoding::encode(&token),
+        urlencoding::encode(target_name),
+        urlencoding::encode(&format!("{target_name}@example.com")),
+    );
+    if active {
+        body.push_str("&status=1");
+    }
+    if let Some(password) = password {
+        body.push_str(&format!("&password={}", urlencoding::encode(password)));
+    }
+    app.request_with_cookies(
+        Request::post(&path)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap(),
+        admin,
+    )
+    .await
+    .status()
+}
+
+/// **A password change ends the account's other sessions and keeps this one.**
+#[test]
+fn a_password_change_ends_other_sessions_and_keeps_the_callers() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let username = common::username("sess-pwchange");
+        let _user_id = fresh_user(app, &username).await;
+
+        let here = login_with_agent(app, &username, "test-password-123", UA_CHROME).await;
+        let elsewhere = login_with_agent(app, &username, "test-password-123", UA_FIREFOX).await;
+
+        let profile = app
+            .request_with_cookies(
+                Request::get("/user/profile")
+                    .header("user-agent", UA_CHROME)
+                    .body(Body::empty())
+                    .unwrap(),
+                &here,
+            )
+            .await;
+        assert_eq!(profile.status(), StatusCode::OK);
+        let token = form_token_from(&html_of(profile).await);
+        let change = app
+            .request_with_cookies(
+                Request::post("/user/password")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("user-agent", UA_CHROME)
+                    .body(Body::from(format!(
+                        "_token={}&current_password=test-password-123&new_password={NEW_PASSWORD}\
+                         &confirm_password={NEW_PASSWORD}",
+                        urlencoding::encode(&token)
+                    )))
+                    .unwrap(),
+                &here,
+            )
+            .await;
+        assert_eq!(change.status(), StatusCode::OK, "the change succeeds");
+        let here = cookies_after(&change, &here);
+
+        assert_eq!(
+            profile_status(app, &elsewhere, UA_FIREFOX).await,
+            StatusCode::SEE_OTHER,
+            "a password change must end the account's other sessions"
+        );
+        assert_eq!(
+            profile_status(app, &here, UA_CHROME).await,
+            StatusCode::OK,
+            "the session that changed the password stays signed in"
+        );
+    });
+}
+
+/// **A password reset through an emailed token ends every session.**
+#[test]
+fn a_password_reset_by_token_ends_every_session() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let username = common::username("sess-pwreset");
+        let user_id = fresh_user(app, &username).await;
+
+        let one = login_with_agent(app, &username, "test-password-123", UA_CHROME).await;
+        let two = login_with_agent(app, &username, "test-password-123", UA_FIREFOX).await;
+
+        let (_, token) =
+            trovato_kernel::models::password_reset::PasswordResetToken::create(&app.db, user_id)
+                .await
+                .expect("mint a reset token");
+        let reset = app
+            .request(
+                Request::post(format!("/user/password-reset/{token}"))
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", common::test_ip_for(&username))
+                    .body(Body::from(
+                        serde_json::json!({ "password": NEW_PASSWORD }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(reset.status(), StatusCode::OK, "the reset succeeds");
+
+        for (cookies, ua) in [(&one, UA_CHROME), (&two, UA_FIREFOX)] {
+            assert_eq!(
+                profile_status(app, cookies, ua).await,
+                StatusCode::SEE_OTHER,
+                "a password reset must end every session of the account"
+            );
+        }
+    });
+}
+
+/// **Recovering an account ends the sessions it had before.**
+///
+/// The new session the recovery establishes is the only one left.
+#[test]
+fn a_recovery_reset_ends_prior_sessions() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let username = common::username("sess-recover");
+        let user_id = fresh_user(app, &username).await;
+        let codes = trovato_kernel::services::recovery_builtins::RecoveryCodesProvider::generate(
+            &app.db, user_id,
+        )
+        .await
+        .expect("recovery codes");
+        let prior = login_with_agent(app, &username, "test-password-123", UA_CHROME).await;
+
+        let ip = common::test_ip_for(&format!("{username}-recovery"));
+        app.state.rate_limiter().reset("recovery", &ip).await.ok();
+        app.state
+            .rate_limiter()
+            .reset("recovery", &format!("user:{user_id}"))
+            .await
+            .ok();
+
+        let post = |path: &'static str, body: serde_json::Value, cookies: String| {
+            let ip = ip.clone();
+            async move {
+                app.request_with_cookies(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .header("x-forwarded-for", ip)
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                    &cookies,
+                )
+                .await
+            }
+        };
+
+        let start = post(
+            "/user/recover/start",
+            serde_json::json!({ "identifier": username }),
+            String::new(),
+        )
+        .await;
+        assert_eq!(start.status(), StatusCode::OK);
+        let cookies = common::extract_cookies(&start);
+        let choose = post(
+            "/user/recover/choose",
+            serde_json::json!({ "method_id": "trovato_recovery_codes:code" }),
+            cookies.clone(),
+        )
+        .await;
+        assert_eq!(choose.status(), StatusCode::OK);
+        let verify = post(
+            "/user/recover/verify",
+            serde_json::json!({ "response": codes[0] }),
+            cookies.clone(),
+        )
+        .await;
+        assert_eq!(verify.status(), StatusCode::OK);
+        let cookies = cookies_after(&verify, &cookies);
+        let reset = post(
+            "/user/recover/reset",
+            serde_json::json!({ "new_password": NEW_PASSWORD }),
+            cookies.clone(),
+        )
+        .await;
+        assert_eq!(
+            reset.status(),
+            StatusCode::OK,
+            "the recovery reset succeeds"
+        );
+        let recovered = cookies_after(&reset, &cookies);
+
+        assert_eq!(
+            profile_status(app, &prior, UA_CHROME).await,
+            StatusCode::SEE_OTHER,
+            "a recovery must end the sessions the account had before it"
+        );
+        assert_eq!(
+            profile_status(app, &recovered, UA_FIREFOX).await,
+            StatusCode::OK,
+            "the session the recovery established is signed in"
+        );
+    });
+}
+
+/// **Blocking an account ends its sessions and deletes its API tokens.**
+///
+/// A blocked user's next request was already refused by `require_login`; what
+/// this pins is that nothing of theirs is left to come back with: no indexed
+/// session, no session record, no token.
+#[test]
+fn blocking_a_user_ends_their_sessions_and_deletes_their_tokens() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let admin = admin_cookies(app, "sess-blocker").await;
+        let username = common::username("sess-blocked");
+        let user_id = fresh_user(app, &username).await;
+        let _victim = login_with_agent(app, &username, "test-password-123", UA_CHROME).await;
+        let (token, _raw) = trovato_kernel::models::api_token::ApiToken::create(
+            &app.db,
+            user_id,
+            "blocked user's token",
+            None,
+        )
+        .await
+        .expect("mint a token");
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ =
+                trovato_kernel::models::api_token::ApiToken::delete(&pool, token.id, user_id).await;
+        });
+        let indexed = app.state.session_registry().list(user_id).await.unwrap();
+        assert_eq!(indexed.len(), 1, "the user's session is indexed");
+        let session_id = indexed[0].session_id.clone();
+
+        let status = admin_edit(app, &admin, user_id, &username, false, None).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "the block is saved");
+
+        assert!(
+            app.state
+                .session_registry()
+                .list(user_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "blocking must end every session of the account"
+        );
+        let mut conn = app
+            .state
+            .redis()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        let record: bool = redis::AsyncCommands::exists(&mut conn, &session_id)
+            .await
+            .unwrap();
+        assert!(!record, "the blocked user's session record must be gone");
+        let tokens: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_tokens WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(tokens, 0, "blocking must delete the account's API tokens");
+    });
+}
+
+/// **An administrator setting another user's password ends that user's sessions.**
+#[test]
+fn an_admin_setting_a_users_password_ends_their_sessions() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let admin = admin_cookies(app, "sess-pwadmin").await;
+        let username = common::username("sess-pwtarget");
+        let user_id = fresh_user(app, &username).await;
+        let victim = login_with_agent(app, &username, "test-password-123", UA_CHROME).await;
+
+        let status = admin_edit(app, &admin, user_id, &username, true, Some(NEW_PASSWORD)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "the edit is saved");
+
+        assert_eq!(
+            profile_status(app, &victim, UA_CHROME).await,
+            StatusCode::SEE_OTHER,
+            "a password set by an administrator must end the user's sessions"
+        );
+        assert_eq!(
+            profile_status(app, &admin, UA_FIREFOX).await,
+            StatusCode::OK,
+            "the administrator's own session is untouched"
+        );
+    });
+}

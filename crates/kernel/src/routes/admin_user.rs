@@ -557,31 +557,78 @@ async fn edit_user_submit(
             apply_role_membership(&state, &current_user, user_id, &form.roles).await;
 
             // Update password if provided
-            if let Some(ref password) = form.password
-                && !password.is_empty()
-                && let Err(e) = state
-                    .users()
-                    .update_password(user_id, password, &user_ctx)
+            let password_set = match form.password {
+                Some(ref password) if !password.is_empty() => {
+                    if let Err(e) = state
+                        .users()
+                        .update_password(user_id, password, &user_ctx)
+                        .await
+                    {
+                        tracing::error!(error = %e, "failed to update user password");
+                        return render_server_error("Failed to update password.");
+                    }
+                    true
+                }
+                _ => false,
+            };
+
+            let admin_user_id = current_user.id;
+            let own_device = session
+                .get::<uuid::Uuid>(crate::services::session_registry::SESSION_DEVICE_ID)
+                .await
+                .ok()
+                .flatten();
+            if existing_user.is_active() && status_after == 0 {
+                // Blocked: nothing the account held may keep working. Every
+                // session ends and every API token is deleted.
+                crate::services::session_registry::end_user_sessions(
+                    &state,
+                    user_id,
+                    None,
+                    Some(admin_user_id),
+                    "account_blocked",
+                )
+                .await;
+                match crate::models::api_token::ApiToken::delete_all_for_user(state.db(), user_id)
                     .await
-            {
-                tracing::error!(error = %e, "failed to update user password");
-                return render_server_error("Failed to update password.");
+                {
+                    Ok(n) => tracing::info!(
+                        user_id = %user_id,
+                        admin = %admin_user_id,
+                        tokens = n,
+                        "blocked account's API tokens deleted"
+                    ),
+                    Err(e) => tracing::error!(
+                        error = %e,
+                        user_id = %user_id,
+                        "failed to delete a blocked account's API tokens"
+                    ),
+                }
+            } else if password_set {
+                // A password set by an administrator ends the account's
+                // sessions. When the administrator set their own, the device
+                // they did it from is kept, as a self-service change keeps it.
+                let keep = if user_id == admin_user_id {
+                    own_device
+                } else {
+                    None
+                };
+                crate::services::session_registry::end_user_sessions(
+                    &state,
+                    user_id,
+                    keep,
+                    Some(admin_user_id),
+                    "password_set_by_admin",
+                )
+                .await;
             }
 
-            // Rotate session if the admin changed their own privileges.
-            // Cross-user session invalidation requires a user→session index
-            // that does not currently exist — tracked as a known limitation.
-            let admin_user_id = current_user.id;
-            if user_id == admin_user_id {
-                if let Err(e) = session.cycle_id().await {
-                    tracing::warn!(error = %e, "failed to rotate session after self-privilege change");
-                }
-            } else {
-                tracing::info!(
-                    target_user = %user_id,
-                    admin = %admin_user_id,
-                    "privilege change for another user — session invalidation deferred (no user→session index)"
-                );
+            // An administrator who changed their own account rotates their
+            // session id, so a copy of the pre-change cookie stops working.
+            if user_id == admin_user_id
+                && let Err(e) = session.cycle_id().await
+            {
+                tracing::warn!(error = %e, "failed to rotate session after self-privilege change");
             }
 
             tracing::info!(user_id = %user_id, "user updated");

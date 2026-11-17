@@ -894,6 +894,14 @@ pub async fn get_user_context(session: &Session, state: &AppState) -> UserContex
         .ok()
         .flatten()
     {
+        // A blocked account is nobody: its session is deleted and the request
+        // is answered as anonymous, exactly as `require_login` does for the
+        // routes that gate on it. Without this every render and read handler
+        // went on treating a blocked user as themselves.
+        Some(user) if !user.is_active() => {
+            let _ = session.delete().await;
+            anonymous_user_context(state).await
+        }
         Some(user) => user_context_for(state, &user).await,
         None => UserContext::anonymous(),
     }

@@ -62,18 +62,24 @@ impl ApiToken {
         Ok((record, raw_token))
     }
 
-    /// Look up a token by its raw value. Returns `None` if not found or expired.
+    /// Look up a token by its raw value. Returns `None` if not found, expired,
+    /// or owned by an account that is not active.
     ///
     /// Always asks the database (see the note at the top of this module), so a
-    /// token deleted or expired a moment ago is refused now.
+    /// token deleted or expired a moment ago is refused now. The owner's status
+    /// is part of the same query, so a blocked account's tokens stop working at
+    /// once, in every process that authenticates with them (the kernel and the
+    /// MCP server alike), even before a block has deleted them.
     pub async fn find_by_token(pool: &PgPool, raw_token: &str) -> Result<Option<Self>> {
         let token_hash = hash_token(raw_token);
 
         let token = sqlx::query_as::<_, ApiToken>(
             r#"
-            SELECT * FROM api_tokens
-            WHERE token_hash = $1
-              AND (expires_at IS NULL OR expires_at > NOW())
+            SELECT t.* FROM api_tokens t
+            JOIN users u ON u.id = t.user_id
+            WHERE t.token_hash = $1
+              AND (t.expires_at IS NULL OR t.expires_at > NOW())
+              AND u.status = 1
             "#,
         )
         .bind(&token_hash)

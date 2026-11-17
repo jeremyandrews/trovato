@@ -147,6 +147,18 @@ async fn set_password(
         .await
         .map_err(|e| AppError::internal_ctx(e, "update password"))?;
 
+    // Whoever holds a session for this account now holds it under a password
+    // that has just been replaced, possibly by the very person the reset is
+    // locking out. End all of them; the user signs in afresh.
+    crate::services::session_registry::end_user_sessions(
+        &state,
+        reset_token.user_id,
+        None,
+        None,
+        "password_reset",
+    )
+    .await;
+
     // Mark token as used
     PasswordResetToken::mark_used(state.db(), reset_token.id)
         .await
