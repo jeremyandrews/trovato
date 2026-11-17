@@ -168,6 +168,79 @@ files = [
 
 **Gather query field references:** Filter and sort field paths (e.g., `"fields.display_name"`) are not validated against content type definitions at registration time. Double-check that field names in your gather query JSON match the `field_name` values in your `tap_item_info` definitions — a typo will silently produce NULL comparisons at query time.
 
+### Gathers that require a permission
+
+A gather is public unless it says otherwise: its page, its route aliases, its
+feed and the JSON API serve its rows to whoever asks, filtered only by item
+access. A gather over your own tables, or one listing things only some roles
+should see, declares the permission a viewer needs in its definition:
+
+```json
+"access": { "permission": "view network devices" }
+```
+
+Seeded from a migration, next to the definition it guards:
+
+```sql
+INSERT INTO gather_query (query_id, label, description, definition, display, plugin, created, changed)
+VALUES (
+    'ng_device_list',
+    'Devices',
+    'Every device seen on the network',
+    '{
+        "record_type": "ng_device_state",
+        "access": { "permission": "view network devices" },
+        "sorts": [{"field": "last_seen", "direction": "desc", "nulls": null}]
+    }'::jsonb,
+    '{"format": "table", "items_per_page": 50, "canonical_url": "/devices"}'::jsonb,
+    'netgrasp',
+    EXTRACT(EPOCH FROM NOW())::bigint,
+    EXTRACT(EPOCH FROM NOW())::bigint
+)
+ON CONFLICT (query_id) DO UPDATE SET
+    definition = EXCLUDED.definition,
+    display    = EXCLUDED.display,
+    changed    = EXCLUDED.changed;
+```
+
+For a gather that already exists, add the key in a later migration rather than
+rewriting the whole definition:
+
+```sql
+UPDATE gather_query
+SET definition = jsonb_set(definition, '{access}', '{"permission": "view network devices"}'::jsonb)
+WHERE query_id IN ('ng_device_list', 'ng_device_online');
+```
+
+Declare the permission itself in `tap_perm` (see
+[Defining Permissions](#defining-permissions)) so an administrator can grant it.
+
+What the kernel then does for a viewer without it, before the query runs:
+
+| Path | Anonymous visitor | Signed-in user without it |
+|------|-------------------|---------------------------|
+| `/gather/{query_id}`, its `canonical_url` or a URL alias to it, each `display.routes` path | redirect to `/user/login` | 403 |
+| `display.routes` path with `?format=json`, `/api/query/{query_id}`, `/api/query/{query_id}/execute` | 403, JSON `error` | 403, JSON `error` |
+| `display.feed` path | 403 | 403 |
+| `/api/queries` | the gather is left out | the gather is left out |
+| `menu_link` rows pointing at any of the addresses above | not drawn | not drawn |
+
+Administrators pass, as they do everywhere, and an anonymous visitor passes if
+the anonymous role holds the permission. Rows are still filtered by item access
+for a viewer who passes: this is a gate in front of the query, not a
+replacement for it. Only the top-level definition's `access` counts; an
+include runs as part of its parent.
+
+A gather over a lightweight-record type (`record_type`) that declares no
+permission requires `access content`, the permission the published path of
+item access already asks for, so it is never public by accident. Declare a
+permission of your own for anything more specific.
+
+A `menu_link` row has no permission of its own. It is drawn for a viewer only
+when the address it points at is one they could open: not a gather they may not
+run, and not a plugin route whose `tap_menu` permission they lack. A link under
+one that is not drawn is not drawn either.
+
 ---
 
 ## The Tap System

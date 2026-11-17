@@ -23,6 +23,11 @@ pub async fn run_gather(
 ) -> Result<CallToolResult, McpError> {
     require_mcp_permission(user_ctx, "access content")?;
     validate_machine_name(&params.query_id, "query_id")?;
+    // The gather's own permission, checked as every web path checks it.
+    if let Some(query) = state.gather().get_query(&params.query_id) {
+        trovato_kernel::gather::authorize_gather(user_ctx, &query)
+            .map_err(|denied| crate::tools::permission_denied(denied.permission()))?;
+    }
 
     let page = params.page.unwrap_or(1).max(1);
 

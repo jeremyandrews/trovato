@@ -73,6 +73,36 @@ pub struct QueryDefinition {
     /// so it is skipped during serialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relevance_order: Option<Vec<Uuid>>,
+
+    /// Who may run this gather at all.
+    ///
+    /// A gate in front of the query, not a row filter: when it names a
+    /// permission, every path that serves a registered gather (its page, its
+    /// route aliases, its feed and the JSON API) refuses a viewer without it
+    /// before the query runs, and a menu link to the gather is not drawn for
+    /// them. Item-level access still filters the rows of a gather the viewer
+    /// may run. See [`GatherAccess`].
+    ///
+    /// Read from the top-level definition of a registered gather only; an
+    /// include's `access` is not consulted, because an include runs as part of
+    /// its parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<GatherAccess>,
+}
+
+/// Access rule declared on a gather definition (`definition.access`).
+///
+/// Declared in the definition JSON a plugin migration or a config file writes:
+///
+/// ```json
+/// "access": { "permission": "view network devices" }
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatherAccess {
+    /// Permission a viewer must hold to run the gather. Administrators hold
+    /// every permission. Empty or absent means the gather declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
 }
 
 fn default_base_table() -> String {
@@ -92,6 +122,7 @@ impl Default for QueryDefinition {
             includes: HashMap::new(),
             stage_aware: true,
             relevance_order: None,
+            access: None,
         }
     }
 }
@@ -707,6 +738,39 @@ pub struct GatherQuery {
     pub changed: i64,
 }
 
+/// The permission a gather without a declared one requires when it does not
+/// read the `item` table (a lightweight-record gather).
+///
+/// An item gather's rows are filtered one by one by item access, which already
+/// asks for `access content` on the published fast path. A record gather has no
+/// per-row access, so without this it would be public by accident: the same
+/// baseline makes a site that withdraws `access content` from a role withdraw
+/// both kinds of listing, not just one.
+pub const RECORD_GATHER_BASELINE_PERMISSION: &str = "access content";
+
+impl GatherQuery {
+    /// The permission a viewer must hold to run this gather, if any.
+    ///
+    /// The declared `definition.access.permission` when there is one; otherwise
+    /// [`RECORD_GATHER_BASELINE_PERMISSION`] for a gather that does not read
+    /// the `item` table; otherwise none. A blank declared permission counts as
+    /// none declared.
+    pub fn required_permission(&self) -> Option<&str> {
+        let declared = self
+            .definition
+            .access
+            .as_ref()
+            .and_then(|access| access.permission.as_deref())
+            .map(str::trim)
+            .filter(|permission| !permission.is_empty());
+        declared.or_else(|| {
+            let reads_items =
+                self.definition.record_type.is_none() && self.definition.base_table == "item";
+            (!reads_items).then_some(RECORD_GATHER_BASELINE_PERMISSION)
+        })
+    }
+}
+
 impl Default for GatherQuery {
     fn default() -> Self {
         Self {
@@ -805,6 +869,66 @@ impl GatherResult {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+
+    fn gather(definition: serde_json::Value) -> GatherQuery {
+        serde_json::from_value(serde_json::json!({
+            "query_id": "q",
+            "label": "Q",
+            "description": null,
+            "definition": definition,
+            "display": {},
+            "plugin": "core"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_item_gather_declaring_nothing_requires_nothing() {
+        assert_eq!(gather(serde_json::json!({})).required_permission(), None);
+    }
+
+    #[test]
+    fn a_declared_permission_is_required() {
+        let q = gather(serde_json::json!({"access": {"permission": "view devices"}}));
+        assert_eq!(q.required_permission(), Some("view devices"));
+        let q = gather(serde_json::json!({
+            "record_type": "ng_device_state",
+            "access": {"permission": "view devices"}
+        }));
+        assert_eq!(q.required_permission(), Some("view devices"));
+    }
+
+    #[test]
+    fn a_blank_declared_permission_counts_as_none() {
+        let q = gather(serde_json::json!({"access": {"permission": "  "}}));
+        assert_eq!(q.required_permission(), None);
+        let q = gather(serde_json::json!({"access": {}}));
+        assert_eq!(q.required_permission(), None);
+    }
+
+    #[test]
+    fn a_record_gather_declaring_nothing_requires_the_baseline() {
+        let q = gather(serde_json::json!({"record_type": "ng_device_state"}));
+        assert_eq!(
+            q.required_permission(),
+            Some(RECORD_GATHER_BASELINE_PERMISSION)
+        );
+        let q = gather(serde_json::json!({"base_table": "ng_devices"}));
+        assert_eq!(
+            q.required_permission(),
+            Some(RECORD_GATHER_BASELINE_PERMISSION)
+        );
+    }
+
+    #[test]
+    fn access_is_left_out_of_a_definition_that_declares_none() {
+        let json = serde_json::to_value(QueryDefinition::default()).unwrap();
+        assert!(json.get("access").is_none(), "{json}");
+        let q = gather(serde_json::json!({"access": {"permission": "view devices"}}));
+        let json = serde_json::to_value(&q.definition).unwrap();
+        assert_eq!(json["access"]["permission"], "view devices");
+    }
+
     use super::*;
 
     fn field(name: &str, label: Option<&str>) -> QueryField {
@@ -971,6 +1095,7 @@ mod tests {
         let def = QueryDefinition {
             base_table: "item".to_string(),
             record_type: None,
+            access: None,
             item_type: Some("blog".to_string()),
             fields: vec![QueryField {
                 field_name: "title".to_string(),

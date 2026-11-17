@@ -141,6 +141,9 @@
                 definition.includes      = parsed.includes      || {};
                 definition.fields        = parsed.fields        || [];
                 definition.stage_aware   = parsed.stage_aware !== undefined ? parsed.stage_aware : (STAGE_AWARE_TABLES[definition.base_table] || false);
+                // Not edited here, but kept: dropping it on save would make a
+                // gather that requires a permission public.
+                if (parsed.access) { definition.access = parsed.access; }
             }
         } catch (e) {
             // Keep defaults on parse error

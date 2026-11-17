@@ -86,6 +86,7 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                         definition: QueryDefinition {
                             base_table: "item".to_string(),
                             record_type: None,
+                            access: None,
                             item_type: Some("conference".to_string()),
                             fields: vec![],
                             filters: vec![QueryFilter {
