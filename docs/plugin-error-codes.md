@@ -68,6 +68,19 @@ epoch (the epoch cuts CPU, the transfer budget cuts the wire). Inherited, unchan
 gaps: the SSRF fence is literal-string / IP-literal based — DNS-rebinding (TOCTOU)
 and redirect re-validation remain out of scope and are not widened by this surface.
 
+## Item API Errors
+
+`get-item`, `save-item`, `delete-item` and `query-items` (SDK: `get_item`,
+`save_item`, `delete_item`, `query_items`). They also return the general codes
+above and `-12`, `-13`, `-14` from the database table.
+
+| Code | Constant | Meaning | Recovery |
+|------|----------|---------|----------|
+| -60 | `ERR_ITEM_ACCESS_DENIED` | The user the plugin acts for may not make this write: no `edit` or `delete` access, no `create {type} content`, a field they may not edit, or a publish change without `publish content`. Also any call made while an access decision is in progress. Never returned by a read: a denied read is `null`, like a missing item | Do the work on behalf of a user who may, or from a background context with `item_background` |
+| -61 | `ERR_ITEM_BACKGROUND_DENIED` | Called from cron or a queue worker without the `item_background` capability | Declare `item_background = true` in `[capabilities]` if the plugin needs kernel authority there |
+| -62 | `ERR_ITEM_NOT_FOUND` | `delete-item` was given an id that names no item | Treat as already deleted if that is what you meant |
+| -63 | `ERR_ITEM_WRITE_DEPTH` | A write made from inside item write taps nested 4 deep | A tap that writes items should not depend on a chain of other plugins' taps writing in turn |
+
 ## Queue API Errors
 
 `queue.push` (byte-identical, unchanged) returns `-1` memory missing, `-2`/`-3`

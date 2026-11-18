@@ -55,9 +55,9 @@ fn tap_item_view(input: ItemViewInput) -> RenderElement {
     render::container().build()
 }
 
-// Tap that can fail
+// Tap that can fail (an Err is logged by the kernel)
 #[plugin_tap_result]
-fn tap_item_insert(input: ItemInput) -> Result<(), String> {
+fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 ```
@@ -71,9 +71,11 @@ fn tap_item_insert(input: ItemInput) -> Result<(), String> {
 | **Content Types** | `tap_item_info` | - | `Vec<ContentTypeDefinition>` |
 | **View** | `tap_item_view` | `ItemViewInput` | `RenderElement` |
 | **View** | `tap_item_view_alter` | `ItemViewAlterInput` | `RenderElement` |
-| **CRUD** | `tap_item_insert` | `ItemInput` | `Result<(), String>` |
-| **CRUD** | `tap_item_update` | `ItemInput` | `Result<(), String>` |
-| **CRUD** | `tap_item_delete` | `ItemDeleteInput` | `Result<(), String>` |
+| **CRUD** | `tap_item_presave` | `{item_type, title, fields, status}` | `{"fields": {...}}`, merged into the write |
+| **CRUD** | `tap_item_insert` | the created item | ignored (notification) |
+| **CRUD** | `tap_item_update` | the updated item | ignored (notification) |
+| **CRUD** | `tap_item_update_index` | the saved item | ignored (notification) |
+| **CRUD** | `tap_item_delete` | the item being deleted | ignored (notification; cannot abort) |
 | **Access** | `tap_item_access` | `ItemAccessInput` | `AccessResult` |
 | **Forms** | `tap_form_alter` | `FormAlterInput` | `FormDefinition` |
 | **Forms** | `tap_form_validate` | `FormValidateInput` | `Result<(), String>` |
@@ -223,10 +225,14 @@ let has_perm = host::user::has_permission("permission name");
 ```
 
 ### Items
+Needs `item-api` in `host_interfaces`; acts as the requesting user (from cron or
+a queue worker, needs `item_background = true`). Writes fire the item write taps
+on the other plugins, as a person's edit does.
 ```rust
-let item = host::item::get(uuid)?;
-let saved = host::item::save(&item)?;
-host::item::delete(uuid)?;
+let item = host::get_item(&id)?;                                   // None: missing or not viewable
+let saved = host::save_item(&json!({ "id": id, "title": "New" }))?;  // no id + "type": create
+host::delete_item(&id)?;                                          // Err(-62): no such item
+let list = host::query_items(&json!({ "type": "page", "limit": 20 }))?;
 ```
 
 ### Cache

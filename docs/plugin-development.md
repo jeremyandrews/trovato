@@ -265,10 +265,8 @@ For taps that can fail, use `#[plugin_tap_result]`:
 
 ```rust
 #[plugin_tap_result]
-fn tap_item_insert(input: ItemInput) -> Result<(), String> {
-    if input.item.title.is_empty() {
-        return Err("Title is required".to_string());
-    }
+fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
+    // An `Err` is logged by the kernel with the plugin and tap named.
     Ok(())
 }
 ```
@@ -287,9 +285,11 @@ fn tap_item_insert(input: ItemInput) -> Result<(), String> {
 |-----|-------|--------|-------------|
 | `tap_item_view` | `ItemViewInput` | `RenderElement` | Render item content |
 | `tap_item_view_alter` | `ItemViewAlterInput` | `RenderElement` | Modify rendered output |
-| `tap_item_insert` | `ItemInput` | `Result<(), String>` | Pre-insert validation |
-| `tap_item_update` | `ItemInput` | `Result<(), String>` | Pre-update validation |
-| `tap_item_delete` | `ItemDeleteInput` | `Result<(), String>` | Pre-delete hook |
+| `tap_item_presave` | `{item_type, title, fields, status}` | `{"fields": {...}}` or `{}` | Before a create or update is written: the one tap that can change a write. Returned fields are merged into the item, last plugin wins per field |
+| `tap_item_insert` | the created item | ignored | Notification after the row exists. It cannot refuse the write, and what it returns, an error included, is logged at most and never read |
+| `tap_item_update` | the updated item | ignored | Notification after the update, as `tap_item_insert` |
+| `tap_item_update_index` | the saved item | ignored | Notification after a create or update, for a plugin that keeps its own index |
+| `tap_item_delete` | the item being deleted | ignored | Notification before the row is removed. It cannot abort the delete |
 | `tap_item_access` | `ItemAccessInput` | `AccessResult` | Control item visibility |
 
 #### Forms
@@ -535,16 +535,40 @@ if host::user::has_permission("administer my_plugin") {
 
 ### Item Operations
 
+Declare `item-api` in `host_interfaces`. Every call acts as the user the plugin
+is handling a request for, with that user's answer; from cron or a queue worker
+the plugin needs `item_background = true`, and then acts with kernel authority.
+
 ```rust
-// Load item
-let item = host::item::get(item_id)?;
+use trovato_sdk::host;
+use serde_json::json;
 
-// Save item
-let saved = host::item::save(&item)?;
+// Load: `None` when the item is missing or the user may not view it.
+let item = host::get_item(&id)?;
 
-// Delete item
-host::item::delete(item_id)?;
+// Create (needs `type`) or update (a non-nil `id`).
+let created = host::save_item(&json!({ "type": "page", "title": "Hello", "language": "en" }))?;
+let updated = host::save_item(&json!({ "id": id, "title": "Hello again" }))?;
+
+// Delete: `Err(ERR_ITEM_NOT_FOUND)` when no item has that id.
+host::delete_item(&id)?;
+
+// List what the user may view.
+let pages = host::query_items(&json!({ "type": "page", "limit": 20 }))?;
 ```
+
+A write is the same write a person makes on the edit form. It goes through the
+kernel's item service, so the other plugins' `tap_item_presave`,
+`tap_item_insert` or `tap_item_update`, `tap_item_update_index` and
+`tap_item_delete` fire, the field and publish gates apply, a revision is
+recorded, and the item's page shows the change at once.
+
+A tap that handles one of those writes may write items too. The nested write
+fires its taps on every plugin except those whose write tap is already running
+around it, so a plugin never sees its own write come back into the handler that
+made it, and a write nested four write taps deep is refused with
+`ERR_ITEM_WRITE_DEPTH`. Every error code is listed in
+[plugin-error-codes.md](plugin-error-codes.md#item-api-errors).
 
 ---
 

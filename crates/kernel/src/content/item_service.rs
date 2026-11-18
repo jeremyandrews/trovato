@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
 use crate::models::{CreateItem, Item, ItemRevision, UpdateItem};
 use crate::services::ai_provider::{AiProviderService, EMBEDDING_INPUT_MAX_CHARS};
@@ -400,12 +401,51 @@ impl ItemService {
         RequestState::new(user.clone(), self.inner.tap_services.clone())
     }
 
+    /// Refuse a write nested [`MAX_ITEM_WRITE_DEPTH`] write taps deep, before
+    /// anything is decided or written. See [`reentry`].
+    fn refuse_if_too_deep() -> Result<()> {
+        if reentry::write_depth() >= MAX_ITEM_WRITE_DEPTH {
+            return Err(WriteTooDeep.into());
+        }
+        Ok(())
+    }
+
+    /// Dispatch one of the item write taps (`tap_item_presave`, `insert`,
+    /// `update`, `update_index`, `delete`) under the re-entrancy rule.
+    ///
+    /// Each handler runs with its plugin on the write stack, and a plugin whose
+    /// write tap is already running around this call is skipped: a write a
+    /// plugin makes from its own tap does not fire back into that plugin. Weight
+    /// order and the log-and-skip handling of a failed handler are the
+    /// dispatcher's, unchanged.
+    async fn dispatch_write_tap(
+        &self,
+        tap: &str,
+        input: &str,
+        user: &UserContext,
+    ) -> Vec<TapResult> {
+        let dispatcher = &self.inner.dispatcher;
+        let mut results = Vec::new();
+        for handler in dispatcher.registry().get_handlers(tap) {
+            let plugin = handler.plugin.info.name.as_str();
+            if reentry::is_handling_write(plugin) {
+                continue;
+            }
+            let call = dispatcher.dispatch_to_plugin(tap, input, plugin, self.tap_state(user));
+            if let Some(result) = reentry::handling_write(plugin, call).await {
+                results.push(result);
+            }
+        }
+        results
+    }
+
     /// Create a new item with tap_item_presave and tap_item_insert invocations.
     ///
     /// The presave tap fires before the item is persisted, allowing plugins
     /// to modify fields (e.g., AI content enrichment). The insert tap fires
     /// after persistence for post-save side effects.
     pub async fn create(&self, mut input: CreateItem, user: &UserContext) -> Result<Item> {
+        Self::refuse_if_too_deep()?;
         // The two write gates, on the client's own submission and before the
         // presave tap: a plugin's presave edits are trusted code, not user
         // input. Both return `WriteDenied`, which every caller maps to 403.
@@ -424,12 +464,8 @@ impl ItemService {
             "status": input.status,
         });
         let presave_input = serde_json::to_string(&presave_json).context("serialize presave")?;
-        let presave_state = self.tap_state(user);
-
         let presave_results = self
-            .inner
-            .dispatcher
-            .dispatch("tap_item_presave", &presave_input, presave_state)
+            .dispatch_write_tap("tap_item_presave", &presave_input, user)
             .await;
 
         // Apply presave modifications — if any plugin returned modified fields,
@@ -453,17 +489,11 @@ impl ItemService {
         // Create the item in the database
         let item = Item::create(&self.inner.pool, input).await?;
 
-        // Invoke tap_item_insert for post-insert taps
+        // tap_item_insert is a notification: the row exists, and what a handler
+        // returns is not read (BL-88). Failures are logged by the dispatcher.
         let item_json = serde_json::to_string(&item).context("serialize item")?;
-        let state = self.tap_state(user);
-
-        let _results = self
-            .inner
-            .dispatcher
-            .dispatch("tap_item_insert", &item_json, state)
+        self.dispatch_write_tap("tap_item_insert", &item_json, user)
             .await;
-
-        // Tap errors are logged by the dispatcher
 
         // Fire tap_item_update_index and regenerate the kernel embedding so the
         // new item is searchable via the SemanticSimilarity gather operator.
@@ -751,6 +781,7 @@ impl ItemService {
         mut input: UpdateItem,
         user: &UserContext,
     ) -> Result<Option<Item>> {
+        Self::refuse_if_too_deep()?;
         // Load existing item
         let Some(existing) = self.load(id).await? else {
             return Ok(None);
@@ -783,12 +814,8 @@ impl ItemService {
             "status": input.status.unwrap_or(existing.status),
         });
         let presave_input = serde_json::to_string(&presave_json).context("serialize presave")?;
-        let presave_state = self.tap_state(user);
-
         let presave_results = self
-            .inner
-            .dispatcher
-            .dispatch("tap_item_presave", &presave_input, presave_state)
+            .dispatch_write_tap("tap_item_presave", &presave_input, user)
             .await;
 
         // Apply presave modifications — merge plugin-returned fields into input.
@@ -810,17 +837,10 @@ impl ItemService {
         let item = Item::update(&self.inner.pool, id, user.id, input).await?;
 
         if let Some(ref i) = item {
-            // Invoke tap_item_update
+            // tap_item_update is a notification, as tap_item_insert is.
             let item_json = serde_json::to_string(i).context("serialize item")?;
-            let state = self.tap_state(user);
-
-            let _results = self
-                .inner
-                .dispatcher
-                .dispatch("tap_item_update", &item_json, state)
+            self.dispatch_write_tap("tap_item_update", &item_json, user)
                 .await;
-
-            // Tap errors are logged by the dispatcher
 
             // Fire tap_item_update_index and regenerate the kernel embedding so
             // the updated item's searchable vector reflects the new content.
@@ -876,11 +896,7 @@ impl ItemService {
                 return;
             }
         };
-        let state = self.tap_state(user);
-        let _results = self
-            .inner
-            .dispatcher
-            .dispatch("tap_item_update_index", &item_json, state)
+        self.dispatch_write_tap("tap_item_update_index", &item_json, user)
             .await;
 
         // Drive kernel-side embedding (re)generation so kernel-managed items
@@ -977,6 +993,7 @@ impl ItemService {
 
     /// Delete an item with tap_item_delete invocation.
     pub async fn delete(&self, id: Uuid, user: &UserContext) -> Result<bool> {
+        Self::refuse_if_too_deep()?;
         // Load item
         let Some(item) = self.load(id).await? else {
             return Ok(false);
@@ -987,17 +1004,11 @@ impl ItemService {
             anyhow::bail!("access denied");
         }
 
-        // Invoke tap_item_delete (can abort deletion)
+        // tap_item_delete is a notification: it cannot abort the delete, and
+        // what a handler returns is not read (BL-88).
         let item_json = serde_json::to_string(&item).context("serialize item")?;
-        let state = self.tap_state(user);
-
-        let _results = self
-            .inner
-            .dispatcher
-            .dispatch("tap_item_delete", &item_json, state)
+        self.dispatch_write_tap("tap_item_delete", &item_json, user)
             .await;
-
-        // Tap errors are logged by the dispatcher
 
         // Delete from database
         let deleted = Item::delete(&self.inner.pool, id).await?;
@@ -1175,7 +1186,7 @@ impl ItemService {
     /// Check if a user has access to perform an operation on an item.
     ///
     /// Access resolution order:
-    /// 1. Admin bypass (always allowed)
+    /// 1. Admin and background-principal bypass (always allowed)
     /// 2. Stage visibility — anonymous users are denied on internal stages
     /// 3. Published fast-path — public-stage + published + "access content"
     /// 4. Plugin `tap_item_access` — Deny wins, then Grant
@@ -1194,8 +1205,13 @@ impl ItemService {
         operation: &str,
         user: &UserContext,
     ) -> Result<bool> {
-        // 1. Admin always has access
-        if user.is_admin() {
+        // 1. Admin always has access, and so does the kernel-internal background
+        //    principal, for the reason given in [`Self::gate_field_writes`]: it
+        //    holds no permissions, and only cron and the queue worker carry it.
+        //    `item-api` hands it here only for a plugin that declared
+        //    `item_background`, so this is how a declared background write keeps
+        //    kernel authority while still going through this service.
+        if user.is_admin() || user.is_background() {
             return Ok(true);
         }
 
@@ -1273,12 +1289,14 @@ impl ItemService {
         let input_json = serde_json::to_string(&input).context("serialize access input")?;
         let state = self.tap_state(user);
 
-        // Invoke tap_item_access
-        let results = self
-            .inner
-            .dispatcher
-            .dispatch("tap_item_access", &input_json, state)
-            .await;
+        // Invoke tap_item_access, with the re-entrancy marker set: a handler
+        // calling item-api would ask for another decision (see `reentry`).
+        let results = reentry::deciding_access(self.inner.dispatcher.dispatch(
+            "tap_item_access",
+            &input_json,
+            state,
+        ))
+        .await;
 
         // Aggregate results: Deny wins, then Grant, else Neutral
         let mut has_grant = false;
@@ -1433,11 +1451,12 @@ impl ItemService {
         let resolved = match serde_json::to_string(&input) {
             Ok(input_json) => {
                 let state = self.tap_state(user);
-                let results = self
-                    .inner
-                    .dispatcher
-                    .dispatch("tap_field_access", &input_json, state)
-                    .await;
+                let results = reentry::deciding_access(self.inner.dispatcher.dispatch(
+                    "tap_field_access",
+                    &input_json,
+                    state,
+                ))
+                .await;
                 aggregate_field_decisions(&missing, &results)
             }
             Err(e) => {

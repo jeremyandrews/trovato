@@ -20,6 +20,7 @@ pub mod page_builder;
 pub mod page_builder_components;
 pub mod page_meta;
 mod record_type;
+pub mod reentry;
 mod type_registry;
 
 pub use block_render::render_blocks;

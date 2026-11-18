@@ -656,7 +656,7 @@ async fn an_item_api_call_inside_an_access_decision_fails_closed() {
     );
 
     // Inside one, the same call is refused without dispatching anything.
-    let inside = trovato_kernel::host::item::deciding_access_for_test(async move {
+    let inside = trovato_kernel::content::reentry::deciding_access_for_test(async move {
         run(
             &pool2,
             admin(),
@@ -1177,5 +1177,59 @@ async fn the_item_api_bindings_round_trip_from_a_plugin() {
         "a second delete is a miss: {out}"
     );
     assert_eq!(out["get_after_delete"], serde_json::Value::Null);
+    forget(&pool, id, &title).await;
+}
+
+/// The depth bound, driven directly: a write made inside
+/// `MAX_ITEM_WRITE_DEPTH` plugins' write taps is refused before anything is
+/// written. Reaching that depth through real plugins would take that many
+/// fixtures each writing from a tap; the stack is the thing under test.
+#[tokio::test]
+async fn a_write_nested_past_the_depth_bound_is_refused() {
+    use trovato_kernel::content::reentry::{MAX_ITEM_WRITE_DEPTH, handling_writes_for_test};
+
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "page", author, 1, json!({})).await;
+    let items = items_for(&pool);
+    let title = unique("b68 depth");
+    let payload = json!({"id": id.to_string(), "title": title}).to_string();
+
+    let around: Vec<String> = (0..MAX_ITEM_WRITE_DEPTH)
+        .map(|n| format!("plugin_{n}"))
+        .collect();
+    let (pool2, items2, payload2) = (pool.clone(), Arc::clone(&items), payload.clone());
+    let refused = handling_writes_for_test(around, async move {
+        run(
+            &pool2,
+            admin(),
+            &items2,
+            "save-item",
+            &payload2,
+            true,
+            false,
+        )
+        .await
+    })
+    .await;
+    assert_eq!(refused.code, host_errors::ERR_ITEM_WRITE_DEPTH);
+    let stored: String = sqlx::query_scalar("SELECT title FROM item WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_ne!(stored, title, "nothing was written");
+
+    // One level shallower is still allowed.
+    let shallower: Vec<String> = (1..MAX_ITEM_WRITE_DEPTH)
+        .map(|n| format!("plugin_{n}"))
+        .collect();
+    let (pool3, items3) = (pool.clone(), Arc::clone(&items));
+    let allowed = handling_writes_for_test(shallower, async move {
+        run(&pool3, admin(), &items3, "save-item", &payload, true, false).await
+    })
+    .await;
+    assert!(allowed.code >= 0, "a write inside fewer taps succeeds");
     forget(&pool, id, &title).await;
 }

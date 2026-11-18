@@ -20,19 +20,27 @@ package trovato:kernel;
 /// acts with kernel authority; without it, host error code -61
 /// (ERR_ITEM_BACKGROUND_DENIED).
 ///
-/// Writes still go straight to the item model: the insert, update and delete
-/// taps do NOT fire from this interface, because dispatching a tap from inside
-/// a tap is the re-entrancy it exists to avoid. Only the access decision is
-/// made through the item service, and a call made while an access decision is
-/// already in progress fails closed.
+/// Writes go through the kernel's item service, exactly as a person's edit does:
+/// save-item and delete-item fire tap-item-presave, tap-item-insert or
+/// tap-item-update, tap-item-update-index and tap-item-delete on the other
+/// plugins, run the field and publish write gates (a refusal is -60), record a
+/// revision and refresh the item cache. A tap handling a write may write again:
+/// the nested write fires its taps to every plugin except those whose write tap
+/// is already running around it, and a write nested 4 write taps deep is
+/// refused with -63 (ERR_ITEM_WRITE_DEPTH). A call made while an access
+/// decision is in progress fails closed with -60.
 interface item-api {
     /// Get an item by ID, returns full item JSON.
     get-item: func(id: string) -> result<string, string>;
 
-    /// Save an item from JSON (insert or update based on whether id exists).
+    /// Save an item from JSON: an update when it carries a non-nil `id`
+    /// (`title`, `status`, `fields`, `log`; null if no item has that id), a
+    /// create otherwise (`type` required; `title`, `status`, `fields`, `log`,
+    /// and `language`, which must be one of the site's languages, else -14).
     save-item: func(item-json: string) -> result<string, string>;
 
-    /// Delete an item by ID.
+    /// Delete an item by ID. An id that names no item is -62
+    /// (ERR_ITEM_NOT_FOUND).
     delete-item: func(id: string) -> result<_, string>;
 
     /// Query items with structured query, returns JSON array.
