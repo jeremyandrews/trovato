@@ -130,6 +130,23 @@ there" should accept -62 as the second half of that. The SDK now binds all four
 functions (`trovato_sdk::host::get_item`, `save_item`, `delete_item`,
 `query_items`); hand-written `item-api` imports keep working.
 
+### A plugin with an import the kernel does not provide fails to load
+
+**Who is affected:** a plugin whose module imports a function the kernel does
+not provide: a WASI function other than `fd_write`, `random_get`,
+`environ_get`, `environ_sizes_get`, `proc_exit` and `clock_time_get`, or a
+function missing from a host interface it declares. Find out by looking for a
+`cannot be linked` error naming the plugin in the startup log.
+
+**What changed.** Such a plugin used to load and report success, then fail every
+tap at dispatch with `unknown import`. It now fails to load, with a message
+naming the import, and the rest of the site starts without it. A plugin built
+with Rust after 1.96 imports `clock_time_get`, which the kernel now provides,
+so those plugins load and run.
+
+**What to do.** Nothing, unless the startup log names one of your plugins; that
+plugin was already failing on every request.
+
 ### A plugin call now has a wall clock ceiling
 
 **Who is affected:** any site; in practice only a plugin that makes many slow

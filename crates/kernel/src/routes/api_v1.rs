@@ -92,11 +92,14 @@ async fn inject_api_version(
 }
 
 // -------------------------------------------------------------------------
-/// Serve the OpenAPI 3.0 specification.
-async fn openapi_spec() -> impl IntoResponse {
-    let mut registry = crate::routes::route_metadata::RouteRegistry::new();
-    registry.register_kernel_routes();
-    Json(registry.to_openapi_json())
+/// Serve the OpenAPI 3.0 specification: the kernel's API routes and every
+/// enabled plugin's `api` routes, built once at startup
+/// ([`AppState::openapi`]).
+async fn openapi_spec(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        state.openapi().to_string(),
+    )
 }
 
 // Helper functions

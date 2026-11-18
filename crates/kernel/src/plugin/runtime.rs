@@ -888,8 +888,9 @@ fn build_plugin_linker(
         .map(|caps| caps.host_interfaces.clone())
         .unwrap_or_default();
 
-    // Load-time import-vs-declaration pre-check. WASI imports
-    // (`wasi_snapshot_preview1`) are baseline and excluded.
+    // Load-time import-vs-declaration pre-check for the kernel's own
+    // interfaces. WASI imports are baseline, not declared; whether the kernel
+    // provides each one is checked below, once the linker exists.
     let declared_set: HashSet<&str> = declared.iter().map(String::as_str).collect();
     let mut undeclared: Vec<&str> = module
         .imports()
@@ -940,8 +941,38 @@ fn build_plugin_linker(
     // Expose exactly the declared host-interface subset (deny-unless-declared).
     crate::host::register_declared(&mut linker, &declared)?;
 
+    // Every import has to resolve against this linker, WASI included. Without
+    // this a plugin importing a WASI function the kernel does not provide
+    // loaded cleanly and then failed every dispatch with "unknown import"
+    // (BL-118): instantiation happens per dispatch, not at load. Pre-
+    // instantiating type-checks every import without a store, and the
+    // linker is the one list of what the kernel provides, so there is no
+    // second list to keep in step.
+    if let Err(e) = linker.instantiate_pre(module) {
+        anyhow::bail!(
+            "plugin '{}' cannot be linked: {e}. The kernel provides the host \
+             interfaces the plugin declares and these WASI functions: {}",
+            info.name,
+            WASI_FUNCTIONS.join(", ")
+        );
+    }
+
     Ok(linker)
 }
+
+/// The `wasi_snapshot_preview1` functions [`add_wasi_stubs`] provides, for the
+/// load error that names a missing one.
+const WASI_FUNCTIONS: &[&str] = &[
+    "fd_write",
+    "random_get",
+    "environ_get",
+    "environ_sizes_get",
+    "proc_exit",
+    "clock_time_get",
+];
+
+/// When the monotonic clock started: the first time any plugin read it.
+static MONOTONIC_EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// Add minimal WASI stubs for wasi_snapshot_preview1.
 ///
@@ -1015,6 +1046,46 @@ fn add_wasi_stubs(linker: &mut Linker<PluginState>) -> Result<()> {
                 // Write 0 for both count and size
                 data[count_ptr..count_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
                 data[size_ptr..size_ptr + 4].copy_from_slice(&0u32.to_le_bytes());
+                0 // Success
+            },
+        )
+        .into_anyhow()?;
+
+    // clock_time_get(clock_id, precision, time_ptr) -> errno
+    // Real time for the realtime (0) and monotonic (1) clocks, in nanoseconds;
+    // Rust's `SystemTime` and `Instant` read these. The CPU-time clocks (2, 3)
+    // are not offered: EINVAL. Rust after 1.96 imports this from every plugin.
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "clock_time_get",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             clock_id: i32,
+             _precision: i64,
+             time_ptr: i32|
+             -> i32 {
+                let nanos = match clock_id {
+                    0 => std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos()),
+                    1 => MONOTONIC_EPOCH
+                        .get_or_init(std::time::Instant::now)
+                        .elapsed()
+                        .as_nanos(),
+                    _ => return 28, // EINVAL
+                };
+                let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
+                let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return 8; // EBADF
+                };
+                let data = memory.data_mut(&mut caller);
+                let Ok(at) = usize::try_from(time_ptr) else {
+                    return 21; // EFAULT
+                };
+                let Some(slot) = data.get_mut(at..at.saturating_add(8)) else {
+                    return 21; // EFAULT
+                };
+                slot.copy_from_slice(&nanos.to_le_bytes());
                 0 // Success
             },
         )

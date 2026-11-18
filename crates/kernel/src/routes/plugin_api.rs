@@ -143,42 +143,19 @@ pub fn warn_unreachable_callbacks(menus: &[MenuDefinition]) {
 /// plugin must not be able to take the process down by declaring a duplicate.
 pub fn build_plugin_api_router(menus: &[MenuDefinition]) -> Router<AppState> {
     let mut router = Router::new();
-    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let (served, skipped) = served_api_entries(menus);
 
-    for menu in menus {
-        if menu.handler_type != API_HANDLER_TYPE {
-            continue;
-        }
-        if menu.callback.trim().is_empty() {
-            tracing::warn!(
-                plugin = %menu.plugin,
-                path = %menu.path,
-                "skipping api menu entry with no callback"
-            );
-            continue;
-        }
-        if !menu.path.starts_with('/') {
-            tracing::warn!(
-                plugin = %menu.plugin,
-                path = %menu.path,
-                "skipping api menu entry whose path is not absolute"
-            );
-            continue;
-        }
+    for (menu, reason) in skipped {
+        tracing::warn!(
+            plugin = %menu.plugin,
+            path = %menu.path,
+            method = %menu.method,
+            "skipping api menu entry: {reason}"
+        );
+    }
 
-        let method = menu.method.to_ascii_uppercase();
-        let axum_path = to_axum_path(&menu.path);
-
-        if !seen.insert((method.clone(), axum_path.clone())) {
-            tracing::warn!(
-                plugin = %menu.plugin,
-                path = %menu.path,
-                method = %method,
-                "skipping duplicate api menu entry"
-            );
-            continue;
-        }
-
+    for entry in served {
+        let menu = entry.menu;
         let config = Arc::new(menu.clone());
         let handler = {
             let config = Arc::clone(&config);
@@ -201,33 +178,79 @@ pub fn build_plugin_api_router(menus: &[MenuDefinition]) -> Router<AppState> {
             }
         };
 
-        let route = match method.as_str() {
+        let route = match entry.method.as_str() {
             "GET" => get(handler),
             "POST" => post(handler),
             "PUT" => put(handler),
-            "DELETE" => delete(handler),
-            other => {
-                tracing::warn!(
-                    plugin = %menu.plugin,
-                    path = %menu.path,
-                    method = %other,
-                    "skipping api menu entry with an unsupported method"
-                );
-                continue;
-            }
+            _ => delete(handler),
         };
 
         tracing::debug!(
             plugin = %menu.plugin,
-            path = %axum_path,
-            method = %method,
+            path = %entry.path,
+            method = %entry.method,
             callback = %menu.callback,
             "registered plugin api route"
         );
-        router = router.route(&axum_path, route);
+        router = router.route(&entry.path, route);
     }
 
     router
+}
+
+/// A plugin `api` menu entry the kernel serves, with its method upper-cased
+/// and its path in axum's (and OpenAPI's) `{name}` syntax.
+pub struct ServedApi<'a> {
+    /// The menu entry as the plugin declared it.
+    pub menu: &'a MenuDefinition,
+    /// `GET`, `POST`, `PUT` or `DELETE`.
+    pub method: String,
+    /// The route path, `/x/{id}` for a declared `/x/:id`.
+    pub path: String,
+}
+
+/// Which `api` menu entries the kernel serves, and why it skips the rest.
+///
+/// The one rule both the router ([`build_plugin_api_router`]) and the OpenAPI
+/// document read, so the document cannot list a plugin route the router does
+/// not serve. An entry is skipped when it names no callback, its path is not
+/// absolute, its method is not one of the four the router mounts, or it
+/// repeats a method and path already taken: axum panics on a route conflict,
+/// and a plugin must not be able to take the process down by declaring one.
+/// Entries that are not `api` entries are neither served nor reported.
+pub fn served_api_entries(
+    menus: &[MenuDefinition],
+) -> (Vec<ServedApi<'_>>, Vec<(&MenuDefinition, &'static str)>) {
+    let mut served = Vec::new();
+    let mut skipped = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    for menu in menus {
+        if menu.handler_type != API_HANDLER_TYPE {
+            continue;
+        }
+        if menu.callback.trim().is_empty() {
+            skipped.push((menu, "no callback"));
+            continue;
+        }
+        if !menu.path.starts_with('/') {
+            skipped.push((menu, "path is not absolute"));
+            continue;
+        }
+        let method = menu.method.to_ascii_uppercase();
+        if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "DELETE") {
+            skipped.push((menu, "unsupported method"));
+            continue;
+        }
+        let path = to_axum_path(&menu.path);
+        if !seen.insert((method.clone(), path.clone())) {
+            skipped.push((menu, "duplicate method and path"));
+            continue;
+        }
+        served.push(ServedApi { menu, method, path });
+    }
+
+    (served, skipped)
 }
 
 /// Translate a menu path pattern to axum's syntax: `/x/:id` → `/x/{id}`.
