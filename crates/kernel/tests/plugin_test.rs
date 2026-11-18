@@ -1705,3 +1705,105 @@ async fn the_scheduled_publishing_update_still_publishes_an_item() {
         .await
         .ok();
 }
+
+// =============================================================================
+// WASI imports (BL-118)
+//
+// The kernel provides a handful of `wasi_snapshot_preview1` functions. Rust
+// after 1.96 imports `clock_time_get`, which was not one of them, so every tap
+// of a plugin built with it failed at dispatch, while loading reported success
+// because the import pre-check skipped WASI imports.
+// =============================================================================
+
+/// Write a scratch plugin whose `.wasm` is the given WAT, implementing
+/// `tap_cron`, and return its directory.
+fn scratch_wat_plugin(name: &str, wat: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("{name}_{}", Uuid::now_v7().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (major, minor) = trovato_kernel::plugin::KERNEL_API_VERSION;
+    std::fs::write(
+        dir.join(format!("{name}.info.toml")),
+        format!(
+            "name = \"{name}\"\ndescription = \"scratch\"\nversion = \"1.0.0\"\n\
+             api_version = \"{major}.{minor}\"\ndefault_enabled = false\ndependencies = []\n\
+             [taps]\nimplements = [\"tap_cron\"]\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join(format!("{name}.wasm")), wat).unwrap();
+    dir
+}
+
+/// A plugin importing `clock_time_get` loads and runs, and the clock it reads
+/// is real: the realtime clock is after November 2023, and the monotonic clock
+/// does not go backwards between two reads.
+#[tokio::test]
+async fn a_plugin_importing_clock_time_get_runs_and_reads_real_time() {
+    let wat = r#"
+(module
+  (import "wasi_snapshot_preview1" "clock_time_get"
+    (func $clock (param i32 i64 i32) (result i32)))
+  (memory (export "memory") 2)
+  (data (i32.const 70000) "true")
+  (data (i32.const 70010) "false")
+  (func (export "tap_cron") (param i32 i32) (result i64)
+    (local $ok i32)
+    ;; realtime (0) into 70100, monotonic (1) twice into 70200 and 70300
+    (local.set $ok (i32.eqz (call $clock (i32.const 0) (i64.const 1) (i32.const 70100))))
+    (local.set $ok (i32.and (local.get $ok)
+      (i64.gt_u (i64.load (i32.const 70100)) (i64.const 1700000000000000000))))
+    (local.set $ok (i32.and (local.get $ok)
+      (i32.eqz (call $clock (i32.const 1) (i64.const 1) (i32.const 70200)))))
+    (local.set $ok (i32.and (local.get $ok)
+      (i32.eqz (call $clock (i32.const 1) (i64.const 1) (i32.const 70300)))))
+    (local.set $ok (i32.and (local.get $ok)
+      (i64.ge_u (i64.load (i32.const 70300)) (i64.load (i32.const 70200)))))
+    (if (result i64) (local.get $ok)
+      (then (i64.or (i64.shl (i64.const 70000) (i64.const 32)) (i64.const 4)))
+      (else (i64.or (i64.shl (i64.const 70010) (i64.const 32)) (i64.const 5))))))
+"#;
+    let dir = scratch_wat_plugin("wasi_clock_probe", wat);
+    let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
+    runtime
+        .load_plugin(&dir)
+        .expect("a plugin importing clock_time_get loads");
+    let runtime = Arc::new(runtime);
+    let registry = Arc::new(TapRegistry::from_plugins(&runtime));
+    let dispatcher = TapDispatcher::new(Arc::clone(&runtime), registry);
+
+    let result = dispatcher
+        .dispatch_to_plugin(
+            "tap_cron",
+            "{}",
+            "wasi_clock_probe",
+            RequestState::default(),
+        )
+        .await
+        .expect("a tap of a plugin importing clock_time_get runs");
+    assert_eq!(result.output, "true", "the clocks it reads are real");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A plugin importing a WASI function the kernel does not provide fails to
+/// load, naming the import, instead of loading and failing every dispatch.
+#[tokio::test]
+async fn a_plugin_importing_an_unsupported_wasi_function_fails_to_load() {
+    let wat = r#"
+(module
+  (import "wasi_snapshot_preview1" "sock_accept"
+    (func (param i32 i32 i32) (result i32)))
+  (memory (export "memory") 1)
+  (func (export "tap_cron") (param i32 i32) (result i64) (i64.const 0)))
+"#;
+    let dir = scratch_wat_plugin("wasi_sock_probe", wat);
+    let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
+    let err = runtime
+        .load_plugin(&dir)
+        .expect_err("an unsupported WASI import must fail the load");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("sock_accept") && message.contains("wasi_sock_probe"),
+        "the error names the plugin and the import: {message}"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}

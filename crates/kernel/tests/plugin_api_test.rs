@@ -849,3 +849,114 @@ fn a_token_minted_for_one_session_does_not_verify_in_another() {
         disable_plugin(app).await;
     });
 }
+
+/// `/api/openapi.json` describes the routes the server really serves.
+///
+/// It was a hand-written list built per request: no plugin route ever entered
+/// it, and three of its paths (`/api/v1/items`, `/api/v1/items/{id}`,
+/// `/api/v1/categories`) were served by no router at all. This asks for the
+/// document from an app with `test_plugin_api` enabled, checks the plugin's
+/// `api` entries are in it and its page entry is not, and then requests every
+/// path the document lists, with the method it lists, and requires an answer
+/// other than 404 or 405, so the list cannot drift from the router again.
+#[test]
+fn openapi_lists_plugin_routes_and_every_listed_path_is_served() {
+    common::run_test(async {
+        let app = app();
+
+        let response = app
+            .request(
+                Request::get("/api/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let doc = json_body(response).await;
+        let paths = doc["paths"].as_object().expect("paths object");
+
+        // The plugin's api entries, under the OpenAPI spelling of their params,
+        // with the method, title and permission the entry declares.
+        let write = &paths["/tpa/note/{slug}"]["post"];
+        assert_eq!(write["summary"], "Write a note", "{doc}");
+        assert!(
+            write["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains(PERM_WRITE),
+            "the required permission is stated: {write}"
+        );
+        assert!(paths["/tpa/notes"].get("get").is_some());
+        assert!(
+            paths.get("/tpa/page").is_none(),
+            "a page entry is not an api"
+        );
+
+        // The three paths that were never served are listed as the routed ones.
+        for listed in ["/api/items", "/api/item/{id}", "/api/categories"] {
+            assert!(paths.contains_key(listed), "{listed} is listed");
+        }
+        for unserved in ["/api/v1/items", "/api/v1/items/{id}", "/api/v1/categories"] {
+            assert!(!paths.contains_key(unserved), "{unserved} is not listed");
+        }
+
+        // A real item, so `/api/item/{id}` answers for the route, not for a
+        // missing row.
+        let item_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+             VALUES ('page', 'page', 'openapi probe', true, 'Title', 'core', '{}'::jsonb) \
+             ON CONFLICT (type) DO NOTHING",
+        )
+        .execute(&app.db)
+        .await
+        .expect("seed the page type");
+        sqlx::query(
+            "INSERT INTO item (id, type, title, status, author_id, created, changed, stage_id) \
+             SELECT $1, 'page', 'openapi probe', 1, id, 1, 1, $2 FROM users LIMIT 1",
+        )
+        .bind(item_id)
+        .bind(trovato_kernel::models::stage::LIVE_STAGE_ID)
+        .execute(&app.db)
+        .await
+        .expect("seed an item");
+
+        let mut unanswered = Vec::new();
+        for (path, operations) in paths {
+            let concrete = path
+                .replace("{id}", &item_id.to_string())
+                .split('/')
+                .map(|seg| {
+                    if seg.starts_with('{') {
+                        "probe".to_string()
+                    } else {
+                        seg.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            for method in operations.as_object().expect("operations").keys() {
+                let request = Request::builder()
+                    .method(method.to_uppercase().as_str())
+                    .uri(&concrete)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap();
+                let status = app.request(request).await.status();
+                if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
+                    unanswered.push(format!("{method} {path} -> {status}"));
+                }
+            }
+        }
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        assert!(
+            unanswered.is_empty(),
+            "every path in /api/openapi.json must be served: {unanswered:?}"
+        );
+        disable_plugin(app).await;
+    });
+}
