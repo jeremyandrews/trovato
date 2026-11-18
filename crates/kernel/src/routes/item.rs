@@ -606,29 +606,28 @@ async fn view_item(
                     html_escape(name),
                     filtered
                 ));
-            } else if let Some(s) = value.as_str() {
-                // Plain string field (e.g., "field_city": "Portland")
-                let label = name
-                    .strip_prefix("field_")
-                    .unwrap_or(name)
-                    .replace('_', " ");
-                let filtered = FilterPipeline::for_format("plain_text").process(s);
-                children_html.push_str(&format!(
-                    "<div class=\"field field-{}\"><strong class=\"field__label\">{}</strong>: {}</div>",
-                    html_escape(name),
-                    html_escape(&label),
-                    filtered
-                ));
             } else if !value.is_object() && !value.is_array() && !value.is_null() {
-                // Numeric or boolean scalar fields
-                let label = name
-                    .strip_prefix("field_")
-                    .unwrap_or(name)
-                    .replace('_', " ");
-                let text = value.to_string();
+                // Plain string, numeric or boolean field (e.g. "field_city":
+                // "Portland"). The label is the one the item type declares,
+                // else derived from the machine name. The separator sits inside
+                // the label element, so a theme that hides the label hides it
+                // too instead of leaving a bare ": true".
+                let label = content_type_fields
+                    .iter()
+                    .find(|f| f.field_name == *name && !f.label.trim().is_empty())
+                    .map(|f| f.label.clone())
+                    .unwrap_or_else(|| {
+                        name.strip_prefix("field_")
+                            .unwrap_or(name)
+                            .replace('_', " ")
+                    });
+                let text = match value.as_str() {
+                    Some(s) => s.to_string(),
+                    None => value.to_string(),
+                };
                 let filtered = FilterPipeline::for_format("plain_text").process(&text);
                 children_html.push_str(&format!(
-                    "<div class=\"field field-{}\"><strong class=\"field__label\">{}</strong>: {}</div>",
+                    "<div class=\"field field-{}\"><strong class=\"field__label\">{}:</strong> {}</div>",
                     html_escape(name),
                     html_escape(&label),
                     filtered

@@ -18,9 +18,11 @@
         });
     });
 
-    // Expose cancelReply globally for the inline onclick handler
-    window.cancelReply = function() {
-        document.getElementById('comment-parent-id').value = '';
-        document.getElementById('replying-to').style.display = 'none';
-    };
+    // Bound here, not inline: the kernel's CSP blocks inline event handlers.
+    document.querySelectorAll('.cancel-reply').forEach(function(button) {
+        button.addEventListener('click', function() {
+            document.getElementById('comment-parent-id').value = '';
+            document.getElementById('replying-to').style.display = 'none';
+        });
+    });
 })();
