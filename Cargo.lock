@@ -4797,6 +4797,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_item_deny"
+version = "0.104.0"
+dependencies = [
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_item_writer"
 version = "0.104.0"
 dependencies = [

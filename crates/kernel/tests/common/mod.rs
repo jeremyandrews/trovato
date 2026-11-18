@@ -286,6 +286,28 @@ impl TestApp {
     /// nothing else — where a `set_var` steers every other test thread in the
     /// binary too, and cannot be undone once another thread may have read it.
     pub async fn with_config(customize: impl FnOnce(&mut Config)) -> Self {
+        Self::build(customize, false).await
+    }
+
+    /// Build a test app whose router also runs the two rate-limit layers, in the
+    /// places `main.rs` puts them: the per-IP check inside the session layer and
+    /// ahead of authentication, the per-user check after it.
+    ///
+    /// The shared app leaves both out, because every request a test binary makes
+    /// without an `X-Forwarded-For` of its own lands in one `127.0.0.1` budget,
+    /// and a binary makes far more than a minute's worth. A test about the limits
+    /// themselves wants them, and wants them exactly where production has them:
+    /// a limiter tested beside the stack rather than in it is how a request came
+    /// to be counted twice, once by the middleware and again by its handler, with
+    /// nothing in the suite able to see it.
+    ///
+    /// `AppState` reads its limits once, at construction, so a test that
+    /// configures `rate_limit.*` keys writes them before calling this.
+    pub async fn with_rate_limits(customize: impl FnOnce(&mut Config)) -> Self {
+        Self::build(customize, true).await
+    }
+
+    async fn build(customize: impl FnOnce(&mut Config), rate_limited: bool) -> Self {
         // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
         // through the workspace env lock like any other mutation. It is also the
         // last environment *mutation* left in this fixture: everything below is a
@@ -431,7 +453,18 @@ impl TestApp {
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 trovato_kernel::middleware::negotiate_language,
+            ));
+        // The per-user check, inside both authentication layers as in `main.rs`,
+        // so it sees the user a token request authenticated as.
+        let router = if rate_limited {
+            router.layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::check_authenticated_rate_limit,
             ))
+        } else {
+            router
+        };
+        let router = router
             // `Authorization: Bearer <api-token>` authentication, as in
             // production. Absent here until K1, which made the difference
             // observable: `routes::plugin_api` exempts a *bearer*-authenticated
@@ -453,7 +486,18 @@ impl TestApp {
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 trovato_kernel::middleware::authenticate_bearer_token,
+            ));
+        // The per-IP check, outer to authentication and inner to the session
+        // layer, as in `main.rs`.
+        let router = if rate_limited {
+            router.layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::check_rate_limit,
             ))
+        } else {
+            router
+        };
+        let router = router
             .layer(session_layer)
             // Resolve the trusted-proxy-gated client IP (RATE-1) so handlers see
             // the `ClientIp` extension exactly as in production.
