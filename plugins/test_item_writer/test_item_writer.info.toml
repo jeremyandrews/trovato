@@ -1,0 +1,19 @@
+name = "test_item_writer"
+description = "B68 fixture: item write taps, re-entrant writes, item-api SDK bindings"
+version = "0.104.0"
+api_version = "0.104"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_item_presave", "tap_item_insert", "tap_item_update", "tap_item_update_index", "tap_item_delete", "tap_queue_worker"]
+weight = 0
+
+# `item-api` is what the fixture exercises. `db` + `raw_sql` let every tap write
+# one row to `tiw_log`, a table the test creates, which is how the suite sees
+# which taps fired and in what order. `logging` because the #[plugin_tap] macro
+# references the logging import on its error paths.
+[capabilities]
+host_interfaces = ["logging", "db", "item-api"]
+db_tables = ["tiw_log"]
+raw_sql = true

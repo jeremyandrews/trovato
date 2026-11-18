@@ -57,21 +57,41 @@
 //!
 //! ## Item API (`trovato:item-api/*`)
 //!
+//! Every call acts as the user the plugin is handling a request for; from cron
+//! or the queue worker it needs the `item_background` capability. Writes go
+//! through the kernel's item service, so they fire the item write taps.
+//!
 //! - **`get-item(id_ptr, id_len, out_ptr, out_max_len) → i32`**
-//!   - `-1`: memory missing, `-2`: ID read failed, `-3`: output write failed
-//!   - `≥ 0`: bytes written (JSON of item)
+//!   - `-1`: memory missing, `-2`: ID read failed or not a UUID,
+//!     `-3`: output write failed, `-10`: no services, `-12`: database error,
+//!     `-13`: serialization failed, `-60`: called inside an access decision,
+//!     `-61`: background call without `item_background`
+//!   - `≥ 0`: bytes written: the item's JSON, or `null` when it is missing **or**
+//!     the user may not view it (the two are indistinguishable on purpose)
 //!
 //! - **`save-item(item_ptr, item_len, out_ptr, out_max_len) → i32`**
-//!   - `-1`: memory missing, `-2`: item JSON read failed, `-3`: output write failed
-//!   - `≥ 0`: bytes written (JSON of saved item)
+//!   - `-1`: memory missing, `-2`: item JSON read failed, `-3`: output write
+//!     failed, `-10`: no services, `-12`: database error, `-13`: serialization
+//!     failed, `-14`: not a JSON object, no `type` on a create, or a `language`
+//!     the site does not have, `-60`: refused (no `edit` access, no
+//!     `create {type} content`, a field the user may not edit, a publish change
+//!     without `publish content`, or called inside an access decision),
+//!     `-61`: background call without `item_background`, `-63`: nested too deep
+//!   - `≥ 0`: bytes written: the saved item's JSON, or `null` for an update of
+//!     an id that names no item
 //!
 //! - **`delete-item(id_ptr, id_len) → i32`**
-//!   - `-1`: memory missing, `-2`: ID read failed
-//!   - `0`: success
+//!   - `-1`: memory missing, `-2`: ID read failed or not a UUID, `-10`: no
+//!     services, `-12`: database error, `-60`: refused, `-61`: background call
+//!     without `item_background`, `-62`: no such item, `-63`: nested too deep
+//!   - `0`: deleted
 //!
 //! - **`query-items(query_ptr, query_len, out_ptr, out_max_len) → i32`**
-//!   - `-1`: memory missing, `-2`: query JSON read failed, `-3`: output write failed
-//!   - `≥ 0`: bytes written (JSON array of items)
+//!   - `-1`: memory missing, `-2`: query JSON read failed, `-3`: output write
+//!     failed, `-10`: no services, `-12`: database error, `-13`: serialization
+//!     failed, `-14`: not JSON, `-60`: called inside an access decision,
+//!     `-61`: background call without `item_background`
+//!   - `≥ 0`: bytes written (JSON array of the items the user may view)
 //!
 //! ## Request Context (`trovato:request-context/*`)
 //!
@@ -311,6 +331,27 @@ pub const ERR_ITEM_ACCESS_DENIED: i32 = -60;
 /// manifest plane as [`ERR_AI_BACKGROUND_DENIED`]. With the capability, a
 /// background call proceeds with kernel authority; without it, this.
 pub const ERR_ITEM_BACKGROUND_DENIED: i32 = -61;
+
+/// `delete-item` was given an id that names no item.
+///
+/// Deleting nothing used to return `0`, so a plugin could not tell a delete
+/// that happened from one that did not (BL-25). An id the caller may not see is
+/// not this: the delete is decided first, and a refusal is
+/// [`ERR_ITEM_ACCESS_DENIED`].
+///
+/// Added by B68, after 0.104.0.
+pub const ERR_ITEM_NOT_FOUND: i32 = -62;
+
+/// An `item-api` write was made from inside item write taps nested
+/// `MAX_ITEM_WRITE_DEPTH` (4) deep, and was refused before anything was written.
+///
+/// A plugin's `save-item` and `delete-item` fire the item write taps on the
+/// other plugins, and a plugin handling one may write again. A nested write
+/// never fires back into a plugin whose write tap is already running, and this
+/// bounds the chain across plugins.
+///
+/// Added by B68, after 0.104.0.
+pub const ERR_ITEM_WRITE_DEPTH: i32 = -63;
 
 // =============================================================================
 // HTTP API errors (`trovato:kernel/http`)

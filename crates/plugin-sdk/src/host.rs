@@ -159,6 +159,22 @@ unsafe extern "C" {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/item-api")]
+unsafe extern "C" {
+    #[link_name = "get-item"]
+    fn __item_get(id_ptr: i32, id_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "save-item"]
+    fn __item_save(item_ptr: i32, item_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "delete-item"]
+    fn __item_delete(id_ptr: i32, id_len: i32) -> i32;
+
+    #[link_name = "query-items"]
+    fn __item_query(query_ptr: i32, query_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "trovato:kernel/variables")]
 unsafe extern "C" {
     #[link_name = "get"]
@@ -178,6 +194,108 @@ unsafe extern "C" {
 // --------------------------------------------------------------------------
 // Ergonomic wrappers
 // --------------------------------------------------------------------------
+
+/// Call an `item-api` function that writes JSON into an output buffer, and
+/// parse what it wrote.
+#[cfg(target_arch = "wasm32")]
+fn item_call<T: serde::de::DeserializeOwned>(call: impl FnOnce(i32, i32) -> i32) -> Result<T, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = call(buf.as_mut_ptr() as i32, buf.len() as i32);
+    if result < 0 {
+        return Err(result);
+    }
+    let len = result as usize;
+    if len >= MAX_OUTPUT_BUFFER {
+        return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
+    }
+    buf.truncate(len);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// Load an item by id, as the user the plugin is acting for.
+///
+/// `Ok(None)` when the item does not exist **or** the user may not view it; the
+/// two are one answer on purpose. Fields the user may not view are dropped.
+/// From cron or a queue worker the plugin needs `item_background`.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Item API".
+#[cfg(target_arch = "wasm32")]
+pub fn get_item(id: &str) -> Result<Option<crate::types::Item>, i32> {
+    item_call(|out, max| unsafe { __item_get(id.as_ptr() as i32, id.len() as i32, out, max) })
+}
+
+/// Create or update an item through the kernel's item service, exactly as a
+/// person's edit would: the item write taps fire on the other plugins, the
+/// field and publish gates apply, and the item cache is refreshed.
+///
+/// `item` is a JSON object. With a non-nil `"id"` it is an update of `title`,
+/// `status`, `fields` and `log`, whichever are present; `Ok(None)` means no
+/// item has that id. Without one it is a create, which needs `"type"` and
+/// takes `title`, `status`, `fields`, `log` and `language`.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Item API". A refusal is
+/// [`crate::host_errors::ERR_ITEM_ACCESS_DENIED`].
+#[cfg(target_arch = "wasm32")]
+pub fn save_item(item: &serde_json::Value) -> Result<Option<crate::types::Item>, i32> {
+    let json = serde_json::to_string(item).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    item_call(|out, max| unsafe { __item_save(json.as_ptr() as i32, json.len() as i32, out, max) })
+}
+
+/// Delete an item through the kernel's item service; `tap_item_delete` fires on
+/// the other plugins.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Item API". An id that names
+/// no item is [`crate::host_errors::ERR_ITEM_NOT_FOUND`].
+#[cfg(target_arch = "wasm32")]
+pub fn delete_item(id: &str) -> Result<(), i32> {
+    let result = unsafe { __item_delete(id.as_ptr() as i32, id.len() as i32) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// List items the user the plugin is acting for may view.
+///
+/// `query` is a JSON object with optional `type`, `status`, `limit` (at most
+/// 100, default 50) and `offset`. A page can come back shorter than `limit`:
+/// items the user may not view are left out, not counted.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Item API".
+#[cfg(target_arch = "wasm32")]
+pub fn query_items(query: &serde_json::Value) -> Result<Vec<crate::types::Item>, i32> {
+    let json = serde_json::to_string(query).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    item_call(|out, max| unsafe { __item_query(json.as_ptr() as i32, json.len() as i32, out, max) })
+}
+
+/// Load an item (stub for native testing, always `Ok(None)`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_item(_id: &str) -> Result<Option<crate::types::Item>, i32> {
+    Ok(None)
+}
+
+/// Save an item (stub for native testing, always `Ok(None)`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_item(_item: &serde_json::Value) -> Result<Option<crate::types::Item>, i32> {
+    Ok(None)
+}
+
+/// Delete an item (stub for native testing, always succeeds).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn delete_item(_id: &str) -> Result<(), i32> {
+    Ok(())
+}
+
+/// List items (stub for native testing, always empty).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn query_items(_query: &serde_json::Value) -> Result<Vec<crate::types::Item>, i32> {
+    Ok(Vec::new())
+}
 
 /// Execute a DML statement (INSERT, UPDATE, DELETE), return rows affected.
 ///

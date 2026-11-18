@@ -73,10 +73,7 @@ requires `delete`. A denied read is indistinguishable from a missing item and
 writes `null`, exactly as a missing id does. A denied write returns
 `ERR_ITEM_ACCESS_DENIED` (-60).
 
-Writes still go straight to the model, so the insert, update and delete taps
-still do not fire from `item-api`. That is deliberate and unchanged: dispatching
-a tap from inside a tap is the re-entrancy this module exists to avoid. Only the
-access decision is new.
+Writes now go through the item service as well; see the next entry.
 
 **Background contexts need a capability.** Cron and the queue worker run under
 the kernel-internal background principal, which has no identity and no
@@ -99,6 +96,39 @@ behalf, check that the user it is acting for actually has the rights you were
 relying on the kernel not to check. If it touches items from cron or the queue
 worker, add `item_background = true` before you upgrade, or those jobs start
 failing on the first run.
+
+### A plugin's `save-item` and `delete-item` fire the item taps
+
+**Who is affected:** a plugin that writes items through `item-api` (`save-item`,
+`delete-item`), and a plugin that implements `tap_item_presave`,
+`tap_item_insert`, `tap_item_update`, `tap_item_update_index` or
+`tap_item_delete`. Find out with `wasm-tools print <plugin>.wasm | grep -E
+'item-api|tap_item_'`.
+
+**What changed.** A plugin's item write is now the same write a person makes:
+it goes through the kernel's item service, so the item write taps fire on the
+other plugins, the field and publish gates apply, a revision is recorded and the
+item cache is refreshed at once instead of after `CACHE_TTL_ITEMS`. Three
+consequences a plugin can see:
+
+- A write that changes a field the acting user may not edit, or changes whether
+  an item is published without `publish content`, is refused with
+  `ERR_ITEM_ACCESS_DENIED` (-60). It used to be written.
+- `delete-item` on an id that names no item returns `ERR_ITEM_NOT_FOUND` (-62)
+  instead of `0`.
+- A tap that writes items while handling an item write no longer runs alone: its
+  write fires the taps of every plugin not already handling one around it, and a
+  write nested four write taps deep is refused with `ERR_ITEM_WRITE_DEPTH` (-63).
+
+`save-item` now also takes `language` on a create, which must be one of the
+site's languages.
+
+**What to do.** A plugin that implements an item write tap and writes items
+from it should check it does not depend on its own write being invisible to the
+other plugins. A plugin that treated `delete-item`'s `0` as "gone or never
+there" should accept -62 as the second half of that. The SDK now binds all four
+functions (`trovato_sdk::host::get_item`, `save_item`, `delete_item`,
+`query_items`); hand-written `item-api` imports keep working.
 
 ### A plugin call now has a wall clock ceiling
 
