@@ -515,6 +515,15 @@ DELETE /api/batch/{id}
 
 All token management endpoints require an authenticated session.
 
+A person manages their own tokens at `/user/tokens`, linked from their account
+page (`/user/profile`). The page lists each token's name, when it was created,
+last used and expires; creates one (a name, and an optional expiry in days) and
+shows the raw token once; and revokes one. It calls the endpoints below with the
+page's CSRF token, so it does nothing an API client cannot.
+
+A token request is counted against its user's rate limit, at the count of the
+user's role (see "Rate Limits" in `INSTALL.md`).
+
 ### Create Token
 
 ```

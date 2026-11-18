@@ -13,8 +13,8 @@ use crate::state::AppState;
 
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, html_escape, render_admin_template,
-    render_error, render_not_found, render_server_error, require_csrf, require_permission,
-    single_form_field,
+    render_error, render_forbidden, render_not_found, render_server_error, require_csrf,
+    require_permission, single_form_field,
 };
 
 /// Session key for flash messages on the content list page.
@@ -464,6 +464,19 @@ async fn edit_content_form(
     };
 
     let user_ctx = admin_user_context(&state, &user).await;
+
+    // `edit any content` admits a user to the screen; whether they may edit
+    // this item is the access seam's decision, a plugin's Deny included. Asked
+    // before anything of the item is rendered, and answered as the submit is.
+    match state.items().check_access(&item, "edit", &user_ctx).await {
+        Ok(true) => {}
+        Ok(false) => return render_forbidden("You may not edit this item."),
+        Err(e) => {
+            tracing::error!(error = %e, item_id = %item_id, "edit access check failed");
+            return render_server_error("Could not check access to this item.");
+        }
+    }
+
     let values = serde_json::json!({
         "title": item.title,
         "status": item.status == 1,
@@ -684,6 +697,11 @@ async fn edit_content_submit(
                     &[denied.to_string()],
                 )
                 .await;
+            }
+            // The item-level refusal from `ItemService::update`: a 403, as the
+            // form answers, rather than a 500.
+            if e.to_string().contains("access denied") {
+                return render_forbidden("You may not edit this item.");
             }
             tracing::error!(error = %e, "failed to update content");
             render_server_error("Failed to update content.")

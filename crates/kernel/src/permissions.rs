@@ -31,6 +31,11 @@ struct PermissionServiceInner {
     /// Cache of user_id -> permissions (TTL-bounded).
     user_cache: Cache<Uuid, CachedPermissions>,
 
+    /// Cache of user_id -> the names of the roles assigned to them (TTL-bounded,
+    /// invalidated with `user_cache`). Read by the per-user rate limit, which
+    /// runs on every authenticated request and must not cost a query each.
+    role_cache: Cache<Uuid, Arc<Vec<String>>>,
+
     /// Database pool for cache misses.
     pool: PgPool,
 }
@@ -41,6 +46,10 @@ impl PermissionService {
         Self {
             inner: Arc::new(PermissionServiceInner {
                 user_cache: Cache::builder()
+                    .max_capacity(MAX_CAPACITY)
+                    .time_to_live(ttl)
+                    .build(),
+                role_cache: Cache::builder()
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
                     .build(),
@@ -158,11 +167,34 @@ impl PermissionService {
         Ok(context_from_permissions(user, permissions))
     }
 
+    /// The names of the roles an authenticated user holds: every role assigned
+    /// to them, plus the `authenticated user` role every signed-in user has.
+    ///
+    /// Served from a cache with the same lifetime and invalidation as the
+    /// permission cache, because its caller is the per-user rate limit, which
+    /// runs on every authenticated request.
+    pub async fn user_role_names(&self, user_id: Uuid) -> Result<Arc<Vec<String>>> {
+        if let Some(cached) = self.inner.role_cache.get(&user_id) {
+            return Ok(cached);
+        }
+
+        let mut names: Vec<String> = Role::get_user_roles(&self.inner.pool, user_id)
+            .await?
+            .into_iter()
+            .map(|role| role.name)
+            .collect();
+        names.push(well_known::AUTHENTICATED_ROLE_NAME.to_string());
+        let names = Arc::new(names);
+        self.inner.role_cache.insert(user_id, Arc::clone(&names));
+        Ok(names)
+    }
+
     /// Invalidate the cache for a specific user.
     ///
     /// Call this when a user's roles or permissions change.
     pub fn invalidate_user(&self, user_id: Uuid) {
         self.inner.user_cache.invalidate(&user_id);
+        self.inner.role_cache.invalidate(&user_id);
     }
 
     /// Invalidate the entire cache.
@@ -170,6 +202,7 @@ impl PermissionService {
     /// Call this when role permissions change.
     pub fn invalidate_all(&self) {
         self.inner.user_cache.invalidate_all();
+        self.inner.role_cache.invalidate_all();
     }
 
     /// Get the number of cached entries (for monitoring).
