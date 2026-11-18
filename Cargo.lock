@@ -4815,6 +4815,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_queue_owner"
+version = "0.104.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "test_queue_sender"
+version = "0.104.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_queue_worker"
 version = "0.104.0"
 dependencies = [

@@ -1,0 +1,15 @@
+name = "test_queue_sender"
+description = "B68 fixture: pushes to another plugin's queue"
+version = "0.104.0"
+api_version = "0.104"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_cron"]
+weight = 0
+
+# `queue` grants `push-to`. `logging` because the #[plugin_tap] macro references
+# the logging import on its error paths.
+[capabilities]
+host_interfaces = ["logging", "queue"]

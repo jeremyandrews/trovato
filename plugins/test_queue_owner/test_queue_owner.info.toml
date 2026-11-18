@@ -1,0 +1,19 @@
+name = "test_queue_owner"
+description = "B68 fixture: a queue owner that shares one queue"
+version = "0.104.0"
+api_version = "0.104"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_queue_info", "tap_queue_worker"]
+weight = 0
+
+# `db` + `raw_sql` let the worker write one row per job to `tqo_log`, a table
+# the test creates, which is how the suite sees what the worker received and
+# how many jobs ran at once. `logging` because the #[plugin_tap] macro
+# references the logging import on its error paths.
+[capabilities]
+host_interfaces = ["logging", "db"]
+db_tables = ["tqo_log"]
+raw_sql = true

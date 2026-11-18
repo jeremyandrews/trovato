@@ -1,0 +1,17 @@
+[package]
+name = "test_queue_sender"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "B68 test fixture: pushes to queues test_queue_owner owns, and reports what the kernel answered"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
