@@ -10,10 +10,11 @@
 # vulnerabilities under the suppression list in audit.toml, not as HEAD: the
 # very next commit, c5ed5561 ("Assigned ... RUSTSEC-2026-0459 to
 # libsqlite3-sys"), is the one that makes RUSTSEC-2026-0459 visible to cargo
-# audit, and that advisory has no fix a dependency upgrade can reach (every
-# released sqlx caps libsqlite3-sys below the fixed 0.39) and is not
-# suppressed. 4505c66d already carries the advisory's text under the
-# placeholder id RUSTSEC-0000-0000, which cargo audit does not load; audited
-# at this commit, it reports nothing. Moving past c5ed5561 waits on that
-# advisory being answered.
+# audit. When the pin was set that advisory had no fix a dependency upgrade
+# could reach (sqlx 0.8 capped libsqlite3-sys below the fixed 0.39); it was
+# never suppressed. sqlx 0.9.1 lifted the cap and the lock now carries
+# libsqlite3-sys 0.40, so the pin can move past c5ed5561 at its next bump.
+# 4505c66d already carries the advisory's text under the placeholder id
+# RUSTSEC-0000-0000, which cargo audit does not load; audited at this commit,
+# it reports nothing.
 4505c66d4e5cf133719d1c3c983e61ca326de6b8

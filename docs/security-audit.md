@@ -80,7 +80,7 @@ When an advisory cannot be immediately resolved (no fix available, or the
 vulnerability does not affect our usage), suppress it in `.cargo/audit.toml`
 with:
 
-1. The advisory ID (e.g., `RUSTSEC-2023-0071`)
+1. The advisory ID (e.g., `RUSTSEC-YYYY-NNNN`)
 2. A comment explaining why suppression is acceptable
 3. A review date for re-evaluation
 
@@ -89,16 +89,18 @@ Example:
 ```toml
 [advisories]
 ignore = [
-    # rsa timing sidechannel — transitive via sqlx-mysql, we only use postgres.
-    # Review date: 2026-06-01
-    "RUSTSEC-2023-0071",
+    # <crate> <issue> — why it does not affect Trovato, and what fixes it.
+    # Review date: YYYY-MM-DD
+    "RUSTSEC-YYYY-NNNN",
 ]
 ```
 
 ## Current Suppressions
 
-See `.cargo/audit.toml` for the current list of suppressed advisories with
-justifications.
+None. The ignore list in `.cargo/audit.toml` is empty: the last entries
+(RUSTSEC-2023-0071, -2026-0141, -2026-0194 and -2026-0195) were removed with
+the sqlx 0.9.1 upgrade, once none of them matched a crate in `Cargo.lock`. Its
+comments record why each advisory that used to be suppressed no longer is.
 
 ## Quarterly Review Process
 

@@ -6,7 +6,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 /// Anonymous user UUID (nil UUID).
@@ -208,7 +208,7 @@ impl User {
 
         // Use a simpler approach - fetch and update
         // In production, you'd use a query builder like sea-query
-        let mut query_builder = sqlx::query_as::<_, User>(&query);
+        let mut query_builder = sqlx::query_as::<_, User>(AssertSqlSafe(query));
 
         if let Some(ref name) = input.name {
             query_builder = query_builder.bind(name);
@@ -381,7 +381,7 @@ impl User {
         ] {
             // Table and column are from this fixed list, never from input.
             let sql = format!("UPDATE {table} SET {column} = $1 WHERE {column} = $2");
-            sqlx::query(&sql)
+            sqlx::query(AssertSqlSafe(sql))
                 .bind(ANONYMOUS_USER_ID)
                 .bind(user_id)
                 .execute(&mut **tx)
@@ -396,7 +396,7 @@ impl User {
             ("stage_deletion", "deleted_by"),
         ] {
             let sql = format!("UPDATE {table} SET {column} = NULL WHERE {column} = $1");
-            sqlx::query(&sql)
+            sqlx::query(AssertSqlSafe(sql))
                 .bind(user_id)
                 .execute(&mut **tx)
                 .await

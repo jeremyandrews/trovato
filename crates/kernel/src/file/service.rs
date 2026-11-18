@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -418,7 +418,7 @@ impl FileService {
         param_idx += 1;
         sql.push_str(&format!(" OFFSET ${param_idx}"));
 
-        let mut query = sqlx::query_as::<_, FileRow>(&sql);
+        let mut query = sqlx::query_as::<_, FileRow>(AssertSqlSafe(sql));
 
         if let Some(s) = status {
             query = query.bind(s as i16);
@@ -473,7 +473,7 @@ impl FileService {
             sql.push_str(&media_scope_clause(param_idx));
         }
 
-        let mut query = sqlx::query_scalar::<_, i64>(&sql);
+        let mut query = sqlx::query_scalar::<_, i64>(AssertSqlSafe(sql));
 
         if let Some(s) = status {
             query = query.bind(s as i16);

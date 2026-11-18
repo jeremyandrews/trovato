@@ -616,9 +616,9 @@ fn e2e_create_content_type() {
         );
 
         // Verify the content type exists in the database
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM item_type WHERE type = '{machine_name}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -744,9 +744,9 @@ fn e2e_add_field_to_content_type() {
         );
 
         // Verify the field was added (check settings JSON)
-        let settings: serde_json::Value = sqlx::query_scalar(&format!(
+        let settings: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT settings FROM item_type WHERE type = '{type_name}'"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -1424,9 +1424,9 @@ fn e2e_admin_create_user() {
         );
 
         // Verify user was created
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM users WHERE name = '{new_username}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -1448,11 +1448,12 @@ fn e2e_admin_edit_user() {
         app.create_test_user(&username, "testpass123", &email).await;
 
         // Get the user ID
-        let user_id: uuid::Uuid =
-            sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{username}'"))
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
+        let user_id: uuid::Uuid = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT id FROM users WHERE name = '{username}'"
+        )))
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
 
         let cookies = app
             .create_and_login_admin("admin_users_4", "password123", "users4@test.com")
@@ -1505,11 +1506,12 @@ fn e2e_admin_edit_user() {
         );
 
         // Verify email was updated
-        let updated_email: String =
-            sqlx::query_scalar(&format!("SELECT mail FROM users WHERE id = '{user_id}'"))
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
+        let updated_email: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT mail FROM users WHERE id = '{user_id}'"
+        )))
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
 
         assert_eq!(updated_email, new_email, "Email should be updated");
     });
@@ -1527,11 +1529,12 @@ fn e2e_admin_delete_user() {
         app.create_test_user(&username, "testpass123", &format!("{username}@test.com"))
             .await;
 
-        let user_id: uuid::Uuid =
-            sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{username}'"))
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
+        let user_id: uuid::Uuid = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT id FROM users WHERE name = '{username}'"
+        )))
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
 
         let cookies = app
             .create_and_login_admin("admin_users_5", "password123", "users5@test.com")
@@ -1557,9 +1560,9 @@ fn e2e_admin_delete_user() {
         );
 
         // Verify user was deleted
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM users WHERE id = '{user_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -1580,11 +1583,12 @@ fn e2e_admin_cannot_delete_self() {
         app.create_test_admin(&username, "testpass123", &format!("{username}@test.com"))
             .await;
 
-        let user_id: uuid::Uuid =
-            sqlx::query_scalar(&format!("SELECT id FROM users WHERE name = '{username}'"))
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
+        let user_id: uuid::Uuid = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT id FROM users WHERE name = '{username}'"
+        )))
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
 
         // Login as the same admin user we're trying to delete
         let cookies = app.login(&username, "testpass123").await;
@@ -1719,9 +1723,9 @@ fn e2e_admin_create_role() {
         );
 
         // Verify role was created
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM roles WHERE name = '{role_name}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -1765,9 +1769,9 @@ fn e2e_admin_delete_role() {
         );
 
         // Verify role was deleted
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM roles WHERE id = '{role_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -1997,9 +2001,9 @@ fn e2e_admin_create_content() {
         );
 
         // Verify content was created
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM item WHERE title = '{title}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -2082,11 +2086,12 @@ fn e2e_admin_edit_content() {
         );
 
         // Verify title was updated
-        let updated_title: String =
-            sqlx::query_scalar(&format!("SELECT title FROM item WHERE id = '{item_id}'"))
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
+        let updated_title: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT title FROM item WHERE id = '{item_id}'"
+        )))
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
 
         assert_eq!(updated_title, new_title, "Title should be updated");
     });
@@ -2140,9 +2145,9 @@ fn e2e_admin_delete_content() {
         );
 
         // Verify content was deleted
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM item WHERE id = '{item_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -2285,9 +2290,9 @@ fn e2e_admin_create_category() {
         );
 
         // Verify category was created
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM category WHERE id = '{cat_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -2340,9 +2345,9 @@ fn e2e_admin_delete_category() {
         );
 
         // Verify category was deleted
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM category WHERE id = '{cat_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -2470,9 +2475,9 @@ fn e2e_admin_create_tag() {
         );
 
         // Verify tag was created
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM category_tag WHERE label = '{tag_label}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -2543,9 +2548,9 @@ fn e2e_admin_delete_tag() {
         );
 
         // Verify tag was deleted
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM category_tag WHERE id = '{tag_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -2696,9 +2701,9 @@ fn e2e_admin_delete_file() {
         );
 
         // Verify file was deleted
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM file_managed WHERE id = '{file_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -2940,7 +2945,7 @@ fn e2e_admin_add_search_config() {
 
         // Verify search config was created
         let exists: bool = sqlx::query_scalar(
-        &format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{type_name}' AND field_name = '{field_name}')")
+        sqlx::AssertSqlSafe(format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{type_name}' AND field_name = '{field_name}')"))
     )
     .fetch_one(&app.db)
     .await
@@ -3006,7 +3011,7 @@ fn e2e_admin_remove_search_config() {
 
         // Verify search config was deleted
         let exists: bool = sqlx::query_scalar(
-        &format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{type_name}' AND field_name = '{field_name}')")
+        sqlx::AssertSqlSafe(format!("SELECT EXISTS(SELECT 1 FROM search_field_config WHERE bundle = '{type_name}' AND field_name = '{field_name}')"))
     )
     .fetch_one(&app.db)
     .await
@@ -3600,9 +3605,9 @@ fn e2e_api_category_create_and_delete_authorized() {
             "authorized category create should succeed"
         );
 
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM category WHERE id = '{cat_id}')"
-        ))
+        )))
         .fetch_one(&app.db)
         .await
         .unwrap();

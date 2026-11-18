@@ -24,6 +24,7 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::get;
+use sqlx::AssertSqlSafe;
 use tower_sessions::Session;
 
 use crate::state::AppState;
@@ -92,7 +93,10 @@ async fn list_records(
         limit = RECORD_LIST_LIMIT,
     );
 
-    let rows: Vec<serde_json::Value> = match sqlx::query_scalar(&sql).fetch_all(state.db()).await {
+    let rows: Vec<serde_json::Value> = match sqlx::query_scalar(AssertSqlSafe(sql))
+        .fetch_all(state.db())
+        .await
+    {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!(error = %e, record_type = %type_name, "failed to list records");
@@ -145,7 +149,7 @@ async fn view_record(
     // as it arrived.
     let id_param = uuid::Uuid::parse_str(&id).map_or_else(|_| id.clone(), |u| u.to_string());
 
-    let row: Option<serde_json::Value> = match sqlx::query_scalar(&sql)
+    let row: Option<serde_json::Value> = match sqlx::query_scalar(AssertSqlSafe(sql))
         .bind(&id_param)
         .fetch_optional(state.db())
         .await

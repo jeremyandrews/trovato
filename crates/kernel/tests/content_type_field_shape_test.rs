@@ -333,7 +333,7 @@ fn the_migration_repairs_a_legacy_array_shaped_row() {
         .await
         .expect("seed a row in the legacy array shape");
 
-        sqlx::raw_sql(&migration)
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration))
             .execute(&app.db)
             .await
             .expect("apply the normalization migration");

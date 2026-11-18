@@ -13,7 +13,7 @@
 use anyhow::Result;
 use regex::Regex;
 use sqlx::postgres::PgArguments;
-use sqlx::{Column, Executor, PgPool, Row, TypeInfo};
+use sqlx::{AssertSqlSafe, Column, Executor, PgPool, Row, TypeInfo};
 use std::sync::LazyLock;
 use tracing::warn;
 use trovato_sdk::host_errors;
@@ -224,7 +224,9 @@ async fn fetch_rows(
 
     // Set statement timeout scoped to this transaction.
     let timeout_result = conn
-        .execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
+        .execute(AssertSqlSafe(format!(
+            "SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'"
+        )))
         .await;
     if let Err(e) = timeout_result {
         warn!(error = %e, "failed to set statement_timeout");
@@ -232,7 +234,7 @@ async fn fetch_rows(
         return Err(host_errors::ERR_SQL_FAILED);
     }
 
-    let query = sqlx::query(sql);
+    let query = sqlx::query(AssertSqlSafe(sql));
     let query = bind_json_params(params, query);
 
     let rows = match query.fetch_all(&mut *conn).await {
@@ -277,7 +279,9 @@ async fn do_execute_raw(
     })?;
 
     let timeout_result = conn
-        .execute(format!("SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'").as_str())
+        .execute(AssertSqlSafe(format!(
+            "SET LOCAL statement_timeout = '{PLUGIN_QUERY_TIMEOUT_MS}'"
+        )))
         .await;
     if let Err(e) = timeout_result {
         warn!(error = %e, "failed to set statement_timeout");
@@ -285,7 +289,7 @@ async fn do_execute_raw(
         return Err(host_errors::ERR_SQL_FAILED);
     }
 
-    let query = sqlx::query(sql);
+    let query = sqlx::query(AssertSqlSafe(sql));
     let query = bind_json_params(params, query);
 
     let result = match query.execute(&mut *conn).await {

@@ -4,11 +4,12 @@
 [advisories]
 # Advisories to ignore (with justification and review date)
 ignore = [
-    # rsa timing sidechannel (Marvin Attack) — transitive via sqlx-mysql.
-    # We only use sqlx with PostgreSQL; sqlx-mysql is an unused compile-time
-    # feature dependency. No fix available upstream.
-    # Review date: 2026-06-01
-    "RUSTSEC-2023-0071",
+    # NOTE: RUSTSEC-2023-0071 (rsa Marvin Attack, transitive via sqlx-mysql)
+    # is no longer suppressed. sqlx 0.9 moved rsa behind the optional
+    # `mysql-rsa` feature, which Trovato does not enable, so no rsa remains in
+    # Cargo.lock. The same upgrade (sqlx 0.8 -> 0.9.1) lifted sqlx-sqlite's
+    # cap on libsqlite3-sys, clearing RUSTSEC-2026-0459 by moving
+    # libsqlite3-sys to 0.40; that advisory was never suppressed.
 
     # NOTE: every wasmtime and cranelift advisory is FIXED, not suppressed.
     # RUSTSEC-2026-0085 through -0096, -0114 (the 2026-04 batch against
@@ -33,25 +34,11 @@ ignore = [
     # rustls 0.21 path) was eliminated by dropping the unused s3 feature + AWS
     # SDK for 1.0. No webpki 0.101 / rustls 0.21 remains in Cargo.lock.
 
-    # lettre 0.11 TLS hostname verification disabled with the Boring backend
-    # (RUSTSEC-2026-0141).
-    # NOT APPLICABLE. Trovato builds lettre with default-features = false and
-    # features = ["tokio1-rustls-tls", ...] (Cargo.toml:113) — the rustls
-    # backend, not Boring. The vulnerable Boring TLS path is never compiled.
-    # Review date: 2026-07-01
-    "RUSTSEC-2026-0141",
-
-    # PENDING JEREMY REVIEW — quick-xml 0.38.4 DoS pair (RUSTSEC-2026-0194
-    # quadratic duplicate-attribute check, RUSTSEC-2026-0195 unbounded
-    # namespace-declaration allocation). Both fix in quick-xml >=0.41.0.
-    # Reachable only via plist 1.8.0 -> syntect 5.3.0 -> trovato-kernel, which
-    # parses bundled Sublime .tmTheme/.plist syntax assets at startup, not
-    # attacker-controlled XML. plist 1.8.0 pins quick-xml "^0.38", so 0.41 is a
-    # semver-incompatible transitive bump that needs a new plist (and likely
-    # syntect) upstream release — out of scope for an idle-rot hygiene pass.
-    # Review date: 2026-07-09
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
+    # NOTE: RUSTSEC-2026-0141 (lettre TLS hostname verification with the
+    # Boring backend) and RUSTSEC-2026-0194/-0195 (quick-xml 0.38 DoS pair) are
+    # no longer suppressed: neither matches anything in Cargo.lock (lettre is
+    # 0.11.23 with the rustls backend; quick-xml is 0.42). `cargo audit` with
+    # this whole ignore list removed reports no vulnerability.
 
     # NOTE: RUSTSEC-2026-0189 (rmcp 0.16 DNS rebinding in the Streamable HTTP
     # server transport) is no longer suppressed. It was never compiled here,

@@ -49,12 +49,14 @@ sessions, passkeys and the admin recovery settings) and five more on inline `on*
 handlers, and the enforcing policy blocks every one of them. Those have to move to
 `static/js/` as well. See BL-08 in [docs/BACKLOG.md](docs/BACKLOG.md).
 
-### Dependency advisories are suppressed with justifications
+### Dependency advisories are fixed, not suppressed
 
-`cargo audit` runs in CI and `.cargo/audit.toml` lists what is suppressed and
-why. Each entry has reasoning; none is suppressed silently. The open ones:
+`cargo audit` runs in CI, and `.cargo/audit.toml` is where a suppression would
+be recorded, with its reasoning and a review date. Its ignore list is empty:
+every advisory against a crate in `Cargo.lock` has been fixed by upgrading the
+dependency.
 
-Every wasmtime and cranelift advisory is **fixed rather than suppressed**:
+Every wasmtime and cranelift advisory was **fixed rather than suppressed**:
 RUSTSEC-2026-0085 through -0096, -0114 and -0222 all cleared by upgrading the
 runtime to wasmtime 47.0.3, RUSTSEC-2026-0268 and -0269 by 47.0.4, and
 RUSTSEC-2026-0315, -0316, -0325, -0326 and -0327 by 49.0.2, which is what the
@@ -62,24 +64,14 @@ runtime is on. No 47.x release fixed that last batch, which is why the major
 version moved. Nothing about the plugin sandbox is being carried on a
 justification.
 
-Five suppressions remain, none of them in the WASM runtime:
-
-- **RUSTSEC-2026-0194 / RUSTSEC-2026-0195** (quick-xml denial of service): the
-  live one. Reachable only through `plist` and `syntect`, which parse the
-  bundled syntax-highlighting theme files at startup rather than anything an
-  attacker supplies. The fix is quick-xml 0.41, and `plist` pins `^0.38`, so it
-  needs an upstream release before Trovato can take it.
-- **RUSTSEC-2026-0189** (rmcp DNS rebinding, CVSS 8.8): not compiled. The
-  vulnerable code is rmcp's Streamable HTTP server transport, behind the
-  `transport-streamable-http-server` feature. `trovato-mcp` enables only
-  `transport-io` and serves over STDIO, so the MCP server has no HTTP listener
-  to rebind against. The fix is rmcp 1.4, a major bump with breaking API
-  changes; worth taking on its own merits, but not a live exposure.
-- **RUSTSEC-2026-0141** (lettre TLS hostname verification with the Boring
-  backend): not applicable. Trovato builds lettre with `default-features =
-  false` and the rustls backend, so the vulnerable code is never compiled.
-- **RUSTSEC-2023-0071** (rsa timing sidechannel): transitive through
-  `sqlx-mysql`; Trovato uses PostgreSQL only.
+The last suppressions went with the sqlx 0.9.1 upgrade. RUSTSEC-2026-0459
+(libsqlite3-sys, never compiled because Trovato uses PostgreSQL only) cleared
+when sqlx 0.9.1 lifted the version cap that kept libsqlite3-sys below the fixed
+release; it was never suppressed. RUSTSEC-2023-0071 (rsa) left `Cargo.lock`
+with the same upgrade, since sqlx 0.9 makes rsa an opt-in MySQL feature. The
+lettre (RUSTSEC-2026-0141) and quick-xml (RUSTSEC-2026-0194, -0195) entries no
+longer matched any crate in the lock and were removed. The rmcp advisory
+(RUSTSEC-2026-0189) was fixed earlier by moving `trovato-mcp` to rmcp 3.10.
 
 ## Completeness
 

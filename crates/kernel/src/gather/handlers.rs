@@ -5,7 +5,7 @@
 
 use anyhow::{Result, bail};
 use sea_query::{Expr, SimpleExpr};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use std::future::Future;
 use std::pin::Pin;
 use uuid::Uuid;
@@ -161,7 +161,7 @@ impl FilterHandler for HierarchicalInFilterHandler {
 SELECT DISTINCT id FROM descendants"#,
             );
 
-            let rows: Vec<Uuid> = sqlx::query_scalar(&sql)
+            let rows: Vec<Uuid> = sqlx::query_scalar(AssertSqlSafe(sql))
                 .bind(&root_ids[..])
                 .fetch_all(pool)
                 .await?;

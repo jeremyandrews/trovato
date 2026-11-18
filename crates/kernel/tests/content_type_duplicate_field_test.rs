@@ -504,14 +504,14 @@ fn the_migration_drops_duplicate_field_definitions_and_is_idempotent() {
             settings
         };
 
-        sqlx::raw_sql(&migration)
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration.as_str()))
             .execute(&app.db)
             .await
             .expect("apply the dedupe migration");
         let once = read_back().await;
 
         // Idempotent: a second run must leave the row exactly as the first did.
-        sqlx::raw_sql(&migration)
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration.as_str()))
             .execute(&app.db)
             .await
             .expect("apply the dedupe migration a second time");
