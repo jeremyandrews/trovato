@@ -4765,6 +4765,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_bulk_action"
+version = "0.104.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_e2e_bystander"
 version = "0.104.0"
 dependencies = [

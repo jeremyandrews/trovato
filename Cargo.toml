@@ -62,6 +62,7 @@ members = [
     "plugins/test_item_writer",
     "plugins/test_queue_owner",
     "plugins/test_queue_sender",
+    "plugins/test_bulk_action",
     # FR-8 (Story 3.8) reference plugin: the canonical tap_field_access
     # implementation (Cairn tier + Ritrovo role patterns). Real, enableable
     # plugin; built with --target wasm32-wasip1 like the other plugin cdylibs.

@@ -1,0 +1,25 @@
+name = "test_bulk_action"
+description = "B68 fixture: a plugin bulk action"
+version = "0.104.0"
+api_version = "0.104"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_bulk_action"]
+weight = 0
+
+# One action, offered to a user holding `stamp content`.
+[[bulk_actions]]
+name = "stamp"
+label = "Stamp selected"
+permissions = ["stamp content"]
+
+# `db` + `raw_sql` let the tap write one row per item it is handed to `tba_log`,
+# a table the test creates. `user-api` reads who the chunk runs as. `logging`
+# because the #[plugin_tap] macro references the logging import on its error
+# paths.
+[capabilities]
+host_interfaces = ["logging", "db", "user-api"]
+db_tables = ["tba_log"]
+raw_sql = true

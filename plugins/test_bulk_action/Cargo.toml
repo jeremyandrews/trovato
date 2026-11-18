@@ -1,0 +1,17 @@
+[package]
+name = "test_bulk_action"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "B68 test fixture: declares a bulk action and records every chunk tap_bulk_action receives, and who it ran as"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

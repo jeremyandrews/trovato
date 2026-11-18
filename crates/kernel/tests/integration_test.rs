@@ -3158,34 +3158,33 @@ fn e2e_static_file_returns_404_for_missing() {
 // AC-W2 regressions.
 // =============================================================================
 
-/// Create an authenticated batch and return `(cookies, batch_id)`. Panics on
-/// any non-201 to keep the call sites terse.
+/// Record a pending batch owned by the user named `owner` and return
+/// `(cookies, batch_id)`.
+///
+/// Through the batch service rather than `POST /api/batch`: the endpoint now
+/// runs what it records (B68), so a batch made there would not stay pending
+/// for the read, cancel and delete tests that use this. Creating one over HTTP
+/// is `e2e_batch_create_operation`'s and `bulk_action_test.rs`'s job.
 async fn create_batch_authed(
     app: &TestApp,
     cookies: &str,
+    owner: &str,
     operation_type: &str,
 ) -> (String, String) {
-    let (cookies, csrf) = fetch_csrf_token(app, cookies, "/").await;
-    let response = app
-        .request_with_cookies(
-            Request::post("/api/batch")
-                .header("content-type", "application/json")
-                .header("X-CSRF-Token", &csrf)
-                .body(Body::from(
-                    json!({ "operation_type": operation_type, "params": {} }).to_string(),
-                ))
-                .unwrap(),
-            &cookies,
+    let owner_id = common::user_id_of(app, owner).await;
+    let operation = app
+        .state
+        .batch()
+        .create(
+            trovato_kernel::batch::CreateBatch {
+                operation_type: operation_type.to_string(),
+                params: json!({}),
+            },
+            owner_id,
         )
-        .await;
-    assert_eq!(
-        response.status(),
-        StatusCode::CREATED,
-        "authenticated batch create should succeed"
-    );
-    let body = response_json(response).await;
-    let id = body["id"].as_str().unwrap().to_string();
-    (cookies, id)
+        .await
+        .expect("record a batch");
+    (cookies.to_string(), operation.id.to_string())
 }
 
 #[test]
@@ -3196,6 +3195,14 @@ fn e2e_batch_create_operation() {
             .create_and_login_admin("batch_create", "password123", "batch_create@test.com")
             .await;
 
+        // A registered action over a real item: the endpoint refuses any other
+        // `operation_type` (B68; see `bulk_action_test.rs`). Publishing an item
+        // that is already published leaves the shared fixture as it was.
+        app.ensure_conference_items().await;
+        let item: uuid::Uuid = sqlx::query_scalar("SELECT id FROM item WHERE status = 1 LIMIT 1")
+            .fetch_one(&app.db)
+            .await
+            .expect("an item to select");
         let (cookies, csrf) = fetch_csrf_token(app, &cookies, "/").await;
         let response = app
             .request_with_cookies(
@@ -3204,8 +3211,8 @@ fn e2e_batch_create_operation() {
                     .header("X-CSRF-Token", &csrf)
                     .body(Body::from(
                         json!({
-                            "operation_type": "test_operation",
-                            "params": {"key": "value"}
+                            "operation_type": "publish",
+                            "params": {"item_ids": [item]}
                         })
                         .to_string(),
                     ))
@@ -3296,7 +3303,7 @@ fn e2e_batch_get_operation() {
             .create_and_login_admin("batch_get", "password123", "batch_get@test.com")
             .await;
 
-        let (cookies, batch_id) = create_batch_authed(app, &cookies, "test_get").await;
+        let (cookies, batch_id) = create_batch_authed(app, &cookies, "batch_get", "test_get").await;
 
         // Get the operation status (owner read).
         let response = app
@@ -3332,7 +3339,8 @@ fn e2e_batch_ownership_isolation() {
             .await;
         // Owner is admin so create succeeds; the *other* user is a plain user
         // so admin-bypass does not mask the ownership check.
-        let (owner_cookies, batch_id) = create_batch_authed(app, &owner_cookies, "owned_op").await;
+        let (owner_cookies, batch_id) =
+            create_batch_authed(app, &owner_cookies, "batch_owner", "owned_op").await;
 
         let other_cookies = app
             .create_and_login_user("batch_other", "password123", "batch_other@test.com")
@@ -3400,7 +3408,8 @@ fn e2e_batch_cancel_operation() {
             .create_and_login_admin("batch_cancel", "password123", "batch_cancel@test.com")
             .await;
 
-        let (cookies, batch_id) = create_batch_authed(app, &cookies, "test_cancel").await;
+        let (cookies, batch_id) =
+            create_batch_authed(app, &cookies, "batch_cancel", "test_cancel").await;
 
         // Cancel the operation (owner + fresh CSRF).
         let (cookies, csrf) = fetch_csrf_token(app, &cookies, "/").await;
@@ -3429,7 +3438,8 @@ fn e2e_batch_delete_operation() {
             .create_and_login_admin("batch_delete", "password123", "batch_delete@test.com")
             .await;
 
-        let (cookies, batch_id) = create_batch_authed(app, &cookies, "test_delete").await;
+        let (cookies, batch_id) =
+            create_batch_authed(app, &cookies, "batch_delete", "test_delete").await;
 
         // Delete the operation (owner + fresh CSRF).
         let (cookies, csrf) = fetch_csrf_token(app, &cookies, "/").await;
