@@ -1,7 +1,8 @@
 //! Batch operations API.
 //!
 //! Provides REST endpoints for managing long-running batch operations
-//! with progress polling support.
+//! with progress polling support. A batch runs one registered bulk action over
+//! a list of items; [`crate::batch::bulk`] holds the registry and the executor.
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -11,7 +12,7 @@ use serde::Serialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::batch::{BatchOperation, BatchStatus, CreateBatch};
+use crate::batch::{BatchOperation, BatchStatus, CreateBatch, SubmitError};
 use crate::error::AppError;
 use crate::routes::helpers::require_csrf_header;
 use crate::routes::item::get_user_context;
@@ -98,11 +99,42 @@ async fn create_batch(
     }
     verify_csrf(&session, &headers).await?;
 
-    let operation = state
-        .batch()
-        .create(input, user.id)
+    // Only a registered bulk action is a batch something will run (B68):
+    // `params.item_ids` names the items, and the action's own permissions
+    // decide who may start it.
+    let ids: Vec<Uuid> = match input.params.get("item_ids") {
+        Some(ids) => serde_json::from_value(ids.clone())
+            .map_err(|_| AppError::bad_request("params.item_ids must be a list of item ids"))?,
+        None => Vec::new(),
+    };
+    let operation = match state
+        .bulk()
+        .submit(&input.operation_type, ids, &user)
         .await
-        .map_err(|e| AppError::internal_ctx(e, "create batch operation"))?;
+        .map_err(|e| AppError::internal_ctx(e, "create batch operation"))?
+    {
+        Ok(operation) => operation,
+        Err(SubmitError::Unknown) => {
+            return Err(AppError::bad_request(format!(
+                "unknown operation_type '{}': not a registered bulk action",
+                input.operation_type
+            )));
+        }
+        Err(SubmitError::Denied) => {
+            return Err(AppError::forbidden(
+                "you do not have permission to run this action",
+            ));
+        }
+        Err(SubmitError::Empty) => {
+            return Err(AppError::bad_request("params.item_ids names no items"));
+        }
+    };
+    let cron = state.cron().clone();
+    tokio::spawn(async move {
+        if let Err(e) = cron.drain_bulk_jobs().await {
+            tracing::warn!(error = %e, "bulk action drain failed");
+        }
+    });
 
     Ok((
         StatusCode::CREATED,

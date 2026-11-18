@@ -520,15 +520,18 @@ Select multiple items via checkboxes (or "Select all" to check the entire page),
 | **Unpublish** | Sets `status = 0` on selected items |
 | **Delete** | Permanently removes selected items (with confirmation) |
 
-Bulk operations report results: "5 item(s) published." or "3 item(s) published. 2 item(s) failed." if some items couldn't be processed.
+Bulk operations report results: "5 item(s) published." or "3 item(s) published. 2 item(s) failed." if some items couldn't be processed. When the list holds more items than one page shows, a checkbox applies the action to every item matching the current filters. A selection of more than 100 items runs in the background: the list shows a progress bar and then the same message.
+
+Plugins can add their own actions to the dropdown; each is shown only to users holding the permissions the plugin declares for it.
 
 The delete action prompts for JavaScript confirmation before submitting to prevent accidental data loss.
 
 ### Bulk Operation Security
 
-- **Authentication required** -- Only administrators can access `/admin/content`.
+- **Permission required** -- `/admin/content` needs `edit any content`, and each action its own permissions: publish and unpublish also need `publish content`, delete needs `delete any content`.
 - **CSRF protection** -- The bulk action form includes a CSRF token.
-- **Action validation** -- The server validates the action string against an allowlist (`publish`, `unpublish`, `delete`). Unknown actions are rejected.
+- **Action validation** -- The server accepts only registered actions: the three above and those of enabled plugins. Unknown actions are rejected.
+- **Checked as it runs** -- A background run re-checks your permissions before every 100 items and stops if you have lost them.
 - **Per-item error handling** -- If an individual item update fails (e.g., permission denied), the error is logged and counted without aborting the entire batch.
 
 ### Quick Actions

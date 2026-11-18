@@ -121,12 +121,12 @@ The Batch API allows long-running operations to be executed asynchronously with 
 
 ### User Guide
 
-Batch operations are used internally for:
-- Content reindexing
-- Bulk content updates
-- Data migrations
-
-Progress can be monitored through the API or admin interface.
+A batch runs one bulk action over a list of items: the kernel's `publish`,
+`unpublish` and `delete`, or an action a plugin declares under
+`[[bulk_actions]]`. The content list runs a selection of more than 100 items
+as a batch and shows its progress; `POST /api/batch` always does.
+[`api-reference.md`](api-reference.md#batch-operations) is the current
+contract; the examples below predate it.
 
 ### API Reference
 
@@ -137,9 +137,9 @@ POST /api/batch
 Content-Type: application/json
 
 {
-    "operation_type": "reindex",
+    "operation_type": "publish",
     "params": {
-        "bundle": "page"
+        "item_ids": ["01952a3c-4e5f-7b8a-9c0d-e1f2a3b4c5d6"]
     }
 }
 ```

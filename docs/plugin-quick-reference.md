@@ -83,6 +83,7 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | **System** | `tap_menu` | - | `Vec<MenuDefinition>` |
 | **System** | `tap_perm` | - | `Vec<PermissionDefinition>` |
 | **System** | `tap_cron` | - | `Result<(), String>` |
+| **System** | `tap_bulk_action` | `{action, item_ids}` (items the user may edit) | `{succeeded, failed}`; declare under `[[bulk_actions]]` |
 | **Lifecycle** | `tap_install` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_enable` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_disable` | - | `Result<(), String>` |

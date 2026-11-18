@@ -71,7 +71,10 @@ struct AppStateInner {
     /// Uses `parking_lot::RwLock` rather than `std::sync::RwLock` because:
     /// - No poisoning: a panic in a writer won't permanently wedge every reader.
     /// - Shorter critical sections avoid blocking Tokio worker threads.
-    enabled_plugins: parking_lot::RwLock<std::collections::HashSet<String>>,
+    ///
+    /// Shared (`Arc`) with the bulk action executor, which asks whether a
+    /// plugin action's plugin is still enabled before each chunk.
+    enabled_plugins: Arc<parking_lot::RwLock<std::collections::HashSet<String>>>,
 
     /// Redis client for sessions and caching.
     redis: RedisClient,
@@ -176,6 +179,9 @@ struct AppStateInner {
 
     /// Batch operations service.
     batch: Arc<BatchService>,
+
+    /// Bulk actions on items and the executor that runs them as batches (B68).
+    bulk: Arc<crate::batch::BulkExecutor>,
 
     /// Stage service for publish operations.
     stage: Arc<StageService>,
@@ -911,6 +917,25 @@ impl AppState {
         // Create batch service
         let batch = Arc::new(BatchService::new(redis.clone()));
 
+        // Bulk actions (B68): the kernel's three and every plugin's declared
+        // ones, run as batches through the cron drain's `__kernel_batch` arm.
+        let enabled_plugins = Arc::new(parking_lot::RwLock::new(enabled_set.clone()));
+        let bulk = Arc::new(crate::batch::BulkExecutor::new(
+            crate::batch::BulkServices {
+                pool: db.clone(),
+                items: items.clone(),
+                batch: batch.clone(),
+                dispatcher: tap_dispatcher.clone(),
+                registry: Arc::new(crate::batch::BulkActionRegistry::from_plugins(
+                    &plugin_runtime,
+                )),
+                permissions: permissions.clone(),
+                services: tap_services.clone(),
+                enabled: enabled_plugins.clone(),
+            },
+        ));
+        cron.set_bulk_executor(bulk.clone());
+
         // Create stage service
         let stage = Arc::new(StageService::new(db.clone(), cache.clone()));
 
@@ -1101,7 +1126,7 @@ impl AppState {
                 db,
                 db_pool_max_connections: config.database_max_connections,
                 plugins_dirs: config.plugins_dirs.clone(),
-                enabled_plugins: parking_lot::RwLock::new(enabled_set.clone()),
+                enabled_plugins,
                 redis,
                 cache,
                 config_storage,
@@ -1133,6 +1158,7 @@ impl AppState {
                 metrics,
                 rate_limiter,
                 batch,
+                bulk,
                 stage,
                 language_negotiators,
                 known_languages,
@@ -1396,6 +1422,11 @@ impl AppState {
     /// Get the batch service.
     pub fn batch(&self) -> &Arc<BatchService> {
         &self.inner.batch
+    }
+
+    /// The bulk action registry and executor (B68).
+    pub fn bulk(&self) -> &Arc<crate::batch::BulkExecutor> {
+        &self.inner.bulk
     }
 
     /// Get the stage service.

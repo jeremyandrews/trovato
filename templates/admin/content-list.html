@@ -40,18 +40,35 @@
     </form>
 </div>
 
+{% if batch %}
+<div class="admin-card bulk-progress" id="bulk-progress" data-batch="{{ batch }}">
+    <p class="bulk-progress__label" role="status" aria-live="polite">Starting&hellip;</p>
+    <progress class="bulk-progress__bar" max="100" value="0"></progress>
+    <p class="bulk-progress__done" hidden><a href="/admin/content">Refresh the list</a></p>
+</div>
+<script src="/static/js/bulk-progress.js" defer></script>
+{% endif %}
+
 <div class="admin-card">
     {% if items %}
     <form method="post" action="/admin/content/bulk" id="bulk-form">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="filter_type" value="{{ type_filter }}">
+        <input type="hidden" name="filter_status" value="{{ status_filter }}">
         <div class="bulk-actions">
             <select name="action" class="bulk-action-select">
                 <option value="">- Bulk action -</option>
-                <option value="publish">Publish selected</option>
-                <option value="unpublish">Unpublish selected</option>
-                <option value="delete">Delete selected</option>
+                {% for action in bulk_actions %}
+                <option value="{{ action.id }}">{{ action.label }}</option>
+                {% endfor %}
             </select>
             <button type="submit" class="button button--secondary button--small">Apply</button>
+            {% if total > items | length %}
+            <label class="bulk-scope">
+                <input type="checkbox" name="scope" value="all">
+                Apply to all {{ total }} items matching this filter, not only those checked on this page
+            </label>
+            {% endif %}
         </div>
         <table class="table">
             <thead>
@@ -163,6 +180,13 @@
     }
     .th-check {
         width: 2rem;
+    }
+    .bulk-scope {
+        font-size: 0.875rem;
+    }
+    .bulk-progress__bar {
+        width: 100%;
+        height: 1rem;
     }
 </style>
 {# Bulk actions handled by admin-helpers.js #}

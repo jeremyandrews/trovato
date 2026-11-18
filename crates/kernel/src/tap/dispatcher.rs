@@ -23,6 +23,8 @@ const BACKGROUND_TAPS: &[&str] = &[
     "tap_cron",
     "tap_queue_worker",
     "tap_queue_info",
+    // One chunk of up to 100 items, each of which may be an item-api write.
+    "tap_bulk_action",
 ];
 
 /// Result from a single tap invocation.

@@ -294,6 +294,7 @@ mod tests {
             },
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         }
     }
 

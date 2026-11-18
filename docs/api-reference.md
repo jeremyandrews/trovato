@@ -452,19 +452,34 @@ Tag object:
 
 ## Batch Operations
 
+A batch runs one **bulk action** over a list of items: the kernel's
+`publish`, `unpublish` and `delete`, or an action a plugin declares, named
+`"<plugin>.<name>"` (see [plugin development](plugin-development.md#bulk-actions)).
+The kernel runs it in the background in chunks of 100, checking before each
+chunk that the batch was not cancelled and that you still hold the action's
+permissions, and records progress you can poll.
+
 ### Create Batch
+
+Requires a session and an `X-CSRF-Token` header.
 
 ```
 POST /api/batch
 Content-Type: application/json
 
-{"operation_type": "export", "params": { ... }}
+{"operation_type": "publish", "params": {"item_ids": ["<uuid>", "..."]}}
 ```
 
 **Response (201):**
 ```json
-{"id": "<uuid>", "status": "Pending"}
+{"id": "<uuid>", "status": "pending"}
 ```
+
+**400** for an `operation_type` that is not a registered action (or belongs to
+a disabled plugin), or for no `item_ids`; **403** when you do not hold the
+action's permissions (`publish` and `unpublish` need `edit any content` and
+`publish content`, `delete` needs `delete any content`, a plugin action needs
+the permissions it declares).
 
 ### Get Status
 
@@ -476,22 +491,24 @@ GET /api/batch/{id}
 ```json
 {
   "id": "<uuid>",
-  "operation_type": "export",
-  "status": "Running",
+  "operation_type": "publish",
+  "status": "running",
   "progress": {
-    "total": 100,
-    "processed": 42,
-    "percentage": 42,
-    "current_operation": "Exporting items..."
+    "total": 2000,
+    "processed": 400,
+    "percentage": 20,
+    "current_operation": "400 of 2000"
   },
-  "result": null,
-  "error": null,
   "created": 1708000000,
   "updated": 1708000100
 }
 ```
 
-Status values: `Pending`, `Running`, `Completed`, `Failed`, `Cancelled`.
+Status values: `pending`, `running`, `complete`, `failed`, `cancelled`. A
+finished batch carries `result`: `{"succeeded": n, "failed": n, "message":
+"2000 item(s) published."}`; a stopped one carries `error`, saying why and how
+far it got. An item that does not exist, or that the action could not change,
+counts as failed.
 
 ### Cancel Batch
 

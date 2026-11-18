@@ -457,6 +457,12 @@ world plugin {
     export tap-cron: func() -> result<_, string>;
     export tap-queue-info: func() -> string;
     export tap-queue-worker: func(item-json: string) -> result<_, string>;
+    // Bulk actions (B68): one chunk of an action the plugin declares under
+    // `[[bulk_actions]]`. Input `{"action": "<name>", "item_ids": [...]}`,
+    // holding only items the submitting user may edit; the request is that
+    // user's, so item-api calls are judged as them. Returns
+    // `{"succeeded": n, "failed": n}`.
+    export tap-bulk-action: func(input-json: string) -> string;
 
     // User lifecycle — the login/logout/register/update/delete taps all receive
     // a JSON object carrying the affected user's id (`{"user_id": "..."}`).

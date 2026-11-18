@@ -1096,6 +1096,7 @@ fn dependency_resolution_no_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         },
     );
     plugins.insert(
@@ -1111,6 +1112,7 @@ fn dependency_resolution_no_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         },
     );
 
@@ -1137,6 +1139,7 @@ fn dependency_resolution_with_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         },
     );
     plugins.insert(
@@ -1152,6 +1155,7 @@ fn dependency_resolution_with_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         },
     );
 
@@ -1182,6 +1186,7 @@ fn dependency_resolution_circular() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         },
     );
     plugins.insert(
@@ -1197,6 +1202,7 @@ fn dependency_resolution_circular() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         },
     );
 
@@ -1296,6 +1302,7 @@ fn db_probe_state(plugin: &str) -> PluginState {
             public_functions: vec![],
         }),
         record_types: vec![],
+        bulk_actions: Vec::new(),
     };
     let policy = DbPolicy::derive(&info, &dir);
     std::fs::remove_dir_all(&dir).ok();
@@ -1440,6 +1447,7 @@ async fn raw_probe_state(plugin: &str) -> PluginState {
             public_functions: vec![],
         }),
         record_types: vec![],
+        bulk_actions: Vec::new(),
     };
     let policy = DbPolicy::derive(&info, Path::new("/nonexistent"));
 

@@ -149,19 +149,20 @@ async fn list_content(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "edit any content").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "edit any content").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let type_filter = params.get("type").map(|s| s.as_str());
     let status_filter = params.get("status").and_then(|s| s.parse::<i16>().ok());
 
-    let items = match state
+    let (items, total) = match state
         .items()
         .list_filtered(type_filter, status_filter, None, 100, 0)
         .await
     {
-        Ok((items, _total)) => items,
+        Ok(found) => found,
         Err(e) => {
             tracing::error!(error = %e, "failed to list content");
             return render_server_error("Failed to load content.");
@@ -190,8 +191,25 @@ async fn list_content(
         tracing::warn!(error = %e, "failed to clear flash message");
     }
 
+    // The bulk select offers the actions this user may run: the kernel's and
+    // those of enabled plugins (B68).
+    let user_ctx = admin_user_context(&state, &user).await;
+    let bulk_actions: Vec<_> = state
+        .bulk()
+        .available_to(&user_ctx)
+        .into_iter()
+        .cloned()
+        .collect();
+    // A batch the form just started, whose progress the page polls.
+    let batch = params
+        .get("batch")
+        .and_then(|b| uuid::Uuid::parse_str(b).ok());
+
     let mut context = tera::Context::new();
     context.insert("items", &items);
+    context.insert("total", &total);
+    context.insert("bulk_actions", &bulk_actions);
+    context.insert("batch", &batch);
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
     context.insert("type_filter", &type_filter.unwrap_or(""));
@@ -741,6 +759,13 @@ struct BulkActionForm {
     token: String,
     action: String,
     ids: Vec<uuid::Uuid>,
+    /// `scope=all`: act on every item matching the list's filters, not only
+    /// the checked rows, which are at most one page.
+    all_matching: bool,
+    /// The list's type filter, for `scope=all`.
+    filter_type: Option<String>,
+    /// The list's status filter, for `scope=all`.
+    filter_status: Option<i16>,
 }
 
 /// Why a bulk action body was not turned into a [`BulkActionForm`].
@@ -788,7 +813,18 @@ impl BulkActionForm {
                 ids.push(id);
             }
         }
-        Ok(Self { token, action, ids })
+        let all_matching = single_form_field(body, "scope").as_deref() == Some("all");
+        let filter_type = single_form_field(body, "filter_type").filter(|t| !t.is_empty());
+        let filter_status =
+            single_form_field(body, "filter_status").and_then(|s| s.parse::<i16>().ok());
+        Ok(Self {
+            token,
+            action,
+            ids,
+            all_matching,
+            filter_type,
+            filter_status,
+        })
     }
 }
 
@@ -817,6 +853,9 @@ async fn bulk_content_action(
                 token,
                 action,
                 ids: Vec::new(),
+                all_matching: false,
+                filter_type: None,
+                filter_status: None,
             },
             Some(value),
         ),
@@ -833,15 +872,21 @@ async fn bulk_content_action(
     // published state, so they need `publish content` on top of the edit
     // permission — the same answer `ItemService::gate_publish` would give one
     // item at a time, asked once here so the screen refuses rather than
-    // reporting every item as failed. An unrecognized action asks for the edit
+    // reporting every item as failed. A plugin's action asks for the
+    // permissions it declares (B68). An unrecognized action asks for the edit
     // permission and is then rejected as unknown below.
-    let required: &[&str] = match form.action.as_str() {
-        "delete" => &["delete any content"],
-        "publish" | "unpublish" => &["edit any content", crate::content::PUBLISH_CONTENT],
-        _ => &["edit any content"],
+    let registered = state
+        .bulk()
+        .registry()
+        .get(&form.action)
+        .filter(|a| a.plugin().is_none_or(|p| state.is_plugin_enabled(p)))
+        .cloned();
+    let required: Vec<String> = match &registered {
+        Some(action) => action.permissions.clone(),
+        None => vec!["edit any content".to_string()],
     };
     let mut holder = None;
-    for permission in required {
+    for permission in &required {
         match require_permission(&state, &session, permission).await {
             Ok(user) => holder = Some(user),
             Err(redirect) => return redirect,
@@ -856,7 +901,7 @@ async fn bulk_content_action(
     }
 
     // Validate action before processing
-    if !matches!(form.action.as_str(), "publish" | "unpublish" | "delete") {
+    let Some(action) = registered else {
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
@@ -867,7 +912,7 @@ async fn bulk_content_action(
             tracing::warn!(error = %e, "failed to set flash message");
         }
         return Redirect::to("/admin/content").into_response();
-    }
+    };
 
     // Never act on part of a selection the browser did not send cleanly. The
     // value is echoed escaped and cut short: it is whatever the client sent.
@@ -888,7 +933,25 @@ async fn bulk_content_action(
         return Redirect::to("/admin/content").into_response();
     }
 
-    if form.ids.is_empty() {
+    let ids = if form.all_matching {
+        match crate::models::Item::ids_filtered(
+            state.db(),
+            form.filter_type.as_deref(),
+            form.filter_status,
+        )
+        .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to resolve a bulk selection");
+                return render_server_error("The selection could not be read.");
+            }
+        }
+    } else {
+        form.ids
+    };
+
+    if ids.is_empty() {
         if let Err(e) = session
             .insert(CONTENT_FLASH_KEY, "No items selected.")
             .await
@@ -899,59 +962,56 @@ async fn bulk_content_action(
     }
 
     let user_ctx = admin_user_context(&state, &user).await;
+    let bulk = state.bulk();
 
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    match form.action.as_str() {
-        "publish" | "unpublish" => {
-            let new_status: i16 = if form.action == "publish" { 1 } else { 0 };
-            for id in &form.ids {
-                let update = crate::models::UpdateItem {
-                    title: None,
-                    status: Some(new_status),
-                    fields: None,
-                    promote: None,
-                    sticky: None,
-                    log: Some(format!("Bulk {}", form.action)),
-                };
-                // `Ok(None)` is an id that names no item: a failure, as the
-                // delete arm's `Ok(false)` is, not a success.
-                match state.items().update(*id, update, &user_ctx).await {
-                    Ok(Some(_)) => success_count += 1,
-                    Ok(None) => fail_count += 1,
-                    Err(e) => {
-                        tracing::warn!(item_id = %id, error = %e, "bulk action failed");
-                        fail_count += 1;
-                    }
-                }
-            }
+    // One chunk or less finishes within the request, and the flash reports it,
+    // as the form always has. A bigger selection runs as a queued batch, and
+    // the list polls its progress.
+    let inline = ids.len() <= crate::batch::bulk::CHUNK_SIZE;
+    let created = if inline {
+        bulk.create(&action.id, ids, &user_ctx).await
+    } else {
+        bulk.submit(&action.id, ids, &user_ctx).await
+    };
+    let operation = match created {
+        Ok(Ok(operation)) => operation,
+        Ok(Err(refused)) => {
+            // The checks above already passed; only a race reaches here.
+            tracing::warn!(?refused, "bulk action refused after its checks passed");
+            return render_error("The action could not be started.");
         }
-        "delete" => {
-            for id in &form.ids {
-                match state.items().delete(*id, &user_ctx).await {
-                    Ok(true) => success_count += 1,
-                    Ok(false) => fail_count += 1,
-                    Err(e) => {
-                        tracing::warn!(item_id = %id, error = %e, "bulk delete failed");
-                        fail_count += 1;
-                    }
-                }
-            }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to start a bulk action");
+            return render_server_error("The action could not be started.");
         }
-        _ => unreachable!(), // Validated above
+    };
+
+    if !inline {
+        let cron = state.cron().clone();
+        tokio::spawn(async move {
+            if let Err(e) = cron.drain_bulk_jobs().await {
+                tracing::warn!(error = %e, "bulk action drain failed");
+            }
+        });
+        return Redirect::to(&format!("/admin/content?batch={}", operation.id)).into_response();
     }
 
-    let action_label = match form.action.as_str() {
-        "publish" => "published",
-        "unpublish" => "unpublished",
-        "delete" => "deleted",
-        _ => unreachable!(),
-    };
-    let msg = if fail_count > 0 {
-        format!("{success_count} item(s) {action_label}. {fail_count} item(s) failed.")
-    } else {
-        format!("{success_count} item(s) {action_label}.")
-    };
+    if let Err(e) = bulk.run(operation.id).await {
+        tracing::error!(error = %e, "bulk action failed to start");
+        return render_server_error("The action could not be started.");
+    }
+    let finished = state.batch().get(operation.id).await.ok().flatten();
+    let msg = finished
+        .map(|op| {
+            op.result
+                .as_ref()
+                .and_then(|r| r.get("message"))
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+                .or(op.error)
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
     if let Err(e) = session.insert(CONTENT_FLASH_KEY, msg).await {
         tracing::warn!(error = %e, "failed to set flash message");
     }

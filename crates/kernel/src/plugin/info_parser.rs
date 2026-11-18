@@ -72,6 +72,37 @@ pub struct PluginInfo {
     /// derived allowlist is known.
     #[serde(default)]
     pub record_types: Vec<RecordTypeDecl>,
+
+    /// Bulk actions the plugin adds to the content list (B68), each run by the
+    /// plugin's `tap_bulk_action` and registered as `"<plugin>.<name>"`. See
+    /// [`BulkActionDecl`].
+    #[serde(default)]
+    pub bulk_actions: Vec<BulkActionDecl>,
+}
+
+/// A bulk action a plugin declares under `[[bulk_actions]]` (B68).
+///
+/// ```toml
+/// [[bulk_actions]]
+/// name = "archive"
+/// label = "Archive selected"
+/// permissions = ["edit any content", "archive content"]
+/// ```
+///
+/// The kernel shows it in the content list's bulk select to a user holding
+/// every listed permission, runs it as a batch over the selection, and hands
+/// the declaring plugin's `tap_bulk_action` chunks of the items that user may
+/// edit. Deny by default: an action must name at least one permission, and the
+/// plugin must implement `tap_bulk_action`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BulkActionDecl {
+    /// Machine name, unique within the plugin.
+    pub name: String,
+    /// What the bulk select shows.
+    pub label: String,
+    /// Every permission a user must hold to run it; at least one.
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 /// A lightweight-record type declaration (P11g / D-53) — the manifest surface
@@ -365,6 +396,8 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_cron",
     "tap_queue_info",
     "tap_queue_worker",
+    // Bulk actions declared under `[[bulk_actions]]` (B68)
+    "tap_bulk_action",
     // User
     "tap_user_login",
     "tap_user_logout",
@@ -586,6 +619,48 @@ impl PluginInfo {
             }
         }
 
+        // Validate bulk action declarations (B68): a machine name unique in the
+        // plugin, a label, at least one permission, and a tap to run them.
+        let mut seen_actions = std::collections::HashSet::new();
+        for action in &self.bulk_actions {
+            if !crate::routes::helpers::is_valid_machine_name(&action.name) {
+                anyhow::bail!(
+                    "plugin '{}': bulk action name '{}' is not a valid machine name",
+                    self.name,
+                    action.name
+                );
+            }
+            if !seen_actions.insert(action.name.as_str()) {
+                anyhow::bail!(
+                    "plugin '{}': bulk action '{}' is declared twice",
+                    self.name,
+                    action.name
+                );
+            }
+            if action.label.trim().is_empty() {
+                anyhow::bail!(
+                    "plugin '{}': bulk action '{}' has no label",
+                    self.name,
+                    action.name
+                );
+            }
+            if action.permissions.iter().all(|p| p.trim().is_empty()) {
+                anyhow::bail!(
+                    "plugin '{}': bulk action '{}' must name at least one permission",
+                    self.name,
+                    action.name
+                );
+            }
+        }
+        if !self.bulk_actions.is_empty()
+            && !self.taps.implements.iter().any(|t| t == "tap_bulk_action")
+        {
+            anyhow::bail!(
+                "plugin '{}' declares bulk actions but does not implement tap_bulk_action",
+                self.name
+            );
+        }
+
         // Validate lightweight-record declarations (P11g / D-53). Structural only:
         // machine-name for the type, safe SQL identifiers for the table and every
         // column, safe field references for the map values. The allowlist
@@ -727,6 +802,51 @@ impl PluginInfo {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn with_bulk(taps: &str, action: &str) -> Result<PluginInfo> {
+        let toml = format!(
+            "name = \"p\"\ndescription = \"d\"\nversion = \"1.0.0\"\n\
+             [taps]\nimplements = [{taps}]\n[[bulk_actions]]\n{action}\n"
+        );
+        PluginInfo::parse_str(&toml, Path::new("test.toml"))
+    }
+
+    #[test]
+    fn a_bulk_action_is_parsed() {
+        let info = with_bulk(
+            r#""tap_bulk_action""#,
+            r#"name = "archive"
+label = "Archive selected"
+permissions = ["archive content"]"#,
+        )
+        .unwrap();
+        assert_eq!(info.bulk_actions.len(), 1);
+        assert_eq!(info.bulk_actions[0].name, "archive");
+        assert_eq!(info.bulk_actions[0].permissions, vec!["archive content"]);
+    }
+
+    #[test]
+    fn a_bulk_action_without_a_permission_is_refused() {
+        let err = with_bulk(
+            r#""tap_bulk_action""#,
+            "name = \"archive\"\nlabel = \"Archive\"",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("at least one permission"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_bulk_action_without_the_tap_is_refused() {
+        let err = with_bulk(
+            r#""tap_cron""#,
+            "name = \"archive\"\nlabel = \"Archive\"\npermissions = [\"x\"]",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("tap_bulk_action"), "{err:#}");
+    }
 
     #[test]
     fn parse_valid_info() {
@@ -1198,6 +1318,7 @@ api_version = "1.2.3"
             migrations: super::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            bulk_actions: Vec::new(),
         }
     }
 

@@ -161,6 +161,38 @@ impl Item {
         Ok(item)
     }
 
+    /// Every item among `ids` that exists, in no particular order: one query
+    /// for a whole bulk action chunk.
+    pub async fn find_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        let items = sqlx::query_as::<_, Item>(
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE id = ANY($1)"
+        )
+        .bind(ids)
+        .fetch_all(pool)
+        .await
+        .context("failed to fetch items by id")?;
+
+        Ok(items)
+    }
+
+    /// The id of every item matching the content list's filters, newest change
+    /// first: what "every item matching this filter" selects for a bulk action.
+    pub async fn ids_filtered(
+        pool: &PgPool,
+        item_type: Option<&str>,
+        status: Option<i16>,
+    ) -> Result<Vec<Uuid>> {
+        sqlx::query_scalar(
+            "SELECT id FROM item WHERE ($1::text IS NULL OR type = $1) \
+             AND ($2::smallint IS NULL OR status = $2) ORDER BY changed DESC",
+        )
+        .bind(item_type)
+        .bind(status)
+        .fetch_all(pool)
+        .await
+        .context("failed to list filtered item ids")
+    }
+
     /// List items by content type.
     pub async fn list_by_type(pool: &PgPool, item_type: &str) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(

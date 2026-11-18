@@ -758,6 +758,9 @@ pub struct CronService {
     /// An outright override of the in-flight ceiling, ignoring the worker's
     /// budget. `None` in production, where the ceiling is budget + slack.
     job_ceiling: Option<Duration>,
+    /// Runs bulk action batches claimed from the `__kernel_batch` queue (B68).
+    /// `None` in a harness that builds a `CronService` on its own.
+    bulk: Option<Arc<crate::batch::BulkExecutor>>,
 }
 
 impl CronService {
@@ -782,6 +785,7 @@ impl CronService {
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
+            bulk: None,
         }
     }
 
@@ -806,6 +810,7 @@ impl CronService {
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
+            bulk: None,
         }
     }
 
@@ -876,6 +881,11 @@ impl CronService {
     /// Set the AI token budget service for cron plugin access.
     pub fn set_ai_budgets(&mut self, ai_budgets: Arc<AiTokenBudgetService>) {
         self.ai_budgets = Some(ai_budgets);
+    }
+
+    /// Set the executor the bulk action drain runs batches with (B68).
+    pub fn set_bulk_executor(&mut self, bulk: Arc<crate::batch::BulkExecutor>) {
+        self.bulk = Some(bulk);
     }
 
     /// Set the pgvector store for the native embed drain (P11f).
@@ -1167,6 +1177,13 @@ impl CronService {
                     }
                 }
                 Err(e) => warn!(error = %e, "embed queue drain failed"),
+            }
+            match self.drain_bulk_jobs().await {
+                Ok(stats) if stats.total() > 0 || stats.errors > 0 => {
+                    tasks_run.push(format!("bulk_jobs: {}", stats.total()));
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "bulk action queue drain failed"),
             }
         }
 
@@ -1611,6 +1628,62 @@ impl CronService {
         Ok(stats)
     }
 
+    /// Drain the bulk action queue (B68): claim batch jobs under
+    /// [`crate::batch::bulk::KERNEL_BATCH_PLUGIN`] one at a time and run each
+    /// with the [`crate::batch::BulkExecutor`].
+    ///
+    /// Called by the cron drain, the resident runner, and a task spawned when a
+    /// person submits an action, so nobody waits for cron; `SKIP LOCKED` claims
+    /// make the overlap safe, and a batch that is no longer pending is left
+    /// alone. A no-op without an executor.
+    pub async fn drain_bulk_jobs(&self) -> Result<QueueDrainStats> {
+        use crate::batch::bulk::{BATCH_QUEUE_NAME, KERNEL_BATCH_PLUGIN};
+        let mut stats = QueueDrainStats::default();
+        let Some(bulk) = self.bulk.clone() else {
+            return Ok(stats);
+        };
+        if let Err(e) = self.reap_exhausted_jobs(KERNEL_BATCH_PLUGIN).await {
+            warn!(error = %e, "failed to reap exhausted bulk action jobs");
+        }
+        loop {
+            let claimed = self
+                .claim_batch(KERNEL_BATCH_PLUGIN, BATCH_QUEUE_NAME, 1)
+                .await?;
+            let Some(job) = claimed.into_iter().next() else {
+                break;
+            };
+            let batch_id = job
+                .payload
+                .get("batch_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<uuid::Uuid>().ok());
+            let outcome = match batch_id {
+                // A kernel-produced payload always names a batch; a row that
+                // does not is garbage, consumed rather than retried.
+                None => {
+                    warn!(
+                        row_id = job.id,
+                        "bulk action job names no batch; discarding"
+                    );
+                    mark_job_succeeded(&self.pool, job.id).await?;
+                    JobOutcome::Succeeded
+                }
+                Some(id) => match bulk.run(id).await {
+                    Ok(()) => {
+                        mark_job_succeeded(&self.pool, job.id).await?;
+                        JobOutcome::Succeeded
+                    }
+                    Err(e) => {
+                        let err = format!("bulk action could not start: {e}");
+                        mark_job_failed(&self.pool, &job, KERNEL_BATCH_PLUGIN, &err).await?
+                    }
+                },
+            };
+            stats.record(outcome);
+        }
+        Ok(stats)
+    }
+
     /// Retire rows that reached `max_attempts` without ever recording a terminal
     /// outcome, and whose claim lease has expired.
     ///
@@ -1915,6 +1988,9 @@ impl CronService {
                 }
                 Ok(_) => {}
                 Err(e) => warn!(error = %e, "queue-runner embed drain failed"),
+            }
+            if let Err(e) = self.drain_bulk_jobs().await {
+                warn!(error = %e, "queue-runner bulk action drain failed");
             }
         }
     }

@@ -14,11 +14,12 @@ This guide covers everything you need to know to develop plugins for Trovato CMS
 8. [Menus and Permissions](#menus-and-permissions)
 9. [Database Operations](#database-operations)
 10. [Caching](#caching)
-11. [Inter-Plugin Communication](#inter-plugin-communication)
-12. [Letting an assistant configure your plugin](#letting-an-assistant-configure-your-plugin)
-13. [Testing](#testing)
-14. [Deployment](#deployment)
-15. [Best Practices](#best-practices)
+11. [Bulk Actions](#bulk-actions)
+12. [Inter-Plugin Communication](#inter-plugin-communication)
+13. [Letting an assistant configure your plugin](#letting-an-assistant-configure-your-plugin)
+14. [Testing](#testing)
+15. [Deployment](#deployment)
+16. [Best Practices](#best-practices)
 
 ---
 
@@ -309,6 +310,7 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | `tap_cron` | None | `Result<(), String>` | Background tasks |
 | `tap_queue_info` | None | `[{name, concurrency, shared_with?}]` | Declare owned queues, each one's worker concurrency, and the plugins that may push to it ([queue docs](plugin-queue.md)) |
 | `tap_queue_worker` | Job payload, or `{sender, queue, payload}` for a job another plugin pushed | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
+| `tap_bulk_action` | `{action, item_ids}` | `{succeeded, failed}` | Run one chunk of a bulk action the plugin declares ([bulk actions](#bulk-actions)) |
 | `tap_install` | None | `Result<(), String>` | First-time setup |
 | `tap_enable` | None | `Result<(), String>` | On plugin enable |
 | `tap_disable` | None | `Result<(), String>` | On plugin disable |
@@ -773,6 +775,51 @@ host::cache::invalidate_tag("tag:blog");
 ```
 
 ---
+
+## Bulk Actions
+
+A plugin can add actions to the content list's bulk select. Declare each in the
+manifest and implement `tap_bulk_action`:
+
+```toml
+[taps]
+implements = ["tap_bulk_action"]
+
+[[bulk_actions]]
+name = "archive"                 # registered as "my_plugin.archive"
+label = "Archive selected"
+permissions = ["edit any content", "archive content"]
+```
+
+- **Who sees it.** A user holding every listed permission, while the plugin is
+  enabled. An action must list at least one permission, and a plugin that
+  declares actions must implement `tap_bulk_action`, or the manifest is refused.
+- **How it runs.** The kernel runs the selection as a batch, in chunks of up to
+  100 items. Before each chunk it checks the batch was not cancelled and
+  re-reads the user's permissions; a user who has lost them stops the run.
+- **What the tap gets.** One call per chunk, with
+  `{"action": "archive", "item_ids": [...]}`, holding only the items the user
+  may `edit`; the others already count as failed. The call runs as that user,
+  so an `item-api` write you make is checked as theirs. Return
+  `{"succeeded": n, "failed": n}`; anything you do not report as succeeded
+  counts as failed.
+
+```rust
+#[plugin_tap]
+fn tap_bulk_action(input: serde_json::Value) -> serde_json::Value {
+    let ids = input["item_ids"].as_array().cloned().unwrap_or_default();
+    let mut succeeded = 0;
+    for id in ids.iter().filter_map(|v| v.as_str()) {
+        if trovato_sdk::host::save_item(&serde_json::json!({ "id": id, "status": 0 })).is_ok() {
+            succeeded += 1;
+        }
+    }
+    serde_json::json!({ "succeeded": succeeded, "failed": ids.len() - succeeded })
+}
+```
+
+The same action can be started over HTTP with `POST /api/batch` and
+`"operation_type": "my_plugin.archive"` ([API reference](api-reference.md#batch-operations)).
 
 ## Inter-Plugin Communication
 

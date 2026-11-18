@@ -9,6 +9,25 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### `POST /api/batch` runs what it records, and only registered actions
+
+**Who is affected:** a client that creates batches with `POST /api/batch`. Find
+out by searching scripts and integrations for `/api/batch`.
+
+**What changed.** A batch used to be a record nothing ran: any
+`operation_type` was accepted and stayed `pending`. Now the endpoint accepts
+only a registered bulk action (`publish`, `unpublish`, `delete`, or a plugin's
+`"<plugin>.<name>"`) with `params.item_ids` naming the items, runs it in the
+background, and answers 400 for any other `operation_type` or an empty
+selection and 403 when the caller lacks the action's permissions. A client that
+stored its own job descriptions as batches must keep them elsewhere. Reading,
+cancelling and deleting a batch are unchanged.
+
+Related changes that need nothing from an operator: the content list's bulk
+select now lists plugin actions, can apply an action to every item matching the
+filters, and runs a selection of more than 100 items in the background with a
+progress bar; a selection of 100 or fewer finishes within the request as before.
+
 ### List every proxy hop in `TRUSTED_PROXIES`
 
 **Who is affected:** a site behind more than one proxy (for example a CDN in
