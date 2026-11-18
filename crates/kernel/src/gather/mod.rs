@@ -16,7 +16,7 @@ mod query_builder;
 pub mod types;
 
 #[allow(unused_imports)]
-pub use access::GatherAccessConfig;
+pub use access::{GatherAccessConfig, GatherDenied, authorize_gather};
 #[allow(unused_imports)]
 pub use category_service::CategoryService;
 #[allow(unused_imports)]
@@ -33,8 +33,8 @@ pub use handlers::{HierarchicalInFilterHandler, JsonbArrayContainsFilterHandler}
 pub use query_builder::{CategoryHierarchyQuery, GatherQueryBuilder};
 #[allow(unused_imports)]
 pub use types::{
-    DisplayFormat, ExposedWidget, FilterOperator, FilterValue, GatherQuery, GatherResult,
-    GatherRoute, GatherRouteParam, IncludeDefinition, JoinType, NullsOrder, PagerConfig,
-    PagerStyle, QueryContext, QueryDefinition, QueryDisplay, QueryField, QueryFilter,
+    DisplayFormat, ExposedWidget, FilterOperator, FilterValue, GatherAccess, GatherQuery,
+    GatherResult, GatherRoute, GatherRouteParam, IncludeDefinition, JoinType, NullsOrder,
+    PagerConfig, PagerStyle, QueryContext, QueryDefinition, QueryDisplay, QueryField, QueryFilter,
     QueryRelationship, QuerySort, SortDirection,
 };

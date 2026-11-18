@@ -307,6 +307,17 @@ impl GatherQueryBuilder {
     }
 }
 
+### Gather Access
+
+A gather definition may carry `access.permission`. When it does, every path that
+serves the registered gather (its page and aliases, route aliases, feed, JSON API,
+query listing and the MCP tool) calls `gather::authorize_gather` before running
+the query, and menu drawing calls it for any `menu_link` whose address serves the
+gather. A lightweight-record gather that declares no permission requires
+`access content`. This is a gate in front of the query; item access still filters
+the rows of a gather the viewer may run. The plugin author's view is in
+[Gathers that require a permission](../plugin-development.md#gathers-that-require-a-permission).
+
 ### Stage-Aware Gather Queries
 
 When executing a Gather query in a stage context, the query must:

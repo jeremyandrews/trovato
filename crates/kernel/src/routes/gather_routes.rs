@@ -18,7 +18,6 @@ use std::sync::Arc;
 use axum::{
     Extension, Json, Router,
     extract::{OriginalUri, Path, Query, State},
-    http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
 };
@@ -28,7 +27,7 @@ use crate::gather::types::{GatherQuery, GatherRouteParam};
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::Tag;
 use crate::models::stage::LIVE_STAGE_ID;
-use crate::routes::gather::ExecuteParams;
+use crate::routes::gather::{ExecuteParams, GatherPageError};
 use crate::routes::helpers::{is_valid_slug, render_not_found, render_server_error};
 use crate::state::AppState;
 
@@ -217,10 +216,13 @@ async fn handle_gather_route(
                 },
             }))
             .into_response(),
-            Err(e) => {
-                tracing::error!(error = %e, "gather JSON query failed");
-                render_server_error("Query execution failed")
-            }
+            Err(e) => match e.downcast_ref::<crate::gather::GatherDenied>() {
+                Some(denied) => super::gather::gather_denied_json(denied),
+                None => {
+                    tracing::error!(error = %e, "gather JSON query failed");
+                    render_server_error("Query execution failed")
+                }
+            },
         }
     } else {
         match super::gather::execute_and_render(
@@ -235,13 +237,9 @@ async fn handle_gather_route(
         .await
         {
             Ok(Html(html)) => Html(html).into_response(),
-            Err((status, Json(err))) => {
-                if status == StatusCode::NOT_FOUND {
-                    render_not_found()
-                } else {
-                    render_server_error(&err.error)
-                }
-            }
+            Err(GatherPageError::Denied(denied)) => super::gather::gather_denied_html(&denied),
+            Err(GatherPageError::NotFound) => render_not_found(),
+            Err(GatherPageError::Failed(error)) => render_server_error(&error),
         }
     } // end else (HTML branch)
 }

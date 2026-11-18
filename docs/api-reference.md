@@ -292,11 +292,22 @@ GET /api/search?q=hello&page=1&limit=10
 
 ## Gather (Queries)
 
+A gather may declare the permission a viewer needs to run it, in its definition:
+`"access": { "permission": "..." }`. Every endpoint below checks it before the
+query runs: `/api/queries` leaves out a gather the caller may not run, and the
+other two answer 403 with a JSON `error` body (`Permission required: ...`).
+Administrators pass. A lightweight-record gather (`record_type`) that declares
+none requires `access content`. [Gathers that require a
+permission](plugin-development.md#gathers-that-require-a-permission) covers the
+HTML pages, route aliases, feeds and menu links.
+
 ### List Queries
 
 ```
 GET /api/queries
 ```
+
+Lists the gathers the caller may run.
 
 **Response (200):**
 ```json

@@ -202,6 +202,11 @@ async fn serve_feed(
     .await
     {
         Ok(result) => result,
+        // An aggregator has no login page to be sent to: a feed of a gather the
+        // viewer may not run is simply refused.
+        Err(e) if e.downcast_ref::<crate::gather::GatherDenied>().is_some() => {
+            return (axum::http::StatusCode::FORBIDDEN, "Access denied").into_response();
+        }
         Err(e) => {
             tracing::error!(
                 query_id = %config.query_id,

@@ -227,6 +227,35 @@ impl GatherService {
         self.queries.iter().map(|(_k, v)| v).collect()
     }
 
+    /// The registered gather a request path serves, if any.
+    ///
+    /// Covers every address the kernel serves a gather at by itself:
+    /// `/gather/{query_id}`, the query's `canonical_url`, each of its
+    /// `display.routes` patterns (a `{name}` segment matches any one segment),
+    /// and its feed path. A query string or fragment on `path` is ignored. A URL
+    /// alias standing in for one of these is the caller's to resolve first.
+    pub fn query_for_path(&self, path: &str) -> Option<GatherQuery> {
+        let path = path.split(['?', '#']).next().unwrap_or(path);
+        if let Some(query_id) = path.strip_prefix("/gather/")
+            && let Some(query) = self.get_query(query_id.trim_end_matches('/'))
+        {
+            return Some(query);
+        }
+        self.queries.iter().map(|(_k, v)| v).find(|query| {
+            query.display.canonical_url.as_deref() == Some(path)
+                || query
+                    .display
+                    .feed
+                    .as_ref()
+                    .is_some_and(|feed| feed.path == path)
+                || query
+                    .display
+                    .routes
+                    .iter()
+                    .any(|route| route_pattern_matches(&route.path, path))
+        })
+    }
+
     /// Maximum number of distinct values returned by [`Self::fetch_distinct_values`].
     const DISTINCT_VALUES_LIMIT: i64 = 200;
 
@@ -2176,6 +2205,23 @@ pub(crate) const GATHER_JOIN_TABLES: &[&str] = &[
     "file_managed",
 ];
 
+/// Whether a gather route pattern (`/topics/{slug}`) matches `path`.
+///
+/// Segment by segment: a `{name}` segment matches any one non-empty segment,
+/// anything else must be equal.
+fn route_pattern_matches(pattern: &str, path: &str) -> bool {
+    let pattern_parts: Vec<&str> = pattern.split('/').collect();
+    let path_parts: Vec<&str> = path.split('/').collect();
+    pattern_parts.len() == path_parts.len()
+        && pattern_parts.iter().zip(&path_parts).all(|(pat, actual)| {
+            if pat.starts_with('{') && pat.ends_with('}') {
+                !actual.is_empty()
+            } else {
+                pat == actual
+            }
+        })
+}
+
 /// Whether `table` is on the gather denylist.
 pub(crate) fn is_denied_gather_table(table: &str) -> bool {
     GATHER_DENIED_TABLES.contains(&table) || table.starts_with("_sqlx") || table.starts_with("pg_")
@@ -2335,6 +2381,20 @@ mod tests {
 
     use super::*;
     use crate::gather::types::{PagerConfig, PagerStyle, QuerySort, SortDirection};
+
+    #[test]
+    fn route_pattern_matches_literal_and_named_segments() {
+        assert!(route_pattern_matches("/devices/online", "/devices/online"));
+        assert!(route_pattern_matches("/topics/{slug}", "/topics/rust"));
+        assert!(route_pattern_matches(
+            "/location/{country}/{city}",
+            "/location/it/rome"
+        ));
+        assert!(!route_pattern_matches("/topics/{slug}", "/topics"));
+        assert!(!route_pattern_matches("/topics/{slug}", "/topics/"));
+        assert!(!route_pattern_matches("/topics/{slug}", "/topics/a/b"));
+        assert!(!route_pattern_matches("/devices/online", "/devices"));
+    }
 
     #[test]
     fn remove_record_field_drops_plain_column() {

@@ -1866,6 +1866,39 @@ parents:
         ));
     }
 
+    #[test]
+    fn gather_query_access_permission_survives_export_and_import() {
+        let query: GatherQuery = serde_json::from_value(serde_json::json!({
+            "query_id": "ng_device_list",
+            "label": "Devices",
+            "description": null,
+            "definition": {
+                "record_type": "ng_device_state",
+                "access": { "permission": "view network devices" }
+            },
+            "display": {},
+            "plugin": "netgrasp"
+        }))
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        let yaml = serialize_entity(&ConfigEntity::GatherQuery(Box::new(query)), &mut warnings)
+            .expect("a gather query exports");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(yaml.contains("view network devices"), "exported:\n{yaml}");
+
+        let ConfigEntity::GatherQuery(imported) =
+            deserialize_entity("gather_query", &yaml).unwrap().entity
+        else {
+            panic!("a gather_query file imports as a gather query");
+        };
+        assert_eq!(
+            imported.required_permission(),
+            Some("view network devices"),
+            "the permission came back from:\n{yaml}"
+        );
+    }
+
     // ── Serialize helper tests ─────────────────────────────────────
 
     #[test]

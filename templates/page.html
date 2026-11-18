@@ -17,8 +17,11 @@
         {# Labelled because the page has four navs — site, two breadcrumbs, footer —
            and a screen reader lists them by label. #}
         <nav class="site-nav" aria-label="Main">
-            {% if main_menu is defined and main_menu %}
-            {% for link in main_menu %}
+            {# main_menu_owned: the site has a main menu of its own, even when
+               this viewer may follow none of its links. The plugin menu below is
+               what a site without one gets, not a fallback for an empty one. #}
+            {% if main_menu_owned | default(value=false) or main_menu | default(value=[]) | length > 0 %}
+            {% for link in main_menu | default(value=[]) %}
             {% if not link.hidden %}
             {# aria-current, not just the active class: the class is styling, and
                assistive technology cannot see it.

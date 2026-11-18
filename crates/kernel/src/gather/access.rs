@@ -20,9 +20,10 @@
 //! [`ItemService`]: crate::content::ItemService
 //! [`filter_page_for_view`]: crate::content::ItemService::filter_page_for_view
 
-use crate::gather::types::QueryField;
+use crate::gather::types::{GatherQuery, QueryField};
 use crate::models::Item;
 use crate::models::stage::LIVE_STAGE_ID;
+use crate::tap::UserContext;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -103,6 +104,66 @@ impl GatherAccessConfig {
             ),
         }
     }
+}
+
+/// Why a viewer may not run a gather (see [`authorize_gather`]).
+///
+/// Distinguishes the anonymous visitor, whom an HTML path sends to log in,
+/// from the signed-in one, who is refused outright, as `require_permission`
+/// does for every other gated page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatherDenied {
+    /// No one is signed in, and the anonymous role lacks the permission.
+    Anonymous {
+        /// The permission the gather requires.
+        permission: String,
+    },
+    /// The signed-in viewer lacks the permission.
+    Forbidden {
+        /// The permission the gather requires.
+        permission: String,
+    },
+}
+
+impl GatherDenied {
+    /// The permission the viewer lacked.
+    pub fn permission(&self) -> &str {
+        match self {
+            Self::Anonymous { permission } | Self::Forbidden { permission } => permission,
+        }
+    }
+}
+
+impl std::fmt::Display for GatherDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Permission required: {}", self.permission())
+    }
+}
+
+impl std::error::Error for GatherDenied {}
+
+/// Whether `viewer` may run the registered gather `query`.
+///
+/// The one gate every path that serves a gather calls before it runs the
+/// query: its page, its route aliases, its feed, the JSON API, the query
+/// listing, the MCP tool, and menu drawing. The permission is
+/// [`GatherQuery::required_permission`]; an administrator holds every
+/// permission, and an anonymous visitor holds whatever the anonymous role
+/// grants. It is a gate in front of the query, not a row filter: item access
+/// still decides which rows of an allowed gather the viewer sees.
+pub fn authorize_gather(viewer: &UserContext, query: &GatherQuery) -> Result<(), GatherDenied> {
+    let Some(permission) = query.required_permission() else {
+        return Ok(());
+    };
+    if viewer.can(permission) {
+        return Ok(());
+    }
+    let permission = permission.to_string();
+    Err(if viewer.authenticated {
+        GatherDenied::Forbidden { permission }
+    } else {
+        GatherDenied::Anonymous { permission }
+    })
 }
 
 fn parse_uuid(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<Uuid> {
@@ -251,6 +312,67 @@ pub(crate) fn filter_row_fields(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+
+    fn protected(permission: &str) -> GatherQuery {
+        serde_json::from_value(serde_json::json!({
+            "query_id": "q",
+            "label": "Q",
+            "description": null,
+            "definition": {"access": {"permission": permission}},
+            "display": {},
+            "plugin": "core"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_gather_without_a_permission_is_open_to_anyone() {
+        let open = GatherQuery::default();
+        assert_eq!(authorize_gather(&UserContext::anonymous(), &open), Ok(()));
+    }
+
+    #[test]
+    fn an_anonymous_visitor_without_the_permission_is_told_to_log_in() {
+        assert_eq!(
+            authorize_gather(&UserContext::anonymous(), &protected("view devices")),
+            Err(GatherDenied::Anonymous {
+                permission: "view devices".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn a_signed_in_user_without_the_permission_is_forbidden() {
+        let user = UserContext::authenticated(Uuid::new_v4(), vec!["access content".to_string()]);
+        assert_eq!(
+            authorize_gather(&user, &protected("view devices")),
+            Err(GatherDenied::Forbidden {
+                permission: "view devices".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn the_holder_and_an_admin_may_run_it() {
+        let holder = UserContext::authenticated(Uuid::new_v4(), vec!["view devices".to_string()]);
+        assert_eq!(
+            authorize_gather(&holder, &protected("view devices")),
+            Ok(())
+        );
+        let admin = UserContext::administrator(Uuid::new_v4(), vec![]);
+        assert_eq!(authorize_gather(&admin, &protected("view devices")), Ok(()));
+    }
+
+    #[test]
+    fn an_anonymous_role_holding_the_permission_lets_anonymous_in() {
+        let mut anonymous = UserContext::anonymous();
+        anonymous.permissions = vec!["view devices".to_string()];
+        assert_eq!(
+            authorize_gather(&anonymous, &protected("view devices")),
+            Ok(())
+        );
+    }
+
     use super::*;
     use crate::gather::types::QueryField;
 

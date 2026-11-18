@@ -3,7 +3,8 @@
 //! REST endpoints for executing gather queries.
 
 use crate::gather::{
-    ExposedWidget, FilterValue, GatherQuery, QueryContext, QueryDefinition, QueryDisplay,
+    ExposedWidget, FilterValue, GatherDenied, GatherQuery, QueryContext, QueryDefinition,
+    QueryDisplay, authorize_gather,
 };
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::TagWithDepth;
@@ -14,7 +15,7 @@ use axum::{
     Extension, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Json, Response},
+    response::{Html, IntoResponse, Json, Redirect, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -132,15 +133,50 @@ struct AdhocQueryRequest {
 }
 
 // -------------------------------------------------------------------------
+// Access gate
+// -------------------------------------------------------------------------
+
+/// The refusal an HTML path gives a viewer who may not run a gather: the
+/// login redirect for an anonymous visitor, 403 for a signed-in one, exactly
+/// as [`require_permission`](super::helpers::require_permission) answers.
+pub fn gather_denied_html(denied: &GatherDenied) -> Response {
+    match denied {
+        GatherDenied::Anonymous { .. } => Redirect::to("/user/login").into_response(),
+        GatherDenied::Forbidden { .. } => {
+            (StatusCode::FORBIDDEN, Html("Access denied")).into_response()
+        }
+    }
+}
+
+/// The refusal a JSON path gives a viewer who may not run a gather: the 403
+/// and error body [`require_permission_json`] gives.
+pub fn gather_denied_json(denied: &GatherDenied) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(JsonError {
+            error: denied.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+// -------------------------------------------------------------------------
 // Handlers
 // -------------------------------------------------------------------------
 
-async fn list_queries(State(state): State<AppState>) -> Result<Json<Vec<QuerySummary>>, AppError> {
+/// Every registered gather the viewer may run. A gather they may not run is
+/// left out rather than listed and refused later.
+async fn list_queries(
+    State(state): State<AppState>,
+    session: Session,
+) -> Result<Json<Vec<QuerySummary>>, AppError> {
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let queries = state.gather().list_queries();
 
     Ok(Json(
         queries
             .into_iter()
+            .filter(|q| authorize_gather(&viewer, q).is_ok())
             .map(|q| QuerySummary {
                 query_id: q.query_id,
                 label: q.label,
@@ -153,12 +189,17 @@ async fn list_queries(State(state): State<AppState>) -> Result<Json<Vec<QuerySum
 
 async fn get_query(
     State(state): State<AppState>,
+    session: Session,
     Path(query_id): Path<String>,
-) -> Result<Json<QueryResponse>, AppError> {
+) -> Result<Response, AppError> {
     let query = state
         .gather()
         .get_query(&query_id)
         .ok_or_else(|| AppError::not_found_id("query", &query_id))?;
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    if let Err(denied) = authorize_gather(&viewer, &query) {
+        return Ok(gather_denied_json(&denied));
+    }
 
     Ok(Json(QueryResponse {
         query_id: query.query_id,
@@ -169,7 +210,8 @@ async fn get_query(
         plugin: query.plugin,
         created: query.created,
         changed: query.changed,
-    }))
+    })
+    .into_response())
 }
 
 async fn execute_query(
@@ -178,8 +220,13 @@ async fn execute_query(
     Extension(resolved_lang): Extension<ResolvedLanguage>,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
-) -> Result<Json<GatherResultResponse>, AppError> {
+) -> Result<Response, AppError> {
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    if let Some(query) = state.gather().get_query(&query_id)
+        && let Err(denied) = authorize_gather(&viewer, &query)
+    {
+        return Ok(gather_denied_json(&denied));
+    }
     let user_id = viewer.authenticated.then_some(viewer.id);
     let language = language_for_context(&resolved_lang, state.default_language());
     let context = QueryContext {
@@ -207,7 +254,8 @@ async fn execute_query(
         total_pages: result.total_pages,
         has_next: result.has_next,
         has_prev: result.has_prev,
-    }))
+    })
+    .into_response())
 }
 
 async fn execute_adhoc_query(
@@ -273,7 +321,7 @@ async fn render_query_html(
     requested: Option<Extension<crate::middleware::RequestedPath>>,
     Path(query_id): Path<String>,
     Query(params): Query<ExecuteParams>,
-) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
+) -> Response {
     // Use canonical_url from the query definition when available so that pager
     // links and filter form actions stay on the friendly URL (e.g. /conferences)
     // rather than /gather/{query_id}.
@@ -284,7 +332,7 @@ async fn render_query_html(
     let base_path = canonical.unwrap_or_else(|| format!("/gather/{query_id}"));
     let language = language_for_context(&resolved_lang, state.default_language());
     let requested_path = requested.map(|Extension(r)| r.0);
-    execute_and_render(
+    match execute_and_render(
         &state,
         &session,
         &query_id,
@@ -294,6 +342,31 @@ async fn render_query_html(
         requested_path.as_deref(),
     )
     .await
+    {
+        Ok(html) => html.into_response(),
+        Err(GatherPageError::Denied(denied)) => gather_denied_html(&denied),
+        Err(GatherPageError::NotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(JsonError {
+                error: "query not found".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(GatherPageError::Failed(error)) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(JsonError { error })).into_response()
+        }
+    }
+}
+
+/// Why [`execute_and_render`] did not produce a page.
+#[derive(Debug)]
+pub enum GatherPageError {
+    /// No gather is registered under the id.
+    NotFound,
+    /// The viewer may not run the gather; see [`gather_denied_html`].
+    Denied(GatherDenied),
+    /// The query failed; the message says why.
+    Failed(String),
 }
 
 /// Execute a gather query and render it as an HTML page.
@@ -303,7 +376,11 @@ async fn render_query_html(
 /// `None`, queries return the original (default-language) content.
 /// Execute a Gather query and return the structured result without rendering.
 ///
-/// Used for JSON API responses (content negotiation).
+/// Used for JSON API responses (content negotiation) and feeds.
+///
+/// A viewer who may not run the gather gets an error that downcasts to
+/// [`GatherDenied`], before the query runs; a caller that does not look for it
+/// still fails closed.
 pub async fn execute_query_only(
     state: &AppState,
     query_id: &str,
@@ -311,6 +388,9 @@ pub async fn execute_query_only(
     language: Option<String>,
     viewer: UserContext,
 ) -> anyhow::Result<crate::gather::GatherResult> {
+    if let Some(query) = state.gather().get_query(query_id) {
+        authorize_gather(&viewer, &query)?;
+    }
     let user_id = viewer.authenticated.then_some(viewer.id);
     let query_context = QueryContext {
         current_user_id: user_id,
@@ -342,8 +422,15 @@ pub async fn execute_and_render(
     base_path: &str,
     language: Option<String>,
     requested_path: Option<&str>,
-) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
+) -> Result<Html<String>, GatherPageError> {
     let viewer = crate::routes::item::get_user_context(session, state).await;
+    let gather_query = state
+        .gather()
+        .get_query(query_id)
+        .ok_or(GatherPageError::NotFound)?;
+    // Before anything reads the gather's table, the widget preload included.
+    authorize_gather(&viewer, &gather_query).map_err(GatherPageError::Denied)?;
+
     let user_id = viewer.authenticated.then_some(viewer.id);
     let query_context = QueryContext {
         current_user_id: user_id,
@@ -351,15 +438,6 @@ pub async fn execute_and_render(
         url_args: params.filters.clone(),
         language,
     };
-
-    let gather_query = state.gather().get_query(query_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "query not found".to_string(),
-            }),
-        )
-    })?;
 
     let exposed_filters = parse_filter_params(&params.filters);
     let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
@@ -378,14 +456,7 @@ pub async fn execute_and_render(
             &query_context,
         )
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| GatherPageError::Failed(e.to_string()))?;
 
     // Collect filter values for template context
     let filter_values: HashMap<String, String> = params
