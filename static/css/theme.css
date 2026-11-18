@@ -1457,8 +1457,10 @@ html {
     color: var(--gray-700);
 }
 
-/* Hide field labels for body/content fields — show only the value */
-.field .field__label {
+/* Hide field labels for body/content fields — show only the value.
+   Other scalar fields keep their label; it carries its own separator. */
+.field-field_body .field__label,
+.field-field_content .field__label {
     display: none;
 }
 
