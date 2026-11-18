@@ -10,13 +10,7 @@ The channel is GitHub's private vulnerability reporting:
 
 That form is private to the reporter and the maintainers, it creates a draft
 advisory that becomes the published one, and it lets a fix be prepared and
-tested before anything is visible. Use it in preference to anything else.
-
-<!-- MAINTAINER: fill in or delete. No address is published until Jeremy sets
-     one, because a wrong or unmonitored security address is worse than none:
-     it silently swallows reports that would otherwise have gone to the form
-     above. -->
-If you cannot use GitHub, email `[SECURITY CONTACT ADDRESS NOT YET SET]`.
+tested before anything is visible.
 
 ### What to include
 
