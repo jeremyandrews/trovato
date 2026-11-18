@@ -798,6 +798,88 @@ async fn validate_references(
 
     validate_menu_link_parents(storage, parsed, failures).await;
     validate_role_permissions(pool, parsed, failures).await;
+    validate_workflow(pool, parsed, failures).await;
+}
+
+/// Every permission name an import accepts: the kernel's, every plugin
+/// permission declared through `tap_perm`, and every one a role already holds.
+/// One answer for role files and the workflow, so the two cannot disagree; see
+/// [`validate_role_permissions`] for why each source counts.
+async fn known_permissions(pool: &PgPool) -> std::result::Result<HashSet<String>, String> {
+    let mut known: HashSet<String> = crate::models::role::KERNEL_PERMISSIONS
+        .iter()
+        .map(|p| (*p).to_string())
+        .collect();
+    let declared = crate::plugin::permission_registry::load_all(pool)
+        .await
+        .map_err(|e| format!("failed to read the declared plugin permissions: {e:#}"))?;
+    known.extend(declared.into_iter().map(|p| p.name));
+    let granted = Role::all_granted_permissions(pool)
+        .await
+        .map_err(|e| format!("failed to read the existing permission grants: {e:#}"))?;
+    known.extend(granted);
+    Ok(known)
+}
+
+/// Reject a `workflow.editorial` variable the kernel could not use as written.
+///
+/// A transition naming a stage or a permission that does not exist is never
+/// usable, and at run time it is dropped with only a log line; an operator
+/// would find out by an editor reporting that a move is missing. Caught here,
+/// the import fails with the transition named. Stages count when they exist
+/// or arrive in the same import; permissions by [`known_permissions`].
+async fn validate_workflow(
+    pool: &PgPool,
+    parsed: &BTreeMap<String, Vec<ParsedEntity>>,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
+    let Some(workflow) = parsed.get(entity_types::VARIABLE).and_then(|vars| {
+        vars.iter().find_map(|pe| match &pe.entity {
+            ConfigEntity::Variable { key, value }
+                if key == crate::models::workflow::WORKFLOW_KEY =>
+            {
+                Some((pe, value))
+            }
+            _ => None,
+        })
+    }) else {
+        return;
+    };
+    let (pe, value) = workflow;
+
+    let mut stages: HashSet<String> = match Stage::list_all(pool).await {
+        Ok(stages) => stages.into_iter().map(|s| s.machine_name).collect(),
+        Err(e) => {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: format!("failed to read the stages: {e:#}"),
+            });
+            return;
+        }
+    };
+    if let Some(incoming) = parsed.get(entity_types::STAGE) {
+        stages.extend(incoming.iter().filter_map(|pe| match &pe.entity {
+            ConfigEntity::Stage(stage) => Some(stage.machine_name.clone()),
+            _ => None,
+        }));
+    }
+    let permissions = match known_permissions(pool).await {
+        Ok(known) => known,
+        Err(error) => {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error,
+            });
+            return;
+        }
+    };
+
+    for error in crate::models::workflow::problems(value, &stages, &permissions) {
+        failures.push(ConfigImportFailure {
+            filename: pe.filename.clone(),
+            error,
+        });
+    }
 }
 
 /// Reject a role file that names a permission the kernel cannot account for.
@@ -836,35 +918,19 @@ async fn validate_role_permissions(
         return;
     }
 
-    let mut known: HashSet<String> = crate::models::role::KERNEL_PERMISSIONS
-        .iter()
-        .map(|p| (*p).to_string())
-        .collect();
-    match crate::plugin::permission_registry::load_all(pool).await {
-        Ok(declared) => known.extend(declared.into_iter().map(|p| p.name)),
-        Err(e) => {
-            // Same reasoning as the granted set below: narrowing what counts as
-            // valid would reject a permission the file legitimately names.
+    // Without every source, a plugin's permission would be rejected as
+    // unknown. Failing the import is the safe answer: silently narrowing what
+    // counts as valid would revoke grants the file meant to keep.
+    let known = match known_permissions(pool).await {
+        Ok(known) => known,
+        Err(error) => {
             failures.push(ConfigImportFailure {
                 filename: "(role permissions)".to_string(),
-                error: format!("failed to read the declared plugin permissions: {e:#}"),
+                error,
             });
             return;
         }
-    }
-    match Role::all_granted_permissions(pool).await {
-        Ok(granted) => known.extend(granted),
-        Err(e) => {
-            // Without the granted set, a plugin's permission would be rejected as
-            // unknown. Failing the import is the safe answer: silently narrowing
-            // what counts as valid would revoke grants the file meant to keep.
-            failures.push(ConfigImportFailure {
-                filename: "(role permissions)".to_string(),
-                error: format!("failed to read the existing permission grants: {e:#}"),
-            });
-            return;
-        }
-    }
+    };
 
     for pe in roles {
         let Some(permissions) = pe.role_permissions.as_ref() else {

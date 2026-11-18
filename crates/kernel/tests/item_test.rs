@@ -232,6 +232,7 @@ fn create_item_input_defaults() {
 #[test]
 fn update_item_input_partial() {
     let input = UpdateItem {
+        stage_id: None,
         title: Some("Updated Title".to_string()),
         status: None,
         promote: None,
@@ -817,6 +818,7 @@ fn create_item_with_all_fields() {
 #[test]
 fn update_item_with_all_fields() {
     let input = UpdateItem {
+        stage_id: None,
         title: Some("New Title".to_string()),
         status: Some(1),
         promote: Some(1),

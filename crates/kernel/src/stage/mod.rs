@@ -791,27 +791,8 @@ async fn publish_dependents_default(
     tx: &mut Transaction<'_, Postgres>,
     stage_id: Uuid,
 ) -> Result<i64> {
-    let mut total: i64 = 0;
-
-    // Move staged url_alias records to live
-    let aliases_updated = sqlx::query("UPDATE url_alias SET stage_id = $1 WHERE stage_id = $2")
-        .bind(LIVE_STAGE_ID)
-        .bind(stage_id)
-        .execute(&mut **tx)
-        .await
-        .context("failed to move staged aliases to live")?;
-    total += aliases_updated.rows_affected() as i64;
-    debug!(rows = %aliases_updated.rows_affected(), "moved url_alias to live");
-
-    // Move staged menu_link records to live
-    let menus_updated = sqlx::query("UPDATE menu_link SET stage_id = $1 WHERE stage_id = $2")
-        .bind(LIVE_STAGE_ID)
-        .bind(stage_id)
-        .execute(&mut **tx)
-        .await
-        .context("failed to move staged menu links to live")?;
-    total += menus_updated.rows_affected() as i64;
-    debug!(rows = %menus_updated.rows_affected(), "moved menu_link to live");
+    // Move staged url_alias and menu_link records to live
+    let total = move_dependents(tx, stage_id, LIVE_STAGE_ID, None).await?;
 
     // Process dependent deletions (url_alias, menu_link)
     let alias_deletions = sqlx::query(
@@ -854,6 +835,48 @@ async fn publish_dependents_default(
     .context("failed to clean up dependent deletion records")?;
 
     Ok(total)
+}
+
+/// Move URL aliases and menu links from `source` to `target`: every one on the
+/// stage, or with `item`, only those that point at that item (`/item/{id}`).
+///
+/// The one place a dependent changes stage. A whole-stage publish calls it with
+/// no item; a single item's stage move (`Item::update`) calls it with the item,
+/// in the same transaction as the item row. Returns the number of rows moved.
+/// A row the target already has (the same alias, or the same menu path) fails
+/// the statement on its unique constraint, which rolls back the transaction
+/// rather than overwriting the target's row.
+pub async fn move_dependents(
+    tx: &mut Transaction<'_, Postgres>,
+    source: Uuid,
+    target: Uuid,
+    item: Option<Uuid>,
+) -> Result<i64> {
+    let path = item.map(|id| format!("/item/{id}"));
+
+    let aliases = sqlx::query(
+        "UPDATE url_alias SET stage_id = $1 WHERE stage_id = $2 AND ($3::text IS NULL OR source = $3)",
+    )
+    .bind(target)
+    .bind(source)
+    .bind(path.as_deref())
+    .execute(&mut **tx)
+    .await
+    .context("failed to move url aliases to the target stage")?;
+    debug!(rows = %aliases.rows_affected(), target = %target, "moved url_alias");
+
+    let menus = sqlx::query(
+        "UPDATE menu_link SET stage_id = $1 WHERE stage_id = $2 AND ($3::text IS NULL OR path = $3)",
+    )
+    .bind(target)
+    .bind(source)
+    .bind(path.as_deref())
+    .execute(&mut **tx)
+    .await
+    .context("failed to move menu links to the target stage")?;
+    debug!(rows = %menus.rows_affected(), target = %target, "moved menu_link");
+
+    Ok((aliases.rows_affected() + menus.rows_affected()) as i64)
 }
 
 /// Hierarchy-aware items publish: moves items from `source` to `target` stage.
@@ -910,27 +933,8 @@ async fn publish_dependents_to_target(
     source: Uuid,
     target: Uuid,
 ) -> Result<i64> {
-    let mut total: i64 = 0;
-
-    // Move staged url_alias records to target stage
-    let aliases_updated = sqlx::query("UPDATE url_alias SET stage_id = $1 WHERE stage_id = $2")
-        .bind(target)
-        .bind(source)
-        .execute(&mut **tx)
-        .await
-        .context("failed to move staged aliases to target")?;
-    total += aliases_updated.rows_affected() as i64;
-    debug!(rows = %aliases_updated.rows_affected(), target = %target, "moved url_alias to target stage");
-
-    // Move staged menu_link records to target stage
-    let menus_updated = sqlx::query("UPDATE menu_link SET stage_id = $1 WHERE stage_id = $2")
-        .bind(target)
-        .bind(source)
-        .execute(&mut **tx)
-        .await
-        .context("failed to move staged menu links to target")?;
-    total += menus_updated.rows_affected() as i64;
-    debug!(rows = %menus_updated.rows_affected(), target = %target, "moved menu_link to target stage");
+    // Move staged url_alias and menu_link records to the target stage
+    let total = move_dependents(tx, source, target, None).await?;
 
     // Process dependent deletions
     let alias_deletions = sqlx::query(

@@ -160,6 +160,26 @@
         </fieldset>
         {% endif %}
 
+        {# The stage selector: the stages this user may move the item to by
+           the editorial workflow, and nothing at all when there are none. The
+           submit decides the move again. #}
+        {% if editing %}{% if stage_targets %}
+        <fieldset class="fieldset">
+            <legend>Stage</legend>
+            <div class="fieldset__content">
+                <div class="form-item">
+                    <label for="edit-stage">Move to stage</label>
+                    <select id="edit-stage" name="_stage" class="form-select">
+                        <option value="">Stay on {{ current_stage_label }}</option>
+                        {% for stage in stage_targets %}
+                        <option value="{{ stage.id }}">{{ stage.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+        </fieldset>
+        {% endif %}{% endif %}
+
         <div class="form-actions">
             <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create content{% endif %}</button>
             <a href="/admin/content" class="button button--secondary">Cancel</a>

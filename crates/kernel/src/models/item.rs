@@ -130,6 +130,13 @@ pub struct UpdateItem {
     pub sticky: Option<i16>,
     pub fields: Option<serde_json::Value>,
     pub log: Option<String>,
+    /// Move the item to this stage. `None` leaves it where it is.
+    ///
+    /// The model moves it, with its URL aliases and menu links, in the same
+    /// transaction as the revision, and decides nothing: whether this user may
+    /// make the move is `ItemService::update`'s question.
+    #[serde(default)]
+    pub stage_id: Option<Uuid>,
 }
 
 impl Item {
@@ -246,7 +253,9 @@ impl Item {
         sqlx::query(
             r#"
             INSERT INTO item (id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id)
-            VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    COALESCE($11, (SELECT tag_id FROM stage_config WHERE is_default), $14),
+                    $12, $13)
             "#,
         )
         .bind(item_id)
@@ -259,11 +268,15 @@ impl Item {
         .bind(input.promote.unwrap_or(0))
         .bind(input.sticky.unwrap_or(0))
         .bind(input.fields.clone().unwrap_or(serde_json::json!({})))
-        .bind(input.stage_id.unwrap_or(LIVE_STAGE_ID))
+        // No stage given: the stage marked default, resolved inside this one
+        // INSERT (no extra round trip), and Live if somehow none is marked.
+        // `uq_stage_is_default` keeps the subquery to one row.
+        .bind(input.stage_id)
         // Routes should always provide the resolved language; "en" is a last-resort safety net.
         .bind(input.language.as_deref().unwrap_or("en"))
         // New items are their own group (item_group_id = item_id)
         .bind(item_id)
+        .bind(LIVE_STAGE_ID)
         .execute(&mut *tx)
         .await
         .context("failed to insert item")?;
@@ -325,6 +338,7 @@ impl Item {
         let sticky = input.sticky.unwrap_or(current.sticky);
         let fields = input.fields.unwrap_or(current.fields);
         let log = input.log;
+        let stage_id = input.stage_id.unwrap_or(current.stage_id);
 
         // Start transaction
         let mut tx = pool.begin().await.context("failed to start transaction")?;
@@ -358,7 +372,8 @@ impl Item {
                 promote = $4,
                 sticky = $5,
                 fields = $6,
-                current_revision_id = $7
+                current_revision_id = $7,
+                stage_id = $9
             WHERE id = $8
             "#,
         )
@@ -370,9 +385,17 @@ impl Item {
         .bind(&fields)
         .bind(revision_id)
         .bind(id)
+        .bind(stage_id)
         .execute(&mut *tx)
         .await
         .context("failed to update item")?;
+
+        // A stage move takes the item's URL aliases and menu links on the old
+        // stage with it, in this transaction, through the stage publish code
+        // narrowed to this item.
+        if stage_id != current.stage_id {
+            crate::stage::move_dependents(&mut tx, current.stage_id, stage_id, Some(id)).await?;
+        }
 
         tx.commit().await.context("failed to commit transaction")?;
 
@@ -445,6 +468,7 @@ impl Item {
 
         // Create update input from revision
         let input = UpdateItem {
+            stage_id: None,
             title: Some(revision.title),
             status: Some(revision.status),
             promote: None,

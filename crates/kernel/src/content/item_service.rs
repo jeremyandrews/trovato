@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
-use crate::models::{CreateItem, Item, ItemRevision, UpdateItem};
+use crate::models::workflow::{WORKFLOW_KEY, Workflow};
+use crate::models::{CreateItem, Item, ItemRevision, SiteConfig, UpdateItem};
 use crate::services::ai_provider::{AiProviderService, EMBEDDING_INPUT_MAX_CHARS};
 use crate::services::embed_index::{self, EmbedPolicy};
 use crate::services::vector_store::{PgVectorStore, VectorStore};
@@ -127,6 +128,47 @@ const STAGE_CACHE_CAPACITY: u64 = 16;
 /// queries and limiting the window of stale visibility data.
 const STAGE_CACHE_TTL: Duration = Duration::from_secs(30);
 
+/// Every stage, and the workflow resolved against them.
+///
+/// What a stage move is decided against, loaded in one go (two queries) and
+/// cached by [`ItemService`] with the stage cache's TTL, so deciding a move, or
+/// listing the moves a form may offer, costs no query per item.
+#[derive(Debug)]
+pub struct StageView {
+    stages: Vec<Stage>,
+    workflow: Workflow,
+}
+
+impl StageView {
+    /// Every stage, in the order `Stage::list_all` returns them.
+    pub fn stages(&self) -> &[Stage] {
+        &self.stages
+    }
+
+    /// The stage with this id.
+    pub fn stage(&self, id: Uuid) -> Option<&Stage> {
+        self.stages.iter().find(|s| s.id == id)
+    }
+
+    /// The stage with this machine name.
+    pub fn by_machine_name(&self, machine_name: &str) -> Option<&Stage> {
+        self.stages.iter().find(|s| s.machine_name == machine_name)
+    }
+
+    /// The stage new content lands on: the one marked default, else Live.
+    pub fn default_stage(&self) -> Uuid {
+        self.stages
+            .iter()
+            .find(|s| s.is_default)
+            .map_or(LIVE_STAGE_ID, |s| s.id)
+    }
+
+    /// The resolved workflow.
+    pub fn workflow(&self) -> &Workflow {
+        &self.workflow
+    }
+}
+
 /// Service for item CRUD operations with tap integration.
 #[derive(Clone)]
 pub struct ItemService {
@@ -141,6 +183,9 @@ struct ItemServiceInner {
     cache: Cache<Uuid, Item>,
     /// Cached stage lookups — stages rarely change and there are typically only 3.
     stage_cache: Cache<Uuid, Stage>,
+    /// Every stage and the resolved workflow, loaded together and cached with
+    /// the stage cache's TTL: what a stage move is decided against. One entry.
+    stage_view: Cache<(), Arc<StageView>>,
     /// Cached field access decisions keyed by "perm_hash:item_type:field_name:operation".
     /// Deny-wins aggregation result, 5-minute TTL. **Shared** (`Arc`) with the
     /// `tap_services` `RequestServices` so a plugin config write flushes the same
@@ -389,6 +434,10 @@ impl ItemService {
                     .max_capacity(STAGE_CACHE_CAPACITY)
                     .time_to_live(STAGE_CACHE_TTL)
                     .build(),
+                stage_view: Cache::builder()
+                    .max_capacity(1)
+                    .time_to_live(STAGE_CACHE_TTL)
+                    .build(),
                 field_access_cache,
                 ai_providers,
                 vector_store,
@@ -446,6 +495,17 @@ impl ItemService {
     /// after persistence for post-save side effects.
     pub async fn create(&self, mut input: CreateItem, user: &UserContext) -> Result<Item> {
         Self::refuse_if_too_deep()?;
+        // A create that names a stage other than the default is a move from the
+        // default stage, and is decided as one. Naming none lands on the
+        // default, which `Item::create` resolves in its one INSERT.
+        if let Some(stage_id) = input.stage_id {
+            let view = self.stage_view().await?;
+            let from = view.default_stage();
+            if stage_id != from && !self.may_move(&view, from, stage_id, user) {
+                warn!(user_id = %user.id, stage = %stage_id, "create refused: no transition to this stage");
+                anyhow::bail!("access denied");
+            }
+        }
         // The two write gates, on the client's own submission and before the
         // presave tap: a plugin's presave edits are trusted code, not user
         // input. Both return `WriteDenied`, which every caller maps to 403.
@@ -790,6 +850,20 @@ impl ItemService {
         // Check access
         if !self.check_access(&existing, "edit", user).await? {
             anyhow::bail!("access denied");
+        }
+
+        // A stage change is a move, decided by the workflow (the edit access
+        // just checked is the other half of the rule). Asking for the stage the
+        // item is already on is no move at all.
+        if input.stage_id == Some(existing.stage_id) {
+            input.stage_id = None;
+        }
+        if let Some(to) = input.stage_id {
+            let view = self.stage_view().await?;
+            if !self.may_move(&view, existing.stage_id, to, user) {
+                warn!(user_id = %user.id, item_id = %id, stage = %to, "move refused: no transition");
+                anyhow::bail!("access denied");
+            }
         }
 
         // Field-level and publish gates, after item-level access and before the
@@ -1234,12 +1308,14 @@ impl ItemService {
                     (internal, Some(name))
                 }
                 Ok(None) => {
+                    // A stage that cannot be found must not make an item public:
+                    // deny, as the database error below does.
                     warn!(
                         stage_id = %item.stage_id,
                         item_id = %item.id,
-                        "stage not found for item, treating as public"
+                        "stage not found for item, denying access"
                     );
-                    (false, None)
+                    return Ok(false);
                 }
                 Err(e) => {
                     // DB errors must not silently upgrade access — deny and log.
@@ -1902,6 +1978,7 @@ impl ItemService {
             item_id,
             user.id,
             UpdateItem {
+                stage_id: None,
                 title: Some(revision.title),
                 status,
                 promote: None,
@@ -1939,12 +2016,67 @@ impl ItemService {
     pub fn clear_cache(&self) {
         self.inner.cache.invalidate_all();
         self.inner.stage_cache.invalidate_all();
+        self.inner.stage_view.invalidate_all();
     }
 
     /// Clear cached stage data. Call when stage config changes (visibility,
     /// machine name, etc.) so access checks use fresh data.
     pub fn clear_stage_cache(&self) {
         self.inner.stage_cache.invalidate_all();
+        self.inner.stage_view.invalidate_all();
+    }
+
+    /// Every stage and the resolved workflow, from the cache.
+    ///
+    /// Loaded together on a miss (`Stage::list_all` and the
+    /// [`WORKFLOW_KEY`] variable) and kept for the stage cache's TTL, so a
+    /// change to either is seen within it; `clear_stage_cache` drops it at once.
+    pub async fn stage_view(&self) -> Result<Arc<StageView>> {
+        if let Some(view) = self.inner.stage_view.get(&()) {
+            return Ok(view);
+        }
+        let stages = Stage::list_all(&self.inner.pool).await?;
+        let value = SiteConfig::get(&self.inner.pool, WORKFLOW_KEY).await?;
+        let workflow = Workflow::resolve(value.as_ref(), &stages);
+        let view = Arc::new(StageView { stages, workflow });
+        self.inner.stage_view.insert((), Arc::clone(&view));
+        Ok(view)
+    }
+
+    /// Whether `user` may move an item from stage `from` to stage `to`: the one
+    /// rule `create`, `update` and [`Self::move_targets`] apply
+    /// (`docs/design/stage-workflow.md`).
+    ///
+    /// The workflow half: a transition from `from` to `to` whose permission the
+    /// user holds. The other half, that the user may edit the item (a plugin's
+    /// Deny included), is the caller's, decided before this is asked. An
+    /// administrator, or the kernel background principal, may move any item to
+    /// any stage that exists. A stage that does not exist is never a target.
+    fn may_move(&self, view: &StageView, from: Uuid, to: Uuid, user: &UserContext) -> bool {
+        if view.stage(to).is_none() {
+            return false;
+        }
+        if user.is_admin() || user.is_background() {
+            return true;
+        }
+        view.workflow().allows(from, to, user)
+    }
+
+    /// The stages `user` may move `item` to, in stage order, excluding the one
+    /// it is on. Empty when they may move it nowhere. What a stage selector
+    /// offers, decided by the same rule [`Self::update`] applies.
+    pub async fn move_targets(&self, item: &Item, user: &UserContext) -> Result<Vec<Stage>> {
+        if !self.check_access(item, "edit", user).await? {
+            return Ok(Vec::new());
+        }
+        let view = self.stage_view().await?;
+        Ok(view
+            .stages()
+            .iter()
+            .filter(|s| s.id != item.stage_id)
+            .filter(|s| self.may_move(&view, item.stage_id, s.id, user))
+            .cloned()
+            .collect())
     }
 
     /// Get cache size.

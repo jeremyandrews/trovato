@@ -50,7 +50,19 @@
                 <option value="publish">Publish selected</option>
                 <option value="unpublish">Unpublish selected</option>
                 <option value="delete">Delete selected</option>
+                {% if stages %}<option value="move_to_stage">Move selected to stage</option>{% endif %}
             </select>
+            {% if stages %}
+            {# The target of "Move selected to stage"; the other actions ignore it.
+               Each item's move is decided by the editorial workflow. #}
+            <label class="visually-hidden" for="bulk-stage">Target stage</label>
+            <select name="stage" id="bulk-stage" class="bulk-action-select">
+                <option value="">- Target stage -</option>
+                {% for stage in stages %}
+                <option value="{{ stage.id }}">{{ stage.label }}</option>
+                {% endfor %}
+            </select>
+            {% endif %}
             <button type="submit" class="button button--secondary button--small">Apply</button>
         </div>
         <table class="table">

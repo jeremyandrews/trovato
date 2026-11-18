@@ -96,6 +96,11 @@ struct ContentFormData {
     /// read both as "unpublish".
     #[serde(rename = "_status_rendered")]
     status_rendered: Option<String>,
+    /// The stage the edit form's selector asks to move the item to: a stage
+    /// id, or empty for "stay". Offered only on the edit form, and only when
+    /// the user may move the item somewhere.
+    #[serde(rename = "_stage")]
+    stage: Option<String>,
     #[serde(flatten)]
     fields: std::collections::HashMap<String, serde_json::Value>,
 }
@@ -109,6 +114,16 @@ impl ContentFormData {
         self.status_rendered
             .is_some()
             .then(|| i16::from(self.status.is_some()))
+    }
+
+    /// The stage this submission asks to move the item to: `Ok(None)` when it
+    /// asked for none, `Err` when the value is not a stage id. Whether the move
+    /// is allowed is `ItemService::update`'s decision.
+    fn requested_stage(&self) -> Result<Option<uuid::Uuid>, ()> {
+        match self.stage.as_deref().map(str::trim) {
+            None | Some("") => Ok(None),
+            Some(value) => uuid::Uuid::parse_str(value).map(Some).map_err(|_| ()),
+        }
     }
 }
 
@@ -180,6 +195,16 @@ async fn list_content(
 
     let content_types = state.content_types().list_all().await;
 
+    // The targets the bulk move offers. Every stage: whether a user may move an
+    // item there is decided per item when the action runs.
+    let stages = match state.items().stage_view().await {
+        Ok(view) => view.stages().to_vec(),
+        Err(e) => {
+            tracing::warn!(error = %e, "stage list for the bulk move failed");
+            Vec::new()
+        }
+    };
+
     let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
@@ -194,6 +219,7 @@ async fn list_content(
     context.insert("items", &items);
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
+    context.insert("stages", &stages);
     context.insert("type_filter", &type_filter.unwrap_or(""));
     context.insert(
         "status_filter",
@@ -553,8 +579,35 @@ async fn render_edit_form(
         false,
     )
     .await;
+    insert_stage_choice(state, &mut context, user_ctx, item).await;
 
     render_admin_template(state, "admin/content-form.html", context).await
+}
+
+/// Put the stage selector's choices in the context: the item's current stage,
+/// and the stages this user may move it to by the workflow. With nowhere to
+/// go, `stage_targets` is empty and the form renders no selector. A lookup
+/// that fails offers nothing: the selector is only ever an offer, and the
+/// submit decides again.
+async fn insert_stage_choice(
+    state: &AppState,
+    context: &mut tera::Context,
+    user_ctx: &crate::tap::UserContext,
+    item: &crate::models::Item,
+) {
+    let targets = match state.items().move_targets(item, user_ctx).await {
+        Ok(targets) => targets,
+        Err(e) => {
+            tracing::warn!(error = %e, item_id = %item.id, "stage targets lookup failed");
+            Vec::new()
+        }
+    };
+    let current = match state.items().stage_view().await {
+        Ok(view) => view.stage(item.stage_id).map(|s| s.label.clone()),
+        Err(_) => None,
+    };
+    context.insert("stage_targets", &targets);
+    context.insert("current_stage_label", &current.unwrap_or_default());
 }
 
 /// Handle edit content form submission.
@@ -633,8 +686,13 @@ async fn edit_content_submit(
         .await;
     }
 
+    let Ok(stage_id) = form.requested_stage() else {
+        return render_error("The form could not be read.");
+    };
+
     let file_ids = extract_file_ids(&state, &fields_json, &item.item_type);
     let input = crate::models::UpdateItem {
+        stage_id,
         title: Some(form.title.clone()),
         status: form.requested_status(),
         promote: None,
@@ -759,6 +817,8 @@ struct BulkActionForm {
     token: String,
     action: String,
     ids: Vec<uuid::Uuid>,
+    /// The target of `move_to_stage`, as sent; read only by that action.
+    stage: Option<String>,
 }
 
 /// Why a bulk action body was not turned into a [`BulkActionForm`].
@@ -806,7 +866,13 @@ impl BulkActionForm {
                 ids.push(id);
             }
         }
-        Ok(Self { token, action, ids })
+        let stage = single_form_field(body, "stage");
+        Ok(Self {
+            token,
+            action,
+            ids,
+            stage,
+        })
     }
 }
 
@@ -835,6 +901,7 @@ async fn bulk_content_action(
                 token,
                 action,
                 ids: Vec::new(),
+                stage: None,
             },
             Some(value),
         ),
@@ -851,7 +918,9 @@ async fn bulk_content_action(
     // published state, so they need `publish content` on top of the edit
     // permission — the same answer `ItemService::gate_publish` would give one
     // item at a time, asked once here so the screen refuses rather than
-    // reporting every item as failed. An unrecognized action asks for the edit
+    // reporting every item as failed. A move to another stage is an edit, and
+    // each item's move is then decided by the workflow in
+    // `ItemService::update`. An unrecognized action asks for the edit
     // permission and is then rejected as unknown below.
     let required: &[&str] = match form.action.as_str() {
         "delete" => &["delete any content"],
@@ -874,7 +943,10 @@ async fn bulk_content_action(
     }
 
     // Validate action before processing
-    if !matches!(form.action.as_str(), "publish" | "unpublish" | "delete") {
+    if !matches!(
+        form.action.as_str(),
+        "publish" | "unpublish" | "delete" | "move_to_stage"
+    ) {
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
@@ -916,6 +988,30 @@ async fn bulk_content_action(
         return Redirect::to("/admin/content").into_response();
     }
 
+    // A move needs a target, and the target must be a stage id. Refused whole,
+    // before any write; whether the stage exists, and whether this user may
+    // move each item there, is the service's decision per item.
+    let target_stage = if form.action == "move_to_stage" {
+        match form
+            .stage
+            .as_deref()
+            .and_then(|v| uuid::Uuid::parse_str(v.trim()).ok())
+        {
+            Some(stage) => Some(stage),
+            None => {
+                if let Err(e) = session
+                    .insert(CONTENT_FLASH_KEY, "Nothing was moved: choose a stage.")
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to set flash message");
+                }
+                return Redirect::to("/admin/content").into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     let user_ctx = admin_user_context(&state, &user).await;
 
     let mut success_count = 0u32;
@@ -925,6 +1021,7 @@ async fn bulk_content_action(
             let new_status: i16 = if form.action == "publish" { 1 } else { 0 };
             for id in &form.ids {
                 let update = crate::models::UpdateItem {
+                    stage_id: None,
                     title: None,
                     status: Some(new_status),
                     fields: None,
@@ -939,6 +1036,27 @@ async fn bulk_content_action(
                     Ok(None) => fail_count += 1,
                     Err(e) => {
                         tracing::warn!(item_id = %id, error = %e, "bulk action failed");
+                        fail_count += 1;
+                    }
+                }
+            }
+        }
+        "move_to_stage" => {
+            for id in &form.ids {
+                let update = crate::models::UpdateItem {
+                    stage_id: target_stage,
+                    title: None,
+                    status: None,
+                    fields: None,
+                    promote: None,
+                    sticky: None,
+                    log: Some("Bulk move to stage".to_string()),
+                };
+                match state.items().update(*id, update, &user_ctx).await {
+                    Ok(Some(_)) => success_count += 1,
+                    Ok(None) => fail_count += 1,
+                    Err(e) => {
+                        tracing::warn!(item_id = %id, error = %e, "bulk move failed");
                         fail_count += 1;
                     }
                 }
@@ -963,6 +1081,7 @@ async fn bulk_content_action(
         "publish" => "published",
         "unpublish" => "unpublished",
         "delete" => "deleted",
+        "move_to_stage" => "moved",
         _ => unreachable!(),
     };
     let msg = if fail_count > 0 {

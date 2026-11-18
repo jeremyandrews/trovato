@@ -177,7 +177,7 @@ For the editorial workflow, Ritrovo needs three additional roles:
 |---|---|---|
 | **viewer** | Can view content on all editorial stages | `access content`, `view incoming conferences`, `view curated conferences` |
 | **editor** | Reviews and curates content | Viewer permissions + `create content`, `edit own content`, `edit any content`, `access files`, `use filtered_html`, `edit conferences` |
-| **publisher** | Publishes content to Live | Editor permissions + `delete any content`, `administer files`, `use full_html`, `publish conferences` |
+| **publisher** | Publishes content to Live | Editor permissions + `publish content`, `delete any content`, `administer files`, `use full_html`, `publish conferences` |
 
 The role definitions live in `docs/tutorial/config/`, one `role.{uuid}.yml` file each; `docs/tutorial/config/README.md` maps the UUIDs to `viewer`, `editor` and `publisher`. `config import` creates the roles **and grants their permissions**: each file declares a `permissions` list, and the import applies exactly that set. The one exception is a permission a plugin declares, such as `ritrovo_access`'s `view incoming conferences` in Part 5: the kernel cannot enumerate a plugin's permissions, so those are granted at `/admin/people/permissions` once the plugin is enabled. Each role file names which of its permissions are in that position.
 
@@ -288,12 +288,12 @@ Not all stage changes are valid. The editorial workflow defines which transition
 
 ```
 incoming → curated     (requires: "edit any content")
-curated  → live        (requires: "publish conferences")
-live     → curated     (requires: "publish conferences")
+curated  → live        (requires: "publish content")
+live     → curated     (requires: "publish content")
 curated  → incoming    (requires: "edit any content")
 ```
 
-An editor (who has `edit any content`) can move content between Incoming and Curated. A publisher (who has `publish conferences`) can promote content to Live or unpublish it. Invalid transitions (like Incoming → Live) are rejected by the kernel.
+An editor (who has `edit any content`) can move content between Incoming and Curated. A publisher (who has `publish content`) can promote content to Live or unpublish it. Invalid transitions (like Incoming → Live) are rejected by the kernel: a move is allowed only when a transition names exactly that pair and the user holds its permission, and with no workflow configured only an administrator moves items. `config import` refuses a transition that names a stage or a permission it cannot find, which is why the publish steps use the kernel's `publish content` rather than Part 5's `publish conferences`.
 
 The workflow is configured in `docs/tutorial/config/variable.workflow.editorial.yml`:
 
@@ -307,11 +307,11 @@ value:
       label: "Promote to Curated"
     - from: curated
       to: live
-      permission: "publish conferences"
+      permission: "publish content"
       label: "Publish"
     - from: live
       to: curated
-      permission: "publish conferences"
+      permission: "publish content"
       label: "Unpublish to Curated"
     - from: curated
       to: incoming

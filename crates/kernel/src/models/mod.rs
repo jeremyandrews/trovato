@@ -19,6 +19,7 @@ pub mod tile;
 pub mod url_alias;
 pub mod user;
 pub mod webauthn_credential;
+pub mod workflow;
 
 pub use assistant::{
     Conversation, PROPOSAL_APPLIED, PROPOSAL_DISCARDED, PROPOSAL_FAILED, PROPOSAL_PROPOSED,

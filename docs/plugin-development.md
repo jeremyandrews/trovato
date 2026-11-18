@@ -550,6 +550,12 @@ let item = host::get_item(&id)?;
 let created = host::save_item(&json!({ "type": "page", "title": "Hello", "language": "en" }))?;
 let updated = host::save_item(&json!({ "id": id, "title": "Hello again" }))?;
 
+// Move to a stage by machine name, by the editorial workflow's rule: an
+// unknown name is `ERR_PARAM_DESERIALIZE`, a move the user may not make is
+// `ERR_ITEM_ACCESS_DENIED`. Without `stage`, a create lands on the default
+// stage and an update stays where it is.
+let moved = host::save_item(&json!({ "id": id, "stage": "curated" }))?;
+
 // Delete: `Err(ERR_ITEM_NOT_FOUND)` when no item has that id.
 host::delete_item(&id)?;
 

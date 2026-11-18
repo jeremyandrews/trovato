@@ -19,6 +19,7 @@ permissions:
 - create content
 - edit own content
 - edit any content
+- publish content
 - delete any content
 - access files
 - administer files
