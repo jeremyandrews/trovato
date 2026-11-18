@@ -1,10 +1,16 @@
 //! Route metadata for API documentation and versioning.
 //!
-//! Provides structured metadata about kernel routes that plugins can
-//! use to generate OpenAPI specs, API explorers, or client SDKs.
+//! Builds `/api/openapi.json` from the kernel's API routes and every enabled
+//! plugin's `api` menu entries. The plugin half is read through
+//! [`served_api_entries`], the same rule the plugin router mounts from, so the
+//! document lists exactly the plugin routes the server serves; a test requests
+//! every listed path and requires the router to answer it.
 
 use axum::http::Method;
 use serde::Serialize;
+
+use crate::menu::MenuDefinition;
+use crate::routes::plugin_api::served_api_entries;
 
 /// Metadata describing an API route.
 #[derive(Debug, Clone, Serialize)]
@@ -12,7 +18,7 @@ pub struct RouteMetadata {
     /// HTTP method.
     pub method: String,
 
-    /// Route path pattern (e.g., "/api/v1/items/{id}").
+    /// Route path pattern (e.g., "/api/item/{id}").
     pub path: String,
 
     /// Short summary of the route's purpose.
@@ -29,6 +35,9 @@ pub struct RouteMetadata {
 
     /// Whether this route is deprecated.
     pub deprecated: bool,
+
+    /// Longer description, when there is something to add to the summary.
+    pub description: Option<String>,
 }
 
 /// Metadata about a route parameter.
@@ -47,10 +56,7 @@ pub struct ParamMeta {
     pub description: String,
 }
 
-/// Registry of all API route metadata.
-///
-/// Built at startup from kernel route definitions. Plugins can
-/// add their own route metadata via `register_route_metadata` host function.
+/// Registry of all API route metadata: the kernel's routes and the plugins'.
 #[derive(Debug, Default)]
 pub struct RouteRegistry {
     routes: Vec<RouteMetadata>,
@@ -67,7 +73,7 @@ impl RouteRegistry {
         // Register the core API v1 routes
         self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
-            path: "/api/v1/items".to_string(),
+            path: "/api/items".to_string(),
             summary: "List content items with filters and pagination".to_string(),
             parameters: vec![
                 ParamMeta {
@@ -86,17 +92,18 @@ impl RouteRegistry {
                     name: "per_page".to_string(),
                     location: "query".to_string(),
                     required: false,
-                    description: "Items per page (default 25)".to_string(),
+                    description: "Items per page (default 20, max 100)".to_string(),
                 },
             ],
             response_type: "application/json".to_string(),
             tags: vec!["content".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
-            path: "/api/v1/items/{id}".to_string(),
+            path: "/api/item/{id}".to_string(),
             summary: "Get a single content item by ID".to_string(),
             parameters: vec![ParamMeta {
                 name: "id".to_string(),
@@ -107,6 +114,7 @@ impl RouteRegistry {
             response_type: "application/json".to_string(),
             tags: vec!["content".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -122,6 +130,7 @@ impl RouteRegistry {
             response_type: "application/json".to_string(),
             tags: vec!["search".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -137,16 +146,18 @@ impl RouteRegistry {
             response_type: "application/json".to_string(),
             tags: vec!["user".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
-            path: "/api/v1/categories".to_string(),
+            path: "/api/categories".to_string(),
             summary: "List categories".to_string(),
             parameters: vec![],
             response_type: "application/json".to_string(),
             tags: vec!["categories".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -176,6 +187,7 @@ impl RouteRegistry {
             response_type: "application/json".to_string(),
             tags: vec!["content".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -187,6 +199,7 @@ impl RouteRegistry {
             response_type: "application/json".to_string(),
             tags: vec!["ai".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -197,6 +210,7 @@ impl RouteRegistry {
             response_type: "text/event-stream".to_string(),
             tags: vec!["ai".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -207,6 +221,7 @@ impl RouteRegistry {
             response_type: "application/json".to_string(),
             tags: vec!["search".to_string(), "ai".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -217,6 +232,7 @@ impl RouteRegistry {
             response_type: "text/event-stream".to_string(),
             tags: vec!["search".to_string(), "ai".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -227,6 +243,7 @@ impl RouteRegistry {
             response_type: "text/event-stream".to_string(),
             tags: vec!["search".to_string(), "ai".to_string()],
             deprecated: false,
+            description: None,
         });
 
         self.routes.push(RouteMetadata {
@@ -237,17 +254,55 @@ impl RouteRegistry {
             response_type: "application/json".to_string(),
             tags: vec!["infrastructure".to_string()],
             deprecated: false,
+            description: None,
         });
     }
 
-    /// Register a plugin-provided route.
-    pub fn register(&mut self, meta: RouteMetadata) {
-        self.routes.push(meta);
+    /// Register every plugin `api` menu entry the plugin router serves.
+    ///
+    /// The summary is the entry's title, the tag its plugin, the path
+    /// parameters come from the path, and a required permission is stated in
+    /// the description.
+    pub fn register_plugin_api_routes(&mut self, menus: &[MenuDefinition]) {
+        let (served, _skipped) = served_api_entries(menus);
+        for entry in served {
+            let parameters = entry
+                .path
+                .split('/')
+                .filter_map(|seg| seg.strip_prefix('{')?.strip_suffix('}'))
+                .map(|name| ParamMeta {
+                    name: name.to_string(),
+                    location: "path".to_string(),
+                    required: true,
+                    description: String::new(),
+                })
+                .collect();
+            let permission = entry.menu.permission.trim();
+            self.routes.push(RouteMetadata {
+                method: entry.method,
+                path: entry.path,
+                summary: entry.menu.title.clone(),
+                parameters,
+                response_type: "application/json".to_string(),
+                tags: vec![entry.menu.plugin.clone()],
+                deprecated: false,
+                description: (!permission.is_empty())
+                    .then(|| format!("Requires the `{permission}` permission.")),
+            });
+        }
     }
 
     /// Get all registered routes.
     pub fn routes(&self) -> &[RouteMetadata] {
         &self.routes
+    }
+
+    /// The whole document: kernel routes plus the plugin routes in `menus`.
+    pub fn openapi_document(menus: &[MenuDefinition]) -> serde_json::Value {
+        let mut registry = Self::new();
+        registry.register_kernel_routes();
+        registry.register_plugin_api_routes(menus);
+        registry.to_openapi_json()
     }
 
     /// Generate an OpenAPI 3.0 spec from registered routes.
@@ -294,6 +349,10 @@ impl RouteRegistry {
 
             if route.deprecated {
                 operation["deprecated"] = serde_json::Value::Bool(true);
+            }
+
+            if let Some(description) = &route.description {
+                operation["description"] = serde_json::Value::String(description.clone());
             }
 
             // Convert {id} to OpenAPI {id} format (already correct)

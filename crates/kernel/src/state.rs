@@ -104,6 +104,11 @@ struct AppStateInner {
     /// Menu registry.
     menu_registry: Arc<MenuRegistry>,
 
+    /// `/api/openapi.json`, serialized once beside the menu registry it reads.
+    /// Both are fixed for the life of the process, so the document changes
+    /// exactly when the plugin set does: at the next start.
+    openapi: Arc<str>,
+
     /// Assistant scope registry, built once at boot from `tap_assistant_scopes`.
     assistant_scopes: Arc<AssistantRegistry>,
     /// Permissions plugins declared through `tap_perm`, collected once at boot.
@@ -539,6 +544,11 @@ impl AppState {
         });
 
         let menu_registry = Arc::new(menu_registry);
+        let openapi: Arc<str> = crate::routes::route_metadata::RouteRegistry::openapi_document(
+            &menu_registry.all().cloned().collect::<Vec<_>>(),
+        )
+        .to_string()
+        .into();
 
         // Plugin permissions, collected the same way and for the same reason: a
         // permission declaration is a constant, so it is gathered once here
@@ -1102,6 +1112,7 @@ impl AppState {
                 tap_dispatcher,
                 tap_services,
                 menu_registry,
+                openapi,
                 plugin_permissions,
                 assistant_scopes,
                 content_types,
@@ -1239,6 +1250,11 @@ impl AppState {
     /// Get the menu registry.
     pub fn menu_registry(&self) -> &Arc<MenuRegistry> {
         &self.inner.menu_registry
+    }
+
+    /// The serialized `/api/openapi.json` document.
+    pub fn openapi(&self) -> &Arc<str> {
+        &self.inner.openapi
     }
 
     /// Get the assistant scope registry.
