@@ -13,7 +13,7 @@
 //! kernel from a crate the kernel dev-depends on. The caller runs them, which
 //! is one line and keeps the dependency pointing one way.
 
-use sqlx::{Connection, Executor, PgConnection, PgPool};
+use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
 
 /// A database created for one test, dropped when this value is.
@@ -52,7 +52,7 @@ impl ScratchDb {
             .await
             .expect("failed to connect to the postgres maintenance database");
         admin
-            .execute(format!(r#"CREATE DATABASE "{name}""#).as_str())
+            .execute(AssertSqlSafe(format!(r#"CREATE DATABASE "{name}""#)))
             .await
             .unwrap_or_else(|e| panic!("failed to create scratch database {name}: {e}"));
         drop(admin);
@@ -109,9 +109,9 @@ impl Drop for ScratchDb {
                     PgConnection::connect(&format!("{server_url}/postgres")).await
                 {
                     let _ = admin
-                        .execute(
-                            format!(r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#).as_str(),
-                        )
+                        .execute(AssertSqlSafe(format!(
+                            r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#
+                        )))
                         .await;
                 }
             });

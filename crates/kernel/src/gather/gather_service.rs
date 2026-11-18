@@ -22,7 +22,7 @@ use crate::services::vector_store::{PgVectorStore, VectorStore};
 use crate::tap::UserContext;
 use anyhow::{Context, Result};
 use moka::sync::Cache;
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -442,7 +442,7 @@ impl GatherService {
             Self::DISTINCT_VALUES_LIMIT
         ));
 
-        let mut q = sqlx::query_scalar::<_, String>(&sql)
+        let mut q = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql))
             .bind(jsonb_key)
             .bind(item_type);
         for (_, val) in &eq_scope {
@@ -513,7 +513,7 @@ impl GatherService {
             param_idx += 1;
         }
 
-        let mut q = sqlx::query_scalar::<_, String>(&sql).bind(item_type);
+        let mut q = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql)).bind(item_type);
         for (_, val) in &eq_scope {
             q = q.bind(val.clone());
         }
@@ -807,7 +807,7 @@ impl GatherService {
         // enforced post-fetch and is not counted; access-aware totals are not a
         // 1.0 goal).
         let count_sql = builder.build_count();
-        let total: i64 = sqlx::query_scalar(&count_sql)
+        let total: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql))
             .fetch_one(&mut *tx)
             .await
             .context("failed to execute count query")?;
@@ -945,10 +945,12 @@ impl GatherService {
         let Some(items) = self.item_access.get() else {
             // Unwired test harness: no enforcement, single window.
             let main_sql = builder.build(page, per_page);
-            let rows = sqlx::query_scalar(&format!("SELECT row_to_json(t) FROM ({main_sql}) t"))
-                .fetch_all(&mut **tx)
-                .await
-                .context("failed to execute main query")?;
+            let rows = sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT row_to_json(t) FROM ({main_sql}) t"
+            )))
+            .fetch_all(&mut **tx)
+            .await
+            .context("failed to execute main query")?;
             return Ok((rows, false));
         };
 
@@ -968,11 +970,12 @@ impl GatherService {
             // Clamp so the cumulative scan never exceeds the hard cap.
             let this_window = window.min(max_scan - scanned);
             let main_sql = builder.build_window(base_offset + scanned, this_window);
-            let batch: Vec<serde_json::Value> =
-                sqlx::query_scalar(&format!("SELECT row_to_json(t) FROM ({main_sql}) t"))
-                    .fetch_all(&mut **tx)
-                    .await
-                    .context("failed to execute main query window")?;
+            let batch: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT row_to_json(t) FROM ({main_sql}) t"
+            )))
+            .fetch_all(&mut **tx)
+            .await
+            .context("failed to execute main query window")?;
             let got = batch.len() as u64;
             scanned += got;
 
@@ -1173,11 +1176,12 @@ impl GatherService {
     ) -> Result<(Vec<serde_json::Value>, bool)> {
         let offset = (page.saturating_sub(1) as u64) * u64::from(per_page);
         let main_sql = builder.build_window(offset, u64::from(per_page.max(1)));
-        let mut rows: Vec<serde_json::Value> =
-            sqlx::query_scalar(&format!("SELECT row_to_json(t) FROM ({main_sql}) t"))
-                .fetch_all(&mut **tx)
-                .await
-                .context("failed to execute record query window")?;
+        let mut rows: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT row_to_json(t) FROM ({main_sql}) t"
+        )))
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to execute record query window")?;
 
         if let Some(items) = self.item_access.get() {
             Self::apply_record_field_filtering(items, viewer, &mut rows, record_ctx).await;

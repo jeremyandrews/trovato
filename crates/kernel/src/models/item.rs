@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 use super::stage::LIVE_STAGE_ID;
@@ -523,7 +523,7 @@ impl Item {
             param_idx + 1
         ));
 
-        let mut query_builder = sqlx::query_as::<_, Item>(&query);
+        let mut query_builder = sqlx::query_as::<_, Item>(AssertSqlSafe(query));
 
         if let Some(t) = item_type {
             query_builder = query_builder.bind(t);
@@ -572,7 +572,7 @@ impl Item {
             query.push_str(&cond);
         }
 
-        let mut query_builder = sqlx::query_scalar::<_, i64>(&query);
+        let mut query_builder = sqlx::query_scalar::<_, i64>(AssertSqlSafe(query));
 
         if let Some(t) = item_type {
             query_builder = query_builder.bind(t);
@@ -638,7 +638,9 @@ impl Item {
         }
         sql.push_str(" ORDER BY changed DESC");
 
-        let mut query = sqlx::query_as::<_, Item>(&sql).bind(scalar).bind(array);
+        let mut query = sqlx::query_as::<_, Item>(AssertSqlSafe(sql))
+            .bind(scalar)
+            .bind(array);
         if let Some(t) = item_type {
             query = query.bind(t);
         }

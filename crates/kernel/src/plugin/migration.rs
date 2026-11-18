@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use sqlx::{PgPool, Row};
+use sqlx::{AssertSqlSafe, PgPool, Row};
 use tracing::{debug, info, warn};
 
 use super::error::PluginError;
@@ -96,7 +96,7 @@ pub async fn run_plugin_migrations(
         // Use raw_sql instead of query() because migration files contain
         // multiple SQL statements. query() uses prepared statements which
         // only support a single statement per call.
-        sqlx::raw_sql(&sql)
+        sqlx::raw_sql(AssertSqlSafe(sql))
             .execute(&mut *tx)
             .await
             .map_err(|e| PluginError::MigrationFailed {

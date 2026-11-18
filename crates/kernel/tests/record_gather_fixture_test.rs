@@ -121,7 +121,7 @@ async fn seed(pool: &sqlx::PgPool, published: Uuid, unpublished: Uuid) {
         plugins_dir().join(format!("{PLUGIN}/migrations/001_create_event_record.sql")),
     )
     .expect("read migration");
-    sqlx::query(&migration)
+    sqlx::query(sqlx::AssertSqlSafe(migration))
         .execute(pool)
         .await
         .expect("create record_event");

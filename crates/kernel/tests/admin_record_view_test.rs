@@ -100,7 +100,7 @@ async fn ensure_tables(app: &TestApp) {
                 .join(file),
         )
         .unwrap_or_else(|e| panic!("read {file}: {e}"));
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql))
             .execute(&app.db)
             .await
             .unwrap_or_else(|e| panic!("apply {file}: {e}"));

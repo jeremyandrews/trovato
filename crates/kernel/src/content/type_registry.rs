@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use moka::sync::Cache;
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use tracing::{info, warn};
 
 use crate::models::{CreateItemType, ItemType};
@@ -545,7 +545,7 @@ impl ContentTypeRegistry {
              {RETURNING_ITEM_TYPE}",
             merge = merge_settings_sql("$5"),
         );
-        let row = sqlx::query_as::<_, ItemType>(&sql)
+        let row = sqlx::query_as::<_, ItemType>(AssertSqlSafe(sql))
             .bind(machine_name)
             .bind(label)
             .bind(description)
@@ -631,7 +631,7 @@ impl ContentTypeRegistry {
             "UPDATE item_type SET settings = {merge} WHERE type = $1 {RETURNING_ITEM_TYPE}",
             merge = merge_settings_sql("$2"),
         );
-        let row = sqlx::query_as::<_, ItemType>(&sql)
+        let row = sqlx::query_as::<_, ItemType>(AssertSqlSafe(sql))
             .bind(type_name)
             .bind(&patch)
             .fetch_optional(&self.inner.pool)

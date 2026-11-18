@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 
 /// Content type record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -198,7 +198,7 @@ impl ItemType {
             RETURNING type as type_name, label, description, has_title, title_label, plugin, settings
             "#
         );
-        let item_type = sqlx::query_as::<_, ItemType>(&sql)
+        let item_type = sqlx::query_as::<_, ItemType>(AssertSqlSafe(sql))
             .bind(&input.type_name)
             .bind(&input.label)
             .bind(&input.description)
