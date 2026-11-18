@@ -162,6 +162,26 @@ struct ClaimedJob {
     attempts: i32,
     /// Attempt bound after which the job is dead-lettered.
     max_attempts: i32,
+    /// The plugin that pushed the job with `push-to`, for a job on a shared
+    /// queue; `None` for the owner's own `push`/`enqueue` and kernel jobs.
+    sender: Option<String>,
+}
+
+/// What `tap_queue_worker` receives for a claimed job.
+///
+/// A job the owner pushed itself is its payload, unchanged. A job another
+/// plugin pushed to a shared queue is wrapped, so the worker can tell who sent
+/// it: `{"sender", "queue", "payload"}`. The kernel recorded the sender at push
+/// time from the pusher's own state, so it cannot be forged by the payload.
+fn worker_input(queue_name: &str, job: &ClaimedJob) -> serde_json::Value {
+    match &job.sender {
+        None => job.payload.clone(),
+        Some(sender) => serde_json::json!({
+            "sender": sender,
+            "queue": queue_name,
+            "payload": job.payload,
+        }),
+    }
 }
 
 /// How far past a worker's own CPU budget the drain waits before it stops
@@ -331,7 +351,8 @@ async fn run_queue_job(
     invocation_sink: Arc<AtomicU64>,
 ) -> Result<JobOutcome> {
     // Infallible: payload came from JSONB and round-trips to a string.
-    let input_json = serde_json::to_string(&job.payload).unwrap_or_else(|_| "{}".to_string());
+    let input_json = serde_json::to_string(&worker_input(&queue_name, &job))
+        .unwrap_or_else(|_| "{}".to_string());
 
     // P11c / D-40: queue-worker dispatch carries the kernel-internal background
     // principal so a plugin holding `ai_background` may call AI from the worker.
@@ -1725,7 +1746,7 @@ impl CronService {
                 LIMIT $4
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, payload, attempts, max_attempts
+            RETURNING id, payload, attempts, max_attempts, sender
             "#,
         )
         .bind(plugin_name)
@@ -1746,6 +1767,7 @@ impl CronService {
                     payload: row.try_get("payload").ok()?,
                     attempts: row.try_get("attempts").ok()?,
                     max_attempts: row.try_get("max_attempts").ok()?,
+                    sender: row.try_get("sender").ok()?,
                 })
             })
             .collect())
@@ -2125,6 +2147,29 @@ impl std::fmt::Debug for CronService {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn job(sender: Option<&str>) -> ClaimedJob {
+        ClaimedJob {
+            id: 1,
+            payload: serde_json::json!({"n": 7}),
+            attempts: 1,
+            max_attempts: 3,
+            sender: sender.map(String::from),
+        }
+    }
+
+    #[test]
+    fn an_owners_own_job_reaches_the_worker_as_its_payload() {
+        assert_eq!(worker_input("q", &job(None)), serde_json::json!({"n": 7}));
+    }
+
+    #[test]
+    fn a_pushed_job_names_its_sender_and_queue() {
+        assert_eq!(
+            worker_input("shared", &job(Some("alpha"))),
+            serde_json::json!({"sender": "alpha", "queue": "shared", "payload": {"n": 7}})
+        );
+    }
 
     #[test]
     fn test_hostname() {

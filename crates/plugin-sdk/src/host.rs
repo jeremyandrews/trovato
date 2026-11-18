@@ -97,6 +97,16 @@ unsafe extern "C" {
         opts_ptr: i32,
         opts_len: i32,
     ) -> i32;
+
+    #[link_name = "push-to"]
+    fn __queue_push_to(
+        owner_ptr: i32,
+        owner_len: i32,
+        queue_name_ptr: i32,
+        queue_name_len: i32,
+        payload_ptr: i32,
+        payload_len: i32,
+    ) -> i32;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -561,6 +571,51 @@ pub fn queue_enqueue(
     _queue_name: &str,
     _payload: &serde_json::Value,
     _opts: &crate::types::QueueOptions,
+) -> Result<(), i32> {
+    Ok(())
+}
+
+/// Push a job onto a queue another plugin owns (B68).
+///
+/// The owner must declare `queue_name` in its `tap_queue_info` and list the
+/// calling plugin in that entry's `shared_with`. The job then runs in the
+/// owner's `tap_queue_worker`, under the owner's concurrency width, and the
+/// worker receives `{"sender": "<this plugin>", "queue": "<queue>", "payload":
+/// <payload>}` so it knows who sent it. The kernel names the sender; a plugin
+/// cannot push as another.
+///
+/// # Errors
+///
+/// [`crate::host_errors::ERR_QUEUE_PUSH_REFUSED`] if the owner does not share
+/// the queue with the caller; otherwise a negative host error code as for
+/// [`queue_push`].
+#[cfg(target_arch = "wasm32")]
+pub fn queue_push_to(
+    owner: &str,
+    queue_name: &str,
+    payload: &serde_json::Value,
+) -> Result<(), i32> {
+    let payload_json =
+        serde_json::to_string(payload).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let result = unsafe {
+        __queue_push_to(
+            owner.as_ptr() as i32,
+            owner.len() as i32,
+            queue_name.as_ptr() as i32,
+            queue_name.len() as i32,
+            payload_json.as_ptr() as i32,
+            payload_json.len() as i32,
+        )
+    };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Push to another plugin's queue (stub for native testing, always succeeds).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn queue_push_to(
+    _owner: &str,
+    _queue_name: &str,
+    _payload: &serde_json::Value,
 ) -> Result<(), i32> {
     Ok(())
 }

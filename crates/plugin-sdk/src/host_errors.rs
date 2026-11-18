@@ -205,6 +205,16 @@
 //!   - `-36`: DB insert failed ([`ERR_QUEUE_INSERT_FAILED`])
 //!   - `0`: success
 //!
+//! - **`push-to(owner_ptr, owner_len, queue_ptr, queue_len, payload_ptr, payload_len) → i32`**
+//!   (B68: additive; push to a queue another plugin owns and shares)
+//!   - `-1`: memory missing, `-2`: owner read failed, `-3`: queue name read
+//!     failed, `-4`: payload read failed
+//!   - `-34`: malformed payload JSON ([`ERR_QUEUE_INVALID_PAYLOAD`])
+//!   - `-36`: DB insert failed ([`ERR_QUEUE_INSERT_FAILED`])
+//!   - `-64`: the owner does not share this queue with the caller
+//!     ([`ERR_QUEUE_PUSH_REFUSED`])
+//!   - `0`: success
+//!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
 //!
 //! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
@@ -405,6 +415,11 @@ pub const ERR_QUEUE_INVALID_OPTS: i32 = -35;
 
 /// Queue `enqueue`: the database insert failed.
 pub const ERR_QUEUE_INSERT_FAILED: i32 = -36;
+
+/// Queue `push-to`: the owner is not loaded, does not declare the queue in its
+/// `tap_queue_info`, or does not list the caller in that queue's
+/// `shared_with`. Added by B68, after 0.104.0.
+pub const ERR_QUEUE_PUSH_REFUSED: i32 = -64;
 
 // =============================================================================
 // Mail API errors (`trovato:kernel/mail`) — added at KERNEL_API_VERSION (0,101)

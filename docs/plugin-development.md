@@ -307,8 +307,8 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | `tap_menu` | None | `Vec<MenuDefinition>` | Register routes |
 | `tap_perm` | None | `Vec<PermissionDefinition>` | Define permissions |
 | `tap_cron` | None | `Result<(), String>` | Background tasks |
-| `tap_queue_info` | None | `[{name, concurrency}]` | Declare owned queues + worker concurrency ([queue docs](plugin-queue.md)) |
-| `tap_queue_worker` | Job payload | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
+| `tap_queue_info` | None | `[{name, concurrency, shared_with?}]` | Declare owned queues, each one's worker concurrency, and the plugins that may push to it ([queue docs](plugin-queue.md)) |
+| `tap_queue_worker` | Job payload, or `{sender, queue, payload}` for a job another plugin pushed | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
 | `tap_install` | None | `Result<(), String>` | First-time setup |
 | `tap_enable` | None | `Result<(), String>` | On plugin enable |
 | `tap_disable` | None | `Result<(), String>` | On plugin disable |

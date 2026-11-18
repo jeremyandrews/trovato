@@ -244,6 +244,15 @@ interface queue {
     /// applies v2 retry/backoff/dead-letter semantics regardless of entry point.
     /// `payload-json` must be well-formed JSON.
     enqueue: func(queue-name: string, payload-json: string, opts-json: string) -> result<_, string>;
+
+    /// Push to a queue another plugin owns (B68). The owner shares a queue by
+    /// listing plugins in that queue's `tap-queue-info` entry, as
+    /// `"shared_with": ["<plugin>", ...]`; a queue not shared with the caller
+    /// refuses the push with -64 (ERR_QUEUE_PUSH_REFUSED). The job is stored
+    /// under the owner and runs in the owner's `tap-queue-worker` under the
+    /// owner's width, which receives `{"sender": "<caller>", "queue":
+    /// "<queue-name>", "payload": <payload>}`. The kernel names the sender.
+    push-to: func(owner: string, queue-name: string, payload-json: string) -> result<_, string>;
 }
 
 /// Outgoing mail, narrow by construction (added at 0.101).

@@ -9,9 +9,10 @@ This document is the contract for plugin authors and operators.
 
 ## Enqueuing work
 
-Two host functions enqueue jobs. Both inject the calling plugin's name (a plugin
-cannot enqueue under another plugin's identity) and feed the same server-side v2
-semantics.
+Two host functions enqueue jobs onto the caller's own queues, and a third, below,
+pushes to a queue another plugin shares. All three inject the calling plugin's
+name (a plugin cannot enqueue under another plugin's identity) and feed the same
+server-side v2 semantics.
 
 - **`queue_push(queue_name, payload)`** — the minimal, byte-identical form.
   Priority 0, no delay. Its ABI is frozen; existing callers are unaffected.
@@ -37,6 +38,49 @@ semantics.
 `payload` must be well-formed JSON. Error codes are documented in
 [`plugin-error-codes.md`](plugin-error-codes.md#queue-api-errors).
 
+## Sharing a queue with another plugin
+
+A queue belongs to the plugin that declares it. The owner can let other plugins
+push to it by listing them in that queue's `tap_queue_info` entry:
+
+```rust
+#[plugin_tap]
+fn tap_queue_info() -> serde_json::Value {
+    serde_json::json!([
+        { "name": "notifications", "concurrency": 2, "shared_with": ["ritrovo_cfp"] }
+    ])
+}
+```
+
+A listed plugin pushes with **`queue_push_to(owner, queue_name, payload)`**:
+
+```rust
+trovato_sdk::host::queue_push_to(
+    "ritrovo_notify",
+    "notifications",
+    &serde_json::json!({ "event": "cfp_closing_soon", "id": id }),
+)?;
+```
+
+- **Deny by default.** A queue with no `shared_with`, a plugin not in the list,
+  a queue the owner does not declare, and an owner that is not loaded all refuse
+  the push with `ERR_QUEUE_PUSH_REFUSED` (-64), and nothing is queued. The
+  kernel asks the owner at push time, by dispatching its `tap_queue_info`, so
+  the declaration the drain obeys is the one the push is checked against.
+- **The owner runs it.** The job is stored under the owner, so it runs in the
+  owner's `tap_queue_worker`, at the owner's width for that queue, under the
+  owner's capabilities, with the same retry, backoff and dead-letter rules.
+- **The worker is told who sent it.** A pushed job reaches the worker wrapped:
+
+  ```json
+  { "sender": "ritrovo_cfp", "queue": "notifications", "payload": { "event": "..." } }
+  ```
+
+  The kernel records `sender` from the pushing plugin's own identity, so a
+  payload cannot claim to come from someone else. A job the owner pushed itself
+  still arrives as its bare payload, as below.
+- Priority 0, no delay, as `queue_push`.
+
 ## Declaring your worker and its concurrency
 
 Implement two taps:
@@ -50,8 +94,10 @@ Implement two taps:
   }
   ```
 
-- `tap_queue_worker` — process one job. The kernel passes the job payload
-  **directly** as the worker input (not wrapped):
+- `tap_queue_worker` — process one job. The kernel passes a job you pushed
+  yourself **directly** as the worker input (not wrapped); a job another plugin
+  pushed to a queue you share arrives wrapped with its sender (see
+  [Sharing a queue](#sharing-a-queue-with-another-plugin)):
 
   ```rust
   #[plugin_tap]
@@ -61,11 +107,13 @@ Implement two taps:
   }
   ```
 
-**Concurrency (D-47).** `concurrency` is now honored — for the first time; in v1
-it was only a codegen docstring and was never parsed. The kernel drains up to
-that many jobs **in parallel** per plugin, **clamped to a kernel cap of 4**. A
-plugin that declares nothing (or exports no `tap_queue_info`) drains at
-concurrency 1.
+**Concurrency (D-47).** `concurrency` is honored per queue: the kernel drains up
+to that many of the queue's jobs **in parallel**, **clamped to a kernel cap of
+4**, and each queue a plugin declares keeps its own width. A queue the plugin
+does not declare (or a plugin that exports no `tap_queue_info`) drains at
+concurrency 1. `concurrency`, `name` and `shared_with` are the only keys the
+kernel reads from an entry; `max_retries` and `retry_delay_seconds`, which older
+examples show, are ignored, and every queue uses the retry rules below.
 
 ## Delivery guarantee: at-least-once — workers MUST be idempotent
 
@@ -268,6 +316,7 @@ un-attempted state and survive the migration):
 | `locked_until` | claim lease expiry (reclaimable after it passes) |
 | `status` | `ready` \| `claimed` \| `done` (reserved) \| `dead` |
 | `last_error` / `dead_reason` / `dead_at` | failure diagnostics for retries and the DLQ |
+| `sender` | the plugin that pushed the job with `push-to`; `NULL` for the owner's own jobs (B68) |
 
 The schema is internal and not part of the frozen 1.0 contract; the **semantics**
 above (at-least-once delivery, honored-bounded concurrency, the `enqueue` surface)

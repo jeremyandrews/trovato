@@ -85,13 +85,15 @@ above and `-12`, `-13`, `-14` from the database table.
 
 `queue.push` (byte-identical, unchanged) returns `-1` memory missing, `-2`/`-3`
 parameter read, `-4` malformed payload JSON, `-5` DB insert failed. The additive
-`queue.enqueue` (P11d / D-48, carries `priority`/`delay`) adds:
+`queue.enqueue` (P11d / D-48, carries `priority`/`delay`) and `queue.push-to`
+(B68, push to a queue another plugin shares) add:
 
 | Code | Constant | Meaning | Recovery |
 |------|----------|---------|----------|
-| -34 | `ERR_QUEUE_INVALID_PAYLOAD` | `enqueue` payload was not valid JSON | Serialize a valid JSON value |
+| -34 | `ERR_QUEUE_INVALID_PAYLOAD` | `enqueue` or `push-to` payload was not valid JSON | Serialize a valid JSON value |
 | -35 | `ERR_QUEUE_INVALID_OPTS` | `enqueue` opts were not a valid `{priority?, delay?}` object | Build opts with `QueueOptions` |
-| -36 | `ERR_QUEUE_INSERT_FAILED` | `enqueue` DB insert failed | Transient — the job was not enqueued; retry |
+| -36 | `ERR_QUEUE_INSERT_FAILED` | `enqueue` or `push-to` DB insert failed | Transient — the job was not enqueued; retry |
+| -64 | `ERR_QUEUE_PUSH_REFUSED` | `push-to`: the owner is not loaded, does not declare the queue, or does not list the caller in its `shared_with` | Ask the owner to share the queue; not transient |
 
 See [`plugin-queue.md`](plugin-queue.md) for queue semantics (at-least-once delivery, backoff, dead-lettering).
 
