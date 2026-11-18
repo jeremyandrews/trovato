@@ -707,3 +707,475 @@ async fn the_app_binds_an_item_service_into_its_tap_services() {
         "AppState must bind the item service the item-api host functions decide with"
     );
 }
+
+// =============================================================================
+// Writes go through `ItemService` (B68 Part 2)
+//
+// `save-item` and `delete-item` wrote through the `Item` model, so a plugin's
+// write fired none of the item write taps, ran neither write gate, and left the
+// item cache serving the old row. These drive a write through the probe and
+// watch for it from a second plugin, `test_item_writer`, which logs every item
+// write tap it receives to `tiw_log`.
+// =============================================================================
+
+/// Serializes creating `tiw_log` across tests, binaries and shards.
+const TIW_LOG_LOCK: i64 = 0x0B68_0000_0002;
+
+/// The witness plugin's log table. The fixture writes it with `execute-raw`;
+/// the suite creates it, so no plugin migration has to run.
+async fn ensure_tiw_log(pool: &PgPool) {
+    let mut tx = pool.begin().await.expect("begin tiw_log setup");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(TIW_LOG_LOCK)
+        .execute(&mut *tx)
+        .await
+        .expect("take tiw_log lock");
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tiw_log (\
+           id BIGSERIAL PRIMARY KEY, tap TEXT NOT NULL, item_id TEXT NOT NULL, \
+           title TEXT NOT NULL, note TEXT NOT NULL)",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("create tiw_log");
+    tx.commit().await.expect("commit tiw_log setup");
+}
+
+/// The witness's log for one title, in the order the taps fired.
+async fn taps_titled(pool: &PgPool, title: &str) -> Vec<String> {
+    sqlx::query_scalar("SELECT tap FROM tiw_log WHERE title = $1 ORDER BY id")
+        .bind(title)
+        .fetch_all(pool)
+        .await
+        .expect("read tiw_log")
+}
+
+/// The witness's log for one item id, in order, as `tap` or `tap:note`.
+async fn taps_for(pool: &PgPool, id: Uuid) -> Vec<String> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT tap, note FROM tiw_log WHERE item_id = $1 ORDER BY id")
+            .bind(id.to_string())
+            .fetch_all(pool)
+            .await
+            .expect("read tiw_log");
+    rows.into_iter()
+        .map(|(tap, note)| {
+            if note.is_empty() {
+                tap
+            } else {
+                format!("{tap}:{note}")
+            }
+        })
+        .collect()
+}
+
+async fn forget(pool: &PgPool, id: Uuid, title_prefix: &str) {
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM tiw_log WHERE item_id = $1 OR title LIKE $2")
+        .bind(id.to_string())
+        .bind(format!("{title_prefix}%"))
+        .execute(pool)
+        .await
+        .ok();
+}
+
+/// An item service whose dispatcher has `test_item_writer` loaded, with the
+/// services wired so the witness's own item-api calls reach the same service.
+struct Witnessed {
+    items: Arc<trovato_kernel::content::ItemService>,
+    dispatcher: Arc<trovato_kernel::tap::TapDispatcher>,
+    services: RequestServices,
+}
+
+fn witnessed(pool: &PgPool) -> Witnessed {
+    use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
+    use trovato_kernel::tap::{TapDispatcher, TapRegistry};
+
+    let name = "test_item_writer";
+    let mut runtime = PluginRuntime::new(&PluginConfig::default()).expect("create runtime");
+    runtime
+        .load_plugin(&common::project_root().join("plugins").join(name))
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to load fixture '{name}': {e:#}\n\
+                 build it first: cargo build -p {name} --target wasm32-wasip1 --release \
+                 && cp target/wasm32-wasip1/release/{name}.wasm plugins/{name}/"
+            )
+        });
+    let runtime = Arc::new(runtime);
+    let registry = Arc::new(TapRegistry::from_plugins(&runtime));
+    let dispatcher = Arc::new(TapDispatcher::new(Arc::clone(&runtime), registry));
+    let services =
+        RequestServices::for_background(pool.clone(), None, None, reqwest::Client::new())
+            .with_plugin_runtime(Arc::clone(&runtime));
+    let items = Arc::new(trovato_kernel::content::ItemService::new(
+        pool.clone(),
+        Arc::clone(&dispatcher),
+        services.clone(),
+        std::time::Duration::from_secs(60),
+        None,
+        None,
+    ));
+    services.set_item_service(&items);
+    Witnessed {
+        items,
+        dispatcher,
+        services,
+    }
+}
+
+fn unique(prefix: &str) -> String {
+    format!("{prefix} {}", Uuid::now_v7().simple())
+}
+
+/// A plugin's create fires presave, insert and the index tap on another plugin.
+#[tokio::test]
+async fn save_item_create_fires_the_write_taps_on_another_plugin() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    ensure_tiw_log(&pool).await;
+    let w = witnessed(&pool);
+    let title = unique("b68 create");
+
+    let payload = json!({"type": "page", "title": title}).to_string();
+    let answer = run(&pool, admin(), &w.items, "save-item", &payload, true, false).await;
+    assert!(answer.code >= 0, "the create must succeed: {}", answer.code);
+    let id: Uuid = serde_json::from_str::<serde_json::Value>(&answer.body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    assert_eq!(
+        taps_titled(&pool, &title).await,
+        vec!["presave", "insert", "update_index"],
+        "a plugin's create must fire the same taps a person's does"
+    );
+    forget(&pool, id, &title).await;
+}
+
+/// A plugin's update fires presave, update and the index tap.
+#[tokio::test]
+async fn save_item_update_fires_the_write_taps_on_another_plugin() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    ensure_tiw_log(&pool).await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "page", author, 1, json!({})).await;
+    let w = witnessed(&pool);
+    let title = unique("b68 update");
+
+    let payload = json!({"id": id.to_string(), "title": title}).to_string();
+    let answer = run(&pool, admin(), &w.items, "save-item", &payload, true, false).await;
+    assert!(answer.code >= 0, "the update must succeed: {}", answer.code);
+    assert_eq!(
+        taps_titled(&pool, &title).await,
+        vec!["presave", "update", "update_index"],
+        "a plugin's update must fire the same taps a person's does"
+    );
+    forget(&pool, id, &title).await;
+}
+
+/// A plugin's delete fires `tap_item_delete`.
+#[tokio::test]
+async fn delete_item_fires_the_delete_tap_on_another_plugin() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    ensure_tiw_log(&pool).await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "page", author, 1, json!({})).await;
+    let w = witnessed(&pool);
+
+    let answer = run(
+        &pool,
+        admin(),
+        &w.items,
+        "delete-item",
+        &id.to_string(),
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(answer.code, 0, "the delete must succeed");
+    assert_eq!(taps_for(&pool, id).await, vec!["delete"]);
+    assert!(status_of(&pool, id).await.is_none(), "and the row is gone");
+    forget(&pool, id, "-").await;
+}
+
+/// Deleting an id that names no item is a miss, not a success (BL-25).
+#[tokio::test]
+async fn delete_item_on_a_missing_id_reports_a_miss() {
+    let pool = probe_pool().await;
+    let items = items_for(&pool);
+    let answer = run(
+        &pool,
+        admin(),
+        &items,
+        "delete-item",
+        &Uuid::now_v7().to_string(),
+        false,
+        false,
+    )
+    .await;
+    assert!(
+        answer.code < 0,
+        "deleting nothing must not report success, got {}",
+        answer.code
+    );
+}
+
+/// A user who may edit but not publish cannot publish through a plugin: the
+/// service's publish gate decides, as it does for the edit form.
+#[tokio::test]
+async fn save_item_runs_the_publish_gate() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "page", author, 0, json!({})).await;
+    let items = items_for(&pool);
+
+    let editor = UserContext::authenticated(
+        rightless_user(&pool).await,
+        vec!["edit any content".to_string(), "access content".to_string()],
+    );
+    let payload = json!({"id": id.to_string(), "status": 1}).to_string();
+    let answer = run(&pool, editor, &items, "save-item", &payload, true, false).await;
+    assert_eq!(
+        answer.code,
+        host_errors::ERR_ITEM_ACCESS_DENIED,
+        "publishing without `publish content` must be refused"
+    );
+    assert_eq!(
+        status_of(&pool, id).await,
+        Some(0),
+        "the item stays unpublished"
+    );
+    forget(&pool, id, "-").await;
+}
+
+/// A user who may edit the item but not a governed field cannot write that
+/// field through a plugin: the service's field gate decides.
+#[tokio::test]
+async fn save_item_runs_the_field_gate() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "person").await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "person", author, 1, json!({"ssn": "111"})).await;
+    let items = items_for(&pool);
+
+    let editor = UserContext::authenticated(
+        rightless_user(&pool).await,
+        vec!["edit any content".to_string(), "access content".to_string()],
+    );
+    let payload = json!({"id": id.to_string(), "fields": {"ssn": "999"}}).to_string();
+    let answer = run(&pool, editor, &items, "save-item", &payload, true, false).await;
+    assert_eq!(
+        answer.code,
+        host_errors::ERR_ITEM_ACCESS_DENIED,
+        "writing a field the user may not edit must be refused"
+    );
+    let ssn: Option<String> = sqlx::query_scalar("SELECT fields->>'ssn' FROM item WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(ssn.as_deref(), Some("111"), "the field is unchanged");
+    forget(&pool, id, "-").await;
+}
+
+/// The defect as Ritrovo measured it: after a plugin updates an item, the item
+/// route kept serving the old title for up to `CACHE_TTL_ITEMS`.
+#[test]
+fn after_a_plugin_update_the_item_route_serves_the_new_title() {
+    common::run_test(async {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+
+        let app = common::shared_app().await;
+        ensure_type(&app.db, "page").await;
+        let author = some_user(&app.db).await;
+        let id = seed_item(&app.db, "page", author, 1, json!({})).await;
+        let get = || async {
+            let response = app
+                .request(
+                    Request::get(format!("/api/item/{id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["title"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        // Warm the cache with the old title.
+        assert_eq!(get().await, format!("probe {id}"));
+
+        let title = unique("b68 cache");
+        let payload = json!({"id": id.to_string(), "title": title}).to_string();
+        let answer = run(
+            &app.db,
+            admin(),
+            app.state.items(),
+            "save-item",
+            &payload,
+            true,
+            false,
+        )
+        .await;
+        assert!(answer.code >= 0, "the plugin update must succeed");
+        assert_eq!(
+            get().await,
+            title,
+            "the item route must serve the plugin's write at once, not after CACHE_TTL_ITEMS"
+        );
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(id)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// A tap that rewrites the item it was told about terminates: the nested write
+/// does not fire its taps back into the plugin making it.
+#[tokio::test]
+async fn a_tap_that_rewrites_the_same_item_terminates() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    ensure_tiw_log(&pool).await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "page", author, 1, json!({})).await;
+    let w = witnessed(&pool);
+    let title = unique("echo");
+
+    let payload = json!({"id": id.to_string(), "title": title}).to_string();
+    let answer = run(&pool, admin(), &w.items, "save-item", &payload, true, false).await;
+    assert!(answer.code >= 0, "the outer write must succeed");
+
+    assert_eq!(
+        taps_for(&pool, id).await,
+        vec!["update", "echo:saved", "update_index"],
+        "the echo writes once and its own taps are not fired back into it"
+    );
+    let stored: String = sqlx::query_scalar("SELECT title FROM item WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored,
+        format!("{title}+"),
+        "exactly one nested write landed"
+    );
+    forget(&pool, id, &title).await;
+}
+
+/// A background write from a plugin holding `item_background` goes through the
+/// service too, so the taps fire.
+#[tokio::test]
+async fn a_background_write_with_the_capability_fires_the_taps() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    ensure_tiw_log(&pool).await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "page", author, 0, json!({})).await;
+    let w = witnessed(&pool);
+    let title = unique("b68 background");
+
+    let payload = json!({"id": id.to_string(), "title": title, "status": 1}).to_string();
+    let answer = run(
+        &pool,
+        UserContext::background(),
+        &w.items,
+        "save-item",
+        &payload,
+        true,
+        true,
+    )
+    .await;
+    assert!(answer.code >= 0, "a declared background write succeeds");
+    assert_eq!(status_of(&pool, id).await, Some(1));
+    assert_eq!(
+        taps_titled(&pool, &title).await,
+        vec!["presave", "update", "update_index"]
+    );
+    forget(&pool, id, &title).await;
+}
+
+/// `language` on create is stored when the site has it and refused otherwise.
+#[tokio::test]
+async fn save_item_create_takes_a_known_language_and_refuses_an_unknown_one() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    let items = items_for(&pool);
+    let title = unique("b68 language");
+
+    let known = json!({"type": "page", "title": title, "language": "en"}).to_string();
+    let answer = run(&pool, admin(), &items, "save-item", &known, true, false).await;
+    assert!(answer.code >= 0, "a known language is accepted");
+    let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+    assert_eq!(body["language"], "en");
+    let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+
+    let unknown = json!({"type": "page", "title": title, "language": "xx-none"}).to_string();
+    let refused = run(&pool, admin(), &items, "save-item", &unknown, true, false).await;
+    assert_eq!(
+        refused.code,
+        host_errors::ERR_PARAM_DESERIALIZE,
+        "a language the site does not have is refused"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM item WHERE title = $1")
+        .bind(&title)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "and nothing was created for it");
+    forget(&pool, id, &title).await;
+}
+
+/// The item-api bindings a plugin calls, end to end: create, read, list,
+/// update, delete, and a second delete that is a miss.
+#[tokio::test]
+async fn the_item_api_bindings_round_trip_from_a_plugin() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    ensure_tiw_log(&pool).await;
+    let w = witnessed(&pool);
+    let title = unique("b68 roundtrip");
+
+    let state = RequestState::new(admin(), w.services.clone());
+    let result = w
+        .dispatcher
+        .dispatch_to_plugin(
+            "tap_queue_worker",
+            &json!({"type": "page", "title": title}).to_string(),
+            "test_item_writer",
+            state,
+        )
+        .await
+        .expect("the fixture's round trip ran");
+    let out: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+    let id: Uuid = out["id"].as_str().expect("created").parse().unwrap();
+
+    assert_eq!(out["created_title"], title.as_str());
+    assert_eq!(out["get"], title.as_str());
+    assert_eq!(out["query_found"], true);
+    assert_eq!(out["update"], format!("{title} (edited)"));
+    assert_eq!(out["delete"], 0);
+    assert!(
+        out["delete_again"].as_i64().unwrap() < 0,
+        "a second delete is a miss: {out}"
+    );
+    assert_eq!(out["get_after_delete"], serde_json::Value::Null);
+    forget(&pool, id, &title).await;
+}

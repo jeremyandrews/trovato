@@ -1,0 +1,17 @@
+[package]
+name = "test_item_writer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "B68 test fixture: records every item write tap it receives, rewrites an item from tap_item_update to exercise the re-entrancy bound, and drives the item-api SDK bindings from tap_queue_worker"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
