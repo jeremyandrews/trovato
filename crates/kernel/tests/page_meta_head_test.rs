@@ -303,6 +303,10 @@ fn an_item_without_body_text_emits_no_description_tag() {
 fn an_article_item_gets_article_og_type_and_timestamps() {
     run_test(async {
         let app = shared_app().await;
+        // `blog` belongs to the trovato_blog plugin and other files assert its
+        // declared fields; seeding it with this file's fixture fields must not
+        // outlive the test.
+        app.restore_content_type_on_exit(ARTICLE_TYPE).await;
         ensure_item_type(app, ARTICLE_TYPE, "Blog").await;
 
         let title = format!("Article Metadata {}", Uuid::now_v7().simple());
