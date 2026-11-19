@@ -345,7 +345,9 @@ fn a_plugin_validation_error_refuses_the_save() {
                 form_tokens(&html)
             );
             let (status, text) = post_form(app, &cookies, &path, body).await;
-            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}: {text}");
+            // Not saved: the form comes back (422 on `/item`, 200 on the admin
+            // form, as for any other form error there), not a redirect.
+            assert!(!status.is_redirection(), "{path}: saved ({status})");
             assert!(text.contains(REFUSED), "{path}: the editor sees no error");
             // The error is shown on the field, not only at the top.
             assert!(
