@@ -1,7 +1,7 @@
 name = "test_form_taps"
 description = "B71 fixture: form alter, validate and submit through the kernel forms pipeline"
-version = "0.104.0"
-api_version = "0.104"
+version = "0.105.0"
+api_version = "0.105"
 default_enabled = false
 dependencies = []
 

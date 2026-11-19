@@ -55,6 +55,10 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         // `/tpa/form`, which does not ask: the two together are what proves
         // theming is opt-in rather than the new default.
         MenuRoute::api("GET", "/tpa/themed", "show_themed").title("A themed page"),
+        // Filters posted text through a text format with the `text-format`
+        // host call (B71), as the caller. Public: the kernel decides which
+        // formats the caller may use, and an anonymous caller gets plain text.
+        MenuRoute::api("POST", "/tpa/filter", "filter_text").title("Filter text"),
         // A page entry, to prove the kernel routes only `api` entries here.
         MenuRoute::page("/tpa/page", "Not an API"),
     ]
@@ -70,6 +74,7 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "submit_form" => submit_form(&request),
         "send_mail" => send_mail(&request),
         "show_themed" => show_themed(),
+        "filter_text" => filter_text(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
 }
@@ -140,6 +145,25 @@ fn send_mail(request: &ApiRequest) -> ApiResponse {
         Err(code) => ApiResponse::json(&serde_json::json!({"sent": false, "code": code}))
             .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed")),
     }
+}
+
+/// Filter `{text, format}` through the kernel's text format, as the caller,
+/// and answer `{html}` or `{code}`.
+///
+/// This is the rule a plugin rendering user HTML follows: whatever it returns
+/// went through `host::filter_text` first.
+fn filter_text(request: &ApiRequest) -> ApiResponse {
+    let body: serde_json::Value = match request.json() {
+        Ok(v) => v,
+        Err(e) => return ApiResponse::error(400, &format!("body is not JSON: {e}")),
+    };
+    let text = body["text"].as_str().unwrap_or_default();
+    let format = body["format"].as_str().unwrap_or_default();
+    let answer = match host::filter_text(text, format) {
+        Ok(html) => serde_json::json!({ "html": html }),
+        Err(code) => serde_json::json!({ "code": code }),
+    };
+    ApiResponse::json(&answer).unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
 }
 
 /// Read one field out of a URL-encoded body.
@@ -253,10 +277,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_six_api_routes_with_callbacks() {
+    fn the_menu_declares_seven_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 6);
+        assert_eq!(api.len(), 7);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()

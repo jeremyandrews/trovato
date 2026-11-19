@@ -1,7 +1,7 @@
 # Roadmap
 
 <!-- version:begin -->
-Trovato is at 0.104.0.
+Trovato is at 0.105.0.
 <!-- version:end -->
 This page says what stands between that and 1.0, and what comes after.
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more detail; this one

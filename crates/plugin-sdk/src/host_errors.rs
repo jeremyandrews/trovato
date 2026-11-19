@@ -205,6 +205,15 @@
 //!   - `-36`: DB insert failed ([`ERR_QUEUE_INSERT_FAILED`])
 //!   - `0`: success
 //!
+//! ## Text format (`trovato:kernel/text-format`)
+//!
+//! - **`filter-text(text_ptr, text_len, format_ptr, format_len, out_ptr, out_max_len) → i32`**
+//!   - `-1`: memory missing, `-2`: text read failed, `-3`: format read failed
+//!   - `-70`: the acting user may not use this format ([`ERR_TEXT_FORMAT_NOT_PERMITTED`])
+//!   - `-71`: no such format ([`ERR_TEXT_FORMAT_UNKNOWN`])
+//!   - `-72`: the filtered text does not fit the output buffer ([`ERR_TEXT_FORMAT_TOO_LARGE`])
+//!   - `≥ 0`: bytes of filtered text written
+//!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
 //!
 //! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
@@ -352,6 +361,29 @@ pub const ERR_ITEM_NOT_FOUND: i32 = -62;
 ///
 /// Added by B68, after 0.104.0.
 pub const ERR_ITEM_WRITE_DEPTH: i32 = -63;
+
+// =============================================================================
+// Text format errors (`trovato:kernel/text-format`)
+// =============================================================================
+
+/// The user the plugin is acting for may not use the requested text format:
+/// `plain_text` is always allowed, `filtered_html` needs `use filtered_html`,
+/// `full_html` needs `use full_html`. Nothing was filtered.
+///
+/// Added by B71, after 0.104.0.
+pub const ERR_TEXT_FORMAT_NOT_PERMITTED: i32 = -70;
+
+/// The requested text format does not exist. The kernel knows `plain_text`,
+/// `filtered_html` and `full_html`.
+///
+/// Added by B71, after 0.104.0.
+pub const ERR_TEXT_FORMAT_UNKNOWN: i32 = -71;
+
+/// The filtered text is larger than the output buffer. Refused rather than
+/// truncated, since cutting filtered HTML could leave a broken tag.
+///
+/// Added by B71, after 0.104.0.
+pub const ERR_TEXT_FORMAT_TOO_LARGE: i32 = -72;
 
 // =============================================================================
 // HTTP API errors (`trovato:kernel/http`)

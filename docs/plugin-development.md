@@ -679,6 +679,30 @@ made it, and a write nested four write taps deep is refused with
 `ERR_ITEM_WRITE_DEPTH`. Every error code is listed in
 [plugin-error-codes.md](plugin-error-codes.md#item-api-errors).
 
+### Text Formats
+
+Declare `text-format` in `host_interfaces`. **A plugin that renders HTML a user
+wrote must pass it through `host::filter_text` before returning it.** The
+kernel filters the fields it renders itself; it does not filter what a plugin
+returns, so user HTML a plugin echoes unfiltered is a stored XSS.
+
+```rust
+use trovato_sdk::host;
+
+// The same filter the kernel applies when it renders a field in that format.
+let safe = host::filter_text(&comment_body, "filtered_html")?;
+```
+
+The format must be one the user the plugin is acting for may use, by the rule
+the item forms apply: `plain_text` always, `filtered_html` with
+`use filtered_html`, `full_html` with `use full_html`. Anything else is an error,
+never the text unfiltered: `ERR_TEXT_FORMAT_NOT_PERMITTED` (-70) for a format
+the user may not use, `ERR_TEXT_FORMAT_UNKNOWN` (-71) for one that does not
+exist, `ERR_TEXT_FORMAT_TOO_LARGE` (-72) when the result is larger than the
+output buffer. Filter with the format the text was written in, and when the
+author's format is not one the viewer's request may use, fall back to
+`plain_text`, which is always allowed and escapes everything.
+
 ---
 
 ## Access Control

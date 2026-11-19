@@ -238,6 +238,14 @@ host::delete_item(&id)?;                                          // Err(-62): n
 let list = host::query_items(&json!({ "type": "page", "limit": 20 }))?;
 ```
 
+### Text formats
+Needs `text-format` in `host_interfaces`. **Rendering HTML a user wrote? Filter
+it through this first**: the kernel does not filter a plugin's output.
+```rust
+let safe = host::filter_text(&body, "filtered_html")?;  // Err(-70): user may not use it
+                                                         // Err(-71): no such format
+```
+
 ### Cache
 ```rust
 let cached = host::cache::get("bin", "key");
@@ -353,6 +361,7 @@ host::cache::set("views", &cache_key, &result, json!(["tag:items"]));
 - Make HTTP calls directly
 - Concatenate SQL strings
 - Expose secrets in errors
+- Return HTML a user wrote without `host::filter_text`
 
 ## Do
 

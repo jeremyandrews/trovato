@@ -9,6 +9,25 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Plugins filter user HTML through `host::filter_text`; plugin API 0.105
+
+**Who is affected:** a plugin that renders HTML a user wrote; anyone pinning
+the plugin API version.
+
+**What changed.** A new host interface, `text-format`, has one call,
+`filter-text(text, format)` (SDK: `host::filter_text`), which runs the
+kernel's own text format filter for a format the acting user may use, and
+returns an error for any other, never the text unfiltered. A plugin that returns
+user written HTML must filter it through this: the kernel does not filter a
+plugin's output. Declare `text-format` in `host_interfaces`. The project
+version moves to 0.105.0, so `KERNEL_API_VERSION` is `(0, 105)` and the bundled
+manifests declare `api_version = "0.105"`. A plugin that calls `filter_text`
+should declare `0.105`, which a 0.104 kernel refuses cleanly instead of failing
+to link the import.
+
+**How to find out.** `grep -rln "| safe\|text/html" plugins/*/src` lists
+plugins that return HTML; check each one's user written parts.
+
 ### Form AJAX for every editor; conditional fields
 
 **Who is affected:** a plugin implementing `tap_form_ajax`; a script or theme

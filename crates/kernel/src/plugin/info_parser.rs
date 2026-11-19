@@ -418,6 +418,8 @@ pub const KNOWN_HOST_INTERFACES: &[&str] = &[
     "http",
     "queue",
     "mail",
+    // Filter user text through a text format (added by B71, after 0.104.0).
+    "text-format",
 ];
 
 fn default_true() -> bool {

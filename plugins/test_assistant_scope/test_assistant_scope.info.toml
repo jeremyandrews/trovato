@@ -1,7 +1,7 @@
 name = "test_assistant_scope"
 description = "0.102 e2e fixture: configuring a widget by conversation"
-version = "0.104.0"
-api_version = "0.104"
+version = "0.105.0"
+api_version = "0.105"
 default_enabled = false
 dependencies = []
 

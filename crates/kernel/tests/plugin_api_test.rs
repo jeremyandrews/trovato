@@ -960,3 +960,69 @@ fn openapi_lists_plugin_routes_and_every_listed_path_is_served() {
         disable_plugin(app).await;
     });
 }
+
+/// POST a JSON body to `/tpa/filter` with a fresh token and read the answer.
+async fn filter_through_plugin(
+    app: &TestApp,
+    cookies: &str,
+    text: &str,
+    format: &str,
+) -> serde_json::Value {
+    let token = csrf_token(app, cookies).await;
+    let response = app
+        .request_with_cookies(
+            Request::post("/tpa/filter")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-CSRF-Token", &token)
+                .body(Body::from(
+                    serde_json::json!({"text": text, "format": format}).to_string(),
+                ))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await
+}
+
+/// **B71 Part 5.** A plugin rendering user HTML filters it through the
+/// kernel's text format with `host::filter_text`, as the user it acts for:
+/// `filtered_html` drops a `<script>`, and `full_html` without `use full_html`
+/// is an error, not unfiltered output.
+#[test]
+fn a_plugin_filters_user_html_through_a_text_format() {
+    common::run_test(async {
+        let app = app();
+        let cookies = app
+            .create_and_login_user(
+                "b71filterer",
+                "correct-horse-battery-staple",
+                "b71filterer@test.local",
+            )
+            .await;
+        let user = user_id_of(app, "b71filterer").await;
+        grant_permission(app, user, "use filtered_html").await;
+
+        let answer = filter_through_plugin(
+            app,
+            &cookies,
+            "<p>Hi</p><script>alert(1)</script>",
+            "filtered_html",
+        )
+        .await;
+        let html = answer["html"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{answer}"));
+        assert!(html.contains("<p>Hi</p>"), "{answer}");
+        assert!(!html.contains("<script"), "the script survived: {answer}");
+
+        let answer = filter_through_plugin(app, &cookies, "<b>x</b>", "full_html").await;
+        assert_eq!(
+            answer["code"],
+            serde_json::json!(trovato_sdk::host_errors::ERR_TEXT_FORMAT_NOT_PERMITTED),
+            "full_html without `use full_html` must be refused: {answer}"
+        );
+
+        disable_plugin(app).await;
+    });
+}
