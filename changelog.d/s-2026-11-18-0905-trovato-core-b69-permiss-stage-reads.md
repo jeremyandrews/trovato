@@ -24,9 +24,10 @@ with the same `check_access` the page uses, and starts each page at the visible
 row that opens it. The Pagefind index is documented as what it already was:
 Live only.
 
-Contract: additive for the permission. `/admin/stage/switch` and
-`/admin/stage/current` change behaviour (a non-administrator holder of `use
-stages` may now use them; an administrator still may; an unknown stage is a
-400 where it was stored), and gather totals change for signed-in viewers. No
+Contract: additive for the permission. Frozen for the observable changes to
+existing behaviour: `/admin/stage/switch` and `/admin/stage/current` answer a
+non-administrator holder of `use stages` (an administrator still may use them)
+and an unknown stage is a 400 where it was stored; `?stage=` without the
+permission is ignored; gather totals change for signed-in viewers. No
 host function, WIT type or SDK type changed. See
 `docs/design/stage-workflow.md` §8.
