@@ -892,7 +892,7 @@ impl TestApp {
                     "field_url": "https://wasmcon.dev",
                     "field_start_date": "2026-07-22",
                     "field_end_date": "2026-07-23",
-                    "field_online": "1",
+                    "field_online": true,
                     "field_description": "A virtual conference dedicated to WebAssembly, covering toolchains, runtimes, and the component model.",
                     "field_language": "en"
                 }),

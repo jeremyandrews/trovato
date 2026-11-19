@@ -390,7 +390,7 @@ The `fields` column contains a flat JSON object:
 }
 ```
 
-Notice that `title` is a column on the `item` table itself, not inside `fields`. Boolean fields that are unchecked are simply absent from the JSON (the checkbox was not checked, so `field_online` is not submitted). For WasmCon Online 2026, you would see `"field_online": "1"` present in the JSON.
+Notice that `title` is a column on the `item` table itself, not inside `fields`. Boolean fields are stored as JSON booleans. A conference seeded without `field_online` simply has no key; once it is saved from the form, an unchecked box is stored as `false`. For WasmCon Online 2026, you would see `"field_online": true` in the JSON.
 
 ### Item IDs and Timestamps
 

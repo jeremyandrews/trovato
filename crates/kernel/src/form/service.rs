@@ -450,6 +450,24 @@ impl FormService {
         Ok(Some(state))
     }
 
+    /// The state saved under `form_build_id`, if it was built for `user_id`.
+    ///
+    /// A missing, expired or unreadable state and one built for another user
+    /// are the same answer: `None`, and the caller treats the form as expired.
+    pub async fn recall(&self, form_build_id: &str, user_id: uuid::Uuid) -> Option<FormState> {
+        if form_build_id.is_empty() {
+            return None;
+        }
+        match self.load_state(form_build_id).await {
+            Ok(Some(state)) if state.user_id == Some(user_id) => Some(state),
+            Ok(_) => None,
+            Err(e) => {
+                warn!(error = %e, "failed to load form state");
+                None
+            }
+        }
+    }
+
     /// Clean up expired form states.
     pub async fn cleanup_expired(&self) -> Result<u64> {
         let cutoff = chrono::Utc::now().timestamp() - 6 * 3600; // 6 hours
@@ -489,6 +507,25 @@ pub struct FormState {
     /// Extra state data (e.g., item counts for multi-value fields).
     #[serde(default)]
     pub extra: HashMap<String, Value>,
+
+    /// The user the form was built for. A submission or AJAX request from
+    /// anyone else finds no state.
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
+
+    /// The item an edit form edits; `None` on an add form.
+    #[serde(default)]
+    pub item_id: Option<uuid::Uuid>,
+
+    /// The content type an item form is for.
+    #[serde(default)]
+    pub item_type: Option<String>,
+
+    /// The fields the built form rendered as inputs, after alteration and
+    /// field access. The submission builder writes these and only these; it
+    /// is kept here, server side, so a request cannot widen it.
+    #[serde(default)]
+    pub rendered_fields: Vec<String>,
 }
 
 impl FormState {
@@ -500,6 +537,10 @@ impl FormState {
             values: HashMap::new(),
             step: 0,
             extra: HashMap::new(),
+            user_id: None,
+            item_id: None,
+            item_type: None,
+            rendered_fields: Vec::new(),
         }
     }
 }

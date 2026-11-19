@@ -332,7 +332,10 @@ impl Item {
             return Ok(None);
         };
 
-        // Merge updates with current values
+        // Each top level value the input leaves `None` keeps the stored one.
+        // `fields` is replaced whole when given: the caller has already built
+        // the complete map (a form save starts from the stored fields, see
+        // `content::submission::build_item_fields`).
         let title = input.title.unwrap_or(current.title);
         let status = input.status.unwrap_or(current.status);
         let promote = input.promote.unwrap_or(current.promote);

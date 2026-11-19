@@ -6012,8 +6012,8 @@ fn seeded_conferences_exist_with_correct_data() {
         assert_eq!(fields["field_start_date"], "2026-07-22");
         assert_eq!(fields["field_end_date"], "2026-07-23");
         assert_eq!(
-            fields["field_online"], "1",
-            "Online conference should store field_online as string \"1\" matching form format"
+            fields["field_online"], true,
+            "Online conference should store field_online as a JSON boolean, as the form does"
         );
         assert!(
             fields.get("field_city").is_none()
@@ -6265,8 +6265,8 @@ fn e2e_conference_create_and_verify() {
 
         // AC #4: checked boolean field is stored in JSONB
         assert_eq!(
-            fields["field_online"], "1",
-            "Checked boolean (field_online=1) should be stored in JSONB"
+            fields["field_online"], true,
+            "Checked boolean (field_online=1) should be stored in JSONB as true"
         );
 
         // Tutorial Step 3: form submission creates a revision
@@ -6377,10 +6377,10 @@ fn e2e_conference_unchecked_boolean_absent_from_json() {
         .await
         .unwrap();
 
-        assert!(
-            fields.get("field_online").is_none(),
-            "Unchecked boolean should be absent from JSONB, not stored as false. Got: {:?}",
-            fields.get("field_online")
+        assert_eq!(
+            fields.get("field_online"),
+            Some(&serde_json::json!(false)),
+            "A rendered checkbox left unchecked is stored as false (B64)"
         );
 
         // Cleanup

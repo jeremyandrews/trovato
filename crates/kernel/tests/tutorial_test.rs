@@ -539,7 +539,7 @@ fn test_part01_step03_online_boolean_field() {
         let app = shared_app().await;
         seed_tutorial_data(app).await;
 
-        // Tutorial: 'For WasmCon Online 2026, you would see "field_online": "1"'
+        // Tutorial: 'For WasmCon Online 2026, you would see "field_online": true'
         let row: (Value,) = sqlx::query_as(
             "SELECT fields FROM item WHERE type = 'conference' AND title = 'WasmCon Online 2026'",
         )
@@ -548,8 +548,8 @@ fn test_part01_step03_online_boolean_field() {
         .expect("WasmCon Online 2026 must exist");
 
         assert_eq!(
-            row.0["field_online"], "1",
-            "WasmCon Online should have field_online set to \"1\""
+            row.0["field_online"], true,
+            "WasmCon Online should have field_online set to true"
         );
 
         // RustConf should NOT have field_online (unchecked = absent)
