@@ -491,12 +491,14 @@ fn an_editor_reads_who_changed_it_previews_compares_and_reverts() {
             StatusCode::OK,
             "the compare must render, got {html}"
         );
+        // The title and the city are diffed word by word: what changed is
+        // marked as removed and added, and what stayed is plain text.
         for expected in [
             "City",
-            "Barga",
-            "Pisa",
-            "Revision History Original",
-            "Revision History Third",
+            r#"<del class="diff-removed">Barga</del>"#,
+            r#"<ins class="diff-added">Pisa</ins>"#,
+            r#"<del class="diff-removed">Original</del>"#,
+            r#"<ins class="diff-added">Third</ins>"#,
         ] {
             assert!(
                 html.contains(expected),
