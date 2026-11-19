@@ -223,7 +223,13 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
     context.insert("flash", &flash);
     context.insert("path", "/admin/system/ai-budgets");
 
-    render_admin_template(&state, "admin/ai-budgets.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-budgets.html",
+        context,
+    )
+    .await
 }
 
 /// Save budget configuration.
@@ -394,7 +400,13 @@ async fn user_budget_detail(
     context.insert("flash", &flash);
     context.insert("path", &format!("/admin/system/ai-budgets/user/{user_id}"));
 
-    render_admin_template(&state, "admin/ai-budget-user.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-budget-user.html",
+        context,
+    )
+    .await
 }
 
 /// Save per-user budget overrides.

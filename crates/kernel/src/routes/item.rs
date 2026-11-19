@@ -1460,7 +1460,13 @@ async fn list_revisions(
     context.insert("revisions", &rev_data);
     context.insert("csrf_token", &csrf_token);
 
-    super::helpers::render_admin_template(&state, "admin/revisions.html", context).await
+    super::helpers::render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/revisions.html",
+        context,
+    )
+    .await
 }
 
 /// Preview one past revision: its title and fields, rendered as the item page
@@ -1504,7 +1510,13 @@ async fn preview_revision(
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("fields_html", &fields_html);
 
-    super::helpers::render_admin_template(&state, "admin/revision-preview.html", context).await
+    super::helpers::render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/revision-preview.html",
+        context,
+    )
+    .await
 }
 
 /// The two revisions a compare is asked for.
@@ -1573,7 +1585,13 @@ async fn compare_revisions(
     );
     context.insert("comparison", &comparison);
 
-    super::helpers::render_admin_template(&state, "admin/revision-compare.html", context).await
+    super::helpers::render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/revision-compare.html",
+        context,
+    )
+    .await
 }
 
 /// Revert to a previous revision.

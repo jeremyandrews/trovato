@@ -56,7 +56,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "failed to get plugin statuses");
-            return render_plugin_error(&state, "Failed to load plugin statuses.").await;
+            return render_plugin_error(&state, &session, "Failed to load plugin statuses.").await;
         }
     };
     let status_map: std::collections::HashMap<String, &status::PluginStatus> =
@@ -124,7 +124,13 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
     context.insert("flash", &flash);
     context.insert("path", "/admin/plugins");
 
-    render_admin_template(&state, "admin/plugin-list.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/plugin-list.html",
+        context,
+    )
+    .await
 }
 
 /// Toggle a plugin's enabled/disabled status.
@@ -150,7 +156,7 @@ async fn toggle_plugin(
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
-        return render_plugin_error(&state, "Invalid plugin name.").await;
+        return render_plugin_error(&state, &session, "Invalid plugin name.").await;
     }
 
     // Check plugin is installed
@@ -158,13 +164,14 @@ async fn toggle_plugin(
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "failed to check plugin install status");
-            return render_plugin_error(&state, "Failed to check plugin status.").await;
+            return render_plugin_error(&state, &session, "Failed to check plugin status.").await;
         }
     };
 
     if !installed {
         return render_plugin_error(
             &state,
+            &session,
             "Plugin is not installed. Use the CLI to install it first: trovato plugin install",
         )
         .await;
@@ -173,7 +180,7 @@ async fn toggle_plugin(
     let (new_status, action_word) = match form.action.as_str() {
         "enable" => (STATUS_ENABLED, "enabled"),
         "disable" => (STATUS_DISABLED, "disabled"),
-        _ => return render_plugin_error(&state, "Invalid action.").await,
+        _ => return render_plugin_error(&state, &session, "Invalid action.").await,
     };
 
     let want_enabled = new_status == STATUS_ENABLED;
@@ -299,11 +306,17 @@ async fn refresh_declared_permissions(state: &AppState, plugin: &str) {
 /// The message is inserted raw into the Tera context because the template uses
 /// Tera's default autoescape for `.html` files. Pre-escaping would cause
 /// double-escaped output (e.g. `&amp;amp;`).
-async fn render_plugin_error(state: &AppState, message: &str) -> Response {
+async fn render_plugin_error(state: &AppState, session: &Session, message: &str) -> Response {
     let mut context = tera::Context::new();
     context.insert("error_message", message);
     context.insert("path", "/admin/plugins");
-    render_admin_template(state, "admin/plugin-error.html", context).await
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/plugin-error.html",
+        context,
+    )
+    .await
 }
 
 // =============================================================================

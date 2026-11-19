@@ -459,7 +459,13 @@ async fn list_menus(State(state): State<AppState>, session: Session) -> Response
     context.insert("plugin_entries", &plugin_entries(&state));
     context.insert("path", "/admin/structure/menus");
 
-    render_admin_template(&state, "admin/menus.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/menus.html",
+        context,
+    )
+    .await
 }
 
 /// List one menu's links as an indented tree.
@@ -490,7 +496,13 @@ async fn show_menu(
     context.insert("csrf_token", &csrf_token);
     context.insert("path", &format!("/admin/structure/menus/{menu_name}"));
 
-    render_admin_template(&state, "admin/menu-links.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/menu-links.html",
+        context,
+    )
+    .await
 }
 
 /// Render the add/edit form.
@@ -527,7 +539,13 @@ async fn render_form(
     context.insert("errors", &errors);
     context.insert("path", &action);
 
-    render_admin_template(state, "admin/menu-link-form.html", context).await
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/menu-link-form.html",
+        context,
+    )
+    .await
 }
 
 /// Add-link form.

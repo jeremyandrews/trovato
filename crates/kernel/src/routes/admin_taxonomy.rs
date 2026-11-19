@@ -83,7 +83,13 @@ async fn list_categories(State(state): State<AppState>, session: Session) -> Res
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/structure/categories");
 
-    render_admin_template(&state, "admin/categories.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/categories.html",
+        context,
+    )
+    .await
 }
 
 /// Show add category form.
@@ -105,7 +111,13 @@ async fn add_category_form(State(state): State<AppState>, session: Session) -> R
     context.insert("values", &serde_json::json!({"hierarchy": 0}));
     context.insert("path", "/admin/structure/categories/add");
 
-    render_admin_template(&state, "admin/category-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/category-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add category form submission.
@@ -169,7 +181,13 @@ async fn add_category_submit(
         );
         context.insert("path", "/admin/structure/categories/add");
 
-        return render_admin_template(&state, "admin/category-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/category-form.html",
+            context,
+        )
+        .await;
     }
 
     let input = CreateCategory {
@@ -240,7 +258,13 @@ async fn edit_category_form(
         &format!("/admin/structure/categories/{category_id}/edit"),
     );
 
-    render_admin_template(&state, "admin/category-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/category-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit category form submission.
@@ -296,7 +320,13 @@ async fn edit_category_submit(
             &format!("/admin/structure/categories/{category_id}/edit"),
         );
 
-        return render_admin_template(&state, "admin/category-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/category-form.html",
+            context,
+        )
+        .await;
     }
 
     let input = UpdateCategory {
@@ -398,7 +428,13 @@ async fn list_tags(
         &format!("/admin/structure/categories/{category_id}/tags"),
     );
 
-    render_admin_template(&state, "admin/tags.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/tags.html",
+        context,
+    )
+    .await
 }
 
 /// Show add tag form.
@@ -449,7 +485,13 @@ async fn add_tag_form(
         &format!("/admin/structure/categories/{category_id}/tags/add"),
     );
 
-    render_admin_template(&state, "admin/tag-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/tag-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add tag form submission.
@@ -543,7 +585,13 @@ async fn add_tag_submit(
             &format!("/admin/structure/categories/{category_id}/tags/add"),
         );
 
-        return render_admin_template(&state, "admin/tag-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/tag-form.html",
+            context,
+        )
+        .await;
     }
 
     let parent_ids = match &form.parent_id {
@@ -642,7 +690,13 @@ async fn edit_tag_form(
     );
     context.insert("path", &format!("/admin/structure/tags/{tag_id}/edit"));
 
-    render_admin_template(&state, "admin/tag-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/tag-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit tag form submission.
@@ -736,7 +790,13 @@ async fn edit_tag_submit(
         );
         context.insert("path", &format!("/admin/structure/tags/{tag_id}/edit"));
 
-        return render_admin_template(&state, "admin/tag-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/tag-form.html",
+            context,
+        )
+        .await;
     }
 
     // Update tag — None keeps current slug, Some("") clears it, Some(value) sets it.

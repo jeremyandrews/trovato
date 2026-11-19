@@ -108,7 +108,13 @@ async fn pathauto_config_page(State(state): State<AppState>, session: Session) -
         context.insert("flash", &msg);
     }
 
-    render_admin_template(&state, "admin/pathauto.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/pathauto.html",
+        context,
+    )
+    .await
 }
 
 /// Save pathauto patterns.

@@ -192,7 +192,13 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     context.insert("flash", &flash);
     context.insert("path", "/admin/config/site");
 
-    render_admin_template(&state, "admin/config/site.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/config/site.html",
+        context,
+    )
+    .await
 }
 
 /// Save site settings.
@@ -316,7 +322,13 @@ async fn site_config_submit(
         context.insert("errors", &errors);
         context.insert("path", "/admin/config/site");
 
-        return render_admin_template(&state, "admin/config/site.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/config/site.html",
+            context,
+        )
+        .await;
     }
 
     // Save each setting

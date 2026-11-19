@@ -71,7 +71,13 @@ async fn chat_config_page(State(state): State<AppState>, session: Session) -> Re
         context.insert("flash", &flash);
     }
 
-    render_admin_template(&state, "admin/ai-chat.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-chat.html",
+        context,
+    )
+    .await
 }
 
 /// Save chat configuration.

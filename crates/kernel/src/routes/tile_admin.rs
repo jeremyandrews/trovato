@@ -86,7 +86,13 @@ async fn list_tiles(State(state): State<AppState>, session: Session) -> Response
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/structure/tiles");
 
-    render_admin_template(&state, "admin/tiles.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/tiles.html",
+        context,
+    )
+    .await
 }
 
 /// Show add tile form.
@@ -106,7 +112,13 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/tiles/add");
 
-    render_admin_template(&state, "admin/tile-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/tile-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add tile form submission.
@@ -194,7 +206,13 @@ async fn edit_tile_form(
     );
     context.insert("path", &format!("/admin/structure/tiles/{tile_id}/edit"));
 
-    render_admin_template(&state, "admin/tile-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/tile-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit tile form submission.

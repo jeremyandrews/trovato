@@ -180,7 +180,7 @@ neither.
 
 | Route | Method | Permission |
 |---|---|---|
-| `/system/ajax` | POST | `administer site` |
+| `/system/ajax` | POST | `administer site` (until B71 Part 4; see below) |
 | `/admin/structure/types` and all its field and search routes | GET, POST | `administer site` |
 | `/admin/structure/records` and its listing routes | GET | `administer site` |
 | `/admin/structure/menus` and all its link routes | GET, POST | `administer site` |
@@ -259,16 +259,17 @@ release is outstanding, stays on `administer site` rather than following the
 page. Someone admitted to moderate comments cannot act on an update, so opening
 the section wider does not widen that disclosure.
 
-**The admin layout's sidebar is not filtered.** It lists every screen
-unconditionally, as it has since the conversion above made those screens
-delegable, so a delegated role sees links it cannot open. That is not
-introduced by this permission and is not fixed by it: filtering the sidebar
-means giving `render_admin_template` the viewer, a signature change across its
-80 call sites, and is left for that change.
+The admin layout's sidebar is filtered the same way (BL-117, B71 Part 6). It
+is built from one table, `routes::admin_nav::LINKS`, which names each screen
+and the permission its page asks for, so a delegated role sees only the links
+it may open.
 
-| Route | Method | Check |
-|---|---|---|
-| `/system/ajax` | POST | `administer site` |
+`/system/ajax` no longer asks for `administer site` (B71 Part 4). It serves the
+AJAX callbacks of every form built by the form pipeline, so it checks the
+form's own access instead:
+- a valid `X-CSRF-Token`;
+- form state built for the caller;
+- whether the caller may still open that form (edit access on the item, or the
+  create permission for the type).
 
-`/system/ajax` keeps `administer site` because it does work rather than admit:
-it serves the admin forms' AJAX callbacks.
+See `docs/plugin-development.md`.

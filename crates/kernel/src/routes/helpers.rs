@@ -352,18 +352,31 @@ pub async fn inject_site_context(
     context.insert("current_path", &path);
 }
 
-/// Render an admin template with common context (enabled_plugins).
+/// Render an admin template with common context: `enabled_plugins`, and
+/// `admin_nav`, the sidebar filtered to what `viewer` may open.
 ///
 /// This is the shared implementation used by all admin route modules
 /// (admin, gather_admin, plugin_admin). The `enabled_plugins` list is
-/// sorted for deterministic template output.
+/// sorted for deterministic template output. The active sidebar link is read
+/// from the context's `path`.
 pub async fn render_admin_template(
     state: &AppState,
+    viewer: &UserContext,
     template: &str,
     mut context: tera::Context,
 ) -> Response {
     let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
     enabled.sort();
+    // The sidebar holds only the screens this viewer may open (BL-117).
+    let path = context
+        .get("path")
+        .and_then(|p| p.as_str())
+        .unwrap_or_default()
+        .to_string();
+    context.insert(
+        "admin_nav",
+        &super::admin_nav::sidebar(viewer, &enabled, &path),
+    );
     context.insert("enabled_plugins", &enabled);
     // Ensure "errors" is always available for form templates that use form::errors().
     if context.get("errors").is_none() {

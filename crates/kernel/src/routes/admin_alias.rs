@@ -98,7 +98,13 @@ async fn list_aliases(
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/structure/aliases");
 
-    render_admin_template(&state, "admin/aliases.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/aliases.html",
+        context,
+    )
+    .await
 }
 
 /// Add URL alias form.
@@ -118,7 +124,13 @@ async fn add_alias_form(State(state): State<AppState>, session: Session) -> Resp
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/aliases/add");
 
-    render_admin_template(&state, "admin/alias-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/alias-form.html",
+        context,
+    )
+    .await
 }
 
 /// Add URL alias submit.
@@ -207,7 +219,13 @@ async fn edit_alias_form(
     );
     context.insert("path", &format!("/admin/structure/aliases/{alias_id}/edit"));
 
-    render_admin_template(&state, "admin/alias-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/alias-form.html",
+        context,
+    )
+    .await
 }
 
 /// Edit URL alias submit.

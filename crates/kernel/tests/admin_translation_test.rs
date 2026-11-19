@@ -172,9 +172,27 @@ fn template_names_after(source: &str, call: &str) -> Vec<String> {
         .match_indices(call)
         .filter_map(|(at, _)| {
             let rest = &source[at + call.len()..];
-            // Only the argument list of this call: stop at its closing paren so
-            // a variable template name does not borrow a later literal.
-            let args = &rest[..rest.find(')').unwrap_or(rest.len())];
+            // Only the argument list of this call: stop at its own closing
+            // paren, past any nested call such as the viewer argument of
+            // `render_admin_template`, so a variable template name does not
+            // borrow a later literal.
+            let mut depth = 0usize;
+            let end = rest
+                .char_indices()
+                .find(|&(_, c)| match c {
+                    '(' => {
+                        depth += 1;
+                        false
+                    }
+                    ')' if depth == 0 => true,
+                    ')' => {
+                        depth -= 1;
+                        false
+                    }
+                    _ => false,
+                })
+                .map_or(rest.len(), |(i, _)| i);
+            let args = &rest[..end];
             let open = args.find('"')?;
             let name = args[open + 1..].split('"').next()?;
             name.ends_with(".html").then(|| name.to_string())

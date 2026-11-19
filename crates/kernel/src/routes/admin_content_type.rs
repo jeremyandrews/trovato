@@ -76,7 +76,13 @@ async fn list_content_types(State(state): State<AppState>, session: Session) -> 
     context.insert("content_types", &content_types);
     context.insert("path", "/admin/structure/types");
 
-    render_admin_template(&state, "admin/content-types.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/content-types.html",
+        context,
+    )
+    .await
 }
 
 /// Show add content type form.
@@ -98,7 +104,13 @@ async fn add_content_type_form(State(state): State<AppState>, session: Session) 
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/types/add");
 
-    render_admin_template(&state, "admin/content-type-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/content-type-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add content type form submission.
@@ -207,7 +219,13 @@ async fn render_add_form_with_errors(
     );
     context.insert("path", "/admin/structure/types/add");
 
-    render_admin_template(state, "admin/content-type-form.html", context).await
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/content-type-form.html",
+        context,
+    )
+    .await
 }
 
 /// Show edit content type form.
@@ -270,7 +288,13 @@ async fn edit_content_type_form(
     );
     context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
-    render_admin_template(&state, "admin/content-type-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/content-type-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit content type form submission.
@@ -328,7 +352,13 @@ async fn edit_content_type_submit(
         );
         context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
-        return render_admin_template(&state, "admin/content-type-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/content-type-form.html",
+            context,
+        )
+        .await;
     }
 
     // Update the content type
@@ -397,7 +427,13 @@ async fn manage_fields(
         &format!("/admin/structure/types/{type_name}/fields"),
     );
 
-    render_admin_template(&state, "admin/field-list.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/field-list.html",
+        context,
+    )
+    .await
 }
 
 /// Add a field to a content type.
@@ -510,7 +546,13 @@ async fn rerender_field_list(
         &format!("/admin/structure/types/{type_name}/fields"),
     );
 
-    render_admin_template(state, "admin/field-list.html", context).await
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/field-list.html",
+        context,
+    )
+    .await
 }
 
 // =============================================================================
@@ -566,7 +608,13 @@ async fn edit_field_form(
         &format!("/admin/structure/types/{type_name}/fields/{field_name}/edit"),
     );
 
-    render_admin_template(&state, "admin/field-edit.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/field-edit.html",
+        context,
+    )
+    .await
 }
 
 /// Handle field edit form submission.
@@ -631,7 +679,13 @@ async fn edit_field_submit(
             &format!("/admin/structure/types/{type_name}/fields/{field_name}/edit"),
         );
 
-        return render_admin_template(&state, "admin/field-edit.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/field-edit.html",
+            context,
+        )
+        .await;
     }
 
     let required = form.required.is_some();
@@ -747,7 +801,13 @@ async fn manage_search_config(
         &format!("/admin/structure/types/{type_name}/search"),
     );
 
-    render_admin_template(&state, "admin/search-config.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/search-config.html",
+        context,
+    )
+    .await
 }
 
 /// Add or update a search field configuration.
