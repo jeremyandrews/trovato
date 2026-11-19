@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::content::{FieldMode, FilterPipeline, FormBuilder, PUBLISH_CONTENT};
+use crate::content::{
+    FieldMode, FilterPipeline, FormBuilder, ItemRevisions, PUBLISH_CONTENT, RevisionAccess,
+    RevisionSelection,
+};
 use crate::error::AppError;
 use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::ResolvedLanguage;
@@ -326,6 +329,8 @@ pub fn router() -> Router<AppState> {
         .route("/item/{id}/delete", post(delete_item))
         // Revision history
         .route("/item/{id}/revisions", get(list_revisions))
+        .route("/item/{id}/revisions/compare", get(compare_revisions))
+        .route("/item/{id}/revisions/{rev_id}", get(preview_revision))
         .route("/item/{id}/revert/{rev_id}", post(revert_revision))
         // API endpoints
         .route("/api/content-types", get(list_content_types))
@@ -466,195 +471,7 @@ async fn view_item(
         .unwrap_or_default();
 
     // Render fields through filter pipeline
-    let mut children_html = String::new();
-    if let Some(fields) = item.fields.as_object() {
-        for (name, value) in fields {
-            // Blocks field: flat JSON array of {type, weight, data}
-            let is_blocks_field = content_type_fields.iter().any(|f| {
-                f.field_name == *name
-                    && matches!(f.field_type, trovato_sdk::types::FieldType::Blocks)
-            });
-            if is_blocks_field {
-                if let Some(blocks) = value.as_array() {
-                    let rendered = crate::content::render_blocks(blocks);
-                    children_html.push_str(&format!(
-                        "<div class=\"field field--blocks field-{}\">{}</div>",
-                        html_escape(name),
-                        rendered
-                    ));
-                }
-                continue;
-            }
-
-            // PageBuilder field: Puck JSON component tree.
-            // Detect via field type definition OR structural check (root+content keys).
-            let is_page_builder_field = content_type_fields.iter().any(|f| {
-                f.field_name == *name
-                    && matches!(f.field_type, trovato_sdk::types::FieldType::PageBuilder)
-            }) || (value.get("root").is_some()
-                && value.get("content").is_some());
-            if is_page_builder_field {
-                match state.theme().render_page_builder_content(value) {
-                    Ok(rendered) => {
-                        children_html.push_str(&format!(
-                            "<div class=\"field field--page-builder field-{}\">{}</div>",
-                            html_escape(name),
-                            rendered
-                        ));
-                    }
-                    Err(e) => {
-                        tracing::warn!(field = %name, error = %e, "failed to render page builder field");
-                    }
-                }
-                continue;
-            }
-
-            // Compound field: has "sections" array
-            if let Some(sections_raw) = value.get("sections").and_then(|s| s.as_array()) {
-                // Sort sections by weight for correct display order
-                let mut sorted_sections = sections_raw.clone();
-                sorted_sections
-                    .sort_by_key(|s| s.get("weight").and_then(|w| w.as_i64()).unwrap_or(0));
-
-                for section in &sorted_sections {
-                    let section_type = section
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("unknown");
-
-                    // Sanitize section_type for template suggestion: only allow
-                    // alphanumeric, hyphens, and underscores to prevent path traversal
-                    let safe_type: String = section_type
-                        .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                        .collect();
-
-                    // Process section data fields through FilterPipeline
-                    let mut section_fields_html = String::new();
-                    if let Some(data) = section.get("data").and_then(|d| d.as_object()) {
-                        for (_key, val) in data {
-                            if let (Some(text), Some(fmt)) = (
-                                val.get("value").and_then(|v| v.as_str()),
-                                val.get("format").and_then(|v| v.as_str()),
-                            ) {
-                                let filtered = FilterPipeline::for_format_safe(fmt).process(text);
-                                section_fields_html.push_str(&filtered);
-                            } else if let Some(text) = val.as_str() {
-                                let filtered =
-                                    FilterPipeline::for_format("plain_text").process(text);
-                                section_fields_html.push_str(&filtered);
-                            } else {
-                                // Render non-string values (Integer, Float, Boolean) as
-                                // escaped text so they're not silently dropped
-                                if !val.is_object() && !val.is_array() && !val.is_null() {
-                                    let text = val.to_string();
-                                    let filtered =
-                                        FilterPipeline::for_format("plain_text").process(&text);
-                                    section_fields_html.push_str(&filtered);
-                                }
-                            }
-                        }
-                    }
-
-                    // Try to resolve section template using sanitized type
-                    let suggestions = [
-                        format!("elements/compound-section--{safe_type}"),
-                        "elements/compound-section".to_string(),
-                    ];
-                    let suggestion_refs: Vec<&str> =
-                        suggestions.iter().map(|s| s.as_str()).collect();
-                    let template = state
-                        .theme()
-                        .resolve_template(&suggestion_refs)
-                        .unwrap_or_else(|| "elements/compound-section.html".to_string());
-
-                    // Build sanitized section data: HTML-escape all string values
-                    // so custom templates can safely use {{ section_data.field }}
-                    let sanitized_data = if let Some(data) =
-                        section.get("data").and_then(|d| d.as_object())
-                    {
-                        let mut clean = serde_json::Map::new();
-                        for (k, v) in data {
-                            if let Some(s) = v.as_str() {
-                                clean.insert(k.clone(), serde_json::json!(html_escape(s)));
-                            } else if let Some(obj) = v.as_object() {
-                                // Escape string values inside nested objects like {value, format}
-                                let mut inner = serde_json::Map::new();
-                                for (ik, iv) in obj {
-                                    if let Some(s) = iv.as_str() {
-                                        inner.insert(ik.clone(), serde_json::json!(html_escape(s)));
-                                    } else {
-                                        inner.insert(ik.clone(), iv.clone());
-                                    }
-                                }
-                                clean.insert(k.clone(), serde_json::Value::Object(inner));
-                            } else {
-                                clean.insert(k.clone(), v.clone());
-                            }
-                        }
-                        serde_json::Value::Object(clean)
-                    } else {
-                        serde_json::json!({})
-                    };
-
-                    let mut section_ctx = tera::Context::new();
-                    section_ctx.insert("section_data", &sanitized_data);
-                    section_ctx.insert("section_type", &safe_type);
-                    section_ctx.insert("section_body", &section_fields_html);
-
-                    let section_html = state
-                        .theme()
-                        .tera()
-                        .render(&template, &section_ctx)
-                        .unwrap_or_else(|_| {
-                            format!(
-                                "<div class=\"compound-section compound-section--{}\">{}</div>",
-                                html_escape(&safe_type),
-                                section_fields_html
-                            )
-                        });
-                    children_html.push_str(&section_html);
-                }
-            } else if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
-                let raw_fmt = value
-                    .get("format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("plain_text");
-                let filtered = FilterPipeline::for_format_safe(raw_fmt).process(text_val);
-                children_html.push_str(&format!(
-                    "<div class=\"field field-{}\">{}</div>",
-                    html_escape(name),
-                    filtered
-                ));
-            } else if !value.is_object() && !value.is_array() && !value.is_null() {
-                // Plain string, numeric or boolean field (e.g. "field_city":
-                // "Portland"). The label is the one the item type declares,
-                // else derived from the machine name. The separator sits inside
-                // the label element, so a theme that hides the label hides it
-                // too instead of leaving a bare ": true".
-                let label = content_type_fields
-                    .iter()
-                    .find(|f| f.field_name == *name && !f.label.trim().is_empty())
-                    .map(|f| f.label.clone())
-                    .unwrap_or_else(|| {
-                        name.strip_prefix("field_")
-                            .unwrap_or(name)
-                            .replace('_', " ")
-                    });
-                let text = match value.as_str() {
-                    Some(s) => s.to_string(),
-                    None => value.to_string(),
-                };
-                let filtered = FilterPipeline::for_format("plain_text").process(&text);
-                children_html.push_str(&format!(
-                    "<div class=\"field field-{}\"><strong class=\"field__label\">{}:</strong> {}</div>",
-                    html_escape(name),
-                    html_escape(&label),
-                    filtered
-                ));
-            }
-        }
-    }
+    let mut children_html = render_item_fields(&state, &item.fields, &content_type_fields);
 
     // Include plugin render outputs
     for output in render_outputs {
@@ -892,6 +709,203 @@ async fn view_item(
         .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{item_html}</body></html>"));
 
     Ok(Html(page_html))
+}
+
+/// Render an item's fields as its page shows them: Blocks, page builder,
+/// compound sections, formatted text and plain values, each through the
+/// filter pipeline.
+///
+/// One body for the item page and the revision preview, so a past revision is
+/// shown exactly as it would have been. The caller hands in fields already cut
+/// to what the viewer may see.
+fn render_item_fields(
+    state: &AppState,
+    fields: &serde_json::Value,
+    content_type_fields: &[trovato_sdk::types::FieldDefinition],
+) -> String {
+    let mut children_html = String::new();
+    if let Some(fields) = fields.as_object() {
+        for (name, value) in fields {
+            // Blocks field: flat JSON array of {type, weight, data}
+            let is_blocks_field = content_type_fields.iter().any(|f| {
+                f.field_name == *name
+                    && matches!(f.field_type, trovato_sdk::types::FieldType::Blocks)
+            });
+            if is_blocks_field {
+                if let Some(blocks) = value.as_array() {
+                    let rendered = crate::content::render_blocks(blocks);
+                    children_html.push_str(&format!(
+                        "<div class=\"field field--blocks field-{}\">{}</div>",
+                        html_escape(name),
+                        rendered
+                    ));
+                }
+                continue;
+            }
+
+            // PageBuilder field: Puck JSON component tree.
+            // Detect via field type definition OR structural check (root+content keys).
+            let is_page_builder_field = content_type_fields.iter().any(|f| {
+                f.field_name == *name
+                    && matches!(f.field_type, trovato_sdk::types::FieldType::PageBuilder)
+            }) || (value.get("root").is_some()
+                && value.get("content").is_some());
+            if is_page_builder_field {
+                match state.theme().render_page_builder_content(value) {
+                    Ok(rendered) => {
+                        children_html.push_str(&format!(
+                            "<div class=\"field field--page-builder field-{}\">{}</div>",
+                            html_escape(name),
+                            rendered
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!(field = %name, error = %e, "failed to render page builder field");
+                    }
+                }
+                continue;
+            }
+
+            // Compound field: has "sections" array
+            if let Some(sections_raw) = value.get("sections").and_then(|s| s.as_array()) {
+                // Sort sections by weight for correct display order
+                let mut sorted_sections = sections_raw.clone();
+                sorted_sections
+                    .sort_by_key(|s| s.get("weight").and_then(|w| w.as_i64()).unwrap_or(0));
+
+                for section in &sorted_sections {
+                    let section_type = section
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown");
+
+                    // Sanitize section_type for template suggestion: only allow
+                    // alphanumeric, hyphens, and underscores to prevent path traversal
+                    let safe_type: String = section_type
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                        .collect();
+
+                    // Process section data fields through FilterPipeline
+                    let mut section_fields_html = String::new();
+                    if let Some(data) = section.get("data").and_then(|d| d.as_object()) {
+                        for (_key, val) in data {
+                            if let (Some(text), Some(fmt)) = (
+                                val.get("value").and_then(|v| v.as_str()),
+                                val.get("format").and_then(|v| v.as_str()),
+                            ) {
+                                let filtered = FilterPipeline::for_format_safe(fmt).process(text);
+                                section_fields_html.push_str(&filtered);
+                            } else if let Some(text) = val.as_str() {
+                                let filtered =
+                                    FilterPipeline::for_format("plain_text").process(text);
+                                section_fields_html.push_str(&filtered);
+                            } else {
+                                // Render non-string values (Integer, Float, Boolean) as
+                                // escaped text so they're not silently dropped
+                                if !val.is_object() && !val.is_array() && !val.is_null() {
+                                    let text = val.to_string();
+                                    let filtered =
+                                        FilterPipeline::for_format("plain_text").process(&text);
+                                    section_fields_html.push_str(&filtered);
+                                }
+                            }
+                        }
+                    }
+
+                    // Try to resolve section template using sanitized type
+                    let suggestions = [
+                        format!("elements/compound-section--{safe_type}"),
+                        "elements/compound-section".to_string(),
+                    ];
+                    let suggestion_refs: Vec<&str> =
+                        suggestions.iter().map(|s| s.as_str()).collect();
+                    let template = state
+                        .theme()
+                        .resolve_template(&suggestion_refs)
+                        .unwrap_or_else(|| "elements/compound-section.html".to_string());
+
+                    // Build sanitized section data: HTML-escape all string values
+                    // so custom templates can safely use {{ section_data.field }}
+                    let sanitized_data = if let Some(data) =
+                        section.get("data").and_then(|d| d.as_object())
+                    {
+                        let mut clean = serde_json::Map::new();
+                        for (k, v) in data {
+                            if let Some(s) = v.as_str() {
+                                clean.insert(k.clone(), serde_json::json!(html_escape(s)));
+                            } else if let Some(obj) = v.as_object() {
+                                // Escape string values inside nested objects like {value, format}
+                                let mut inner = serde_json::Map::new();
+                                for (ik, iv) in obj {
+                                    if let Some(s) = iv.as_str() {
+                                        inner.insert(ik.clone(), serde_json::json!(html_escape(s)));
+                                    } else {
+                                        inner.insert(ik.clone(), iv.clone());
+                                    }
+                                }
+                                clean.insert(k.clone(), serde_json::Value::Object(inner));
+                            } else {
+                                clean.insert(k.clone(), v.clone());
+                            }
+                        }
+                        serde_json::Value::Object(clean)
+                    } else {
+                        serde_json::json!({})
+                    };
+
+                    let mut section_ctx = tera::Context::new();
+                    section_ctx.insert("section_data", &sanitized_data);
+                    section_ctx.insert("section_type", &safe_type);
+                    section_ctx.insert("section_body", &section_fields_html);
+
+                    let section_html = state
+                        .theme()
+                        .tera()
+                        .render(&template, &section_ctx)
+                        .unwrap_or_else(|_| {
+                            format!(
+                                "<div class=\"compound-section compound-section--{}\">{}</div>",
+                                html_escape(&safe_type),
+                                section_fields_html
+                            )
+                        });
+                    children_html.push_str(&section_html);
+                }
+            } else if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
+                let raw_fmt = value
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("plain_text");
+                let filtered = FilterPipeline::for_format_safe(raw_fmt).process(text_val);
+                children_html.push_str(&format!(
+                    "<div class=\"field field-{}\">{}</div>",
+                    html_escape(name),
+                    filtered
+                ));
+            } else if !value.is_object() && !value.is_array() && !value.is_null() {
+                // Plain string, numeric or boolean field (e.g. "field_city":
+                // "Portland"). The label is the one the item type declares,
+                // else derived from the machine name. The separator sits inside
+                // the label element, so a theme that hides the label hides it
+                // too instead of leaving a bare ": true".
+                let label =
+                    crate::content::revision_compare::field_label(content_type_fields, name);
+                let text = match value.as_str() {
+                    Some(s) => s.to_string(),
+                    None => value.to_string(),
+                };
+                let filtered = FilterPipeline::for_format("plain_text").process(&text);
+                children_html.push_str(&format!(
+                    "<div class=\"field field-{}\"><strong class=\"field__label\">{}:</strong> {}</div>",
+                    html_escape(name),
+                    html_escape(&label),
+                    filtered
+                ));
+            }
+        }
+    }
+    children_html
 }
 
 /// Render the assistant launcher for every scope that applies to this item type.
@@ -1386,80 +1400,99 @@ async fn delete_item(
     }
 }
 
+/// Load an item and the revisions a revision page asks for, as the session's
+/// user, or the response that refuses them.
+///
+/// Every revision read route starts here: a login, then
+/// [`crate::content::ItemService::load_revisions`], which holds the item to
+/// `view` (404) then `edit` (403), checks every revision id against the item in
+/// the path, and drops the fields the user may not view.
+async fn revisions_for_session(
+    state: &AppState,
+    session: &Session,
+    id: Uuid,
+    which: RevisionSelection<'_>,
+) -> Result<ItemRevisions, Response> {
+    super::helpers::require_login(state, session).await?;
+    let user = get_user_context(session, state).await;
+    state
+        .items()
+        .load_revisions(id, which, &user)
+        .await
+        .map_err(|refusal| match refusal {
+            RevisionAccess::NotFound => super::helpers::render_not_found(),
+            RevisionAccess::Forbidden => super::helpers::render_forbidden(
+                "You do not have permission to read this item's revision history.",
+            ),
+            RevisionAccess::Failed(e) => {
+                tracing::error!(error = %e, item_id = %id, "failed to load revisions");
+                super::helpers::render_server_error("Failed to load revisions")
+            }
+        })
+}
+
+/// The name of every author of `revisions`, in one query however many there
+/// are. A deleted account's revisions carry the anonymous author, whose row
+/// names it; an id with no row at all is shown as that author too.
+async fn revision_authors(
+    state: &AppState,
+    revisions: &[crate::models::ItemRevision],
+) -> std::collections::HashMap<Uuid, String> {
+    let mut ids: Vec<Uuid> = revisions.iter().map(|r| r.author_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut names = state.users().names_by_ids(&ids).await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load revision authors");
+        std::collections::HashMap::new()
+    });
+    for id in ids {
+        names.entry(id).or_insert_with(|| "anonymous".to_string());
+    }
+    names
+}
+
+/// A revision as the revision templates show it.
+fn revision_summary(
+    revision: &crate::models::ItemRevision,
+    authors: &std::collections::HashMap<Uuid, String>,
+    current: Option<Uuid>,
+) -> serde_json::Value {
+    let date = chrono::DateTime::from_timestamp(revision.created, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+    serde_json::json!({
+        "id": revision.id,
+        "date": date,
+        "title": revision.title,
+        "log": revision.log,
+        "author": authors.get(&revision.author_id),
+        "is_current": Some(revision.id) == current,
+    })
+}
+
 /// List revision history for an item.
 ///
 /// Requires authentication — revision history may contain draft titles and
-/// internal log messages not intended for anonymous visitors.
+/// internal log messages not intended for anonymous visitors — and answers to
+/// `view` then `edit` on the item, as every revision route does.
 async fn list_revisions(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
 ) -> Response {
-    if let Err(redirect) = super::helpers::require_login(&state, &session).await {
-        return redirect;
-    }
-    let user = get_user_context(&session, &state).await;
+    let ItemRevisions { item, revisions } =
+        match revisions_for_session(&state, &session, id, RevisionSelection::All).await {
+            Ok(loaded) => loaded,
+            Err(refusal) => return refusal,
+        };
 
-    let item = match state.items().load(id).await {
-        Ok(Some(i)) => i,
-        Ok(None) => return super::helpers::render_not_found(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to load item");
-            return super::helpers::render_server_error("Failed to load item");
-        }
-    };
-
-    // The history is an editor's view of the item, so it answers to the same
-    // two questions the revert button on this very page already answers to:
-    // `view` decides whether the item exists for this caller at all, and `edit`
-    // decides whether they may read how it got here. Without them a login was
-    // the whole gate, and the titles and log messages of every draft on the
-    // site were readable by anyone with an account.
-    if !state
-        .items()
-        .check_access(&item, "view", &user)
-        .await
-        .unwrap_or(false)
-    {
-        return super::helpers::render_not_found();
-    }
-    if !state
-        .items()
-        .check_access(&item, "edit", &user)
-        .await
-        .unwrap_or(false)
-    {
-        return super::helpers::render_forbidden(
-            "You do not have permission to read this item's revision history.",
-        );
-    }
-
-    let revisions = match state.items().get_revisions(id).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to get revisions");
-            return super::helpers::render_server_error("Failed to load revisions");
-        }
-    };
-
-    let csrf_token = generate_csrf_token(&session).await;
-
-    // Build revision data for template
+    let authors = revision_authors(&state, &revisions).await;
     let rev_data: Vec<serde_json::Value> = revisions
         .iter()
-        .map(|rev| {
-            let date = chrono::DateTime::from_timestamp(rev.created, 0)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            serde_json::json!({
-                "id": rev.id,
-                "date": date,
-                "title": rev.title,
-                "log": rev.log,
-                "is_current": Some(rev.id) == item.current_revision_id,
-            })
-        })
+        .map(|rev| revision_summary(rev, &authors, item.current_revision_id))
         .collect();
+
+    let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("path", &format!("/item/{id}/revisions"));
@@ -1469,6 +1502,119 @@ async fn list_revisions(
     context.insert("csrf_token", &csrf_token);
 
     super::helpers::render_admin_template(&state, "admin/revisions.html", context).await
+}
+
+/// Preview one past revision: its title and fields, rendered as the item page
+/// renders them, without dispatching a view tap or writing anything.
+async fn preview_revision(
+    State(state): State<AppState>,
+    session: Session,
+    Path((id, rev_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let ItemRevisions { item, revisions } = match revisions_for_session(
+        &state,
+        &session,
+        id,
+        RevisionSelection::Ids(&[rev_id]),
+    )
+    .await
+    {
+        Ok(loaded) => loaded,
+        Err(refusal) => return refusal,
+    };
+    let Some(revision) = revisions.first() else {
+        return super::helpers::render_not_found();
+    };
+
+    let content_type_fields = state
+        .content_types()
+        .get(&item.item_type)
+        .map(|ct| ct.fields.clone())
+        .unwrap_or_default();
+    let fields_html = render_item_fields(&state, &revision.fields, &content_type_fields);
+    let authors = revision_authors(&state, &revisions).await;
+
+    let mut context = tera::Context::new();
+    context.insert("path", &format!("/item/{id}/revisions/{rev_id}"));
+    context.insert("item_id", &id);
+    context.insert("item_title", &item.title);
+    context.insert(
+        "revision",
+        &revision_summary(revision, &authors, item.current_revision_id),
+    );
+    context.insert("current_revision_id", &item.current_revision_id);
+    context.insert("fields_html", &fields_html);
+
+    super::helpers::render_admin_template(&state, "admin/revision-preview.html", context).await
+}
+
+/// The two revisions a compare is asked for.
+#[derive(Debug, Deserialize)]
+struct CompareQuery {
+    from: Uuid,
+    to: Uuid,
+}
+
+/// Compare two revisions of an item, field by field.
+///
+/// Computed from the two filtered `fields` snapshots by
+/// [`crate::content::revision_compare::compare_revisions`]; the older of the two
+/// is always the left side, whichever order they were picked in.
+async fn compare_revisions(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+    Query(query): Query<CompareQuery>,
+) -> Response {
+    let ItemRevisions { item, revisions } = match revisions_for_session(
+        &state,
+        &session,
+        id,
+        RevisionSelection::Ids(&[query.from, query.to]),
+    )
+    .await
+    {
+        Ok(loaded) => loaded,
+        Err(refusal) => return refusal,
+    };
+    let [first, second] = revisions.as_slice() else {
+        return super::helpers::render_not_found();
+    };
+    let (from, to) = if (second.created, second.id) < (first.created, first.id) {
+        (second, first)
+    } else {
+        (first, second)
+    };
+
+    let content_type_fields = state
+        .content_types()
+        .get(&item.item_type)
+        .map(|ct| ct.fields.clone())
+        .unwrap_or_default();
+    let comparison = crate::content::revision_compare::compare_revisions(
+        &from.title,
+        &from.fields,
+        &to.title,
+        &to.fields,
+        &content_type_fields,
+    );
+    let authors = revision_authors(&state, &revisions).await;
+
+    let mut context = tera::Context::new();
+    context.insert("path", &format!("/item/{id}/revisions/compare"));
+    context.insert("item_id", &id);
+    context.insert("item_title", &item.title);
+    context.insert(
+        "from",
+        &revision_summary(from, &authors, item.current_revision_id),
+    );
+    context.insert(
+        "to",
+        &revision_summary(to, &authors, item.current_revision_id),
+    );
+    context.insert("comparison", &comparison);
+
+    super::helpers::render_admin_template(&state, "admin/revision-compare.html", context).await
 }
 
 /// Revert to a previous revision.

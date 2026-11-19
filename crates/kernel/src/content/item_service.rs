@@ -407,6 +407,37 @@ impl std::fmt::Display for WriteDenied {
 
 impl std::error::Error for WriteDenied {}
 
+/// Which of an item's revisions [`ItemService::load_revisions`] loads.
+#[derive(Debug, Clone, Copy)]
+pub enum RevisionSelection<'a> {
+    /// Every revision, newest first: the history page.
+    All,
+    /// These revisions of the item, in this order: a preview or a compare.
+    Ids(&'a [Uuid]),
+}
+
+/// An item and the revisions of it a user asked for, each cut to the fields
+/// that user may view.
+#[derive(Debug, Clone)]
+pub struct ItemRevisions {
+    /// The item, as stored.
+    pub item: Item,
+    /// The revisions, in the order [`RevisionSelection`] gives.
+    pub revisions: Vec<ItemRevision>,
+}
+
+/// Why [`ItemService::load_revisions`] answered nothing.
+#[derive(Debug)]
+pub enum RevisionAccess {
+    /// No such item, an item the user may not view, or a revision id that
+    /// is not one of this item's.
+    NotFound,
+    /// The user may view the item but not edit it.
+    Forbidden,
+    /// A load or an access decision failed.
+    Failed(anyhow::Error),
+}
+
 impl ItemService {
     /// Create a new item service.
     ///
@@ -1929,9 +1960,84 @@ impl ItemService {
         Item::find_referencing(&self.inner.pool, item_type, field_name, target_id).await
     }
 
-    /// Get revisions for an item.
-    pub async fn get_revisions(&self, item_id: Uuid) -> Result<Vec<ItemRevision>> {
-        Item::get_revisions(&self.inner.pool, item_id).await
+    /// Load an item and some or all of its revisions, for this user.
+    ///
+    /// The one access path every revision read takes: the history page, the
+    /// preview and the compare. A revision is an editor's view of the item, so
+    /// the item answers to `view` first (a refusal is [`RevisionAccess::NotFound`],
+    /// as for a missing item) and then to `edit` ([`RevisionAccess::Forbidden`]).
+    ///
+    /// [`RevisionSelection::Ids`] loads the named revisions with one query scoped
+    /// to the item, so a revision id is never trusted on its own: one that
+    /// belongs to another item, or to none, is not found. They come back in the
+    /// order asked for.
+    ///
+    /// Every revision's `fields` is cut to what `accessible_fields(.., "view")`
+    /// allows, in one batched decision over the names all of them carry. A field
+    /// the user may not see is therefore absent from every snapshot, and a
+    /// comparison of two snapshots cannot report it even as removed.
+    pub async fn load_revisions(
+        &self,
+        item_id: Uuid,
+        which: RevisionSelection<'_>,
+        user: &UserContext,
+    ) -> std::result::Result<ItemRevisions, RevisionAccess> {
+        let item = self
+            .load(item_id)
+            .await
+            .map_err(RevisionAccess::Failed)?
+            .ok_or(RevisionAccess::NotFound)?;
+        if !self
+            .check_access(&item, "view", user)
+            .await
+            .map_err(RevisionAccess::Failed)?
+        {
+            return Err(RevisionAccess::NotFound);
+        }
+        if !self
+            .check_access(&item, "edit", user)
+            .await
+            .map_err(RevisionAccess::Failed)?
+        {
+            return Err(RevisionAccess::Forbidden);
+        }
+
+        let mut revisions = match which {
+            RevisionSelection::All => Item::get_revisions(&self.inner.pool, item_id)
+                .await
+                .map_err(RevisionAccess::Failed)?,
+            RevisionSelection::Ids(ids) => {
+                let found = Item::get_revisions_by_ids(&self.inner.pool, item_id, ids)
+                    .await
+                    .map_err(RevisionAccess::Failed)?;
+                ids.iter()
+                    .map(|id| found.iter().find(|r| r.id == *id).cloned())
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or(RevisionAccess::NotFound)?
+            }
+        };
+
+        let mut names: Vec<String> = revisions
+            .iter()
+            .filter_map(|r| r.fields.as_object())
+            .flat_map(|o| o.keys().cloned())
+            .collect();
+        names.sort();
+        names.dedup();
+        if !names.is_empty() {
+            let visible: std::collections::HashSet<String> = self
+                .accessible_fields(user, &item.item_type, &names, "view")
+                .await
+                .into_iter()
+                .collect();
+            for revision in &mut revisions {
+                if let Some(fields) = revision.fields.as_object_mut() {
+                    fields.retain(|name, _| visible.contains(name));
+                }
+            }
+        }
+
+        Ok(ItemRevisions { item, revisions })
     }
 
     /// Revert an item to a previous revision.

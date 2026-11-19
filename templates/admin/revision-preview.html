@@ -1,0 +1,33 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Revision of {{ revision.date }}: {{ revision.title }}</h2>
+    <a href="/item/{{ item_id }}/revisions" class="button">Back to history</a>
+</div>
+
+<div class="admin-card">
+    <p>
+        {% if revision.is_current %}
+        This is the current version of <a href="/item/{{ item_id }}">{{ item_title }}</a>.
+        {% else %}
+        <strong>This is not the current version</strong> of
+        <a href="/item/{{ item_id }}">{{ item_title }}</a>.
+        {% endif %}
+        Saved on {{ revision.date }} by {{ revision.author }}.
+        {% if revision.log %}Log message: {{ revision.log }}{% endif %}
+    </p>
+    {% if current_revision_id and not revision.is_current %}
+    <p>
+        <a href="/item/{{ item_id }}/revisions/compare?from={{ revision.id }}&amp;to={{ current_revision_id }}" class="button button--small">Compare with current</a>
+    </p>
+    {% endif %}
+</div>
+
+<div class="admin-card revision-preview">
+    <h1>{{ revision.title }}</h1>
+    {# The item page's own renderer, over fields already cut to what this
+       viewer may see; the same markup `/item/{id}` puts in `children`. #}
+    {{ fields_html | safe }}
+</div>
+{% endblock %}

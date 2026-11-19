@@ -9,14 +9,18 @@
     - aria-selected="true" on the active tab
     - tabindex="0" on active tab, tabindex="-1" on inactive tabs
     - Left/Right arrow keys move focus between tabs
-    - Home/End keys move to first/last tab -#}
+    - Home/End keys move to first/last tab
+
+    No explicit `escape` filter: autoescape already escapes every `{{ }}` here,
+    and escaping twice turned `/item/<id>/revisions` into the literal href
+    `&#x2F;item&#x2F;...`, a link to nowhere. -#}
 {% macro tab_bar(local_tasks) %}
 {% if local_tasks and local_tasks | length > 1 %}
 <nav class="admin-tabs" aria-label="Local tasks">
     <ul class="admin-tabs__list" role="tablist">
         {% for tab in local_tasks %}
         <li class="admin-tabs__item" role="presentation">
-            <a href="{{ tab.path | escape }}" role="tab" aria-selected="{{ tab.active }}" tabindex="{% if tab.active %}0{% else %}-1{% endif %}"{% if tab.active %} aria-current="page"{% endif %} class="admin-tabs__link{% if tab.active %} admin-tabs__link--active{% endif %}">{{ tab.title | escape }}</a>
+            <a href="{{ tab.path }}" role="tab" aria-selected="{{ tab.active }}" tabindex="{% if tab.active %}0{% else %}-1{% endif %}"{% if tab.active %} aria-current="page"{% endif %} class="admin-tabs__link{% if tab.active %} admin-tabs__link--active{% endif %}">{{ tab.title }}</a>
         </li>
         {% endfor %}
     </ul>

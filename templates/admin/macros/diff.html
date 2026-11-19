@@ -1,0 +1,11 @@
+{#- A value's diff, run by run. Every `seg.text` is plain text from
+    `content::revision_compare`, escaped here by autoescape; the only markup is
+    this macro's own. Nothing passes through `safe`. -#}
+{% macro segments(list) -%}
+{%- for seg in list -%}
+{%- if seg.kind == "added" -%}<ins class="diff-added">{{ seg.text }}</ins>
+{%- elif seg.kind == "removed" -%}<del class="diff-removed">{{ seg.text }}</del>
+{%- else -%}<span>{{ seg.text }}</span>
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro segments %}
