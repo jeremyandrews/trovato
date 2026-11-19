@@ -173,7 +173,7 @@ pub struct ItemSubmission {
     /// URL alias, update path only.
     pub url_alias: Option<String>,
     /// The stage asked for, as sent: `_stage` on a form, `stage_id` in JSON.
-    /// Read through [`ItemSubmission::requested_stage`].
+    /// Read through `ItemSubmission::requested_stage`.
     pub stage: Option<String>,
     /// CSRF token from the form body; `None` when the request is JSON and the
     /// token belongs in the `X-CSRF-Token` header instead.
