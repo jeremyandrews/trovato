@@ -500,3 +500,87 @@ fn anonymous_gets_no_edit_form_and_no_write() {
         disable_plugin(app).await;
     });
 }
+
+/// A field the viewer may not see is in no revision page: not in the preview,
+/// and not in the compare, not even as a field the later revision removed.
+///
+/// Here rather than beside the other revision route tests in
+/// `field_access_rest_test.rs`, because a field is only hidden when a
+/// `tap_field_access` implementer says so, and this file's app is the one with
+/// the reference plugin loaded.
+#[test]
+fn a_denied_field_is_in_neither_the_revision_preview_nor_the_compare() {
+    run_test(async {
+        let app = app();
+        ensure_person_type(app).await;
+        let id = seed_person(app, "Revisioned person", "123-45-6789").await;
+
+        // An administrator's edit drops `ssn` and changes `bio`, so a compare
+        // that read the stored snapshots would report `ssn` as removed.
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+        app.state
+            .items()
+            .update(
+                id,
+                trovato_kernel::models::UpdateItem {
+                    title: None,
+                    status: None,
+                    promote: None,
+                    sticky: None,
+                    fields: Some(serde_json::json!({ "bio": "rewritten-bio" })),
+                    log: Some("drop the ssn".to_string()),
+                    stage_id: None,
+                },
+                &admin,
+            )
+            .await
+            .expect("admin edit")
+            .expect("item exists");
+        let revs: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM item_revision WHERE item_id = $1 ORDER BY created, id",
+        )
+        .bind(id)
+        .fetch_all(&app.db)
+        .await
+        .unwrap();
+        let (first, second) = (revs[0], revs[1]);
+
+        let (_, cookies) = user_holding(app, "fieldwrite-revs", EDITOR).await;
+
+        let (status, html) = get_as(
+            app,
+            &format!("/item/{id}/revisions/{first}"),
+            &cookies,
+            "fw-revs",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the preview renders, got {html}");
+        assert!(
+            html.contains("before"),
+            "the visible field is shown, got {html}"
+        );
+        assert!(
+            !html.contains("123-45-6789") && !html.contains("SSN"),
+            "the preview must not show a field the viewer may not see, got {html}"
+        );
+
+        let (status, html) = get_as(
+            app,
+            &format!("/item/{id}/revisions/compare?from={first}&to={second}"),
+            &cookies,
+            "fw-revs",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the compare renders, got {html}");
+        assert!(
+            html.contains("before") && html.contains("rewritten-bio"),
+            "the visible field's change is shown, got {html}"
+        );
+        assert!(
+            !html.contains("123-45-6789") && !html.contains("SSN"),
+            "the compare must not show a field the viewer may not see, even as removed, got {html}"
+        );
+
+        disable_plugin(app).await;
+    });
+}
