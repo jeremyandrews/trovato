@@ -450,8 +450,8 @@ summary of intent". The code has nine handlers plus one inline check:
 | `/admin/queue/dlq/{id}/delete` | POST | `routes/admin_queue.rs:120` | `require_admin_json` |
 | `/admin/embed/status` | GET | `routes/admin_embed.rs:44` | `require_admin_json` |
 | `/admin/embed/backfill` | POST | `routes/admin_embed.rs:75` | `require_admin_json` |
-| `/admin/stage/switch` | POST | `routes/admin.rs:55` | `require_admin_json` |
-| `/admin/stage/current` | GET | `routes/admin.rs:75` | `require_admin_json` |
+| `/admin/stage/switch` | POST | `routes/admin.rs` (`switch_stage`) | CSRF header, then `use stages` (`require_use_stages`); 400 for an unknown stage |
+| `/admin/stage/current` | GET | `routes/admin.rs` (`get_current_stage`) | `use stages` (`require_use_stages`) |
 | `/api/v1/user/export` | GET | `routes/api_v1.rs:218-227` | inline `u.is_admin`, no helper |
 
 Only the first two are documented, and only for them is a rationale recorded

@@ -11,6 +11,7 @@ use tower_sessions::Session;
 
 use crate::file::service::{FileStatus, MediaScope};
 use crate::form::AjaxRequest;
+use crate::models::stage::LIVE_STAGE_ID;
 use crate::models::{Comment, CommentStatus, SiteConfig, UpdateComment};
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
@@ -21,7 +22,7 @@ use crate::error::AppError;
 
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, render_admin_template, render_not_found, render_server_error,
-    require_admin_json, require_csrf, require_permission,
+    require_csrf, require_permission,
 };
 
 /// Stage switch request.
@@ -38,47 +39,86 @@ struct StageSwitchResponse {
     active_stage: Option<String>,
 }
 
+/// The caller's context, if they may read stages other than Live; a 403
+/// otherwise, anonymous visitors included.
+async fn require_use_stages(
+    state: &AppState,
+    session: &Session,
+) -> Result<crate::tap::UserContext, AppError> {
+    let viewer = super::helpers::get_user_context(session, state).await;
+    if viewer.authenticated && viewer.can(crate::content::USE_STAGES) {
+        Ok(viewer)
+    } else {
+        Err(AppError::forbidden("You may not use stages"))
+    }
+}
+
 /// Switch the active stage for the current session.
 ///
 /// POST /admin/stage/switch
+///
+/// CSRF first, then `use stages` (an administrator holds it implicitly). A
+/// `stage_id` of `null` or Live's id goes back to Live; any other value must
+/// be the id of a stage that exists, or the request is a 400 and the session
+/// keeps what it had. What the session's stage is used for is
+/// [`super::helpers::read_stages`]'s decision, which asks the permission
+/// again on every read.
 async fn switch_stage(
     State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
     Json(request): Json<StageSwitchRequest>,
 ) -> Result<Json<StageSwitchResponse>, AppError> {
-    // Verify CSRF token from header
     super::helpers::require_csrf_header(&session, &headers)
         .await
         .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
-    require_admin_json(&state, &session).await?;
+    require_use_stages(&state, &session).await?;
+
+    let stage = match request.stage_id.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(value) => {
+            let id = value
+                .parse::<uuid::Uuid>()
+                .map_err(|_| AppError::bad_request("stage_id must be a stage id"))?;
+            let view = state
+                .items()
+                .stage_view()
+                .await
+                .map_err(|e| AppError::internal_ctx(e, "switch stage"))?;
+            if view.stage(id).is_none() {
+                return Err(AppError::bad_request("no stage has that id"));
+            }
+            (id != LIVE_STAGE_ID).then_some(id)
+        }
+    };
+    let stored = stage.map(|id| id.to_string());
 
     session
-        .insert(SESSION_ACTIVE_STAGE, request.stage_id.clone())
+        .insert(SESSION_ACTIVE_STAGE, stored.clone())
         .await
         .map_err(|e| AppError::internal_ctx(anyhow::anyhow!(e), "switch stage"))?;
 
-    tracing::info!(stage = ?request.stage_id, "stage switched");
+    tracing::info!(stage = ?stored, "stage switched");
 
     Ok(Json(StageSwitchResponse {
         success: true,
-        active_stage: request.stage_id,
+        active_stage: stored,
     }))
 }
 
 /// Get the current active stage.
+///
+/// GET /admin/stage/current, for a holder of `use stages`.
 async fn get_current_stage(
     State(state): State<AppState>,
     session: Session,
 ) -> Result<Json<StageSwitchResponse>, AppError> {
-    require_admin_json(&state, &session).await?;
+    require_use_stages(&state, &session).await?;
 
-    let active_stage: Option<String> = session
-        .get(SESSION_ACTIVE_STAGE)
+    let active_stage = super::helpers::session_stage(&session)
         .await
-        .map_err(|e| AppError::internal_ctx(anyhow::anyhow!(e), "get current stage"))?
-        .flatten();
+        .map(|id| id.to_string());
 
     Ok(Json(StageSwitchResponse {
         success: true,

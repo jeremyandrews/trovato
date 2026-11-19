@@ -1020,6 +1020,54 @@ pub async fn get_user_context(session: &Session, state: &AppState) -> UserContex
     }
 }
 
+/// The stage the session asked to read, if any: the active stage stored by
+/// `/admin/stage/switch`, parsed. Live, nothing stored, or a value that is not a
+/// stage id are all `None`. Whether the session may read it is
+/// [`read_stages`]'s decision, not this one's.
+pub async fn session_stage(session: &Session) -> Option<Uuid> {
+    let value: Option<String> = session
+        .get::<Option<String>>(crate::routes::auth::SESSION_ACTIVE_STAGE)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+    value
+        .and_then(|s| s.parse::<Uuid>().ok())
+        .filter(|id| *id != LIVE_STAGE_ID)
+}
+
+/// The stages a read draws on for `viewer`: the one stage resolver.
+///
+/// Live, for everyone. A holder of `use stages` (an administrator holds it
+/// implicitly) who asked for another stage, by a request parameter or the
+/// session's active stage, reads that stage with Live beneath it. A stage that
+/// does not exist is Live. Deny wherever there is a choice: without the
+/// permission, what was asked for is ignored rather than refused, so a link
+/// carrying `?stage=` still works and shows Live.
+///
+/// No query on the common path: the permission is the viewer's, and the stage
+/// is checked against the item service's cached stage view.
+pub async fn read_stages(
+    state: &AppState,
+    viewer: &UserContext,
+    requested: Option<Uuid>,
+) -> Vec<Uuid> {
+    let Some(stage) = requested.filter(|id| *id != LIVE_STAGE_ID) else {
+        return vec![LIVE_STAGE_ID];
+    };
+    if !viewer.can(crate::content::USE_STAGES) {
+        return vec![LIVE_STAGE_ID];
+    }
+    match state.items().stage_view().await {
+        Ok(view) if view.stage(stage).is_some() => vec![stage, LIVE_STAGE_ID],
+        Ok(_) => vec![LIVE_STAGE_ID],
+        Err(e) => {
+            tracing::warn!(error = %e, "stage lookup failed, reading Live");
+            vec![LIVE_STAGE_ID]
+        }
+    }
+}
+
 /// The context of a visitor with no session user: the anonymous user row with
 /// the anonymous role's real permissions.
 ///

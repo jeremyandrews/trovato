@@ -59,6 +59,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "publish content",
     "delete own content",
     "delete any content",
+    // Read a stage other than Live: switch the session's active stage, and see
+    // it (with Live beneath it) in search, gathers and aliases. Granted to no
+    // role by any migration; an administrator holds it implicitly. See
+    // `routes::helpers::read_stages`.
+    "use stages",
     "access user profiles",
     "administer users",
     "administer categories",

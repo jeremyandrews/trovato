@@ -13,37 +13,10 @@ use uuid::Uuid;
 
 use tower_sessions::Session;
 
-use crate::models::stage::LIVE_STAGE_ID;
-use crate::routes::auth::{SESSION_ACTIVE_STAGE, SESSION_USER_ID};
+use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::html_escape;
+use crate::routes::helpers::{read_stages, session_stage};
 use crate::state::AppState;
-
-/// Resolve the active stage IDs from the user session.
-///
-/// Anonymous users (or sessions without an active stage) see only
-/// `LIVE_STAGE_ID`. Authenticated users with an active non-live stage
-/// see both their active stage and the live stage.
-async fn resolve_stage_ids(session: &Session) -> Vec<Uuid> {
-    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
-        Ok(Some(s)) => match s.parse() {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(
-                    value = %s,
-                    error = %e,
-                    "corrupt SESSION_ACTIVE_STAGE value, falling back to live stage"
-                );
-                LIVE_STAGE_ID
-            }
-        },
-        _ => LIVE_STAGE_ID,
-    };
-    if active_stage == LIVE_STAGE_ID {
-        vec![LIVE_STAGE_ID]
-    } else {
-        vec![active_stage, LIVE_STAGE_ID]
-    }
-}
 
 /// Sanitize a search snippet from PostgreSQL `ts_headline`.
 ///
@@ -125,7 +98,10 @@ async fn search_html(
 
     // Get user ID if logged in
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let stage_ids = resolve_stage_ids(&session).await;
+    // Live, or the session's stage with Live beneath it for a holder of
+    // `use stages`: the one resolver every read path uses.
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    let stage_ids = read_stages(&state, &viewer, session_stage(&session).await).await;
 
     // Execute search
     let mut results = match state
@@ -146,7 +122,6 @@ async fn search_html(
 
     // FR-8 Story 3.7 — route result rows through the shared access seam: drop
     // items the viewer cannot see and redact restricted-field snippets.
-    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     results.results = state
         .items()
         .filter_search_results(results.results, &viewer)
@@ -207,7 +182,10 @@ async fn search_json(
 
     // Get user ID if logged in
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let stage_ids = resolve_stage_ids(&session).await;
+    // Live, or the session's stage with Live beneath it for a holder of
+    // `use stages`: the one resolver every read path uses.
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    let stage_ids = read_stages(&state, &viewer, session_stage(&session).await).await;
 
     // Execute search
     let mut results = match state
@@ -229,7 +207,6 @@ async fn search_json(
     };
 
     // FR-8 Story 3.7 — route result rows through the shared access seam.
-    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     results.results = state
         .items()
         .filter_search_results(results.results, &viewer)

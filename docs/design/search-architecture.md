@@ -273,7 +273,7 @@ Each live-stage item produces an index entry containing:
 
 Pagefind supports custom metadata per page, which is how we inject ranking signals into the client-side index.
 
-For editor search (items on internal-visibility stages + live stage), the tsvector fallback handles it server-side with stage-scoped queries -- same as the existing stage-aware kernel search. Editors don't use Pagefind for editorial work; they use the admin search which is already stage-aware.
+For editor search (items on internal-visibility stages + live stage), the tsvector fallback handles it server-side with stage-scoped queries -- same as the existing stage-aware kernel search. **The Pagefind index is Live only:** it is built from published Live items and served as static files to everyone, so it never contains a stage's content. Server-side search reads a stage only for a holder of `use stages` who switched to it (`routes::helpers::read_stages`; see `docs/design/stage-workflow.md` §8); everyone else, and every Pagefind query, reads Live.
 
 ### Rust/WASM Synergy
 

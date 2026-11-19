@@ -91,7 +91,10 @@ struct GatherResultResponse {
 pub struct ExecuteParams {
     #[serde(default = "default_page")]
     page: u32,
-    #[serde(default = "default_stage")]
+    /// `?stage=`: honoured only for a holder of `use stages`
+    /// ([`crate::routes::helpers::read_stages`]); absent, the session's
+    /// active stage is used for them.
+    #[serde(default)]
     stage: String,
     /// Exposed filter values as JSON-encoded strings
     #[serde(flatten)]
@@ -118,6 +121,11 @@ fn default_page() -> u32 {
 
 fn default_stage() -> String {
     LIVE_STAGE_ID.to_string()
+}
+
+/// The stage a request names with `?stage=`, if it names one that parses.
+fn requested_stage(stage: &str) -> Option<Uuid> {
+    stage.parse::<Uuid>().ok()
 }
 
 #[derive(Deserialize)]
@@ -238,11 +246,24 @@ async fn execute_query(
 
     // Parse exposed filter values
     let exposed_filters = parse_filter_params(&params.filters);
-    let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
+    let requested = match requested_stage(&params.stage) {
+        Some(stage) => Some(stage),
+        None => crate::routes::helpers::session_stage(&session).await,
+    };
+    let stage_ids = match context.viewer.as_ref() {
+        Some(viewer) => crate::routes::helpers::read_stages(&state, viewer, requested).await,
+        None => vec![LIVE_STAGE_ID],
+    };
 
     let result = state
         .gather()
-        .execute(&query_id, params.page, exposed_filters, stage_id, &context)
+        .execute_with_stages(
+            &query_id,
+            params.page,
+            exposed_filters,
+            &stage_ids,
+            &context,
+        )
         .await
         .map_err(|e| AppError::internal_ctx(e, "execute gather query"))?;
 
@@ -287,16 +308,24 @@ async fn execute_adhoc_query(
         .filter_map(|(k, v)| json_to_filter_value(v).map(|fv| (k, fv)))
         .collect();
 
-    let stage_id = request.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
+    // The builder's preview is a read like any other: another stage only for
+    // a holder of `use stages`.
+    let stage_ids = match context.viewer.as_ref() {
+        Some(viewer) => {
+            crate::routes::helpers::read_stages(&state, viewer, requested_stage(&request.stage))
+                .await
+        }
+        None => vec![LIVE_STAGE_ID],
+    };
 
     let result = state
         .gather()
-        .execute_definition(
+        .execute_definition_with_stages(
             &request.definition,
             &request.display,
             request.page,
             exposed_filters,
-            stage_id,
+            &stage_ids,
             &context,
         )
         .await
@@ -400,15 +429,20 @@ pub async fn execute_query_only(
     };
 
     let exposed_filters = parse_filter_params(&params.filters);
-    let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
+    let stage_ids = match query_context.viewer.as_ref() {
+        Some(viewer) => {
+            crate::routes::helpers::read_stages(state, viewer, requested_stage(&params.stage)).await
+        }
+        None => vec![LIVE_STAGE_ID],
+    };
 
     state
         .gather()
-        .execute(
+        .execute_with_stages(
             query_id,
             params.page,
             exposed_filters,
-            stage_id,
+            &stage_ids,
             &query_context,
         )
         .await
@@ -440,7 +474,14 @@ pub async fn execute_and_render(
     };
 
     let exposed_filters = parse_filter_params(&params.filters);
-    let stage_id = params.stage.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID);
+    let requested = match requested_stage(&params.stage) {
+        Some(stage) => Some(stage),
+        None => crate::routes::helpers::session_stage(session).await,
+    };
+    let stage_ids = match query_context.viewer.as_ref() {
+        Some(viewer) => crate::routes::helpers::read_stages(state, viewer, requested).await,
+        None => vec![LIVE_STAGE_ID],
+    };
 
     // Pre-fetch widget data before executing — borrows exposed_filters for faceted
     // scoping, then releases the borrow so execute() can take ownership.
@@ -448,11 +489,11 @@ pub async fn execute_and_render(
 
     let result = state
         .gather()
-        .execute(
+        .execute_with_stages(
             query_id,
             params.page,
             exposed_filters,
-            stage_id,
+            &stage_ids,
             &query_context,
         )
         .await

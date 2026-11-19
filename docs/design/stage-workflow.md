@@ -156,3 +156,53 @@ Every way in is a thin caller of that:
   site is Live.
 - New content landing on the default stage: a behaviour change for a site that
   marked a stage other than Live default, recorded in `UPGRADING.md`.
+
+## 8. Reading a stage (B69 Part 3)
+
+Moving items is half of a workflow; the other half is an editor seeing the
+stage they work in. Until B69 three places decided which stages a read drew
+on, and none asked a permission: `/admin/stage/switch` stored any string as the
+session's active stage (for an administrator), search and the alias fallback
+read that value for whoever's session held it, and the gather routes took
+`?stage=` from anyone, anonymous visitors included, whose `total` then counted
+the published items on an internal stage.
+
+**Decision.** One resolver, `routes::helpers::read_stages(state, viewer,
+requested)`, answers every read: Live, or the requested stage with Live beneath
+it for a holder of `use stages`. The request is `?stage=` where a route takes
+one, else the session's active stage (`session_stage`). Without the permission
+the request is ignored, not refused, so a shared link carrying `?stage=` shows
+Live rather than an error. A stage that does not exist is Live. The permission
+is asked on every read, so revoking it takes effect on the next request, not the
+next login.
+
+- `use stages` is in `KERNEL_PERMISSIONS`, granted to no role by any migration;
+  an administrator holds it implicitly (`UserContext::can`).
+- `POST /admin/stage/switch` keeps its CSRF check (first), then requires the
+  permission (403), and answers 400 for a value that is not a stage id or names
+  no stage. `null` or Live's id goes back to Live. `GET /admin/stage/current`
+  requires the permission.
+- Callers: search (HTML and JSON), the alias fallback (which loads the viewer
+  only when the session names a stage, so a request with none costs nothing),
+  and the gather routes (`/gather/{id}`, `/api/query/{id}/execute`, the ad hoc
+  preview, and `execute_query_only`, whose callers, the feeds and route
+  aliases, keep forcing Live).
+- Item pages are unchanged: they load an item by id and ask `check_access`,
+  which already denies an internal stage to anonymous visitors.
+
+**Counting what the caller can see.** A gather's `total` was the SQL count,
+which for anyone but an anonymous visitor included rows the post-fetch access
+pass then dropped, and its pages started at raw offsets, so a page could repeat
+or skip visible rows. An Item gather now reads the candidates' access columns in
+rank order, in one query up to the existing scan cap (`max_scan`, 1000 by
+default), decides each with the same `check_access`, and reports that count;
+page N starts at the raw position of the visible row that opens it. The
+backfill loop and its `access_capped` signal are unchanged. Past the cap the
+count is of what was scanned, so it can under-report but never counts a row the
+caller cannot see. A record gather's published filter is an exact SQL predicate,
+so it keeps its SQL count. Search keeps its SQL count: it is bounded by the
+stages the resolver allows, and its per-row filter is a separate change.
+
+**Pagefind is Live only.** The static index is built from published Live items
+(`cron/pagefind.rs`) and served to everyone, so it never contains a stage's
+content; an editor reading a stage uses the server-side search.

@@ -9,6 +9,27 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Reading a stage needs `use stages`; gather totals count what the viewer can see
+
+**Who is affected:** a site whose editors preview a stage other than Live, and
+anything that reads a gather's `total` or pager for a signed-in viewer.
+
+**What changed.** A new kernel permission, `use stages`, decides who may read a
+stage other than Live: switch the session's stage at `/admin/stage/switch`, and
+see it, with Live beneath it, in search, gathers (`?stage=`) and URL aliases.
+No role is granted it on upgrade; administrators hold it implicitly. Before,
+the switch was for administrators only, but a gather took `?stage=` from anyone.
+If editors who are not administrators should preview stages, grant their role
+`use stages` at `/admin/people/permissions` or in its role file. A request for
+a stage without the permission is answered from Live, not refused, and a
+switch to a stage that does not exist is now a 400.
+
+A gather's `total`, `total_pages` and `has_next` now count only the rows the
+viewer can see, up to the gather scan cap (`max_scan`, 1000 by default). For an
+anonymous visitor nothing changes on Live; for a signed-in viewer who cannot
+see some matching rows (unpublished items by others, say), the numbers go
+down to what they can actually page through.
+
 ### New content lands on the default stage; stage moves follow the workflow
 
 **Who is affected:** a site that marked a stage other than Live as the default
