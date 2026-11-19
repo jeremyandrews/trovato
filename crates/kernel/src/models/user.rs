@@ -89,6 +89,27 @@ impl User {
         Ok(user)
     }
 
+    /// The names of the users among `ids`, in one query.
+    ///
+    /// An id with no row is absent from the map. Deleted accounts never are:
+    /// account deletion reattributes their content to [`ANONYMOUS_USER_ID`],
+    /// whose row names it.
+    pub async fn names_by_ids(
+        pool: &PgPool,
+        ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, String>> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows: Vec<(Uuid, String)> =
+            sqlx::query_as("SELECT id, name FROM users WHERE id = ANY($1)")
+                .bind(ids)
+                .fetch_all(pool)
+                .await
+                .context("failed to fetch user names")?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Find a user by username (case-insensitive).
     pub async fn find_by_name(pool: &PgPool, name: &str) -> Result<Option<Self>> {
         let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE LOWER(name) = LOWER($1)")

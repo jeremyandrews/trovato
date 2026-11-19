@@ -255,19 +255,6 @@ site.
 There is no filesystem watch. `ThemeEngine::reload` exists and nothing calls it, so
 a template change needs a restart in development and production alike.
 
-### The revision history page fails once an item has a revision
-
-`ItemRevision` carries two fields, `change_summary` and `ai_generated`, beyond the
-eight columns `get_revisions` and `get_revision` select. Both carry
-`#[serde(default)]`, which reads as a default at a glance and does nothing for
-`sqlx::FromRow`, and neither carries `#[sqlx(default)]`, so decoding a row fails on a
-missing column (`crates/kernel/src/models/item.rs:96-105`, `:396-400`, `:409-413`).
-
-An empty result decodes, so `/item/{id}/revisions` works until the first edit and
-answers 500 afterwards, and revert fails the same way. It is a 1.0 blocker and it
-needs the integration test that edits an item before loading its history, which is
-why it survived. See BL-91 in [docs/BACKLOG.md](docs/BACKLOG.md).
-
 ### A revision's authorship can change, and nothing else about it can
 
 `item_revision` rows are immutable by database trigger: a revision is a snapshot,

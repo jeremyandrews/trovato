@@ -77,6 +77,18 @@ impl UserService {
         Ok(user)
     }
 
+    /// The names of the users among `ids`, in one query whatever their number.
+    ///
+    /// For pages that name many authors at once (the revision history), where
+    /// a cached `find_by_id` per author would be one query per author on a
+    /// cold cache.
+    pub async fn names_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, String>> {
+        User::names_by_ids(&self.inner.pool, ids).await
+    }
+
     /// Find a user by username (not cached — used for uniqueness checks).
     pub async fn find_by_name(&self, name: &str) -> Result<Option<User>> {
         User::find_by_name(&self.inner.pool, name).await

@@ -21,13 +21,17 @@ pub mod page_builder_components;
 pub mod page_meta;
 mod record_type;
 pub mod reentry;
+pub mod revision_compare;
 mod type_registry;
 
 pub use block_render::render_blocks;
 pub use block_types::{BlockTypeDefinition, BlockTypeRegistry};
 pub use filter::{FilterPipeline, TextFilter};
 pub use form::{FieldMode, FormBuilder, extract_reference_id};
-pub use item_service::{ItemService, PUBLISH_CONTENT, USE_STAGES, WriteDenied, decode_view_output};
+pub use item_service::{
+    ItemRevisions, ItemService, PUBLISH_CONTENT, RevisionAccess, RevisionSelection, USE_STAGES,
+    WriteDenied, decode_view_output,
+};
 pub use page_meta::PageMeta;
 pub use record_type::{RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry};
 pub use type_registry::{AddFieldError, ContentTypeRegistry, CreateContentTypeError};

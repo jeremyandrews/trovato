@@ -278,7 +278,7 @@ bear out is recorded as such in the row rather than dropped.
 | BL-88 (G-ITEM-INSERT-OUTPUT-DISCARDED) | `tap_item_insert` runs after the row exists and its output is bound to `_results` and never read, an `Err` included. `tap_item_update`, `tap_item_delete` and the revert dispatch do the same. Both plugin documents give the tap's return type as `Result<(), String>` and its purpose as pre-insert validation, which it cannot be in either half: it runs too late to prevent anything and nothing reads what it reports. The delete site even comments "can abort deletion". | `crates/kernel/src/content/item_service.rs:396-401,652-658,829-834,1505`; `docs/plugin-development.md:195,217`; `docs/plugin-quick-reference.md:60,74` | documents fixed (#163): both plugin documents now call insert, update and delete notifications whose output is ignored and name presave as the tap that changes a write; the code is unchanged | 1.0.x, **Ritrovo gate** | frozen; the contract says one thing and the code does another, so one of them changes |
 | BL-89 (G-PLUGIN-INSTALL-WARNS-ON-AN-OVERLAY) | `trovato plugin install` derives a workspace root two directories above the plugin it found and warns when there is no build output there, without first looking at whether the module is already in place. For a plugin on an appended `PLUGINS_DIR` search path, which is how every external plugin is installed, that directory is the overlay's parent and has no `target/`, so the warning prints on every install and tells the operator to build something already built. | `crates/kernel/src/plugin/cli.rs:386-412` (`wasm_src.exists()` with no test of `wasm_dest`) | open | 1.0.x | additive |
 | BL-90 (G-PERM-GRID-SAVE-REVOKES-PLUGIN-GRANTS) | Saving the permission grid revoked every plugin permission from every role: the handler built each role's desired set by filtering `KERNEL_PERMISSIONS` against the submitted checkboxes, and the save had replace semantics, so a permission the grid never rendered looked deliberately unchecked. The form now states which permissions it rendered and `set_permissions_within` confines removals to that set, so a permission the grid did not show keeps whatever it had. The checkbox key is an index rather than the name with spaces replaced by underscores, which was not reversible once plugin names brought underscores in. | `crates/kernel/src/models/role.rs` (`set_permissions_within`); `crates/kernel/src/routes/admin_user.rs`; `templates/admin/permissions.html` | fixed (#93) | closed | n/a |
-| BL-91 (G-REVISION-HISTORY-500) | The revision history page and revert fail for any item that has a revision. `ItemRevision` carries `change_summary` and `ai_generated` beyond the eight columns `get_revisions` and `get_revision` select. Both have `#[serde(default)]`, which does nothing for `sqlx::FromRow`, and neither has `#[sqlx(default)]`, so decoding a row fails on a missing column. An empty result decodes, which is why the page works until the first edit. | `crates/kernel/src/models/item.rs:96-105` (the two fields), `:396-400` and `:409-413` (the two queries); the route reports it at `crates/kernel/src/routes/item.rs:1243` | open | 1.0, **Ritrovo gate** | additive |
+| BL-91 (G-REVISION-HISTORY-500) | The revision history page and revert failed for any item that had a revision. `ItemRevision` carries `change_summary` and `ai_generated` beyond the eight columns `get_revisions` and `get_revision` selected. Both have `#[serde(default)]`, which does nothing for `sqlx::FromRow`, and neither has `#[sqlx(default)]`, so decoding a row failed on a missing column. Both queries now select all ten columns, and `the_revision_list_is_held_to_view_then_edit` loads the history of an edited item. | `crates/kernel/src/models/item.rs` (`get_revisions`, `get_revision`) | fixed `c137f2b` | closed | n/a |
 | BL-92 (G-NO-ITEM-STAGE-TRANSITION) | Nothing moves one item from one stage to another. The item forms carry no stage and creation passes `stage_id: None`; the bulk actions are `publish`, `unpublish` and `delete`, which set `status`; `save-item` has no stage on create or update; `StageService::publish` moves a whole stage and no route calls it (`state.stage()` has no caller outside `state.rs`). The tutorial ships `variable.workflow.editorial.yml` describing the transitions and their permissions, and the kernel says in its own source that nothing reads it. Fixed in B69 Part 2: `UpdateItem::stage_id`, one rule in `ItemService` (`may_move`: edit access plus a transition naming exactly the pair whose permission the user holds; administrators exempt; no workflow, administrators only), selectors on both edit forms, a `move_to_stage` bulk action, `save-item`'s `stage`, and a `config import` check of the workflow. See `docs/design/stage-workflow.md`. | `crates/kernel/src/routes/item.rs:957`; `crates/kernel/src/routes/admin_content.rs:293,625-626`; `crates/kernel/src/host/item.rs:213`; `crates/kernel/src/stage/mod.rs:358-363`; `crates/kernel/src/routes/admin_stage.rs:14-19` | fixed (B69 Part 2) | 1.0, **Ritrovo gate** | additive for the route, the form field and the bulk action; frozen for the `save-item` half (an existing host call starts honouring a field it ignores) |
 | BL-93 (G-DEFAULT-STAGE-IGNORED-ON-CREATE) | `/admin/structure/stages` tells the administrator that exactly one stage is the default, "which is where new content lands", and stores `is_default` on `stage_config`. Nothing reads it: creation binds `input.stage_id.unwrap_or(LIVE_STAGE_ID)`, and a search of the item service, the item routes, the content admin routes and the item model finds no reader. Marking a stage default changes nothing. Fixed in B69 Part 2: `Item::create` resolves a missing stage to the default in its INSERT (`COALESCE`), Live when none is marked. | `crates/kernel/src/models/stage.rs:107-108,290-297` (stored); `crates/kernel/src/models/item.rs:262` (ignored) | fixed (B69 Part 2) | 1.0, **Ritrovo gate** | frozen; what a create with no stage does is observable to every plugin that calls `save-item` |
 | BL-94 (G-MAIL-CANNOT-REACH-A-USER) | A plugin has no way to send mail to one of the site's own users. `mail` has one function and the recipient is always the site's configured contact address, and `user-api` exposes no address either. The refusal to be a relay is right and it also rules out every message a site sends to its own members on a plugin's behalf. | `crates/wit/kernel.wit:212-225`; `crates/kernel/src/host/mail.rs:1-14`; `crates/wit/kernel.wit:55-58` | open | post, **Ritrovo gate** | additive (a new `send-to-user(user-id, subject, body)` where the kernel resolves the address) |
@@ -297,7 +297,7 @@ bear out is recorded as such in the row rather than dropped.
 | BL-107 (G-FILE-NO-HOST-API) | A plugin cannot accept or store a file. There is no file interface among the WIT world's twelve imports, and a plugin route's body is UTF-8 text capped at 256 KiB, so a multipart upload to a plugin page is refused before the plugin sees it. | `crates/wit/kernel.wit:258-270` (the import list); `crates/kernel/src/routes/plugin_api.rs:92,309-313` | open | post, **Ritrovo gate** | additive if the body gains a field or a host call is added; frozen if `ApiRequest::body` changes type |
 | BL-108 (G-PLUGIN-ROUTE-NO-HEADERS) | A plugin route sees no request headers and sets none. `ApiRequest` carries callback, method, path, params, query, body, user and a CSRF token; `ApiResponse` sets status, body, content type, theme and title. So a plugin cannot redirect after a POST, set `Cache-Control`, or read `Accept-Language`. | `crates/plugin-sdk/src/types.rs:784-812,884-918`; `crates/kernel/src/routes/plugin_api.rs:408-421` | open | post | additive (new optional fields on both records) |
 | BL-109 (G-S3-STORAGE-REMOVED) | There is no S3-compatible storage backend. This is a recorded decision, not an omission: it was an unused, non-default optional feature and the last carrier of the legacy AWS-SDK TLS chain, and the source says so and names the way back. Listed so the documents that promise S3 stop being read as describing something outstanding. | `crates/kernel/src/file/storage.rs:1-8` | decided | closed, **Ritrovo gate** | n/a |
-| BL-110 (G-REVISION-NO-COMPARE) | `item_revision.change_summary` holds the added, removed and changed fields, and no route or template renders a comparison of two revisions. Waits on BL-91, since the history page is where a compare view is reached from. | `crates/kernel/src/models/item.rs:96-101`; no compare route in `crates/kernel/src/routes/item.rs` | open | post, **Ritrovo gate** | additive |
+| BL-110 (G-REVISION-NO-COMPARE) | No route or template compared two revisions. `GET /item/{id}/revisions/compare?from=&to=` now does, field by field, computed from the two revisions' `fields` snapshots (`item_revision.change_summary` is never written, so there was nothing to read), with a preview of any revision beside it, both held to `view` then `edit` and filtered by field view access. | `crates/kernel/src/content/revision_compare.rs`; `crates/kernel/src/routes/item.rs` (`compare_revisions`, `preview_revision`) | fixed #169 | closed | n/a |
 | BL-111 (G-SEARCH-NO-ADMIN-OR-ANALYTICS) | Search ranking is a JSON block in a template rather than configuration, there is no search settings screen, and nothing records a query: a search of `crates/kernel/src` and `templates/` finds no query log, no top-query report and no expansion hit rate. Per-type field weights, which do have a screen, are a different thing. | `templates/search.html:100-121`; no `admin/config/search` route in `crates/kernel/src/routes/mod.rs` | open | post, **Ritrovo gate** | additive |
 
 ### What the code did not bear out
@@ -406,7 +406,7 @@ cron or a queue worker), **BL-90** (35.2 and D16 lose by the grid what SQL
 granted), **BL-93** (35.3 and 36.4 need new content to land where the operator
 said), **BL-104** (34.4's menu links and 38.2's aliases), **BL-105** (37.4 must
 resolve a subscriber), **BL-107** (36.4's logo upload), and **BL-110** (35.4 and
-D20 want a comparison).
+D20 want a comparison; closed with #169).
 
 ### Findings with no blocked row behind them
 
@@ -501,24 +501,25 @@ should get a row when the next pass runs.
 
 ## Tally
 
-123 distinct findings after merging duplicates. By status: 87 open, 5 partly fixed
-(BL-03, BL-06, BL-07, BL-21, BL-25), 28 fixed, 2 that do not reproduce, and 1 decided
-(BL-109). By class: 25 proposed to block 1.0, 34 to ship in 1.0.x, 35 to wait until
-after 1.0, and 29 closed. The two partitions cross at three rows: of the two that do
+123 distinct findings after merging duplicates. By status: 85 open, 5 partly fixed
+(BL-03, BL-06, BL-07, BL-21, BL-25), 30 fixed, 2 that do not reproduce, and 1 decided
+(BL-109). By class: 24 proposed to block 1.0, 34 to ship in 1.0.x, 34 to wait until
+after 1.0, and 31 closed. The two partitions cross at three rows: of the two that do
 not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
 on one database confirm it; and BL-02 is fixed in the kernel and stays in 1.0 for
-the SDK half its row names. So the 29 closed are 27 of the 28 fixed, plus BL-14 and
-BL-109. Everything not closed — 94 rows — is what "open" means in the paragraph
+the SDK half its row names. So the 31 closed are 29 of the 30 fixed, plus BL-14 and
+BL-109. Everything not closed — 92 rows — is what "open" means in the paragraph
 above, and the five partly fixed rows are inside it, each one open on the half its
 row names.
 
-The 25: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-67,
-BL-68, BL-73, BL-74, BL-85, BL-87, BL-91, BL-92, BL-93, BL-98, BL-99, BL-100,
+The 24: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-67,
+BL-68, BL-73, BL-74, BL-85, BL-87, BL-92, BL-93, BL-98, BL-99, BL-100,
 BL-104, BL-112, BL-118, BL-120.
 
 Four of the 30 that stood here before closed in the fix series — BL-09, BL-11,
 BL-12 and BL-15 — and BL-112 is new, so that list was three shorter. Three more
-have closed since and are gone from it: BL-41 (#92), BL-69 and BL-90 (#93). BL-66
+have closed since and are gone from it: BL-41 (#92), BL-69 and BL-90 (#93), and
+BL-91 (`c137f2b`; its post-1.0 companion BL-110 closed with #169). BL-66
 left the list without closing: the 1.0 definition no longer names the security
 review, so the row is classed post and the review is welcome rather than
 required. The fix series has also closed BL-33 (#96) and BL-116 (#97), neither of
@@ -647,7 +648,7 @@ an unrelated reason silently takes it back. So a site running any plugin with a
 permission cannot be operated through the interface at all: the interface undoes the
 only mechanism that works. Revoke only what the grid rendered. Small.
 
-**BL-91, revision history 500.** Day one, and it needs no plugin: edit any item once
+**BL-91, revision history 500.** Fixed in `c137f2b`; the reasoning is kept for the record. Day one, and it needs no plugin: edit any item once
 through the admin form and its history page answers 500, as does revert. Revisions
 are a headline feature with a screen and an API. Two columns in two queries, or two
 attributes on two fields, plus the integration test that edits an item before
@@ -759,7 +760,7 @@ named.
 |---|---|---|---|---|---|
 | **K1 permissions** | BL-69, BL-90 | 35.2, 36.6, D16, P17, P18; most of D8 | additive | `plugin/info_parser.rs` and wherever boot walks the registry, `routes/admin_user.rs`, `config_storage/yaml.rs`, `models/role.rs`, `templates/admin/permissions.html` | BL-69 is already a 1.0 blocker on this page; no open pull request touches it |
 | **K2 editorial workflow** | BL-92, BL-93 | 35.3, D3 (with K3), and lets Ritrovo's importer land in Incoming (P3) | **contract change**, twice | `routes/item.rs`, `routes/admin_content.rs`, `models/item.rs`, `models/stage.rs`, `stage/mod.rs`, `host/item.rs`, `crates/wit/kernel.wit`, `templates/admin/content-form.html` | none open; needs K1 first, because a transition is gated on a permission |
-| **K3 revisions** | BL-91, BL-110 | 35.4, D20, D3 (with K2) | additive | `models/item.rs`, `routes/item.rs`, `templates/item/revisions.html`, one new compare template, `crates/kernel/tests/` | none; independent of every other batch |
+| **K3 revisions** | BL-91 (fixed `c137f2b`), BL-110 (fixed #169) | 35.4, D20, D3 (with K2) | additive | `content/item_service.rs`, `content/revision_compare.rs` (the compare, computed from the two `fields` snapshots; `change_summary` is never written), `routes/item.rs`, `templates/admin/revisions.html`, two new templates, `crates/kernel/tests/` | done |
 | **K4 delegated administration and batch** | BL-41, BL-102 | 37.2, 39.2, D25 | additive | `routes/helpers.rs`, `routes/admin_content.rs`, `routes/admin.rs`, `batch/service.rs`, a new executor module | BL-41 is already a 1.0 blocker; needs K1 for permissions that exist and K2 for a stage-publish operation to execute |
 | **K5 forms reachable** | BL-95, BL-42, BL-103 | 36.1, 36.3, D22, D23, 31.6, P16, and the form half of 36.4, 36.5, D6 | additive | `form/service.rs`, `routes/item.rs`, `routes/auth.rs`, `routes/admin.rs`, `content/item_service.rs`, `content/form.rs` | none open; needs K1 to permission-gate `/system/ajax` |
 | **K6 profile and file** | BL-101, BL-107 | 36.7, D15, and 36.4's logo upload | additive if the request body gains a field rather than changing type | `routes/auth.rs`, `templates/user/profile.html`, `routes/plugin_api.rs`, `crates/plugin-sdk/src/types.rs`, `crates/wit/kernel.wit` | needs K5, because the profile form has to be built through `FormService` before a plugin can add to it |

@@ -1,0 +1,49 @@
+{% extends "page--admin.html" %}
+
+{% import "admin/macros/diff.html" as diff %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Compare revisions: {{ item_title }}</h2>
+    <a href="/item/{{ item_id }}/revisions" class="button">Back to history</a>
+</div>
+
+<div class="admin-card">
+    <p>
+        From <a href="/item/{{ item_id }}/revisions/{{ from.id }}">{{ from.date }}</a> by {{ from.author }}
+        {% if from.is_current %}<span class="badge badge--success">current</span>{% endif %}
+        to <a href="/item/{{ item_id }}/revisions/{{ to.id }}">{{ to.date }}</a> by {{ to.author }}
+        {% if to.is_current %}<span class="badge badge--success">current</span>{% endif %}
+    </p>
+    <p class="diff-legend"><del class="diff-removed">removed</del> <ins class="diff-added">added</ins></p>
+</div>
+
+<div class="admin-card">
+    <dl class="diff">
+        <dt>Title {% if not comparison.title %}<span class="diff-kind">unchanged</span>{% endif %}</dt>
+        <dd class="diff-text">{% if comparison.title %}{{ diff::segments(list=comparison.title) }}{% else %}{{ to.title }}{% endif %}</dd>
+
+        {% for field in comparison.fields %}
+        <dt>{{ field.label }} <span class="diff-kind diff-kind--{{ field.kind }}">{{ field.kind }}</span></dt>
+        <dd class="diff-text">{{ diff::segments(list=field.segments) }}</dd>
+        {% endfor %}
+    </dl>
+    {% if comparison.unchanged > 0 %}
+    <p class="diff-unchanged">{{ comparison.unchanged }} unchanged field{{ comparison.unchanged | pluralize }} not shown.</p>
+    {% endif %}
+    {% if not comparison.fields %}
+    <p>No field differs between these revisions.</p>
+    {% endif %}
+</div>
+<style>
+    .diff dt { font-weight: 600; margin-top: 1rem; }
+    .diff dd { margin: 0.25rem 0 0 0; }
+    .diff-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); font-size: 0.875rem; background: var(--gray-50, #f9fafb); padding: 0.5rem; border-radius: 4px; }
+    .diff-added { background: #d1fae5; color: #065f46; text-decoration: none; }
+    .diff-removed { background: #fee2e2; color: #991b1b; }
+    .diff-kind { font-weight: 400; font-size: 0.75rem; text-transform: uppercase; margin-left: 0.5rem; color: var(--gray-600, #4b5563); }
+    .diff-kind--added { color: #065f46; }
+    .diff-kind--removed { color: #991b1b; }
+    .diff-unchanged { color: var(--gray-600, #4b5563); }
+</style>
+{% endblock %}
