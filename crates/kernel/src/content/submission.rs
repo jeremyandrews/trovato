@@ -78,6 +78,64 @@ pub fn permitted_text_formats(user: &UserContext) -> Vec<String> {
     formats
 }
 
+/// The value a `settings.visible_when` condition
+/// compares, as the form posts it: the posted value when the controlling field
+/// was rendered and `posted` is given, the stored one otherwise. A Boolean is
+/// `"1"` or `""`, whichever side it comes from.
+fn controlling_value(
+    content_type: &ContentTypeDefinition,
+    name: &str,
+    stored: Option<&Map<String, Value>>,
+    rendered: &[String],
+    posted: Option<&PostedForm>,
+) -> String {
+    let is_boolean = content_type
+        .fields
+        .iter()
+        .any(|f| f.field_name == name && matches!(f.field_type, FieldType::Boolean));
+    if let Some(posted) = posted
+        && rendered.iter().any(|r| r == name)
+    {
+        let raw = posted.get(name).unwrap_or("");
+        return match (is_boolean, is_truthy(raw)) {
+            (true, true) => "1".to_string(),
+            (true, false) => String::new(),
+            (false, _) => raw.to_string(),
+        };
+    }
+    match stored.and_then(|s| s.get(name)) {
+        Some(Value::Bool(true)) => "1".to_string(),
+        Some(Value::String(s)) if is_boolean => {
+            if is_truthy(s) {
+                "1".to_string()
+            } else {
+                String::new()
+            }
+        }
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Whether `field` is shown: true unless its `settings.visible_when` condition is
+/// false for the controlling value (see `controlling_value`).
+///
+/// The form builder asks with the stored values to decide what to show first;
+/// the submission builder asks with what was posted, so a field the editor
+/// hid is not saved and not required.
+pub fn is_visible(
+    field: &FieldDefinition,
+    content_type: &ContentTypeDefinition,
+    stored: Option<&Map<String, Value>>,
+    rendered: &[String],
+    posted: Option<&PostedForm>,
+) -> bool {
+    field.visible_when_condition().is_none_or(|when| {
+        controlling_value(content_type, &when.field, stored, rendered, posted) == when.equals
+    })
+}
+
 /// Build the field map a form save writes.
 ///
 /// Starts from `stored` (an add form passes `None`) and overwrites only the
@@ -88,7 +146,9 @@ pub fn permitted_text_formats(user: &UserContext) -> Vec<String> {
 /// posted, Blocks, Compound and PageBuilder parsed from their JSON input. A
 /// field whose `cardinality` is not 1 becomes an array of its non empty values,
 /// and more values than a positive cardinality is a field error. Every key the
-/// form did not render survives untouched.
+/// form did not render survives untouched, and so does a field whose
+/// `visible_when` condition is false for the posted values: it is neither
+/// written nor required.
 ///
 /// Returns every error at once, so the form can show them all.
 pub fn build_item_fields(
@@ -110,6 +170,7 @@ pub fn build_item_fields(
         .fields
         .iter()
         .filter(|f| rendered.contains(&f.field_name))
+        .filter(|f| is_visible(f, content_type, stored, rendered, Some(posted)))
     {
         let name = &field.field_name;
         if matches!(
@@ -442,5 +503,59 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(errors[0].field.as_deref(), Some("field_body"));
+    }
+
+    #[test]
+    fn a_hidden_field_is_neither_saved_nor_required() {
+        let mut ct = content_type();
+        ct.fields.push(
+            FieldDefinition::new("field_why", FieldType::Text { max_length: None })
+                .label("Why")
+                .required()
+                .visible_when("field_flag", "1"),
+        );
+        let mut rendered = all_rendered();
+        rendered.push("field_why".to_string());
+        let stored = json!({"field_why": "kept"});
+
+        // Flag unchecked: the posted value is dropped and nothing is required.
+        let out = build_item_fields(
+            stored.as_object(),
+            &ct,
+            &rendered,
+            &posted(&[("field_why", "typed while hidden")]),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out["field_why"], json!("kept"));
+
+        // Flag checked: the field is shown, saved, and required.
+        let out = build_item_fields(
+            stored.as_object(),
+            &ct,
+            &rendered,
+            &posted(&[("field_flag", "1"), ("field_why", "because")]),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out["field_why"], json!("because"));
+        let errors = build_item_fields(None, &ct, &rendered, &posted(&[("field_flag", "1")]), &[])
+            .unwrap_err();
+        assert_eq!(errors[0].field.as_deref(), Some("field_why"));
+    }
+
+    #[test]
+    fn visibility_reads_the_stored_value_when_nothing_was_posted() {
+        let mut ct = content_type();
+        ct.fields.push(
+            FieldDefinition::new("field_why", FieldType::Text { max_length: None })
+                .visible_when("field_flag", "1"),
+        );
+        let why = ct.fields.last().unwrap().clone();
+        let on = json!({"field_flag": true});
+        let off = json!({"field_flag": false});
+        assert!(is_visible(&why, &ct, on.as_object(), &[], None));
+        assert!(!is_visible(&why, &ct, off.as_object(), &[], None));
+        assert!(!is_visible(&why, &ct, None, &[], None));
     }
 }

@@ -80,6 +80,7 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | **Forms** | `tap_form_alter` | the form as JSON (`form_id`, `elements`, `libraries`) | the form, altered; plugins chain in weight order |
 | **Forms** | `tap_form_validate` | `{form_id, values}` (rendered inputs only, no passwords) | `{}` or `{"errors": ["msg" or {"field", "message"}]}` |
 | **Forms** | `tap_form_submit` | `{form_id, values, item_id}` | ignored; fires once after a successful save |
+| **Forms** | `tap_form_ajax` | `{trigger, form_id, values}` (CSRF, form access checked; full host API) | `{"commands": [...]}` or `{}` |
 | **System** | `tap_menu` | - | `Vec<MenuDefinition>` |
 | **System** | `tap_perm` | - | `Vec<PermissionDefinition>` |
 | **System** | `tap_cron` | - | `Result<(), String>` |
@@ -112,6 +113,7 @@ FieldDefinition::new("field_name", FieldType::TextLong)
     .label("Display Label")
     .required()              // Mark as required
     .cardinality(1)          // 1 = single, -1 = unlimited
+    .visible_when("field_online", "1")  // shown only while field_online is checked
 ```
 
 ---

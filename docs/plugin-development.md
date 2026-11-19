@@ -299,6 +299,7 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | `tap_form_alter` | the form as JSON | the form as JSON | Change a form before it is rendered |
 | `tap_form_validate` | `{form_id, values}` | `{}` or `{"errors": [...]}` | Refuse a submission, on a field or the whole form |
 | `tap_form_submit` | `{form_id, values, item_id}` | ignored | Notification after a successful save, once |
+| `tap_form_ajax` | `{trigger, form_id, values}` | `{"commands": [...]}` or `{}` | Answer an AJAX trigger the kernel does not handle itself |
 
 Every content and profile form goes through these taps: `item_add_{type}` and
 `item_edit_{type}` (both on `/item/...` and on `/admin/content/...`), and
@@ -344,6 +345,15 @@ Return `{}` to accept, or `{"errors": [...]}` where each error is either a
 string (shown at the top of the form) or `{"field": "field_x", "message":
 "..."}` (shown beside that input). Any error refuses the save; nothing is
 written and the editor sees the form again with what they typed.
+
+**`tap_form_ajax`** answers an element whose `ajax` callback names a trigger
+the kernel does not handle (the kernel's own is `add_{field}`, "Add another").
+`POST /system/ajax` checks the CSRF header, that the form was built for this
+user and that they may still open it (edit access to the item, or the type's
+create permission), then dispatches with the full host API, so a handler can
+read its tables. `values` are the form's current values. Return AJAX commands
+(`replace`, `append`, `remove`, `add_class`, ... each with a `selector`) or
+`{}`; every handler's commands are applied in order.
 
 **`tap_form_submit`** receives `{form_id, values, item_id}` after the save
 succeeded, once per save. `item_id` is the item created or updated, or `null`
@@ -407,6 +417,49 @@ fn tap_item_info() -> Vec<ContentTypeDefinition> {
 | Email | `FieldType::Email` | Email address |
 | File | `FieldType::File` | File upload |
 | Reference | `FieldType::RecordReference(target_type)` | Reference to another record |
+
+### Field Options
+
+Every field definition, in Rust or in an `item_type.*.yml` config file, takes
+these options besides its name, type and label:
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `required` | `false` | The form refuses a save without a value |
+| `cardinality` | `1` | How many values: `1` single, `-1` unlimited, `n` at most `n`. The form shows each stored value plus one empty slot and an "Add another" button, and refuses more than `n` |
+| `settings` | `{}` | Type specific settings, and `visible_when` (below) |
+| `personal_data` | `false` | Included in data exports and anonymised on account deletion |
+
+`settings.visible_when: {field, equals}` shows the field only while `field`
+(in the same type) has the value `equals`. It lives in `settings` so that a
+definition without it, and a plugin built against an earlier SDK, are
+unaffected. It compares the controlling field's value as the form posts it:
+the option key of a select, the text of a text field, `"1"` for a checked
+Boolean and `""` for an unchecked one. While it is false the form hides the
+field, a save keeps the field's stored value whatever was posted for it, and
+`required` is not checked. The form shows and hides it as the editor types
+(`static/js/form-states.js`); without JavaScript every field starts as the
+stored values say and the server applies the rule on save.
+
+```rust
+FieldDefinition::new("field_stream_url", FieldType::Text { max_length: None })
+    .label("Stream URL")
+    .required()
+    .visible_when("field_online", "1")
+```
+
+```yaml
+    - field_name: field_stream_url
+      field_type:
+        Text:
+          max_length: null
+      label: Stream URL
+      required: true
+      settings:
+        visible_when:
+          field: field_online
+          equals: "1"
+```
 
 ### Working with Items
 

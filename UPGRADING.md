@@ -9,6 +9,26 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Form AJAX for every editor; conditional fields
+
+**Who is affected:** a plugin implementing `tap_form_ajax`; a script or theme
+calling `POST /system/ajax`; a site that wants a field shown only for some
+values of another.
+
+**What changed.** `/system/ajax` no longer requires `administer site`. It
+requires an `X-CSRF-Token` header (the form prints one in `_ajax_token`, and
+each response carries the next in the same header, since tokens are single
+use), a form state built for the caller, and that the caller may still open
+the form; otherwise 403. `tap_form_ajax` now runs with the full host API. "Add
+another" on a multi value field is built by the server and works on
+`/item/{id}/edit` for any editor. The old built-in `remove_{field}_{n}`
+trigger and `templates/form/multi-value-item.html` are gone: clearing a value
+removes it on save. A field definition may carry `settings.visible_when: {field,
+equals}`; existing definitions load unchanged.
+
+**How to find out.** `grep -rn "system/ajax\|tap_form_ajax" plugins themes`
+lists callers to check for the header.
+
 ### Content and profile forms run the form taps; one form renderer
 
 **Who is affected:** a plugin that implements `tap_form_alter`,

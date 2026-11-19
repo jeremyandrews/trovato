@@ -1,6 +1,7 @@
 <form id="{{ form.form_id }}" action="{{ form.action }}" method="{{ form.method }}" class="form"{% if form.attributes %}{% for key, value in form.attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>
     <input type="hidden" name="_token" value="{{ form.token }}">
     <input type="hidden" name="_form_build_id" value="{{ form.form_build_id }}">
+    {% if form.ajax_token %}<input type="hidden" name="_ajax_token" value="{{ form.ajax_token }}">{% endif %}
 
     {% if form.title %}
     <h2 class="form__title">{{ form.title }}</h2>

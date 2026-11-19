@@ -239,6 +239,18 @@ pub struct FieldDefinition {
     pub personal_data: bool,
 }
 
+/// A condition on another field's value, under `settings.visible_when`: see
+/// [`FieldDefinition::visible_when`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisibleWhen {
+    /// The controlling field's machine name, in the same content type.
+    pub field: String,
+    /// The value that shows the field, compared as the form posts it: the
+    /// option key of a select, the text of a text field, `"1"` for a checked
+    /// Boolean and `""` for an unchecked one.
+    pub equals: String,
+}
+
 fn default_cardinality() -> i32 {
     1
 }
@@ -264,6 +276,31 @@ impl FieldDefinition {
     pub fn label(mut self, label: &str) -> Self {
         self.label = label.into();
         self
+    }
+
+    /// Show this field only while `field` (in the same content type) has the
+    /// value `equals`, stored as `settings.visible_when`.
+    ///
+    /// While the condition is false the form hides the field, a save keeps its
+    /// stored value whatever was posted for it, and `required` is not checked.
+    pub fn visible_when(mut self, field: &str, equals: &str) -> Self {
+        if !self.settings.is_object() {
+            self.settings = serde_json::Value::Object(Default::default());
+        }
+        if let Some(settings) = self.settings.as_object_mut() {
+            settings.insert(
+                "visible_when".into(),
+                serde_json::json!({ "field": field, "equals": equals }),
+            );
+        }
+        self
+    }
+
+    /// The `settings.visible_when` condition, if the field has a well formed one.
+    pub fn visible_when_condition(&self) -> Option<VisibleWhen> {
+        self.settings
+            .get("visible_when")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     pub fn cardinality(mut self, n: i32) -> Self {

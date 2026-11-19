@@ -1,5 +1,5 @@
 //! B71 fixture: a plugin that alters, validates and hears the submission of
-//! kernel forms.
+//! kernel forms, and answers one AJAX trigger from its own table.
 //!
 //! Before B71 no route called `FormService::build` or `process`, so none of
 //! these taps ever ran for a content or profile form. This fixture touches only
@@ -85,4 +85,28 @@ pub fn tap_form_submit(input: serde_json::Value) -> serde_json::Value {
         host::log("error", "test_form_taps", &format!("insert failed: {code}"));
     }
     serde_json::json!({})
+}
+
+/// Answer the `b71_count` trigger with how many submissions the table holds.
+///
+/// `/system/ajax` used to dispatch with no services, so a handler could not
+/// read anything; this one needs the database to answer at all.
+#[plugin_tap]
+pub fn tap_form_ajax(input: serde_json::Value) -> serde_json::Value {
+    if input["trigger"] != "b71_count"
+        || !is_probe_form(input["form_id"].as_str().unwrap_or_default())
+    {
+        return serde_json::json!({});
+    }
+    let count = host::query_raw("SELECT count(*) AS n FROM b71_form_submits", &[])
+        .ok()
+        .and_then(|rows| serde_json::from_str::<serde_json::Value>(&rows).ok())
+        .and_then(|rows| rows[0]["n"].as_i64());
+    let html = match count {
+        Some(n) => format!("<span class=\"b71-count\">{n} submissions</span>"),
+        None => "<span class=\"b71-count\">no database</span>".to_string(),
+    };
+    serde_json::json!({
+        "commands": [{"command": "replace", "selector": "#b71-count", "html": html}]
+    })
 }

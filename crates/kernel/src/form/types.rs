@@ -5,6 +5,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The attribute a multi value container carries when the form offers "Add
+/// another" for it; its value is the AJAX trigger, `add_{field}`.
+pub const ADD_ANOTHER: &str = "data-add-another";
+
 /// A complete form definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Form {
@@ -47,6 +51,13 @@ pub struct Form {
     /// a plugin may add a name here, never a URL.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<String>,
+
+    /// The CSRF token the form's AJAX requests send, apart from `token`
+    /// because kernel tokens are single use: an AJAX call must not spend the
+    /// token the form is submitted with. Each AJAX response carries the next
+    /// one in its `X-CSRF-Token` header. Empty when the form has no AJAX.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ajax_token: String,
 }
 
 impl Form {
@@ -64,6 +75,7 @@ impl Form {
             attributes: None,
             dirty: false,
             libraries: Vec::new(),
+            ajax_token: String::new(),
         }
     }
 
@@ -141,11 +153,23 @@ impl Form {
         out
     }
 
-    /// Every element of the form, children included, depth first.
-    pub fn all_elements(&self) -> Vec<&FormElement> {
-        fn walk<'a>(elements: &'a BTreeMap<String, FormElement>, out: &mut Vec<&'a FormElement>) {
-            for element in elements.values() {
-                out.push(element);
+    /// Whether the form makes AJAX requests: an element with an `ajax`
+    /// callback or a multi value field with "Add another".
+    pub fn uses_ajax(&self) -> bool {
+        self.all_elements()
+            .iter()
+            .any(|(_, e)| e.ajax.is_some() || e.attr(ADD_ANOTHER).is_some())
+    }
+
+    /// Every element of the form with its name, children included, depth
+    /// first.
+    pub fn all_elements(&self) -> Vec<(&str, &FormElement)> {
+        fn walk<'a>(
+            elements: &'a BTreeMap<String, FormElement>,
+            out: &mut Vec<(&'a str, &'a FormElement)>,
+        ) {
+            for (name, element) in elements {
+                out.push((name.as_str(), element));
                 walk(&element.children, out);
             }
         }
@@ -325,6 +349,11 @@ impl FormElement {
     }
 
     /// Set one HTML attribute.
+    /// The value of attribute `name`, if set.
+    pub fn attr(&self, name: &str) -> Option<&Value> {
+        self.attributes.as_ref().and_then(|a| a.get(name))
+    }
+
     pub fn attribute(mut self, name: &str, value: impl Into<Value>) -> Self {
         let attributes = self
             .attributes

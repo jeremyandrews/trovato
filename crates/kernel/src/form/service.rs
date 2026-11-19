@@ -13,9 +13,9 @@ use tracing::{debug, warn};
 use crate::tap::{RequestState, TapDispatcher};
 use crate::theme::ThemeEngine;
 
-use super::ajax::{AjaxRequest, AjaxResponse};
+use super::ajax::AjaxResponse;
 use super::csrf::{generate_csrf_token, verify_csrf_token};
-use super::types::{Form, FormElement};
+use super::types::Form;
 
 /// Form service for managing forms.
 pub struct FormService {
@@ -79,10 +79,24 @@ impl FormService {
                     form.form_id = form_id.clone();
                     form.form_build_id = build_id.clone();
                     form.token = token.clone();
+                    form.ajax_token.clear();
                 }
                 Err(e) => {
                     warn!(plugin = %plugin, error = %e, "failed to parse form alteration");
                 }
+            }
+        }
+
+        if form.uses_ajax() {
+            form.ajax_token = generate_csrf_token(session).await;
+        }
+        // How many values each "Add another" field shows, so the next one
+        // the server builds takes the next delta.
+        for (name, element) in form.all_elements() {
+            if element.attr(super::types::ADD_ANOTHER).is_some() {
+                form_state
+                    .extra
+                    .insert(format!("{name}_count"), Value::from(element.children.len()));
             }
         }
 
@@ -190,173 +204,47 @@ impl FormService {
             .await;
     }
 
-    /// Handle an AJAX callback.
-    pub async fn ajax_callback(
-        &self,
-        request: &AjaxRequest,
-        _session: &Session,
-        state: &RequestState,
-    ) -> Result<AjaxResponse> {
-        // Load form state
-        let form_state = self.load_state(&request.form_build_id).await?;
-
-        let Some(mut form_state) = form_state else {
-            return Ok(AjaxResponse::new().alert("Form session expired. Please reload the page."));
-        };
-
-        // Update form state with current values
-        form_state
-            .values
-            .extend(request.values.iter().map(|(k, v)| (k.clone(), v.clone())));
-
-        // Handle the trigger
-        let response = self
-            .handle_ajax_trigger(&request.trigger, &mut form_state, state)
-            .await?;
-
-        // Save updated state
-        self.save_state(&request.form_build_id, &form_state).await?;
-
-        Ok(response)
-    }
-
-    /// Handle an AJAX trigger.
-    async fn handle_ajax_trigger(
+    /// Dispatch `tap_form_ajax` for a trigger the kernel does not handle
+    /// itself, and combine the commands the plugins return.
+    ///
+    /// The caller has checked the CSRF header, that the form state was built
+    /// for this user and that they may still open the form; `state` carries
+    /// the services, so a plugin can read its tables.
+    pub async fn ajax_tap(
         &self,
         trigger: &str,
-        state: &mut FormState,
-        request_state: &RequestState,
-    ) -> Result<AjaxResponse> {
-        // Check for built-in triggers
-        if trigger.starts_with("add_") {
-            // "Add another item" pattern
-            let field_name = trigger.strip_prefix("add_").unwrap_or(trigger);
-            return self.handle_add_item(field_name, state).await;
-        }
-
-        if trigger.starts_with("remove_") {
-            let parts: Vec<&str> = trigger
-                .strip_prefix("remove_")
-                .unwrap_or(trigger)
-                .split('_')
-                .collect();
-            if parts.len() >= 2 {
-                let field_name = parts[0];
-                let index: usize = parts[1].parse().unwrap_or(0);
-                return self.handle_remove_item(field_name, index, state).await;
-            }
-        }
-
-        // Default: invoke tap for custom handlers
-        let callback_input = serde_json::json!({
+        form_state: &FormState,
+        values: &serde_json::Map<String, Value>,
+        state: &RequestState,
+    ) -> AjaxResponse {
+        let input = serde_json::json!({
             "trigger": trigger,
-            "form_id": state.form_id,
-            "values": state.values,
+            "form_id": form_state.form_id,
+            "values": values,
         });
-
-        let results = self
+        let mut response = AjaxResponse::new();
+        for result in self
             .dispatcher
             .dispatch(
                 "tap_form_ajax",
-                &serde_json::to_string(&callback_input)?,
-                request_state.clone(),
+                &serde_json::to_string(&input).unwrap_or_default(),
+                state.clone(),
             )
-            .await;
-
-        // Combine responses
-        let mut response = AjaxResponse::new();
-        for result in results {
+            .await
+        {
             if result.output.is_empty() || result.output == "{}" {
                 continue;
             }
-
-            if let Ok(ajax_response) = serde_json::from_str::<AjaxResponse>(&result.output) {
-                response.commands.extend(ajax_response.commands);
+            match serde_json::from_str::<AjaxResponse>(&result.output) {
+                Ok(tap) => response.commands.extend(tap.commands),
+                Err(e) => warn!(
+                    plugin = %result.plugin_name,
+                    error = %e,
+                    "failed to parse tap_form_ajax result"
+                ),
             }
         }
-
-        Ok(response)
-    }
-
-    /// Handle "Add another item" for multi-value fields.
-    async fn handle_add_item(
-        &self,
-        field_name: &str,
-        state: &mut FormState,
-    ) -> Result<AjaxResponse> {
-        // Increment item count
-        let count_key = format!("{field_name}_count");
-        let current_count = state
-            .extra
-            .get(&count_key)
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as usize;
-
-        let new_count = current_count + 1;
-        state
-            .extra
-            .insert(count_key, Value::Number(new_count.into()));
-
-        // Generate HTML for new item
-        let new_item_html = self.render_multi_value_item(field_name, new_count - 1)?;
-
-        Ok(AjaxResponse::new()
-            .append(format!("#{field_name}-wrapper"), new_item_html)
-            .invoke(
-                "Trovato.updateFieldDelta",
-                serde_json::json!({
-                    "field": field_name,
-                    "count": new_count
-                }),
-            ))
-    }
-
-    /// Handle "Remove item" for multi-value fields.
-    async fn handle_remove_item(
-        &self,
-        field_name: &str,
-        index: usize,
-        state: &mut FormState,
-    ) -> Result<AjaxResponse> {
-        // Decrement item count
-        let count_key = format!("{field_name}_count");
-        let current_count = state
-            .extra
-            .get(&count_key)
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as usize;
-
-        if current_count > 0 {
-            state
-                .extra
-                .insert(count_key, Value::Number((current_count - 1).into()));
-        }
-
-        Ok(AjaxResponse::new().remove(format!("#{field_name}-{index}")))
-    }
-
-    /// Render a multi-value field item.
-    fn render_multi_value_item(&self, field_name: &str, index: usize) -> Result<String> {
-        let element = FormElement::textfield().title(format!("Item {}", index + 1));
-
-        let mut context = tera::Context::new();
-        context.insert("name", &format!("{field_name}[{index}]"));
-        context.insert("element", &element);
-        context.insert("index", &index);
-        context.insert("field_name", field_name);
-
-        self.theme
-            .tera()
-            .render("form/multi-value-item.html", &context)
-            .or_else(|_| {
-                // Fallback to inline rendering
-                Ok(format!(
-                    r#"<div id="{field_name}-{index}" class="multi-value-item">
-                        <input type="text" name="{field_name}[{index}]" class="form-text" />
-                        <button type="button" class="remove-item" data-ajax-trigger="remove_{field_name}_{index}">Remove</button>
-                    </div>"#
-                ))
-            })
+        response
     }
 
     /// Save form state for AJAX/multi-step forms.

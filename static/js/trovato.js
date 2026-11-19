@@ -151,13 +151,20 @@ Trovato.ajax = {
         return values;
     },
 
-    // Submit an AJAX request
+    // Submit an AJAX request.
+    //
+    // CSRF tokens are single use, so the form carries one for AJAX apart from
+    // the one it is submitted with (`_ajax_token`), and every response carries
+    // the next in its X-CSRF-Token header. A form rendered without one falls
+    // back to `_token`, which the AJAX call then replaces the same way.
     submit: function(form, trigger) {
         var formBuildId = form.querySelector('input[name="_form_build_id"]');
         if (!formBuildId) {
             console.error('Form missing _form_build_id');
             return;
         }
+        var tokenInput = form.querySelector('input[name="_ajax_token"]') ||
+            form.querySelector('input[name="_token"]');
 
         var payload = {
             form_build_id: formBuildId.value,
@@ -168,12 +175,17 @@ Trovato.ajax = {
         fetch('/system/ajax', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': tokenInput ? tokenInput.value : ''
             },
             body: JSON.stringify(payload),
             credentials: 'same-origin'
         })
         .then(function(response) {
+            var next = response.headers.get('X-CSRF-Token');
+            if (next && tokenInput) {
+                tokenInput.value = next;
+            }
             if (!response.ok) {
                 throw new Error('AJAX request failed: ' + response.status);
             }
@@ -228,15 +240,14 @@ Trovato.updateFieldDelta = function(args) {
         wrapper.setAttribute('data-count', args.count);
     }
 
-    // Toggle "Add another" button visibility (hide if at max)
+    // Hide "Add another" once the field holds as many values as it may.
     var maxItems = wrapper && wrapper.getAttribute('data-max-items');
     if (maxItems) {
-        var addBtn = wrapper.parentElement.querySelector(
+        var addBtn = wrapper.querySelector(
             '[data-ajax-trigger="add_' + args.field + '"]'
         );
         if (addBtn) {
-            addBtn.style.display =
-                args.count >= parseInt(maxItems, 10) ? 'none' : '';
+            addBtn.hidden = args.count >= parseInt(maxItems, 10);
         }
     }
 };
