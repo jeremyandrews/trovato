@@ -367,6 +367,10 @@ fn apply_field_decisions(fields: &mut serde_json::Value, decisions: &HashMap<Str
 /// narrower gives its per-type editors a role that does not hold this.
 pub const PUBLISH_CONTENT: &str = "publish content";
 
+/// The permission that lets a user read a stage other than Live
+/// (`routes::helpers::read_stages`).
+pub const USE_STAGES: &str = "use stages";
+
 /// A write refused by one of the two item write gates.
 ///
 /// Returned inside `anyhow::Error` so every caller finds it the same way —

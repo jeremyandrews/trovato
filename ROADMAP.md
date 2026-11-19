@@ -88,7 +88,7 @@ Items move between stages by that workflow (BL-92): the admin and front-end edit
 forms offer the stages a user may reach, the content list has a bulk move, and
 `save-item` accepts a stage, all decided by one rule in `ItemService`. New content
 lands on the stage marked default (BL-93). See `docs/design/stage-workflow.md`.
-What editors do not yet have is a way to *read* from their stage rather than Live.
+Editors read from their stage: a holder of `use stages` who switches to a stage sees it, with Live beneath it, in search, gathers and aliases; everyone else reads Live, and a gather's total counts only what its caller can see.
 
 **Menus are done.** `/admin/structure/menus` lists a site's menus, renders each as
 an indented tree, and creates, edits, reorders and deletes links, with cycle

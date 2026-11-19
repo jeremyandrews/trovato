@@ -3,8 +3,9 @@
 //! Rewrites incoming requests from alias paths to their source paths,
 //! enabling human-readable URLs like /about-us instead of /item/{uuid}.
 //!
-//! Stage-aware: reads `active_stage` from the session. Tries the active
-//! stage first, then falls back to `"live"`.
+//! Stage-aware for a holder of `use stages`: the session's active stage is
+//! tried first, then Live. Everyone else is looked up on Live only
+//! (`routes::helpers::read_stages`).
 
 use axum::{
     body::Body,
@@ -20,8 +21,23 @@ use uuid::Uuid;
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::UrlAlias;
 use crate::models::stage::LIVE_STAGE_ID;
-use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
+
+/// The stage an alias is looked up on first, before Live: the session's
+/// active stage for a holder of `use stages`, else Live
+/// ([`crate::routes::helpers::read_stages`]). The viewer is loaded only when the
+/// session names a stage, so a request with none costs nothing extra.
+async fn alias_stage(state: &AppState, session: &Session) -> Uuid {
+    let Some(requested) = crate::routes::helpers::session_stage(session).await else {
+        return LIVE_STAGE_ID;
+    };
+    let viewer = crate::routes::helpers::get_user_context(session, state).await;
+    crate::routes::helpers::read_stages(state, &viewer, Some(requested))
+        .await
+        .first()
+        .copied()
+        .unwrap_or(LIVE_STAGE_ID)
+}
 
 /// Middleware to resolve path aliases to their source paths.
 ///
@@ -72,20 +88,7 @@ pub async fn resolve_path_alias(
         .map(|l| l.0.as_str())
         .unwrap_or_else(|| state.default_language());
 
-    // Read active stage from session (default live for anonymous users)
-    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
-        Ok(Some(s)) => match s.parse::<Uuid>() {
-            Ok(uuid) => uuid,
-            Err(_) => {
-                tracing::warn!(
-                    raw_value = %s,
-                    "session active_stage is not a valid UUID, defaulting to live"
-                );
-                LIVE_STAGE_ID
-            }
-        },
-        _ => LIVE_STAGE_ID,
-    };
+    let active_stage = alias_stage(&state, &session).await;
 
     // Look up alias in database with language and stage context.
     // Try the active stage first; fall back to live if not found.
@@ -167,8 +170,6 @@ pub async fn path_alias_fallback(
     router: std::sync::Arc<axum::Router>,
     mut request: Request<Body>,
 ) -> Response {
-    use crate::models::stage::LIVE_STAGE_ID;
-    use crate::routes::auth::SESSION_ACTIVE_STAGE;
     use tower::ServiceExt;
 
     let raw_path = request.uri().path().to_string();
@@ -214,11 +215,7 @@ pub async fn path_alias_fallback(
             .insert(ResolvedLanguage(lang.clone()));
     }
 
-    // Read active stage from session (default to live)
-    let active_stage: Uuid = match session.get::<String>(SESSION_ACTIVE_STAGE).await {
-        Ok(Some(s)) => s.parse::<Uuid>().unwrap_or(LIVE_STAGE_ID),
-        _ => LIVE_STAGE_ID,
-    };
+    let active_stage = alias_stage(&state, &session).await;
 
     // Look up alias: try active stage, then fall back to live
     let alias = lookup_alias(state.db(), &path, active_stage, &language).await;

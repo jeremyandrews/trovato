@@ -27,7 +27,7 @@ pub use block_render::render_blocks;
 pub use block_types::{BlockTypeDefinition, BlockTypeRegistry};
 pub use filter::{FilterPipeline, TextFilter};
 pub use form::{FieldMode, FormBuilder, extract_reference_id};
-pub use item_service::{ItemService, PUBLISH_CONTENT, WriteDenied, decode_view_output};
+pub use item_service::{ItemService, PUBLISH_CONTENT, USE_STAGES, WriteDenied, decode_view_output};
 pub use page_meta::PageMeta;
 pub use record_type::{RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry};
 pub use type_registry::{AddFieldError, ContentTypeRegistry, CreateContentTypeError};

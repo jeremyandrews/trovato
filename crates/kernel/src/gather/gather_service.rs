@@ -802,15 +802,20 @@ impl GatherService {
             .await
             .context("failed to set statement timeout")?;
 
-        // Count reflects the SQL-expressible access predicate (D-26 note: it is
-        // not the exact access-filtered total — the residual item/plugin tier is
-        // enforced post-fetch and is not counted; access-aware totals are not a
-        // 1.0 goal).
-        let count_sql = builder.build_count();
-        let total: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql))
-            .fetch_one(&mut *tx)
-            .await
-            .context("failed to execute count query")?;
+        // An Item gather counts what this viewer can see (`fetch_access_filtered`
+        // returns the count with the page). A record gather's published filter is
+        // an exact SQL predicate, so its SQL count is already that; so is an
+        // unwired harness's, which enforces nothing.
+        let sql_total = if record_ctx.is_some() || self.item_access.get().is_none() {
+            let count_sql = builder.build_count();
+            let total: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql))
+                .fetch_one(&mut *tx)
+                .await
+                .context("failed to execute count query")?;
+            Some(total.max(0) as u64)
+        } else {
+            None
+        };
 
         // Item-access + over-fetch/backfill (Story 3.4, §4 / D-26) then
         // field-level filtering across the page.
@@ -818,13 +823,15 @@ impl GatherService {
             .viewer
             .clone()
             .unwrap_or_else(UserContext::anonymous);
-        let (mut rows, access_capped) = if let Some(rc) = &record_ctx {
+        let (mut rows, access_capped, visible_total) = if let Some(rc) = &record_ctx {
             // Lightweight-record page (P11g / D-54, D-55): the record-level
             // (published) filter is already an exact SQL predicate, so there is no
             // per-item over-fetch loop — fetch the page and refine fields through
             // the same FR-8 seam Items use.
-            self.fetch_record_page(&builder, &viewer, page, per_page, &mut tx, rc)
-                .await?
+            let (rows, capped) = self
+                .fetch_record_page(&builder, &viewer, page, per_page, &mut tx, rc)
+                .await?;
+            (rows, capped, None)
         } else {
             self.fetch_access_filtered(
                 &builder,
@@ -858,7 +865,8 @@ impl GatherService {
             self.resolve_row_urls(&mut rows, stage_ids, context).await;
         }
 
-        Ok(GatherResult::new(rows, total as u64, page, per_page).with_access_capped(access_capped))
+        let total = visible_total.or(sql_total).unwrap_or(0);
+        Ok(GatherResult::new(rows, total, page, per_page).with_access_capped(access_capped))
     }
 
     /// Give each row a `url`: its URL alias when it has one, `/item/{id}`
@@ -941,7 +949,7 @@ impl GatherService {
         field_map: &[(String, String)],
         whole_fields_keys: &[String],
         output_keys: &[String],
-    ) -> Result<(Vec<serde_json::Value>, bool)> {
+    ) -> Result<(Vec<serde_json::Value>, bool, Option<u64>)> {
         let Some(items) = self.item_access.get() else {
             // Unwired test harness: no enforcement, single window.
             let main_sql = builder.build(page, per_page);
@@ -951,12 +959,45 @@ impl GatherService {
             .fetch_all(&mut **tx)
             .await
             .context("failed to execute main query")?;
-            return Ok((rows, false));
+            return Ok((rows, false, None));
         };
 
         let page_size = per_page.max(1) as usize;
-        let base_offset = (page.saturating_sub(1) as u64) * per_page as u64;
         let max_scan = u64::from(self.access.max_scan);
+
+        // What the viewer can see, counted: the candidates' access columns in
+        // rank order, one query up to the scan cap, each decided by the same
+        // `check_access` the page uses. `total` and the pager are this count, so
+        // they never include a row the viewer cannot see; past the cap they
+        // count what was scanned. Page N starts at the raw position of the
+        // visible row that opens it, so pages neither overlap nor skip; a page
+        // the count does not reach starts where the raw offset would have.
+        let scan_sql = builder.build_window(0, max_scan);
+        let candidates: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT jsonb_build_object('id', r->'id', 'type', r->'type', \
+             'author_id', r->'author_id', 'stage_id', r->'stage_id', 'status', r->'status') \
+             FROM (SELECT to_jsonb(t) AS r FROM ({scan_sql}) t) s"
+        )))
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to execute access count query")?;
+        let mut visible_positions: Vec<u64> = Vec::new();
+        for (position, row) in candidates.iter().enumerate() {
+            if let Some(item) = access::access_item_from_row(row)
+                && items
+                    .check_access(&item, "view", viewer)
+                    .await
+                    .unwrap_or(false)
+            {
+                visible_positions.push(position as u64);
+            }
+        }
+        let visible_total = visible_positions.len() as u64;
+        let first_visible = (page.saturating_sub(1) as usize) * page_size;
+        let base_offset = visible_positions
+            .get(first_visible)
+            .copied()
+            .unwrap_or((page.saturating_sub(1) as u64) * per_page as u64);
         let max_rounds = self.access.max_backfill_rounds;
         let mut window = u64::from(per_page.max(1)) * u64::from(self.access.fetch_factor);
 
@@ -1021,7 +1062,7 @@ impl GatherService {
         )
         .await;
 
-        Ok((visible, access_capped))
+        Ok((visible, access_capped, Some(visible_total)))
     }
 
     /// Tier-2 field-level filtering over the visible page (Story 3.4 AC-2).
