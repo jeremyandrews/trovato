@@ -146,7 +146,7 @@ head -n 30 docs/tutorial/config/role.*.yml
 Key permissions:
 - **viewer**: access content, view incoming conferences, view curated conferences
 - **editor**: viewer permissions + create/edit conferences and speakers, access files, use filtered_html, edit conferences
-- **publisher**: editor permissions + delete any, administer files, use full_html, publish conferences
+- **publisher**: editor permissions + publish content, delete any, administer files, use full_html, publish conferences
 
 > **Note:** The `view incoming conferences`, `view curated conferences`, `edit conferences`, and `publish conferences` permissions are declared by the `ritrovo_access` plugin (Part 5). They are included in the role YAML files to document the final intended state. At this point in the tutorial, only the base permissions are assigned; the ritrovo_access permissions are added in Part 5 after the plugin is installed.
 
@@ -344,8 +344,8 @@ cat docs/tutorial/config/variable.workflow.editorial.yml
 
 The workflow defines four transitions:
 - `incoming → curated` (requires: `edit any content`)
-- `curated → live` (requires: `publish conferences`)
-- `live → curated` (requires: `publish conferences`)
+- `curated → live` (requires: `publish content`)
+- `live → curated` (requires: `publish content`)
 - `curated → incoming` (requires: `edit any content`)
 
 ### 3.5 Verify Stage-Aware Gathers

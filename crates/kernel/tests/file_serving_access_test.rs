@@ -299,6 +299,7 @@ fn reference_index_updates_on_item_edit() {
             .update(
                 item_id,
                 trovato_kernel::models::UpdateItem {
+                    stage_id: None,
                     title: None,
                     status: None,
                     promote: None,

@@ -81,14 +81,14 @@ did before, with menus listed as having a screen they did not have.
 **The stage screen is done; stages are not.** `/admin/structure/stages` creates and
 edits stages: machine name, label, description, visibility, default and weight,
 which is what the schema models. There is deliberately no workflow-membership
-field, because there is nothing to edit: the tutorial ships a `workflow.editorial`
-variable describing transitions and no kernel code reads it.
+field: the moves between stages are the `workflow.editorial` variable, which
+`config import` validates and the kernel enforces.
 
-What that paragraph did not say is that the feature behind the screen cannot be
-used. Nothing moves one item from one stage to another: no route, no form field, no
-bulk action and no host call (BL-92). And the screen's own sentence about the
-default stage being where new content lands is not true, because nothing reads the
-flag it saves (BL-93). Both are 1.0 blockers.
+Items move between stages by that workflow (BL-92): the admin and front-end edit
+forms offer the stages a user may reach, the content list has a bulk move, and
+`save-item` accepts a stage, all decided by one rule in `ItemService`. New content
+lands on the stage marked default (BL-93). See `docs/design/stage-workflow.md`.
+What editors do not yet have is a way to *read* from their stage rather than Live.
 
 **Menus are done.** `/admin/structure/menus` lists a site's menus, renders each as
 an indented tree, and creates, edits, reorders and deletes links, with cycle

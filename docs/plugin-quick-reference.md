@@ -231,6 +231,7 @@ on the other plugins, as a person's edit does.
 ```rust
 let item = host::get_item(&id)?;                                   // None: missing or not viewable
 let saved = host::save_item(&json!({ "id": id, "title": "New" }))?;  // no id + "type": create
+let moved = host::save_item(&json!({ "id": id, "stage": "curated" }))?; // by the workflow; create: default stage
 host::delete_item(&id)?;                                          // Err(-62): no such item
 let list = host::query_items(&json!({ "type": "page", "limit": 20 }))?;
 ```

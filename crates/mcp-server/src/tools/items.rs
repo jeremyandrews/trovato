@@ -8,7 +8,6 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::*;
 use uuid::Uuid;
 
-use trovato_kernel::LIVE_STAGE_ID;
 use trovato_kernel::models::Item;
 use trovato_kernel::models::item::{CreateItem, UpdateItem};
 use trovato_kernel::state::AppState;
@@ -187,7 +186,9 @@ pub async fn create_item(
         promote: None,
         sticky: None,
         fields: params.fields,
-        stage_id: Some(LIVE_STAGE_ID),
+        // The default stage, as for every other caller: naming Live here would
+        // be a move from the default, which a non-administrator may not make.
+        stage_id: None,
         language: None,
         log: Some("Created via MCP".to_string()),
     };
@@ -227,6 +228,7 @@ pub async fn update_item(
     let id = parse_uuid(&params.id)?;
 
     let input = UpdateItem {
+        stage_id: None,
         title: params.title,
         status: params.status,
         promote: None,

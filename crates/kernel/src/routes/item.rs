@@ -172,6 +172,9 @@ pub struct ItemSubmission {
     pub log: Option<String>,
     /// URL alias, update path only.
     pub url_alias: Option<String>,
+    /// The stage asked for, as sent: `_stage` on a form, `stage_id` in JSON.
+    /// Read through `ItemSubmission::requested_stage`.
+    pub stage: Option<String>,
     /// CSRF token from the form body; `None` when the request is JSON and the
     /// token belongs in the `X-CSRF-Token` header instead.
     pub body_csrf: Option<String>,
@@ -191,6 +194,18 @@ impl ItemSubmission {
             None => crate::routes::helpers::require_csrf_header(session, headers)
                 .await
                 .map_err(|_| AppError::forbidden("Invalid or missing CSRF token")),
+        }
+    }
+
+    /// The stage this submission asks for: `None` when it asked for none (or
+    /// sent an empty value, the selector's "stay"), a 400 when the value is not
+    /// a stage id. Whether the item may go there is `ItemService`'s decision.
+    fn requested_stage(&self) -> Result<Option<Uuid>, AppError> {
+        match self.stage.as_deref().map(str::trim) {
+            None | Some("") => Ok(None),
+            Some(value) => Uuid::parse_str(value)
+                .map(Some)
+                .map_err(|_| AppError::bad_request("stage must be a stage id")),
         }
     }
 
@@ -221,6 +236,7 @@ impl ItemSubmission {
                 .map(|l| l.trim().to_string())
                 .filter(|l| !l.is_empty()),
             url_alias: form.get("url_alias").map(|a| a.to_string()),
+            stage: form.get("_stage").cloned(),
             body_csrf: Some(form.get("_csrf").cloned().unwrap_or_default()),
         }
     }
@@ -237,6 +253,10 @@ impl ItemSubmission {
             log: body.get("log").and_then(|v| v.as_str()).map(String::from),
             url_alias: body
                 .get("url_alias")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            stage: body
+                .get("stage_id")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             body_csrf: None,
@@ -1019,6 +1039,9 @@ async fn create_item(
     }
 
     let language = lang.0;
+    // No stage: the default stage. Another is a move from the default, which
+    // the service decides.
+    let stage_id = request.requested_stage()?;
 
     // A create needs a title; on the JSON path this was previously enforced by
     // serde's required field, so the error is kept a 400 either way.
@@ -1036,7 +1059,7 @@ async fn create_item(
         promote: None,
         sticky: None,
         fields: request.fields,
-        stage_id: None,
+        stage_id,
         language: Some(language),
         log: request.log,
     };
@@ -1143,6 +1166,45 @@ async fn edit_item_form(
         html_escape(&current_alias)
     );
 
+    // The stage selector: the stages this user may move the item to by the
+    // editorial workflow, and nothing when there are none. The submit decides
+    // the move again.
+    let targets = state
+        .items()
+        .move_targets(&item, &user)
+        .await
+        .unwrap_or_default();
+    let stage_field = if targets.is_empty() {
+        String::new()
+    } else {
+        let current = state
+            .items()
+            .stage_view()
+            .await
+            .ok()
+            .and_then(|view| view.stage(item.stage_id).map(|s| s.label.clone()))
+            .unwrap_or_default();
+        let options: String = targets
+            .iter()
+            .map(|s| {
+                format!(
+                    r#"<option value="{}">{}</option>"#,
+                    s.id,
+                    html_escape(&s.label)
+                )
+            })
+            .collect();
+        format!(
+            r#"<div class="form-group">
+            <label for="edit-stage">Move to stage</label>
+            <select id="edit-stage" name="_stage" class="form-control">
+                <option value="">Stay on {}</option>{options}
+            </select>
+        </div>"#,
+            html_escape(&current)
+        )
+    };
+
     // Resolve the display title of every RecordReference target, so the
     // autocomplete box comes back showing what the field points at rather than
     // blank (the stored value is a bare uuid — see `extract_reference_id`).
@@ -1182,7 +1244,7 @@ async fn edit_item_form(
         .with_permitted_formats(permitted_formats)
         .with_csrf_token(csrf_token)
         .with_reference_titles(reference_titles)
-        .with_extra_html(alias_field)
+        .with_extra_html(format!("{alias_field}{stage_field}"))
         .with_field_modes(field_modes)
         .with_publish_allowed(user.can(PUBLISH_CONTENT));
     let form_html = form_builder.build_edit_form(&item, &format!("/item/{id}/edit"));
@@ -1224,8 +1286,10 @@ async fn update_item(
 
     // Verify CSRF from the header (JSON) or the `_csrf` input (form body).
     request.verify_csrf(&session, &headers).await?;
+    let stage_id = request.requested_stage()?;
 
     let input = UpdateItem {
+        stage_id,
         title: request.title,
         status: request.status,
         promote: None,

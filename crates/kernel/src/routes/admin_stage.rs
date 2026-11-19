@@ -11,12 +11,11 @@
 //! Machine name, label, description, visibility, default, weight. That is what the
 //! schema models, and the form does not widen it.
 //!
-//! In particular there is **no workflow membership field**, because there is no
-//! such thing to edit. The tutorial ships `variable.workflow.editorial.yml`
-//! describing stage transitions, and nothing in the kernel reads it: a
-//! repository-wide search for `workflow.editorial` finds the file and no consumer.
-//! A form field for a relationship the kernel does not model would be a field that
-//! does nothing.
+//! In particular there is **no workflow membership field**. Which moves between
+//! stages are allowed is the `workflow.editorial` site configuration variable
+//! (`models/workflow.rs`), managed by `config import`, which validates it; a
+//! stage does not belong to a workflow, a transition names two stages. See
+//! `docs/design/stage-workflow.md`.
 //!
 //! ## The guard rails, and where they live
 //!

@@ -1,5 +1,8 @@
 # Editorial workflow transition graph
-# Defines allowed stage transitions and required permissions
+# Defines allowed stage transitions and required permissions. `config import`
+# refuses a transition naming a stage or a permission it cannot find, so every
+# permission here is one the kernel defines: `publish conferences` (Part 5's
+# plugin) does not exist yet when this file is imported.
 key: workflow.editorial
 value:
   transitions:
@@ -9,11 +12,11 @@ value:
       label: "Promote to Curated"
     - from: curated
       to: live
-      permission: "publish conferences"
+      permission: "publish content"
       label: "Publish"
     - from: live
       to: curated
-      permission: "publish conferences"
+      permission: "publish content"
       label: "Unpublish to Curated"
     - from: curated
       to: incoming

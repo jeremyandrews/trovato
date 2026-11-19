@@ -296,6 +296,24 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         .and_then(|v| v.as_i64())
                         .map(|n| n as i16);
 
+                    // An optional stage, by machine name, on create and on
+                    // update. Resolved through the service's cached stage view;
+                    // a name no stage has is a malformed request. Whether this
+                    // writer may put the item there is the service's decision.
+                    let stage_id = match text("stage") {
+                        None => None,
+                        Some(name) => match items.stage_view().await {
+                            Ok(view) => match view.by_machine_name(name) {
+                                Some(stage) => Some(stage.id),
+                                None => return host_errors::ERR_PARAM_DESERIALIZE,
+                            },
+                            Err(e) => {
+                                warn!(error = %e, "save-item stage lookup failed");
+                                return host_errors::ERR_SQL_FAILED;
+                            }
+                        },
+                    };
+
                     // A non-nil `id` is an update.
                     let existing_id = text("id")
                         .and_then(|s| s.parse::<Uuid>().ok())
@@ -303,6 +321,7 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
                     let result = if let Some(id) = existing_id {
                         let update = UpdateItem {
+                            stage_id,
                             title: text("title").map(String::from),
                             status,
                             promote: None,
@@ -354,8 +373,9 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                             fields: parsed.get("fields").cloned(),
                             promote: Some(0),
                             sticky: Some(0),
-                            // Stage on create is B69's (BL-92).
-                            stage_id: None,
+                            // No stage: the default stage. A stage other than
+                            // the default is a move, decided by the service.
+                            stage_id,
                             language,
                             log: text("log").map(String::from),
                         };

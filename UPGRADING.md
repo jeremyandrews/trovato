@@ -9,6 +9,40 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### New content lands on the default stage; stage moves follow the workflow
+
+**Who is affected:** a site that marked a stage other than Live as the default
+at `/admin/structure/stages`, a site with a `workflow.editorial` variable (the
+tutorial ships one), and a plugin that calls `save-item`.
+
+**What changed.** A create that names no stage used to land on Live whatever
+the stage screen said. It now lands on the stage marked default. Find out
+whether that is you before upgrading:
+
+```sql
+SELECT machine_name FROM stage_config WHERE is_default;
+```
+
+If that answers anything but `live`, new items (from the forms, the JSON API,
+`save-item` and MCP) will start arriving there, and will not be public until
+they are moved to Live.
+
+The `workflow.editorial` variable is now enforced. A user moves an item from one
+stage to another only when a transition names exactly that pair with a
+permission they hold; with no workflow, only administrators move items.
+`config import` now refuses a workflow transition that names a stage or a
+permission it cannot find. The tutorial's file named `publish conferences`, a
+permission the Part 5 plugin declares, and would be refused before that plugin
+is enabled; it now names the kernel's `publish content`, which the tutorial's
+publisher role holds. If your site copied the tutorial's file, check each
+`permission:` against what your roles hold.
+
+`save-item` now honours a `stage` machine name it used to ignore; a plugin that
+sends one will see its writes moved, or refused with `ERR_ITEM_ACCESS_DENIED`.
+
+An item whose stage row is missing (a `stage_config` row deleted by hand) is now
+denied to everyone but administrators, where it was treated as visible.
+
 ### Login and registration admit their stated counts; rate limits by role
 
 **Who is affected:** a site that tuned `login` or `register`

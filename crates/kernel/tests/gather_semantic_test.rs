@@ -228,6 +228,7 @@ fn item_create_and_update_run_index_best_effort() {
             .update(
                 created.id,
                 UpdateItem {
+                    stage_id: None,
                     title: Some("PF-4 Index Smoke (edited)".to_string()),
                     status: Some(1),
                     promote: Some(0),
