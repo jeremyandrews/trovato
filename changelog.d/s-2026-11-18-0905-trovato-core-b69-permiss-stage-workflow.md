@@ -25,6 +25,13 @@ and nothing read the flag: creation bound Live. `Item::create` now resolves a
 missing stage to the default stage in the INSERT itself, Live when none is
 marked, so every caller (forms, JSON, `save-item`, MCP) gets it.
 
+The content list's bulk form could not be submitted from a browser: each row's
+Delete button sat in its own `<form>` inside `#bulk-form`, so the browser closed
+the bulk form after the first row and sent `_token` twice, and every bulk action
+(publish, unpublish, delete, and the new move) answered 400 "The form could not
+be read." The Delete buttons now submit forms rendered after the table through
+the `form` attribute.
+
 `ItemService::check_access` treated an item whose stage row could not be found
 as visible; it now denies, and logs.
 
