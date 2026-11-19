@@ -296,9 +296,57 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 
 | Tap | Input | Output | Description |
 |-----|-------|--------|-------------|
-| `tap_form_alter` | `FormAlterInput` | `FormDefinition` | Modify form structure |
-| `tap_form_validate` | `FormValidateInput` | `Result<(), String>` | Validate submission |
-| `tap_form_submit` | `FormSubmitInput` | `Result<(), String>` | Handle submission |
+| `tap_form_alter` | the form as JSON | the form as JSON | Change a form before it is rendered |
+| `tap_form_validate` | `{form_id, values}` | `{}` or `{"errors": [...]}` | Refuse a submission, on a field or the whole form |
+| `tap_form_submit` | `{form_id, values, item_id}` | ignored | Notification after a successful save, once |
+
+Every content and profile form goes through these taps: `item_add_{type}` and
+`item_edit_{type}` (both on `/item/...` and on `/admin/content/...`), and
+`user_profile_form`.
+
+**`tap_form_alter`** receives the whole form and returns it. Plugins run in
+weight order and each receives what the previous one returned, so alterations
+compose. The form is `{form_id, action, method, elements, libraries, ...}`;
+`elements` is an object keyed by input name, and each element has a `type`
+(`textfield`, `textarea`, `select`, `checkbox`, `hidden`, `markup`, `input`,
+`widget`, `container`, ...), `weight`, and optional `title`, `description`,
+`default_value`, `prefix`, `suffix`, `attributes`, `children`. To add a script
+or stylesheet, push the name of a kernel asset library into `libraries`
+(`ai_assist`, `block_editor`, `compound_field`, `file_upload`, `record_ref`);
+the renderer attaches it as a file, so no inline script is needed and the page's
+CSP does not change. `form_id`, `form_build_id` and the CSRF token are the
+kernel's and are kept whatever a plugin returns. An input a plugin adds is
+submitted and handed to `tap_form_validate`, but a content form only stores the
+item's own declared fields, so store anything else from `tap_form_submit`.
+
+```rust
+#[plugin_tap]
+pub fn tap_form_alter(form_json: String) -> String {
+    let Ok(mut form) = serde_json::from_str::<serde_json::Value>(&form_json) else {
+        return form_json;
+    };
+    if form["form_id"] != "item_edit_article" {
+        return form_json;
+    }
+    form["elements"]["my_notice"] = serde_json::json!({
+        "type": "markup", "value": "<p>Reviewed weekly.</p>", "weight": 990,
+    });
+    serde_json::to_string(&form).unwrap_or(form_json)
+}
+```
+
+**`tap_form_validate`** receives `{form_id, values}`: the posted value of every
+input the form rendered (after alteration), a multi value field as an array.
+Form machinery, inputs the form did not render, and passwords are not passed.
+Return `{}` to accept, or `{"errors": [...]}` where each error is either a
+string (shown at the top of the form) or `{"field": "field_x", "message":
+"..."}` (shown beside that input). Any error refuses the save; nothing is
+written and the editor sees the form again with what they typed.
+
+**`tap_form_submit`** receives `{form_id, values, item_id}` after the save
+succeeded, once per save. `item_id` is the item created or updated, or `null`
+for the profile form. Its return value is ignored. It cannot refuse the save;
+use `tap_form_validate` for that.
 
 #### System
 

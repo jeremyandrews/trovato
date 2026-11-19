@@ -16,7 +16,7 @@
         {% if element.placeholder %}placeholder="{{ element.placeholder }}"{% endif %}
         {% if element.required %}required{% endif %}
         {% if element.disabled %}disabled{% endif %}
-        {% if element.element_type.max_length %}maxlength="{{ element.element_type.max_length }}"{% endif %}
+        {% if element.max_length %}maxlength="{{ element.max_length }}"{% endif %}
         {% if field_error %}aria-describedby="error-{{ name }}" aria-invalid="true"{% endif %}
         {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
         {% if element.ajax %}data-ajax-trigger="{{ element.ajax.callback }}" data-ajax-event="{{ element.ajax.event | default(value='change') }}"{% endif %}

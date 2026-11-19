@@ -184,7 +184,7 @@ async fn get_as(app: &TestApp, path: &str, cookies: &str, bucket: &str) -> (Stat
 async fn csrf_from(app: &TestApp, path: &str, cookies: &str, bucket: &str) -> String {
     let (status, html) = get_as(app, path, cookies, bucket).await;
     assert_eq!(status, StatusCode::OK, "{path} should render for this user");
-    input_value(&html, "_csrf").expect("the form must carry a CSRF token")
+    input_value(&html, "_token").expect("the form must carry a CSRF token")
 }
 
 /// POST a JSON body as this user.
@@ -419,7 +419,7 @@ fn the_permission_holder_writes_the_field_through_the_same_paths() {
             html.contains(r#"name="ssn""#),
             "`view pii` should see the input"
         );
-        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let csrf = input_value(&html, "_token").expect("csrf token");
 
         // And the write lands.
         let (status, body) = post_json(

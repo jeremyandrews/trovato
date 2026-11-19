@@ -77,9 +77,9 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | **CRUD** | `tap_item_update_index` | the saved item | ignored (notification) |
 | **CRUD** | `tap_item_delete` | the item being deleted | ignored (notification; cannot abort) |
 | **Access** | `tap_item_access` | `ItemAccessInput` | `AccessResult` |
-| **Forms** | `tap_form_alter` | `FormAlterInput` | `FormDefinition` |
-| **Forms** | `tap_form_validate` | `FormValidateInput` | `Result<(), String>` |
-| **Forms** | `tap_form_submit` | `FormSubmitInput` | `Result<(), String>` |
+| **Forms** | `tap_form_alter` | the form as JSON (`form_id`, `elements`, `libraries`) | the form, altered; plugins chain in weight order |
+| **Forms** | `tap_form_validate` | `{form_id, values}` (rendered inputs only, no passwords) | `{}` or `{"errors": ["msg" or {"field", "message"}]}` |
+| **Forms** | `tap_form_submit` | `{form_id, values, item_id}` | ignored; fires once after a successful save |
 | **System** | `tap_menu` | - | `Vec<MenuDefinition>` |
 | **System** | `tap_perm` | - | `Vec<PermissionDefinition>` |
 | **System** | `tap_cron` | - | `Result<(), String>` |

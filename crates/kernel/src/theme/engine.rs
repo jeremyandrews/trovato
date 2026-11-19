@@ -792,6 +792,7 @@ impl ThemeEngine {
         let mut context = tera::Context::new();
         context.insert("form", form);
         context.insert("errors", errors);
+        context.insert("libraries", &crate::form::assets::libraries_for(form));
 
         // Build field→error lookup for per-element error rendering
         let field_errors: HashMap<&str, &str> = errors
@@ -854,7 +855,13 @@ impl ThemeEngine {
     ) -> Result<String> {
         use crate::form::ElementType;
 
+        let widget_template;
         let template_name = match &element.element_type {
+            ElementType::Widget { widget } => {
+                widget_template = format!("form/widget--{widget}.html");
+                widget_template.as_str()
+            }
+            ElementType::Input { .. } => "form/input.html",
             ElementType::Textfield { .. } => "form/textfield.html",
             ElementType::Textarea { .. } => "form/textarea.html",
             ElementType::Select { .. } => "form/select.html",

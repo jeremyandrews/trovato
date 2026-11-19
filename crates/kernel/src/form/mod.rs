@@ -9,11 +9,14 @@
 //! - Tap integration for form alteration, validation, and submission
 
 pub mod ajax;
+pub mod assets;
 pub mod csrf;
 mod service;
 mod types;
 
 pub use ajax::{AjaxCommand, AjaxRequest, AjaxResponse};
 pub use csrf::{generate_csrf_token, verify_csrf_token};
-pub use service::{FormResult, FormService, FormState, ValidationError};
+pub use service::{
+    FORM_EXPIRED, FormResult, FormService, FormState, ProcessError, ValidationError,
+};
 pub use types::{ElementType, Form, FormElement};

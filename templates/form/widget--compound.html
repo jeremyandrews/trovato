@@ -1,0 +1,15 @@
+<div class="form-item form-item--compound">
+    {% if element.title %}
+    <label class="form-item__label{% if element.required %} form-item__label--required{% endif %}">{{ element.title }}</label>
+    {% endif %}
+    <div class="compound-field" id="compound-{{ name }}" data-field="{{ name }}"
+         data-config="{{ element.attributes['data-config'] | default(value='{}') }}"
+         data-section-types="{{ element.attributes['data-section-types'] | default(value='[]') }}">
+        <div class="compound-field__sections"></div>
+        <input type="hidden" name="{{ name }}" class="compound-field__value" value="{{ element.default_value | default(value='') }}"{% if element.disabled %} disabled{% endif %}>
+        <div class="compound-field__actions">
+            <button type="button" class="button compound-field__add">Add section</button>
+        </div>
+    </div>
+    {% if field_error %}<div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>{% endif %}
+</div>

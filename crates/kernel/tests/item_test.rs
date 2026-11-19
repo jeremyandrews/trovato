@@ -4,6 +4,16 @@
 //! These tests verify the Item model, ItemService, and related functionality.
 
 use trovato_kernel::content::{FieldMode, FilterPipeline, FormBuilder};
+
+/// A built item form as the theme renders it, so these tests read the HTML
+/// a browser gets.
+fn html(form: trovato_kernel::form::Form) -> String {
+    let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+    trovato_kernel::theme::ThemeEngine::new(&[templates], None)
+        .expect("theme engine")
+        .render_form(&form)
+        .expect("render form")
+}
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::{
     CreateItem, CreateItemType, Item, ItemRevision, ItemType, UpdateItem,
@@ -106,17 +116,21 @@ fn test_content_type() -> ContentTypeDefinition {
 #[test]
 fn form_builder_add_form_includes_title() {
     let builder = FormBuilder::new(test_content_type());
-    let form = builder.build_add_form("/item/add/blog");
+    let form = html(builder.build_add_form("/item/add/blog"));
 
     assert!(form.contains(r#"name="title""#));
-    assert!(form.contains(r#"action="/item/add/blog""#));
+    // Autoescape writes `/` as `&#x2F;`, which a browser reads as `/`.
+    assert!(
+        form.replace("&#x2F;", "/")
+            .contains(r#"action="/item/add/blog""#)
+    );
     assert!(form.contains(r#"type="submit""#));
 }
 
 #[test]
 fn form_builder_add_form_includes_all_fields() {
     let builder = FormBuilder::new(test_content_type());
-    let form = builder.build_add_form("/item/add/blog");
+    let form = html(builder.build_add_form("/item/add/blog"));
 
     // Check for body field (TextLong -> textarea)
     assert!(form.contains(r#"name="body""#));
@@ -133,10 +147,13 @@ fn form_builder_add_form_includes_all_fields() {
 #[test]
 fn form_builder_add_form_marks_required_fields() {
     let builder = FormBuilder::new(test_content_type());
-    let form = builder.build_add_form("/item/add/blog");
+    let form = html(builder.build_add_form("/item/add/blog"));
 
-    // Body is required
-    assert!(form.contains("Body *")); // Label with asterisk
+    // Body is required: its label carries the class whose `::after` is the
+    // asterisk (`static/css/forms.css`), and its input `required`.
+    assert!(
+        form.contains(r#"<label for="body" class="form-item__label form-item__label--required">"#)
+    );
 }
 
 #[test]
@@ -165,7 +182,7 @@ fn form_builder_edit_form_includes_values() {
         retention_days: None,
     };
 
-    let form = builder.build_edit_form(&item, "/item/123/edit");
+    let form = html(builder.build_edit_form(&item, "/item/123/edit"));
 
     // Title value is included
     assert!(form.contains(r#"value="Test Post""#));
@@ -587,7 +604,7 @@ fn comprehensive_content_type() -> ContentTypeDefinition {
 #[test]
 fn form_builder_renders_all_field_types() {
     let builder = FormBuilder::new(comprehensive_content_type());
-    let form = builder.build_add_form("/item/add/test");
+    let form = html(builder.build_add_form("/item/add/test"));
 
     // TextLong -> textarea
     assert!(form.contains("<textarea"));
@@ -659,7 +676,7 @@ fn form_builder_edit_form_populates_all_types() {
         retention_days: None,
     };
 
-    let form = builder.build_edit_form(&item, "/item/123/edit");
+    let form = html(builder.build_edit_form(&item, "/item/123/edit"));
 
     // Values populated
     assert!(form.contains("Body content"));
@@ -672,7 +689,10 @@ fn form_builder_edit_form_populates_all_types() {
     assert!(form.contains("550e8400-e29b-41d4-a716-446655440000"));
 
     // Unpublished - checkbox not checked (status=0)
-    assert!(form.contains(r#"<input type="checkbox" name="status""#));
+    let at = form.find(r#"name="status""#).unwrap();
+    let tag = &form[form[..at].rfind('<').unwrap()..at + form[at..].find('>').unwrap()];
+    assert!(tag.contains(r#"type="checkbox""#), "{tag}");
+    assert!(!tag.contains("checked"), "{tag}");
 }
 
 #[test]
@@ -699,14 +719,17 @@ fn form_builder_escapes_html_in_values() {
         retention_days: None,
     };
 
-    let form = builder.build_edit_form(&item, "/item/123/edit");
+    let form = html(builder.build_edit_form(&item, "/item/123/edit"));
 
     // Title should be escaped
     assert!(form.contains("&lt;script&gt;"));
     assert!(!form.contains("<script>alert"));
 
     // Body value should be escaped
-    assert!(form.contains("&lt;b&gt;bold&lt;/b&gt;"));
+    assert!(
+        form.replace("&#x2F;", "/")
+            .contains("&lt;b&gt;bold&lt;/b&gt;")
+    );
 }
 
 // ============================================================================
@@ -945,7 +968,7 @@ fn modes(pairs: &[(&str, FieldMode)]) -> std::collections::HashMap<String, Field
 fn form_builder_renders_a_read_only_field_disabled_with_its_value() {
     let builder = FormBuilder::new(test_content_type())
         .with_field_modes(modes(&[("summary", FieldMode::ReadOnly)]));
-    let form = builder.build_edit_form(&populated_blog_item(1), "/item/123/edit");
+    let form = html(builder.build_edit_form(&populated_blog_item(1), "/item/123/edit"));
 
     assert!(
         form.contains(r#"name="summary""#),
@@ -970,7 +993,7 @@ fn form_builder_renders_a_read_only_field_disabled_with_its_value() {
 fn form_builder_renders_nothing_at_all_for_a_hidden_field() {
     let builder = FormBuilder::new(test_content_type())
         .with_field_modes(modes(&[("summary", FieldMode::Hidden)]));
-    let form = builder.build_edit_form(&populated_blog_item(1), "/item/123/edit");
+    let form = html(builder.build_edit_form(&populated_blog_item(1), "/item/123/edit"));
 
     assert!(
         !form.contains(r#"name="summary""#),
@@ -1018,21 +1041,25 @@ fn form_builder_omits_the_status_control_when_the_user_may_not_publish() {
     // The default, so a route that does not say renders no control. An absent
     // checkbox reads as "unpublished" on submit, which is why the marker and
     // the checkbox travel together or not at all.
-    let add = FormBuilder::new(test_content_type()).build_add_form("/item/add/blog");
+    let add = html(FormBuilder::new(test_content_type()).build_add_form("/item/add/blog"));
     assert!(!add.contains(r#"name="status""#));
     assert!(!add.contains("_status_rendered"));
 
-    let edit = FormBuilder::new(test_content_type())
-        .build_edit_form(&populated_blog_item(1), "/item/123/edit");
+    let edit = html(
+        FormBuilder::new(test_content_type())
+            .build_edit_form(&populated_blog_item(1), "/item/123/edit"),
+    );
     assert!(!edit.contains(r#"name="status""#));
     assert!(!edit.contains("_status_rendered"));
 }
 
 #[test]
 fn form_builder_offers_the_status_control_when_the_user_may_publish() {
-    let add = FormBuilder::new(test_content_type())
-        .with_publish_allowed(true)
-        .build_add_form("/item/add/blog");
+    let add = html(
+        FormBuilder::new(test_content_type())
+            .with_publish_allowed(true)
+            .build_add_form("/item/add/blog"),
+    );
     assert!(add.contains(r#"name="status""#));
     assert!(
         add.contains(r#"name="_status_rendered""#),
@@ -1041,18 +1068,22 @@ fn form_builder_offers_the_status_control_when_the_user_may_publish() {
 
     // And it reflects the item's current state on an edit form. Scanned
     // tag-by-tag because the type's Boolean field renders `checked` too.
-    let published = FormBuilder::new(test_content_type())
-        .with_publish_allowed(true)
-        .build_edit_form(&populated_blog_item(1), "/item/123/edit");
+    let published = html(
+        FormBuilder::new(test_content_type())
+            .with_publish_allowed(true)
+            .build_edit_form(&populated_blog_item(1), "/item/123/edit"),
+    );
     let at = published.find(r#"name="status""#).unwrap();
     let tag_end = at + published[at..].find('>').unwrap();
     assert!(
         published[at..tag_end].contains("checked"),
         "a published item's box is checked"
     );
-    let draft = FormBuilder::new(test_content_type())
-        .with_publish_allowed(true)
-        .build_edit_form(&populated_blog_item(0), "/item/123/edit");
+    let draft = html(
+        FormBuilder::new(test_content_type())
+            .with_publish_allowed(true)
+            .build_edit_form(&populated_blog_item(0), "/item/123/edit"),
+    );
     let at = draft.find(r#"name="status""#).unwrap();
     let tag_end = at + draft[at..].find('>').unwrap();
     assert!(

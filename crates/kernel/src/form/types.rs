@@ -41,6 +41,12 @@ pub struct Form {
     /// Whether this form has been modified (for "unsaved changes" warnings).
     #[serde(default)]
     pub dirty: bool,
+
+    /// Asset libraries the page needs for this form, by name (see
+    /// [`crate::form::assets`]). The renderer adds the ones its widgets need;
+    /// a plugin may add a name here, never a URL.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<String>,
 }
 
 impl Form {
@@ -57,6 +63,7 @@ impl Form {
             description: None,
             attributes: None,
             dirty: false,
+            libraries: Vec::new(),
         }
     }
 
@@ -99,6 +106,52 @@ impl Form {
     /// Get a mutable reference to an element.
     pub fn get_element_mut(&mut self, name: &str) -> Option<&mut FormElement> {
         self.elements.get_mut(name)
+    }
+
+    /// The names of every input this form submits: each element and child
+    /// that is not disabled, display only or a button, with a multi value
+    /// delta suffix (`name[0]`) folded into its field name, sorted and
+    /// deduplicated.
+    ///
+    /// This is the list the submission builder writes and nothing beyond it,
+    /// taken after `tap_form_alter`, so a field a plugin removed is kept as
+    /// stored and a field the form shows disabled is never cleared.
+    /// A password input is left out: the route that renders one checks it
+    /// itself, nothing stores it, and it is never handed to a plugin.
+    pub fn rendered_inputs(&self) -> Vec<String> {
+        fn walk(elements: &BTreeMap<String, FormElement>, out: &mut Vec<String>) {
+            for (name, element) in elements {
+                if element.disabled {
+                    continue;
+                }
+                match element.element_type {
+                    ElementType::Fieldset { .. } | ElementType::Container => {}
+                    ElementType::Markup { .. }
+                    | ElementType::Submit { .. }
+                    | ElementType::Password => continue,
+                    _ => out.push(name.split('[').next().unwrap_or(name).to_string()),
+                }
+                walk(&element.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.elements, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Every element of the form, children included, depth first.
+    pub fn all_elements(&self) -> Vec<&FormElement> {
+        fn walk<'a>(elements: &'a BTreeMap<String, FormElement>, out: &mut Vec<&'a FormElement>) {
+            for element in elements.values() {
+                out.push(element);
+                walk(&element.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.elements, &mut out);
+        out
     }
 
     /// Get elements sorted by weight.
@@ -257,6 +310,31 @@ impl FormElement {
         Self::new(ElementType::Container)
     }
 
+    /// Create an `<input>` of another HTML type (`number`, `email`, `date`).
+    pub fn input(input_type: impl Into<String>) -> Self {
+        Self::new(ElementType::Input {
+            input_type: input_type.into(),
+        })
+    }
+
+    /// Create a scripted widget, rendered by `form/widget--{name}.html`.
+    pub fn widget(widget: impl Into<String>) -> Self {
+        Self::new(ElementType::Widget {
+            widget: widget.into(),
+        })
+    }
+
+    /// Set one HTML attribute.
+    pub fn attribute(mut self, name: &str, value: impl Into<Value>) -> Self {
+        let attributes = self
+            .attributes
+            .get_or_insert_with(|| Value::Object(Default::default()));
+        if let Some(map) = attributes.as_object_mut() {
+            map.insert(name.to_string(), value.into());
+        }
+        self
+    }
+
     /// Create a new element with the given type.
     fn new(element_type: ElementType) -> Self {
         Self {
@@ -405,6 +483,20 @@ pub enum ElementType {
 
     /// Generic container for AJAX targets.
     Container,
+
+    /// An `<input>` of another HTML type: `number`, `email` or `date`.
+    Input {
+        /// The HTML `type` attribute.
+        input_type: String,
+    },
+
+    /// A scripted widget (block editor, compound sections, file upload,
+    /// record reference, page builder), rendered by
+    /// `form/widget--{widget}.html` with the asset library it needs.
+    Widget {
+        /// The widget name.
+        widget: String,
+    },
 }
 
 impl ElementType {
@@ -424,6 +516,8 @@ impl ElementType {
             ElementType::Fieldset { .. } => "fieldset",
             ElementType::Markup { .. } => "markup",
             ElementType::Container => "container",
+            ElementType::Input { .. } => "input",
+            ElementType::Widget { .. } => "widget",
         }
     }
 }

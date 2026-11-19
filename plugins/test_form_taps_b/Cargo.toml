@@ -1,0 +1,16 @@
+[package]
+name = "test_form_taps_b"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "B71 test fixture: a second alter, to prove two alterations compose"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde_json = { workspace = true }

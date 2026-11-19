@@ -1,0 +1,13 @@
+name = "test_form_taps_b"
+description = "B71 fixture: a second form alter, run after test_form_taps"
+version = "0.104.0"
+api_version = "0.104"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_form_alter"]
+weight = 10
+
+[capabilities]
+host_interfaces = ["logging", "user-api"]

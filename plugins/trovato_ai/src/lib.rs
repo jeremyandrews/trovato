@@ -356,6 +356,21 @@ pub fn tap_form_alter(form_json: String) -> String {
         }
     }
 
+    // The buttons do nothing without their script. The kernel form renderer
+    // attaches the libraries a form names, after this alteration.
+    if !text_field_names.is_empty()
+        && let Some(obj) = form.as_object_mut()
+    {
+        let libraries = obj
+            .entry("libraries")
+            .or_insert_with(|| serde_json::json!([]));
+        if let Some(list) = libraries.as_array_mut()
+            && !list.iter().any(|l| l == "ai_assist")
+        {
+            list.push(serde_json::json!("ai_assist"));
+        }
+    }
+
     serde_json::to_string(&form).unwrap_or(form_json)
 }
 

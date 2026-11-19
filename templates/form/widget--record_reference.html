@@ -1,0 +1,16 @@
+<div class="form-item form-item--record-reference record-reference-field">
+    {% if element.title %}
+    <label for="{{ name }}_autocomplete" class="form-item__label{% if element.required %} form-item__label--required{% endif %}">{{ element.title }}</label>
+    {% endif %}
+    <input type="hidden" id="{{ name }}" name="{{ name }}" value="{{ element.default_value | default(value='') }}"{% if element.disabled %} disabled{% endif %}>
+    <input type="text" id="{{ name }}_autocomplete"
+           class="form-text record-ref-autocomplete"
+           data-target-type="{{ element.attributes['data-target-type'] | default(value='') }}"
+           data-hidden-field="{{ name }}"
+           value="{{ element.attributes['data-display'] | default(value='') }}"
+           placeholder="Search {{ element.attributes['data-target-type'] | default(value='') }}..."
+           autocomplete="off"
+           {% if element.required %}required{% endif %}{% if element.disabled %} disabled{% endif %}>
+    <div class="record-ref-results" id="{{ name }}_results"></div>
+    {% if field_error %}<div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>{% endif %}
+</div>

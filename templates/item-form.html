@@ -1,0 +1,8 @@
+{% extends "page.html" %}
+
+{% block content %}
+<div class="item-form">
+    <h1>{{ title }}</h1>
+    {{ form_html | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
+</div>
+{% endblock %}

@@ -28,7 +28,9 @@ mod type_registry;
 pub use block_render::render_blocks;
 pub use block_types::{BlockTypeDefinition, BlockTypeRegistry};
 pub use filter::{FilterPipeline, TextFilter};
-pub use form::{FieldMode, FormBuilder, editable_fields, extract_reference_id};
+pub use form::{
+    FieldMode, FormBuilder, LOG_WEIGHT, STATUS_WEIGHT, SUBMIT_WEIGHT, extract_reference_id,
+};
 pub use item_service::{
     ItemRevisions, ItemService, PUBLISH_CONTENT, RevisionAccess, RevisionSelection, USE_STAGES,
     WriteDenied, decode_view_output,
