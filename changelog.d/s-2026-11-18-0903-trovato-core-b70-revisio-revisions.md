@@ -23,3 +23,9 @@ and 0.104.0, was fixed earlier by `c137f2b`: both revision queries selected eigh
 columns while `ItemRevision` derives `sqlx::FromRow` over ten, and `#[serde(default)]`
 does nothing for `FromRow`, so every non-empty result failed to decode. Its entry
 in `KNOWN-ISSUES.md` is gone and BL-91 is marked fixed.
+
+The View, Edit and Revisions tabs on the admin edit forms led nowhere: the tab
+macro piped each path through `escape` under Tera's autoescape, so `/` was
+escaped twice and every tab's `href` was the literal text `&#x2F;item&#x2F;...`.
+The macro now leaves escaping to autoescape, and the Revisions tab takes an
+editor to the history.
