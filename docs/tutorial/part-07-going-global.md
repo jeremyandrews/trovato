@@ -481,7 +481,7 @@ Tokens are hashed with SHA-256 before storage -- the raw token is shown only onc
 
 Token validation is cached to avoid per-request database lookups. The cache entry is keyed by the token hash and has a short TTL (60 seconds by default).
 
-Token CRUD is available at `/api/tokens` (authenticated via session) and as a self-service page in the user profile.
+Token CRUD is available at `/api/tokens` (authenticated via session) and as a self-service page at `/user/tokens`, linked from the account page at `/user/profile`. The page shows a new token once, right after it is created.
 
 </details>
 

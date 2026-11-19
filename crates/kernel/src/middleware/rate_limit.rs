@@ -2,6 +2,7 @@
 //!
 //! Uses a sliding window counter pattern with Redis INCR + EXPIRE.
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -134,6 +135,58 @@ pub struct RateLimitConfig {
     /// many mails; this one stops many sources flooding one inbox, which no
     /// per-client limit can see.
     pub reset_mail: (u32, Duration),
+
+    /// Per-role counts: bucket name, then [`role_key`], then the count.
+    ///
+    /// A bucket's count above is its default; an entry here replaces it for the
+    /// holders of that role. The window is the bucket's, whoever is counted.
+    /// [`RateLimitConfig::count_for`] is the one place these are read.
+    pub by_role: BTreeMap<String, BTreeMap<String, u32>>,
+}
+
+/// Who a rate-limit check is counting, for choosing the count.
+#[derive(Debug, Clone, Copy)]
+pub enum RateLimitCaller<'a> {
+    /// A request that presents no credential: the `anonymous user` role's count.
+    Anonymous,
+    /// A request that presents a session user or a `Bearer` header, counted per
+    /// client IP before authentication has said whose it is: the most generous
+    /// count the bucket has for anyone.
+    PresentsCredential,
+    /// An authenticated user holding these roles (by name): the most generous of
+    /// their roles' counts.
+    User(&'a [String]),
+}
+
+/// The key a role is configured under: its name, lower-cased, with every run of
+/// characters other than an ASCII letter or digit replaced by one underscore,
+/// and none at either end. `anonymous user` is `anonymous_user`, `Site editor`
+/// is `site_editor`.
+pub fn role_key(role_name: &str) -> String {
+    let mut key = String::with_capacity(role_name.len());
+    for c in role_name.chars() {
+        if c.is_ascii_alphanumeric() {
+            key.push(c.to_ascii_lowercase());
+        } else if !key.is_empty() && !key.ends_with('_') {
+            key.push('_');
+        }
+    }
+    while key.ends_with('_') {
+        key.pop();
+    }
+    key
+}
+
+/// The environment variable that overrides `bucket`'s count for `role`
+/// (a [`role_key`]): `TROVATO_RATE_LIMIT_API__ANONYMOUS_USER`.
+pub fn role_env_key(bucket: &str, role: &str) -> String {
+    format!("{}__{}", bucket_env_key(bucket), role.to_uppercase())
+}
+
+/// The `site_config` key that overrides `bucket`'s count for `role` (a
+/// [`role_key`]): `rate_limit.api.anonymous_user`.
+pub fn role_config_key(bucket: &str, role: &str) -> String {
+    format!("{}.{role}", bucket_config_key(bucket))
 }
 
 /// Every rate-limit bucket, by the name used to key it, configure it and
@@ -203,6 +256,7 @@ impl Default for RateLimitConfig {
             static_assets: (2000, Duration::from_secs(60)), // 2000 per minute
             mail: (100, Duration::from_secs(3600)),       // 100 per hour, per plugin
             reset_mail: (3, Duration::from_secs(3600)),   // 3 per hour, per address
+            by_role: BTreeMap::new(),
         }
     }
 }
@@ -303,6 +357,99 @@ impl RateLimitConfig {
             }
         }
     }
+
+    /// Set the per-role counts from every `rate_limit.<bucket>.<role>` site
+    /// configuration entry and every `TROVATO_RATE_LIMIT_<BUCKET>__<ROLE>`
+    /// environment variable it is given, **environment winning**, as for the
+    /// bucket defaults.
+    ///
+    /// Given whole lists rather than a lookup, because the role half of a key is
+    /// open-ended: the roles a site has are its own. A key whose bucket is not in
+    /// [`BUCKETS`], or whose value is not a count of at least 1, is ignored with a
+    /// warning. A key naming a role nobody holds is harmless: it matches no
+    /// request. The role half is normalized through [`role_key`], so
+    /// `rate_limit.api.Site Editor` and `rate_limit.api.site_editor` are the same
+    /// key.
+    pub fn apply_role_overrides(&mut self, env: &[(String, String)], config: &[(String, String)]) {
+        let config_entries = config.iter().filter_map(|(key, raw)| {
+            let rest = key.strip_prefix("rate_limit.")?;
+            let (bucket, role) = rest.split_once('.')?;
+            Some((key, bucket.to_string(), role, raw))
+        });
+        let env_entries = env.iter().filter_map(|(key, raw)| {
+            let rest = key.strip_prefix("TROVATO_RATE_LIMIT_")?;
+            let (bucket, role) = rest.split_once("__")?;
+            Some((key, bucket.to_lowercase(), role, raw))
+        });
+
+        // Configuration first and the environment second, so the environment's
+        // value is the one left standing.
+        for (source, bucket, role, raw) in config_entries.chain(env_entries) {
+            if !BUCKETS.contains(&bucket.as_str()) {
+                warn!(source = %source, "rate limit override names no bucket, ignoring it");
+                continue;
+            }
+            let role = role_key(role);
+            if role.is_empty() {
+                warn!(source = %source, "rate limit override names no role, ignoring it");
+                continue;
+            }
+            match raw.trim().parse::<u32>() {
+                Ok(limit) if limit >= 1 => {
+                    self.by_role.entry(bucket).or_default().insert(role, limit);
+                }
+                _ => warn!(
+                    source = %source,
+                    value = %raw,
+                    "rate limit override is not a positive integer, ignoring it"
+                ),
+            }
+        }
+    }
+
+    /// The count `caller` gets in `bucket`. The one place a count is chosen.
+    ///
+    /// - [`RateLimitCaller::Anonymous`]: the `anonymous user` role's count, or
+    ///   the bucket default.
+    /// - [`RateLimitCaller::User`]: the most generous count among the user's
+    ///   roles, or the bucket default if none of them has one. No role, the
+    ///   administrator included, is exempt.
+    /// - [`RateLimitCaller::PresentsCredential`]: the most generous count the
+    ///   bucket gives anyone, the default included. It bounds an address before
+    ///   authentication has said whose the credential is, so it must not refuse
+    ///   a request the user's own count would admit.
+    ///
+    /// An unknown bucket is counted as `api`, as [`categorize_path`] defaults.
+    pub fn count_for(&self, bucket: &str, caller: RateLimitCaller<'_>) -> u32 {
+        let bucket = if self.bucket(bucket).is_some() {
+            bucket
+        } else {
+            "api"
+        };
+        let (default, _) = self.bucket(bucket).unwrap_or(self.api);
+        let Some(by_role) = self.by_role.get(bucket) else {
+            return default;
+        };
+        match caller {
+            RateLimitCaller::Anonymous => by_role
+                .get(&role_key(
+                    crate::models::role::well_known::ANONYMOUS_ROLE_NAME,
+                ))
+                .copied()
+                .unwrap_or(default),
+            RateLimitCaller::User(roles) => roles
+                .iter()
+                .filter_map(|name| by_role.get(&role_key(name)).copied())
+                .max()
+                .unwrap_or(default),
+            RateLimitCaller::PresentsCredential => by_role
+                .values()
+                .copied()
+                .max()
+                .unwrap_or(default)
+                .max(default),
+        }
+    }
 }
 
 /// Rate limiter using Redis for distributed counting.
@@ -370,8 +517,28 @@ impl RateLimiter {
     /// Check if a request should be rate limited.
     ///
     /// Returns Ok(()) if allowed, Err with retry-after seconds if limited.
+    ///
+    /// Counted at the bucket's default count. A request path chooses its count
+    /// by who is asking, through [`RateLimiter::check_as`].
     pub async fn check(&self, category: &str, identifier: &str) -> Result<(), u64> {
-        let (limit, window) = self.get_limit(category);
+        let (limit, _) = self.get_limit(category);
+        self.check_at(category, identifier, limit).await
+    }
+
+    /// Check a request against the count [`RateLimitConfig::count_for`] gives
+    /// `caller` in `category`.
+    pub async fn check_as(
+        &self,
+        category: &str,
+        identifier: &str,
+        caller: RateLimitCaller<'_>,
+    ) -> Result<(), u64> {
+        let limit = self.config.count_for(category, caller);
+        self.check_at(category, identifier, limit).await
+    }
+
+    async fn check_at(&self, category: &str, identifier: &str, limit: u32) -> Result<(), u64> {
+        let (_, window) = self.get_limit(category);
         let key = format!("rate:{category}:{identifier}");
         let window_secs = window.as_secs();
 
@@ -640,10 +807,23 @@ pub fn rate_limit_response(retry_after: u64) -> Response {
         .into_response()
 }
 
-/// Rate limiting middleware layer.
+/// Per-IP rate limiting middleware layer, ahead of authentication.
 ///
-/// Extracts the client identifier and request category, then checks the
-/// rate limiter. Returns 429 Too Many Requests when the limit is exceeded.
+/// The flood guard. It runs before either authentication layer, so it cannot
+/// know whose a credential is; it knows only whether one is presented:
+///
+/// - **No credential** (no session user, no `Authorization: Bearer`): counted
+///   per client IP at the `anonymous user` role's count. This is the whole of
+///   an anonymous client's limit.
+/// - **A credential**: counted per client IP, in a budget of its own, at the
+///   most generous count the bucket gives anyone. It never refuses what the
+///   user's own count would admit, and it still bounds an address sending
+///   values that authenticate nobody, before the token lookup they would
+///   otherwise reach unthrottled. The user's own count is applied by
+///   [`check_authenticated_rate_limit`] once authentication has run.
+///
+/// The two per-IP budgets have different keys, so signed-in traffic from an
+/// office does not spend its anonymous visitors' budget, or the reverse.
 pub async fn check_rate_limit(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -669,48 +849,92 @@ pub async fn check_rate_limit(
             )
         });
 
-    match state.rate_limiter().check(category, &client_id).await {
+    // A credential is a `Bearer` header or a session that names a user. The
+    // session is cloned out before the await: a request body is not `Sync`, so a
+    // borrow of the request cannot be held across one.
+    let bearer = presents_bearer(request.headers());
+    let session = request
+        .extensions()
+        .get::<tower_sessions::Session>()
+        .cloned();
+    let credentialed = bearer || session_user(session).await.is_some();
+    let checked = if credentialed {
+        state
+            .rate_limiter()
+            .check_as(
+                category,
+                &format!("credential:{client_id}"),
+                RateLimitCaller::PresentsCredential,
+            )
+            .await
+    } else {
+        state
+            .rate_limiter()
+            .check_as(category, &client_id, RateLimitCaller::Anonymous)
+            .await
+    };
+
+    match checked {
         Ok(()) => next.run(request).await,
         Err(retry_after) => rate_limit_response(retry_after),
     }
 }
 
-/// Per-user rate limiting middleware layer (runs after authentication).
+/// Whether a request carries an `Authorization: Bearer` header, valid or not.
+fn presents_bearer(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("Bearer "))
+}
+
+/// The user a session names, if any.
+async fn session_user(session: Option<tower_sessions::Session>) -> Option<uuid::Uuid> {
+    session?
+        .get::<uuid::Uuid>(crate::routes::auth::SESSION_USER_ID)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Per-user rate limiting middleware layer, after authentication.
 ///
-/// Adds a second rate limit check keyed on the authenticated user's ID.
-/// This prevents a single user from exceeding limits by distributing
-/// requests across multiple IPs. Only fires for authenticated requests.
+/// Counts an authenticated request (a cookie session, or a token the API token
+/// layer accepted) per user, at the most generous count among the user's roles
+/// ([`RateLimitConfig::count_for`]), so a user cannot exceed their count by
+/// spreading requests over addresses. The roles come from the permission
+/// service's cache, not a query per request.
 pub async fn check_authenticated_rate_limit(
     State(state): State<AppState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    // Extract user ID from session (set by bearer/API token auth layers).
     let session = request
         .extensions()
         .get::<tower_sessions::Session>()
         .cloned();
-
-    let user_id = if let Some(ref session) = session {
-        session
-            .get::<uuid::Uuid>(crate::routes::auth::SESSION_USER_ID)
-            .await
-            .ok()
-            .flatten()
-    } else {
-        None
-    };
-
-    // Only apply per-user limits to authenticated requests.
-    if let Some(uid) = user_id {
+    if let Some(uid) = session_user(session).await {
         let category = categorize_path_with(
             request.uri().path(),
             request.method().as_str(),
             state.rate_limiter().static_prefixes(),
         );
+        // A role lookup that fails counts the user at the bucket default: no
+        // role's more generous count is granted on a failure.
+        let roles = match state.permissions().user_role_names(uid).await {
+            Ok(roles) => roles,
+            Err(e) => {
+                warn!(error = %e, user_id = %uid, "failed to load roles for the rate limit, using the default count");
+                Arc::new(Vec::new())
+            }
+        };
         let user_key = format!("user:{uid}");
 
-        if let Err(retry_after) = state.rate_limiter().check(category, &user_key).await {
+        if let Err(retry_after) = state
+            .rate_limiter()
+            .check_as(category, &user_key, RateLimitCaller::User(&roles))
+            .await
+        {
             return rate_limit_response(retry_after);
         }
     }
@@ -1299,5 +1523,145 @@ mod tests {
         assert!(list.contains(&"10.0.0.5".parse().unwrap()));
         assert!(list.contains(&"::1".parse().unwrap()));
         assert_eq!(list.len(), 3, "junk entries dropped");
+    }
+
+    // ── Per-role counts ────────────────────────────────────────────────────
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    fn roles(list: &[&str]) -> Vec<String> {
+        list.iter().map(|r| (*r).to_string()).collect()
+    }
+
+    #[test]
+    fn a_role_key_is_its_name_lower_cased_with_underscores() {
+        assert_eq!(role_key("anonymous user"), "anonymous_user");
+        assert_eq!(role_key("Site Editor"), "site_editor");
+        assert_eq!(role_key("  api -- client "), "api_client");
+        assert_eq!(role_key("editor"), "editor");
+        assert_eq!(role_key("!!!"), "");
+        assert_eq!(
+            role_env_key("api", "anonymous_user"),
+            "TROVATO_RATE_LIMIT_API__ANONYMOUS_USER"
+        );
+        assert_eq!(
+            role_config_key("api", "anonymous_user"),
+            "rate_limit.api.anonymous_user"
+        );
+    }
+
+    /// The example the docs give: 60 a minute anonymous, 300 authenticated.
+    #[test]
+    fn sixty_anonymous_and_three_hundred_authenticated() {
+        let mut config = RateLimitConfig::default();
+        config.apply_role_overrides(
+            &[],
+            &pairs(&[
+                ("rate_limit.api.anonymous_user", "60"),
+                ("rate_limit.api.authenticated_user", "300"),
+            ]),
+        );
+        assert_eq!(config.count_for("api", RateLimitCaller::Anonymous), 60);
+        assert_eq!(
+            config.count_for(
+                "api",
+                RateLimitCaller::User(&roles(&["authenticated user"]))
+            ),
+            300
+        );
+        assert_eq!(
+            config.count_for("api", RateLimitCaller::PresentsCredential),
+            300
+        );
+        // Other buckets keep their defaults for everyone.
+        assert_eq!(config.count_for("search", RateLimitCaller::Anonymous), 20);
+    }
+
+    #[test]
+    fn a_user_gets_the_most_generous_of_their_roles_or_the_default() {
+        let mut config = RateLimitConfig::default();
+        config.apply_role_overrides(
+            &[],
+            &pairs(&[
+                ("rate_limit.api.editor", "150"),
+                ("rate_limit.api.reviewer", "40"),
+            ]),
+        );
+        let both = roles(&["reviewer", "editor", "authenticated user"]);
+        assert_eq!(config.count_for("api", RateLimitCaller::User(&both)), 150);
+        // A single configured role applies even below the default: the role
+        // count replaces the default for its holders.
+        let reviewer = roles(&["reviewer", "authenticated user"]);
+        assert_eq!(
+            config.count_for("api", RateLimitCaller::User(&reviewer)),
+            40
+        );
+        let neither = roles(&["authenticated user"]);
+        assert_eq!(
+            config.count_for("api", RateLimitCaller::User(&neither)),
+            100
+        );
+        // The flood guard never refuses what a user's own count admits.
+        assert_eq!(
+            config.count_for("api", RateLimitCaller::PresentsCredential),
+            150
+        );
+    }
+
+    #[test]
+    fn the_environment_wins_over_site_configuration_for_a_role() {
+        let mut config = RateLimitConfig::default();
+        config.apply_role_overrides(
+            &pairs(&[("TROVATO_RATE_LIMIT_API__EDITOR", "500")]),
+            &pairs(&[("rate_limit.api.editor", "150")]),
+        );
+        assert_eq!(
+            config.count_for("api", RateLimitCaller::User(&roles(&["editor"]))),
+            500
+        );
+    }
+
+    #[test]
+    fn a_bucket_with_an_underscore_reads_from_the_environment() {
+        let mut config = RateLimitConfig::default();
+        config.apply_role_overrides(
+            &pairs(&[("TROVATO_RATE_LIMIT_VERIFY_EMAIL__ANONYMOUS_USER", "2")]),
+            &[],
+        );
+        assert_eq!(
+            config.count_for("verify_email", RateLimitCaller::Anonymous),
+            2
+        );
+    }
+
+    #[test]
+    fn invalid_role_overrides_are_ignored() {
+        let mut config = RateLimitConfig::default();
+        config.apply_role_overrides(
+            // Bucket defaults use no `__`, so they are not role entries.
+            &pairs(&[
+                ("TROVATO_RATE_LIMIT_API", "7"),
+                ("TROVATO_RATE_LIMIT_NOPE__EDITOR", "9"),
+            ]),
+            &pairs(&[
+                ("rate_limit.api", "7"),
+                ("rate_limit.api.editor", "0"),
+                ("rate_limit.api.reviewer", "lots"),
+                ("rate_limit.api.!!!", "9"),
+                ("rate_limit.nope.editor", "9"),
+            ]),
+        );
+        assert!(config.by_role.is_empty(), "{:?}", config.by_role);
+    }
+
+    #[test]
+    fn an_unknown_bucket_is_counted_as_api() {
+        let mut config = RateLimitConfig::default();
+        config.apply_role_overrides(&[], &pairs(&[("rate_limit.api.anonymous_user", "60")]));
+        assert_eq!(config.count_for("nope", RateLimitCaller::Anonymous), 60);
     }
 }

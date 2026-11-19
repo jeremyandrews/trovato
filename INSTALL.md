@@ -96,9 +96,11 @@ kernel marks `public`; responses it marks `private, no-store` must not be kept.
 
 ### Rate Limits
 
-Every request is counted against one bucket, chosen by its path and method, and
-limited per client IP (and, for an authenticated request, a second time per user).
-Each bucket's limit is the request count in the table below; the window is fixed.
+Every request is counted against one bucket, chosen by its path and method. A
+request that presents no credential is counted per client IP; a signed-in request
+(a session cookie or an API token) is counted per user, at the count of the user's
+role. Each bucket's default is the request count in the table below; the window is
+fixed per bucket, whoever is counted.
 
 A limit is overridden by the environment variable `TROVATO_RATE_LIMIT_<BUCKET>`
 or by the site configuration key `rate_limit.<bucket>`, both taking the count
@@ -133,6 +135,50 @@ For example, to serve a site whose pages carry an unusual number of assets:
 ```bash
 TROVATO_RATE_LIMIT_STATIC=5000
 ```
+
+#### Counts by role
+
+A bucket can give the holders of a role their own count, set by the environment
+variable `TROVATO_RATE_LIMIT_<BUCKET>__<ROLE>` (two underscores) or the site
+configuration key `rate_limit.<bucket>.<role>`, with the same precedence and the
+same handling of a bad value as the bucket default. `<role>` is the role's name,
+lower-cased, with each run of characters other than a letter or a digit written
+as one underscore: `anonymous user` is `anonymous_user`, `Site Editor` is
+`site_editor` (upper-cased in the environment variable). A key naming a role
+nobody holds has no effect.
+
+Which count a request gets:
+
+- **No credential** (no session, no `Authorization: Bearer`): the
+  `anonymous_user` count, or the bucket default, per client IP.
+- **Signed in**, by cookie or by token: the most generous count among the user's
+  roles, every signed-in user holding `authenticated_user` as well as their own,
+  or the bucket default if none of them has one, per user. No role is exempt,
+  administrators included.
+
+Before authentication has run, a request that presents a credential is also
+counted per client IP at the most generous count the bucket gives anyone, in a
+budget of its own. That bounds an address sending tokens that authenticate
+nobody without refusing a signed-in user their own count.
+
+For example, 60 API requests a minute for anonymous clients and 300 for any
+signed-in user:
+
+```bash
+TROVATO_RATE_LIMIT_API__ANONYMOUS_USER=60
+TROVATO_RATE_LIMIT_API__AUTHENTICATED_USER=300
+```
+
+or, stored in the site configuration:
+
+```text
+rate_limit.api.anonymous_user = 60
+rate_limit.api.authenticated_user = 300
+```
+
+`login` and `register` are counted once per request, by the per-IP check, so
+`login` admits five attempts a minute from an address and `register` three an
+hour.
 
 ## 3. Build
 

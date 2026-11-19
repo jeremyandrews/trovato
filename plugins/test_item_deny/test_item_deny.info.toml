@@ -1,0 +1,15 @@
+name = "test_item_deny"
+description = "B69 fixture: denies edit on items of type test_edit_denied"
+version = "0.104.0"
+api_version = "0.104"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_item_access"]
+weight = 0
+
+# `logging` because the #[plugin_tap] macro references the logging import on
+# its error paths. Nothing else: the fixture only answers an access question.
+[capabilities]
+host_interfaces = ["logging"]

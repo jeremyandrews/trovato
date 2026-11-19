@@ -15,6 +15,12 @@ pub mod well_known {
 
     /// Authenticated user role (assigned to all logged-in users).
     pub const AUTHENTICATED_ROLE_ID: Uuid = Uuid::from_u128(2);
+
+    /// The anonymous role's name, as the migration seeds it.
+    pub const ANONYMOUS_ROLE_NAME: &str = "anonymous user";
+
+    /// The authenticated role's name, as the migration seeds it.
+    pub const AUTHENTICATED_ROLE_NAME: &str = "authenticated user";
 }
 
 /// Permissions the kernel itself defines.

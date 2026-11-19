@@ -9,6 +9,28 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Login and registration admit their stated counts; rate limits by role
+
+**Who is affected:** a site that tuned `login` or `register`
+(`TROVATO_RATE_LIMIT_LOGIN`, `TROVATO_RATE_LIMIT_REGISTER`, or the
+`rate_limit.login` / `rate_limit.register` site configuration keys) to what it
+saw in practice, and a site that wants different limits for different roles.
+
+**What changed.** Each sign-in and registration attempt used to be counted twice
+against the same per-address budget, once by the rate-limit middleware and again
+by the handler, so the configured count admitted about half as many attempts as
+it said (`register`, 3 an hour, admitted one). Each attempt is now counted once,
+so the stated count is what an address gets: twice what it effectively allowed
+before. If you raised either count to compensate, lower it again.
+
+New keys, nothing to do unless you want them: a bucket can give a role its own
+count, `TROVATO_RATE_LIMIT_<BUCKET>__<ROLE>` or `rate_limit.<bucket>.<role>`
+(the role's name lower-cased, other characters as underscores, so
+`anonymous_user`, `authenticated_user`). An anonymous request gets the
+`anonymous_user` count per address; a signed-in request gets the most generous
+count among its user's roles per user. With no role keys set, every limit is what
+it was. See "Rate Limits" in `INSTALL.md`.
+
 ### List every proxy hop in `TRUSTED_PROXIES`
 
 **Who is affected:** a site behind more than one proxy (for example a CDN in

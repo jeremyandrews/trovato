@@ -145,11 +145,11 @@ async fn login_form_submit(
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<LoginFormRequest>,
 ) -> Response {
-    // Rate limit login attempts by IP
+    // The `login` bucket is counted once, per client IP, by the rate-limit
+    // middleware (`categorize_path` puts this path in it). It used to be counted
+    // here as well, which spent each attempt twice. The address is still the
+    // lockout's key.
     let client_id = client_ip.0;
-    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
-        return crate::middleware::rate_limit_response(retry_after);
-    }
 
     // Verify CSRF token
     if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
@@ -381,14 +381,11 @@ async fn login(
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<JsonSuccess>, AppError> {
-    // Rate limit login attempts by IP
+    // The `login` bucket is counted once, per client IP, by the rate-limit
+    // middleware (`categorize_path` puts this path in it). It used to be counted
+    // here as well, which spent each attempt twice. The address is still the
+    // lockout's key.
     let client_id = client_ip.0;
-    if let Err(retry_after) = state.rate_limiter().check("login", &client_id).await {
-        return Err(AppError::RateLimited {
-            retry_after_secs: retry_after,
-            category: "login".into(),
-        });
-    }
 
     match do_login(&state, &session, &request, &client_id).await {
         Ok(()) => Ok(Json(JsonSuccess {
@@ -551,18 +548,15 @@ async fn render_register_form(
 async fn register_form_submit(
     State(state): State<AppState>,
     session: Session,
-    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<RegisterFormRequest>,
 ) -> Response {
     if !is_registration_enabled(&state).await {
         return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
     }
 
-    // Rate limit registration attempts (separate bucket from login)
-    let client_id = client_ip.0;
-    if let Err(retry_after) = state.rate_limiter().check("register", &client_id).await {
-        return crate::middleware::rate_limit_response(retry_after);
-    }
+    // The `register` bucket is counted once, per client IP, by the rate-limit
+    // middleware (`categorize_path` puts this path in it). It used to be counted
+    // here as well, which spent each attempt twice.
 
     // Verify CSRF token
     if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
@@ -800,21 +794,15 @@ async fn do_register(
 /// This endpoint does **not** require a CSRF token because it accepts
 /// `application/json` bodies, which cannot be submitted by cross-origin
 /// HTML forms (the browser's same-origin policy blocks `Content-Type:
-/// application/json` from `<form>` elements). Rate limiting provides
-/// additional abuse protection.
+/// application/json` from `<form>` elements). The `register` rate limit
+/// (applied by the middleware) provides additional abuse protection.
 async fn register_json(
     State(state): State<AppState>,
-    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Json(request): Json<RegisterJsonRequest>,
 ) -> Result<Json<JsonSuccess>, AppError> {
-    // Rate limit registration attempts (separate bucket from login)
-    let client_id = client_ip.0;
-    if let Err(retry_after) = state.rate_limiter().check("register", &client_id).await {
-        return Err(AppError::RateLimited {
-            retry_after_secs: retry_after,
-            category: "register".into(),
-        });
-    }
+    // The `register` bucket is counted once, per client IP, by the rate-limit
+    // middleware (`categorize_path` puts this path in it). It used to be counted
+    // here as well, which spent each attempt twice.
 
     if !is_registration_enabled(&state).await {
         return Err(AppError::not_found("registration"));

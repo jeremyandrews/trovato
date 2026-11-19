@@ -165,55 +165,10 @@ fn login_with_valid_credentials_returns_success() {
     });
 }
 
-/// TQ-F1 (test-quality gap) + RATE-1 enforcement: a burst of login attempts
-/// from one client DETERMINISTICALLY trips the limiter. The login limit is
-/// 5/min, so the first 5 attempts are processed (401 bad creds) and the 6th is
-/// blocked with 429 — asserted exactly, not the tolerant "200-or-429" the audit
-/// flagged. The client is identified by the trusted-proxy-forwarded IP
-/// (`ClientIp`), so a fixed `X-Forwarded-For` maps to one bucket.
-#[test]
-fn e2e_login_rate_limit_blocks_after_threshold() {
-    run_test(async {
-        let app = shared_app().await;
-
-        let unique = uuid::Uuid::now_v7().simple().to_string();
-        let username = format!("rlburst_{}", &unique[..12]);
-        // Unique bucket per test run (shared DB/Redis), reset to a clean slate.
-        let fake_ip = format!(
-            "10.77.{}.{}",
-            unique.as_bytes()[0] % 255,
-            (unique.as_bytes()[1] % 254) + 1
-        );
-        app.state.rate_limiter().reset("login", &fake_ip).await.ok();
-
-        let mut statuses = Vec::new();
-        for _ in 0..6 {
-            let resp = app
-                .request(
-                    Request::post("/user/login/json")
-                        .header("content-type", "application/json")
-                        .header("x-forwarded-for", &fake_ip)
-                        .body(Body::from(
-                            json!({ "username": username, "password": "wrongpassword" })
-                                .to_string(),
-                        ))
-                        .unwrap(),
-                )
-                .await;
-            statuses.push(resp.status());
-        }
-
-        assert!(
-            statuses[..5].iter().all(|s| *s == StatusCode::UNAUTHORIZED),
-            "first 5 attempts should be processed (401 bad creds), got {statuses:?}"
-        );
-        assert_eq!(
-            statuses[5],
-            StatusCode::TOO_MANY_REQUESTS,
-            "the 6th attempt must be rate-limited (429), got {statuses:?}"
-        );
-    });
-}
+// `e2e_login_rate_limit_blocks_after_threshold` moved to
+// `rate_limit_roles_test.rs`, which runs on an app with the rate-limit
+// middleware in it. Here, on the shared app, it only ever saw the login
+// handler's own count, which is gone: the middleware counts a login once.
 
 /// One JSON login attempt from `ip`, with the per-IP `login` rate-limit bucket
 /// reset first so the rate limit (5 a minute) never masks the lockout these

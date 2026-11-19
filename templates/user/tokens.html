@@ -1,0 +1,95 @@
+{% extends "page.html" %}
+
+{% block title %}API tokens{% endblock %}
+
+{% block content %}
+<div class="api-tokens" style="max-width: 720px; margin: 60px auto; padding: 2rem;">
+    <h1 style="margin-bottom: 0.5rem;">API tokens</h1>
+    <p style="color: #555; margin-bottom: 1.5rem;">
+        An API token lets a program act as you: send it as
+        <code>Authorization: Bearer &lt;token&gt;</code>. It can do anything your
+        account can, and it counts against your account's request limit. Revoke a
+        token you no longer use.
+    </p>
+
+    <div id="api-token-message" role="status" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;"></div>
+
+    <noscript>
+        <div style="background: #fee; border: 1px solid #c00; padding: 1rem; border-radius: 4px;">
+            Creating and revoking tokens needs JavaScript.
+        </div>
+    </noscript>
+
+    {# ── Shown once, after a create ─────────────────────────────────────── #}
+    <div id="api-token-created" hidden style="background: #efe; border: 1px solid #0a0; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem;">
+        <p style="margin-top: 0;"><strong>Your new token</strong></p>
+        <input type="text" id="api-token-value" class="form-text" readonly
+               aria-label="Your new API token"
+               style="width: 100%; padding: 0.5rem; font-family: monospace; font-size: 0.95rem;">
+        <p style="margin-bottom: 0.75rem;">
+            Copy it now. It will not be shown again: once you leave or reload this
+            page, the only way to use a token you did not copy is to revoke it and
+            create another.
+        </p>
+        <button type="button" id="api-token-done" style="padding: 0.5rem 1rem; cursor: pointer;">I have copied it</button>
+    </div>
+
+    {# ── The user's tokens ──────────────────────────────────────────────── #}
+    <h2 style="margin-top: 2rem;">Your tokens</h2>
+    {% if tokens %}
+    <table style="width: 100%; border-collapse: collapse; margin-top: 0.5rem;">
+        <thead>
+            <tr style="text-align: left; border-bottom: 2px solid #ddd;">
+                <th style="padding: 0.5rem 0;">Name</th>
+                <th style="padding: 0.5rem 0;">Created</th>
+                <th style="padding: 0.5rem 0;">Last used</th>
+                <th style="padding: 0.5rem 0;">Expires</th>
+                <th style="padding: 0.5rem 0;"></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for token in tokens %}
+            <tr style="border-bottom: 1px solid #eee;" data-token-id="{{ token.id }}">
+                <td style="padding: 0.6rem 0.5rem 0.6rem 0;">{{ token.name | escape }}</td>
+                <td style="padding: 0.6rem 0.5rem 0.6rem 0; color: #555;">{{ token.created }}</td>
+                <td style="padding: 0.6rem 0.5rem 0.6rem 0; color: #555;">{{ token.last_used | default(value="never") }}</td>
+                <td style="padding: 0.6rem 0.5rem 0.6rem 0; color: #555;">{{ token.expires_at | default(value="never") }}</td>
+                <td style="padding: 0.6rem 0; text-align: right;">
+                    <button type="button" class="api-token-revoke" data-id="{{ token.id }}"
+                            data-name="{{ token.name | escape }}" style="cursor: pointer;">Revoke</button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color: #777;">You have no API tokens.</p>
+    {% endif %}
+
+    {# ── Create one ─────────────────────────────────────────────────────── #}
+    <h2 style="margin-top: 2.5rem;">Create a token</h2>
+    {% if tokens | length >= max_tokens %}
+    <p style="color: #a60;">You have {{ max_tokens }} tokens, the most an account can hold. Revoke one to create another.</p>
+    {% else %}
+    <form id="api-token-create" style="margin-top: 0.5rem;">
+        <div class="form-item" style="margin-bottom: 0.75rem;">
+            <label for="api-token-name" class="form-item__label">Name</label>
+            <input type="text" id="api-token-name" name="name" class="form-text" required maxlength="255"
+                   placeholder="e.g. Deploy script"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;">
+        </div>
+        <div class="form-item" style="margin-bottom: 0.75rem;">
+            <label for="api-token-expiry" class="form-item__label">Expires after (days)</label>
+            <input type="number" id="api-token-expiry" name="expires_in_days" class="form-text" min="1" max="3650"
+                   placeholder="Leave empty for a token that does not expire"
+                   style="width: 100%; padding: 0.5rem; font-size: 1rem;">
+        </div>
+        <button type="submit" style="padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer;">Create token</button>
+    </form>
+    {% endif %}
+
+    <p style="margin-top: 2rem;"><a href="/user/profile">Back to my account</a></p>
+</div>
+
+<script src="/static/js/api-tokens.js" defer></script>
+{% endblock %}

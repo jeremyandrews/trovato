@@ -262,31 +262,36 @@ struct AppStateInner {
     comments: OnceLock<Arc<services::comment::CommentService>>,
 }
 
-/// Read every stored `rate_limit.<bucket>` override, keyed by config key.
+/// Read every stored `rate_limit.*` override (the bucket defaults,
+/// `rate_limit.<bucket>`, and the per-role counts, `rate_limit.<bucket>.<role>`)
+/// for the default tenant, as `(key, value)` pairs.
 ///
-/// One lookup per bucket rather than one `LIKE` scan, so the tenant fallback in
-/// `SiteConfig::get` applies to these the way it does to every other setting.
 /// A read failure is not fatal: the caller keeps the compiled defaults, because
 /// refusing to boot over an unreadable *optional* setting would turn a tuning
 /// knob into a liveness dependency.
-async fn load_rate_limit_overrides(db: &PgPool) -> std::collections::HashMap<String, String> {
-    let mut stored = std::collections::HashMap::new();
-    for bucket in crate::middleware::rate_limit::BUCKETS {
-        let key = crate::middleware::rate_limit::bucket_config_key(bucket);
-        match crate::models::SiteConfig::get(db, &key).await {
-            Ok(Some(serde_json::Value::String(s))) => {
-                stored.insert(key, s);
-            }
-            Ok(Some(other)) => {
-                stored.insert(key, other.to_string());
-            }
-            Ok(None) => {}
-            Err(e) => {
-                warn!(key = %key, error = %e, "failed to read rate limit override, using the default");
-            }
+async fn load_rate_limit_overrides(db: &PgPool) -> Vec<(String, String)> {
+    // One query for every key under the prefix: the bucket defaults and the
+    // per-role counts alike. The role half of a key is open-ended, so there is
+    // no list of keys to ask for one by one.
+    let rows = sqlx::query_as::<_, (String, serde_json::Value)>(
+        "SELECT key, value FROM site_config WHERE key LIKE 'rate\\_limit.%' AND tenant_id = $1",
+    )
+    .bind(crate::models::tenant::DEFAULT_TENANT_ID)
+    .fetch_all(db)
+    .await;
+    match rows {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|(key, value)| match value {
+                serde_json::Value::String(s) => (key, s),
+                other => (key, other.to_string()),
+            })
+            .collect(),
+        Err(e) => {
+            warn!(error = %e, "failed to read rate limit overrides, using the defaults");
+            Vec::new()
         }
     }
-    stored
 }
 
 impl AppState {
@@ -324,11 +329,22 @@ impl AppState {
         // key, environment first. Resolved once here: a site config edit takes
         // effect on the next restart, which is the same as every other setting
         // `AppState::new` reads.
+        //
+        // Per-role counts (`TROVATO_RATE_LIMIT_<BUCKET>__<ROLE>`,
+        // `rate_limit.<bucket>.<role>`) are read in the same pass, with the same
+        // precedence.
         let mut rate_limit_config = RateLimitConfig::default();
         let stored_limits = load_rate_limit_overrides(&db).await;
         rate_limit_config.apply_overrides(&|key| std::env::var(key).ok(), &|key| {
-            stored_limits.get(key).cloned()
+            stored_limits
+                .iter()
+                .find(|(stored, _)| stored == key)
+                .map(|(_, value)| value.clone())
         });
+        let env_limits: Vec<(String, String)> = std::env::vars()
+            .filter(|(key, _)| key.starts_with("TROVATO_RATE_LIMIT_"))
+            .collect();
+        rate_limit_config.apply_role_overrides(&env_limits, &stored_limits);
         // Uploaded files are static assets too, and `FILES_URL` decides where
         // they are served from, so the bucket has to follow it rather than assume
         // the default.
