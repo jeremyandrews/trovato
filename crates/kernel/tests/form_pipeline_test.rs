@@ -195,6 +195,8 @@ fn form_tokens(html: &str) -> String {
     )
 }
 
+/// GET a page as HTML, with Tera's escaped `/` (`&#x2F;`) read back as the
+/// browser reads it, so a URL can be matched as written.
 async fn get_page(app: &TestApp, cookies: &str, uri: &str) -> String {
     let page = app
         .request_with_cookies(
@@ -203,7 +205,7 @@ async fn get_page(app: &TestApp, cookies: &str, uri: &str) -> String {
         )
         .await;
     assert_eq!(page.status(), StatusCode::OK, "GET {uri}");
-    body_string(page).await
+    body_string(page).await.replace("&#x2F;", "/")
 }
 
 async fn post_form(app: &TestApp, cookies: &str, uri: &str, body: String) -> (StatusCode, String) {
