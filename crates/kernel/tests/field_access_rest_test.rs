@@ -652,8 +652,12 @@ fn a_non_admin_editor_reaches_the_history_from_the_edit_form() {
             StatusCode::OK,
             "the editor opens the edit form, got {html}"
         );
+        // Autoescape writes `/` as `&#x2F;`, which a browser reads as `/`.
+        // On `main` the tab macro escaped twice, giving `&amp;#x2F;`, which a
+        // browser reads as the literal text `&#x2F;`: a link to nowhere.
+        let as_a_browser_reads_it = html.replace("&#x2F;", "/");
         assert!(
-            html.contains(&format!("/item/{id}/revisions")),
+            as_a_browser_reads_it.contains(&format!(r#"href="/item/{id}/revisions""#)),
             "the edit form must link the revision history, got {html}"
         );
     });
