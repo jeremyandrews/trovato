@@ -287,9 +287,10 @@ impl ChatService {
         let user_id = viewer.authenticated.then_some(viewer.id);
 
         let stage_ids = vec![LIVE_STAGE_ID];
+        // Unrecorded: retrieval for the chat is not a visitor's search.
         let results = match self
             .search
-            .search(
+            .search_unrecorded(
                 query,
                 &stage_ids,
                 user_id,

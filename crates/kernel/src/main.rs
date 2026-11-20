@@ -242,6 +242,28 @@ async fn run_server() -> Result<()> {
         });
     }
 
+    // Flush search analytics from memory to the database every 30 seconds, and
+    // once more on shutdown, so a clean stop loses nothing and a crash at most
+    // one window. `flush` logs its own failures and drops that batch.
+    {
+        let search = state.search().clone();
+        let token = shutdown_token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(crate::search::analytics::FLUSH_INTERVAL);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let _ = search.analytics().flush().await;
+                    }
+                    _ = token.cancelled() => {
+                        let _ = search.analytics().flush().await;
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     // Spawn the resident plugin-queue runner (P11d / D-46), but only when it is
     // enabled in site_config at boot. The default deployment runs no queue
     // scheduler and keeps the external-cron cadence contract; enabling the

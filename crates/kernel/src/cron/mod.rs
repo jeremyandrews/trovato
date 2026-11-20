@@ -690,6 +690,9 @@ async fn run_embed_job(
     }
 }
 
+/// Redis key that holds the once-a-day claim on pruning search analytics.
+const SEARCH_ANALYTICS_PRUNE_KEY: &str = "cron:search_analytics_prune";
+
 /// Cron service for scheduled operations.
 pub struct CronService {
     redis: RedisClient,
@@ -733,6 +736,9 @@ pub struct CronService {
     /// An outright override of the in-flight ceiling, ignoring the worker's
     /// budget. `None` in production, where the ceiling is budget + slack.
     job_ceiling: Option<Duration>,
+    /// Search, whose analytics tables cron prunes once a day. `None` in a
+    /// harness that builds a `CronService` on its own.
+    search: Option<Arc<crate::search::SearchService>>,
 }
 
 impl CronService {
@@ -758,6 +764,7 @@ impl CronService {
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
+            search: None,
         }
     }
 
@@ -783,6 +790,7 @@ impl CronService {
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
+            search: None,
         }
     }
 
@@ -867,6 +875,11 @@ impl CronService {
     /// field-access cache and a different tap dispatcher.
     pub fn set_item_service(&mut self, items: Arc<ItemService>) {
         self.items = Some(items);
+    }
+
+    /// Wire in search, so cron prunes its analytics past the retention window.
+    pub fn set_search_service(&mut self, search: Arc<crate::search::SearchService>) {
+        self.search = Some(search);
     }
 
     /// Enable pagefind index rebuilding (requires `trovato_search` plugin).
@@ -1146,6 +1159,23 @@ impl CronService {
                     }
                 }
                 Err(e) => warn!(error = %e, "embed queue drain failed"),
+            }
+        }
+
+        // Prune search analytics past the retention window, at most once a day.
+        if let Some(ref search) = self.search {
+            match self.claim_daily(SEARCH_ANALYTICS_PRUNE_KEY).await {
+                Ok(true) => {
+                    let retention = search.settings().await.analytics_retention_days;
+                    match search.analytics().prune(retention).await {
+                        Ok(count) => {
+                            tasks_run.push(format!("prune_search_analytics: {count}"));
+                        }
+                        Err(e) => warn!(error = %e, "failed to prune search analytics"),
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => warn!(error = %e, "failed to claim the daily search analytics prune"),
             }
         }
 
@@ -1883,6 +1913,26 @@ impl CronService {
                 Err(e) => warn!(error = %e, "queue-runner embed drain failed"),
             }
         }
+    }
+
+    /// Claim a once-a-day task across every kernel process: true for the first
+    /// caller in a 24 hour window, false for the rest.
+    async fn claim_daily(&self, key: &str) -> Result<bool> {
+        let mut conn = self
+            .redis
+            .get_multiplexed_async_connection()
+            .await
+            .context("failed to get Redis connection")?;
+        let claimed: Option<String> = redis::cmd("SET")
+            .arg(key)
+            .arg(1)
+            .arg("NX")
+            .arg("EX")
+            .arg(86_400)
+            .query_async(&mut conn)
+            .await
+            .context("failed to claim daily task")?;
+        Ok(claimed.is_some())
     }
 
     /// Get the last cron run status.

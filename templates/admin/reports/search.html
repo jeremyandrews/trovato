@@ -1,0 +1,88 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Search Report</h2>
+</div>
+
+<div class="admin-card">
+    <p class="form-item__description">Counts per day only: the query text with email
+    addresses and long numbers removed, never who searched, from where or when within
+    the day. Kept for {{ retention_days }} days. Switch analytics off, or change how
+    long it is kept, on the <a href="/admin/config/search#search-analytics">search
+    settings</a> screen.{% if not analytics_enabled %} <strong>Analytics is switched
+    off: nothing new is being recorded.</strong>{% endif %}</p>
+
+    <nav aria-label="Report period">
+        Period:
+        {% for p in periods %}
+        {% if p == days %}<strong aria-current="page">last {{ p }} days</strong>{% else %}<a href="/admin/reports/search?days={{ p }}">last {{ p }} days</a>{% endif %}{% if not loop.last %} &middot; {% endif %}
+        {% endfor %}
+    </nav>
+</div>
+
+<div class="admin-card" id="search-totals">
+    <h3>Totals, last {{ days }} days</h3>
+    <dl>
+        <dt>Searches</dt>
+        <dd>{{ totals.searches }}</dd>
+        <dt>Searches that found nothing</dt>
+        <dd>{{ totals.zero_results }}{% if zero_share is number %} ({{ zero_share }}%){% endif %}</dd>
+        <dt>Expansion cache hit rate</dt>
+        <dd>{% if hit_rate is number %}{{ hit_rate }}% of {{ lookups }} expansions ({{ daily.expansion_hits }} hits, {{ daily.expansion_misses }} misses){% else %}no expansions yet{% endif %}</dd>
+    </dl>
+</div>
+
+<div class="admin-card" id="search-top-queries">
+    <h3>Top queries</h3>
+    {% if top %}
+    <table class="admin-table">
+        <thead><tr><th scope="col">Query</th><th scope="col">Searches</th><th scope="col">Found nothing</th></tr></thead>
+        <tbody>
+        {% for row in top %}
+        <tr><td>{{ row.query }}</td><td>{{ row.searches }}</td><td>{{ row.zero_results }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No searches in this period.</p>
+    {% endif %}
+</div>
+
+<div class="admin-card" id="search-zero-queries">
+    <h3>Queries that found nothing</h3>
+    <p class="form-item__description">What visitors looked for and the site does not have,
+    or does not call by that name.</p>
+    {% if zero %}
+    <table class="admin-table">
+        <thead><tr><th scope="col">Query</th><th scope="col">Found nothing</th><th scope="col">Searches</th></tr></thead>
+        <tbody>
+        {% for row in zero %}
+        <tr><td>{{ row.query }}</td><td>{{ row.zero_results }}</td><td>{{ row.searches }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>Every search in this period found something.</p>
+    {% endif %}
+</div>
+
+<div class="admin-card" id="search-sentiment">
+    <h3>Follow-up sentiment</h3>
+    {% if classified > 0 %}
+    <table class="admin-table">
+        <thead><tr><th scope="col">Label</th><th scope="col">Follow-ups</th></tr></thead>
+        <tbody>
+            <tr><td>Satisfied</td><td>{{ daily.satisfied }}</td></tr>
+            <tr><td>Confused</td><td>{{ daily.confused }}</td></tr>
+            <tr><td>Unmet</td><td>{{ daily.unmet }}</td></tr>
+        </tbody>
+    </table>
+    <p>Unmet: {{ unmet_share }}% of {{ classified }} classified follow-ups. A high unmet
+    share points at content the site is missing.</p>
+    {% else %}
+    <p>No follow-ups classified in this period.{% if not sentiment_enabled %} Sentiment
+    classification is off; it is switched on in the search settings.{% endif %}</p>
+    {% endif %}
+</div>
+{% endblock %}

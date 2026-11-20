@@ -1082,6 +1082,7 @@ impl AppState {
         // P11f: the native embed drain writes item embeddings into the same
         // pgvector store the gather read path and sync index path share.
         cron.set_vector_store(vector_store.clone());
+        cron.set_search_service(search.clone());
         cron.set_pagefind_enabled(enabled_set.contains("trovato_search"));
         // The security-audit retention window and the Pagefind index destination
         // used to be read from the environment inside the tasks themselves.

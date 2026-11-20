@@ -5,7 +5,7 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use tera::Context;
@@ -39,6 +39,48 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/search", get(search_html))
         .route("/api/search", get(search_json))
+        .route("/api/search/log", post(log_browser_search))
+}
+
+/// Longest query the beacon accepts, in bytes, before normalization.
+const MAX_BEACON_QUERY_BYTES: usize = 500;
+
+/// Largest result count the beacon accepts.
+const MAX_BEACON_RESULTS: i64 = 100_000;
+
+/// A search the browser ran in Pagefind, reported for analytics.
+#[derive(Debug, Deserialize)]
+struct SearchLog {
+    query: String,
+    results: i64,
+}
+
+/// `POST /api/search/log`: count a browser search.
+///
+/// Browser searches run entirely in Pagefind and never reach the server, so
+/// `scolta.js` reports each one here with `navigator.sendBeacon`, once, after
+/// its results render. Validated, counted in memory, answered 204; nothing
+/// touches the database. No CSRF token: the request changes nothing a visitor
+/// owns, and the rate limiter files it under the `search` bucket.
+async fn log_browser_search(
+    State(state): State<AppState>,
+    Json(body): Json<SearchLog>,
+) -> Response {
+    if body.query.len() > MAX_BEACON_QUERY_BYTES {
+        return crate::error::AppError::bad_request("query is too long").into_response();
+    }
+    let Ok(results) = u64::try_from(body.results) else {
+        return crate::error::AppError::bad_request("results must not be negative").into_response();
+    };
+    if body.results > MAX_BEACON_RESULTS {
+        return crate::error::AppError::bad_request("results is out of range").into_response();
+    }
+    let settings = crate::search::SearchSettings::load(state.db(), state.cache()).await;
+    state
+        .search()
+        .analytics()
+        .record(&settings, &body.query, results);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// Search query parameters.

@@ -178,6 +178,12 @@ pub const LINKS: &[Link] = &[
         "/admin/config/search",
         Permission("administer site"),
     ),
+    link(
+        "System",
+        "Search report",
+        "/admin/reports/search",
+        Permission("administer site"),
+    ),
     link("System", "Plugins", "/admin/plugins", Administrator),
     link(
         "System",
