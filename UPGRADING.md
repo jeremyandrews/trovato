@@ -9,6 +9,22 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### The password reset link opens a page; `GET` answers JSON only when asked for it
+
+**Who is affected:** a client (a script, an app, a test harness) that fetches
+`GET /user/password-reset/{token}` and reads JSON from it. Browsers and the
+`POST` endpoints are not affected: a `POST` with `Content-Type:
+application/json` gets the same JSON answers it always did.
+
+**What changed.** The link a reset mail carries now opens a set-password page,
+and `GET /user/password-reset` is a page asking for an email address. `GET`
+on the link answers `{"success": true, ...}` or a 400 only when the request
+sends `Accept: application/json`; without it, the answer is HTML.
+
+**How to find out, before upgrading.** Search your clients for
+`password-reset/` and check each `GET` sends `Accept: application/json`. A site
+whose resets are all done in a browser has nothing to do.
+
 ### Plugin mail from `tap_cron` and `tap_queue_worker` now sends
 
 **Who is affected:** a plugin that calls `send-to-site-contacts`
