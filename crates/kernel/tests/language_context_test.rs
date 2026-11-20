@@ -98,7 +98,12 @@ async fn create_item(app: &TestApp, title: &str) -> Uuid {
 }
 
 /// Record a translation of `item` into `language`.
+///
+/// `item_translation` belongs to the translation plugin, which the shared app
+/// does not load: the fixture creates it rather than relying on an earlier test
+/// in the same shard having done so.
 async fn translate(app: &TestApp, item: Uuid, language: &str, title: &str) {
+    common::ensure_translation_table(app);
     sqlx::query(
         "INSERT INTO item_translation (item_id, language, title, fields) \
          VALUES ($1, $2, $3, '{}'::jsonb) \
