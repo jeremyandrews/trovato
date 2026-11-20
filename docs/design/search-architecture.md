@@ -211,6 +211,66 @@ or on `history` plus `query`, whichever it received.
 
 ---
 
+## Search Analytics (as built)
+
+What visitors search for, counted per UTC day, without the kernel storing
+anything that identifies a person. On by default; switched off, and its
+retention set, on `/admin/config/search`. Read at `/admin/reports/search`.
+
+**What is stored, and only this.** Two tables:
+
+| Table | Key | Counters |
+|---|---|---|
+| `search_query_daily` | UTC `day`, normalized `query` | `searches`, `zero_results` |
+| `search_daily` | UTC `day` | `expansion_hits`, `expansion_misses`, `satisfied`, `confused`, `unmet` |
+
+The query is stored as `search::analytics::normalize_for_analytics` leaves it:
+trimmed, whitespace collapsed, lowercased (the same `search::normalize_query`
+the expansion cache keys on), then every email shaped token replaced by
+`[email]` and every run of six or more digits by `[number]`, then cut to 100
+characters. A query that normalizes to nothing is not recorded.
+
+**What is never stored**, in a table or in a log line this work adds: an IP
+address, a user id, a session id, a user agent, a referrer, or any time finer
+than the UTC day. The one debug line that logged a raw query on an expansion
+cache hit was removed.
+
+**Where searches are counted.** Server: `SearchService::search`, the path
+`/search`, `/api/search` and `/api/v1/search` all take, once per search on its
+first page, with the result total. `SearchService::search_unrecorded` is the same
+search uncounted, for callers that are not a visitor searching (the AI chat's
+retrieval, the MCP tool, tests). Browser: `scolta.js` sends
+`POST /api/search/log` with `{query, results}` through `navigator.sendBeacon`,
+once per search the visitor runs, after the primary results render; not for a
+filter toggle, not for the search the page runs from its own `?q=` (the server
+counted that one when it rendered the page), and only when the rendered config
+says `analytics: true`. The endpoint checks the query is at most 500 bytes and
+`results` is 0 to 100,000, answers 204, and touches no database. The rate
+limiter files it under the `search` bucket. The expansion endpoint counts a
+cache hit or miss for every expansion it is asked for.
+
+**Recording never slows a search.** `SearchAnalytics::record` and
+`SearchAnalytics::count` take a short synchronous lock on an in memory map and
+return. A background task flushes every 30 seconds, and once more on shutdown,
+with one `INSERT ... SELECT FROM unnest(...) ON CONFLICT ... DO UPDATE SET n =
+n + EXCLUDED.n` per table, so several kernel processes add up correctly. At most
+10,000 distinct (day, query) keys wait between flushes; past that, new queries
+are dropped and the count dropped is logged at the next flush. A flush that fails
+is logged and its batch dropped rather than kept. A crash loses at most one flush
+window, 30 seconds of counts.
+
+**Retention.** Cron deletes rows older than `analytics_retention_days` (default
+90, 1 to 365) from both tables, one `DELETE` each, at most once a day across all
+processes (a Redis claim, `cron:search_analytics_prune`).
+
+**The report.** A 7, 30 or 90 day period (never longer than retention), the
+searches and zero result searches with their share, the top 25 queries, the top
+25 queries that found nothing, the expansion cache hit rate, and the follow-up
+sentiment counts (zero until sentiment classification exists and is switched on). Each is one aggregate query over the period (`GROUP BY`,
+`ORDER BY`, `LIMIT`), run concurrently.
+
+---
+
 ## The Vector Database Question
 
 The standard AI search architecture generates embeddings for all content, stores them in a vector database, converts each query to an embedding at search time, and finds nearest neighbors. This works, but for most content sites it's unnecessary complexity.

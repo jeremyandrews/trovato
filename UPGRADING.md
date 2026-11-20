@@ -9,6 +9,25 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Search analytics are on by default
+
+**Who is affected:** every site. The upgrade adds two tables,
+`search_query_daily` and `search_daily`, and starts counting searches.
+
+**What is recorded.** Per UTC day: each normalized query with how often it was
+searched and how often it found nothing, and the day's expansion cache hits and
+misses. The query is lowercased, email addresses become `[email]` and runs of six
+or more digits become `[number]`. No IP address, account, session, user agent,
+referrer or time finer than the day is stored. Rows older than 90 days are deleted
+by cron.
+
+**What to do.** Nothing, to keep the default. To record nothing, untick "Record
+search analytics" on `/admin/config/search`; to keep fewer days, lower "Keep
+analytics for (days)" there. If your privacy notice lists what the site
+stores, add search queries counted per day. A site that runs its own search page
+template and wants browser searches counted sends `POST /api/search/log` with
+`{"query": "...", "results": n}` as `scolta.js` does.
+
 ### Rebuild the Pagefind index for titles and field weights to apply
 
 **Who is affected:** a site with the `trovato_search` plugin enabled, which builds
