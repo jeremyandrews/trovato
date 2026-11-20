@@ -23,7 +23,8 @@
 //!   success.
 //! - `tap_cron` enqueues two jobs through the additive `enqueue` host function
 //!   (one high-priority, one delayed) so the suite can verify priority and
-//!   delay reach `plugin_queue`.
+//!   delay reach `plugin_queue`, and sends one mail to the site contact address
+//!   so the suite can see whether mail sends from `tap_cron` (BL-72).
 
 use serde_json::json;
 use trovato_sdk::plugin_tap;
@@ -125,6 +126,10 @@ fn tap_queue_worker(input: serde_json::Value) -> serde_json::Value {
 /// Enqueue two jobs through the additive `enqueue` host function (D-48): one at
 /// high priority with no delay, one at default priority deferred by an hour.
 /// Lets the suite verify `priority`/`delay` reach `plugin_queue`.
+///
+/// Then sends one mail to the site contact address. Its result is not part of
+/// the return: a suite that cares reads the SMTP sink and the `mail` bucket,
+/// and one that does not is unaffected whether it was sent or refused.
 #[plugin_tap]
 fn tap_cron(_input: serde_json::Value) -> serde_json::Value {
     let _ = trovato_sdk::host::queue_enqueue(
@@ -143,5 +148,7 @@ fn tap_cron(_input: serde_json::Value) -> serde_json::Value {
             delay: 3600,
         },
     );
+    let _ =
+        trovato_sdk::host::mail_send_to_site_contacts("cron tap mail", "sent from tap_cron", &[]);
     json!({ "status": "ok" })
 }
