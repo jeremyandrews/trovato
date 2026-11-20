@@ -1,10 +1,10 @@
 <fieldset
-    class="fieldset{% if element.element_type.collapsible %} fieldset--collapsible{% endif %}{% if element.element_type.collapsed %} fieldset--collapsed{% endif %}"
+    class="fieldset{% if element.collapsible %} fieldset--collapsible{% endif %}{% if element.collapsed %} fieldset--collapsed{% endif %}"
     {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
 >
     {% if element.title %}
-    <legend{% if element.element_type.collapsible %} onclick="this.parentElement.classList.toggle('fieldset--collapsed')"{% endif %}>
-        {% if element.element_type.collapsible %}<span class="fieldset__toggle">&#9662;</span> {% endif %}{{ element.title }}
+    <legend{% if element.collapsible %} onclick="this.parentElement.classList.toggle('fieldset--collapsed')"{% endif %}>
+        {% if element.collapsible %}<span class="fieldset__toggle">&#9662;</span> {% endif %}{{ element.title }}
     </legend>
     {% endif %}
 

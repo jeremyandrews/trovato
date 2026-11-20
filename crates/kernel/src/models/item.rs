@@ -169,6 +169,21 @@ impl Item {
         Ok(item)
     }
 
+    /// Find every item whose id is in `ids`, in one query. Missing ids are
+    /// simply absent from the result.
+    pub async fn find_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, Item>(
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE id = ANY($1)"
+        )
+        .bind(ids)
+        .fetch_all(pool)
+        .await
+        .context("failed to fetch items by id")
+    }
+
     /// List items by content type.
     pub async fn list_by_type(pool: &PgPool, item_type: &str) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(

@@ -94,10 +94,10 @@ fn input_value(html: &str, name: &str) -> Option<String> {
 
 /// The form's CSRF token and build id, as the browser posts them.
 fn form_tokens(html: &str) -> String {
-    let csrf = input_value(html, "_csrf").expect("the form must carry a CSRF token");
+    let csrf = input_value(html, "_token").expect("the form must carry a CSRF token");
     let build_id = input_value(html, "_form_build_id").expect("the form must carry a build id");
     format!(
-        "_csrf={}&_form_build_id={}",
+        "_token={}&_form_build_id={}",
         urlencoding::encode(&csrf),
         urlencoding::encode(&build_id)
     )
@@ -137,7 +137,7 @@ fn the_rendered_add_form_can_be_submitted() {
 
         // A form cannot set the X-CSRF-Token header the JSON path reads, so the
         // token has to be in the body or the page is unsubmittable by design.
-        let csrf = input_value(&html, "_csrf").expect("the form must carry a CSRF token");
+        let csrf = input_value(&html, "_token").expect("the form must carry a CSRF token");
         assert!(!csrf.is_empty());
 
         // 2. The browser posts it back, urlencoded, exactly as rendered.
@@ -190,7 +190,9 @@ fn the_rendered_add_form_can_be_submitted() {
         let edit_html = body_string(edit).await;
         assert_eq!(
             input_value(&edit_html, "field_headline").as_deref(),
-            Some("A headline &amp; &lt;b&gt;markup&lt;/b&gt;"),
+            // The form templates escape with Tera, which also writes `/` as
+            // `&#x2F;`; a browser reads both back as the text that was saved.
+            Some("A headline &amp; &lt;b&gt;markup&lt;&#x2F;b&gt;"),
             "the saved value must render back into the form, HTML-escaped"
         );
 
@@ -227,7 +229,7 @@ fn the_json_api_path_is_unchanged() {
                 &cookies,
             )
             .await;
-        let csrf = input_value(&body_string(page).await, "_csrf").unwrap();
+        let csrf = input_value(&body_string(page).await, "_token").unwrap();
 
         let response = app
             .request_with_cookies(
@@ -296,7 +298,7 @@ fn the_json_api_path_is_unchanged() {
     });
 }
 
-/// A form submission with a bad `_csrf` is refused, so widening the accepted
+/// A form submission with a bad `_token` is refused, so widening the accepted
 /// encodings did not open a hole.
 #[test]
 fn a_form_submission_without_a_valid_token_is_refused() {
@@ -313,7 +315,7 @@ fn a_form_submission_without_a_valid_token_is_refused() {
 
         for body in [
             "title=Forged&status=1".to_string(),
-            "_csrf=not-a-real-token&title=Forged&status=1".to_string(),
+            "_token=not-a-real-token&title=Forged&status=1".to_string(),
         ] {
             let response = app
                 .request_with_cookies(
@@ -693,7 +695,7 @@ fn a_json_create_asking_to_publish_is_refused_without_the_permission() {
         let cookies = editor_holding(app, "k1pubjson", &editor_perms(false)).await;
 
         let (_, html) = get_page(app, &format!("/item/add/{TYPE}"), &cookies).await;
-        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let csrf = input_value(&html, "_token").expect("csrf token");
 
         let (status, body) = post_json(
             app,
@@ -754,7 +756,7 @@ fn a_json_update_changing_the_published_state_is_refused_without_the_permission(
             .expect("seed a published item");
 
         let (_, html) = get_page(app, &format!("/item/{}/edit", item.id), &cookies).await;
-        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let csrf = input_value(&html, "_token").expect("csrf token");
 
         let (status, body) = post_json(
             app,
@@ -815,7 +817,7 @@ fn the_permission_holder_publishes_through_both_paths() {
 
         // And unpublishing over JSON works for them.
         let (_, html) = get_page(app, &format!("/item/{id}/edit"), &cookies).await;
-        let csrf = input_value(&html, "_csrf").expect("csrf token");
+        let csrf = input_value(&html, "_token").expect("csrf token");
         let (status, body) = post_json(
             app,
             &format!("/item/{id}/edit"),

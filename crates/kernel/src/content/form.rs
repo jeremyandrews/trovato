@@ -1,10 +1,7 @@
-//! Auto-generated admin forms.
-//!
-//! Generates HTML forms from content type field definitions.
-//! This is a temporary solution until the full Form API is built in Epic 9.
+//! Item forms, built as typed [`Form`]s from content type field definitions.
 
+use crate::form::{Form, FormElement};
 use crate::models::Item;
-use crate::routes::helpers::html_escape;
 use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 
 /// How one field is rendered on an item form.
@@ -46,62 +43,21 @@ impl FieldMode {
             (true, true) => Self::Editable,
         }
     }
-
-    /// The template-facing name of this mode.
-    ///
-    /// The admin forms are Tera templates rather than `FormBuilder` output, so
-    /// they read the mode as a string from the render context.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Editable => "editable",
-            Self::ReadOnly => "readonly",
-            Self::Hidden => "hidden",
-        }
-    }
-
-    /// The attribute this mode adds to an input: `disabled`, or nothing.
-    fn disabled_attr(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "disabled",
-            _ => "",
-        }
-    }
 }
 
-/// The fields a form with these modes renders as inputs a browser submits:
-/// the [`FieldMode::Editable`] ones, sorted. A read only field is rendered
-/// `disabled` and so never posted; a hidden one is not rendered at all.
-pub fn editable_fields(modes: &std::collections::HashMap<String, FieldMode>) -> Vec<String> {
-    let mut names: Vec<String> = modes
-        .iter()
-        .filter(|(_, mode)| **mode == FieldMode::Editable)
-        .map(|(name, _)| name.clone())
-        .collect();
-    names.sort();
-    names
-}
-
-/// Builder for auto-generated forms.
+/// Builder for item forms: a content type's fields as a typed
+/// [`crate::form::Form`], never HTML.
+///
+/// This is the one place a [`FieldType`] becomes a widget. The route adds its
+/// own elements (URL alias, stage), `FormService::build` runs
+/// `tap_form_alter`, and `ThemeEngine::render_form_with_errors` renders the
+/// result, the same way on the admin form and on `/item/add` and
+/// `/item/{id}/edit`.
 pub struct FormBuilder {
     content_type: ContentTypeDefinition,
     /// Text formats the current user is permitted to use.
     /// When empty, all formats are shown (backwards compat).
     permitted_formats: Vec<String>,
-    /// CSRF token emitted as a hidden `_csrf` input.
-    ///
-    /// An HTML form cannot set the `X-CSRF-Token` header the JSON API path
-    /// reads, so without this the page the kernel renders could never be
-    /// submitted successfully (**G-ITEM-FORM-MISMATCH**). Empty means no token
-    /// input is emitted, which keeps the builder usable in tests.
-    csrf_token: String,
-    /// The build id the form prints as `_form_build_id`, under which the
-    /// route saved the form state the submission is checked against.
-    form_build_id: String,
-    /// Extra form controls injected just before the submit button, so a caller
-    /// can add a field (the URL-alias input) *inside* the `<form>` rather than
-    /// concatenating it after the closing tag, where a browser would never
-    /// submit it.
-    extra_html: String,
     /// Display titles for `RecordReference` targets, keyed by target uuid.
     ///
     /// The stored value is a bare uuid (that is what the widget's JavaScript
@@ -122,15 +78,21 @@ pub struct FormBuilder {
     publish_allowed: bool,
 }
 
+/// Weight of the title element: first.
+const TITLE_WEIGHT: i32 = -100;
+/// Weight of the publishing controls, after every field.
+pub const STATUS_WEIGHT: i32 = 900;
+/// Weight of the revision log message.
+pub const LOG_WEIGHT: i32 = 950;
+/// Weight of the submit button: last.
+pub const SUBMIT_WEIGHT: i32 = 1000;
+
 impl FormBuilder {
     /// Create a new form builder for a content type.
     pub fn new(content_type: ContentTypeDefinition) -> Self {
         Self {
             content_type,
             permitted_formats: Vec::new(),
-            csrf_token: String::new(),
-            form_build_id: String::new(),
-            extra_html: String::new(),
             reference_titles: std::collections::HashMap::new(),
             field_modes: std::collections::HashMap::new(),
             publish_allowed: false,
@@ -162,30 +124,6 @@ impl FormBuilder {
             .unwrap_or_default()
     }
 
-    /// The published checkbox plus the hidden input that says it was rendered,
-    /// or nothing at all when this user may not publish.
-    ///
-    /// `_status_rendered` is what lets the submission distinguish "the user
-    /// unchecked the box" from "there was no box": an unchecked checkbox posts
-    /// nothing, so without the marker the two are the same request.
-    fn status_control(&self, checked: bool) -> String {
-        if !self.publish_allowed {
-            return String::new();
-        }
-        let checked = if checked { "checked" } else { "" };
-        format!(
-            r#"
-            <div class="form-group">
-                <input type="hidden" name="_status_rendered" value="1">
-                <label>
-                    <input type="checkbox" name="status" value="1" {checked}>
-                    Published
-                </label>
-            </div>
-            "#
-        )
-    }
-
     /// Supply display titles for `RecordReference` targets, keyed by uuid.
     pub fn with_reference_titles(
         mut self,
@@ -193,42 +131,6 @@ impl FormBuilder {
     ) -> Self {
         self.reference_titles = titles;
         self
-    }
-
-    /// Set the CSRF token this form carries in its body.
-    pub fn with_csrf_token(mut self, token: impl Into<String>) -> Self {
-        self.csrf_token = token.into();
-        self
-    }
-
-    /// Set the build id this form prints as `_form_build_id`.
-    pub fn with_form_build_id(mut self, id: impl Into<String>) -> Self {
-        self.form_build_id = id.into();
-        self
-    }
-
-    /// Append extra controls immediately before the submit button.
-    pub fn with_extra_html(mut self, html: impl Into<String>) -> Self {
-        self.extra_html = html.into();
-        self
-    }
-
-    /// The hidden CSRF and build id inputs, each omitted when not set.
-    fn csrf_input(&self) -> String {
-        let mut html = String::new();
-        if !self.csrf_token.is_empty() {
-            html.push_str(&format!(
-                r#"<input type="hidden" name="_csrf" value="{}">"#,
-                html_escape(&self.csrf_token)
-            ));
-        }
-        if !self.form_build_id.is_empty() {
-            html.push_str(&format!(
-                r#"<input type="hidden" name="_form_build_id" value="{}">"#,
-                html_escape(&self.form_build_id)
-            ));
-        }
-        html
     }
 
     /// Set the permitted text formats for the current user.
@@ -252,395 +154,272 @@ impl FormBuilder {
         self.permitted_formats.contains(&format.to_string())
     }
 
-    /// Generate an add form for creating new items.
-    pub fn build_add_form(&self, action: &str) -> String {
-        let mut html = String::new();
+    /// The add form, `item_add_{type}`, posting to `action`.
+    pub fn build_add_form(&self, action: &str) -> Form {
+        self.build(
+            format!("item_add_{}", self.content_type.machine_name),
+            action,
+            None,
+        )
+    }
 
-        html.push_str(&format!(
-            r#"<form method="post" action="{}" class="item-form item-form-add">{}"#,
-            html_escape(action),
-            self.csrf_input()
-        ));
+    /// The edit form for `item`, `item_edit_{type}`, posting to `action`.
+    pub fn build_edit_form(&self, item: &Item, action: &str) -> Form {
+        self.build(
+            format!("item_edit_{}", self.content_type.machine_name),
+            action,
+            Some(item),
+        )
+    }
 
-        // Title field (always present)
-        html.push_str(
-            r#"
-            <div class="form-group">
-                <label for="title">Title</label>
-                <input type="text" id="title" name="title" required class="form-control">
-            </div>
-        "#,
-        );
+    /// The form both public builders share.
+    fn build(&self, form_id: String, action: &str, item: Option<&Item>) -> Form {
+        let title_label = self
+            .content_type
+            .title_label
+            .clone()
+            .unwrap_or_else(|| "Title".to_string());
+        let mut title = FormElement::textfield()
+            .title(title_label)
+            .required()
+            .weight(TITLE_WEIGHT);
+        if let Some(item) = item {
+            title = title.default_value(item.title.clone());
+        }
+        let mut form = Form::new(form_id).action(action).element("title", title);
 
-        // Dynamic fields. A hidden field is not rendered at all.
-        for field in &self.content_type.fields {
+        // A field this viewer may not see is not rendered, value included.
+        for (index, field) in self.content_type.fields.iter().enumerate() {
             let mode = self.mode_of(&field.field_name);
             if mode == FieldMode::Hidden {
                 continue;
             }
-            html.push_str(&self.render_field(field, None, mode));
+            let value = item.and_then(|i| i.fields.get(&field.field_name));
+            let weight = i32::try_from(index).unwrap_or(i32::MAX - 1000);
+            form = form.elements(self.field_elements(field, value, mode, weight));
         }
 
-        // Status field, only when this user may publish.
-        html.push_str(&self.status_control(true));
-
-        // Caller-supplied controls, inside the form so they are submitted.
-        html.push_str(&self.extra_html);
-
-        // Submit button
-        html.push_str(
-            r#"
-            <div class="form-actions">
-                <button type="submit" class="btn btn-primary">Save</button>
-            </div>
-        </form>
-        "#,
-        );
-
-        html
-    }
-
-    /// Generate an edit form for updating existing items.
-    pub fn build_edit_form(&self, item: &Item, action: &str) -> String {
-        let mut html = String::new();
-
-        html.push_str(&format!(
-            r#"<form method="post" action="{}" class="item-form item-form-edit">{}"#,
-            html_escape(action),
-            self.csrf_input()
-        ));
-
-        // Title field
-        html.push_str(&format!(
-            r#"
-            <div class="form-group">
-                <label for="title">Title</label>
-                <input type="text" id="title" name="title" value="{}" required class="form-control">
-            </div>
-            "#,
-            html_escape(&item.title)
-        ));
-
-        // Dynamic fields with existing values. A field this viewer may not see
-        // is not rendered, value included.
-        for field in &self.content_type.fields {
-            let mode = self.mode_of(&field.field_name);
-            if mode == FieldMode::Hidden {
-                continue;
-            }
-            let value = item.fields.get(&field.field_name);
-            html.push_str(&self.render_field(field, value, mode));
+        // The published checkbox and the marker that says it was rendered:
+        // an unchecked box posts nothing, so without the marker "unchecked"
+        // and "never offered" are the same request. Only for a user who may
+        // publish.
+        if self.publish_allowed {
+            let published = item.is_none_or(Item::is_published);
+            form = form
+                .element(
+                    "status",
+                    FormElement::checkbox()
+                        .title("Published")
+                        .default_value(published)
+                        .weight(STATUS_WEIGHT),
+                )
+                .element(
+                    "_status_rendered",
+                    FormElement::hidden()
+                        .default_value("1")
+                        .weight(STATUS_WEIGHT),
+                );
         }
 
-        // Status field, only when this user may publish.
-        html.push_str(&self.status_control(item.is_published()));
+        if item.is_some() {
+            form = form.element(
+                "log",
+                FormElement::textfield()
+                    .title("Revision log message")
+                    .placeholder("Describe your changes...")
+                    .weight(LOG_WEIGHT),
+            );
+        }
 
-        // Revision log
-        html.push_str(r#"
-            <div class="form-group">
-                <label for="log">Revision log message</label>
-                <input type="text" id="log" name="log" class="form-control" placeholder="Describe your changes...">
-            </div>
-        "#);
-
-        // Caller-supplied controls, inside the form so they are submitted.
-        html.push_str(&self.extra_html);
-
-        // Submit button
-        html.push_str(
-            r#"
-            <div class="form-actions">
-                <button type="submit" class="btn btn-primary">Save</button>
-            </div>
-        </form>
-        "#,
-        );
-
-        html
+        form.element("op", FormElement::submit("Save").weight(SUBMIT_WEIGHT))
     }
 
-    /// Render a single field based on its type.
+    /// The element(s) one field renders as, under its own name.
     ///
-    /// `mode` is never [`FieldMode::Hidden`] here — the callers skip those
-    /// fields entirely rather than render them in any form. A `ReadOnly` field
-    /// carries `disabled` on every control it renders, which is what keeps a
-    /// browser from submitting it.
-    fn render_field(
+    /// A field whose `cardinality` is not 1 is a container holding one widget
+    /// per stored value, `name[0]`, `name[1]`, …, plus one empty slot while
+    /// the cardinality allows another value; the submission builder reads the
+    /// deltas back in order.
+    fn field_elements(
         &self,
         field: &FieldDefinition,
         value: Option<&serde_json::Value>,
         mode: FieldMode,
-    ) -> String {
-        let field_name = &field.field_name;
-        let label = &field.label;
-        let required = if field.required { "required" } else { "" };
-        let required_star = if field.required { " *" } else { "" };
-        let disabled = mode.disabled_attr();
-
-        match &field.field_type {
-            FieldType::Text { max_length } => {
-                let max = max_length
-                    .map(|m| format!(r#"maxlength="{m}""#))
-                    .unwrap_or_default();
-                let val = extract_text_value(value);
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <input type="text" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} {max} class="form-control">
-                    </div>
-                    "#
-                )
+        weight: i32,
+    ) -> Vec<(String, FormElement)> {
+        let name = &field.field_name;
+        if field.cardinality == 1 {
+            let mut elements = vec![(name.clone(), self.widget(field, value, mode))];
+            if matches!(field.field_type, FieldType::TextLong) {
+                elements.push((format!("{name}_format"), self.format_select(value, mode)));
             }
-
-            FieldType::TextLong => {
-                let val = extract_text_value(value);
-                let format = extract_format_value(value);
-
-                // Build format options based on permissions
-                let mut format_options = String::new();
-                if self.is_format_permitted("filtered_html") {
-                    let sel = if format == "filtered_html" {
-                        "selected"
-                    } else {
-                        ""
-                    };
-                    format_options.push_str(&std::format!(
-                        r#"<option value="filtered_html" {sel}>Filtered HTML</option>"#
-                    ));
-                }
-                if self.is_format_permitted("full_html") {
-                    let sel = if format == "full_html" {
-                        "selected"
-                    } else {
-                        ""
-                    };
-                    format_options.push_str(&std::format!(
-                        r#"<option value="full_html" {sel}>Full HTML</option>"#
-                    ));
-                }
-                {
-                    let sel = if format == "plain_text" {
-                        "selected"
-                    } else {
-                        ""
-                    };
-                    format_options.push_str(&std::format!(
-                        r#"<option value="plain_text" {sel}>Plain Text</option>"#
-                    ));
-                }
-
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <textarea id="{field_name}" name="{field_name}" rows="10" {required} {disabled} class="form-control">{val}</textarea>
-                        <div class="form-help">
-                            <select name="{field_name}_format" {disabled} class="form-control-sm">
-                                {format_options}
-                            </select>
-                        </div>
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::Integer => {
-                let val = scalar_of(value)
-                    .and_then(|v| v.as_i64().map(|n| n.to_string()))
-                    .unwrap_or_default();
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <input type="number" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} class="form-control">
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::Float => {
-                let val = scalar_of(value)
-                    .and_then(|v| v.as_f64().map(|n| n.to_string()))
-                    .unwrap_or_default();
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <input type="number" id="{field_name}" name="{field_name}" value="{val}" step="any" {required} {disabled} class="form-control">
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::Boolean => {
-                let checked = scalar_of(value)
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let checked_attr = if checked { "checked" } else { "" };
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="{field_name}" name="{field_name}" value="1" {checked_attr} {disabled}>
-                            {label}
-                        </label>
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::Date => {
-                let val = extract_text_value(value);
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <input type="date" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} class="form-control">
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::Email => {
-                let val = extract_text_value(value);
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <input type="email" id="{field_name}" name="{field_name}" value="{val}" {required} {disabled} class="form-control">
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::RecordReference(target_type) => {
-                let val = extract_reference_id(value);
-                // Display title for the current value: an inline `title` key if
-                // the writer supplied one, else the route-resolved title for
-                // this uuid. Without the latter the box renders empty on every
-                // edit, because what the widget stores is a bare uuid.
-                let display = value
-                    .and_then(|v| v.get("title"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_else(|| {
-                        self.reference_titles
-                            .get(&val)
-                            .map(String::as_str)
-                            .unwrap_or_default()
-                    });
-                let escaped_type = crate::routes::helpers::html_escape(target_type);
-                let escaped_val = crate::routes::helpers::html_escape(&val);
-                let escaped_display = crate::routes::helpers::html_escape(display);
-                format!(
-                    r#"
-                    <div class="form-group record-reference-field">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <input type="hidden" id="{field_name}" name="{field_name}" value="{escaped_val}" {disabled}>
-                        <input type="text" id="{field_name}_autocomplete"
-                               class="form-control record-ref-autocomplete"
-                               data-target-type="{escaped_type}"
-                               data-hidden-field="{field_name}"
-                               value="{escaped_display}"
-                               placeholder="Search {escaped_type}..."
-                               autocomplete="off"
-                               {required} {disabled}>
-                        <div class="record-ref-results" id="{field_name}_results"></div>
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::File => {
-                // File upload - simplified for MVP
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label for="{field_name}">{label}{required_star}</label>
-                        <input type="file" id="{field_name}" name="{field_name}" {required} {disabled} class="form-control">
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::Blocks => {
-                // Block editor: hidden input + container div for Editor.js
-                let existing_json = value
-                    .map(|v| serde_json::to_string(v).unwrap_or_default())
-                    .unwrap_or_else(|| "[]".to_string());
-                let existing_escaped = html_escape(&existing_json);
-
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label>{label}{required_star}</label>
-                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}" {disabled}>
-                        <div data-block-editor data-block-editor-input="{field_name}"></div>
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::PageBuilder => {
-                // Page builder: hidden input + container div for Puck editor
-                let existing_json = value
-                    .map(|v| serde_json::to_string(v).unwrap_or_default())
-                    .unwrap_or_else(|| r#"{"root":{"title":""},"content":[]}"#.to_string());
-                let existing_escaped = html_escape(&existing_json);
-
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label>{label}{required_star}</label>
-                        <input type="hidden" id="{field_name}" name="{field_name}" value="{existing_escaped}" {disabled}>
-                        <div data-page-builder data-page-builder-input="{field_name}"
-                             data-components-url="/api/v1/page-builder/components"></div>
-                    </div>
-                    "#
-                )
-            }
-
-            FieldType::Compound {
-                allowed_types,
-                min_items,
-                max_items,
-            } => {
-                // Build config JSON (Compound type constraints only)
-                let config = serde_json::json!({
-                    "allowed_types": allowed_types,
-                    "min_items": min_items,
-                    "max_items": max_items,
-                });
-                let config_json = html_escape(&serde_json::to_string(&config).unwrap_or_default());
-
-                // Build section type schemas JSON separately
-                let section_types =
-                    crate::content::compound::parse_section_schemas(&field.settings);
-                let section_types_json =
-                    html_escape(&serde_json::to_string(&section_types).unwrap_or_default());
-
-                // Serialize existing value for hidden input
-                let existing_json = value
-                    .map(|v| serde_json::to_string(v).unwrap_or_default())
-                    .unwrap_or_else(|| r#"{"sections":[]}"#.to_string());
-                let existing_escaped = html_escape(&existing_json);
-
-                format!(
-                    r#"
-                    <div class="form-group">
-                        <label>{label}{required_star}</label>
-                        <div class="compound-field" id="compound-{field_name}" data-field="{field_name}" data-config="{config_json}" data-section-types="{section_types_json}">
-                            <div class="compound-field__sections"></div>
-                            <input type="hidden" name="{field_name}" class="compound-field__value" value="{existing_escaped}" {disabled}>
-                            <div class="compound-field__actions">
-                                <button type="button" class="button compound-field__add">Add section</button>
-                            </div>
-                        </div>
-                    </div>
-                    "#
-                )
-            }
+            return elements
+                .into_iter()
+                .map(|(n, e)| (n, e.weight(weight)))
+                .collect();
         }
+
+        let stored: Vec<&serde_json::Value> = match value {
+            Some(serde_json::Value::Array(values)) => values.iter().collect(),
+            Some(serde_json::Value::Null) | None => Vec::new(),
+            Some(single) => vec![single],
+        };
+        let room = field.cardinality < 0 || stored.len() < field.cardinality as usize;
+        let mut slots: Vec<Option<&serde_json::Value>> = stored.into_iter().map(Some).collect();
+        if room && mode == FieldMode::Editable {
+            slots.push(None);
+        }
+
+        let mut container = FormElement::container()
+            .title(field.label.clone())
+            .weight(weight)
+            .attribute("data-cardinality", field.cardinality);
+        if mode == FieldMode::ReadOnly {
+            container = container.disabled();
+        }
+        for (delta, slot) in slots.into_iter().enumerate() {
+            let mut widget = self.widget(field, slot, mode);
+            widget.title = None;
+            widget.required = false;
+            let delta_weight = i32::try_from(delta).unwrap_or(i32::MAX);
+            container = container.child(format!("{name}[{delta}]"), widget.weight(delta_weight));
+        }
+        vec![(name.clone(), container)]
+    }
+
+    /// The single value widget for `field`.
+    ///
+    /// `mode` is never [`FieldMode::Hidden`] here — the callers skip those
+    /// fields entirely rather than render them in any form. A `ReadOnly` field
+    /// is `disabled`, which is what keeps a browser from submitting it.
+    pub fn widget(
+        &self,
+        field: &FieldDefinition,
+        value: Option<&serde_json::Value>,
+        mode: FieldMode,
+    ) -> FormElement {
+        let mut element =
+            match &field.field_type {
+                FieldType::Text { max_length } => {
+                    let mut e = FormElement::textfield();
+                    if let Some(max) = max_length {
+                        e = e.max_length(*max);
+                    }
+                    e.default_value(raw_field_text(value).unwrap_or_default())
+                }
+                FieldType::TextLong => FormElement::textarea(10)
+                    .default_value(raw_field_text(value).unwrap_or_default()),
+                FieldType::Integer => FormElement::input("number").default_value(
+                    scalar_of(value)
+                        .and_then(|v| v.as_i64().map(|n| n.to_string()))
+                        .unwrap_or_default(),
+                ),
+                FieldType::Float => FormElement::input("number")
+                    .attribute("step", "any")
+                    .default_value(
+                        scalar_of(value)
+                            .and_then(|v| v.as_f64().map(|n| n.to_string()))
+                            .unwrap_or_default(),
+                    ),
+                FieldType::Boolean => FormElement::checkbox().default_value(
+                    scalar_of(value)
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                ),
+                FieldType::Date => FormElement::input("date")
+                    .default_value(raw_field_text(value).unwrap_or_default()),
+                FieldType::Email => FormElement::input("email")
+                    .default_value(raw_field_text(value).unwrap_or_default()),
+                FieldType::RecordReference(target_type) => {
+                    let id = extract_reference_id(value);
+                    // Display title for the current value: an inline `title` key if
+                    // the writer supplied one, else the route-resolved title for
+                    // this uuid. Without the latter the box renders empty on every
+                    // edit, because what the widget stores is a bare uuid.
+                    let display = value
+                        .and_then(|v| v.get("title"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or_else(|| self.reference_titles.get(&id).cloned())
+                        .unwrap_or_default();
+                    FormElement::widget("record_reference")
+                        .attribute("data-target-type", target_type.clone())
+                        .attribute("data-display", display)
+                        .default_value(id)
+                }
+                FieldType::File => FormElement::widget("file")
+                    .default_value(raw_field_text(value).unwrap_or_default()),
+                FieldType::Blocks => {
+                    FormElement::widget("blocks").default_value(json_input(value, "[]"))
+                }
+                FieldType::PageBuilder => FormElement::widget("page_builder")
+                    .default_value(json_input(value, r#"{"root":{"title":""},"content":[]}"#)),
+                FieldType::Compound {
+                    allowed_types,
+                    min_items,
+                    max_items,
+                } => {
+                    let config = serde_json::json!({
+                        "allowed_types": allowed_types,
+                        "min_items": min_items,
+                        "max_items": max_items,
+                    });
+                    let section_types =
+                        crate::content::compound::parse_section_schemas(&field.settings);
+                    FormElement::widget("compound")
+                        .attribute(
+                            "data-config",
+                            serde_json::to_string(&config).unwrap_or_default(),
+                        )
+                        .attribute(
+                            "data-section-types",
+                            serde_json::to_string(&section_types).unwrap_or_default(),
+                        )
+                        .default_value(json_input(value, r#"{"sections":[]}"#))
+                }
+            };
+        element = element.title(field.label.clone());
+        // A checkbox that must be ticked is not what "required" means for a
+        // Boolean; the other widgets carry it to the browser.
+        if field.required && !matches!(field.field_type, FieldType::Boolean) {
+            element = element.required();
+        }
+        if mode == FieldMode::ReadOnly {
+            element = element.disabled();
+        }
+        element
+    }
+
+    /// The text format selector beside a long text field, offering the
+    /// formats this user may use.
+    fn format_select(&self, value: Option<&serde_json::Value>, mode: FieldMode) -> FormElement {
+        let current = extract_format_value(value);
+        let options: Vec<(String, String)> = [
+            ("filtered_html", "Filtered HTML"),
+            ("full_html", "Full HTML"),
+            ("plain_text", "Plain Text"),
+        ]
+        .into_iter()
+        .filter(|(format, _)| self.is_format_permitted(format))
+        .map(|(format, label)| (format.to_string(), label.to_string()))
+        .collect();
+        let mut element = FormElement::select(options)
+            .title("Text format")
+            .default_value(current)
+            .required();
+        if mode == FieldMode::ReadOnly {
+            element = element.disabled();
+        }
+        element
+    }
+}
+
+/// A stored JSON value as the text a widget's hidden input carries, or
+/// `empty` when there is none.
+fn json_input(value: Option<&serde_json::Value>, empty: &str) -> String {
+    match value {
+        Some(serde_json::Value::Null) | None => empty.to_string(),
+        Some(v) => serde_json::to_string(v).unwrap_or_else(|_| empty.to_string()),
     }
 }
 
@@ -674,13 +453,6 @@ fn raw_field_text(value: Option<&serde_json::Value>) -> Option<String> {
         serde_json::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
-}
-
-/// Extract text value from field JSON, HTML-escaped for an attribute or body.
-fn extract_text_value(value: Option<&serde_json::Value>) -> String {
-    raw_field_text(value)
-        .map(|s| html_escape(&s))
-        .unwrap_or_default()
 }
 
 /// Extract format from field JSON.
@@ -726,6 +498,7 @@ pub fn extract_reference_id(value: Option<&serde_json::Value>) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::form::ElementType;
 
     fn test_content_type() -> ContentTypeDefinition {
         ContentTypeDefinition {
@@ -734,79 +507,95 @@ mod tests {
             description: "A blog article".to_string(),
             title_label: None,
             fields: vec![
-                FieldDefinition {
-                    field_name: "body".to_string(),
-                    field_type: FieldType::TextLong,
-                    label: "Body".to_string(),
-                    required: true,
-                    cardinality: 1,
-                    settings: serde_json::json!({}),
-                    personal_data: false,
-                },
-                FieldDefinition {
-                    field_name: "summary".to_string(),
-                    field_type: FieldType::Text {
+                FieldDefinition::new("body", FieldType::TextLong)
+                    .label("Body")
+                    .required(),
+                FieldDefinition::new(
+                    "summary",
+                    FieldType::Text {
                         max_length: Some(255),
                     },
-                    label: "Summary".to_string(),
-                    required: false,
-                    cardinality: 1,
-                    settings: serde_json::json!({}),
-                    personal_data: false,
-                },
+                )
+                .label("Summary"),
+                FieldDefinition::new("tags", FieldType::Text { max_length: None })
+                    .label("Tags")
+                    .cardinality(-1),
             ],
         }
     }
 
-    #[test]
-    fn build_add_form_includes_title() {
-        let builder = FormBuilder::new(test_content_type());
-        let form = builder.build_add_form("/item/add/blog");
-        assert!(form.contains(r#"name="title""#));
-        assert!(form.contains(r#"action="/item/add/blog""#));
+    fn item(fields: serde_json::Value) -> Item {
+        Item {
+            id: uuid::Uuid::now_v7(),
+            current_revision_id: None,
+            item_type: "blog".to_string(),
+            title: "Test".to_string(),
+            author_id: uuid::Uuid::nil(),
+            status: 1,
+            created: 0,
+            changed: 0,
+            promote: 0,
+            sticky: 0,
+            fields,
+            stage_id: crate::models::stage::LIVE_STAGE_ID,
+            language: "en".to_string(),
+            item_group_id: uuid::Uuid::now_v7(),
+            retention_days: None,
+        }
     }
 
     #[test]
-    fn build_add_form_includes_fields() {
-        let builder = FormBuilder::new(test_content_type());
-        let form = builder.build_add_form("/item/add/blog");
-        assert!(form.contains(r#"name="body""#));
-        assert!(form.contains(r#"name="summary""#));
-        assert!(form.contains("textarea")); // TextLong
+    fn the_add_form_is_typed_and_named_for_its_type() {
+        let form = FormBuilder::new(test_content_type()).build_add_form("/item/add/blog");
+        assert_eq!(form.form_id, "item_add_blog");
+        assert_eq!(form.action, "/item/add/blog");
+        assert!(form.elements["title"].required);
+        assert!(matches!(
+            form.elements["body"].element_type,
+            ElementType::Textarea { .. }
+        ));
+        assert!(form.elements.contains_key("body_format"));
+        assert!(matches!(
+            form.elements["op"].element_type,
+            ElementType::Submit { .. }
+        ));
+        assert!(!form.elements.contains_key("log"), "no log on an add form");
     }
 
     #[test]
-    fn html_escape_works() {
-        assert_eq!(html_escape("<script>"), "&lt;script&gt;");
-        assert_eq!(html_escape(r#"a="b""#), "a=&quot;b&quot;");
+    fn a_multi_value_field_renders_every_value_and_one_empty_slot() {
+        let form = FormBuilder::new(test_content_type())
+            .build_edit_form(&item(serde_json::json!({"tags": ["a", "b"]})), "/x");
+        let tags = &form.elements["tags"];
+        let names: Vec<&String> = tags.children.keys().collect();
+        assert_eq!(names, vec!["tags[0]", "tags[1]", "tags[2]"]);
+        assert_eq!(
+            tags.children["tags[1]"].default_value,
+            Some(serde_json::json!("b"))
+        );
+        assert_eq!(
+            tags.children["tags[2]"].default_value,
+            Some(serde_json::json!(""))
+        );
+        assert!(form.rendered_inputs().contains(&"tags".to_string()));
     }
 
     #[test]
-    fn html_escape_single_quote() {
-        assert_eq!(html_escape("it's"), "it&#x27;s");
-    }
-
-    #[test]
-    fn html_escape_ampersand() {
-        assert_eq!(html_escape("a & b"), "a &amp; b");
-    }
-
-    #[test]
-    fn extract_text_value_some() {
-        let val = serde_json::json!({"value": "Hello"});
-        assert_eq!(extract_text_value(Some(&val)), "Hello");
-    }
-
-    #[test]
-    fn extract_text_value_none() {
-        assert_eq!(extract_text_value(None), "");
-    }
-
-    #[test]
-    fn extract_text_value_escapes() {
-        let val = serde_json::json!({"value": "<b>bold</b>"});
-        let result = extract_text_value(Some(&val));
-        assert!(result.contains("&lt;b&gt;"));
+    fn modes_hide_and_disable() {
+        let modes = [
+            ("summary".to_string(), FieldMode::Hidden),
+            ("body".to_string(), FieldMode::ReadOnly),
+        ]
+        .into_iter()
+        .collect();
+        let form = FormBuilder::new(test_content_type())
+            .with_field_modes(modes)
+            .build_edit_form(&item(serde_json::json!({"summary": "secret"})), "/x");
+        assert!(!form.elements.contains_key("summary"));
+        assert!(form.elements["body"].disabled);
+        let rendered = form.rendered_inputs();
+        assert!(!rendered.contains(&"summary".to_string()));
+        assert!(!rendered.contains(&"body".to_string()));
     }
 
     #[test]
@@ -821,26 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn build_add_form_has_submit_button() {
-        let builder = FormBuilder::new(test_content_type());
-        let form = builder.build_add_form("/item/add/blog");
-        assert!(form.contains(r#"type="submit""#));
-        assert!(form.contains("Save"));
-    }
-
-    #[test]
-    fn build_add_form_has_status_checkbox() {
-        // The control is rendered only for a user who may publish, so this test
-        // says so. Its absence by default is the new behaviour, pinned in
-        // `tests/item_test.rs`.
-        let builder = FormBuilder::new(test_content_type()).with_publish_allowed(true);
-        let form = builder.build_add_form("/item/add/blog");
-        assert!(form.contains(r#"name="status""#));
-        assert!(form.contains("Published"));
-    }
-
-    #[test]
-    fn compound_field_renders_container_and_hidden_input() {
+    fn compound_field_carries_its_config() {
         let ct = ContentTypeDefinition {
             machine_name: "page".to_string(),
             label: "Page".to_string(),
@@ -857,61 +627,22 @@ mod tests {
                 required: false,
                 cardinality: 1,
                 settings: serde_json::json!({
-                    "section_types": [{
-                        "machine_name": "text",
-                        "label": "Text",
-                        "fields": []
-                    }]
+                    "section_types": [{"machine_name": "text", "label": "Text", "fields": []}]
                 }),
                 personal_data: false,
             }],
         };
-        let builder = FormBuilder::new(ct);
-        let form = builder.build_add_form("/item/add/page");
-        assert!(
-            form.contains("compound-field"),
-            "should contain compound-field class"
+        let form = FormBuilder::new(ct).build_add_form("/item/add/page");
+        let sections = &form.elements["sections"];
+        assert!(matches!(
+            &sections.element_type,
+            ElementType::Widget { widget } if widget == "compound"
+        ));
+        let attrs = sections.attributes.as_ref().unwrap();
+        assert!(attrs.get("data-section-types").is_some());
+        assert_eq!(
+            sections.default_value,
+            Some(serde_json::json!(r#"{"sections":[]}"#))
         );
-        assert!(
-            form.contains(r#"data-field="sections""#),
-            "should have data-field"
-        );
-        assert!(
-            form.contains("compound-field__value"),
-            "should have hidden input"
-        );
-        assert!(
-            form.contains("compound-field__add"),
-            "should have add button"
-        );
-        assert!(
-            form.contains("data-section-types="),
-            "should have data-section-types attribute"
-        );
-    }
-
-    #[test]
-    fn build_edit_form_has_log_field() {
-        let builder = FormBuilder::new(test_content_type());
-        let item = Item {
-            id: uuid::Uuid::now_v7(),
-            current_revision_id: None,
-            item_type: "blog".to_string(),
-            title: "Test".to_string(),
-            author_id: uuid::Uuid::nil(),
-            status: 1,
-            created: 0,
-            changed: 0,
-            promote: 0,
-            sticky: 0,
-            fields: serde_json::json!({}),
-            stage_id: crate::models::stage::LIVE_STAGE_ID,
-            language: "en".to_string(),
-            item_group_id: uuid::Uuid::now_v7(),
-            retention_days: None,
-        };
-        let form = builder.build_edit_form(&item, "/item/123/edit");
-        assert!(form.contains(r#"name="log""#));
-        assert!(form.contains("Revision log"));
     }
 }

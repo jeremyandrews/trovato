@@ -1,0 +1,8 @@
+<div class="form-item form-item--page-builder">
+    {% if element.title %}
+    <label class="form-item__label{% if element.required %} form-item__label--required{% endif %}">{{ element.title }}</label>
+    {% endif %}
+    <input type="hidden" id="{{ name }}" name="{{ name }}" value="{{ element.default_value | default(value='') }}"{% if element.disabled %} disabled{% endif %}>
+    <div data-page-builder data-page-builder-input="{{ name }}" data-components-url="/api/v1/page-builder/components"></div>
+    {% if field_error %}<div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>{% endif %}
+</div>

@@ -31,6 +31,8 @@ members = [
     "plugins/trovato_page_builder",
     "plugins/trovato_captcha",
     "plugins/test_plugin_api",
+    "plugins/test_form_taps",
+    "plugins/test_form_taps_b",
     # 0.102 AI Assistant e2e fixture: declares an assistant scope with a read
     # tool, a write tool and a failing tool, plus a deliberately invalid scope
     # so the registry's drop-and-warn path is exercised by a real plugin.

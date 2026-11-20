@@ -9,20 +9,20 @@
 
     <select
         id="{{ name }}"
-        name="{{ name }}{% if element.element_type.multiple %}[]{% endif %}"
+        name="{{ name }}{% if element.multiple %}[]{% endif %}"
         class="form-select"
-        {% if element.element_type.multiple %}multiple{% endif %}
+        {% if element.multiple %}multiple{% endif %}
         {% if element.required %}required{% endif %}
         {% if element.disabled %}disabled{% endif %}
         {% if field_error %}aria-describedby="error-{{ name }}" aria-invalid="true"{% endif %}
         {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
         {% if element.ajax %}data-ajax-trigger="{{ element.ajax.callback }}" data-ajax-event="{{ element.ajax.event | default(value='change') }}"{% endif %}
     >
-        {% if not element.required and not element.element_type.multiple %}
+        {% if not element.required and not element.multiple %}
         <option value="">- Select -</option>
         {% endif %}
-        {% for option in element.element_type.options %}
-        <option value="{{ option.0 }}"{% if element.default_value == option.0 %} selected{% endif %}>{{ option.1 }}</option>
+        {% for option in element.options %}
+        <option value="{{ option.0 }}"{% if element.default_value is defined and element.default_value == option.0 %} selected{% endif %}>{{ option.1 }}</option>
         {% endfor %}
     </select>
 

@@ -89,6 +89,30 @@ async fn csrf_token(app: &TestApp, path: &str, cookies: &str) -> String {
     html[start..end].to_string()
 }
 
+/// The profile form's CSRF token and build id, as the browser posts them back.
+async fn profile_form_tokens(app: &TestApp, cookies: &str) -> (String, String) {
+    let response = app
+        .request_with_cookies(
+            Request::get("/user/profile").body(Body::empty()).unwrap(),
+            cookies,
+        )
+        .await;
+    let body = axum::body::to_bytes(response.into_body(), 2_000_000)
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(&body);
+    let value_of = |name: &str| {
+        let marker = format!(r#"name="{name}" value=""#);
+        let start = html
+            .find(&marker)
+            .map(|p| p + marker.len())
+            .unwrap_or_else(|| panic!("no {name} on the profile page"));
+        let end = start + html[start..].find('"').expect("unterminated value");
+        html[start..end].to_string()
+    };
+    (value_of("_token"), value_of("_form_build_id"))
+}
+
 #[test]
 fn an_admins_context_carries_their_real_permissions_and_the_admin_marker() {
     run_test(async {
@@ -154,9 +178,10 @@ fn a_self_service_profile_update_succeeds_for_the_owner() {
             .create_and_login_user(&name, "test-password-123", &mail)
             .await;
 
-        let token = csrf_token(app, "/user/profile", &cookies).await;
+        let (token, build_id) = profile_form_tokens(app, &cookies).await;
         let body = format!(
-            "_token={token}&name={name}&mail={mail}&timezone=Europe/Rome&current_password="
+            "_token={token}&_form_build_id={build_id}&name={name}&mail={mail}\
+             &timezone=Europe/Rome&current_password="
         );
         let response = app
             .request_with_cookies(

@@ -5500,12 +5500,14 @@ fn profile_update_changes_display_name() {
             .await;
         let body = response_text(response).await;
         let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+        let build_id = extract_form_build_id(&body).expect("Should have a form build id");
 
         // Update display name (keep same email, no password needed)
         let new_name = format!("Updated {username}");
         let form_body = format!(
-            "_token={}&name={}&mail={}&timezone=&current_password=",
+            "_token={}&_form_build_id={}&name={}&mail={}&timezone=&current_password=",
             urlencoding::encode(&csrf_token),
+            urlencoding::encode(&build_id),
             urlencoding::encode(&new_name),
             urlencoding::encode(&email),
         );

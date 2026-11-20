@@ -1091,16 +1091,24 @@ async fn clear_pending_email(state: &AppState, user: &User) {
 // ─── Profile & Password Management ──────────────────────────────────────────
 
 /// Profile edit form request.
-#[derive(Deserialize)]
 struct ProfileFormRequest {
     name: String,
     mail: String,
-    #[serde(default)]
     timezone: String,
-    #[serde(default)]
     current_password: String,
-    #[serde(rename = "_token")]
-    csrf_token: String,
+}
+
+impl ProfileFormRequest {
+    /// The profile fields out of a posted form.
+    fn from_posted(posted: &crate::content::submission::PostedForm) -> Self {
+        let get = |name: &str| posted.get(name).unwrap_or_default().to_string();
+        Self {
+            name: get("name"),
+            mail: get("mail"),
+            timezone: get("timezone"),
+            current_password: get("current_password"),
+        }
+    }
 }
 
 /// Password change form request.
@@ -1142,20 +1150,69 @@ async fn get_current_user(state: &AppState, session: &Session) -> Result<User, R
     Ok(user)
 }
 
+/// The profile form, `user_profile_form`, showing `values` (name, mail,
+/// timezone). It goes through `FormService::build` like every other form, so
+/// `tap_form_alter` reaches it.
+fn build_profile_form(values: &serde_json::Value) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    let text = |key: &str| {
+        values
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    Form::new("user_profile_form")
+        .action("/user/profile")
+        .element(
+            "name",
+            FormElement::textfield()
+                .title("Username")
+                .required()
+                .default_value(text("name"))
+                .weight(0),
+        )
+        .element(
+            "mail",
+            FormElement::input("email")
+                .title("Email address")
+                .required()
+                .default_value(text("mail"))
+                .weight(1),
+        )
+        .element(
+            "timezone",
+            FormElement::textfield()
+                .title("Timezone")
+                .placeholder("e.g., America/New_York")
+                .default_value(text("timezone"))
+                .weight(2),
+        )
+        .element(
+            "current_password",
+            FormElement::password()
+                .title("Current password")
+                .placeholder("Required to change username or email")
+                .description("Required when changing your username or email address.")
+                .weight(3),
+        )
+        .element("op", FormElement::submit("Save profile").weight(100))
+}
+
 /// Render the profile page with context.
 ///
 /// When `values` is provided, those values override the user's stored values
 /// (used to preserve submitted form data on validation errors).
 ///
-/// Uses separate CSRF tokens for the profile and password forms since
-/// tokens are single-use (consumed on verification).
+/// The profile form is built through the forms pipeline and carries its own
+/// token; the password form gets `password_csrf`, since tokens are single-use
+/// (consumed on verification).
 // Each optional param (errors/success/error/values) represents a distinct render
 // state; bundling them into a struct would obscure call-site intent.
 #[allow(clippy::too_many_arguments)]
 async fn render_profile(
     state: &AppState,
     session: &Session,
-    profile_csrf: &str,
     password_csrf: &str,
     user: &User,
     errors: Option<&[String]>,
@@ -1163,17 +1220,36 @@ async fn render_profile(
     error: Option<&str>,
     values: Option<&serde_json::Value>,
 ) -> Response {
+    let stored = serde_json::json!({
+        "name": user.name,
+        "mail": user.mail,
+        "timezone": user.timezone,
+    });
+    let user_ctx = super::helpers::user_context_for(state, user).await;
+    let mut form_state = crate::form::FormState::new("user_profile_form", "");
+    form_state.user_id = Some(user.id);
+    let form = match state
+        .forms()
+        .build(
+            build_profile_form(values.unwrap_or(&stored)),
+            session,
+            &crate::tap::RequestState::new(user_ctx, state.tap_services().clone()),
+            form_state,
+        )
+        .await
+        .and_then(|form| state.theme().render_form(&form))
+    {
+        Ok(html) => html,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build the profile form");
+            return Html("<h1>Error</h1><p>Failed to render profile page</p>".to_string())
+                .into_response();
+        }
+    };
+
     let mut context = tera::Context::new();
-    context.insert("csrf_token", profile_csrf);
+    context.insert("profile_form", &form);
     context.insert("password_csrf_token", password_csrf);
-    context.insert(
-        "user",
-        values.unwrap_or(&serde_json::json!({
-            "name": user.name,
-            "mail": user.mail,
-            "timezone": user.timezone,
-        })),
-    );
     if let Some(errors) = errors {
         context.insert("errors", errors);
     }
@@ -1194,13 +1270,6 @@ async fn render_profile(
     }
 }
 
-/// Generate a pair of CSRF tokens for the profile page (one per form).
-async fn profile_csrf_pair(session: &Session) -> (String, String) {
-    let profile = generate_csrf_token(session).await;
-    let password = generate_csrf_token(session).await;
-    (profile, password)
-}
-
 /// Profile view/edit form handler.
 ///
 /// GET /user/profile
@@ -1210,11 +1279,10 @@ async fn profile_form(State(state): State<AppState>, session: Session) -> Respon
         Err(resp) => return resp,
     };
 
-    let (profile_csrf, password_csrf) = profile_csrf_pair(&session).await;
+    let password_csrf = generate_csrf_token(&session).await;
     render_profile(
         &state,
         &session,
-        &profile_csrf,
         &password_csrf,
         &user,
         None,
@@ -1232,8 +1300,9 @@ async fn profile_update(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
-    Form(form): Form<ProfileFormRequest>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = crate::content::submission::PostedForm(pairs);
     let user = match get_current_user(&state, &session).await {
         Ok(u) => u,
         Err(resp) => return resp,
@@ -1248,10 +1317,34 @@ async fn profile_update(
         return crate::middleware::rate_limit_response(retry_after);
     }
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
-        return resp;
-    }
+    // CSRF, the form state, and `tap_form_validate`, through the pipeline.
+    let tap_state = crate::tap::RequestState::new(
+        super::helpers::user_context_for(&state, &user).await,
+        state.tap_services().clone(),
+    );
+    let (form_state, mut errors) = match state
+        .forms()
+        .process(
+            posted.get("_form_build_id").unwrap_or_default(),
+            &posted,
+            &session,
+            &tap_state,
+            |_| Ok(()),
+        )
+        .await
+    {
+        Ok((form_state, ())) => (Some(form_state), Vec::new()),
+        Err(crate::form::ProcessError::Csrf) => {
+            return super::helpers::render_error(
+                "Invalid or expired form token. Please try again.",
+            );
+        }
+        Err(crate::form::ProcessError::Invalid(errors)) => (
+            None,
+            errors.into_iter().map(|e| e.message).collect::<Vec<_>>(),
+        ),
+    };
+    let form = ProfileFormRequest::from_posted(&posted);
 
     let name = form.name.trim();
     let mail = form.mail.trim();
@@ -1265,8 +1358,6 @@ async fn profile_update(
         "mail": mail,
         "timezone": timezone,
     });
-
-    let mut errors = Vec::new();
 
     if let Err(msg) = validate_username(name) {
         errors.push(msg.to_string());
@@ -1328,11 +1419,10 @@ async fn profile_update(
     }
 
     if !errors.is_empty() {
-        let (pc, pwc) = profile_csrf_pair(&session).await;
+        let pwc = generate_csrf_token(&session).await;
         return render_profile(
             &state,
             &session,
-            &pc,
             &pwc,
             &user,
             Some(&errors),
@@ -1388,6 +1478,13 @@ async fn profile_update(
     let user_ctx = super::helpers::user_context_for(&state, &user).await;
     match state.users().update(user.id, update, &user_ctx).await {
         Ok(Some(updated_user)) => {
+            if let Some(form_state) = &form_state {
+                state
+                    .forms()
+                    .submitted(form_state, &posted, None, &tap_state)
+                    .await;
+            }
+
             // Cycle session ID after credential changes to prevent fixation
             if name_changing && let Err(e) = session.cycle_id().await {
                 tracing::warn!(error = %e, user_id = %user.id, "failed to cycle session ID after username change");
@@ -1438,7 +1535,7 @@ async fn profile_update(
                 }
             }
 
-            let (pc, pwc) = profile_csrf_pair(&session).await;
+            let pwc = generate_csrf_token(&session).await;
             let success_msg = if email_changing {
                 "Profile updated. A verification email has been sent to your new address. \
                  Your email will be updated after you confirm the change."
@@ -1448,7 +1545,6 @@ async fn profile_update(
             render_profile(
                 &state,
                 &session,
-                &pc,
                 &pwc,
                 &updated_user,
                 None,
@@ -1459,11 +1555,10 @@ async fn profile_update(
             .await
         }
         Ok(None) => {
-            let (pc, pwc) = profile_csrf_pair(&session).await;
+            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pc,
                 &pwc,
                 &user,
                 None,
@@ -1475,11 +1570,10 @@ async fn profile_update(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to update profile");
-            let (pc, pwc) = profile_csrf_pair(&session).await;
+            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pc,
                 &pwc,
                 &user,
                 None,
@@ -1548,11 +1642,10 @@ async fn password_change(
     }
 
     if !errors.is_empty() {
-        let (pc, pwc) = profile_csrf_pair(&session).await;
+        let pwc = generate_csrf_token(&session).await;
         return render_profile(
             &state,
             &session,
-            &pc,
             &pwc,
             &user,
             Some(&errors),
@@ -1616,11 +1709,10 @@ async fn password_change(
                 )
                 .await;
 
-            let (pc, pwc) = profile_csrf_pair(&session).await;
+            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pc,
                 &pwc,
                 &user,
                 None,
@@ -1631,11 +1723,10 @@ async fn password_change(
             .await
         }
         _ => {
-            let (pc, pwc) = profile_csrf_pair(&session).await;
+            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pc,
                 &pwc,
                 &user,
                 None,

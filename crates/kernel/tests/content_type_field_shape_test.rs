@@ -206,8 +206,10 @@ fn the_admin_add_form_renders_the_declared_fields() {
             html.contains(r#"name="field_body""#),
             "the add form rendered none of blog's declared fields"
         );
+        // An unlimited field is posted as `field_tags[0]`, `field_tags[1]`, …
+        // and the form renders one empty slot for a new item.
         assert!(
-            html.contains(r#"name="field_tags""#),
+            html.contains(r#"name="field_tags[0]""#),
             "the add form is missing field_tags"
         );
     });

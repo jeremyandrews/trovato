@@ -41,6 +41,7 @@ pub mod helpers;
 pub mod image_style;
 pub mod install;
 pub mod item;
+pub mod item_form;
 pub mod lock;
 pub mod metrics;
 pub mod oauth;

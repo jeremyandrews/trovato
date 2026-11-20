@@ -13,4 +13,8 @@
     {% endif %}
 
     {{ children | safe }} {# SAFE: kernel FormBuilder-generated HTML — child elements already rendered by the kernel #}
+
+    {% if field_error %}
+    <div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>
+    {% endif %}
 </div>

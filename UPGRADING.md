@@ -9,6 +9,37 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Content and profile forms run the form taps; one form renderer
+
+**Who is affected:** a plugin that implements `tap_form_alter`,
+`tap_form_validate` or `tap_form_submit`; a theme that overrides
+`templates/admin/content-form.html`, `templates/user/profile.html` or any
+`templates/form/*.html`; a script that posts to `/item/add/{type}`,
+`/item/{id}/edit` or `/user/profile` without loading the page.
+
+**What changed.** The item forms (on `/item/...` and `/admin/content/...`) and
+the profile form are now built as a kernel `Form` and rendered by the one form
+renderer, so the three form taps fire for them, as documented in
+`docs/plugin-development.md` (Forms). Before, none of them fired for any form a
+route served, so a plugin's implementation of these taps starts running on
+upgrade. Form ids are `item_add_{type}`, `item_edit_{type}` and
+`user_profile_form`. Alterations chain in weight order. A plugin that adds a
+button needing a script names a kernel asset library in `libraries` (the AI
+Assist buttons use `ai_assist`); the admin content page no longer loads
+`ai-assist.js` and `file-upload.js` on its own. The `/item/...` forms render
+inside the site theme rather than as a bare page, and no form carries an inline
+`<style>`; form styles are in `static/css/forms.css`.
+
+`content-form.html` now prints only `form_html`; a theme override of it that
+builds its own inputs must print `form_html` instead. Form element templates
+read element properties directly (`element.options`, not
+`element.element_type.options`). The item forms carry their CSRF token as
+`_token` (was `_csrf`), and the profile form now needs `_form_build_id` too.
+
+**How to find out.** `grep -rn "tap_form_" plugins/*/src` lists the plugins
+whose form taps will start firing; `ls themes/*/templates/form
+themes/*/templates/admin/content-form.html` lists overrides to review.
+
 ### Item form saves keep what the form did not show; Booleans are JSON booleans
 
 **Who is affected:** a site whose items carry keys the edit form does not

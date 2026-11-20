@@ -1,0 +1,19 @@
+name = "test_form_taps"
+description = "B71 fixture: form alter, validate and submit through the kernel forms pipeline"
+version = "0.104.0"
+api_version = "0.104"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_perm", "tap_form_alter", "tap_form_validate", "tap_form_submit"]
+# Before test_form_taps_b, which reads what this one adds.
+weight = 0
+
+[capabilities]
+host_interfaces = ["logging", "db", "user-api"]
+db_tables = ["b71_form_submits"]
+raw_sql = true
+
+[migrations]
+files = ["migrations/001_b71_form_submits.sql"]

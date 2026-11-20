@@ -792,6 +792,7 @@ impl ThemeEngine {
         let mut context = tera::Context::new();
         context.insert("form", form);
         context.insert("errors", errors);
+        context.insert("libraries", &crate::form::assets::libraries_for(form));
 
         // Build field→error lookup for per-element error rendering
         let field_errors: HashMap<&str, &str> = errors
@@ -854,7 +855,13 @@ impl ThemeEngine {
     ) -> Result<String> {
         use crate::form::ElementType;
 
+        let widget_template;
         let template_name = match &element.element_type {
+            ElementType::Widget { widget } => {
+                widget_template = format!("form/widget--{widget}.html");
+                widget_template.as_str()
+            }
+            ElementType::Input { .. } => "form/input.html",
             ElementType::Textfield { .. } => "form/textfield.html",
             ElementType::Textarea { .. } => "form/textarea.html",
             ElementType::Select { .. } => "form/select.html",
@@ -1014,6 +1021,25 @@ pub type SharedThemeEngine = Arc<ThemeEngine>;
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A select, radio set or checkbox set with no default renders, with
+    /// nothing chosen: `default_value` is left out of the serialized element
+    /// when it is `None`, and the templates must not compare a missing value.
+    #[test]
+    fn a_choice_element_without_a_default_renders() {
+        use crate::form::{Form, FormElement};
+        let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        let engine = ThemeEngine::new(&[templates], None).unwrap();
+        let options = || vec![("a".to_string(), "A".to_string())];
+        let form = Form::new("probe")
+            .element("pick", FormElement::select(options()))
+            .element("one", FormElement::radio(options()))
+            .element("many", FormElement::checkboxes(options()));
+        let html = engine.render_form(&form).unwrap();
+        assert!(html.contains(r#"<option value="a">A</option>"#), "{html}");
+        assert!(!html.contains("selected"), "{html}");
+        assert!(!html.contains("checked"), "{html}");
+    }
 
     #[test]
     fn test_is_admin_path() {

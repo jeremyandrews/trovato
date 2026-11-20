@@ -34,130 +34,160 @@ impl FormService {
         }
     }
 
-    /// Build a form by ID.
+    /// Finish building `form`: mint its CSRF token, let plugins alter it, and
+    /// save `form_state` with the inputs the altered form renders.
     ///
-    /// This calls the form builder and then invokes `tap_form_alter` for plugins
-    /// to modify the form.
+    /// `tap_form_alter` runs once per implementing plugin in weight order, each
+    /// receiving the previous plugin's output, so two plugins altering one form
+    /// compose. An empty or unparsable answer leaves the form as it was. A
+    /// plugin cannot change the form's id, build id or token.
+    ///
+    /// The rendered input list ([`Form::rendered_inputs`]) is taken after
+    /// alteration and kept server side in `form_state`; the submission builder
+    /// writes those inputs and nothing else.
     pub async fn build(
         &self,
-        form_id: &str,
+        mut form: Form,
         session: &Session,
         state: &RequestState,
+        mut form_state: FormState,
     ) -> Result<Form> {
-        // Generate CSRF token
-        let token = generate_csrf_token(session).await;
+        form.token = generate_csrf_token(session).await;
+        let (form_id, build_id, token) = (
+            form.form_id.clone(),
+            form.form_build_id.clone(),
+            form.token.clone(),
+        );
 
-        // Create base form
-        let mut form = Form::new(form_id);
-        form.token = token;
-
-        // Invoke tap_form_alter for plugins to modify the form
-        let form_json = serde_json::to_string(&form)?;
-        let results = self
-            .dispatcher
-            .dispatch("tap_form_alter", &form_json, state.clone())
-            .await;
-
-        // Apply alterations from plugins
-        for result in results {
+        for handler in self.dispatcher.registry().get_handlers("tap_form_alter") {
+            let plugin = handler.plugin.info.name.clone();
+            let input = serde_json::to_string(&form)?;
+            let Some(result) = self
+                .dispatcher
+                .dispatch_to_plugin("tap_form_alter", &input, &plugin, state.clone())
+                .await
+            else {
+                continue;
+            };
             if result.output.is_empty() || result.output == "{}" {
                 continue;
             }
-
             match serde_json::from_str::<Form>(&result.output) {
-                Ok(altered_form) => {
-                    debug!(
-                        plugin = %result.plugin_name,
-                        form_id = %form_id,
-                        "form altered by plugin"
-                    );
-                    form = altered_form;
+                Ok(altered) => {
+                    debug!(plugin = %plugin, form_id = %form_id, "form altered by plugin");
+                    form = altered;
+                    form.form_id = form_id.clone();
+                    form.form_build_id = build_id.clone();
+                    form.token = token.clone();
                 }
                 Err(e) => {
-                    warn!(
-                        plugin = %result.plugin_name,
-                        error = %e,
-                        "failed to parse form alteration"
-                    );
+                    warn!(plugin = %plugin, error = %e, "failed to parse form alteration");
                 }
             }
+        }
+
+        form_state.form_id = form_id;
+        form_state.form_build_id = build_id.clone();
+        form_state.rendered_fields = form.rendered_inputs();
+        if let Err(e) = self.save_state(&build_id, &form_state).await {
+            // The submission then answers "expired" rather than guessing.
+            warn!(error = %e, "failed to save form state");
         }
 
         Ok(form)
     }
 
-    /// Process a form submission.
-    pub async fn process(
+    /// Check a submission of the form saved under `form_build_id`.
+    ///
+    /// Verifies the CSRF token, recalls the form state (built for this user),
+    /// runs the built-in checks `validate` performs (for an item form, the
+    /// submission builder), then `tap_form_validate`. Returns the state and
+    /// the value `validate` produced, or every error at once.
+    ///
+    /// `tap_form_submit` is not dispatched here: the caller saves first and
+    /// then calls [`Self::submitted`], so a plugin never hears of a submission
+    /// the save refused.
+    pub async fn process<T>(
         &self,
-        form_id: &str,
-        values: &HashMap<String, Value>,
+        form_build_id: &str,
+        posted: &crate::content::submission::PostedForm,
         session: &Session,
         state: &RequestState,
-    ) -> Result<FormResult> {
-        // Verify CSRF token
-        let csrf_token = values.get("_token").and_then(|v| v.as_str()).unwrap_or("");
-
-        if !verify_csrf_token(session, csrf_token).await? {
-            return Ok(FormResult::ValidationFailed(vec![ValidationError {
-                field: None,
-                message: "Invalid or expired form token. Please try again.".to_string(),
-            }]));
+        validate: impl FnOnce(&FormState) -> std::result::Result<T, Vec<ValidationError>>,
+    ) -> std::result::Result<(FormState, T), ProcessError> {
+        let csrf_token = posted.get("_token").unwrap_or("");
+        if !verify_csrf_token(session, csrf_token)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(ProcessError::Csrf);
         }
 
-        // Run built-in validation
-        let mut errors = self.validate_form(form_id, values, state).await?;
+        let Some(form_state) = self.recall(form_build_id, state.user.id).await else {
+            return Err(ProcessError::Invalid(vec![ValidationError::form(
+                FORM_EXPIRED,
+            )]));
+        };
 
-        // Run tap_form_validate for plugin validation
+        let built = validate(&form_state);
+        let mut errors = match &built {
+            Ok(_) => Vec::new(),
+            Err(errors) => errors.clone(),
+        };
+
         let validate_input = serde_json::json!({
-            "form_id": form_id,
-            "values": values,
+            "form_id": form_state.form_id,
+            "values": posted_values(posted, &form_state.rendered_fields),
         });
-
-        let results = self
+        let input = serde_json::to_string(&validate_input).unwrap_or_default();
+        for result in self
             .dispatcher
-            .dispatch(
-                "tap_form_validate",
-                &serde_json::to_string(&validate_input)?,
-                state.clone(),
-            )
-            .await;
-
-        for result in results {
+            .dispatch("tap_form_validate", &input, state.clone())
+            .await
+        {
             if result.output.is_empty() || result.output == "{}" {
                 continue;
             }
-
-            if let Ok(tap_errors) = serde_json::from_str::<TapValidationResult>(&result.output) {
-                for error in tap_errors.errors {
-                    errors.push(ValidationError {
-                        field: None,
-                        message: error,
-                    });
-                }
+            match serde_json::from_str::<TapValidationResult>(&result.output) {
+                Ok(tap) => errors.extend(tap.errors.into_iter().map(TapError::into_error)),
+                Err(e) => warn!(
+                    plugin = %result.plugin_name,
+                    error = %e,
+                    "failed to parse tap_form_validate result"
+                ),
             }
         }
 
-        // If there are errors, return them
-        if !errors.is_empty() {
-            return Ok(FormResult::ValidationFailed(errors));
+        match built {
+            Ok(value) if errors.is_empty() => Ok((form_state, value)),
+            _ => Err(ProcessError::Invalid(errors)),
         }
+    }
 
-        // Call tap_form_submit for side effects
-        let submit_input = serde_json::json!({
-            "form_id": form_id,
-            "values": values,
+    /// Tell plugins a submission was saved: `tap_form_submit`, once.
+    ///
+    /// The input is `{form_id, values, item_id}`: the posted values of the
+    /// inputs the form rendered, and the item the save created or updated, if
+    /// any.
+    pub async fn submitted(
+        &self,
+        form_state: &FormState,
+        posted: &crate::content::submission::PostedForm,
+        item_id: Option<uuid::Uuid>,
+        state: &RequestState,
+    ) {
+        let input = serde_json::json!({
+            "form_id": form_state.form_id,
+            "values": posted_values(posted, &form_state.rendered_fields),
+            "item_id": item_id,
         });
-
         self.dispatcher
             .dispatch(
                 "tap_form_submit",
-                &serde_json::to_string(&submit_input)?,
+                &serde_json::to_string(&input).unwrap_or_default(),
                 state.clone(),
             )
             .await;
-
-        // Default to success redirect
-        Ok(FormResult::Success)
     }
 
     /// Handle an AJAX callback.
@@ -329,84 +359,6 @@ impl FormService {
             })
     }
 
-    /// Validate form values against content type field definitions.
-    ///
-    /// Checks required fields and basic type constraints (email format).
-    /// Returns an empty vec for non-item forms or unknown item types.
-    async fn validate_form(
-        &self,
-        form_id: &str,
-        values: &HashMap<String, Value>,
-        _state: &RequestState,
-    ) -> Result<Vec<ValidationError>> {
-        let mut errors = Vec::new();
-
-        // Extract content type from form_id pattern "item_add_{type}" or "item_edit_{type}"
-        let type_name = form_id
-            .strip_prefix("item_add_")
-            .or_else(|| form_id.strip_prefix("item_edit_"));
-
-        let Some(type_name) = type_name else {
-            return Ok(errors);
-        };
-
-        // Load content type definition
-        let Some(db_type) = crate::models::ItemType::find_by_type(&self.pool, type_name).await?
-        else {
-            return Ok(errors);
-        };
-
-        // Parse field definitions from settings
-        let fields: Vec<trovato_sdk::types::FieldDefinition> = db_type
-            .settings
-            .get("fields")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        for field in &fields {
-            if field.required {
-                let is_empty = match values.get(&field.field_name) {
-                    None | Some(Value::Null) => true,
-                    Some(Value::String(s)) => s.trim().is_empty(),
-                    Some(Value::Object(m)) => {
-                        // Handle {"value": ""} pattern from compound fields
-                        m.get("value")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|s| s.trim().is_empty())
-                            || m.is_empty()
-                    }
-                    _ => false,
-                };
-                if is_empty {
-                    errors.push(ValidationError::field(
-                        &field.field_name,
-                        format!("{} is required.", field.label),
-                    ));
-                }
-            }
-
-            // Type-specific validation for non-empty values
-            if let Some(value) = values.get(&field.field_name) {
-                let text = value
-                    .as_str()
-                    .or_else(|| value.get("value").and_then(|v| v.as_str()));
-
-                if let Some(text) = text
-                    && !text.is_empty()
-                    && matches!(field.field_type, trovato_sdk::types::FieldType::Email)
-                    && !text.contains('@')
-                {
-                    errors.push(ValidationError::field(
-                        &field.field_name,
-                        format!("{} must be a valid email address.", field.label),
-                    ));
-                }
-            }
-        }
-
-        Ok(errors)
-    }
-
     /// Save form state for AJAX/multi-step forms.
     pub async fn save_state(&self, form_build_id: &str, state: &FormState) -> Result<()> {
         let state_json = serde_json::to_value(state)?;
@@ -545,6 +497,21 @@ impl FormState {
     }
 }
 
+/// The error a submission gets when its form state is missing, expired or
+/// another user's.
+pub const FORM_EXPIRED: &str = "This form has expired. Reload the page and submit again.";
+
+/// Why [`FormService::process`] refused a submission.
+#[derive(Debug)]
+pub enum ProcessError {
+    /// The CSRF token was missing, used or wrong: a forged or replayed
+    /// request, answered 403 rather than shown on the form.
+    Csrf,
+    /// Errors to show on the form: an expired state, built-in validation or a
+    /// `tap_form_validate` refusal.
+    Invalid(Vec<ValidationError>),
+}
+
 /// Result of form processing.
 #[derive(Debug)]
 pub enum FormResult {
@@ -596,7 +563,58 @@ impl ValidationError {
 #[derive(Debug, Deserialize)]
 struct TapValidationResult {
     #[serde(default)]
-    errors: Vec<String>,
+    errors: Vec<TapError>,
+}
+
+/// One error from `tap_form_validate`: a message for the whole form, or
+/// `{field, message}` for one field, which the form shows beside it.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TapError {
+    Form(String),
+    Field { field: String, message: String },
+}
+
+impl TapError {
+    fn into_error(self) -> ValidationError {
+        match self {
+            Self::Form(message) => ValidationError::form(message),
+            Self::Field { field, message } => ValidationError::field(field, message),
+        }
+    }
+}
+
+/// The posted values as plugins receive them: each name once, a repeated or
+/// `name[i]` name as an array in delta order.
+///
+/// Only the inputs the form rendered are passed (`rendered`, from
+/// [`Form::rendered_inputs`]), so form machinery (`_token`, `_form_build_id`),
+/// anything a client added to the body, and password inputs, which that list
+/// never holds, do not reach a plugin.
+fn posted_values(
+    posted: &crate::content::submission::PostedForm,
+    rendered: &[String],
+) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for (name, _) in &posted.0 {
+        let base = name.split('[').next().unwrap_or(name);
+        if out.contains_key(base) || !rendered.iter().any(|r| r == base) {
+            continue;
+        }
+        let values = posted.values_of(base);
+        let value = if name.contains('[') || values.len() > 1 {
+            Value::Array(
+                values
+                    .into_iter()
+                    .map(|v| Value::String(v.to_string()))
+                    .collect(),
+            )
+        } else {
+            Value::String(values.first().copied().unwrap_or_default().to_string())
+        };
+        out.insert(base.to_string(), value);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -604,6 +622,29 @@ struct TapValidationResult {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugins_see_only_the_rendered_inputs() {
+        use crate::content::submission::PostedForm;
+        use crate::form::{Form, FormElement};
+
+        let form = Form::new("f")
+            .element("name", FormElement::textfield())
+            .element("current_password", FormElement::password())
+            .element("note", FormElement::markup("<p>x</p>"));
+        let rendered = form.rendered_inputs();
+        assert_eq!(rendered, vec!["name".to_string()]);
+
+        let posted = PostedForm(vec![
+            ("_token".into(), "t".into()),
+            ("name".into(), "Ada".into()),
+            ("current_password".into(), "hunter2".into()),
+            ("smuggled".into(), "x".into()),
+        ]);
+        let values = posted_values(&posted, &rendered);
+        assert_eq!(values.len(), 1, "{values:?}");
+        assert_eq!(values["name"], "Ada");
+    }
 
     #[test]
     fn test_form_state_new() {

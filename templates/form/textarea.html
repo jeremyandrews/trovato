@@ -11,7 +11,7 @@
         id="{{ name }}"
         name="{{ name }}"
         class="form-textarea"
-        rows="{{ element.element_type.rows | default(value=5) }}"
+        rows="{{ element.rows | default(value=5) }}"
         {% if element.placeholder %}placeholder="{{ element.placeholder }}"{% endif %}
         {% if element.required %}required{% endif %}
         {% if element.disabled %}disabled{% endif %}
