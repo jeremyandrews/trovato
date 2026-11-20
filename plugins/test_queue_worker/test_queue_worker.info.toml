@@ -17,5 +17,8 @@ weight = 0
 # `db` + `raw_sql` are what the `"slow_host"` payload uses: `SELECT pg_sleep(...)`
 # is a host call that takes real wall-clock time while the guest does nothing,
 # which is the only way to tell a worker that *waited* from one that *burned*.
-host_interfaces = ["logging", "queue", "mail", "db"]
+host_interfaces = ["logging", "queue", "mail", "db", "variables"]
 raw_sql = true
+# `mail_users` + `variables`: tap_cron mails the member a test names in the
+# `mail_user_target` variable (B73), to prove member mail sends from cron.
+mail_users = true

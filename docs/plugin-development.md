@@ -667,6 +667,60 @@ ABI: a new function, `load-users`, in the existing `user-api` interface and a
 new manifest capability, `user_directory` (B73, after 0.104.0). No existing
 signature changed.
 
+### Mailing a Member
+
+`host::mail_send_to_user` sends a plain text message to one of the site's
+members, by user id. The kernel looks the address up: the plugin never sees
+it, in a return value, an error or a log line. It needs `mail` in
+`host_interfaces` **and** `mail_users = true` under `[capabilities]`;
+declaring `mail` alone still means the site contact address only, and this
+call is refused with `ERR_MAIL_USERS_DENIED`.
+
+```toml
+[capabilities]
+host_interfaces = ["mail"]
+mail_users = true
+```
+
+```rust
+match host::mail_send_to_user(&user_id, "Your weekly digest", &body) {
+    Ok(()) => {}
+    // The member unsubscribed from this plugin's mail: do not retry.
+    Err(trovato_sdk::host_errors::ERR_MAIL_OPTED_OUT) => {}
+    // Unknown, blocked or no address: do not retry either.
+    Err(trovato_sdk::host_errors::ERR_MAIL_RECIPIENT_UNAVAILABLE) => {}
+    // A bucket is spent: try again later.
+    Err(trovato_sdk::host_errors::ERR_MAIL_RATE_LIMITED) => {}
+    Err(code) => return Err(format!("mail failed: {code}")),
+}
+```
+
+Every message goes from the site's `from` address and ends with a footer
+linking to `/user/mail/unsubscribe/{token}`; the same link is in its
+`List-Unsubscribe` header, with `List-Unsubscribe-Post:
+List-Unsubscribe=One-Click`, so a mail client's unsubscribe button works. The
+opt out is per member and per plugin. A member sees what they turned off on
+their account page and can resubscribe there; the plugin is only ever told
+`ERR_MAIL_OPTED_OUT`.
+
+Two buckets apply, and a refusal from either is `ERR_MAIL_RATE_LIMITED`:
+`mail_users`, 1000 messages an hour per plugin, and `mail_recipient`, 10 an
+hour per plugin and member.
+
+**Many recipients: enqueue one job per recipient.** Do not loop over members
+inside `tap_cron`. Every plugin's `tap_cron` shares one dispatch that the
+kernel stops after 150 seconds, and each message is an SMTP round trip, so a
+long loop is cut off partway with no record of who was mailed. Instead,
+`host::queue_push` one job per recipient from `tap_cron` and send in
+`tap_queue_worker`. A failure retries that one recipient, not the whole
+list, and the work spreads over as many cron cycles as it needs. Make the
+worker idempotent, as every queue worker must be. Look recipients up with `host::load_users` in batches of
+100 first if the plugin needs their names or languages.
+
+ABI: a new function, `send-to-user`, in the existing `mail` interface and a
+new manifest capability, `mail_users` (B73, after 0.104.0). No existing
+signature changed.
+
 ### Item Operations
 
 Declare `item-api` in `host_interfaces`. Every call acts as the user the plugin

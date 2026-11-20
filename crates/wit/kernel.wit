@@ -295,6 +295,26 @@ interface mail {
     /// Send to the site's configured contact address only. No caller recipient.
     send-to-site-contacts: func(subject: string, body: string,
                                 attachments: list<attachment>) -> result<_, string>;
+
+    /// Send a plain text message to one of the site's own members, by user id,
+    /// for a plugin that declares `mail_users = true` under `[capabilities]`.
+    /// Declaring `mail` alone keeps meaning the site contact address only.
+    ///
+    /// The kernel resolves the address; the plugin never sees it, in a return
+    /// value, an error or a log line. The message goes from the site's `from`
+    /// address with a footer and `List-Unsubscribe` and
+    /// `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers carrying a
+    /// link that opts this user out of this plugin's mail. No attachments.
+    ///
+    /// Refused, each with its own code: without the capability; past the
+    /// plugin's `mail_users` bucket or the per recipient `mail_recipient`
+    /// bucket; a user who does not exist, is blocked or has no address (one
+    /// code for all three); a user who opted out of this plugin's mail; and the
+    /// subject and body rules `send-to-site-contacts` applies.
+    ///
+    /// Added by B73, after 0.104.0: a new function in an existing interface
+    /// and a new manifest capability; no existing signature changed.
+    send-to-user: func(user-id: string, subject: string, body: string) -> result<_, string>;
 }
 
 /// Text formats: filter text the way the kernel renders a field in a format.

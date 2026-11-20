@@ -1,5 +1,5 @@
 name = "test_members"
-description = "B73 fixture: a plugin that reads about the site's members by id"
+description = "B73 fixture: a plugin that reads about and mails the site's members by id"
 version = "0.105.0"
 api_version = "0.105"
 default_enabled = false
@@ -9,8 +9,10 @@ dependencies = []
 implements = ["tap_menu", "tap_api"]
 weight = 0
 
-# `user-api` with `user_directory` for the load_users callback (B73); a test
-# drops the capability from a copy of this manifest to see the refusal.
+# `user-api` with `user_directory` for the load_users callback, and `mail`
+# with `mail_users` for the mail_user callback (B73). A test drops each
+# capability from a copy of this manifest to see the refusal.
 [capabilities]
-host_interfaces = ["logging", "user-api"]
+host_interfaces = ["logging", "user-api", "mail"]
 user_directory = true
+mail_users = true

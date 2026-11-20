@@ -480,6 +480,20 @@ pub const ERR_MAIL_SEND_FAILED: i32 = -54;
 /// one, and retrying immediately only spends the next window.
 pub const ERR_MAIL_RATE_LIMITED: i32 = -55;
 
+/// The plugin called `send-to-user` without declaring `mail_users = true` under
+/// `[capabilities]`. Declaring `mail` alone reaches the site contact address
+/// only. Added by B73.
+pub const ERR_MAIL_USERS_DENIED: i32 = -56;
+
+/// The user cannot be mailed: no such user, a blocked account, or no address
+/// on file. One code for all three, so a plugin learns nothing about the
+/// account from the refusal. Nothing was sent. Added by B73.
+pub const ERR_MAIL_RECIPIENT_UNAVAILABLE: i32 = -57;
+
+/// The user opted out of this plugin's mail with the unsubscribe link. Nothing
+/// was sent; do not retry. Added by B73.
+pub const ERR_MAIL_OPTED_OUT: i32 = -58;
+
 // =============================================================================
 // User directory errors (`trovato:kernel/user-api` `load-users`) — added by B73
 // =============================================================================

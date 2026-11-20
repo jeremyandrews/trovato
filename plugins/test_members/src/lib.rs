@@ -16,6 +16,11 @@ pub fn tap_menu() -> Vec<MenuRoute> {
     vec![
         // Public facts about users by id: `?ids=a,b,c`.
         MenuRoute::api("GET", "/test-members/users", "load_users").title("Load users"),
+        // Mail one member: `?user_id=&subject=&body=`, or `&body_len=N` for a
+        // body of N bytes too long to put in a URL. A GET with a side effect,
+        // which only a test fixture may have: it keeps the test free of a
+        // session and a form token, neither of which is under test.
+        MenuRoute::api("GET", "/test-members/mail-user", "mail_user").title("Mail a member"),
     ]
 }
 
@@ -24,6 +29,7 @@ pub fn tap_menu() -> Vec<MenuRoute> {
 pub fn tap_api(request: ApiRequest) -> ApiResponse {
     match request.callback.as_str() {
         "load_users" => load_users(&request),
+        "mail_user" => mail_user(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
 }
@@ -36,6 +42,24 @@ fn load_users(request: &ApiRequest) -> ApiResponse {
     let answer = match host::load_users(&ids) {
         Ok(users) => serde_json::json!({ "users": users }),
         Err(code) => serde_json::json!({ "code": code }),
+    };
+    ApiResponse::json(&answer).unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
+}
+
+/// Send `?subject=` and `?body=` (or `?body_len=` bytes of `b`) to the member
+/// `?user_id=`, and answer `{sent: true}` or `{sent: false, code}`.
+///
+/// The plugin names a user, never an address, and gets back only whether it was
+/// sent or the code it was refused with.
+fn mail_user(request: &ApiRequest) -> ApiResponse {
+    let field = |name: &str| request.query.get(name).cloned().unwrap_or_default();
+    let body = match field("body_len").parse::<usize>() {
+        Ok(len) => "b".repeat(len),
+        Err(_) => field("body"),
+    };
+    let answer = match host::mail_send_to_user(&field("user_id"), &field("subject"), &body) {
+        Ok(()) => serde_json::json!({ "sent": true }),
+        Err(code) => serde_json::json!({ "sent": false, "code": code }),
     };
     ApiResponse::json(&answer).unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
 }

@@ -102,6 +102,19 @@ B73).
 | -74 | `ERR_USER_IDS_INVALID` | An id is not a user id (a UUID) | Pass user ids as the kernel gave them |
 | -75 | `ERR_USER_IDS_TOO_MANY` | More than 100 ids in one call | Split the batch |
 
+## Mail to Member Errors
+
+Returned by `host::mail_send_to_user` (`trovato:kernel/mail` `send-to-user`,
+added by B73), besides the `ERR_MAIL_*` codes `mail_send_to_site_contacts`
+returns for a malformed message (-52), no SMTP host (-50), a failed delivery
+(-54) and a spent bucket (-55).
+
+| Code | Constant | Meaning | Recovery |
+|------|----------|---------|----------|
+| -56 | `ERR_MAIL_USERS_DENIED` | The plugin does not declare `mail_users = true` under `[capabilities]` | Declare it, if the plugin needs to mail members |
+| -57 | `ERR_MAIL_RECIPIENT_UNAVAILABLE` | No such user, the user is blocked, or the user has no address (one code for all three) | Do not retry |
+| -58 | `ERR_MAIL_OPTED_OUT` | The member unsubscribed from this plugin's mail | Do not retry; the member can resubscribe from their account page |
+
 ## Queue API Errors
 
 `queue.push` (byte-identical, unchanged) returns `-1` memory missing, `-2`/`-3`
