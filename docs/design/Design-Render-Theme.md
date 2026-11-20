@@ -235,6 +235,32 @@ entries and children go through the same rule.
 matches, and the menus already built), so a tile never reloads what the page
 has.
 
+### Gather Tiles
+
+**A gather tile** (`tile_type: gather_query`) lists the first rows of the
+gather its config names, rendered on the server through
+`elements/tile--gather_query.html` and overridable per tile as
+`elements/tile--gather_query--{machine_name}.html`. Its config is
+`query_id` and `items`, the number of rows, from 1 to 50 and 5 when absent.
+The tile form and `config import` both refuse any other count.
+
+The gather runs once per tile, through `routes::gather::execute_query_only`,
+the same path its JSON response and feed take: authorized for the viewer,
+filtered by item access, on the viewer's stages, in the page's language, with
+`current_user` meaning the viewer. Only the page size changes: the tile asks
+for page 1 with `items` rows. It is not the full gather page. A tile has no
+pager, no exposed filters and no URL arguments; a gather that needs them is
+better linked than placed.
+
+The template gets `tile`, `rows` (each item row has `title` and `url`, its
+alias when it has one), `empty_text` and `more_url`, the gather's own page
+(its canonical URL, else its first route without arguments, else
+`/gather/{query_id}`).
+
+A tile with nothing it may show is left off the page, not drawn empty: when
+the viewer may not run the gather, silently; when the gather does not exist,
+the config is invalid or the query fails, with a warning naming the tile.
+
 ### Language-Aware Menus
 
 When the active language is not the default, every config menu is rewritten

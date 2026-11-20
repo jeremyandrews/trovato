@@ -1743,3 +1743,87 @@ async fn a_bad_role_file_is_named_and_nothing_is_written() {
 
     db.cleanup().await;
 }
+
+/// A `gather_query` tile file whose `config` names the gather and `items`.
+fn gather_tile_yaml(tile_id: &str, machine_name: &str, items: &str) -> String {
+    format!(
+        "id: {tile_id}\nmachine_name: {machine_name}\nlabel: Gather Tile\nregion: sidebar\n\
+         tile_type: gather_query\nconfig:\n  query_id: upcoming\n  items: {items}\n\
+         visibility: {{}}\nweight: 0\nstatus: 1\nplugin: core\n\
+         stage_id: 0193a5a0-0000-7000-8000-000000000001\ncreated: 1767225600\nchanged: 1767225600\n"
+    )
+}
+
+/// A gather tile's item count arrives with its import and leaves with its
+/// export (BL-99).
+#[tokio::test]
+async fn a_gather_tile_item_count_survives_import_and_export() {
+    let db = ScratchDb::new("gathertile").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("gathertile");
+    let tile_id = "0193a5a0-0003-7000-8000-0000000000b1";
+    dir.write(
+        &format!("tile.{tile_id}.yml"),
+        &gather_tile_yaml(tile_id, "gather_tile_rt", "12"),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the gather tile must import clean: {e:#}");
+    }
+    let config: serde_json::Value =
+        sqlx::query_scalar("SELECT config FROM tile WHERE machine_name = 'gather_tile_rt'")
+            .fetch_one(db.pool())
+            .await
+            .expect("the imported tile");
+    assert_eq!(config["items"], serde_json::json!(12), "{config}");
+
+    let export = TempConfigDir::new("gathertile_export");
+    if let Err(e) = export_config(&storage, db.pool(), export.path(), false).await {
+        db.cleanup().await;
+        panic!("export must succeed: {e:#}");
+    }
+    let exported = std::fs::read_to_string(export.path().join(format!("tile.{tile_id}.yml")))
+        .expect("the tile must be exported");
+    assert!(yaml_declares(&exported, "items", "12"), "{exported}");
+    assert!(
+        yaml_declares(&exported, "query_id", "upcoming"),
+        "{exported}"
+    );
+
+    db.cleanup().await;
+}
+
+/// An item count outside 1 to 50 is refused with the file named, and nothing
+/// is written: the same rule the tile form applies.
+#[tokio::test]
+async fn import_refuses_a_gather_tile_item_count_outside_one_to_fifty() {
+    let db = ScratchDb::new("gathertilebad").await;
+    let storage = db.storage();
+
+    for (n, items) in ["0", "51", "\"five\""].iter().enumerate() {
+        let dir = TempConfigDir::new("gathertilebad");
+        let tile_id = format!("0193a5a0-0003-7000-8000-0000000000c{n}");
+        let filename = format!("tile.{tile_id}.yml");
+        dir.write(
+            &filename,
+            &gather_tile_yaml(&tile_id, "gather_tile_bad", items),
+        );
+
+        let err = import_config(&storage, db.pool(), dir.path(), false)
+            .await
+            .expect_err("an out-of-range item count must fail the import");
+        let failed = err.downcast_ref::<ConfigImportFailed>().unwrap();
+        assert_eq!(failed.imported_total(), 0, "items: {items} wrote nothing");
+        assert!(
+            failed
+                .failures
+                .iter()
+                .any(|f| f.filename == filename && f.error.contains("1 and 50")),
+            "items: {items}: {:#?}",
+            failed.failures
+        );
+    }
+
+    db.cleanup().await;
+}

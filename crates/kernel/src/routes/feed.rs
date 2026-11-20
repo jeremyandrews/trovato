@@ -198,6 +198,7 @@ async fn serve_feed(
         params,
         None,
         viewer,
+        None,
     )
     .await
     {

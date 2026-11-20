@@ -80,6 +80,13 @@
                        value="{{ values.query_id | default(value='') }}"
                        class="form-control" placeholder="e.g., blog_listing">
             </div>
+            <div class="form-group">
+                <label for="items">Items</label>
+                <input type="number" id="items" name="items" min="1" max="50" step="1"
+                       value="{{ values.items | default(value=5) }}"
+                       class="form-control" style="width: 100px">
+                <p class="form-help">How many of the gather's rows the tile lists, from 1 to 50.</p>
+            </div>
         </div>
 
         <!-- Chat fields (no additional config needed) -->
