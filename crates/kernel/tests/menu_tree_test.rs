@@ -345,6 +345,41 @@ fn a_link_is_active_on_every_page_under_its_path_and_home_only_on_home() {
     });
 }
 
+/// Register a gather with no rows and return its id. Its page,
+/// `/gather/{id}`, is drawn through `page.html`'s own content block, so it
+/// carries the sidebar; the account pages replace that block and have none.
+async fn empty_gather(app: &TestApp, s: &str) -> String {
+    let query_id = format!("b74_empty_{s}");
+    let query: trovato_kernel::gather::GatherQuery = serde_json::from_value(serde_json::json!({
+        "query_id": query_id,
+        "label": "B74 empty gather",
+        "definition": {
+            "base_table": "item",
+            "item_type": "conference",
+            "filters": [{
+                "exposed": false,
+                "field": "title",
+                "operator": "equals",
+                "value": format!("b74-no-such-title-{s}"),
+            }],
+        },
+        "display": { "format": "table", "items_per_page": 10 },
+        "plugin": "core"
+    }))
+    .expect("gather deserializes");
+    app.state
+        .gather()
+        .register_query(query)
+        .await
+        .expect("register gather");
+    let gathers = app.state.clone();
+    let cleanup_id = query_id.clone();
+    defer_cleanup(move || async move {
+        let _ = gathers.gather().delete_query(&cleanup_id).await;
+    });
+    query_id
+}
+
 #[test]
 fn a_menu_tile_renders_its_menu_filtered_for_the_viewer() {
     run_test(async {
@@ -391,8 +426,9 @@ fn a_menu_tile_renders_its_menu_filtered_for_the_viewer() {
             let _ = Tile::delete(&pool, tile.id).await;
         });
 
+        let page = format!("/gather/{}", empty_gather(app, &s).await);
         let (_, plain) = member(app, &[]).await;
-        let html = get(app, "/user/profile", &plain).await;
+        let html = get(app, &page, &plain).await;
         let at = html
             .find(&format!("id=\"tile-b74_menu_tile_{s}\""))
             .unwrap_or_else(|| panic!("no menu tile:\n{html}"));
@@ -404,7 +440,7 @@ fn a_menu_tile_renders_its_menu_filtered_for_the_viewer() {
         assert!(!html.contains(&format!("B74 tile gated {s}")), "{html}");
 
         let (_, holder) = member(app, &[PERM_EXTRA]).await;
-        let html = get(app, "/user/profile", &holder).await;
+        let html = get(app, &page, &holder).await;
         assert!(html.contains(&format!("B74 tile gated {s}")), "{html}");
     });
 }
@@ -506,35 +542,7 @@ fn a_warm_page_with_four_menus_runs_no_menu_or_alias_query() {
 
         // A gather with no rows, read in Italian: a page that renders the
         // localized menus and has no alias lookups of its own.
-        let query_id = format!("b74_qc_{s}");
-        let query: trovato_kernel::gather::GatherQuery =
-            serde_json::from_value(serde_json::json!({
-                "query_id": query_id,
-                "label": "B74 query count",
-                "definition": {
-                    "base_table": "item",
-                    "item_type": "conference",
-                    "filters": [{
-                        "exposed": false,
-                        "field": "title",
-                        "operator": "equals",
-                        "value": format!("b74-no-such-title-{s}"),
-                    }],
-                },
-                "display": { "format": "table", "items_per_page": 10 },
-                "plugin": "core"
-            }))
-            .expect("gather deserializes");
-        app.state
-            .gather()
-            .register_query(query)
-            .await
-            .expect("register gather");
-        let gathers = app.state.clone();
-        let cleanup_id = query_id.clone();
-        defer_cleanup(move || async move {
-            let _ = gathers.gather().delete_query(&cleanup_id).await;
-        });
+        let query_id = empty_gather(app, &s).await;
 
         let (_, cookies) = member(app, &[]).await;
         let path = format!("/it/gather/{query_id}");
@@ -547,9 +555,13 @@ fn a_warm_page_with_four_menus_runs_no_menu_or_alias_query() {
         );
         let statements = statements_for(app, &path, &cookies).await;
         assert!(!statements.is_empty(), "the counter sees statements at all");
+        // The one alias statement a request always runs is the path alias
+        // middleware resolving the requested path itself (`WHERE alias = $1`);
+        // the menus resolve their links by source, never by alias.
         let menu_queries: Vec<&String> = statements
             .iter()
             .filter(|sql| sql.contains("menu_link") || sql.contains("url_alias"))
+            .filter(|sql| !sql.contains("WHERE alias = $1"))
             .collect();
         assert!(
             menu_queries.is_empty(),
