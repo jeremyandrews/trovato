@@ -17,7 +17,7 @@ mod request_context;
 pub mod sql_guard;
 pub mod text_format;
 pub(crate) mod trace;
-pub mod user;
+mod user;
 mod variables;
 
 use anyhow::{Result, anyhow};

@@ -253,7 +253,6 @@ mod tests {
                 raw_sql: false,
                 ai_background: false,
                 item_background: false,
-                user_directory: false,
                 http_max_transfer: None,
                 public_functions: vec![],
             }),

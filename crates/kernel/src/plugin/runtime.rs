@@ -68,11 +68,6 @@ pub struct PluginState {
     /// production dispatch path sets it via
     /// [`PluginState::with_item_background`].
     pub item_background: bool,
-    /// Whether this plugin declared the `user_directory` manifest capability,
-    /// the gate for `user-api.load-users`. Defaults to `false` (deny) on the
-    /// probe constructors; the production dispatch path sets it via
-    /// [`PluginState::with_user_directory`].
-    pub user_directory: bool,
     /// Effective total-transfer ceiling (bytes) for this plugin's streaming HTTP
     /// fetches (`http-open`/`http-read`, P11e / D-50). Already clamped to
     /// `[1, 16 MB]` by [`CompiledPlugin::http_max_transfer`]; the streaming host
@@ -145,7 +140,6 @@ impl PluginState {
             limiter,
             ai_background: false,
             item_background: false,
-            user_directory: false,
             http_max_transfer: crate::host::http::DEFAULT_TRANSFER_CEILING,
             http_streams: HashMap::new(),
             next_http_handle: 1,
@@ -170,15 +164,6 @@ impl PluginState {
     #[must_use]
     pub fn with_item_background(mut self, item_background: bool) -> Self {
         self.item_background = item_background;
-        self
-    }
-
-    /// Record whether this plugin holds the `user_directory` manifest
-    /// capability. Builder-style, set by the production dispatch path from the
-    /// compiled plugin's manifest; left `false` (deny) on probe contexts.
-    #[must_use]
-    pub fn with_user_directory(mut self, user_directory: bool) -> Self {
-        self.user_directory = user_directory;
         self
     }
 
@@ -311,16 +296,6 @@ impl CompiledPlugin {
             .capabilities
             .as_ref()
             .is_some_and(|c| c.item_background)
-    }
-
-    /// Whether this plugin declared the `user_directory` manifest capability —
-    /// the gate for `user-api.load-users`. Absent `[capabilities]` yields
-    /// `false` (deny).
-    pub fn user_directory(&self) -> bool {
-        self.info
-            .capabilities
-            .as_ref()
-            .is_some_and(|c| c.user_directory)
     }
 
     /// This plugin's effective streaming total-transfer ceiling in bytes (P11e /
