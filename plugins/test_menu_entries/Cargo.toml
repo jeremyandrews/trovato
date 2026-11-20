@@ -1,0 +1,17 @@
+[package]
+name = "test_menu_entries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "B74 test fixture: navigation entries under /user, one gated, one per viewer, one unfollowable"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
