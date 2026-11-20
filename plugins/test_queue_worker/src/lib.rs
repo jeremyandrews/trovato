@@ -150,5 +150,15 @@ fn tap_cron(_input: serde_json::Value) -> serde_json::Value {
     );
     let _ =
         trovato_sdk::host::mail_send_to_site_contacts("cron tap mail", "sent from tap_cron", &[]);
+    // A member to mail, when a test has named one (B73). Unset, nothing is sent.
+    if let Ok(user_id) = trovato_sdk::host::variables_get("mail_user_target", "")
+        && !user_id.is_empty()
+    {
+        let _ = trovato_sdk::host::mail_send_to_user(
+            &user_id,
+            "cron member mail",
+            "sent to a member from tap_cron",
+        );
+    }
     json!({ "status": "ok" })
 }

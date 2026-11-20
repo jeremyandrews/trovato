@@ -104,6 +104,9 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[link_name = "send-to-site-contacts"]
     fn __mail_send_to_site_contacts(req_ptr: i32, req_len: i32) -> i32;
+
+    #[link_name = "send-to-user"]
+    fn __mail_send_to_user(req_ptr: i32, req_len: i32) -> i32;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -663,6 +666,63 @@ pub fn mail_send_to_site_contacts(
     attachments: &[crate::types::MailAttachment],
 ) -> Result<(), i32> {
     mail_request_json(subject, body, attachments).map(|_| ())
+}
+
+/// The member mail request as it crosses the boundary.
+#[derive(serde::Serialize)]
+struct UserMailRequestWire<'a> {
+    user_id: &'a str,
+    subject: &'a str,
+    body: &'a str,
+}
+
+/// Send a plain text message to one of the site's own members, by user id.
+///
+/// **The address is not a parameter, and never comes back.** The kernel
+/// resolves it from the user id and the plugin never sees it. The kernel adds a
+/// footer and `List-Unsubscribe` headers with a link that opts this user out
+/// of this plugin's mail. Needs `mail` in `host_interfaces` **and**
+/// `mail_users = true` under `[capabilities]`.
+///
+/// Each call is one synchronous send. To mail more than a handful of members,
+/// enqueue one job per recipient and send from `tap_queue_worker`.
+///
+/// # Errors
+///
+/// [`ERR_MAIL_USERS_DENIED`](crate::host_errors::ERR_MAIL_USERS_DENIED) without
+/// the capability,
+/// [`ERR_MAIL_RATE_LIMITED`](crate::host_errors::ERR_MAIL_RATE_LIMITED) past the
+/// plugin's or the recipient's bucket,
+/// [`ERR_MAIL_RECIPIENT_UNAVAILABLE`](crate::host_errors::ERR_MAIL_RECIPIENT_UNAVAILABLE)
+/// for an unknown, blocked or addressless user,
+/// [`ERR_MAIL_OPTED_OUT`](crate::host_errors::ERR_MAIL_OPTED_OUT) when the user
+/// unsubscribed from this plugin, and the codes `mail_send_to_site_contacts`
+/// returns for a malformed message, no SMTP host, or a failed delivery.
+#[cfg(target_arch = "wasm32")]
+pub fn mail_send_to_user(user_id: &str, subject: &str, body: &str) -> Result<(), i32> {
+    let request_json = serde_json::to_string(&UserMailRequestWire {
+        user_id,
+        subject,
+        body,
+    })
+    .map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let result =
+        unsafe { __mail_send_to_user(request_json.as_ptr() as i32, request_json.len() as i32) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Send to a member (stub for native testing, always succeeds).
+///
+/// Still builds the request, so a plugin's own tests exercise the encoding.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mail_send_to_user(user_id: &str, subject: &str, body: &str) -> Result<(), i32> {
+    serde_json::to_string(&UserMailRequestWire {
+        user_id,
+        subject,
+        body,
+    })
+    .map(|_| ())
+    .map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)
 }
 
 /// Base64-encode bytes with the standard alphabet and padding (RFC 4648 §4).
