@@ -61,7 +61,7 @@ use super::{read_string_from_memory, write_string_to_memory};
 use std::sync::Arc;
 
 use crate::content::reentry::{self, WriteTooDeep};
-use crate::content::{ItemService, WriteDenied};
+use crate::content::{InvalidFieldValues, ItemService, WriteDenied};
 use crate::models::{CreateItem, Item, Language, UpdateItem};
 use crate::plugin::{PluginState, WasmtimeExt};
 use crate::tap::UserContext;
@@ -149,6 +149,9 @@ fn write_error_code(e: &anyhow::Error) -> i32 {
     }
     if e.downcast_ref::<WriteDenied>().is_some() || e.to_string().contains("access denied") {
         return host_errors::ERR_ITEM_ACCESS_DENIED;
+    }
+    if e.downcast_ref::<InvalidFieldValues>().is_some() {
+        return host_errors::ERR_ITEM_INVALID_FIELDS;
     }
     warn!(error = %e, "item-api write failed");
     host_errors::ERR_SQL_FAILED

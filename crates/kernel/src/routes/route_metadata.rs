@@ -191,6 +191,36 @@ impl RouteRegistry {
         });
 
         self.routes.push(RouteMetadata {
+            method: Method::GET.to_string(),
+            path: "/api/v1/tags/autocomplete".to_string(),
+            summary: "Search the tags of one category by label for autocomplete".to_string(),
+            parameters: vec![
+                ParamMeta {
+                    name: "category".to_string(),
+                    location: "query".to_string(),
+                    required: true,
+                    description: "Category machine name".to_string(),
+                },
+                ParamMeta {
+                    name: "q".to_string(),
+                    location: "query".to_string(),
+                    required: true,
+                    description: "Label prefix search query".to_string(),
+                },
+                ParamMeta {
+                    name: "limit".to_string(),
+                    location: "query".to_string(),
+                    required: false,
+                    description: "Max results (default 10, max 50)".to_string(),
+                },
+            ],
+            response_type: "application/json".to_string(),
+            tags: vec!["categories".to_string()],
+            deprecated: false,
+            description: None,
+        });
+
+        self.routes.push(RouteMetadata {
             method: Method::POST.to_string(),
             path: "/api/v1/ai/assist".to_string(),
             summary: "AI text transformation (rewrite, expand, shorten, translate, tone)"

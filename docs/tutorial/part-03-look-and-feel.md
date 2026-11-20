@@ -126,6 +126,8 @@ The `view_item` handler in `routes/item.rs` resolves two kinds of relationships:
 
 **Forward references** -- For each RecordReference field in the item, the handler reads the UUID(s) stored in the field value, loads those items from the database, and passes them to the template as `referenced_items.{field_name}`. For example, a speaker's `field_conferences` contains an array of conference UUIDs. The handler resolves them to `[{id, title, type}, ...]` and the speaker template renders them as links.
 
+Two more maps sit beside it: `referenced_files.{field_name}` resolves File fields to `[{id, url, filename, mime, alt}, ...]`, and `referenced_tags.{field_name}` resolves CategoryReference fields to `[{id, label, slug, url, ancestors}, ...]`, where `url` is the gather route that lists the tag's category. The full list of item template variables, with an example, is in [Design-Render-Theme.md](../design/Design-Render-Theme.md#item-template-variables).
+
 **Reverse references** -- The handler scans all content types that have RecordReference fields. For each type, it loads up to 50 items and checks whether any field value matches the current item's ID. Matches are passed to the template as `reverse_references.{type_name}`. For example, when viewing a conference, the handler finds speakers whose `field_conferences` contains this conference's UUID.
 
 This scan approach works at tutorial scale. At production scale, you would add a JSONB containment index (`CREATE INDEX ON item USING gin (fields jsonb_path_ops)`) and a targeted query instead of scanning.

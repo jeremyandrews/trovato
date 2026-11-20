@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::field_values;
 use super::file_refs::{self, FileReferences};
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
@@ -622,11 +623,12 @@ impl ItemService {
             }
         }
 
-        // The files the item will reference: any it may not attach refuse the
+        // The field values pass the one check every write runs, then the
+        // files the item will reference: any it may not attach refuse the
         // write, and the rest are indexed and promoted in the item's own
         // transaction.
         let refs = self
-            .file_references(&input.item_type, input.fields.as_ref())
+            .checked_file_references(&input.item_type, input.fields.as_ref(), None)
             .await?;
         self.authorize_new_file_references(None, &refs, user)
             .await?;
@@ -989,12 +991,17 @@ impl ItemService {
             }
         }
 
-        // A write that replaces `fields` replaces the item's file references,
-        // in the same transaction; one that leaves `fields` alone leaves them.
+        // A write that replaces `fields` has its changed values checked and
+        // replaces the item's file references, in the same transaction; one
+        // that leaves `fields` alone leaves them.
         let refs = match input.fields.as_ref() {
             Some(fields) => {
                 let refs = self
-                    .file_references(&existing.item_type, Some(fields))
+                    .checked_file_references(
+                        &existing.item_type,
+                        Some(fields),
+                        Some(&existing.fields),
+                    )
                     .await?;
                 self.authorize_new_file_references(Some(id), &refs, user)
                     .await?;
@@ -1192,18 +1199,24 @@ impl ItemService {
         Ok(deleted)
     }
 
-    /// The files `fields` references, for an item of `item_type`. See
-    /// [`file_refs`].
-    async fn file_references(
+    /// The files `fields` references, for an item of `item_type`, after its
+    /// values pass the one field value check ([`field_values`]): `Err` carrying
+    /// [`field_values::InvalidFieldValues`] when they do not. `previous` is the stored field
+    /// map on an update or revert; a field the write leaves as it was is not
+    /// judged again. One read of the type's field definitions serves both, and
+    /// the tags the write names are looked up in one query. See [`file_refs`].
+    async fn checked_file_references(
         &self,
         item_type: &str,
         fields: Option<&serde_json::Value>,
+        previous: Option<&serde_json::Value>,
     ) -> Result<FileReferences> {
         let Some(fields) = fields else {
             return Ok(FileReferences::default());
         };
         let mut conn = self.inner.pool.acquire().await?;
         let definitions = file_refs::load_field_definitions(&mut conn, item_type).await?;
+        field_values::validate_field_values(&mut conn, &definitions, fields, previous).await?;
         Ok(file_refs::extract_file_references(fields, &definitions))
     }
 
@@ -1375,6 +1388,92 @@ impl ItemService {
                             "mime": f.filemime,
                             "alt": f.alt_text,
                         })
+                    })
+                    .collect();
+                (!entries.is_empty()).then(|| (name.to_string(), entries))
+            })
+            .collect())
+    }
+
+    /// The `CategoryReference` field values of `item`, resolved to their tags,
+    /// keyed by field name: `{id, label, slug, url, ancestors}` each, in the
+    /// field's order, `ancestors` root first as `{id, label, slug, url}`. One
+    /// query for every tag the item names and one recursive query for all
+    /// their ancestors, however many tags and levels there are. `url` is
+    /// `tag_url(category, slug)` ([`crate::gather::GatherService::tag_url`] on
+    /// the item route), null for a tag without a slug or a category no route
+    /// lists. A uuid naming no tag is left out. Tags have no visibility rule:
+    /// every tag listing shows every tag, and so does this.
+    pub async fn referenced_tags(
+        &self,
+        item: &Item,
+        definitions: &[trovato_sdk::types::FieldDefinition],
+        tag_url: impl Fn(&str, &str) -> Option<String>,
+    ) -> Result<HashMap<String, Vec<serde_json::Value>>> {
+        let tag_fields: Vec<(&str, Vec<Uuid>)> = definitions
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.field_type,
+                    trovato_sdk::types::FieldType::CategoryReference(_)
+                )
+            })
+            .map(|d| {
+                let mut ids: Vec<Uuid> = Vec::new();
+                for id in item
+                    .fields
+                    .get(&d.field_name)
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str()?.trim().parse::<Uuid>().ok())
+                {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                (d.field_name.as_str(), ids)
+            })
+            .filter(|(_, ids)| !ids.is_empty())
+            .collect();
+        let ids: Vec<Uuid> = tag_fields
+            .iter()
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let tags: HashMap<Uuid, crate::models::Tag> =
+            crate::models::Tag::find_by_ids(&self.inner.pool, &ids)
+                .await?
+                .into_iter()
+                .map(|t| (t.id, t))
+                .collect();
+        let found: Vec<Uuid> = tags.keys().copied().collect();
+        let ancestors = crate::models::Tag::get_ancestors_of(&self.inner.pool, &found).await?;
+
+        let entry = |tag: &crate::models::Tag| {
+            serde_json::json!({
+                "id": tag.id,
+                "label": tag.label,
+                "slug": tag.slug,
+                "url": tag.slug.as_deref().and_then(|slug| tag_url(&tag.category_id, slug)),
+            })
+        };
+        Ok(tag_fields
+            .into_iter()
+            .filter_map(|(name, ids)| {
+                let entries: Vec<serde_json::Value> = ids
+                    .iter()
+                    .filter_map(|id| tags.get(id))
+                    .map(|tag| {
+                        let mut value = entry(tag);
+                        value["ancestors"] = ancestors
+                            .get(&tag.id)
+                            .map(|list| list.iter().map(|a| entry(&a.tag)).collect())
+                            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+                        value
                     })
                     .collect();
                 (!entries.is_empty()).then(|| (name.to_string(), entries))
@@ -2246,7 +2345,9 @@ impl ItemService {
         // service is where the gates live.
         let refs = match fields.as_ref() {
             Some(fields) => {
-                let refs = self.file_references(&item.item_type, Some(fields)).await?;
+                let refs = self
+                    .checked_file_references(&item.item_type, Some(fields), Some(&item.fields))
+                    .await?;
                 self.authorize_new_file_references(Some(item_id), &refs, user)
                     .await?;
                 Some(refs)

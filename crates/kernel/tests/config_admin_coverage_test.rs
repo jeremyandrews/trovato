@@ -54,14 +54,14 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("item_type", Screen("/admin/structure/types", None)),
     (
         "category",
-        Screen("/admin/structure/categories", Some("categories")),
+        Screen("/admin/structure/categories", Some("trovato_categories")),
     ),
     // Tags are managed per category, so the path carries one; the test seeds it.
     (
         "tag",
         Screen(
             "/admin/structure/categories/cfgaudit_topics/tags",
-            Some("categories"),
+            Some("trovato_categories"),
         ),
     ),
     // Per content type, so the path carries one: the tutorial's `conference`.

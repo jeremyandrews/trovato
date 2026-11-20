@@ -144,8 +144,9 @@ pub fn is_visible(
 /// Float to numbers (empty removes the key), Text, Email, Date, File and
 /// RecordReference to strings, TextLong to `{value, format}` when a format was
 /// posted, Blocks, Compound and PageBuilder parsed from their JSON input. A
-/// field whose `cardinality` is not 1 becomes an array of its non empty values,
-/// and more values than a positive cardinality is a field error. Every key the
+/// field whose `cardinality` is not 1, and every `CategoryReference` field,
+/// becomes an array of its non empty values, and more values than a positive
+/// cardinality is a field error. Every key the
 /// form did not render survives untouched, and so does a field whose
 /// `visible_when` condition is false for the posted values: it is neither
 /// written nor required.
@@ -184,7 +185,7 @@ pub fn build_item_fields(
             continue;
         }
 
-        if field.cardinality != 1 {
+        if crate::content::field_values::stores_a_list(field) {
             let mut values = Vec::new();
             for raw in posted.values_of(name) {
                 if raw.trim().is_empty() {
@@ -196,14 +197,13 @@ pub fn build_item_fields(
                     Err(e) => errors.push(e),
                 }
             }
-            if field.cardinality > 0 && values.len() > field.cardinality as usize {
-                errors.push(ValidationError::field(
-                    name,
-                    format!(
-                        "{} allows at most {} values.",
-                        field.label, field.cardinality
-                    ),
-                ));
+            // The count rule every write path applies, here so the form can
+            // show it beside the field; the service checks the saved value
+            // again, with the tag lookup, whatever wrote it.
+            if let Some(message) =
+                crate::content::field_values::too_many_values(field, values.len())
+            {
+                errors.push(ValidationError::field(name, message));
             }
             if field.required && values.is_empty() {
                 errors.push(required_error(field));
@@ -334,6 +334,7 @@ fn coerce(
         | FieldType::Date
         | FieldType::File
         | FieldType::RecordReference(_)
+        | FieldType::CategoryReference(_)
         | FieldType::Compound { .. }
         | FieldType::Blocks => Ok(Some(Value::String(raw.to_string()))),
     }

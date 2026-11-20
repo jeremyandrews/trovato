@@ -68,8 +68,10 @@ pub(crate) async fn build(
 }
 
 /// The display title of every `RecordReference` target the item points at,
-/// for a target this user may view: one query for all of them, multi value
-/// fields included. A target they may not see keeps its id and no title.
+/// for a target this user may view, and the label of every tag its
+/// `CategoryReference` fields hold: one query for all the items and one for
+/// all the tags, multi value fields included. A target they may not see keeps
+/// its id and no title. Tags have no visibility rule of their own.
 async fn reference_titles(
     state: &AppState,
     user: &UserContext,
@@ -78,10 +80,23 @@ async fn reference_titles(
     modes: &HashMap<String, FieldMode>,
 ) -> HashMap<String, String> {
     let mut ids: Vec<Uuid> = Vec::new();
+    let mut tag_ids: Vec<Uuid> = Vec::new();
     for field in &content_type.fields {
-        if !matches!(field.field_type, FieldType::RecordReference(_))
-            || modes.get(&field.field_name) == Some(&FieldMode::Hidden)
-        {
+        if modes.get(&field.field_name) == Some(&FieldMode::Hidden) {
+            continue;
+        }
+        if matches!(field.field_type, FieldType::CategoryReference(_)) {
+            tag_ids.extend(
+                item.fields
+                    .get(&field.field_name)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str()?.parse::<Uuid>().ok()),
+            );
+            continue;
+        }
+        if !matches!(field.field_type, FieldType::RecordReference(_)) {
             continue;
         }
         let values: Vec<&Value> = match item.fields.get(&field.field_name) {
@@ -112,6 +127,12 @@ async fn reference_titles(
         {
             titles.insert(target.id.to_string(), target.title);
         }
+    }
+    for tag in crate::models::Tag::find_by_ids(state.db(), &tag_ids)
+        .await
+        .unwrap_or_default()
+    {
+        titles.insert(tag.id.to_string(), tag.label);
     }
     titles
 }
@@ -327,7 +348,7 @@ fn add_another(
         .and_then(|ct| {
             ct.fields
                 .iter()
-                .find(|f| f.field_name == field && f.cardinality != 1)
+                .find(|f| f.field_name == field && crate::content::field_values::stores_a_list(f))
                 .cloned()
                 .map(|f| (ct, f))
         })

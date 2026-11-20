@@ -276,6 +276,21 @@ fn write_error(e: anyhow::Error, context: &'static str) -> AppError {
     if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
         return AppError::forbidden(denied.to_string());
     }
+    // A value the field value check refused (cardinality, a tag outside the
+    // field's category) is the client's to fix: 422, naming each one.
+    if let Some(invalid) = e.downcast_ref::<crate::content::InvalidFieldValues>() {
+        return AppError::validation(
+            invalid
+                .0
+                .iter()
+                .map(|v| crate::error::FieldError {
+                    field: v.field.clone(),
+                    code: "invalid_value",
+                    message: v.message.clone(),
+                })
+                .collect(),
+        );
+    }
     if e.to_string().contains("access denied") {
         return AppError::forbidden("Access denied");
     }
@@ -494,6 +509,21 @@ async fn view_item(
             std::collections::HashMap::new()
         });
 
+    // Resolve CategoryReference fields to their tags: one query for the tags,
+    // one recursive query for their ancestors, and the URL of the gather route
+    // that lists each tag's category.
+    let gather = state.gather();
+    let referenced_tags = state
+        .items()
+        .referenced_tags(&item, &content_type_fields, |category, slug| {
+            gather.tag_url(category, slug)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, item_id = %item.id, "failed to resolve tag fields");
+            std::collections::HashMap::new()
+        });
+
     // Resolve reverse references: items that reference this item (P11g / D-57).
     //
     // For each content type's RecordReference field, a GIN-indexed JSONB
@@ -571,6 +601,7 @@ async fn view_item(
     context.insert("children", &children_html);
     context.insert("referenced_items", &referenced_items);
     context.insert("referenced_files", &referenced_files);
+    context.insert("referenced_tags", &referenced_tags);
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
     context.insert("active_language", &active_language);

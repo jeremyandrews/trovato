@@ -1,28 +1,27 @@
 /**
- * RecordReference autocomplete — searches items by type and title,
- * sets the hidden UUID field when a result is selected.
+ * Reference autocomplete — one script for both reference widgets: a
+ * RecordReference field searches items by type and title, a
+ * CategoryReference field (the tag picker) searches the tags of one category.
+ * The input names its endpoint in `data-autocomplete-url` (the target type or
+ * category is appended), shows the chosen result's label, and writes its uuid
+ * into the hidden field the form posts.
+ *
+ * Listeners are delegated from the document, so a slot added by "Add another"
+ * after the page loaded works the same as the ones it was rendered with.
  */
 (function () {
   'use strict';
 
   var DEBOUNCE_MS = 250;
   var MIN_CHARS = 2;
+  var DEFAULT_URL = '/api/v1/items/autocomplete?type=';
+  var SELECTOR = '.record-ref-autocomplete';
 
-  /** Debounce helper. */
-  function debounce(fn, ms) {
-    var timer;
-    return function () {
-      var args = arguments;
-      var ctx = this;
-      clearTimeout(timer);
-      timer = setTimeout(function () { fn.apply(ctx, args); }, ms);
-    };
-  }
-
-  /** Fetch autocomplete results from the API. */
-  function fetchResults(targetType, query, callback) {
-    var url = '/api/v1/items/autocomplete?type=' +
-      encodeURIComponent(targetType) +
+  /** Fetch autocomplete results from the input's endpoint. */
+  function fetchResults(input, query, callback) {
+    var base = input.getAttribute('data-autocomplete-url') || DEFAULT_URL;
+    var url = base +
+      encodeURIComponent(input.getAttribute('data-target-type') || '') +
       '&q=' + encodeURIComponent(query) +
       '&limit=10';
 
@@ -32,8 +31,20 @@
       .catch(function () { callback([]); });
   }
 
+  /** The results box and hidden field an input belongs to. */
+  function partsOf(input) {
+    var hiddenFieldId = input.getAttribute('data-hidden-field');
+    return {
+      hidden: document.getElementById(hiddenFieldId),
+      results: document.getElementById(hiddenFieldId + '_results')
+    };
+  }
+
   /** Show results dropdown. */
-  function showResults(resultsEl, items, hiddenFieldId, inputEl) {
+  function showResults(input, items) {
+    var parts = partsOf(input);
+    var resultsEl = parts.results;
+    if (!resultsEl) return;
     resultsEl.innerHTML = '';
     if (items.length === 0) {
       resultsEl.style.display = 'none';
@@ -47,9 +58,9 @@
       div.setAttribute('data-id', item.id);
       div.addEventListener('mousedown', function (e) {
         e.preventDefault();
-        var hidden = document.getElementById(hiddenFieldId);
+        var hidden = partsOf(input).hidden;
         if (hidden) hidden.value = item.id;
-        inputEl.value = item.title;
+        input.value = item.title;
         resultsEl.style.display = 'none';
       });
       resultsEl.appendChild(div);
@@ -58,49 +69,48 @@
     resultsEl.style.display = 'block';
   }
 
-  /** Initialize autocomplete on all record reference fields. */
-  function init() {
-    var fields = document.querySelectorAll('.record-ref-autocomplete');
-    fields.forEach(function (input) {
-      var targetType = input.getAttribute('data-target-type');
-      var hiddenFieldId = input.getAttribute('data-hidden-field');
-      var resultsEl = document.getElementById(hiddenFieldId + '_results');
-      if (!targetType || !resultsEl) return;
-
-      var search = debounce(function () {
-        var q = input.value.trim();
-        if (q.length < MIN_CHARS) {
-          resultsEl.style.display = 'none';
-          return;
-        }
-        fetchResults(targetType, q, function (items) {
-          showResults(resultsEl, items, hiddenFieldId, input);
-        });
-      }, DEBOUNCE_MS);
-
-      input.addEventListener('input', function () {
-        // Clear the hidden field when user edits (forces re-selection)
-        var hidden = document.getElementById(hiddenFieldId);
-        if (hidden) hidden.value = '';
-        search();
-      });
-
-      input.addEventListener('blur', function () {
-        // Delay hide to allow mousedown on results
-        setTimeout(function () { resultsEl.style.display = 'none'; }, 200);
-      });
-
-      input.addEventListener('focus', function () {
-        if (input.value.trim().length >= MIN_CHARS) {
-          search();
-        }
-      });
+  function search(input) {
+    var resultsEl = partsOf(input).results;
+    if (!resultsEl) return;
+    var q = input.value.trim();
+    if (q.length < MIN_CHARS) {
+      resultsEl.style.display = 'none';
+      return;
+    }
+    fetchResults(input, q, function (items) {
+      // A slower answer for an older query must not replace a newer one.
+      if (input.value.trim() === q) showResults(input, items);
     });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
+  function debounced(input) {
+    clearTimeout(input._recordRefTimer);
+    input._recordRefTimer = setTimeout(function () { search(input); }, DEBOUNCE_MS);
   }
+
+  function target(e) {
+    return e.target && e.target.closest ? e.target.closest(SELECTOR) : null;
+  }
+
+  document.addEventListener('input', function (e) {
+    var input = target(e);
+    if (!input) return;
+    // Clear the hidden field when the user edits (forces re-selection).
+    var hidden = partsOf(input).hidden;
+    if (hidden) hidden.value = '';
+    debounced(input);
+  });
+
+  document.addEventListener('focusin', function (e) {
+    var input = target(e);
+    if (input && input.value.trim().length >= MIN_CHARS) debounced(input);
+  });
+
+  document.addEventListener('focusout', function (e) {
+    var input = target(e);
+    if (!input) return;
+    // Delay hide to allow mousedown on results.
+    var resultsEl = partsOf(input).results;
+    if (resultsEl) setTimeout(function () { resultsEl.style.display = 'none'; }, 200);
+  });
 })();
