@@ -1,0 +1,13 @@
+{#
+  Test fixture for `referenced_files_test`. The shipped theme does not render
+  `referenced_files`; this is the smallest template that puts every resolved
+  file on the page.
+#}
+<article class="file-probe">
+  <h1>{{ item.title }}</h1>
+  {% for field_name, files in referenced_files %}
+    {% for file in files %}
+      <a class="referenced-file" data-field="{{ field_name }}" data-id="{{ file.id }}" data-mime="{{ file.mime }}" data-alt="{{ file.alt | default(value='') }}" href="{{ file.url }}">{{ file.filename }}</a>
+    {% endfor %}
+  {% endfor %}
+</article>
