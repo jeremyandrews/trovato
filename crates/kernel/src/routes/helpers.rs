@@ -270,36 +270,29 @@ pub async fn inject_site_context_for(
     // roles, and the template `viewer`.
     context.insert("viewer", &crate::theme::Viewer::of(viewer));
 
-    // Load main navigation menu links from database (not plugin registry),
-    // keeping only the ones this viewer could follow.
+    // Navigation, from the cached config menus and the menu registry, filtered
+    // for this viewer and matched against the address as asked for. Every key a
+    // theme has always had keeps its shape; `menus_by_name` and
+    // `menus_by_parent` are the same links as trees.
     //
     // `main_menu_owned` says whether the site has a `menu_link` main menu at
     // all, which is what decides that the plugin menu is not drawn. Without it
     // a viewer who may follow none of the links would get the plugin menu the
     // site replaced, rather than the site's menu with nothing in it.
-    let main_menu_links =
-        crate::models::MenuLink::find_by_menu_and_stage(state.db(), "main", LIVE_STAGE_ID)
-            .await
-            .unwrap_or_default();
-    context.insert("main_menu_owned", &!main_menu_links.is_empty());
-    let main_menu_links = links_viewer_may_follow(state, viewer, main_menu_links).await;
-    let main_menu_links = localize_menu_links(state, main_menu_links, &active_language).await;
-    context.insert("main_menu", &main_menu_links);
-
-    // Load footer menu links from database
-    let footer_menu_links =
-        crate::models::MenuLink::find_by_menu_and_stage(state.db(), "footer", LIVE_STAGE_ID)
-            .await
-            .unwrap_or_default();
-    let footer_menu_links = links_viewer_may_follow(state, viewer, footer_menu_links).await;
-    let footer_menu_links = localize_menu_links(state, footer_menu_links, &active_language).await;
-    context.insert("footer_menu", &footer_menu_links);
-
-    // Plugin-registered navigation, filtered to what this viewer may reach.
-    // `root_menus_for` is the permission check; the old `permission.is_empty()`
-    // filter here hid every gated entry from everyone, admins included.
-    let menus = state.menu_registry().root_menus_for(viewer);
-    context.insert("menus", &menus);
+    let requested_path = context
+        .get("requested_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or(path)
+        .to_string();
+    let site_menus =
+        crate::menu::navigation::site_menus(state, viewer, &active_language, &requested_path).await;
+    context.insert("main_menu_owned", &site_menus.main_menu_owned);
+    context.insert("main_menu", &site_menus.main_menu);
+    context.insert("footer_menu", &site_menus.footer_menu);
+    context.insert("menus", &site_menus.menus);
+    context.insert("menus_tree", &site_menus.menus_tree);
+    context.insert("menus_by_name", &site_menus.menus_by_name);
+    context.insert("menus_by_parent", &site_menus.menus_by_parent);
 
     // User authentication status and roles for tile visibility
     context.insert("user_authenticated", &viewer.authenticated);
@@ -360,11 +353,19 @@ pub async fn inject_site_context_for(
     }
     context.insert("assistant_scopes", &assistant_scopes);
 
-    // Load tiles for all regions filtered by request path and user roles
+    // Load tiles for all regions filtered by request path and user roles, each
+    // rendered for this viewer, in this language, from the menus built above.
+    let tile_render = crate::services::tile::TileRenderContext {
+        state,
+        viewer,
+        language: &active_language,
+        roles: &user_roles,
+        menus_by_name: &site_menus.menus_by_name,
+    };
     for region in &["header", "navigation", "sidebar", "footer"] {
         let region_html = state
             .tiles()
-            .render_region(region, LIVE_STAGE_ID, path, &user_roles)
+            .render_region(region, LIVE_STAGE_ID, path, &tile_render)
             .await
             .unwrap_or_default();
         context.insert(format!("{region}_tiles"), &region_html);
@@ -719,177 +720,6 @@ pub fn render_not_found() -> Response {
 </body></html>"#;
 
     (StatusCode::NOT_FOUND, Html(html)).into_response()
-}
-
-/// Drop the menu links `viewer` could not follow, and every link under one.
-///
-/// A `menu_link` row is drawn as it was written, and the rows carry no
-/// permission of their own, so the check is made on where each one leads (see
-/// [`viewer_may_follow`]). Administrators hold every permission and keep every
-/// link.
-async fn links_viewer_may_follow(
-    state: &crate::state::AppState,
-    viewer: &UserContext,
-    links: Vec<crate::models::MenuLink>,
-) -> Vec<crate::models::MenuLink> {
-    if links.is_empty() || viewer.is_admin() {
-        return links;
-    }
-
-    // A link's path may be a URL alias standing in for the page, as a gather's
-    // friendly address usually is. One query for the whole menu.
-    let paths: Vec<String> = links
-        .iter()
-        .map(|link| strip_query(&link.path).to_string())
-        .collect();
-    let sources = crate::models::UrlAlias::sources_for_aliases(
-        state.db(),
-        &paths,
-        LIVE_STAGE_ID,
-        state.default_language(),
-    )
-    .await
-    .unwrap_or_default();
-
-    let mut dropped: std::collections::HashSet<Uuid> = links
-        .iter()
-        .zip(&paths)
-        .filter(|(_, path)| {
-            let target = sources.get(*path).map_or(path.as_str(), String::as_str);
-            !viewer_may_follow(state, viewer, path) || !viewer_may_follow(state, viewer, target)
-        })
-        .map(|(link, _)| link.id)
-        .collect();
-
-    // Children go with their parent, however deep: a link under one the viewer
-    // cannot follow is not drawn either.
-    loop {
-        let before = dropped.len();
-        for link in &links {
-            if link
-                .parent_id
-                .is_some_and(|parent| dropped.contains(&parent))
-            {
-                dropped.insert(link.id);
-            }
-        }
-        if dropped.len() == before {
-            break;
-        }
-    }
-
-    links
-        .into_iter()
-        .filter(|link| !dropped.contains(&link.id))
-        .collect()
-}
-
-/// Whether `viewer` could follow a link to `path`, as far as the kernel can tell
-/// without making the request.
-///
-/// Refused when the path serves a gather the viewer may not run (the same
-/// [`authorize_gather`](crate::gather::authorize_gather) check the gather's own
-/// routes make), or a plugin route whose registered permission they lack.
-/// Anything else is assumed reachable: this hides links, it does not gate pages.
-fn viewer_may_follow(state: &crate::state::AppState, viewer: &UserContext, path: &str) -> bool {
-    if let Some(query) = state.gather().query_for_path(path)
-        && crate::gather::authorize_gather(viewer, &query).is_err()
-    {
-        return false;
-    }
-    match state.menu_registry().match_path(path) {
-        Some(route) => route.menu.permission.is_empty() || viewer.can(&route.menu.permission),
-        None => true,
-    }
-}
-
-/// A link path without its query string or fragment.
-fn strip_query(path: &str) -> &str {
-    path.split(['?', '#']).next().unwrap_or(path)
-}
-
-/// Point a menu at the translated pages it has, and leave the rest alone.
-///
-/// A site serving `/it/why` rendered its navigation with default-language
-/// addresses, so every click out of the menu left the translation. This rewrites
-/// a link when, and only when, the page behind it exists in `language`:
-///
-/// - the path gains a `/{language}` prefix, so the click stays in the language;
-/// - the title is replaced by the translated item's title **when the link's own
-///   title is the target's default-language title**, which is the common case of
-///   a menu label mirroring a page title. A label somebody wrote by hand is
-///   theirs, and is left as they wrote it.
-///
-/// A link whose target has no translation is untouched, address and label both. A
-/// translated label on an untranslated page is a promise the click breaks.
-///
-/// Two queries for a whole menu, not two per link: menus render on every page.
-/// Nothing is cached here because nothing else in menu building is — the links
-/// themselves are read per render.
-async fn localize_menu_links(
-    state: &crate::state::AppState,
-    links: Vec<crate::models::MenuLink>,
-    language: &str,
-) -> Vec<crate::models::MenuLink> {
-    if language == state.default_language() || links.is_empty() {
-        return links;
-    }
-
-    // What each link points at. A path is either an item source path already or
-    // an alias standing in for one; anything else is not content and cannot be
-    // translated.
-    let aliases: Vec<String> = links
-        .iter()
-        .filter(|link| item_id_from_source(&link.path).is_none())
-        .map(|link| link.path.clone())
-        .collect();
-    let sources = crate::models::UrlAlias::sources_for_aliases(
-        state.db(),
-        &aliases,
-        LIVE_STAGE_ID,
-        state.default_language(),
-    )
-    .await
-    .unwrap_or_default();
-
-    let targets: Vec<Option<uuid::Uuid>> = links
-        .iter()
-        .map(|link| {
-            item_id_from_source(&link.path)
-                .or_else(|| sources.get(&link.path).and_then(|s| item_id_from_source(s)))
-        })
-        .collect();
-
-    let ids: Vec<uuid::Uuid> = targets.iter().flatten().copied().collect();
-    let translations = state
-        .items()
-        .translated_titles_for(&ids, language)
-        .await
-        .unwrap_or_default();
-
-    links
-        .into_iter()
-        .zip(targets)
-        .map(|(mut link, target)| {
-            let Some((translated_title, default_title)) =
-                target.and_then(|id| translations.get(&id))
-            else {
-                return link;
-            };
-
-            link.path = format!("/{language}{}", link.path);
-            if link.title == *default_title && !translated_title.is_empty() {
-                link.title = translated_title.clone();
-            }
-            link
-        })
-        .collect()
-}
-
-/// The item a source path names, or `None` if it names something else.
-fn item_id_from_source(path: &str) -> Option<uuid::Uuid> {
-    path.strip_prefix("/item/")
-        .and_then(|id| uuid::Uuid::parse_str(id).ok())
 }
 
 /// Build local task tab data from the menu registry, merged with hardcoded tabs.

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "macros/menu.html" as menu %}
 
 {% block head %}
 {# All page-layout styles live in static/css/theme.css #}
@@ -14,44 +15,61 @@
             <span class="site-branding__slogan">{{ site_slogan }}</span>
             {% endif %}
         </div>
+        {# Below 768px the nav folds behind this button; static/js/site-nav.js
+           reveals the button and toggles the nav. With JavaScript off the
+           button stays hidden and the nav stays open. #}
+        <button type="button" class="site-nav__toggle" aria-expanded="false" aria-controls="site-nav" hidden>Menu</button>
         {# Labelled because the page has four navs — site, two breadcrumbs, footer —
            and a screen reader lists them by label. #}
-        <nav class="site-nav" aria-label="Main">
+        <nav class="site-nav" id="site-nav" aria-label="Main">
             {# main_menu_owned: the site has a main menu of its own, even when
                this viewer may follow none of its links. The plugin menu below is
-               what a site without one gets, not a fallback for an empty one. #}
-            {% if main_menu_owned | default(value=false) or main_menu | default(value=[]) | length > 0 %}
-            {% for link in main_menu | default(value=[]) %}
-            {% if not link.hidden %}
-            {# aria-current, not just the active class: the class is styling, and
-               assistive technology cannot see it.
+               what a site without one gets, not a fallback for an empty one.
 
-               Matched against requested_path, the address as asked for, rather
-               than current_path, which is what the request was rewritten to. A
-               menu links to /why; by the time this renders, current_path is
-               /item/{uuid} and the two can never be equal, so the active trail
-               was dead on every aliased page. #}
-            {% set active_path = requested_path | default(value=current_path | default(value="")) %}
-            <a href="{{ link.path }}" class="site-nav__link{% if active_path == link.path %} site-nav__link--active{% endif %}"{% if active_path == link.path %} aria-current="page"{% endif %}>{{ link.title }}</a>
+               Every link's `active` flag is the kernel's: the page asked for
+               (requested_path, the address before an alias was resolved) is the
+               link's page or one under it, and `/` only on `/`. aria-current,
+               not just the active class: the class is styling, and assistive
+               technology cannot see it. #}
+            {% if menus_by_name is defined %}
+            {% set main_tree = menus_by_name | get(key="main", default=[]) %}
+            {% set user_tree = menus_by_name | get(key="user", default=[]) %}
+            {% else %}
+            {% set main_tree = [] %}
+            {% set user_tree = [] %}
             {% endif %}
-            {% endfor %}
-            {% elif menus is defined %}
-            {% for menu in menus %}
-            {% set active_path = requested_path | default(value=current_path | default(value="")) %}
-            <a href="{{ menu.path }}" class="site-nav__link{% if active_path == menu.path %} site-nav__link--active{% endif %}"{% if active_path == menu.path %} aria-current="page"{% endif %}>{{ menu.title }}</a>
-            {% endfor %}
+            {% if menus_by_parent is defined %}
+            {% set account_entries = menus_by_parent | get(key="/user", default=[]) %}
+            {% else %}
+            {% set account_entries = [] %}
             {% endif %}
-            <div class="site-nav__divider"></div>
+            <ul class="site-nav__menu">
+            {% if main_menu_owned | default(value=false) or main_menu | default(value=[]) | length > 0 %}
+            {{ menu::items(links=main_tree, prefix="site-nav") }}
+            {% elif menus_tree is defined %}
+            {{ menu::items(links=menus_tree, prefix="site-nav") }}
+            {% endif %}
+            </ul>
+            {# The account area: the kernel's own links, then the plugin entries
+               registered under /user and the site's own `user` menu. #}
+            <ul class="site-nav__account">
             {% if user_authenticated %}
-            {% if user_can_access_admin %}<a href="/admin" class="site-nav__link">Admin</a>{% endif %}
-            <a href="/user/profile" class="site-nav__link">Profile</a>
+            {% if user_can_access_admin %}<li class="site-nav__item"><a href="/admin" class="site-nav__link">Admin</a></li>{% endif %}
+            <li class="site-nav__item"><a href="/user/profile" class="site-nav__link">Profile</a></li>
+            {% else %}
+            <li class="site-nav__item"><a href="/user/login" class="site-nav__link">Login</a></li>
+            {% endif %}
+            {{ menu::items(links=account_entries, prefix="site-nav") }}
+            {{ menu::items(links=user_tree, prefix="site-nav") }}
+            {% if user_authenticated %}
+            <li class="site-nav__item">
             <form method="post" action="/user/logout" class="site-nav__logout-form">
                 <input type="hidden" name="_token" value="{{ csrf_token }}">
                 <button type="submit" class="site-nav__link site-nav__logout">Logout</button>
             </form>
-            {% else %}
-            <a href="/user/login" class="site-nav__link">Login</a>
+            </li>
             {% endif %}
+            </ul>
         </nav>
     </div>
     {% if header_tiles is defined and header_tiles %}

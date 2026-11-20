@@ -1,0 +1,19 @@
+{# Navigation macros, shared by the page layout and the menu tile. #}
+
+{#
+  The items of one menu tree, each with the items under it as a nested list.
+  `links` is a list of {title, path, active, children}; `prefix` is the BEM
+  block of the item, link and child list classes, so the page nav and a tile
+  style their own. `active` is set by the kernel (the page is the link's page
+  or one under it), so it is printed here, never recomputed.
+#}
+{% macro items(links, prefix) %}
+{%- for link in links %}
+<li class="{{ prefix }}__item{% if link.children %} {{ prefix }}__item--parent{% endif %}">
+<a href="{{ link.path }}" class="{{ prefix }}__link{% if link.active %} {{ prefix }}__link--active{% endif %}"{% if link.active %} aria-current="page"{% endif %}>{{ link.title }}</a>
+{%- if link.children %}
+<ul class="{{ prefix }}__children">{{ self::items(links=link.children, prefix=prefix) }}</ul>
+{%- endif %}
+</li>
+{%- endfor %}
+{% endmacro %}

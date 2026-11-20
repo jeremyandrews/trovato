@@ -1433,7 +1433,16 @@ impl ConfigStorage for DirectConfigStorage {
     }
 
     async fn save(&self, entity: &ConfigEntity) -> Result<()> {
-        match entity {
+        // What navigation is built from: the links, what their paths stand for,
+        // and the titles a localized label is read from.
+        let navigation = matches!(
+            entity,
+            ConfigEntity::MenuLink(_)
+                | ConfigEntity::UrlAlias(_)
+                | ConfigEntity::Item(_)
+                | ConfigEntity::ItemTranslation(_)
+        );
+        let saved = match entity {
             ConfigEntity::ItemType(t) => self.save_item_type(t).await,
             ConfigEntity::SearchFieldConfig(f) => self.save_search_field_config(f).await,
             ConfigEntity::Category(c) => self.save_category(c).await,
@@ -1449,11 +1458,22 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::Tile(t) => self.save_tile(t).await,
             ConfigEntity::MenuLink(m) => self.save_menu_link(m).await,
             ConfigEntity::File(f) => self.save_file(f).await,
+        };
+        if navigation {
+            crate::menu::invalidate_config_menus();
         }
+        saved
     }
 
     async fn delete(&self, entity_type: &str, id: &str) -> Result<bool> {
-        match entity_type {
+        let navigation = matches!(
+            entity_type,
+            entity_types::MENU_LINK
+                | entity_types::URL_ALIAS
+                | entity_types::ITEM
+                | entity_types::ITEM_TRANSLATION
+        );
+        let deleted = match entity_type {
             entity_types::ITEM_TYPE => self.delete_item_type(id).await,
             entity_types::SEARCH_FIELD_CONFIG => self.delete_search_field_config(id).await,
             entity_types::CATEGORY => self.delete_category(id).await,
@@ -1470,7 +1490,11 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::MENU_LINK => self.delete_menu_link(id).await,
             entity_types::FILE => self.delete_file(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
+        };
+        if navigation {
+            crate::menu::invalidate_config_menus();
         }
+        deleted
     }
 
     async fn list(

@@ -248,15 +248,58 @@ impl MenuRegistry {
     /// included. A plugin declaring a gated nav entry could not get it into the
     /// navigation at all — Argus's `/stories` and `/articles`, both gated on
     /// `access content`, were unreachable from the menu for everyone.
+    ///
+    /// The entries are [`nav_entry_for`] the viewer: a `{uid}` segment carries
+    /// the viewer's id, and an entry no one could follow is left out.
     pub fn root_menus_for(&self, viewer: &crate::tap::UserContext) -> Vec<MenuDefinition> {
-        let mut menus: Vec<MenuDefinition> = self
+        self.root_entries_for(viewer)
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .collect()
+    }
+
+    /// [`root_menus_for`](Self::root_menus_for), each entry beside the path it
+    /// is registered under, which is what its own children name as their
+    /// parent.
+    pub fn root_entries_for(
+        &self,
+        viewer: &crate::tap::UserContext,
+    ) -> Vec<(String, MenuDefinition)> {
+        let mut menus: Vec<(String, MenuDefinition)> = self
             .root_menus()
             .into_iter()
-            .filter(|m| viewer_may_see(m, viewer))
-            .cloned()
+            .filter_map(|m| nav_entry_for(m, viewer).map(|entry| (m.path.clone(), entry)))
             .collect();
-        menus.sort_by_key(|m| m.weight);
+        menus.sort_by_key(|(_, m)| m.weight);
         menus
+    }
+
+    /// The navigation entries under `parent` this viewer may see, sorted by
+    /// weight, each beside the path it is registered under.
+    ///
+    /// The same rule as [`root_menus_for`](Self::root_menus_for), through the
+    /// same [`nav_entry_for`]; local tasks are tabs, not navigation, and are
+    /// left to [`local_tasks`](Self::local_tasks). The registered path is what
+    /// an entry's own children name as their parent, which a `{uid}` entry no
+    /// longer carries once the viewer's id is in it.
+    pub fn children_for(
+        &self,
+        parent: &str,
+        viewer: &crate::tap::UserContext,
+    ) -> Vec<(String, MenuDefinition)> {
+        let mut menus: Vec<(String, MenuDefinition)> = self
+            .children_of(parent)
+            .into_iter()
+            .filter(|m| !m.local_task)
+            .filter_map(|m| nav_entry_for(m, viewer).map(|entry| (m.path.clone(), entry)))
+            .collect();
+        menus.sort_by_key(|(_, m)| m.weight);
+        menus
+    }
+
+    /// Every path some registered entry names as its parent.
+    pub fn parent_paths(&self) -> impl Iterator<Item = &str> {
+        self.children.keys().map(String::as_str)
     }
 
     /// Get visible local task menus for a parent path, sorted by weight.
@@ -307,6 +350,38 @@ impl Default for MenuRegistry {
 /// implicitly, which is what `can` carries.
 fn viewer_may_see(menu: &MenuDefinition, viewer: &crate::tap::UserContext) -> bool {
     menu.permission.is_empty() || viewer.can(&menu.permission)
+}
+
+/// A menu entry as `viewer` would follow it, or `None` when they would not.
+///
+/// The one rule for plugin entries in navigation: the entry is visible, the
+/// viewer may see it ([`viewer_may_see`]), and its path is a link they can
+/// follow. A `{uid}` segment becomes the signed-in viewer's id. An entry with
+/// any other `{...}` segment, or with `{uid}` for an anonymous viewer, names a
+/// page nobody can be sent to, so it is not a link at all.
+pub fn nav_entry_for(
+    menu: &MenuDefinition,
+    viewer: &crate::tap::UserContext,
+) -> Option<MenuDefinition> {
+    if !menu.visible || !viewer_may_see(menu, viewer) {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for segment in menu.path.split('/') {
+        if segment == "{uid}" {
+            if !viewer.authenticated {
+                return None;
+            }
+            segments.push(viewer.id.to_string());
+        } else if segment.starts_with('{') && segment.ends_with('}') {
+            return None;
+        } else {
+            segments.push(segment.to_string());
+        }
+    }
+    let mut entry = menu.clone();
+    entry.path = segments.join("/");
+    Some(entry)
 }
 
 /// Match a route pattern against a path, extracting parameters.
@@ -612,5 +687,53 @@ mod tests {
 
         let children = registry.children_of("/admin");
         assert_eq!(children.len(), 2);
+    }
+
+    fn account_registry() -> MenuRegistry {
+        let json = r#"[
+            {"path": "/user/extra", "title": "Extra", "parent": "/user", "permission": "see extra", "weight": 1},
+            {"path": "/user/{uid}/mine", "title": "Mine", "parent": "/user", "weight": 2},
+            {"path": "/user/{slug}/odd", "title": "Odd", "parent": "/user", "weight": 3},
+            {"path": "/user/{uid}", "title": "Me", "weight": 4},
+            {"path": "/user/tab", "title": "Tab", "parent": "/user", "local_task": true}
+        ]"#;
+        MenuRegistry::from_tap_results(vec![("acct".to_string(), json.to_string())])
+    }
+
+    #[test]
+    fn a_child_entry_follows_the_root_permission_rule() {
+        let registry = account_registry();
+        let holder = registry.children_for("/user", &viewer(&["see extra"]));
+        assert!(holder.iter().any(|(_, m)| m.title == "Extra"));
+        let other = registry.children_for("/user", &viewer(&[]));
+        assert!(!other.iter().any(|(_, m)| m.title == "Extra"));
+        assert!(
+            !other.iter().any(|(_, m)| m.title == "Tab"),
+            "local tasks are tabs"
+        );
+    }
+
+    #[test]
+    fn uid_becomes_the_viewers_id_and_nothing_else_is_filled() {
+        let registry = account_registry();
+        let member = viewer(&[]);
+        let children = registry.children_for("/user", &member);
+        let mine = children.iter().find(|(_, m)| m.title == "Mine").unwrap();
+        assert_eq!(mine.0, "/user/{uid}/mine");
+        assert_eq!(mine.1.path, format!("/user/{}/mine", member.id));
+        assert!(!children.iter().any(|(_, m)| m.title == "Odd"));
+
+        let roots = registry.root_menus_for(&member);
+        assert_eq!(roots[0].path, format!("/user/{}", member.id));
+    }
+
+    #[test]
+    fn a_uid_entry_is_left_out_for_an_anonymous_viewer() {
+        let registry = account_registry();
+        let anonymous = crate::tap::UserContext::anonymous();
+        let children = registry.children_for("/user", &anonymous);
+        assert!(!children.iter().any(|(_, m)| m.path.contains('{')));
+        assert!(!children.iter().any(|(_, m)| m.title == "Mine"));
+        assert!(registry.root_menus_for(&anonymous).is_empty());
     }
 }
