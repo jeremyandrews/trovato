@@ -649,7 +649,7 @@ This means `query--ritrovo.upcoming_conferences.html`, `query--ritrovo.by_topic.
 
 ### Site-Wide Page Context
 
-Every page that renders through Tera templates needs site context -- the site name, slogan, navigation menus, footer menus, authentication state, and CSRF token. The `inject_site_context()` helper in `routes/helpers.rs` provides this. It must be called before rendering any page that extends `page.html`.
+Every page that renders through Tera templates needs site context -- the site name, slogan, navigation menus, footer menus, authentication state, the `viewer` (`id`, `authenticated`, `roles`), and CSRF token. The `inject_site_context()` helper in `routes/helpers.rs` provides this. It must be called before rendering any page that extends `page.html`; a route that has already loaded its viewer calls `inject_site_context_for()` with it, so the viewer is loaded once.
 
 The auth handlers (`login_form`, `render_login_error`, `render_register_form`, `render_profile`) all call `inject_site_context()` so that login, registration, and profile pages display the same site header, navigation, and footer as every other page. Without this, users navigating to `/user/login` would see a bare page with no navigation back to the site.
 
@@ -700,6 +700,8 @@ The theme hides these duplicates with CSS:
 ```
 
 This keeps the generic `children` output available (plugins can add fields that the template doesn't know about) while hiding the duplicate rendering of fields that the template already handles.
+
+A template that lays out every field itself can skip `children` altogether and print `{{ plugin_output | safe }}` instead: that is every plugin's `tap_item_view` output on its own, the same string `children` ends with, so a plugin's contribution survives without the field dump. Item templates also get `viewer` (`id`, `authenticated` and `roles`, and nothing else about who is looking), so a template can link to `/user/{{ viewer.id }}/...` for a signed-in reader. See "The Viewer in the Render Context" in `docs/design/Design-Render-Theme.md`.
 
 ### Verify
 

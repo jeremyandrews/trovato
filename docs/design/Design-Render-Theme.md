@@ -161,6 +161,51 @@ equal and the active trail is dead on every aliased page. `requested_path` falls
 back to `current_path` where a route does not know better, so a template can read
 it unconditionally.
 
+### The Viewer in the Render Context
+
+Every page template and every item template gets `viewer`, built by one function
+(`theme::Viewer::of`) from the request's `UserContext`:
+
+| Key | What it holds |
+|---|---|
+| `viewer.id` | The user's id as a string; `null` for an anonymous visitor. |
+| `viewer.authenticated` | Whether the viewer is signed in. |
+| `viewer.roles` | The names of the viewer's roles, sorted: `anonymous user` for a visitor; every assigned role plus `authenticated user` for a member. |
+
+```jinja
+{% if viewer.authenticated %}
+  <a href="/user/{{ viewer.id }}/subscriptions">My subscriptions</a>
+{% endif %}
+```
+
+It is the only viewer data a template gets, on purpose. No email, no display name,
+no permission list, no session or token: what a template never receives it cannot
+print, and a theme is not where access is decided. A per-viewer control drawn
+from `viewer.roles` is a convenience; the page it leads to still checks for
+itself. The role names come from the permission service's cache, loaded with the
+permissions, so `viewer` costs no query on a warm cache. The item route builds it
+from the viewer it already loaded, so one request loads its viewer once.
+
+`user_authenticated`, `user_can_access_admin` and `csrf_token` are still there,
+unchanged.
+
+### Plugin Output on the Item Template
+
+An item template gets two strings of rendered HTML:
+
+- `children`: the generic field dump, followed by every plugin's `tap_item_view`
+  output. Unchanged; a template that prints only `children` prints what it always
+  did.
+- `plugin_output`: the plugin output alone, the same string `children` ends with.
+
+A theme that lays out its own fields prints `plugin_output` and not `children`,
+and keeps every plugin's contribution (a series navigation, a CFP badge, JSON-LD)
+without printing each field twice. Both are kernel-rendered and already
+sanitized, so both are printed with `| safe` and a `{# SAFE: ... #}` comment.
+
+A text field's format, stored beside it as `<name>_format`, is part of that field
+and is not printed as a field of its own when the type declares `<name>` as text.
+
 ### Language-Aware Menus
 
 When the active language is not the default, `main_menu` and `footer_menu` are

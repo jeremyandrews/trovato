@@ -180,9 +180,29 @@ pub async fn require_permission_json(
 /// the session's user actually exists, not merely whether the session names
 /// one — a session pointing at a deleted user now renders as logged out
 /// instead of showing a logout form for an account that is gone.
+///
+/// It also becomes `viewer` (see [`Viewer`](crate::theme::Viewer)): the
+/// viewer's id, whether they are signed in, and their role names, which is all
+/// a template is told about who is looking.
+///
+/// A route that has already loaded the viewer calls
+/// [`inject_site_context_for`] instead, so one request loads it once.
 pub async fn inject_site_context(
     state: &AppState,
     session: &Session,
+    context: &mut tera::Context,
+    path: &str,
+) {
+    let viewer = get_user_context(session, state).await;
+    inject_site_context_for(state, session, &viewer, context, path).await;
+}
+
+/// [`inject_site_context`] for a route that already holds the viewer's
+/// [`UserContext`].
+pub async fn inject_site_context_for(
+    state: &AppState,
+    session: &Session,
+    viewer: &UserContext,
     context: &mut tera::Context,
     path: &str,
 ) {
@@ -245,9 +265,10 @@ pub async fn inject_site_context(
         context.insert("requested_path", &path);
     }
 
-    // The viewer, with real permissions, loaded once and used for everything
-    // below: navigation visibility, the authentication flags, and tile roles.
-    let viewer = get_user_context(session, state).await;
+    // The viewer, with real permissions, loaded once by the caller and used for
+    // everything below: navigation visibility, the authentication flags, tile
+    // roles, and the template `viewer`.
+    context.insert("viewer", &crate::theme::Viewer::of(viewer));
 
     // Load main navigation menu links from database (not plugin registry),
     // keeping only the ones this viewer could follow.
@@ -261,7 +282,7 @@ pub async fn inject_site_context(
             .await
             .unwrap_or_default();
     context.insert("main_menu_owned", &!main_menu_links.is_empty());
-    let main_menu_links = links_viewer_may_follow(state, &viewer, main_menu_links).await;
+    let main_menu_links = links_viewer_may_follow(state, viewer, main_menu_links).await;
     let main_menu_links = localize_menu_links(state, main_menu_links, &active_language).await;
     context.insert("main_menu", &main_menu_links);
 
@@ -270,14 +291,14 @@ pub async fn inject_site_context(
         crate::models::MenuLink::find_by_menu_and_stage(state.db(), "footer", LIVE_STAGE_ID)
             .await
             .unwrap_or_default();
-    let footer_menu_links = links_viewer_may_follow(state, &viewer, footer_menu_links).await;
+    let footer_menu_links = links_viewer_may_follow(state, viewer, footer_menu_links).await;
     let footer_menu_links = localize_menu_links(state, footer_menu_links, &active_language).await;
     context.insert("footer_menu", &footer_menu_links);
 
     // Plugin-registered navigation, filtered to what this viewer may reach.
     // `root_menus_for` is the permission check; the old `permission.is_empty()`
     // filter here hid every gated entry from everyone, admins included.
-    let menus = state.menu_registry().root_menus_for(&viewer);
+    let menus = state.menu_registry().root_menus_for(viewer);
     context.insert("menus", &menus);
 
     // User authentication status and roles for tile visibility
@@ -986,12 +1007,19 @@ pub async fn admin_user_context(state: &AppState, user: &User) -> UserContext {
 /// [`PermissionService::user_context`](crate::permissions::PermissionService::user_context)
 /// and applies the web failure policy from [`permissions_or_deny_all`].
 pub async fn user_context_for(state: &AppState, user: &User) -> UserContext {
+    let access = state.permissions().user_access(user).await;
+    // The role names ride on the same load; on a failure they are as empty as
+    // the deny-all permission set, never guessed.
+    let roles = access
+        .as_ref()
+        .map(|access| access.roles.to_vec())
+        .unwrap_or_default();
     let permissions = permissions_or_deny_all(
-        state.permissions().user_permissions(user).await,
+        access.map(|access| access.permissions),
         state.metrics(),
         user.id,
     );
-    crate::permissions::context_from_permissions(user, permissions)
+    crate::permissions::context_from_permissions(user, permissions).with_roles(roles)
 }
 
 /// Get the current viewer's context from the session, with **real** permissions
