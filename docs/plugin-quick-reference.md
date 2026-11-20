@@ -229,6 +229,15 @@ let has_perm = host::user::has_permission("permission name");
 let users = host::load_users(&[id_a, id_b])?;   // Vec<UserSummary>
 ```
 
+### Mail
+Needs `mail` in `host_interfaces`. Mailing a member also needs `mail_users = true`
+under [capabilities]; the kernel resolves the address and adds an unsubscribe link.
+Many recipients: `queue_push` one job per recipient, send from `tap_queue_worker`.
+```rust
+host::mail_send_to_site_contacts("Subject", "Body", &[])?;  // site contact only
+host::mail_send_to_user(&user_id, "Subject", "Body")?;      // one member, by id
+```
+
 ### Items
 Needs `item-api` in `host_interfaces`; acts as the requesting user (from cron or
 a queue worker, needs `item_background = true`). Writes fire the item write taps
