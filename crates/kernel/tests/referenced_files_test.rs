@@ -133,7 +133,9 @@ fn file_fields_resolve_to_urls_on_the_item_page() {
         let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
             .await
             .unwrap();
-        let html = String::from_utf8_lossy(&bytes);
+        // Tera's autoescape writes `/` as `&#x2F;` inside the fixture's
+        // attributes; decode that one entity so the URLs compare as written.
+        let html = String::from_utf8_lossy(&bytes).replace("&#x2F;", "/");
 
         let pdf_url = format!("/files/{}", pdf.uri.strip_prefix("local://").unwrap());
         let photo_url = format!("/files/{}", photo.uri.strip_prefix("local://").unwrap());
