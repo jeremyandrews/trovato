@@ -782,6 +782,8 @@ impl ItemService {
         .fetch_one(&self.inner.pool)
         .await
         .context("failed to save item translation")?;
+        // A translated title is what a localized menu label is read from.
+        crate::menu::invalidate_config_menus();
 
         Ok(row)
     }
@@ -801,6 +803,7 @@ impl ItemService {
                 .execute(&self.inner.pool)
                 .await
                 .context("failed to delete item translation")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(result.rows_affected() > 0)
     }

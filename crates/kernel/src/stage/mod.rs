@@ -728,6 +728,8 @@ impl StageService {
 
         // Cache invalidation AFTER transaction commits
         self.cache.invalidate_stage(stage_id).await;
+        // The publish moved aliases and menu links onto Live.
+        crate::menu::invalidate_config_menus();
 
         let mut result = PublishResult::success_with_conflicts(
             stage_id,

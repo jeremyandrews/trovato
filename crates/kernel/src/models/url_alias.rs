@@ -74,6 +74,7 @@ impl UrlAlias {
         .fetch_one(pool)
         .await
         .context("failed to create url alias")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(alias)
     }
@@ -341,6 +342,7 @@ impl UrlAlias {
         .fetch_optional(pool)
         .await
         .context("failed to update url alias")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(updated)
     }
@@ -352,6 +354,7 @@ impl UrlAlias {
             .execute(pool)
             .await
             .context("failed to delete url alias")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(result.rows_affected() > 0)
     }
@@ -363,6 +366,7 @@ impl UrlAlias {
             .execute(pool)
             .await
             .context("failed to delete url aliases by source")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(result.rows_affected())
     }

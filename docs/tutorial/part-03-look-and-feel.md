@@ -334,32 +334,37 @@ Each region can hold **Tiles** -- content blocks assigned to a specific region w
 On every page request, the `inject_site_context` helper in `routes/helpers.rs` builds the page context:
 
 1. **Loads site config** -- Site name and slogan from `site_config`.
-2. **Loads menus** -- Main menu and footer menu items from the `menu_link` table, sorted by weight.
+2. **Loads menus** -- Every config menu from the `menu_link` table, weight ordered, from a cache (no query on a warm page), filtered for the viewer, plus the plugin-registered entries.
 3. **Loads tiles** -- For each region, calls `state.tiles().render_region()` which filters tiles by visibility rules (path patterns, user roles) and renders their HTML.
 4. **Builds authentication context** -- Current user, admin status, CSRF token for the logout form.
 5. **Passes current path** -- Used for active menu highlighting and breadcrumbs.
 
 ### Menus
 
-The main navigation and footer menus are loaded from the `menu_link` database table. Each menu link has a title, path, weight (sort order), and menu name (`main` or `footer`).
+Config menus live in the `menu_link` table. Each menu link has a title, path, weight (sort order), an optional parent link, and a menu name. Any menu name works: `main` and `footer` are the two the stock theme has always drawn, and every other name (`user`, `sidebar`, `legal`) reaches templates too.
 
-The page template renders the main menu in the Navigation region:
+Templates get every menu as a **tree** in `menus_by_name`, keyed by menu name. Each link has `title`, `path`, `active` and `children` (the links under it, also weight ordered), and only the links this viewer may follow are there. A link the viewer cannot follow is dropped with everything under it. Hiding a link is not access control: every page still checks for itself.
 
 ```html
-{% if main_menu is defined and main_menu %}
-<nav class="site-nav">
-    {% for link in main_menu %}
-    <a href="{{ link.path }}" class="site-nav__link{% if current_path == link.path %} site-nav__link--active{% endif %}">
-        {{ link.title }}
-    </a>
-    {% endfor %}
+{% import "macros/menu.html" as menu %}
+<nav class="site-nav" id="site-nav" aria-label="Main">
+    <ul class="site-nav__menu">
+        {{ menu::items(links=menus_by_name | get(key="main", default=[]), prefix="site-nav") }}
+    </ul>
 </nav>
-{% endif %}
 ```
 
-**Active highlighting** -- The template compares each menu link's path against `current_path`. The active link gets a `site-nav__link--active` CSS modifier class.
+`macros/menu.html` draws each link as `<li>` with its children in a nested `<ul class="site-nav__children">`. The stock theme shows children as a dropdown on hover and on keyboard focus on wide screens, and indented under their parent on narrow ones.
 
-If no database menu links exist, the template falls back to plugin-registered routes (the same menu items that appeared in Parts 1 and 2).
+**Active trail** -- `active` is set by the kernel, by one rule: the page asked for is the link's page, or a page under it. So a link to `/devices` is active on `/devices/new`, and a link to `/` is active only on `/`. The stock theme gives an active link the `site-nav__link--active` class and `aria-current="page"`. Links are matched against the address as asked for (`requested_path`), so an aliased page still marks its menu link.
+
+**Plugin entries** -- A plugin registers navigation through `tap_menu`. Root entries arrive in `menus` (and as a tree in `menus_tree`); entries registered with a parent arrive in `menus_by_parent`, keyed by the parent path, so `menus_by_parent["/user"]` is everything plugins put in the account menu. The entries are the ones this viewer may see, by the same permission rule as the root entries. A `{uid}` segment in an entry's path becomes the signed-in viewer's id (`/user/{uid}/subscriptions` becomes `/user/7f3.../subscriptions`). An entry with `{uid}` is left out for an anonymous visitor, and so is an entry with any other `{...}` segment, because nobody can follow it.
+
+The stock account area is Profile and Logout (or Login), then `menus_by_parent["/user"]`, then the site's own `user` menu.
+
+**Menu button** -- Below 768 px the stock nav folds behind a `Menu` button (`<button aria-expanded aria-controls="site-nav">`), toggled by `static/js/site-nav.js`. With JavaScript off the button stays hidden and the nav stays open.
+
+`main_menu`, `footer_menu`, `main_menu_owned` and `menus` are still there with their old flat shapes, for themes written against them. If no `main` config menu exists, the stock template draws the plugin-registered root entries instead.
 
 ### Tiles
 
@@ -367,7 +372,7 @@ Tiles are content blocks placed in page regions. Each tile has:
 
 - **machine_name** -- Unique identifier (e.g., `search_box`, `topic_cloud`)
 - **region** -- Which slot it appears in (header, navigation, sidebar, footer)
-- **tile_type** -- `custom_html`, `menu`, or `gather_query`
+- **tile_type** -- `custom_html`, `menu`, or `gather_query`. A `menu` tile renders the config menu its `menu_name` names (default `main`) as a nested list, filtered for the viewer, through `elements/tile--menu.html`; override it for one tile with `elements/tile--menu--{machine_name}.html`.
 - **config** -- JSON configuration (HTML content, gather query ID, etc.)
 - **visibility** -- JSON rules for when the tile should appear (path patterns, role restrictions)
 - **weight** -- Sort order within the region

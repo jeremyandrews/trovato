@@ -1,0 +1,12 @@
+{#
+  A `menu` tile: the links of the config menu it names, already filtered for
+  the viewer and localized, as a nested list. Override it for one tile with
+  `elements/tile--menu--{machine_name}.html`.
+
+  Given: `tile` (the tile row), `menu_name`, and `links`, the menu as a tree:
+  each link has `title`, `path`, `active` and `children`.
+#}
+{% import "macros/menu.html" as menu %}
+<nav class="tile-menu" aria-label="{{ tile.label }}">
+<ul class="tile-menu__list">{{ menu::items(links=links, prefix="tile-menu") }}</ul>
+</nav>

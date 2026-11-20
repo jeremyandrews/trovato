@@ -449,6 +449,9 @@ impl Item {
         }
 
         tx.commit().await.context("failed to commit transaction")?;
+        // A menu label mirrors its target's title, and a stage move took the
+        // item's aliases and menu links with it.
+        crate::menu::invalidate_config_menus();
 
         // Return updated item
         Self::find_by_id(pool, id).await
@@ -462,6 +465,7 @@ impl Item {
             .execute(pool)
             .await
             .context("failed to delete item")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(result.rows_affected() > 0)
     }

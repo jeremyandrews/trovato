@@ -243,11 +243,92 @@ html {
     opacity: 0.9;
 }
 
-.site-nav__divider {
-    width: 1px;
-    height: 1.25rem;
-    background: var(--gray-200);
-    margin: 0 0.375rem;
+/* The main menu and the account menu are lists; the account menu sits after
+   a hairline, where the old divider element was. */
+.site-nav__menu,
+.site-nav__account {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.site-nav__account {
+    border-left: 1px solid var(--gray-200);
+    margin-left: 0.375rem;
+    padding-left: 0.375rem;
+}
+
+.site-nav__item {
+    position: relative;
+}
+
+.site-nav__link {
+    display: inline-block;
+}
+
+.site-nav__children {
+    list-style: none;
+    margin: 0;
+    padding: 0.375rem;
+}
+
+/* The menu button exists for narrow screens only; see the responsive block. */
+.site-nav__toggle {
+    display: none;
+}
+
+/* Wide screens: a parent's children drop down on hover and on keyboard focus
+   inside the item, so a child link is reached by tabbing from its parent. */
+@media (min-width: 769px) {
+    .site-nav__children {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        z-index: 50;
+        min-width: 12rem;
+        flex-direction: column;
+        gap: 0.125rem;
+        background: white;
+        border: 1px solid var(--gray-200);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-md);
+    }
+
+    .site-nav__item--parent:hover > .site-nav__children,
+    .site-nav__item--parent:focus-within > .site-nav__children {
+        display: flex;
+    }
+
+    .site-nav__children .site-nav__link {
+        display: block;
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+    }
+}
+
+/* A menu tile: its links as a plain nested list. */
+.tile-menu__list,
+.tile-menu__children {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.tile-menu__children {
+    padding-left: 1rem;
+}
+
+.tile-menu__link {
+    display: block;
+    padding: 0.25rem 0;
+}
+
+.tile-menu__link--active {
+    font-weight: 600;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1910,9 +1991,48 @@ form select:focus {
         gap: 0.5rem;
     }
 
+    /* Narrow screens: one column, children indented under their parent, and
+       the whole nav behind the menu button that static/js/site-nav.js shows.
+       Without JavaScript the button stays hidden and the nav stays open. */
     .site-nav {
-        flex-wrap: wrap;
-        justify-content: center;
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+    }
+
+    .site-nav__menu,
+    .site-nav__account {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .site-nav__account {
+        border-left: none;
+        border-top: 1px solid var(--gray-200);
+        margin: 0.25rem 0 0;
+        padding: 0.25rem 0 0;
+    }
+
+    .site-nav__children {
+        padding: 0 0 0 1rem;
+    }
+
+    .site-nav__toggle:not([hidden]) {
+        display: inline-flex;
+        align-self: flex-end;
+        padding: 0.5rem 0.875rem;
+        border: 1px solid var(--gray-200);
+        border-radius: var(--radius-full);
+        background: white;
+        color: var(--gray-600);
+        font: inherit;
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+    }
+
+    .site-nav--closed {
+        display: none;
     }
 
     .hero {

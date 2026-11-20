@@ -108,6 +108,7 @@ impl MenuLink {
         .fetch_one(pool)
         .await
         .context("failed to create menu link")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(link)
     }
@@ -144,6 +145,25 @@ impl MenuLink {
         .fetch_all(pool)
         .await
         .context("failed to fetch menu links by menu and stage")?;
+
+        Ok(links)
+    }
+
+    /// Every menu link of a stage, in every menu, ordered by menu name, weight
+    /// and title: what navigation is built from, in one query.
+    pub async fn find_by_stage(pool: &PgPool, stage_id: Uuid) -> Result<Vec<Self>> {
+        let links = sqlx::query_as::<_, MenuLink>(
+            r#"
+            SELECT id, menu_name, path, title, parent_id, weight, hidden, plugin, stage_id, created, changed
+            FROM menu_link
+            WHERE stage_id = $1
+            ORDER BY menu_name ASC, weight ASC, title ASC
+            "#,
+        )
+        .bind(stage_id)
+        .fetch_all(pool)
+        .await
+        .context("failed to fetch menu links by stage")?;
 
         Ok(links)
     }
@@ -210,6 +230,7 @@ impl MenuLink {
         .fetch_optional(pool)
         .await
         .context("failed to update menu link")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(updated)
     }
@@ -221,6 +242,7 @@ impl MenuLink {
             .execute(pool)
             .await
             .context("failed to delete menu link")?;
+        crate::menu::invalidate_config_menus();
 
         Ok(result.rows_affected() > 0)
     }

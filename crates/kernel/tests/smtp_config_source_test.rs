@@ -105,10 +105,39 @@ async fn delete_smtp_rows(app: &TestApp) {
         .unwrap();
 }
 
+/// The settings a site form save rewrites in a form other than the one it
+/// read: the registration mode is stored as `user_registration` even when it
+/// came from the legacy `allow_user_registration` boolean or from no setting,
+/// and the boolean is deleted.
+const REGISTRATION_KEYS: &[&str] = &["user_registration", "allow_user_registration"];
+
 /// POST the site settings form as an administrator would, carrying every one of
 /// the old SMTP fields, and every other field at the value it already has, so
 /// the shared site settings are left as they were.
+///
+/// The registration settings are put back exactly as they were found
+/// afterwards: a stored mode overrides the boolean other test binaries set, so
+/// leaving one behind closed `/user/register` for any of them sharing this
+/// database.
 async fn post_with_smtp_fields(app: &TestApp, cookies: &str) -> StatusCode {
+    let mut registration = Vec::new();
+    for key in REGISTRATION_KEYS {
+        registration.push((*key, SiteConfig::get(&app.db, key).await.unwrap()));
+    }
+    let status = post_site_form(app, cookies).await;
+    for (key, value) in registration {
+        match value {
+            Some(value) => SiteConfig::set(&app.db, key, value).await.unwrap(),
+            None => {
+                SiteConfig::delete(&app.db, key).await.unwrap();
+            }
+        }
+    }
+    status
+}
+
+/// The POST [`post_with_smtp_fields`] makes.
+async fn post_site_form(app: &TestApp, cookies: &str) -> StatusCode {
     let html = site_page(app, cookies).await;
     let token = csrf_token(&html);
 

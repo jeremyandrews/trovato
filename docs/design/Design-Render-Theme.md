@@ -206,11 +206,40 @@ sanitized, so both are printed with `| safe` and a `{# SAFE: ... #}` comment.
 A text field's format, stored beside it as `<name>_format`, is part of that field
 and is not printed as a field of its own when the type declares `<name>` as text.
 
+### Menus in the Render Context
+
+Every config menu reaches templates, by name, as a tree:
+
+| Variable | What it holds |
+|---|---|
+| `menus_by_name` | Menu name to the menu's links as a tree. Each link is `{title, path, active, children}`, weight ordered, filtered for the viewer, localized. Every menu the stage has is present, empty when the viewer may follow none of its links. |
+| `menus_by_parent` | Parent path to the plugin entries registered under it that this viewer may see, as trees of the same shape. `menus_by_parent["/user"]` is the account menu. |
+| `menus_tree` | The plugin root entries as a tree of the same shape. |
+| `main_menu`, `footer_menu`, `main_menu_owned`, `menus` | Unchanged: the `main` and `footer` menus flat, whether a `main` menu exists, and the plugin root entries flat. |
+
+**One active rule.** `active` is computed in Rust (`menu::navigation::is_active`):
+the requested path is the link path, or starts with the link path followed by
+`/`; `/` matches only itself. A template prints it and never recomputes it.
+
+**Plugin entries.** One rule decides whether a plugin entry is a link for a
+viewer (`menu::nav_entry_for`): it is visible, the viewer holds its permission
+(or it has none, or the viewer is an administrator), and its path can be
+followed. A `{uid}` segment becomes the signed-in viewer's id; `{uid}` for an
+anonymous viewer, or any other `{...}` segment, leaves the entry out. Root
+entries and children go through the same rule.
+
+**A menu tile** (`tile_type: menu`) renders `menus_by_name[menu_name]` through
+`elements/tile--menu.html`, overridable per tile as
+`elements/tile--menu--{machine_name}.html`. Tile rendering takes one
+`TileRenderContext` (the viewer, the language, the role names tile visibility
+matches, and the menus already built), so a tile never reloads what the page
+has.
+
 ### Language-Aware Menus
 
-When the active language is not the default, `main_menu` and `footer_menu` are
-rewritten before they reach the template. A link whose target has a translation in
-that language gets:
+When the active language is not the default, every config menu is rewritten
+before it reaches the template. A link whose target has a translation in that
+language gets:
 
 - its path prefixed with `/{lang}`, so the click stays in the language; and
 - its title replaced by the translated item's title **when the link's title is the
@@ -222,10 +251,22 @@ translated label on an untranslated page is a promise the click breaks, and a
 prefixed address for a page that does not exist in that language is a 404 offered
 as navigation.
 
-The rewrite costs two queries for a whole menu, not two per link: one resolves
-link paths back to the items behind them, one reads the translated and
-default-language titles together. Nothing is cached, which is the same discipline
-as the rest of menu building — the links themselves are read per render.
+### The Menu Cache (B62)
+
+Menus render on every page, so they are cached. On a miss, one query reads every
+`menu_link` row of the stage, one resolves every link path's alias source, and
+for a non-default language one more reads the translated and default titles. The
+result is held in a `moka` cache with a five-minute TTL, keyed by stage and
+language. A warm render runs no `menu_link`, `url_alias` or `item_translation`
+query; the per-viewer filter and the active flag are computed in memory.
+
+Every in-process write that changes the answer clears it: menu link create,
+update and delete (the model functions, so the admin screens and anything else
+that calls them), URL alias create, update and delete, config storage saves and
+deletes of menu links, aliases, items and item translations, item translation
+save and delete, item update and delete (a label mirrors its target's title),
+and stage publish. `trovato config import` runs as its own process, so a running
+server sees an import when the TTL runs out.
 
 ### What This Doesn't Cover
 
