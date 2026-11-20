@@ -2,13 +2,15 @@
 //!
 //! Loads visible tiles for a given region/stage/path and renders them to HTML.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use sqlx::PgPool;
 
+use crate::gather::{GatherDenied, GatherQuery};
 use crate::menu::MenuTreeLink;
-use crate::models::tile::Tile;
+use crate::models::tile::{Tile, gather_tile_items};
+use crate::routes::gather::{ExecuteParams, execute_query_only, query_language};
 use crate::routes::helpers::html_escape;
 use crate::state::AppState;
 use crate::tap::UserContext;
@@ -70,24 +72,29 @@ impl TileService {
         let tiles = self
             .get_visible_tiles(region, stage_id, path, render.roles)
             .await?;
-        let html: String = tiles
-            .iter()
-            .map(|tile| render_tile_html(tile, render))
-            .collect();
+        let mut html = String::new();
+        for tile in &tiles {
+            if let Some(tile_html) = render_tile_html(tile, render).await {
+                html.push_str(&tile_html);
+            }
+        }
         Ok(html)
     }
 }
 
 /// Render a single tile to an HTML string: its body by type, in the wrapper.
-fn render_tile_html(tile: &Tile, render: &TileRenderContext<'_>) -> String {
+///
+/// `None` when the tile has nothing it may show this viewer, and so is left
+/// off the page entirely rather than drawn as an empty box.
+async fn render_tile_html(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
     let body = match tile.tile_type.as_str() {
         "custom_html" => custom_html_body(tile),
         "menu" => render_menu_tile(tile, render),
-        "gather_query" => gather_placeholder(tile),
+        "gather_query" => render_gather_tile(tile, render).await?,
         "chat" => chat_widget(&tile.machine_name),
         _ => "<p>Unknown tile type</p>".to_string(),
     };
-    wrap_tile(tile, &body)
+    Some(wrap_tile(tile, &body))
 }
 
 /// The markup every tile shares around its body: the tile's own classes and
@@ -103,17 +110,78 @@ fn wrap_tile(tile: &Tile, body: &str) -> String {
     )
 }
 
-/// A `gather_query` tile's body: a placeholder nothing fills yet.
-fn gather_placeholder(tile: &Tile) -> String {
+/// A `gather_query` tile: the first rows of the gather its config names
+/// (`query_id`), as many as its `items` (default 5).
+///
+/// The gather runs as the viewer, in the page's language, on its first page,
+/// through [`execute_query_only`]: the path the gather's own JSON and feed
+/// take, with the same authorization, stages and item access. One run per
+/// tile, fetching only the rows the tile shows.
+///
+/// `None`, and so no tile, when the viewer may not run the gather; when the
+/// gather does not exist, the config is invalid or the run fails, also with a
+/// warning naming the tile.
+async fn render_gather_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
+    let state = render.state;
     let query_id = tile
         .config
         .get("query_id")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    format!(
-        "<div class=\"tile-gather\" data-query-id=\"{}\"></div>",
-        html_escape(query_id)
+    let Some(query) = state.gather().get_query(query_id) else {
+        tracing::warn!(tile = %tile.machine_name, query_id, "gather tile names no registered gather");
+        return None;
+    };
+    let items = match gather_tile_items(&tile.config) {
+        Ok(items) => items,
+        Err(message) => {
+            tracing::warn!(tile = %tile.machine_name, query_id, message, "gather tile config is invalid");
+            return None;
+        }
+    };
+
+    let result = match execute_query_only(
+        state,
+        query_id,
+        ExecuteParams::new(1, String::new(), HashMap::new()),
+        query_language(render.language, state.default_language()),
+        render.viewer.clone(),
+        Some(items),
     )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) if e.downcast_ref::<GatherDenied>().is_some() => return None,
+        Err(e) => {
+            tracing::warn!(tile = %tile.machine_name, query_id, error = %e, "gather tile query failed");
+            return None;
+        }
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("tile", tile);
+    context.insert("rows", &result.items);
+    context.insert("empty_text", &query.display.empty_text);
+    context.insert("more_url", &gather_page_path(&query));
+    Some(render_tile_template(tile, render, &context))
+}
+
+/// Where a gather's own page is: its canonical URL, else its first route that
+/// takes no arguments, else `/gather/{query_id}`.
+fn gather_page_path(query: &GatherQuery) -> String {
+    query
+        .display
+        .canonical_url
+        .clone()
+        .or_else(|| {
+            query
+                .display
+                .routes
+                .iter()
+                .find(|route| route.params.is_empty())
+                .map(|route| route.path.clone())
+        })
+        .unwrap_or_else(|| format!("/gather/{}", query.query_id))
 }
 
 /// A `custom_html` tile's body, through the text format it names.
@@ -251,17 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn render_gather_query_tile() {
-        let tile = make_tile(
-            "gather_query",
-            serde_json::json!({ "query_id": "blog_listing" }),
-        );
-        let html = wrap_tile(&tile, &gather_placeholder(&tile));
-        assert!(html.contains("tile-gather"));
-        assert!(html.contains("data-query-id=\"blog_listing\""));
-    }
-
-    #[test]
     fn render_chat_tile() {
         let tile = make_tile("chat", serde_json::json!({}));
         let html = wrap_tile(&tile, &chat_widget(&tile.machine_name));
@@ -270,5 +327,31 @@ mod tests {
         assert!(html.contains("chat-messages"));
         // JS is now in static/js/chat-widget.js, loaded via script src
         assert!(html.contains("chat-widget.js"));
+    }
+
+    #[test]
+    fn a_gather_page_is_its_canonical_url_then_a_plain_route_then_its_id() {
+        let mut query: GatherQuery = serde_json::from_value(serde_json::json!({
+            "query_id": "upcoming",
+            "label": "Upcoming",
+            "description": null,
+            "definition": { "base_table": "item" },
+            "display": {
+                "format": "list",
+                "items_per_page": 10,
+                "routes": [
+                    { "path": "/topics/{slug}", "params": [{ "segment": "slug", "param": "tag" }] },
+                    { "path": "/upcoming" }
+                ]
+            },
+            "plugin": "core"
+        }))
+        .unwrap();
+        assert_eq!(gather_page_path(&query), "/upcoming");
+        query.display.canonical_url = Some("/events".into());
+        assert_eq!(gather_page_path(&query), "/events");
+        query.display.canonical_url = None;
+        query.display.routes.clear();
+        assert_eq!(gather_page_path(&query), "/gather/upcoming");
     }
 }

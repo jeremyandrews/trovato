@@ -200,8 +200,15 @@ async fn handle_gather_route(
         // access for the requesting viewer (Story 3.4) — the aliased JSON path
         // must filter exactly like the HTML path.
         let viewer = crate::routes::item::get_user_context(&session, &state).await;
-        match super::gather::execute_query_only(&state, &config.query_id, params, language, viewer)
-            .await
+        match super::gather::execute_query_only(
+            &state,
+            &config.query_id,
+            params,
+            language,
+            viewer,
+            None,
+        )
+        .await
         {
             Ok(result) => Json(serde_json::json!({
                 "items": result.items,

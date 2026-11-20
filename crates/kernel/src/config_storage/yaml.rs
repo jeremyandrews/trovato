@@ -1501,6 +1501,12 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
         }
         entity_types::TILE => {
             let tile: Tile = serde_yml::from_str(content).context("invalid tile YAML")?;
+            // The tile form's rule, so an import cannot store a count the form
+            // would refuse.
+            if tile.tile_type == "gather_query" {
+                crate::models::tile::gather_tile_items(&tile.config)
+                    .map_err(|message| anyhow::anyhow!("invalid tile config: {message}"))?;
+            }
             Ok(ParsedFile::plain(ConfigEntity::Tile(tile)))
         }
         entity_types::MENU_LINK => {

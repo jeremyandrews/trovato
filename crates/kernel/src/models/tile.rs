@@ -245,6 +245,50 @@ impl Tile {
     }
 }
 
+/// The rows a `gather_query` tile shows when its config names no count.
+pub const GATHER_TILE_DEFAULT_ITEMS: u32 = 5;
+
+/// The counts a `gather_query` tile's `items` may take.
+const GATHER_TILE_ITEMS: std::ops::RangeInclusive<u32> = 1..=50;
+
+/// Why an item count was refused, worded for whoever set it.
+const GATHER_TILE_ITEMS_ERROR: &str =
+    "The number of items must be a whole number between 1 and 50.";
+
+/// The number of rows a `gather_query` tile shows: its config's `items`, or
+/// [`GATHER_TILE_DEFAULT_ITEMS`] when the config has none.
+///
+/// # Errors
+///
+/// A message saying why, when `items` is not a whole number from 1 to 50.
+pub fn gather_tile_items(config: &serde_json::Value) -> std::result::Result<u32, &'static str> {
+    match config.get("items") {
+        None | Some(serde_json::Value::Null) => Ok(GATHER_TILE_DEFAULT_ITEMS),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| GATHER_TILE_ITEMS.contains(n))
+            .ok_or(GATHER_TILE_ITEMS_ERROR),
+    }
+}
+
+/// The item count typed into the tile form; left blank, the default.
+///
+/// # Errors
+///
+/// A message saying why, when the text is not a whole number from 1 to 50.
+pub fn parse_gather_tile_items(typed: &str) -> std::result::Result<u32, &'static str> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Ok(GATHER_TILE_DEFAULT_ITEMS);
+    }
+    typed
+        .parse::<u32>()
+        .ok()
+        .filter(|n| GATHER_TILE_ITEMS.contains(n))
+        .ok_or(GATHER_TILE_ITEMS_ERROR)
+}
+
 /// Simple glob-style path matching (supports trailing `*` only).
 fn path_matches(pattern: &str, path: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix('*') {
@@ -338,5 +382,37 @@ mod tests {
         assert!(!path_matches("/admin/*", "/user/login"));
         assert!(path_matches("/about", "/about"));
         assert!(!path_matches("/about", "/about/team"));
+    }
+
+    #[test]
+    fn gather_tile_items_reads_the_config_or_defaults_to_five() {
+        assert_eq!(gather_tile_items(&serde_json::json!({})), Ok(5));
+        assert_eq!(
+            gather_tile_items(&serde_json::json!({ "items": null })),
+            Ok(5)
+        );
+        assert_eq!(gather_tile_items(&serde_json::json!({ "items": 1 })), Ok(1));
+        assert_eq!(
+            gather_tile_items(&serde_json::json!({ "items": 50 })),
+            Ok(50)
+        );
+        for bad in [
+            serde_json::json!(0),
+            serde_json::json!(51),
+            serde_json::json!(-1),
+            serde_json::json!(2.5),
+            serde_json::json!("7"),
+        ] {
+            assert!(gather_tile_items(&serde_json::json!({ "items": bad })).is_err());
+        }
+    }
+
+    #[test]
+    fn parse_gather_tile_items_takes_blank_as_the_default() {
+        assert_eq!(parse_gather_tile_items(""), Ok(5));
+        assert_eq!(parse_gather_tile_items(" 12 "), Ok(12));
+        for bad in ["0", "51", "-3", "five", "2.5"] {
+            assert!(parse_gather_tile_items(bad).is_err(), "{bad}");
+        }
     }
 }

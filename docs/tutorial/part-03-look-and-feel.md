@@ -372,7 +372,7 @@ Tiles are content blocks placed in page regions. Each tile has:
 
 - **machine_name** -- Unique identifier (e.g., `search_box`, `topic_cloud`)
 - **region** -- Which slot it appears in (header, navigation, sidebar, footer)
-- **tile_type** -- `custom_html`, `menu`, or `gather_query`. A `menu` tile renders the config menu its `menu_name` names (default `main`) as a nested list, filtered for the viewer, through `elements/tile--menu.html`; override it for one tile with `elements/tile--menu--{machine_name}.html`.
+- **tile_type** -- `custom_html`, `menu`, or `gather_query`. A `menu` tile renders the config menu its `menu_name` names (default `main`) as a nested list, filtered for the viewer, through `elements/tile--menu.html`; override it for one tile with `elements/tile--menu--{machine_name}.html`. A `gather_query` tile lists the first `items` rows (1 to 50, default 5) of the gather its `query_id` names, run as the viewer, linked to each item and then to the gather's own page, through `elements/tile--gather_query.html`; a viewer who may not run the gather sees no tile. It shows no pager and no exposed filters.
 - **config** -- JSON configuration (HTML content, gather query ID, etc.)
 - **visibility** -- JSON rules for when the tile should appear (path patterns, role restrictions)
 - **weight** -- Sort order within the region

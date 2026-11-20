@@ -31,11 +31,14 @@ use crate::error::AppError;
 /// Returns `Some(lang)` when the active language differs from the site default,
 /// signalling that translation overlay should be applied.
 fn language_for_context(lang: &ResolvedLanguage, default: &str) -> Option<String> {
-    if lang.0 != default {
-        Some(lang.0.clone())
-    } else {
-        None
-    }
+    query_language(&lang.0, default)
+}
+
+/// The language a gather runs in for a page in `language`: `Some` when it
+/// differs from the site default, so the translation overlay applies, and
+/// `None` for the default language, which needs none.
+pub fn query_language(language: &str, default: &str) -> Option<String> {
+    (language != default).then(|| language.to_string())
 }
 
 /// Create the gather router.
@@ -405,7 +408,9 @@ pub enum GatherPageError {
 /// `None`, queries return the original (default-language) content.
 /// Execute a Gather query and return the structured result without rendering.
 ///
-/// Used for JSON API responses (content negotiation) and feeds.
+/// Used for JSON API responses (content negotiation), feeds and `gather_query`
+/// tiles. `per_page`, when given, replaces the gather's own page size for this
+/// run; a tile uses it to fetch only the rows it shows.
 ///
 /// A viewer who may not run the gather gets an error that downcasts to
 /// [`GatherDenied`], before the query runs; a caller that does not look for it
@@ -416,10 +421,13 @@ pub async fn execute_query_only(
     params: ExecuteParams,
     language: Option<String>,
     viewer: UserContext,
+    per_page: Option<u32>,
 ) -> anyhow::Result<crate::gather::GatherResult> {
-    if let Some(query) = state.gather().get_query(query_id) {
-        authorize_gather(&viewer, &query)?;
-    }
+    let query = state
+        .gather()
+        .get_query(query_id)
+        .ok_or_else(|| anyhow::anyhow!("query not found: {query_id}"))?;
+    authorize_gather(&viewer, &query)?;
     let user_id = viewer.authenticated.then_some(viewer.id);
     let query_context = QueryContext {
         current_user_id: user_id,
@@ -436,10 +444,15 @@ pub async fn execute_query_only(
         None => vec![LIVE_STAGE_ID],
     };
 
+    let mut display = query.display;
+    if let Some(per_page) = per_page {
+        display.items_per_page = per_page;
+    }
     state
         .gather()
-        .execute_with_stages(
-            query_id,
+        .execute_definition_with_stages(
+            &query.definition,
+            &display,
             params.page,
             exposed_filters,
             &stage_ids,

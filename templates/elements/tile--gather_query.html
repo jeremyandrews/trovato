@@ -1,0 +1,23 @@
+{#
+  A `gather_query` tile: the first rows of a gather, rendered on the server.
+
+  Context:
+    tile        the tile (label, machine_name, config)
+    rows        the gather's rows, in its order, at most the tile's `items`;
+                an item row carries `title` and `url` (its alias when it has one)
+    empty_text  the gather's empty text, when it has one
+    more_url    the gather's own page
+
+  Override for every gather tile with `elements/tile--gather_query.html` in a
+  theme, or for one tile with `elements/tile--gather_query--<machine_name>.html`.
+#}
+{% if rows | length > 0 %}
+<ul class="tile-gather__list">
+{% for row in rows %}
+    <li class="tile-gather__item">{% if row.url is defined %}<a href="{{ row.url }}">{{ row.title | default(value="") }}</a>{% else %}{{ row.title | default(value="") }}{% endif %}</li>
+{% endfor %}
+</ul>
+{% elif empty_text %}
+<p class="tile-gather__empty">{{ empty_text }}</p>
+{% endif %}
+<p class="tile-gather__more"><a href="{{ more_url }}">More</a></p>

@@ -9,7 +9,10 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::form::csrf::generate_csrf_token;
-use crate::models::tile::{CreateTile, Tile, UpdateTile};
+use crate::models::tile::{
+    CreateTile, GATHER_TILE_DEFAULT_ITEMS, Tile, UpdateTile, gather_tile_items,
+    parse_gather_tile_items,
+};
 use crate::state::AppState;
 
 use super::helpers::{
@@ -33,6 +36,8 @@ pub struct TileFormData {
     pub format: Option<String>,
     pub menu_name: Option<String>,
     pub query_id: Option<String>,
+    /// A `gather_query` tile's row count, as typed; blank for the default.
+    pub items: Option<String>,
     #[serde(default)]
     pub weight: i32,
     pub status: Option<String>,
@@ -40,8 +45,10 @@ pub struct TileFormData {
 
 impl TileFormData {
     /// Build the type-specific config JSON from form data.
-    fn build_config(&self) -> serde_json::Value {
-        match self.tile_type.as_str() {
+    ///
+    /// Fails with a message for the form's user when a value is out of range.
+    fn build_config(&self) -> Result<serde_json::Value, &'static str> {
+        Ok(match self.tile_type.as_str() {
             "custom_html" => serde_json::json!({
                 "body": self.body.as_deref().unwrap_or(""),
                 "format": self.format.as_deref().unwrap_or("filtered_html"),
@@ -51,10 +58,11 @@ impl TileFormData {
             }),
             "gather_query" => serde_json::json!({
                 "query_id": self.query_id.as_deref().unwrap_or(""),
+                "items": parse_gather_tile_items(self.items.as_deref().unwrap_or(""))?,
             }),
             "chat" => serde_json::json!({}),
             _ => serde_json::json!({}),
-        }
+        })
     }
 }
 
@@ -109,7 +117,10 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("action", "/admin/structure/tiles/add");
     context.insert("csrf_token", &csrf_token);
     context.insert("editing", &false);
-    context.insert("values", &serde_json::json!({}));
+    context.insert(
+        "values",
+        &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS }),
+    );
     context.insert("path", "/admin/structure/tiles/add");
 
     render_admin_template(
@@ -143,7 +154,10 @@ async fn add_tile_submit(
         );
     }
 
-    let config = form.build_config();
+    let config = match form.build_config() {
+        Ok(config) => config,
+        Err(message) => return render_error(message),
+    };
     let input = CreateTile {
         machine_name: form.machine_name.clone(),
         label: form.label.clone(),
@@ -200,6 +214,7 @@ async fn edit_tile_form(
             "format": tile.config.get("format").and_then(|v| v.as_str()).unwrap_or("filtered_html"),
             "menu_name": tile.config.get("menu_name").and_then(|v| v.as_str()).unwrap_or("main"),
             "query_id": tile.config.get("query_id").and_then(|v| v.as_str()).unwrap_or(""),
+            "items": gather_tile_items(&tile.config).unwrap_or(GATHER_TILE_DEFAULT_ITEMS),
             "weight": tile.weight,
             "status": tile.status == 1,
         }),
@@ -232,7 +247,10 @@ async fn edit_tile_submit(
         return resp;
     }
 
-    let config = form.build_config();
+    let config = match form.build_config() {
+        Ok(config) => config,
+        Err(message) => return render_error(message),
+    };
     let input = UpdateTile {
         label: Some(form.label.clone()),
         region: Some(form.region.clone()),
