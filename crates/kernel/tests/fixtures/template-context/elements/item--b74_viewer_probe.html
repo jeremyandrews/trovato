@@ -1,0 +1,10 @@
+{#
+  Test fixture for `template_context_test`: an item template that names its
+  viewer. The roles are printed one by one so the test can see that a role name
+  reaches the page escaped.
+#}
+<article class="viewer-probe">
+<pre id="item-viewer">{{ viewer | json_encode }}</pre>
+<ul id="item-roles">{% for role in viewer.roles %}<li class="role">{{ role }}</li>{% endfor %}</ul>
+{% if viewer.authenticated %}<a class="own-page" href="/user/{{ viewer.id }}">You</a>{% endif %}
+</article>

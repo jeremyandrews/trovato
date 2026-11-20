@@ -1,0 +1,9 @@
+{#
+  Test fixture for `template_context_test`: a blog item template that prints the
+  plugin output on its own and the whole `children` string, each between
+  markers, so the test can compare them byte for byte.
+#}
+<article class="plugin-output-probe">
+{% if plugin_output is defined %}<!--plugin-output-->{{ plugin_output | safe }}<!--/plugin-output-->{% endif %}
+<!--children-->{{ children | safe }}<!--/children-->
+</article>

@@ -1,0 +1,13 @@
+{#
+  Test fixture for `template_context_test`. Replaces the stock page layout in
+  that file's own app only, so the page-level `viewer` can be read back off the
+  served page. `viewer` is printed through `json_encode` under autoescaping,
+  exactly as a theme would print any other value.
+#}
+<!DOCTYPE html>
+<html lang="{{ active_language }}">
+<body>
+<pre id="page-viewer">{{ viewer | json_encode }}</pre>
+<main>{{ content | safe }}</main> {# SAFE: the kernel-rendered item #}
+</body>
+</html>
