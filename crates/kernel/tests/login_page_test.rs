@@ -2,9 +2,10 @@
 //! The login page, as an anonymous visitor loads it.
 //!
 //! `templates/user/login.html` linked "Forgot password?" to
-//! `/user/password-reset`, which the kernel registers for POST only: it is the
-//! JSON endpoint that mints a reset token, not a page. A person who clicked the
-//! link got a 405. The page a person can load is `/user/recover`.
+//! `/user/password-reset` when that was a POST-only JSON endpoint, and a person
+//! who clicked the link got a 405; it was pointed at `/user/recover` instead.
+//! BL-07 made `/user/password-reset` the reset-by-email page, so the link
+//! points there again.
 //!
 //! The test follows the link the page actually renders rather than asserting on
 //! template text, so it fails if the href drifts to anything that does not load.
@@ -70,7 +71,7 @@ fn the_forgot_password_link_points_at_a_page_a_person_can_load() {
             .next()
             .expect("the Forgot password link has an internal href");
 
-        assert_eq!(href, "/user/recover");
+        assert_eq!(href, "/user/password-reset");
         let (status, _) = get(app, &href).await;
         assert_eq!(status, StatusCode::OK, "GET {href}");
     });
