@@ -9,6 +9,24 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Plugin mail from `tap_cron` and `tap_queue_worker` now sends
+
+**Who is affected:** a plugin that calls `send-to-site-contacts`
+(`host::mail_send_to_site_contacts`) from `tap_cron`, `tap_queue_worker` or
+`tap_install`.
+
+**What changed.** Those calls always failed with `ERR_MAIL_NOT_CONFIGURED`,
+because background dispatch carried no email service, even on a site with SMTP
+configured. They now send, through the same email service the kernel uses, and
+each one is counted against the plugin's `mail` bucket (100 an hour by default,
+`TROVATO_RATE_LIMIT_MAIL` or `rate_limit.mail` to change it), exactly as a call
+from a request is.
+
+**How to find out.** Search your plugin for `mail_send_to_site_contacts` in
+code reached from those taps. A plugin that called it there and treated the
+error as "mail is off" will now deliver; make sure that is what it should do,
+and that a loop cannot spend the hour's bucket on mail nobody wants.
+
 ### SMTP settings stored in `/admin/config/site` are deleted; use the environment
 
 **Who is affected:** a site whose administrator entered SMTP settings in the
