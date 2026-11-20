@@ -1,8 +1,9 @@
 //! Site configuration admin routes.
 //!
 //! Provides the admin UI for managing site settings like site name,
-//! email, language, registration mode, front page configuration,
-//! SMTP delivery, and notification preferences.
+//! email, language, registration mode, front page configuration and
+//! notification preferences. SMTP delivery is configured in the environment
+//! only (`SMTP_*`); the page shows what the kernel is using, read only.
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -41,18 +42,6 @@ struct SiteConfigFormData {
     items_per_page: String,
     registration_mode: String,
     #[serde(default)]
-    smtp_host: String,
-    #[serde(default)]
-    smtp_port: String,
-    #[serde(default)]
-    smtp_username: String,
-    #[serde(default)]
-    smtp_password: String,
-    #[serde(default)]
-    smtp_encryption: String,
-    #[serde(default)]
-    smtp_from: String,
-    #[serde(default)]
     notify_admin_on_register: Option<String>,
     #[serde(default)]
     update_check: Option<String>,
@@ -77,16 +66,6 @@ fn is_valid_email(email: &str) -> bool {
         && parts[1].contains('.')
         && !parts[1].starts_with('.')
         && !parts[1].ends_with('.')
-}
-
-/// Load a string site config value, returning empty string on missing/error.
-async fn load_config_string(pool: &sqlx::PgPool, key: &str) -> String {
-    SiteConfig::get(pool, key)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default()
 }
 
 // =============================================================================
@@ -127,29 +106,6 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
         .as_str()
         .to_string();
 
-    // SMTP settings
-    let smtp_host = load_config_string(pool, "smtp_host").await;
-    let smtp_port = {
-        let raw = load_config_string(pool, "smtp_port").await;
-        if raw.is_empty() {
-            "587".to_string()
-        } else {
-            raw
-        }
-    };
-    let smtp_username = load_config_string(pool, "smtp_username").await;
-    let smtp_encryption = load_config_string(pool, "smtp_encryption").await;
-    let smtp_from = load_config_string(pool, "smtp_from").await;
-
-    // Password: detect env: prefix to show "configured via env" instead of the value
-    let smtp_password_raw = load_config_string(pool, "smtp_password").await;
-    let smtp_password_is_env = smtp_password_raw.starts_with("env:");
-    let smtp_password = if smtp_password_is_env {
-        String::new()
-    } else {
-        smtp_password_raw
-    };
-
     // Notification preferences
     let update_check = crate::update_status::setting_allows_check(pool).await;
     let update_status = crate::update_status::stored_status(pool).await;
@@ -178,13 +134,7 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     context.insert("front_page", &front_page);
     context.insert("items_per_page", &items_per_page);
     context.insert("registration_mode", &registration_mode);
-    context.insert("smtp_host", &smtp_host);
-    context.insert("smtp_port", &smtp_port);
-    context.insert("smtp_username", &smtp_username);
-    context.insert("smtp_password", &smtp_password);
-    context.insert("smtp_password_is_env", &smtp_password_is_env);
-    context.insert("smtp_encryption", &smtp_encryption);
-    context.insert("smtp_from", &smtp_from);
+    context.insert("smtp", state.smtp_summary());
     context.insert("notify_admin_on_register", &notify_admin_on_register);
     context.insert("update_check", &update_check);
     context.insert("update_status", &update_status);
@@ -262,38 +212,9 @@ async fn site_config_submit(
         errors.push("Invalid registration mode.".to_string());
     }
 
-    // Validate SMTP port if provided
-    let smtp_port_str = form.smtp_port.trim();
-    if !smtp_port_str.is_empty() {
-        match smtp_port_str.parse::<u16>() {
-            Ok(0) => {
-                errors.push("SMTP port must be between 1 and 65535.".to_string());
-            }
-            Err(_) => {
-                errors.push("SMTP port must be a number.".to_string());
-            }
-            Ok(_) => {}
-        }
-    }
-
-    // Validate SMTP from address if provided
-    let smtp_from = form.smtp_from.trim();
-    if !smtp_from.is_empty() && !is_valid_email(smtp_from) {
-        errors.push("SMTP from address must be a valid email.".to_string());
-    }
-
-    // Validate encryption value
-    let smtp_encryption = form.smtp_encryption.trim();
-    if !smtp_encryption.is_empty() && !["starttls", "tls", "none"].contains(&smtp_encryption) {
-        errors.push("Invalid SMTP encryption mode.".to_string());
-    }
-
     if !errors.is_empty() {
         // Re-render form with errors
         let csrf_token = generate_csrf_token(&session).await;
-
-        let smtp_password_raw = load_config_string(pool, "smtp_password").await;
-        let smtp_password_is_env = smtp_password_raw.starts_with("env:");
 
         let notify_admin_on_register = form.notify_admin_on_register.is_some();
 
@@ -305,13 +226,7 @@ async fn site_config_submit(
         context.insert("front_page", &form.front_page);
         context.insert("items_per_page", &form.items_per_page);
         context.insert("registration_mode", &form.registration_mode);
-        context.insert("smtp_host", &form.smtp_host);
-        context.insert("smtp_port", &form.smtp_port);
-        context.insert("smtp_username", &form.smtp_username);
-        context.insert("smtp_password", &form.smtp_password);
-        context.insert("smtp_password_is_env", &smtp_password_is_env);
-        context.insert("smtp_encryption", &form.smtp_encryption);
-        context.insert("smtp_from", &form.smtp_from);
+        context.insert("smtp", state.smtp_summary());
         context.insert("notify_admin_on_register", &notify_admin_on_register);
         context.insert("update_check", &form.update_check.is_some());
         context.insert(
@@ -375,53 +290,6 @@ async fn site_config_submit(
     if let Err(e) = mode.save(pool).await {
         tracing::error!(error = %e, "failed to save user_registration");
         return render_server_error("Failed to save site settings.");
-    }
-
-    // Save SMTP settings
-    let smtp_host = form.smtp_host.trim();
-    if let Err(e) = SiteConfig::set(pool, "smtp_host", serde_json::json!(smtp_host)).await {
-        tracing::error!(error = %e, "failed to save smtp_host");
-    }
-
-    let smtp_port_val = if smtp_port_str.is_empty() {
-        "587"
-    } else {
-        smtp_port_str
-    };
-    if let Err(e) = SiteConfig::set(pool, "smtp_port", serde_json::json!(smtp_port_val)).await {
-        tracing::error!(error = %e, "failed to save smtp_port");
-    }
-
-    if let Err(e) = SiteConfig::set(
-        pool,
-        "smtp_username",
-        serde_json::json!(form.smtp_username.trim()),
-    )
-    .await
-    {
-        tracing::error!(error = %e, "failed to save smtp_username");
-    }
-
-    // Only overwrite password if a non-empty value was submitted and not env-sourced
-    let password_trimmed = form.smtp_password.trim();
-    if !password_trimmed.is_empty() {
-        let current_raw = load_config_string(pool, "smtp_password").await;
-        if !current_raw.starts_with("env:")
-            && let Err(e) =
-                SiteConfig::set(pool, "smtp_password", serde_json::json!(password_trimmed)).await
-        {
-            tracing::error!(error = %e, "failed to save smtp_password");
-        }
-    }
-
-    if let Err(e) =
-        SiteConfig::set(pool, "smtp_encryption", serde_json::json!(smtp_encryption)).await
-    {
-        tracing::error!(error = %e, "failed to save smtp_encryption");
-    }
-
-    if let Err(e) = SiteConfig::set(pool, "smtp_from", serde_json::json!(smtp_from)).await {
-        tracing::error!(error = %e, "failed to save smtp_from");
     }
 
     // Notification preferences — checkbox: present means true, absent means false
@@ -503,8 +371,8 @@ async fn test_email(
         let _ = session
             .insert(
                 FLASH_KEY,
-                "Email service is not configured. Set SMTP_HOST environment variable \
-                 or configure SMTP settings above and restart the server.",
+                "Email service is not configured. Set the SMTP_HOST environment \
+                 variable and restart the server.",
             )
             .await;
     }

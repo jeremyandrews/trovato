@@ -74,40 +74,30 @@
         </fieldset>
 
         <fieldset class="fieldset">
-            <legend>Email / SMTP</legend>
+            <legend>Email delivery</legend>
             <div class="fieldset__content">
-                <div class="form-item">
-                    <label for="smtp_host" class="form-item__label">SMTP host</label>
-                    <input type="text" id="smtp_host" name="smtp_host" class="form-text" value="{{ smtp_host }}" placeholder="smtp.example.com">
-                </div>
-                <div class="form-item">
-                    <label for="smtp_port" class="form-item__label">SMTP port</label>
-                    <input type="number" id="smtp_port" name="smtp_port" class="form-text" value="{{ smtp_port | default(value='587') }}" min="1" max="65535">
-                </div>
-                <div class="form-item">
-                    <label for="smtp_username" class="form-item__label">SMTP username</label>
-                    <input type="text" id="smtp_username" name="smtp_username" class="form-text" value="{{ smtp_username }}">
-                </div>
-                <div class="form-item">
-                    <label for="smtp_password" class="form-item__label">SMTP password</label>
-                    {% if smtp_password_is_env %}
-                    <p class="form-item__description"><em>Configured via environment variable.</em></p>
-                    {% else %}
-                    <input type="password" id="smtp_password" name="smtp_password" class="form-text" value="{{ smtp_password }}" autocomplete="new-password">
-                    {% endif %}
-                </div>
-                <div class="form-item">
-                    <label for="smtp_encryption" class="form-item__label">Encryption</label>
-                    <select id="smtp_encryption" name="smtp_encryption" class="form-select">
-                        <option value="starttls" {% if smtp_encryption == "starttls" or not smtp_encryption %}selected{% endif %}>STARTTLS (port 587)</option>
-                        <option value="tls" {% if smtp_encryption == "tls" %}selected{% endif %}>TLS (port 465)</option>
-                        <option value="none" {% if smtp_encryption == "none" %}selected{% endif %}>None (insecure)</option>
-                    </select>
-                </div>
-                <div class="form-item">
-                    <label for="smtp_from" class="form-item__label">From address</label>
-                    <input type="email" id="smtp_from" name="smtp_from" class="form-text" value="{{ smtp_from }}" placeholder="Uses site email if empty">
-                </div>
+                {# Read only. SMTP is configured in the server environment and
+                   nowhere else; this shows what the kernel is using. The
+                   username and password say only whether they are set. #}
+                <dl>
+                    <dt>SMTP host</dt>
+                    <dd id="smtp-host">{% if smtp.host %}{{ smtp.host }}{% else %}not configured: mail is not sent{% endif %}</dd>
+                    <dt>Port</dt>
+                    <dd id="smtp-port">{{ smtp.port }}</dd>
+                    <dt>Encryption</dt>
+                    <dd id="smtp-encryption">{{ smtp.encryption }}</dd>
+                    <dt>From address</dt>
+                    <dd id="smtp-from">{{ smtp.from }}</dd>
+                    <dt>Username</dt>
+                    <dd id="smtp-username">{% if smtp.username_set %}set{% else %}not set{% endif %}</dd>
+                    <dt>Password</dt>
+                    <dd id="smtp-password">{% if smtp.password_set %}set{% else %}not set{% endif %}</dd>
+                </dl>
+                <div class="form-item__description">Set in the server environment
+                (<code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_ENCRYPTION</code>,
+                <code>SMTP_FROM_EMAIL</code>, <code>SMTP_USERNAME</code>,
+                <code>SMTP_PASSWORD</code>) and read at startup; change them there
+                and restart the server.</div>
             </div>
         </fieldset>
 
