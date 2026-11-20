@@ -215,7 +215,9 @@ Metrics include:
 
 The `path` label on the HTTP series is the route template that answered, such as
 `/item/{id}`, never the address asked for, so there is one series per route and
-not one per item. A request no route matched is counted under `<unmatched>`.
+not one per item. A request no route matched is counted under `<fallback>`: the
+fallback serves URL aliases (`/conferences/rustconf-2026`) and answers 404s, so
+both land there.
 
 ```bash
 curl -s http://localhost:3000/metrics | grep -E '^http_requests_total'

@@ -50,9 +50,10 @@ pub(crate) fn classify(elapsed_ms: u128, threshold_ms: u128) -> Speed {
     }
 }
 
-/// The route label of a request that matched no route: one series for every
-/// 404 from the fallback, rather than one per path asked for.
-const UNMATCHED_ROUTE: &str = "<unmatched>";
+/// The route label of a request no route matched, which the router's fallback
+/// answers: a URL alias it resolves and serves, or a 404. One series for all of
+/// them, rather than one per path asked for.
+const UNMATCHED_ROUTE: &str = "<fallback>";
 
 /// Middleware that reports total request duration in a `Server-Timing` header.
 ///
