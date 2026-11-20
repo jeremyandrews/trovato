@@ -254,6 +254,7 @@ mod tests {
                 ai_background: false,
                 item_background: false,
                 user_directory: false,
+                mail_users: false,
                 http_max_transfer: None,
                 public_functions: vec![],
             }),

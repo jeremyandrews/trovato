@@ -1259,6 +1259,25 @@ async fn render_profile(
     if let Some(error) = error {
         context.insert("error", error);
     }
+    // The plugins this member opted out of mailing them, each with a
+    // Resubscribe button. Nothing is shown when there are none.
+    match crate::models::user_mail_preference::opted_out_plugins(state.db(), user.id).await {
+        Ok(plugins) if !plugins.is_empty() => {
+            let opt_outs: Vec<serde_json::Value> = plugins
+                .iter()
+                .map(|plugin| {
+                    serde_json::json!({
+                        "plugin": plugin,
+                        "label": super::mail_preference::plugin_label(state, plugin),
+                    })
+                })
+                .collect();
+            context.insert("mail_opt_outs", &opt_outs);
+            context.insert("mail_csrf_token", &generate_csrf_token(session).await);
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "failed to list mail opt outs"),
+    }
     super::helpers::inject_site_context(state, session, &mut context, "/user/profile").await;
 
     match state.theme().tera().render("user/profile.html", &context) {
@@ -1758,4 +1777,5 @@ pub fn router() -> Router<AppState> {
             "/user/data-export",
             get(super::user_data_export::export_my_data),
         )
+        .merge(super::mail_preference::router())
 }
