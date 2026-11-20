@@ -204,6 +204,17 @@ pub enum FieldType {
     /// Storage format: `{"root": {...}, "content": [{type, props, zones}, ...]}`.
     /// Supports 12 component types with nested zones for visual page composition.
     PageBuilder,
+    /// Tags of one category, named by the category's machine name.
+    ///
+    /// Storage format: a JSON array of tag uuid strings (`["<uuid>", …]`), the
+    /// shape gather's `has_tag` and `has_tag_or_descendants` filters read. Every
+    /// write is checked: each value must name a tag of this category, and there
+    /// may be no more values than the field's `cardinality` allows. The item
+    /// page resolves the tags into `referenced_tags`.
+    ///
+    /// Added in 0.105 (B72). Additive: a plugin that matches on `FieldType`
+    /// needs a `_` arm or this one.
+    CategoryReference(String),
 }
 
 /// A content type definition returned by `tap_item_info`.

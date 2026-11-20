@@ -71,6 +71,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/search", get(search))
         .route("/api/v1/user/export", get(export_user_data))
         .route("/api/v1/items/autocomplete", get(autocomplete_items))
+        .route("/api/v1/tags/autocomplete", get(autocomplete_tags))
         .route("/api/v1/media/browse", get(browse_media))
         .route("/api/openapi.json", get(openapi_spec))
         .route(
@@ -454,6 +455,62 @@ struct MediaItem {
     created: i64,
 }
 
+/// Autocomplete endpoint for CategoryReference fields: the tag picker.
+///
+/// `GET /api/v1/tags/autocomplete?category=topics&q=ru&limit=10`
+///
+/// Returns `[{"id": "uuid", "title": "..."}]`, the shape
+/// [`autocomplete_items`] answers with, so one script serves both widgets: the
+/// tags of `category` whose label starts with `q`, case-insensitively, by
+/// weight then label. Same route family, so the same session handling and the
+/// same `api` rate limit bucket. Tags have no per-tag visibility: every tag
+/// listing route (`/api/category/{id}/tags`, the category admin) shows them all,
+/// and so does this.
+async fn autocomplete_tags(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let category = params.get("category").map(String::as_str).unwrap_or("");
+    let query = params.get("q").map(String::as_str).unwrap_or("");
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(10)
+        .clamp(1, 50);
+
+    if category.is_empty() || query.is_empty() {
+        return Json(serde_json::json!([])).into_response();
+    }
+    let pattern = format!(
+        "{}%",
+        query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+
+    match sqlx::query_as::<_, (uuid::Uuid, String)>(
+        "SELECT id, label FROM category_tag WHERE category_id = $1 AND label ILIKE $2 \
+         ORDER BY weight, label LIMIT $3",
+    )
+    .bind(category)
+    .bind(&pattern)
+    .bind(limit)
+    .fetch_all(state.db())
+    .await
+    {
+        Ok(tags) => Json(serde_json::Value::Array(
+            tags.into_iter()
+                .map(|(id, label)| serde_json::json!({ "id": id, "title": label }))
+                .collect(),
+        ))
+        .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "tag autocomplete query failed");
+            Json(serde_json::json!([])).into_response()
+        }
+    }
+}
 /// Browse the media library with filtering, search, and pagination.
 ///
 /// `GET /api/v1/media/browse?page=1&page_size=24&type=image&q=logo&sort=newest`

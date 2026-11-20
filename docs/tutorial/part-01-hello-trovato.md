@@ -203,7 +203,8 @@ Trovato supports these field types:
 | `Date` | A calendar date | Start date, CFP deadline |
 | `Boolean` | True/false | "Is this an online event?" |
 | `File` | A file upload (image, PDF, etc.) | Conference logo, schedule PDF |
-| `RecordReference` | A link to another record (item, category term, etc.) | Topics, speakers |
+| `RecordReference` | A link to another item, of one content type | Speakers |
+| `CategoryReference` | Tags of one category, stored as an array of tag ids | Topics |
 | `Integer` | Whole number | Attendee count |
 | `Float` | Decimal number | Rating score |
 | `Email` | Email address | Contact email |

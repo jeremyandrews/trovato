@@ -39,6 +39,18 @@
             <div class="description">Field types cannot be changed after creation.</div>
         </div>
 
+        {% if field_category %}
+        <div class="form-item">
+            <label for="edit_field_category" class="form-item__label form-item__label--required">Category</label>
+            <select id="edit_field_category" name="category" class="form-select" required>
+                {% for category in categories %}
+                <option value="{{ category.id }}"{% if field_category == category.id %} selected{% endif %}>{{ category.label }}</option>
+                {% endfor %}
+            </select>
+            <div class="description">The field holds tags of this category. Values already saved are not changed; the next save of the field is checked against the category chosen here.</div>
+        </div>
+        {% endif %}
+
         <div class="form-item">
             <label class="form-item__label">
                 <input type="checkbox" name="required" value="1"

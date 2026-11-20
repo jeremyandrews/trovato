@@ -6,6 +6,7 @@
     <input type="text" id="{{ name }}_autocomplete"
            class="form-text record-ref-autocomplete"
            data-target-type="{{ element.attributes['data-target-type'] | default(value='') }}"
+           data-autocomplete-url="{{ element.attributes['data-autocomplete-url'] | default(value='/api/v1/items/autocomplete?type=') }}"
            data-hidden-field="{{ name }}"
            value="{{ element.attributes['data-display'] | default(value='') }}"
            placeholder="Search {{ element.attributes['data-target-type'] | default(value='') }}..."

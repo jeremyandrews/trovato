@@ -80,6 +80,7 @@ above and `-12`, `-13`, `-14` from the database table.
 | -61 | `ERR_ITEM_BACKGROUND_DENIED` | Called from cron or a queue worker without the `item_background` capability | Declare `item_background = true` in `[capabilities]` if the plugin needs kernel authority there |
 | -62 | `ERR_ITEM_NOT_FOUND` | `delete-item` was given an id that names no item | Treat as already deleted if that is what you meant |
 | -63 | `ERR_ITEM_WRITE_DEPTH` | A write made from inside item write taps nested 4 deep | A tap that writes items should not depend on a chain of other plugins' taps writing in turn |
+| -64 | `ERR_ITEM_INVALID_FIELDS` | `save-item` was refused by the field value check every item write runs: a field holds more values than its `cardinality` allows, or a `CategoryReference` field holds something that is not a tag of its category. Nothing was written | Send no more values than the field's cardinality, and only tag ids of the field's category, as a list |
 
 ## Text Format Errors
 

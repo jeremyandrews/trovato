@@ -96,7 +96,20 @@
                     <option value="date" {% if selected_type == "date" %}selected{% endif %}>Date</option>
                     <option value="email" {% if selected_type == "email" %}selected{% endif %}>Email</option>
                     <option value="record_reference" {% if selected_type == "record_reference" %}selected{% endif %}>Reference</option>
+                    <option value="category_reference" {% if selected_type == "category_reference" %}selected{% endif %}>Category reference (tags)</option>
                 </select>
+            </div>
+
+            <div class="form-item" style="flex: 1; min-width: 200px;">
+                <label for="new_field_category" class="form-item__label">Category</label>
+                <select id="new_field_category" name="category" class="form-select">
+                    <option value="">- None -</option>
+                    {% set selected_category = values.category | default(value='') %}
+                    {% for category in categories %}
+                    <option value="{{ category.id }}"{% if selected_category == category.id %} selected{% endif %}>{{ category.label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="description">Required for a category reference: the field holds tags of this category.</div>
             </div>
 
             <div class="form-item" style="display: flex; align-items: flex-end;">

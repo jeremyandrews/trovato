@@ -9,6 +9,38 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### A `CategoryReference` field kind; cardinality is enforced on every write
+
+**Who is affected:** a plugin that matches on `FieldType`; anyone who writes
+items through the item API, a plugin's `save-item` or `config import`; a site
+whose stored items hold more values than a field's `cardinality` allows.
+
+**What changed.** **API change:** `trovato_sdk::types::FieldType` has a new
+variant, `CategoryReference(String)`, naming a category; its value is a JSON
+array of tag uuid strings, whatever the cardinality. `FieldType` is not
+`#[non_exhaustive]`, so a plugin with an exhaustive `match` on it stops
+compiling against this SDK until it adds the arm or a `_` arm; a plugin that
+only constructs field types is unaffected. The plugin API version does not move
+for it: 0.105.0 is not released yet, and the variant ships in 0.105.0 beside
+the `text-format` interface, so a plugin that declares a `CategoryReference`
+field should declare `api_version = "0.105"`, which a 0.104 kernel refuses.
+`save-item` has a new error, `ERR_ITEM_INVALID_FIELDS` (-64).
+
+Behaviour changes that follow: every item write (the item forms, the item API,
+`save-item`, revert and `config import`) refuses more values than a field's
+`cardinality` allows (a JSON array counts its elements; anything else counts as
+one) and, for a `CategoryReference` field, any value that is not a tag of its
+category. The item API answers 422 naming each value, `save-item` returns -64,
+and `config import` fails the set before writing anything. Only written values
+are judged: nothing stored is rewritten, and an update that leaves a field as
+it was does not re-check it.
+
+**How to find out.** Items that hold more values than a field now allows (run
+per type and field, `N` being the field's `cardinality`):
+`SELECT id FROM item WHERE type = '<type>' AND jsonb_typeof(fields -> '<field>') = 'array' AND jsonb_array_length(fields -> '<field>') > N;`.
+They stay as they are until someone edits that field. To find exhaustive
+matches in a plugin: `grep -rn "FieldType::" plugins/*/src`.
+
 ### File fields are indexed and promoted; uploads to 10 MB; served type is the stored type
 
 **Who is affected:** a site with File fields; anyone who saves items through

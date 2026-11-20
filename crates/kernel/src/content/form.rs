@@ -265,7 +265,7 @@ impl FormBuilder {
         weight: i32,
     ) -> Vec<(String, FormElement)> {
         let name = &field.field_name;
-        if field.cardinality == 1 {
+        if !crate::content::field_values::stores_a_list(field) {
             let mut elements = vec![(name.clone(), self.widget(field, value, mode))];
             if matches!(field.field_type, FieldType::TextLong) {
                 elements.push((format!("{name}_format"), self.format_select(value, mode)));
@@ -372,6 +372,23 @@ impl FormBuilder {
                         .unwrap_or_default();
                     FormElement::widget("record_reference")
                         .attribute("data-target-type", target_type.clone())
+                        .attribute("data-autocomplete-url", "/api/v1/items/autocomplete?type=")
+                        .attribute("data-display", display)
+                        .default_value(id)
+                }
+                // The tag picker: the same widget and script, asking the tags
+                // endpoint for this category. One slot holds one tag uuid; the
+                // field is always the repeating container (`stores_a_list`), so
+                // what it posts back is an array. The box shows the tag's label.
+                FieldType::CategoryReference(category) => {
+                    let id = extract_reference_id(value);
+                    let display = self.reference_titles.get(&id).cloned().unwrap_or_default();
+                    FormElement::widget("record_reference")
+                        .attribute("data-target-type", category.clone())
+                        .attribute(
+                            "data-autocomplete-url",
+                            "/api/v1/tags/autocomplete?category=",
+                        )
                         .attribute("data-display", display)
                         .default_value(id)
                 }

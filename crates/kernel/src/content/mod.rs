@@ -12,6 +12,7 @@ pub mod block_render;
 pub mod block_types;
 pub mod body_field;
 pub mod compound;
+pub mod field_values;
 pub(crate) mod file_refs;
 mod filter;
 mod form;
@@ -27,6 +28,7 @@ mod type_registry;
 
 pub use block_render::render_blocks;
 pub use block_types::{BlockTypeDefinition, BlockTypeRegistry};
+pub use field_values::{FieldValueError, InvalidFieldValues};
 pub use filter::{FilterPipeline, TextFilter};
 pub use form::{
     FieldMode, FormBuilder, LOG_WEIGHT, STATUS_WEIGHT, SUBMIT_WEIGHT, extract_reference_id,

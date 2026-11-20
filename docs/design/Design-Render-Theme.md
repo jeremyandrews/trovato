@@ -161,6 +161,60 @@ equal and the active trail is dead on every aliased page. `requested_path` falls
 back to `current_path` where a route does not know better, so a template can read
 it unconditionally.
 
+### Item Template Variables
+
+An item page (`/item/{id}`, and every alias of one) renders its `item--{type}`
+template with the item and, beside it, the things its fields point at, already
+resolved. A template never needs a route of its own to turn a stored uuid into
+a link.
+
+| Variable | Shape | Filled from |
+|---|---|---|
+| `item` | the item: `id`, `title`, `type`, `fields`, `status`, `created`, … | the row |
+| `children` | the rendered field HTML and plugin render output | the field pipeline |
+| `referenced_items` | `{field_name: [{id, title, type}]}` | `RecordReference` fields: the items the viewer may view |
+| `referenced_files` | `{field_name: [{id, url, filename, mime, alt}]}` | `File` fields: the files the viewer may be served. `url` is the file's `/files/{path}` address; there is no download route by id |
+| `referenced_tags` | `{field_name: [{id, label, slug, url, ancestors: [{id, label, slug, url}]}]}` | `CategoryReference` fields: the tags, each with its ancestors root first |
+| `reverse_references` | `{type_name: [{id, title}]}` | items whose `RecordReference` fields point at this one |
+
+Each list keeps the field's order and leaves out a value that names nothing (a
+deleted file, a deleted tag) or that the viewer may not see. A field with
+nothing to show has no key, so `{% if referenced_tags.field_topics %}` is the
+test.
+
+A tag's `url` is the path of the gather route that lists its category: the
+route in a query's `display.routes` whose one parameter maps its path segment
+through `tag_category`, with the tag's slug in place of the segment
+(`/topics/{slug}` gives `/topics/rust`). It is null for a tag without a slug,
+or in a category no route lists. Tags have no visibility rule of their own, so
+every tag a field holds is resolved. The whole map costs two queries, one for
+the tags and one recursive query for all their ancestors, however many tags the
+item holds or how deep they sit.
+
+Topic pills, each with a breadcrumb of its ancestors, and the conference's
+programme PDF:
+
+```html
+{% if referenced_tags.field_topics %}
+<ul class="topics">
+  {% for topic in referenced_tags.field_topics %}
+  <li class="topic">
+    <nav class="topic__trail" aria-label="{{ topic.label }}">
+      {% for parent in topic.ancestors %}
+        {% if parent.url %}<a href="{{ parent.url }}">{{ parent.label }}</a>{% else %}{{ parent.label }}{% endif %} &rsaquo;
+      {% endfor %}
+    </nav>
+    {% if topic.url %}<a class="pill" href="{{ topic.url }}">{{ topic.label }}</a>{% else %}<span class="pill">{{ topic.label }}</span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% for file in referenced_files.field_programme | default(value=[]) %}
+<a href="{{ file.url }}" type="{{ file.mime }}">{{ file.filename }}</a>
+{% endfor %}
+```
+
 ### Language-Aware Menus
 
 When the active language is not the default, `main_menu` and `footer_menu` are
