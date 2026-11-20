@@ -159,6 +159,20 @@ unsafe extern "C" {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/text-format")]
+unsafe extern "C" {
+    #[link_name = "filter-text"]
+    fn __filter_text(
+        text_ptr: i32,
+        text_len: i32,
+        format_ptr: i32,
+        format_len: i32,
+        out_ptr: i32,
+        out_max_len: i32,
+    ) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "trovato:kernel/item-api")]
 unsafe extern "C" {
     #[link_name = "get-item"]
@@ -817,6 +831,45 @@ pub fn current_user_id() -> String {
     String::new()
 }
 
+/// Filter `text` through the text format `format`, exactly as the kernel does
+/// when it renders a field in that format.
+///
+/// A plugin that renders HTML a user wrote must pass it through this before
+/// returning it: the kernel does not filter a plugin's output for it. The
+/// format must be one the user the plugin is acting for may use
+/// (`plain_text` always; `filtered_html` with `use filtered_html`;
+/// `full_html` with `use full_html`). Declare `text-format` in
+/// `host_interfaces`.
+///
+/// # Errors
+///
+/// [`ERR_TEXT_FORMAT_NOT_PERMITTED`](crate::host_errors::ERR_TEXT_FORMAT_NOT_PERMITTED)
+/// when the user may not use the format,
+/// [`ERR_TEXT_FORMAT_UNKNOWN`](crate::host_errors::ERR_TEXT_FORMAT_UNKNOWN) for a
+/// format that does not exist,
+/// [`ERR_TEXT_FORMAT_TOO_LARGE`](crate::host_errors::ERR_TEXT_FORMAT_TOO_LARGE)
+/// when the result is larger than the output buffer, and the standard
+/// negative codes for a failed read.
+#[cfg(target_arch = "wasm32")]
+pub fn filter_text(text: &str, format: &str) -> Result<String, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __filter_text(
+            text.as_ptr() as i32,
+            text.len() as i32,
+            format.as_ptr() as i32,
+            format.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)
+}
+
 /// Check if the current user has a specific permission.
 ///
 /// Returns `true` if the user has the permission, `false` otherwise
@@ -1066,6 +1119,15 @@ pub fn http_read(_handle: u32) -> Result<Vec<u8>, i32> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn http_close(_handle: u32) -> Result<(), i32> {
     Ok(())
+}
+
+/// Filter text through a text format (stub for native testing).
+///
+/// There is no kernel to ask, so this answers `ERR_TEXT_FORMAT_UNKNOWN` rather
+/// than return the text unfiltered as if it were safe.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn filter_text(_text: &str, _format: &str) -> Result<String, i32> {
+    Err(crate::host_errors::ERR_TEXT_FORMAT_UNKNOWN)
 }
 
 /// Execute a DML statement (stub for native testing, always returns 0).

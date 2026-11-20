@@ -4,7 +4,7 @@ Trovato has one version number (see [Versioning.md](Versioning.md)). This page
 explains how that one number reaches everything that repeats it.
 
 <!-- version:begin -->
-Current version: **0.104.0**, plugin API **(0, 104)**.
+Current version: **0.105.0**, plugin API **(0, 105)**.
 <!-- version:end -->
 
 That line is generated. So is nearly everything below it: the only thing a

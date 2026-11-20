@@ -281,6 +281,22 @@ interface mail {
                                 attachments: list<attachment>) -> result<_, string>;
 }
 
+/// Text formats: filter text the way the kernel renders a field in a format.
+///
+/// A plugin that renders HTML a user wrote must pass it through `filter-text`
+/// before returning it; the kernel does not filter a plugin's output for it.
+/// The format is checked against the user the plugin acts for, by the rule the
+/// item forms apply: `plain_text` always, `filtered_html` with
+/// `use filtered_html`, `full_html` with `use full_html`.
+///
+/// Added by B71, after 0.104.0.
+interface text-format {
+    /// Filter `text` through the named format. Errors when the format is
+    /// unknown or the acting user may not use it; never returns the text
+    /// unfiltered in place of an error.
+    filter-text: func(text: string, format: string) -> result<string, string>;
+}
+
 /// The plugin world — all imports and exports for a Trovato plugin.
 /// All tap functions use full-serialization (JSON in, JSON out).
 ///
@@ -325,6 +341,7 @@ world plugin {
     import http;
     import queue;
     import mail;
+    import text-format;
 
     // --- Tap export naming convention (PF-3 / D-1, sub-decision 1) ----------
     // Host *import* fields above are kebab-case and match these WIT identifiers

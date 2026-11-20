@@ -88,8 +88,8 @@ Annotated, named `vX.Y.Z`, message `Trovato X.Y.Z`:
 
 <!-- version:begin -->
 ```sh
-git tag -a v0.104.0 -m "Trovato 0.104.0"
-git push origin v0.104.0
+git tag -a v0.105.0 -m "Trovato 0.105.0"
+git push origin v0.105.0
 ```
 <!-- version:end -->
 

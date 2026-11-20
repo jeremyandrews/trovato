@@ -81,6 +81,16 @@ above and `-12`, `-13`, `-14` from the database table.
 | -62 | `ERR_ITEM_NOT_FOUND` | `delete-item` was given an id that names no item | Treat as already deleted if that is what you meant |
 | -63 | `ERR_ITEM_WRITE_DEPTH` | A write made from inside item write taps nested 4 deep | A tap that writes items should not depend on a chain of other plugins' taps writing in turn |
 
+## Text Format Errors
+
+Returned by `host::filter_text` (`trovato:kernel/text-format`, added by B71).
+
+| Code | Constant | Meaning | Recovery |
+|------|----------|---------|----------|
+| -70 | `ERR_TEXT_FORMAT_NOT_PERMITTED` | The user the plugin acts for may not use this format | Filter with a format they may use; `plain_text` always works |
+| -71 | `ERR_TEXT_FORMAT_UNKNOWN` | No such format | Use `plain_text`, `filtered_html` or `full_html` |
+| -72 | `ERR_TEXT_FORMAT_TOO_LARGE` | The filtered text is larger than the output buffer | Filter smaller pieces |
+
 ## Queue API Errors
 
 `queue.push` (byte-identical, unchanged) returns `-1` memory missing, `-2`/`-3`
