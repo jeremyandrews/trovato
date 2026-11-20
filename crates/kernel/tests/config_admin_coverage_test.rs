@@ -82,6 +82,8 @@ const COVERAGE: &[(&str, Coverage)] = &[
             Some("trovato_content_translation"),
         ),
     ),
+    // Files have the media screen: list, upload, alt text and delete.
+    ("file", Screen("/admin/content/files", None)),
     ("tile", Screen("/admin/structure/tiles", None)),
     ("menu_link", Screen("/admin/structure/menus", None)),
 ];
