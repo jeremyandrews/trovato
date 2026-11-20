@@ -9,6 +9,37 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Item form saves keep what the form did not show; Booleans are JSON booleans
+
+**Who is affected:** a site whose items carry keys the edit form does not
+render (plugin written keys, keys a type no longer declares, multi value
+fields), a site whose Boolean fields were saved from an item form, and a
+script that posts urlencoded bodies to `/item/add/{type}`, `/item/{id}/edit`
+or the admin content forms without first loading the page.
+
+**What changed.** A save from either item form now starts from the stored
+fields and overwrites only the fields the form rendered, so nothing else is
+erased. A checked Boolean is stored as JSON `true` and an unchecked one, when
+the form showed it, as `false`; a migration rewrites the `"1"`, `"0"`, `"true"`
+and `"on"` strings already stored in items for fields a type declares as
+Boolean. Gather filters on a Boolean field now match items that were saved
+from the admin form. Revisions are immutable history and keep the string they
+were saved with, so reverting to a revision from before the upgrade stores the
+string again until the item is next saved from a form. A field with a cardinality other than 1
+is posted as `name[0]`, `name[1]` and stored as an array; more values than its
+cardinality is a field error.
+
+Each rendered form now saves server side state under its `_form_build_id`, and
+a urlencoded submission must carry the build id of a form rendered for the same
+user (and, on an edit, the same item). One that does not is refused with "This
+form has expired" and nothing is saved. JSON submissions are unchanged: absent
+top level keys keep their stored values, and a `fields` object replaces the
+field map, with fields the user may not edit copied back.
+
+**How to find out.** `SELECT type, count(*) FROM item WHERE fields::text ~ '"1"'
+GROUP BY type` lists types that may hold Boolean strings before the upgrade; a
+script posting item forms without a build id will start receiving 400s.
+
 ### Reading a stage needs `use stages`; gather totals count what the viewer can see
 
 **Who is affected:** a site whose editors preview a stage other than Live, and

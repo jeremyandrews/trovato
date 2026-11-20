@@ -92,6 +92,17 @@ fn input_value(html: &str, name: &str) -> Option<String> {
     Some(tag[vat..vend].to_string())
 }
 
+/// The form's CSRF token and build id, as the browser posts them.
+fn form_tokens(html: &str) -> String {
+    let csrf = input_value(html, "_csrf").expect("the form must carry a CSRF token");
+    let build_id = input_value(html, "_form_build_id").expect("the form must carry a build id");
+    format!(
+        "_csrf={}&_form_build_id={}",
+        urlencoding::encode(&csrf),
+        urlencoding::encode(&build_id)
+    )
+}
+
 /// **The finding, closed.** Render the add page, post its own fields back the
 /// way a browser would, and get an item — not a 415.
 #[test]
@@ -131,8 +142,8 @@ fn the_rendered_add_form_can_be_submitted() {
 
         // 2. The browser posts it back, urlencoded, exactly as rendered.
         let form = format!(
-            "_csrf={}&title={}&field_headline={}&status=1",
-            urlencoding::encode(&csrf),
+            "{}&title={}&field_headline={}&status=1",
+            form_tokens(&html),
             urlencoding::encode("Posted from the rendered page"),
             urlencoding::encode("A headline & <b>markup</b>")
         );
@@ -369,10 +380,10 @@ fn a_record_reference_survives_an_edit() {
                 &cookies,
             )
             .await;
-        let csrf = input_value(&body_string(page).await, "_csrf").unwrap();
+        let html = body_string(page).await;
         let form = format!(
-            "_csrf={}&title=Refers&field_target={target}&status=1",
-            urlencoding::encode(&csrf)
+            "{}&title=Refers&field_target={target}&status=1",
+            form_tokens(&html)
         );
         let created = app
             .request_with_cookies(
@@ -418,11 +429,10 @@ fn a_record_reference_survives_an_edit() {
 
         // Saving the edit unchanged must not drop it either — the failure mode
         // that made the widget unusable.
-        let csrf = input_value(&html, "_csrf").unwrap();
         let target_value = input_value(&html, "field_target").unwrap();
         let form = format!(
-            "_csrf={}&title=Refers&field_target={}&status=1",
-            urlencoding::encode(&csrf),
+            "{}&title=Refers&field_target={}&status=1",
+            form_tokens(&html),
             urlencoding::encode(&target_value)
         );
         let saved = app
@@ -582,15 +592,14 @@ fn the_rendered_add_form_offers_no_published_control_without_the_permission() {
         // And submitting the page as rendered creates an unpublished item,
         // rather than the published one `Item::create`'s default would have
         // made of a submission that said nothing.
-        let csrf = input_value(&html, "_csrf").expect("csrf token");
         let title = format!("Draft by an editor {}", Uuid::now_v7().simple());
         let (status, body) = post_form(
             app,
             &format!("/item/add/{TYPE}"),
             &cookies,
             format!(
-                "_csrf={}&title={}&field_headline=hi",
-                urlencoding::encode(&csrf),
+                "{}&title={}&field_headline=hi",
+                form_tokens(&html),
                 urlencoding::encode(&title)
             ),
         )
@@ -650,14 +659,13 @@ fn editing_a_published_item_through_the_rendered_form_leaves_it_published() {
         // submission says nothing about it — and the item stays published.
         // Before `_status_rendered`, this request unpublished the page.
         let (_, html) = get_page(app, &format!("/item/{}/edit", item.id), &cookies).await;
-        let csrf = input_value(&html, "_csrf").expect("csrf token");
         let (status, body) = post_form(
             app,
             &format!("/item/{}/edit", item.id),
             &cookies,
             format!(
-                "_csrf={}&title={}&field_headline=edited",
-                urlencoding::encode(&csrf),
+                "{}&title={}&field_headline=edited",
+                form_tokens(&html),
                 urlencoding::encode(&title)
             ),
         )
@@ -789,15 +797,14 @@ fn the_permission_holder_publishes_through_both_paths() {
             html.contains(r#"name="status""#) && html.contains("_status_rendered"),
             "`{PUBLISH}` is offered the control"
         );
-        let csrf = input_value(&html, "_csrf").expect("csrf token");
         let title = format!("Published by a publisher {}", Uuid::now_v7().simple());
         let (status, body) = post_form(
             app,
             &format!("/item/add/{TYPE}"),
             &cookies,
             format!(
-                "_csrf={}&title={}&field_headline=hi&_status_rendered=1&status=1",
-                urlencoding::encode(&csrf),
+                "{}&title={}&field_headline=hi&_status_rendered=1&status=1",
+                form_tokens(&html),
                 urlencoding::encode(&title)
             ),
         )

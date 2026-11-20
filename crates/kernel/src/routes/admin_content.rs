@@ -4,9 +4,9 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Form, Router};
-use serde::Deserialize;
 use tower_sessions::Session;
 
+use crate::content::submission::{PostedForm, build_item_fields, permitted_text_formats};
 use crate::form::csrf::generate_csrf_token;
 use crate::models::CreateItem;
 use crate::state::AppState;
@@ -17,21 +17,12 @@ use super::helpers::{
     require_permission, single_form_field,
 };
 
+/// The error a submission gets when its form state is missing, expired or
+/// another user's.
+const FORM_EXPIRED: &str = "This form has expired. Reload the page and submit again.";
+
 /// Session key for flash messages on the content list page.
 const CONTENT_FLASH_KEY: &str = "content_admin_flash";
-
-/// Extract content fields from form data, excluding system fields.
-fn extract_content_fields(
-    fields: &std::collections::HashMap<String, serde_json::Value>,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut result = serde_json::Map::new();
-    for (key, value) in fields {
-        if !key.starts_with('_') && key != "title" && key != "status" && key != "log" {
-            result.insert(key.clone(), value.clone());
-        }
-    }
-    result
-}
 
 /// Extract file UUIDs from item fields.
 ///
@@ -79,12 +70,11 @@ async fn promote_file_ids(state: &AppState, file_ids: &[uuid::Uuid]) {
     }
 }
 
-/// Content form data.
-#[derive(Debug, Deserialize)]
+/// Content form data: the form machinery read out of the body, and the whole
+/// body kept for the submission builder.
+#[derive(Debug)]
 struct ContentFormData {
-    #[serde(rename = "_token")]
     token: String,
-    #[serde(rename = "_form_build_id")]
     form_build_id: String,
     title: String,
     status: Option<String>,
@@ -94,18 +84,48 @@ struct ContentFormData {
     /// An unchecked checkbox posts nothing, so without this an absent `status`
     /// and a form that never offered one are the same request — and the handler
     /// read both as "unpublish".
-    #[serde(rename = "_status_rendered")]
     status_rendered: Option<String>,
     /// The stage the edit form's selector asks to move the item to: a stage
     /// id, or empty for "stay". Offered only on the edit form, and only when
     /// the user may move the item somewhere.
-    #[serde(rename = "_stage")]
     stage: Option<String>,
-    #[serde(flatten)]
-    fields: std::collections::HashMap<String, serde_json::Value>,
+    /// Every pair of the body, repeats kept, for
+    /// [`crate::content::submission::build_item_fields`].
+    posted: PostedForm,
 }
 
 impl ContentFormData {
+    /// Read the machinery fields out of a decoded body.
+    fn from_pairs(pairs: Vec<(String, String)>) -> Self {
+        let posted = PostedForm(pairs);
+        let get = |name: &str| posted.get(name).map(str::to_string);
+        Self {
+            token: get("_token").unwrap_or_default(),
+            form_build_id: get("_form_build_id").unwrap_or_default(),
+            title: get("title").unwrap_or_default(),
+            status: get("status"),
+            status_rendered: get("_status_rendered"),
+            stage: get("_stage"),
+            posted,
+        }
+    }
+
+    /// The submitted values as the form template reads them back on an
+    /// error: the stored fields with each posted single value over them.
+    fn redisplay(&self, stored: &serde_json::Value) -> serde_json::Value {
+        let mut fields = stored.as_object().cloned().unwrap_or_default();
+        for (name, value) in &self.posted.0 {
+            if !name.starts_with('_') && name != "title" && name != "status" {
+                fields.insert(name.clone(), serde_json::Value::String(value.clone()));
+            }
+        }
+        serde_json::json!({
+            "title": self.title,
+            "status": self.status.is_some(),
+            "fields": fields,
+        })
+    }
+
     /// The status this submission asks for, or `None` when it said nothing.
     ///
     /// `None` goes to the service as "leave it", which is the only honest
@@ -142,18 +162,24 @@ async fn insert_field_access(
     type_name: &str,
     content_type: &trovato_sdk::types::ContentTypeDefinition,
     creating: bool,
-) {
+) -> std::collections::HashMap<String, crate::content::FieldMode> {
     let modes =
         super::item::field_modes_for(state, user_ctx, type_name, content_type, creating).await;
-    let modes: serde_json::Map<String, serde_json::Value> = modes
-        .into_iter()
-        .map(|(name, mode)| (name, serde_json::Value::String(mode.as_str().to_string())))
+    let names: serde_json::Map<String, serde_json::Value> = modes
+        .iter()
+        .map(|(name, mode)| {
+            (
+                name.clone(),
+                serde_json::Value::String(mode.as_str().to_string()),
+            )
+        })
         .collect();
-    context.insert("field_modes", &modes);
+    context.insert("field_modes", &names);
     context.insert(
         "may_publish",
         &user_ctx.can(crate::content::PUBLISH_CONTENT),
     );
+    modes
 }
 
 /// List all content.
@@ -300,12 +326,10 @@ async fn render_add_form(
     errors: &[String],
 ) -> Response {
     let csrf_token = generate_csrf_token(session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
 
     let mut context = tera::Context::new();
     context.insert("action", &format!("/admin/content/add/{type_name}"));
     context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
     context.insert("content_type", content_type);
     context.insert("values", &values);
@@ -314,7 +338,11 @@ async fn render_add_form(
     if !errors.is_empty() {
         context.insert("errors", &errors);
     }
-    insert_field_access(state, &mut context, user_ctx, type_name, content_type, true).await;
+    let modes =
+        insert_field_access(state, &mut context, user_ctx, type_name, content_type, true).await;
+    let form_build_id =
+        super::item::remember_item_form(state, user_ctx, type_name, None, &modes).await;
+    context.insert("form_build_id", &form_build_id);
 
     render_admin_template(state, "admin/content-form.html", context).await
 }
@@ -327,8 +355,9 @@ async fn add_content_submit(
     session: Session,
     Extension(resolved_lang): Extension<crate::middleware::language::ResolvedLanguage>,
     Path(type_name): Path<String>,
-    Form(form): Form<ContentFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let form = ContentFormData::from_pairs(pairs);
     // Same per-type permission the GET above checks, and the same one
     // `/item/add/{type}` checks.
     let user =
@@ -346,41 +375,42 @@ async fn add_content_submit(
         return render_not_found();
     };
 
-    let mut fields_json = extract_content_fields(&form.fields);
-
-    // Validate all fields before checking errors
     let mut errors = Vec::new();
 
     if form.title.trim().is_empty() {
         errors.push("Title is required.".to_string());
     }
 
-    // Process compound fields: parse JSON string from hidden input
-    errors.extend(crate::content::compound::process_compound_fields(
-        &mut fields_json,
-        &content_type.fields,
-    ));
-
-    // Process blocks fields: parse JSON string from hidden input
-    errors.extend(crate::content::compound::process_blocks_fields(
-        &mut fields_json,
-        &content_type.fields,
-    ));
-
-    // Validate required non-compound fields
-    errors.extend(crate::content::compound::validate_required_fields(
-        &fields_json,
-        &content_type.fields,
-    ));
-
     let user_ctx = admin_user_context(&state, &user).await;
-    // Cloned: `fields_json` is moved into the `CreateItem` below, and this is
-    // what re-renders the form if anything refuses the write.
-    let submitted_values = serde_json::json!({
-        "title": form.title,
-        "status": form.status.is_some(),
-        "fields": fields_json.clone(),
-    });
+    // What re-renders the form if anything refuses the write.
+    let submitted_values = form.redisplay(&serde_json::json!({}));
+
+    // The fields the form rendered, from its server side state; a form whose
+    // state is gone is refused rather than saved with a guess.
+    let fields_json = match state
+        .forms()
+        .recall(&form.form_build_id, user.id)
+        .await
+        .filter(|s| s.item_type.as_deref() == Some(type_name.as_str()) && s.item_id.is_none())
+    {
+        None => {
+            errors.push(FORM_EXPIRED.to_string());
+            serde_json::Map::new()
+        }
+        Some(form_state) => match build_item_fields(
+            None,
+            &content_type,
+            &form_state.rendered_fields,
+            &form.posted,
+            &permitted_text_formats(&user_ctx),
+        ) {
+            Ok(fields) => fields,
+            Err(field_errors) => {
+                errors.extend(field_errors.into_iter().map(|e| e.message));
+                serde_json::Map::new()
+            }
+        },
+    };
 
     if !errors.is_empty() {
         return render_add_form(
@@ -537,13 +567,11 @@ async fn render_edit_form(
 ) -> Response {
     let item_id = item.id;
     let csrf_token = generate_csrf_token(session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
     let current_path = format!("/admin/content/{item_id}/edit");
 
     let mut context = tera::Context::new();
     context.insert("action", &current_path);
     context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
     context.insert("item_id", &item_id.to_string());
     context.insert("content_type", content_type);
@@ -570,7 +598,7 @@ async fn render_edit_form(
         ),
     );
     context.insert("ai_assist_enabled", &state.is_plugin_enabled("trovato_ai"));
-    insert_field_access(
+    let modes = insert_field_access(
         state,
         &mut context,
         user_ctx,
@@ -579,6 +607,10 @@ async fn render_edit_form(
         false,
     )
     .await;
+    let form_build_id =
+        super::item::remember_item_form(state, user_ctx, &item.item_type, Some(item.id), &modes)
+            .await;
+    context.insert("form_build_id", &form_build_id);
     insert_stage_choice(state, &mut context, user_ctx, item).await;
 
     render_admin_template(state, "admin/content-form.html", context).await
@@ -617,8 +649,9 @@ async fn edit_content_submit(
     State(state): State<AppState>,
     session: Session,
     Path(item_id): Path<uuid::Uuid>,
-    Form(form): Form<ContentFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let form = ContentFormData::from_pairs(pairs);
     let user = match require_permission(&state, &session, "edit any content").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
@@ -644,34 +677,36 @@ async fn edit_content_submit(
         errors.push("Title is required.".to_string());
     }
 
-    let mut fields_json = extract_content_fields(&form.fields);
-
-    // Process compound fields: parse JSON string from hidden input
-    errors.extend(crate::content::compound::process_compound_fields(
-        &mut fields_json,
-        &content_type.fields,
-    ));
-
-    // Process blocks fields: parse JSON string from hidden input
-    errors.extend(crate::content::compound::process_blocks_fields(
-        &mut fields_json,
-        &content_type.fields,
-    ));
-
-    // Validate required non-compound fields
-    errors.extend(crate::content::compound::validate_required_fields(
-        &fields_json,
-        &content_type.fields,
-    ));
-
     let user_ctx = admin_user_context(&state, &user).await;
-    // Cloned: `fields_json` is moved into the `UpdateItem` below, and this is
-    // what re-renders the form if anything refuses the write.
-    let submitted_values = serde_json::json!({
-        "title": form.title,
-        "status": form.status.is_some(),
-        "fields": fields_json.clone(),
-    });
+    // What re-renders the form if anything refuses the write.
+    let submitted_values = form.redisplay(&item.fields);
+
+    // Built over the stored fields from the list the form rendered, so a key
+    // it did not show is kept rather than erased.
+    let fields_json = match state
+        .forms()
+        .recall(&form.form_build_id, user.id)
+        .await
+        .filter(|s| s.item_id == Some(item_id))
+    {
+        None => {
+            errors.push(FORM_EXPIRED.to_string());
+            serde_json::Map::new()
+        }
+        Some(form_state) => match build_item_fields(
+            item.fields.as_object(),
+            &content_type,
+            &form_state.rendered_fields,
+            &form.posted,
+            &permitted_text_formats(&user_ctx),
+        ) {
+            Ok(fields) => fields,
+            Err(field_errors) => {
+                errors.extend(field_errors.into_iter().map(|e| e.message));
+                serde_json::Map::new()
+            }
+        },
+    };
 
     if !errors.is_empty() {
         return render_edit_form(

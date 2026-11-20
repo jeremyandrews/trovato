@@ -68,6 +68,19 @@ impl FieldMode {
     }
 }
 
+/// The fields a form with these modes renders as inputs a browser submits:
+/// the [`FieldMode::Editable`] ones, sorted. A read only field is rendered
+/// `disabled` and so never posted; a hidden one is not rendered at all.
+pub fn editable_fields(modes: &std::collections::HashMap<String, FieldMode>) -> Vec<String> {
+    let mut names: Vec<String> = modes
+        .iter()
+        .filter(|(_, mode)| **mode == FieldMode::Editable)
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
 /// Builder for auto-generated forms.
 pub struct FormBuilder {
     content_type: ContentTypeDefinition,
@@ -81,6 +94,9 @@ pub struct FormBuilder {
     /// submitted successfully (**G-ITEM-FORM-MISMATCH**). Empty means no token
     /// input is emitted, which keeps the builder usable in tests.
     csrf_token: String,
+    /// The build id the form prints as `_form_build_id`, under which the
+    /// route saved the form state the submission is checked against.
+    form_build_id: String,
     /// Extra form controls injected just before the submit button, so a caller
     /// can add a field (the URL-alias input) *inside* the `<form>` rather than
     /// concatenating it after the closing tag, where a browser would never
@@ -113,6 +129,7 @@ impl FormBuilder {
             content_type,
             permitted_formats: Vec::new(),
             csrf_token: String::new(),
+            form_build_id: String::new(),
             extra_html: String::new(),
             reference_titles: std::collections::HashMap::new(),
             field_modes: std::collections::HashMap::new(),
@@ -184,21 +201,34 @@ impl FormBuilder {
         self
     }
 
+    /// Set the build id this form prints as `_form_build_id`.
+    pub fn with_form_build_id(mut self, id: impl Into<String>) -> Self {
+        self.form_build_id = id.into();
+        self
+    }
+
     /// Append extra controls immediately before the submit button.
     pub fn with_extra_html(mut self, html: impl Into<String>) -> Self {
         self.extra_html = html.into();
         self
     }
 
-    /// The hidden CSRF input, or nothing when no token was set.
+    /// The hidden CSRF and build id inputs, each omitted when not set.
     fn csrf_input(&self) -> String {
-        if self.csrf_token.is_empty() {
-            return String::new();
+        let mut html = String::new();
+        if !self.csrf_token.is_empty() {
+            html.push_str(&format!(
+                r#"<input type="hidden" name="_csrf" value="{}">"#,
+                html_escape(&self.csrf_token)
+            ));
         }
-        format!(
-            r#"<input type="hidden" name="_csrf" value="{}">"#,
-            html_escape(&self.csrf_token)
-        )
+        if !self.form_build_id.is_empty() {
+            html.push_str(&format!(
+                r#"<input type="hidden" name="_form_build_id" value="{}">"#,
+                html_escape(&self.form_build_id)
+            ));
+        }
+        html
     }
 
     /// Set the permitted text formats for the current user.

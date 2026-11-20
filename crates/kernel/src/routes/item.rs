@@ -130,12 +130,6 @@ pub struct UpdateItemRequest {
 // G-ITEM-FORM-MISMATCH — one submission shape for two request encodings
 // =============================================================================
 
-/// Field names an item form posts that are **not** dynamic content fields.
-///
-/// Mirrors `admin_content::extract_content_fields`, which is the stack that
-/// works, so the two agree about what a field is.
-const RESERVED_FORM_KEYS: &[&str] = &["title", "status", "log", "url_alias"];
-
 /// The hidden input `FormBuilder` emits beside the published checkbox.
 ///
 /// `_`-prefixed, so it is form machinery and never stored as a field.
@@ -160,17 +154,22 @@ const STATUS_RENDERED_KEY: &str = "_status_rendered";
 ///   body; CSRF from the `_csrf` hidden input, because an HTML form cannot set
 ///   a header.
 ///
-/// Field values are stored **flat**, matching the admin stack — the one that
-/// round-trips — rather than the `{"value": …}` wrapper `FormBuilder` used to
-/// read. `FormBuilder` now reads both, so no stored item needs migrating.
+/// A form body's field values are not read here: they go to
+/// [`crate::content::submission::build_item_fields`] with the form state's
+/// rendered list, so a save writes what the form showed and nothing else.
 #[derive(Debug, Default)]
 pub struct ItemSubmission {
     /// New title. `None` on an update means "leave it".
     pub title: Option<String>,
     /// Published flag.
     pub status: Option<i16>,
-    /// Dynamic content fields.
+    /// Dynamic content fields, from a JSON body. A form body leaves this
+    /// `None` and carries [`Self::posted`] instead.
     pub fields: Option<serde_json::Value>,
+    /// Every pair of a form body, for the submission builder; `None` on JSON.
+    pub posted: Option<crate::content::submission::PostedForm>,
+    /// The form body's `_form_build_id`, naming its server side state.
+    pub form_build_id: Option<String>,
     /// Revision log message.
     pub log: Option<String>,
     /// URL alias, update path only.
@@ -213,17 +212,12 @@ impl ItemSubmission {
     }
 
     /// Build a submission from a decoded urlencoded form body.
-    fn from_form(form: std::collections::HashMap<String, String>) -> Self {
-        let mut fields = serde_json::Map::new();
-        for (key, value) in &form {
-            if key.starts_with('_') || RESERVED_FORM_KEYS.contains(&key.as_str()) {
-                continue;
-            }
-            fields.insert(key.clone(), serde_json::Value::String(value.clone()));
-        }
+    fn from_form(pairs: Vec<(String, String)>) -> Self {
+        let form = crate::content::submission::PostedForm(pairs);
+        let get = |name: &str| form.get(name).map(str::to_string);
 
         Self {
-            title: form.get("title").map(|t| t.to_string()),
+            title: get("title"),
             // A checkbox posts nothing when unchecked, so an absent `status`
             // means "unpublished" — but only if the control was on the page at
             // all. The form renders it only for a user who may publish, and
@@ -231,17 +225,68 @@ impl ItemSubmission {
             // submission says nothing about status rather than silently
             // unpublishing the item.
             status: form
-                .contains_key(STATUS_RENDERED_KEY)
-                .then(|| i16::from(form.contains_key("status"))),
-            fields: Some(serde_json::Value::Object(fields)),
-            log: form
-                .get("log")
+                .contains(STATUS_RENDERED_KEY)
+                .then(|| i16::from(form.contains("status"))),
+            fields: None,
+            log: get("log")
                 .map(|l| l.trim().to_string())
                 .filter(|l| !l.is_empty()),
-            url_alias: form.get("url_alias").map(|a| a.to_string()),
-            stage: form.get("_stage").cloned(),
-            body_csrf: Some(form.get("_csrf").cloned().unwrap_or_default()),
+            url_alias: get("url_alias"),
+            stage: get("_stage"),
+            body_csrf: Some(get("_csrf").unwrap_or_default()),
+            form_build_id: get("_form_build_id"),
+            posted: Some(form),
         }
+    }
+
+    /// The field map this submission writes over `stored`: a JSON body's
+    /// `fields` as sent, or a form body built by the submission builder from
+    /// the fields its form state says were rendered.
+    ///
+    /// A form body whose state is missing, expired or another user's is a
+    /// 400: without the rendered list there is no knowing which absent fields
+    /// were cleared and which were never shown.
+    async fn field_values(
+        &self,
+        state: &AppState,
+        user: &UserContext,
+        item_type: &str,
+        stored: Option<(Uuid, &serde_json::Value)>,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        let Some(ref posted) = self.posted else {
+            return Ok(self.fields.clone());
+        };
+        let form_state = state
+            .forms()
+            .recall(self.form_build_id.as_deref().unwrap_or(""), user.id)
+            .await
+            .filter(|s| {
+                s.item_type.as_deref() == Some(item_type) && s.item_id == stored.map(|(id, _)| id)
+            })
+            .ok_or_else(|| {
+                AppError::bad_request("This form has expired. Reload the page and submit again.")
+            })?;
+        let content_type = state
+            .content_types()
+            .get(item_type)
+            .ok_or_else(|| AppError::not_found("content type"))?;
+        crate::content::submission::build_item_fields(
+            stored.and_then(|(_, v)| v.as_object()),
+            &content_type,
+            &form_state.rendered_fields,
+            posted,
+            &crate::content::submission::permitted_text_formats(user),
+        )
+        .map(|fields| Some(serde_json::Value::Object(fields)))
+        .map_err(|errors| {
+            AppError::bad_request(
+                errors
+                    .iter()
+                    .map(|e| e.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        })
     }
 
     /// Build a submission from a decoded JSON body.
@@ -263,6 +308,8 @@ impl ItemSubmission {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             body_csrf: None,
+            posted: None,
+            form_build_id: None,
         }
     }
 }
@@ -279,10 +326,9 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for ItemSubmission {
             .to_ascii_lowercase();
 
         if content_type.starts_with("application/x-www-form-urlencoded") {
-            let Form(form) =
-                Form::<std::collections::HashMap<String, String>>::from_request(req, state)
-                    .await
-                    .map_err(|e| AppError::bad_request(format!("invalid form body: {e}")))?;
+            let Form(form) = Form::<Vec<(String, String)>>::from_request(req, state)
+                .await
+                .map_err(|e| AppError::bad_request(format!("invalid form body: {e}")))?;
             return Ok(Self::from_form(form));
         }
 
@@ -391,17 +437,33 @@ pub(crate) async fn field_modes_for(
         .collect()
 }
 
-fn permitted_text_formats(user: &UserContext) -> Vec<String> {
-    // `can` carries the administrator bypass, so the two formats need no
-    // separate admin arm: an administrator answers `true` to both.
-    let mut formats = vec!["plain_text".to_string()];
-    if user.can("use filtered_html") {
-        formats.push("filtered_html".to_string());
+/// Save the state an item form is submitted against, and return its build id.
+///
+/// The rendered list is the fields the form shows as inputs (see
+/// [`crate::content::editable_fields`]); the submission builder writes those
+/// and keeps every other stored key. A failure to save is logged, and the
+/// submission then answers "expired" rather than guessing.
+pub(crate) async fn remember_item_form(
+    state: &AppState,
+    user: &UserContext,
+    item_type: &str,
+    item_id: Option<Uuid>,
+    field_modes: &std::collections::HashMap<String, FieldMode>,
+) -> String {
+    let form_id = match item_id {
+        Some(_) => format!("item_edit_{item_type}"),
+        None => format!("item_add_{item_type}"),
+    };
+    let build_id = Uuid::new_v4().to_string();
+    let mut form_state = crate::form::FormState::new(form_id, build_id.clone());
+    form_state.user_id = Some(user.id);
+    form_state.item_id = item_id;
+    form_state.item_type = Some(item_type.to_string());
+    form_state.rendered_fields = crate::content::editable_fields(field_modes);
+    if let Err(e) = state.forms().save_state(&build_id, &form_state).await {
+        tracing::warn!(error = %e, "failed to save item form state");
     }
-    if user.can("use full_html") {
-        formats.push("full_html".to_string());
-    }
-    formats
+    build_id
 }
 
 /// View an item.
@@ -992,12 +1054,14 @@ async fn add_item_form(
     // Build form with format permissions. The CSRF token rides in the body:
     // an HTML form cannot set the `X-CSRF-Token` header the JSON path reads,
     // so without it this page could be rendered but never submitted.
-    let permitted_formats = permitted_text_formats(&user);
+    let permitted_formats = crate::content::submission::permitted_text_formats(&user);
     let csrf_token = generate_csrf_token(&session).await;
     let field_modes = field_modes_for(&state, &user, &item_type, &content_type, true).await;
+    let form_build_id = remember_item_form(&state, &user, &item_type, None, &field_modes).await;
     let form_builder = FormBuilder::new(content_type.clone())
         .with_permitted_formats(permitted_formats)
         .with_csrf_token(csrf_token)
+        .with_form_build_id(form_build_id)
         .with_field_modes(field_modes)
         .with_publish_allowed(user.can(PUBLISH_CONTENT));
     let form_html = form_builder.build_add_form(&format!("/item/add/{item_type}"));
@@ -1061,9 +1125,14 @@ async fn create_item(
     // serde's required field, so the error is kept a 400 either way.
     let title = request
         .title
+        .as_deref()
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .ok_or_else(|| AppError::bad_request("Title is required"))?;
+
+    let fields = request
+        .field_values(&state, &user, &item_type, None)
+        .await?;
 
     let input = CreateItem {
         item_type: item_type.clone(),
@@ -1072,7 +1141,7 @@ async fn create_item(
         status: request.status,
         promote: None,
         sticky: None,
-        fields: request.fields,
+        fields,
         stage_id,
         language: Some(language),
         log: request.log,
@@ -1251,12 +1320,15 @@ async fn edit_item_form(
 
     // Build form with format permissions, the body CSRF token, and the alias
     // field *inside* the form.
-    let permitted_formats = permitted_text_formats(&user);
+    let permitted_formats = crate::content::submission::permitted_text_formats(&user);
     let csrf_token = generate_csrf_token(&session).await;
     let field_modes = field_modes_for(&state, &user, &item.item_type, &content_type, false).await;
+    let form_build_id =
+        remember_item_form(&state, &user, &item.item_type, Some(item.id), &field_modes).await;
     let form_builder = FormBuilder::new(content_type.clone())
         .with_permitted_formats(permitted_formats)
         .with_csrf_token(csrf_token)
+        .with_form_build_id(form_build_id)
         .with_reference_titles(reference_titles)
         .with_extra_html(format!("{alias_field}{stage_field}"))
         .with_field_modes(field_modes)
@@ -1302,13 +1374,28 @@ async fn update_item(
     request.verify_csrf(&session, &headers).await?;
     let stage_id = request.requested_stage()?;
 
+    // A form body is built over the stored fields; a JSON body is sent as is.
+    let fields = if request.posted.is_some() {
+        let stored = state
+            .items()
+            .load(id)
+            .await
+            .map_err(|e| AppError::internal_ctx(e, "load item"))?
+            .ok_or_else(|| AppError::not_found_id("item", id))?;
+        request
+            .field_values(&state, &user, &stored.item_type, Some((id, &stored.fields)))
+            .await?
+    } else {
+        request.fields.clone()
+    };
+
     let input = UpdateItem {
         stage_id,
         title: request.title,
         status: request.status,
         promote: None,
         sticky: None,
-        fields: request.fields,
+        fields,
         log: request.log,
     };
 
