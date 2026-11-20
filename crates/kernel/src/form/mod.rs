@@ -19,4 +19,4 @@ pub use csrf::{generate_csrf_token, verify_csrf_token};
 pub use service::{
     FORM_EXPIRED, FormResult, FormService, FormState, ProcessError, ValidationError,
 };
-pub use types::{ElementType, Form, FormElement};
+pub use types::{ADD_ANOTHER, ElementType, Form, FormElement};

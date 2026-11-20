@@ -189,6 +189,7 @@ impl FormBuilder {
         let mut form = Form::new(form_id).action(action).element("title", title);
 
         // A field this viewer may not see is not rendered, value included.
+        let stored = item.and_then(|i| i.fields.as_object());
         for (index, field) in self.content_type.fields.iter().enumerate() {
             let mode = self.mode_of(&field.field_name);
             if mode == FieldMode::Hidden {
@@ -196,7 +197,23 @@ impl FormBuilder {
             }
             let value = item.and_then(|i| i.fields.get(&field.field_name));
             let weight = i32::try_from(index).unwrap_or(i32::MAX - 1000);
-            form = form.elements(self.field_elements(field, value, mode, weight));
+            let elements = self.field_elements(field, value, mode, weight);
+            form = match field.visible_when_condition() {
+                None => form.elements(elements),
+                Some(when) => {
+                    let shown = crate::content::submission::is_visible(
+                        field,
+                        &self.content_type,
+                        stored,
+                        &[],
+                        None,
+                    );
+                    form.element(
+                        format!("{}--when", field.field_name),
+                        visible_when_wrapper(&when, shown, weight, elements),
+                    )
+                }
+            };
         }
 
         // The published checkbox and the marker that says it was rendered:
@@ -274,8 +291,19 @@ impl FormBuilder {
             .title(field.label.clone())
             .weight(weight)
             .attribute("data-cardinality", field.cardinality);
-        if mode == FieldMode::ReadOnly {
-            container = container.disabled();
+        if field.cardinality > 0 {
+            container = container.attribute("data-max-items", field.cardinality);
+        }
+        match mode {
+            FieldMode::ReadOnly => container = container.disabled(),
+            // "Add another" asks the server for the next widget (see
+            // `routes::item_form::add_another`); hidden once the field is full.
+            _ => {
+                container = container.attribute(crate::form::ADD_ANOTHER, format!("add_{name}"));
+                if !room {
+                    container = container.attribute("data-full", "true");
+                }
+            }
         }
         for (delta, slot) in slots.into_iter().enumerate() {
             let mut widget = self.widget(field, slot, mode);
@@ -428,6 +456,38 @@ fn json_input(value: Option<&serde_json::Value>, empty: &str) -> String {
 /// both shapes have to be read.
 fn scalar_of(value: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
     value.map(|v| v.get("value").unwrap_or(v))
+}
+
+/// The wrapper a field with `visible_when` renders in: a container holding the
+/// field's elements, carrying the condition for `form-states.js`, and
+/// `hidden` when the stored values make the condition false. Without
+/// JavaScript the condition is not re-evaluated as the editor types; the
+/// server applies it on save either way.
+///
+/// The inputs inside lose the HTML `required` attribute: a browser refuses to
+/// submit a form whose hidden control is required and empty, and the
+/// submission builder checks `required` itself, only while the field shows.
+fn visible_when_wrapper(
+    when: &trovato_sdk::types::VisibleWhen,
+    shown: bool,
+    weight: i32,
+    elements: Vec<(String, FormElement)>,
+) -> FormElement {
+    let mut wrapper = FormElement::container()
+        .weight(weight)
+        .attribute("data-visible-when-field", when.field.clone())
+        .attribute("data-visible-when-equals", when.equals.clone());
+    if !shown {
+        wrapper = wrapper.attribute("hidden", "hidden");
+    }
+    for (name, mut element) in elements {
+        element.required = false;
+        for child in element.children.values_mut() {
+            child.required = false;
+        }
+        wrapper = wrapper.child(name, element);
+    }
+    wrapper
 }
 
 /// Read a stored field value as raw text, accepting **both** shapes the kernel
@@ -644,5 +704,81 @@ mod tests {
             sections.default_value,
             Some(serde_json::json!(r#"{"sections":[]}"#))
         );
+    }
+
+    /// The real templates, so these check the markup a browser gets.
+    fn render(form: &Form) -> String {
+        let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        crate::theme::ThemeEngine::new(&[templates], None)
+            .unwrap()
+            .render_form(form)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_multi_value_field_offers_add_another_until_full() {
+        let ct = ContentTypeDefinition {
+            machine_name: "probe".to_string(),
+            label: "Probe".to_string(),
+            description: String::new(),
+            title_label: None,
+            fields: vec![
+                FieldDefinition::new("field_tags", FieldType::Text { max_length: None })
+                    .cardinality(-1),
+                FieldDefinition::new("field_pair", FieldType::Text { max_length: None })
+                    .cardinality(2),
+            ],
+        };
+        let item = item(serde_json::json!({"field_tags": ["a"], "field_pair": ["x", "y"]}));
+        let form = FormBuilder::new(ct).build_edit_form(&item, "/x");
+        assert!(form.uses_ajax());
+        let html = render(&form);
+        assert!(html.contains(r#"id="field_tags-items""#), "{html}");
+        assert!(html.contains(r#"data-ajax-trigger="add_field_tags""#));
+        // The full field keeps its button for later, hidden.
+        let pair = html.find(r#"data-ajax-trigger="add_field_pair""#).unwrap();
+        let tag_end = pair + html[pair..].find('>').unwrap();
+        assert!(
+            html[pair..tag_end].contains("hidden"),
+            "{}",
+            &html[pair..tag_end]
+        );
+    }
+
+    #[test]
+    fn a_field_with_visible_when_is_wrapped_and_hidden_while_false() {
+        let ct = ContentTypeDefinition {
+            machine_name: "probe".to_string(),
+            label: "Probe".to_string(),
+            description: String::new(),
+            title_label: None,
+            fields: vec![
+                FieldDefinition::new("field_online", FieldType::Boolean),
+                FieldDefinition::new("field_url", FieldType::Text { max_length: None })
+                    .visible_when("field_online", "1"),
+            ],
+        };
+        let mut item = item(serde_json::json!({"field_online": false, "field_url": "kept"}));
+        let form = FormBuilder::new(ct.clone()).build_edit_form(&item, "/x");
+        assert_eq!(
+            form.rendered_inputs(),
+            vec!["field_online", "field_url", "log", "title"]
+        );
+        let html = render(&form);
+        let at = html
+            .find(r#"data-visible-when-field="field_online""#)
+            .expect(&html);
+        let open = html[..at].rfind('<').unwrap();
+        let tag = &html[open..at + html[at..].find('>').unwrap()];
+        assert!(tag.contains(r#"hidden="hidden""#), "{tag}");
+        assert!(tag.contains(r#"data-visible-when-equals="1""#), "{tag}");
+        assert!(
+            html.contains("form-states.js"),
+            "the script that keeps it current"
+        );
+
+        item.fields = serde_json::json!({"field_online": true});
+        let html = render(&FormBuilder::new(ct).build_edit_form(&item, "/x"));
+        assert!(!html.contains(r#"hidden="hidden""#));
     }
 }

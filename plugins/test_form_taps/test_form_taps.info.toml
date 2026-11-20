@@ -6,7 +6,13 @@ default_enabled = false
 dependencies = []
 
 [taps]
-implements = ["tap_perm", "tap_form_alter", "tap_form_validate", "tap_form_submit"]
+implements = [
+    "tap_perm",
+    "tap_form_alter",
+    "tap_form_validate",
+    "tap_form_submit",
+    "tap_form_ajax",
+]
 # Before test_form_taps_b, which reads what this one adds.
 weight = 0
 

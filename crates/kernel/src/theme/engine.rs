@@ -814,6 +814,17 @@ impl ThemeEngine {
             .context("failed to render form template")
     }
 
+    /// Render one form element outside its form, as an AJAX response
+    /// inserts it (the next value of a multi value field).
+    pub fn render_form_element_html(
+        &self,
+        name: &str,
+        element: &crate::form::FormElement,
+    ) -> Result<String> {
+        let empty = std::collections::HashMap::new();
+        self.render_form_element(name, element, &empty, &mut tera::Context::new())
+    }
+
     /// Render form elements to HTML.
     fn render_form_elements(&self, form: &Form, context: &mut tera::Context) -> Result<String> {
         let empty = std::collections::HashMap::new();
@@ -835,8 +846,7 @@ impl ThemeEngine {
         elements.sort_by_key(|(_, el)| el.weight);
 
         for (name, element) in elements {
-            let field_error = field_errors.get(name.as_str()).copied();
-            let element_html = self.render_form_element(name, element, field_error, context)?;
+            let element_html = self.render_form_element(name, element, field_errors, context)?;
             // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{element_html}").unwrap();
@@ -850,10 +860,12 @@ impl ThemeEngine {
         &self,
         name: &str,
         element: &crate::form::FormElement,
-        field_error: Option<&str>,
+        field_errors: &std::collections::HashMap<&str, &str>,
         context: &mut tera::Context,
     ) -> Result<String> {
         use crate::form::ElementType;
+
+        let field_error = field_errors.get(name).copied();
 
         let widget_template;
         let template_name = match &element.element_type {
@@ -889,7 +901,7 @@ impl ThemeEngine {
 
         // Render children for container types
         if !element.children.is_empty() {
-            let children_html = self.render_form_children(element, context)?;
+            let children_html = self.render_form_children(element, field_errors, context)?;
             el_context.insert("children", &children_html);
         }
 
@@ -902,6 +914,7 @@ impl ThemeEngine {
     fn render_form_children(
         &self,
         element: &crate::form::FormElement,
+        field_errors: &std::collections::HashMap<&str, &str>,
         context: &mut tera::Context,
     ) -> Result<String> {
         use std::fmt::Write;
@@ -911,8 +924,9 @@ impl ThemeEngine {
         children.sort_by_key(|(_, el)| el.weight);
 
         for (name, child) in children {
-            // Children don't receive per-field errors (errors are on top-level fields)
-            let child_html = self.render_form_element(name, child, None, context)?;
+            // A field wrapped for `visible_when` is a child, and its error is
+            // still its own.
+            let child_html = self.render_form_element(name, child, field_errors, context)?;
             // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{child_html}").unwrap();

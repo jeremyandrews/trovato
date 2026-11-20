@@ -29,6 +29,9 @@ const FIXTURES: [&str; 2] = ["test_form_taps", "test_form_taps_b"];
 const AI: &str = "trovato_ai";
 const PROBE: &str = "b71_alter_probe";
 const BLOCKS: &str = "b71_blocks_probe";
+const WHEN: &str = "b71_when_probe";
+const REF_TARGET: &str = "b71_ref_target";
+const REF_PROBE: &str = "b71_ref_probe";
 const ALTERED: &str = "Altered by test_form_taps";
 const COMPOSED: &str = "test_form_taps_b saw test_form_taps";
 const REFUSED: &str = "The probe refuses this note.";
@@ -143,6 +146,29 @@ async fn ensure_types(app: &TestApp) {
             "B71 Blocks Probe",
             vec![FieldDefinition::new("field_body", FieldType::Blocks).label("Body")],
         ),
+        (
+            WHEN,
+            "B71 Conditional Probe",
+            vec![
+                FieldDefinition::new("field_online", FieldType::Boolean).label("Online"),
+                FieldDefinition::new("field_url", FieldType::Text { max_length: None })
+                    .label("Stream URL")
+                    .required()
+                    .visible_when("field_online", "1"),
+            ],
+        ),
+        (REF_TARGET, "B71 Reference Target", vec![]),
+        (
+            REF_PROBE,
+            "B71 Reference Probe",
+            vec![
+                FieldDefinition::new(
+                    "field_ref",
+                    FieldType::RecordReference(REF_TARGET.to_string()),
+                )
+                .label("Related"),
+            ],
+        ),
     ];
     for (machine, label, fields) in types {
         let settings = json!({ "fields": serde_json::to_value(&fields).unwrap() });
@@ -232,22 +258,32 @@ async fn post_form(app: &TestApp, cookies: &str, uri: &str, body: String) -> (St
 }
 
 async fn seed_item(app: &TestApp, item_type: &str, author: Uuid, fields: Value) -> Uuid {
-    let user = trovato_kernel::tap::UserContext::authenticated(
-        author,
-        vec!["administer site".to_string(), "publish content".to_string()],
-    );
+    seed_titled(app, item_type, author, "Pipeline probe", fields, None).await
+}
+
+async fn seed_titled(
+    app: &TestApp,
+    item_type: &str,
+    author: Uuid,
+    title: &str,
+    fields: Value,
+    stage_id: Option<Uuid>,
+) -> Uuid {
+    // Seeding, not under test: the administrator may create on any stage,
+    // which a permission list alone may not since B69.
+    let user = trovato_kernel::tap::UserContext::administrator(author, vec![]);
     app.state
         .items()
         .create(
             trovato_kernel::models::CreateItem {
                 item_type: item_type.to_string(),
-                title: "Pipeline probe".to_string(),
+                title: title.to_string(),
                 author_id: author,
                 status: Some(1),
                 promote: None,
                 sticky: None,
                 fields: Some(fields),
-                stage_id: None,
+                stage_id,
                 language: None,
                 log: None,
             },
@@ -562,5 +598,307 @@ fn the_field_list_does_not_link_to_a_post_only_route() {
                 "links to the POST-only route: {href}"
             );
         }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Part 4: AJAX and conditional fields
+// ---------------------------------------------------------------------------
+
+/// The token and build id the page's AJAX requests use.
+fn ajax_tokens(html: &str) -> (String, String) {
+    (
+        input_value(html, "_ajax_token").expect("the form carries an AJAX token"),
+        input_value(html, "_form_build_id").expect("the form carries a build id"),
+    )
+}
+
+/// POST `/system/ajax` as the page's script does. Returns the status, the
+/// next token from the response header, and the body.
+async fn post_ajax(
+    app: &TestApp,
+    cookies: &str,
+    token: Option<&str>,
+    build_id: &str,
+    trigger: &str,
+) -> (StatusCode, Option<String>, Value) {
+    let mut request =
+        Request::post("/system/ajax").header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        request = request.header("X-CSRF-Token", token);
+    }
+    let payload = json!({"form_build_id": build_id, "trigger": trigger, "values": {}});
+    let response = app
+        .request_with_cookies(
+            request.body(Body::from(payload.to_string())).unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    let next = response
+        .headers()
+        .get("X-CSRF-Token")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let body = body_string(response).await;
+    (
+        status,
+        next,
+        serde_json::from_str(&body).unwrap_or(Value::Null),
+    )
+}
+
+/// A signed-in editor who is not an administrator.
+async fn editor(app: &TestApp, prefix: &str) -> (Uuid, String) {
+    common::user_holding(app, prefix, &["access content", "edit any content"]).await
+}
+
+/// **Item 4.** A non-admin editor on `/item/{id}/edit` gets "Add another", and
+/// it works: the server builds the next value's input at the next delta, and
+/// each response hands over the next token.
+#[test]
+fn a_non_admin_editor_adds_another_value() {
+    run(|app| async move {
+        let (owner, _) = admin(app, "b71addown").await;
+        let id = seed_item(app, PROBE, owner, json!({"field_tags": ["one"]})).await;
+        let (_editor, cookies) = editor(app, "b71adder").await;
+
+        let html = get_page(app, &cookies, &format!("/item/{id}/edit")).await;
+        assert!(
+            html.contains(r#"data-ajax-trigger="add_field_tags""#),
+            "no Add another for a non-admin editor"
+        );
+        let (token, build_id) = ajax_tokens(&html);
+
+        // One stored value and one empty slot are on the page: the next is 2.
+        let (status, next, body) =
+            post_ajax(app, &cookies, Some(&token), &build_id, "add_field_tags").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let command = &body["commands"][0];
+        assert_eq!(command["command"], "append", "{body}");
+        assert_eq!(command["selector"], "#field_tags-items");
+        assert!(
+            command["html"]
+                .as_str()
+                .unwrap()
+                .contains(r#"name="field_tags[2]""#),
+            "{body}"
+        );
+        let next = next.expect("the response carries the next token");
+        assert_ne!(next, token);
+
+        // The spent token is refused; the next one works and moves on a delta.
+        let (status, _, _) =
+            post_ajax(app, &cookies, Some(&token), &build_id, "add_field_tags").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a token is single use");
+        let (status, _, body) =
+            post_ajax(app, &cookies, Some(&next), &build_id, "add_field_tags").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body["commands"][0]["html"]
+                .as_str()
+                .unwrap()
+                .contains(r#"name="field_tags[3]""#),
+            "{body}"
+        );
+    });
+}
+
+/// Every AJAX POST verifies CSRF: no header, or a token the session never
+/// issued, is 403 and nothing runs.
+#[test]
+fn an_ajax_call_without_a_valid_csrf_header_is_refused() {
+    run(|app| async move {
+        let (uid, cookies) = admin(app, "b71ajaxcsrf").await;
+        let id = seed_item(app, PROBE, uid, json!({})).await;
+        let html = get_page(app, &cookies, &format!("/item/{id}/edit")).await;
+        let (_token, build_id) = ajax_tokens(&html);
+
+        for token in [None, Some("not-a-token")] {
+            let (status, next, _) =
+                post_ajax(app, &cookies, token, &build_id, "add_field_tags").await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "token {token:?}");
+            assert!(next.is_none(), "a refused call gets no next token");
+        }
+    });
+}
+
+/// A user who may not open the form cannot drive its AJAX, even with a valid
+/// token of their own and the form's build id.
+#[test]
+fn an_ajax_call_for_a_form_the_user_may_not_open_is_refused() {
+    run(|app| async move {
+        let (owner, owner_cookies) = admin(app, "b71ajaxown").await;
+        let id = seed_item(app, PROBE, owner, json!({})).await;
+        let html = get_page(app, &owner_cookies, &format!("/item/{id}/edit")).await;
+        let (_token, build_id) = ajax_tokens(&html);
+
+        let (_reader, cookies) = common::user_holding(app, "b71ajaxrd", &["access content"]).await;
+        let own = get_page(app, &cookies, "/user/profile").await;
+        let token = input_value(&own, "_token").expect("a token of the reader's own");
+        let (status, _, body) =
+            post_ajax(app, &cookies, Some(&token), &build_id, "add_field_tags").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    });
+}
+
+/// `tap_form_ajax` runs with the services: the fixture answers from its table.
+#[test]
+fn tap_form_ajax_can_read_the_database() {
+    run(|app| async move {
+        let (uid, cookies) = admin(app, "b71ajaxdb").await;
+        let id = seed_item(app, PROBE, uid, json!({})).await;
+        let html = get_page(app, &cookies, &format!("/item/{id}/edit")).await;
+        let (token, build_id) = ajax_tokens(&html);
+
+        let (status, _, body) =
+            post_ajax(app, &cookies, Some(&token), &build_id, "b71_count").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let html = body["commands"][0]["html"].as_str().unwrap_or_default();
+        assert!(
+            html.contains("submissions"),
+            "the handler had no database: {body}"
+        );
+    });
+}
+
+/// `visible_when`: hidden while false, its posted value dropped and its
+/// `required` skipped; shown, saved and required while true.
+#[test]
+fn a_conditional_field_is_hidden_dropped_and_not_required_while_false() {
+    run(|app| async move {
+        let (uid, cookies) = admin(app, "b71when").await;
+        for path in [
+            "/item/{id}/edit".to_string(),
+            "/admin/content/{id}/edit".to_string(),
+        ] {
+            let id = seed_item(
+                app,
+                WHEN,
+                uid,
+                json!({"field_online": false, "field_url": "kept"}),
+            )
+            .await;
+            let path = path.replace("{id}", &id.to_string());
+
+            let html = get_page(app, &cookies, &path).await;
+            let at = html
+                .find(r#"data-visible-when-field="field_online""#)
+                .unwrap_or_else(|| panic!("{path}: no condition on the page"));
+            let open = html[..at].rfind('<').unwrap();
+            let tag = &html[open..at + html[at..].find('>').unwrap()];
+            assert!(tag.contains("hidden"), "{path}: shown while false: {tag}");
+            assert!(html.contains("/static/js/form-states.js"), "{path}");
+
+            // Unchecked: whatever was typed is not saved, and the required
+            // field does not block the save.
+            let body = format!(
+                "{}&title=When&field_url=typed+while+hidden",
+                form_tokens(&html)
+            );
+            let (status, text) = post_form(app, &cookies, &path, body).await;
+            assert!(
+                status.is_success() || status.is_redirection(),
+                "{path}: {status}: {text}"
+            );
+            assert_eq!(
+                stored_fields(app, id).await["field_url"],
+                json!("kept"),
+                "{path}"
+            );
+
+            // Checked and empty: required.
+            let html = get_page(app, &cookies, &path).await;
+            let body = format!(
+                "{}&title=When&field_online=1&field_url=",
+                form_tokens(&html)
+            );
+            let (status, text) = post_form(app, &cookies, &path, body).await;
+            assert!(!status.is_redirection(), "{path}: saved without the URL");
+            assert!(text.contains("Stream URL is required."), "{path}");
+
+            // Checked and filled: saved.
+            let html = get_page(app, &cookies, &path).await;
+            let body = format!(
+                "{}&title=When&field_online=1&field_url=https%3A%2F%2Fexample.org",
+                form_tokens(&html)
+            );
+            let (status, text) = post_form(app, &cookies, &path, body).await;
+            assert!(
+                status.is_success() || status.is_redirection(),
+                "{path}: {status}: {text}"
+            );
+            let fields = stored_fields(app, id).await;
+            assert_eq!(fields["field_url"], json!("https://example.org"), "{path}");
+            assert_eq!(fields["field_online"], json!(true), "{path}");
+        }
+    });
+}
+
+/// The record reference autocomplete works from the non-admin form: the page
+/// loads its script, and the endpoint answers the editor with the targets
+/// they may view and not one on a stage they cannot read.
+#[test]
+fn record_autocomplete_works_from_the_item_form_and_only_offers_viewable_targets() {
+    run(|app| async move {
+        let (owner, _) = admin(app, "b71refown").await;
+        let marker = format!("Zq{}", &Uuid::now_v7().simple().to_string()[24..]);
+        let visible = seed_titled(
+            app,
+            REF_TARGET,
+            owner,
+            &format!("{marker} visible"),
+            json!({}),
+            None,
+        )
+        .await;
+        let stage = common::create_test_stage(app, "b71ref").await;
+        // The service caches the stage list; a stage made here is not in it.
+        app.state.items().clear_stage_cache();
+        let staged = seed_titled(
+            app,
+            REF_TARGET,
+            owner,
+            &format!("{marker} staged"),
+            json!({}),
+            Some(stage),
+        )
+        .await;
+        let id = seed_item(app, REF_PROBE, owner, json!({})).await;
+
+        let (_editor, cookies) = editor(app, "b71refed").await;
+        let html = get_page(app, &cookies, &format!("/item/{id}/edit")).await;
+        assert!(
+            html.contains("/static/js/record-ref.js"),
+            "no autocomplete script"
+        );
+        assert!(
+            html.contains(&format!(r#"data-target-type="{REF_TARGET}""#)),
+            "no autocomplete input"
+        );
+
+        let response = app
+            .request_with_cookies(
+                Request::get(format!(
+                    "/api/v1/items/autocomplete?type={REF_TARGET}&q={marker}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let found: Value = serde_json::from_str(&body_string(response).await).unwrap();
+        let ids: Vec<&str> = found
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(ids.contains(&visible.to_string().as_str()), "{found}");
+        assert!(
+            !ids.contains(&staged.to_string().as_str()),
+            "offered a target on a stage the editor cannot read: {found}"
+        );
     });
 }

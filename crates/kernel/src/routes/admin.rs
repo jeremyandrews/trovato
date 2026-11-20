@@ -455,6 +455,12 @@ async fn media_library(
 /// AJAX form callback endpoint.
 ///
 /// POST /system/ajax
+///
+/// Every request carries the form's AJAX token in `X-CSRF-Token`; tokens are
+/// single use, so a request that passes gets the next one in the same response
+/// header. `add_field` is the content type field screen's trigger and stays
+/// with `administer site`; every other trigger is the form pipeline's
+/// ([`super::item_form::ajax`]), held to whoever may open the form.
 async fn ajax_callback(
     State(state): State<AppState>,
     session: Session,
@@ -462,48 +468,32 @@ async fn ajax_callback(
     Json(request): Json<AjaxRequest>,
 ) -> Response {
     use crate::form::AjaxResponse;
-    use crate::tap::RequestState;
 
-    // Verify CSRF token from header
     if let Err((status, json)) = super::helpers::require_csrf_header(&session, &headers).await {
         return (status, json).into_response();
     }
 
-    // Require authentication for AJAX requests
-    let Ok(user) = require_permission(&state, &session, "administer site").await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(AjaxResponse::new().alert("Session expired. Please log in again.")),
-        )
-            .into_response();
+    let mut response = if request.trigger == "add_field" {
+        if require_permission(&state, &session, "administer site")
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(AjaxResponse::new().alert("Access denied.")),
+            )
+                .into_response();
+        }
+        super::admin_content_type::handle_ajax_add_field(&state, &request).await
+    } else {
+        super::item_form::ajax(&state, &session, &request).await
     };
 
-    // Handle admin-specific AJAX triggers
-    if request.trigger == "add_field" {
-        return super::admin_content_type::handle_ajax_add_field(&state, &request).await;
+    let next = crate::form::csrf::generate_csrf_token(&session).await;
+    if let Ok(value) = axum::http::HeaderValue::from_str(&next) {
+        response.headers_mut().insert("X-CSRF-Token", value);
     }
-
-    // Build the acting context through the shared loader so the AJAX callback
-    // sees the admin's real permissions. This used to hard-code
-    // `vec!["administer site"]`, dropping them exactly as the old front page did.
-    let user_context = admin_user_context(&state, &user).await;
-    let request_state = RequestState::without_services(user_context);
-
-    match state
-        .forms()
-        .ajax_callback(&request, &session, &request_state)
-        .await
-    {
-        Ok(response) => Json(response).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "AJAX callback failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AjaxResponse::new().alert("An error occurred. Please try again.")),
-            )
-                .into_response()
-        }
-    }
+    response
 }
 
 // =============================================================================

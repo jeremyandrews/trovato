@@ -230,3 +230,142 @@ pub(crate) fn redisplay(form: &mut Form, posted: &PostedForm) {
     }
     walk(&mut form.elements, posted);
 }
+
+/// `POST /system/ajax`, after the CSRF header has been checked.
+///
+/// The form state must have been built for this user, and they must still be
+/// allowed to open the form: `edit` access to the item for an edit form, the
+/// type's create permission for an add form. Anything else is 403. The
+/// built-in trigger `add_{field}` builds the next value of a multi value field
+/// the form rendered as editable; any other trigger goes to `tap_form_ajax`,
+/// with the services, so a plugin can read its tables.
+pub(crate) async fn ajax(
+    state: &AppState,
+    session: &Session,
+    request: &crate::form::AjaxRequest,
+) -> axum::response::Response {
+    use crate::form::AjaxResponse;
+    use axum::Json;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    let refused = || {
+        (
+            StatusCode::FORBIDDEN,
+            Json(AjaxResponse::new().alert("You may not use this form. Reload the page.")),
+        )
+            .into_response()
+    };
+
+    let user = super::helpers::get_user_context(session, state).await;
+    let Some(mut form_state) = state.forms().recall(&request.form_build_id, user.id).await else {
+        return refused();
+    };
+    if !may_open(state, &user, &form_state).await {
+        return refused();
+    }
+
+    let response = match request.trigger.strip_prefix("add_") {
+        Some(field) if form_state.rendered_fields.iter().any(|f| f == field) => {
+            add_another(state, &mut form_state, field)
+        }
+        _ => {
+            state
+                .forms()
+                .ajax_tap(
+                    &request.trigger,
+                    &form_state,
+                    &request.values,
+                    &tap_state(state, &user),
+                )
+                .await
+        }
+    };
+    if let Err(e) = state
+        .forms()
+        .save_state(&request.form_build_id, &form_state)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to save form state after AJAX");
+    }
+    Json(response).into_response()
+}
+
+/// Whether `user` may still open the form `form_state` was built for.
+async fn may_open(state: &AppState, user: &UserContext, form_state: &FormState) -> bool {
+    if let Some(item_id) = form_state.item_id {
+        let Ok(Some(item)) = state.items().load(item_id).await else {
+            return false;
+        };
+        return state
+            .items()
+            .check_access(&item, "edit", user)
+            .await
+            .unwrap_or(false);
+    }
+    if let Some(item_type) = &form_state.item_type {
+        return user.can(&format!("create {item_type} content"));
+    }
+    // Any other form: the state was built for this user, which is the check.
+    true
+}
+
+/// The next value of the multi value field `field`: the widget `FormBuilder`
+/// builds for an empty value, appended to the field's items, until the
+/// field's cardinality is reached.
+fn add_another(
+    state: &AppState,
+    form_state: &mut FormState,
+    field: &str,
+) -> crate::form::AjaxResponse {
+    use crate::form::AjaxResponse;
+
+    let Some(definition) = form_state
+        .item_type
+        .as_deref()
+        .and_then(|t| state.content_types().get(t))
+        .and_then(|ct| {
+            ct.fields
+                .iter()
+                .find(|f| f.field_name == field && f.cardinality != 1)
+                .cloned()
+                .map(|f| (ct, f))
+        })
+    else {
+        return AjaxResponse::new();
+    };
+    let (content_type, definition) = definition;
+
+    let count_key = format!("{field}_count");
+    let count = form_state
+        .extra
+        .get(&count_key)
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0);
+    if usize::try_from(definition.cardinality).is_ok_and(|max| count >= max) {
+        return AjaxResponse::new().alert(format!(
+            "{} allows at most {} values.",
+            definition.label, definition.cardinality
+        ));
+    }
+
+    let mut widget = FormBuilder::new(content_type).widget(&definition, None, FieldMode::Editable);
+    widget.title = None;
+    widget.required = false;
+    let name = format!("{field}[{count}]");
+    let html = match state.theme().render_form_element_html(&name, &widget) {
+        Ok(html) => html,
+        Err(e) => {
+            tracing::error!(error = %e, field, "failed to render another value");
+            return AjaxResponse::new().alert("An error occurred. Please try again.");
+        }
+    };
+    form_state.extra.insert(count_key, Value::from(count + 1));
+    AjaxResponse::new()
+        .append(format!("#{field}-items"), html)
+        .invoke(
+            "Trovato.updateFieldDelta",
+            serde_json::json!({ "field": field, "count": count + 1 }),
+        )
+}

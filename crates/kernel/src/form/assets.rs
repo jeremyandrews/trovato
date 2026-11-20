@@ -114,6 +114,11 @@ pub const LIBRARIES: &[Library] = &[
         js: &[local("/static/js/record-ref.js")],
     },
     Library {
+        name: "form_states",
+        css: &[],
+        js: &[local("/static/js/form-states.js")],
+    },
+    Library {
         name: "ai_assist",
         css: &["/static/css/ai-assist.css"],
         js: &[local("/static/js/ai-assist.js")],
@@ -141,11 +146,14 @@ fn widget_library(widget: &str) -> Option<&'static str> {
 /// answers to is dropped.
 pub fn libraries_for(form: &Form) -> Vec<&'static Library> {
     let mut names: Vec<&str> = vec!["form"];
-    for element in form.all_elements() {
+    for (_, element) in form.all_elements() {
         if let ElementType::Widget { widget } = &element.element_type
             && let Some(name) = widget_library(widget)
         {
             names.push(name);
+        }
+        if element.attr("data-visible-when-field").is_some() {
+            names.push("form_states");
         }
     }
     names.extend(form.libraries.iter().map(String::as_str));
