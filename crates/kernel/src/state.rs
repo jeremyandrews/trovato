@@ -35,6 +35,7 @@ use crate::plugin::{
     PluginConfig, PluginRuntime, migration as plugin_migration, status as plugin_status,
 };
 use crate::search::SearchService;
+use crate::search::sentiment::SentimentQueue;
 use crate::services;
 use crate::stage::StageService;
 use crate::tap::{RequestServices, TapDispatcher, TapRegistry};
@@ -143,6 +144,9 @@ struct AppStateInner {
 
     /// Search service for full-text search.
     search: Arc<SearchService>,
+
+    /// The follow-up sentiment classifier's queue and worker.
+    sentiment: Arc<SentimentQueue>,
 
     /// AI provider registry for managing LLM configurations.
     ai_providers: Arc<services::ai_provider::AiProviderService>,
@@ -841,6 +845,11 @@ impl AppState {
 
         // Create search service
         let search = Arc::new(SearchService::new(db.clone(), cache.clone()));
+        let sentiment = Arc::new(SentimentQueue::start(
+            search.clone(),
+            ai_providers.clone(),
+            db.clone(),
+        ));
 
         // (ai_providers and vector_store were created earlier, before the
         // gather service, since gather semantic search depends on them.)
@@ -1149,6 +1158,7 @@ impl AppState {
                 gather,
                 feed_links,
                 search,
+                sentiment,
                 ai_providers,
                 ai_budgets,
                 ai_chat,
@@ -1382,6 +1392,11 @@ impl AppState {
     /// Get the search service.
     pub fn search(&self) -> &Arc<SearchService> {
         &self.inner.search
+    }
+
+    /// Get the follow-up sentiment queue.
+    pub fn sentiment(&self) -> &Arc<SentimentQueue> {
+        &self.inner.sentiment
     }
 
     /// Get the AI provider service.

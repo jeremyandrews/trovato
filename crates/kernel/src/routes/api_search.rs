@@ -14,6 +14,7 @@
 //! there.
 
 use std::convert::Infallible;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -27,7 +28,9 @@ use crate::error::AppError;
 use crate::models::SiteConfig;
 use crate::search::analytics::Counter;
 use crate::search::{SearchSettings, normalize_query, prompts};
-use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
+use crate::services::ai_provider::{
+    AiOperationType, AiProviderService, ProviderProtocol, ResolvedProvider,
+};
 use crate::state::AppState;
 
 /// Build the Scolta search API router.
@@ -160,36 +163,16 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
     let system_prompt = prompts::resolve(prompts::EXPAND_QUERY, &site_name, &site_slogan);
 
     // Make the AI request
-    let (url, request_body, auth_headers) =
-        build_chat_request(&resolved, &system_prompt, &body.query);
-
-    let response = match ai_providers
-        .http()
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(15))
-        .header("content-type", "application/json")
-        .body(request_body)
-        .headers_from_vec(&auth_headers)
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let body = r.text().await.unwrap_or_default();
-            crate::services::ai_provider::log_provider_failure("search", &resolved, status, &body);
-            return AppError::service_unavailable("AI", "AI request failed").into_response();
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "AI search request failed");
-            return AppError::service_unavailable("AI", "AI request failed").into_response();
-        }
-    };
-
-    let response_text = response.text().await.unwrap_or_default();
-    let (content, _tokens) = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
-        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
+    let Some(content) = complete(
+        ai_providers,
+        &resolved,
+        &system_prompt,
+        &body.query,
+        Duration::from_secs(15),
+    )
+    .await
+    else {
+        return AppError::service_unavailable("AI", "AI request failed").into_response();
     };
 
     // Parse the expansion terms from the AI response
@@ -329,7 +312,19 @@ async fn followup(State(state): State<AppState>, Json(body): Json<FollowupReques
         return AppError::bad_request("Query or messages required").into_response();
     };
 
-    json_ai_response_with_key(&state, prompts::FOLLOW_UP, &user_prompt, "response").await
+    let response =
+        json_ai_response_with_key(&state, prompts::FOLLOW_UP, &user_prompt, "response").await;
+
+    // Classify the follow-up off the request path: queued, never awaited.
+    if response.status().is_success()
+        && settings.sentiment_enabled
+        && settings.analytics_enabled
+        && let Some((question, previous_answer)) = last_exchange(&body)
+    {
+        state.sentiment().submit(question, previous_answer);
+    }
+
+    response
 }
 
 // ============================================================================
@@ -355,6 +350,29 @@ fn user_turns(body: &FollowupRequest) -> usize {
     } else {
         body.messages.iter().filter(is_user).count()
     }
+}
+
+/// The visitor's newest message and the assistant answer before it, from
+/// whichever shape the request came in. The search context `scolta.js` appends
+/// to a follow-up is cut off: it is search results, not the visitor's words.
+fn last_exchange(body: &FollowupRequest) -> Option<(&str, &str)> {
+    let (question, earlier): (&str, &[Message]) = if body.messages.is_empty() {
+        (body.query.as_deref()?, &body.history)
+    } else {
+        let (last, earlier) = body.messages.split_last()?;
+        if !last.role.eq_ignore_ascii_case("user") {
+            return None;
+        }
+        (&last.content, earlier)
+    };
+    let previous = earlier
+        .iter()
+        .rev()
+        .find(|m| m.role.eq_ignore_ascii_case("assistant"))?;
+    let question = question
+        .split_once("\n\nAdditional search results for this follow-up:")
+        .map_or(question, |(own, _)| own);
+    Some((question, previous.content.as_str()))
 }
 
 /// Build excerpt context string from a list of excerpts.
@@ -395,36 +413,16 @@ async fn json_ai_response_with_key(
         .unwrap_or_default();
     let system_prompt = prompts::resolve(prompt_template, &site_name, &site_slogan);
 
-    let (url, request_body, auth_headers) =
-        build_chat_request(&resolved, &system_prompt, user_prompt);
-
-    let response = match ai_providers
-        .http()
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(30))
-        .header("content-type", "application/json")
-        .body(request_body)
-        .headers_from_vec(&auth_headers)
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let body = r.text().await.unwrap_or_default();
-            crate::services::ai_provider::log_provider_failure("search", &resolved, status, &body);
-            return AppError::service_unavailable("AI", "AI request failed").into_response();
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "AI search request failed");
-            return AppError::service_unavailable("AI", "AI request failed").into_response();
-        }
-    };
-
-    let response_text = response.text().await.unwrap_or_default();
-    let (content, _tokens) = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
-        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
+    let Some(content) = complete(
+        ai_providers,
+        &resolved,
+        &system_prompt,
+        user_prompt,
+        Duration::from_secs(30),
+    )
+    .await
+    else {
+        return AppError::service_unavailable("AI", "AI request failed").into_response();
     };
 
     let mut result = serde_json::Map::new();
@@ -456,36 +454,16 @@ async fn stream_ai_response(
     let system_prompt = prompts::resolve(prompt_template, &site_name, &site_slogan);
 
     // Non-streaming request for simplicity (scolta.js handles the display)
-    let (url, request_body, auth_headers) =
-        build_chat_request(&resolved, &system_prompt, user_prompt);
-
-    let response = match ai_providers
-        .http()
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(30))
-        .header("content-type", "application/json")
-        .body(request_body)
-        .headers_from_vec(&auth_headers)
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let body = r.text().await.unwrap_or_default();
-            crate::services::ai_provider::log_provider_failure("search", &resolved, status, &body);
-            return AppError::service_unavailable("AI", "AI request failed").into_response();
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "AI search request failed");
-            return AppError::service_unavailable("AI", "AI request failed").into_response();
-        }
-    };
-
-    let response_text = response.text().await.unwrap_or_default();
-    let (content, _tokens) = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
-        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
+    let Some(content) = complete(
+        ai_providers,
+        &resolved,
+        &system_prompt,
+        user_prompt,
+        Duration::from_secs(30),
+    )
+    .await
+    else {
+        return AppError::service_unavailable("AI", "AI request failed").into_response();
     };
 
     // Return as SSE event (single chunk for non-streaming providers)
@@ -502,12 +480,59 @@ async fn stream_ai_response(
         .into_response()
 }
 
+/// Send one chat completion to `resolved` and return its text.
+///
+/// The one send and parse path for every AI search call: the three endpoints
+/// and the sentiment classifier. A provider error is logged through
+/// [`log_provider_failure`](crate::services::ai_provider::log_provider_failure)
+/// and a transport error at warn; both return `None`.
+pub(crate) async fn complete(
+    ai_providers: &AiProviderService,
+    resolved: &ResolvedProvider,
+    system_prompt: &str,
+    user_prompt: &str,
+    timeout: Duration,
+) -> Option<String> {
+    let (url, request_body, auth_headers) =
+        build_chat_request(resolved, system_prompt, user_prompt);
+
+    let response = match ai_providers
+        .http()
+        .post(&url)
+        .timeout(timeout)
+        .header("content-type", "application/json")
+        .body(request_body)
+        .headers_from_vec(&auth_headers)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            crate::services::ai_provider::log_provider_failure("search", resolved, status, &body);
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "AI search request failed");
+            return None;
+        }
+    };
+
+    let response_text = response.text().await.unwrap_or_default();
+    let (content, _tokens) = match resolved.config.protocol {
+        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
+        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
+    };
+    Some(content)
+}
+
 /// Build a non-streaming chat request for the given provider.
 ///
 /// No `temperature`: nothing configures one for search, and Anthropic models
 /// newer than `claude-sonnet-4-6` answer 400 to a request that carries it.
 fn build_chat_request(
-    resolved: &crate::services::ai_provider::ResolvedProvider,
+    resolved: &ResolvedProvider,
     system_prompt: &str,
     user_prompt: &str,
 ) -> (String, String, Vec<(String, String)>) {
