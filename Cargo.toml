@@ -63,6 +63,9 @@ members = [
     # item-api SDK bindings; built with --target wasm32-wasip1.
     "plugins/test_item_writer",
     "plugins/test_item_deny",
+    # B73 member fixture: reads about the site's members by id through
+    # user-api.load-users; built with --target wasm32-wasip1.
+    "plugins/test_members",
     # FR-8 (Story 3.8) reference plugin: the canonical tap_field_access
     # implementation (Cairn tier + Ritrovo role patterns). Real, enableable
     # plugin; built with --target wasm32-wasip1 like the other plugin cdylibs.

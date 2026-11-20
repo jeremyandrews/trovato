@@ -1121,6 +1121,26 @@ pub struct QueueOptions {
     pub delay: i64,
 }
 
+/// Public facts about one of the site's users, as `host::load_users` answers
+/// them. Never an address, a password hash or the user's private `data`.
+///
+/// Added by B73.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserSummary {
+    /// The user's id (a UUID).
+    pub id: String,
+    /// The user's name, as shown on the site.
+    pub name: String,
+    /// `"active"` or `"blocked"`.
+    pub status: String,
+    /// The user's timezone, if they set one.
+    pub timezone: Option<String>,
+    /// The user's language, if they set one.
+    pub language: Option<String>,
+    /// When the account was created, in unix seconds.
+    pub created: i64,
+}
+
 /// One file attached to a message sent with
 /// [`crate::host::mail_send_to_site_contacts`].
 ///

@@ -17,6 +17,7 @@
 
 #![allow(dead_code)]
 
+pub mod plugin_copy;
 pub mod smtp_sink;
 
 use axum::Router;

@@ -1,0 +1,16 @@
+name = "test_members"
+description = "B73 fixture: a plugin that reads about the site's members by id"
+version = "0.105.0"
+api_version = "0.105"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_menu", "tap_api"]
+weight = 0
+
+# `user-api` with `user_directory` for the load_users callback (B73); a test
+# drops the capability from a copy of this manifest to see the refusal.
+[capabilities]
+host_interfaces = ["logging", "user-api"]
+user_directory = true

@@ -4838,6 +4838,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_members"
+version = "0.105.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_plugin_api"
 version = "0.105.0"
 dependencies = [
