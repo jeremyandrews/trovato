@@ -189,7 +189,13 @@ async fn assistant_config_page(State(state): State<AppState>, session: Session) 
         context.insert("flash", &flash);
     }
 
-    render_admin_template(&state, "admin/ai-assistant.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-assistant.html",
+        context,
+    )
+    .await
 }
 
 /// POST the page.

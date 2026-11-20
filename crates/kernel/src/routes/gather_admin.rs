@@ -61,7 +61,13 @@ async fn list_queries(State(state): State<AppState>, session: Session) -> Respon
     context.insert("path", "/admin/gather");
     super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
-    render_admin_template(&state, "admin/gather-list.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/gather-list.html",
+        context,
+    )
+    .await
 }
 
 /// Show create gather query form.
@@ -99,7 +105,13 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
     context.insert("path", "/admin/gather/create");
     super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
-    render_admin_template(&state, "admin/gather-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/gather-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle create gather query form submission.
@@ -197,7 +209,13 @@ async fn create_submit(
         context.insert("path", "/admin/gather/create");
         super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
-        return render_admin_template(&state, "admin/gather-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/gather-form.html",
+            context,
+        )
+        .await;
     }
 
     // Build the query
@@ -266,7 +284,13 @@ async fn edit_form(
     context.insert("path", &format!("/admin/gather/{id}/edit"));
     super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
-    render_admin_template(&state, "admin/gather-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/gather-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit gather query form submission.
@@ -352,7 +376,13 @@ async fn save_submit(
         context.insert("path", &format!("/admin/gather/{id}/edit"));
         super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
 
-        return render_admin_template(&state, "admin/gather-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/gather-form.html",
+            context,
+        )
+        .await;
     }
 
     // Update the query (preserve original created timestamp and plugin)

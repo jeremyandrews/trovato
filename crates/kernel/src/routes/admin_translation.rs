@@ -108,7 +108,13 @@ async fn translation_list(
     // `page--admin.html` reads `path` to mark the active admin menu entry.
     context.insert("path", &format!("/admin/content/{id}/translate"));
 
-    render_admin_template(&state, "admin/content-translate-list.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/content-translate-list.html",
+        context,
+    )
+    .await
 }
 
 /// Edit a translation for a specific language.
@@ -176,7 +182,13 @@ async fn translation_edit(
     // `page--admin.html` reads `path` to mark the active admin menu entry.
     context.insert("path", &format!("/admin/content/{id}/translate/{lang}"));
 
-    render_admin_template(&state, "admin/content-translate-edit.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/content-translate-edit.html",
+        context,
+    )
+    .await
 }
 
 /// Save a translation for one language.

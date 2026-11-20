@@ -957,7 +957,7 @@ v0.102.0. A reviewer who needs it should ask for that repository.
 | G-TWO-WRITER-NO-CONTRACT (BL-28) | Medium | The db allowlist is per table, so no manifest can say a column belongs to another writer, and `raw_sql` reaches any table the role can | **open**, class post |
 | G-ITEM-API-BYPASSES-ITEM-SERVICE (BL-25) | High, residual | `save-item` and `delete-item` call the model directly, so a plugin's item write fires no taps and **runs no access check** | **partly fixed**, otherwise open |
 | BL-105 | | A plugin reaches the kernel's `users` table by declaring it in `db_tables`, which no policy refuses | **open**, class post, explicitly placed in this review's scope |
-| BL-117 | | The admin sidebar lists screens a delegated role gets 403 on | **open** |
+| BL-117 | | The admin sidebar lists screens a delegated role gets 403 on | **fixed** (B71 Part 6) |
 | Site report #8 | | The login page's inline script is blocked by the kernel's own CSP, so passkey sign in does not work on a default install | fixed at `73a9160` after the report |
 | Site report #1 | | Static assets rate limited as API calls at 100/min per IP; behind a proxy every visitor shares one bucket | addressed in part by `bfaee27` |
 

@@ -160,9 +160,14 @@ async fn show_form(State(state): State<AppState>, session: Session) -> Response 
     context.insert("csrf_token", &csrf_token);
     context.insert("page_title", "AI Feature Configuration");
 
-    render_admin_template(&state, "admin/ai-features.html", context)
-        .await
-        .into_response()
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-features.html",
+        context,
+    )
+    .await
+    .into_response()
 }
 
 /// Save the AI features configuration.

@@ -13,13 +13,10 @@
 //! own cards are filtered to what the viewer may actually open, so the page
 //! never offers a door that answers 403.
 //!
-//! **The admin layout's sidebar is not filtered**, and is deliberately left
-//! alone here. It has listed every screen unconditionally since #92 made those
-//! screens delegable, so it is the same for any delegated role reaching any
-//! admin page and is not something this permission introduces. Filtering it
-//! means giving `render_admin_template` the viewer, which is a signature change
-//! across its 80 call sites and belongs in its own change. The assertions below
-//! are therefore scoped to the dashboard's own content region.
+//! The admin layout's sidebar is filtered too, by its own table
+//! (`routes::admin_nav`, BL-117), and has its own tests in
+//! `admin_sidebar_test`. The assertions below are scoped to the dashboard's own
+//! content region.
 //!
 //! It implies nothing and nothing implies it. The one exception is a migration
 //! that grants it once to every role already holding `administer site`, so no
@@ -68,10 +65,8 @@ async fn get_as(app: &TestApp, path: &str, cookies: &str, bucket: &str) -> (Stat
 
 /// The dashboard's own content, without the layout's sidebar.
 ///
-/// The sidebar lists every admin screen unconditionally and has done since #92
-/// (see this file's header), so a whole-page assertion would be testing that
-/// pre-existing behaviour rather than this change. These tests are about what
-/// the dashboard itself offers.
+/// The sidebar is tested in `admin_sidebar_test` (see this file's header).
+/// These tests are about what the dashboard itself offers.
 fn dashboard_main(body: &str) -> &str {
     // The opening tag, not the stylesheet rule of the same name that precedes
     // the sidebar: anchoring on the bare string would slice from the `<style>`

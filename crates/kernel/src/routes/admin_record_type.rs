@@ -60,7 +60,13 @@ async fn list_record_types(State(state): State<AppState>, session: Session) -> R
     let mut context = tera::Context::new();
     context.insert("record_types", &types);
     context.insert("path", "/admin/structure/records");
-    super::helpers::render_admin_template(&state, "admin/record-types.html", context).await
+    super::helpers::render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/record-types.html",
+        context,
+    )
+    .await
 }
 
 /// List the rows of one lightweight-record type.
@@ -110,7 +116,13 @@ async fn list_records(
     context.insert("records", &rows);
     context.insert("truncated", &(rows.len() as i64 >= RECORD_LIST_LIMIT));
     context.insert("path", "/admin/structure/records");
-    super::helpers::render_admin_template(&state, "admin/record-list.html", context).await
+    super::helpers::render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/record-list.html",
+        context,
+    )
+    .await
 }
 
 /// View one lightweight-record row.
@@ -193,7 +205,13 @@ async fn view_record(
     );
     context.insert("fields", &pairs);
     context.insert("path", "/admin/structure/records");
-    super::helpers::render_admin_template(&state, "admin/record-view.html", context).await
+    super::helpers::render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/record-view.html",
+        context,
+    )
+    .await
 }
 
 /// Build the lightweight-record admin router (P11g / D-58, read-only).

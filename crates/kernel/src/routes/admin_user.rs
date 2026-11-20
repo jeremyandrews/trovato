@@ -216,7 +216,13 @@ async fn list_users(State(state): State<AppState>, session: Session) -> Response
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/people");
 
-    render_admin_template(&state, "admin/users.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/users.html",
+        context,
+    )
+    .await
 }
 
 /// Show add user form.
@@ -239,7 +245,13 @@ async fn add_user_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("roles", &state.roles().list().await.unwrap_or_default());
     context.insert("path", "/admin/people/add");
 
-    render_admin_template(&state, "admin/user-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/user-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add user form submission.
@@ -310,7 +322,13 @@ async fn add_user_submit(
         context.insert("roles", &all_roles);
         context.insert("path", "/admin/people/add");
 
-        return render_admin_template(&state, "admin/user-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/user-form.html",
+            context,
+        )
+        .await;
     }
 
     // Create the user
@@ -406,7 +424,13 @@ async fn edit_user_form(
         ),
     );
 
-    render_admin_template(&state, "admin/user-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/user-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit user form submission.
@@ -537,7 +561,13 @@ async fn edit_user_submit(
             ),
         );
 
-        return render_admin_template(&state, "admin/user-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/user-form.html",
+            context,
+        )
+        .await;
     }
 
     // Update the user
@@ -756,7 +786,13 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/people/roles");
 
-    render_admin_template(&state, "admin/roles.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/roles.html",
+        context,
+    )
+    .await
 }
 
 /// Show add role form.
@@ -778,7 +814,13 @@ async fn add_role_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/people/roles/add");
 
-    render_admin_template(&state, "admin/role-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/role-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add role form submission.
@@ -828,7 +870,13 @@ async fn add_role_submit(
         );
         context.insert("path", "/admin/people/roles/add");
 
-        return render_admin_template(&state, "admin/role-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/role-form.html",
+            context,
+        )
+        .await;
     }
 
     match state.roles().create(&form.name).await {
@@ -883,7 +931,13 @@ async fn edit_role_form(
     );
     context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
 
-    render_admin_template(&state, "admin/role-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/role-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit role form submission.
@@ -947,7 +1001,13 @@ async fn edit_role_submit(
         );
         context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
 
-        return render_admin_template(&state, "admin/role-form.html", context).await;
+        return render_admin_template(
+            &state,
+            &crate::routes::helpers::get_user_context(&session, &state).await,
+            "admin/role-form.html",
+            context,
+        )
+        .await;
     }
 
     match state.roles().update(role_id, &form.name).await {
@@ -1220,7 +1280,13 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
     context.insert("form_build_id", &form_build_id);
     context.insert("path", "/admin/people/permissions");
 
-    render_admin_template(&state, "admin/permissions.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/permissions.html",
+        context,
+    )
+    .await
 }
 
 /// Save permission matrix.

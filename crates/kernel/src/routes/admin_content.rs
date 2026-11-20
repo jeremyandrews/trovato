@@ -139,7 +139,13 @@ async fn list_content(
     context.insert("flash", &flash);
     context.insert("path", "/admin/content");
 
-    render_admin_template(&state, "admin/content-list.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/content-list.html",
+        context,
+    )
+    .await
 }
 
 /// Select content type before adding.
@@ -156,7 +162,13 @@ async fn select_content_type(State(state): State<AppState>, session: Session) ->
     context.insert("content_types", &content_types);
     context.insert("path", "/admin/content/add");
 
-    render_admin_template(&state, "admin/content-add-select.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/content-add-select.html",
+        context,
+    )
+    .await
 }
 
 /// Show add content form.
@@ -261,7 +273,13 @@ async fn render_content_form(
         );
     }
 
-    render_admin_template(state, "admin/content-form.html", context).await
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/content-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add content form submission.

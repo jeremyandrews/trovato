@@ -152,7 +152,13 @@ async fn list_stages(State(state): State<AppState>, session: Session) -> Respons
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/structure/stages");
 
-    render_admin_template(&state, "admin/stages.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/stages.html",
+        context,
+    )
+    .await
 }
 
 /// Render the add/edit form.
@@ -180,7 +186,13 @@ async fn render_form(
     context.insert("errors", &errors);
     context.insert("path", &action);
 
-    render_admin_template(state, "admin/stage-form.html", context).await
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/stage-form.html",
+        context,
+    )
+    .await
 }
 
 /// Empty form values, so the template never reads an undefined variable.

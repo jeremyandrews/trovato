@@ -190,7 +190,13 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
         context.insert("running_version", crate::update_status::running_version());
     }
 
-    render_admin_template(&state, "admin/dashboard.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/dashboard.html",
+        context,
+    )
+    .await
 }
 
 // =============================================================================
@@ -242,7 +248,13 @@ async fn list_files(
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/content/files");
 
-    render_admin_template(&state, "admin/files.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/files.html",
+        context,
+    )
+    .await
 }
 
 /// Show file details.
@@ -272,7 +284,13 @@ async fn file_details(
     context.insert("public_url", &public_url);
     context.insert("path", &format!("/admin/content/files/{file_id}"));
 
-    render_admin_template(&state, "admin/file-details.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/file-details.html",
+        context,
+    )
+    .await
 }
 
 /// Delete a file.
@@ -445,7 +463,13 @@ async fn media_library(
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/media");
 
-    render_admin_template(&state, "admin/media-library.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/media-library.html",
+        context,
+    )
+    .await
 }
 
 // =============================================================================
@@ -662,7 +686,13 @@ async fn list_comments(
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/content/comments");
 
-    render_admin_template(&state, "admin/comments.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/comments.html",
+        context,
+    )
+    .await
 }
 
 /// Edit a comment form.
@@ -712,7 +742,13 @@ async fn edit_comment_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/content/comments");
 
-    render_admin_template(&state, "admin/comment-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/comment-form.html",
+        context,
+    )
+    .await
 }
 
 /// Edit a comment submit.

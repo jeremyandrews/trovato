@@ -184,7 +184,13 @@ async fn list_providers(State(state): State<AppState>, session: Session) -> Resp
     context.insert("flash", &flash);
     context.insert("path", "/admin/system/ai-providers");
 
-    render_admin_template(&state, "admin/ai-providers.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-providers.html",
+        context,
+    )
+    .await
 }
 
 /// Show add provider form.
@@ -218,7 +224,13 @@ async fn add_provider_form(State(state): State<AppState>, session: Session) -> R
     context.insert("operations", &operations);
     context.insert("path", "/admin/system/ai-providers/add");
 
-    render_admin_template(&state, "admin/ai-provider-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-provider-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle add provider form submission.
@@ -387,7 +399,13 @@ async fn edit_provider_form(
         &format!("/admin/system/ai-providers/{provider_id}/edit"),
     );
 
-    render_admin_template(&state, "admin/ai-provider-form.html", context).await
+    render_admin_template(
+        &state,
+        &crate::routes::helpers::get_user_context(&session, &state).await,
+        "admin/ai-provider-form.html",
+        context,
+    )
+    .await
 }
 
 /// Handle edit provider form submission.
@@ -671,7 +689,13 @@ async fn redisplay_form(
     context.insert("operations", &operations);
     context.insert("path", action);
 
-    render_admin_template(state, "admin/ai-provider-form.html", context).await
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/ai-provider-form.html",
+        context,
+    )
+    .await
 }
 
 // =============================================================================
