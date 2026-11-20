@@ -87,49 +87,21 @@ async fn upload_file(
         return (status, json).into_response();
     }
 
-    // Process multipart form
-    let mut filename: Option<String> = None;
-    let mut content_type: Option<String> = None;
-    let mut data: Option<Vec<u8>> = None;
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-
-        if name == "file" {
-            filename = field.file_name().map(|s| s.to_string());
-            content_type = field.content_type().map(|s| s.to_string());
-
-            match field.bytes().await {
-                Ok(bytes) => data = Some(bytes.to_vec()),
-                Err(e) => {
-                    // A body past `MAX_UPLOAD_BODY_SIZE` stops here, before the
-                    // service sees it: say so, rather than "failed to read".
-                    let (status, message) = if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                        (
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            format!("File too large (max {MAX_FILE_SIZE} bytes)"),
-                        )
-                    } else {
-                        warn!(error = %e, "failed to read upload data");
-                        (
-                            StatusCode::BAD_REQUEST,
-                            "Failed to read file data".to_string(),
-                        )
-                    };
-                    return (
-                        status,
-                        Json(UploadResponse {
-                            success: false,
-                            file: None,
-                            error: Some(message),
-                        }),
-                    )
-                        .into_response();
-                }
-            }
-            break; // Only process first file
+    // Read the first `file` part.
+    let (filename, content_type, data) = match read_upload_part(&mut multipart, &["file"]).await {
+        Ok(part) => part,
+        Err((status, message)) => {
+            return (
+                status,
+                Json(UploadResponse {
+                    success: false,
+                    file: None,
+                    error: Some(message),
+                }),
+            )
+                .into_response();
         }
-    }
+    };
 
     // Validate we got a file
     let Some(filename) = filename else {
@@ -405,32 +377,13 @@ async fn block_editor_upload(
         return (status, json).into_response();
     }
 
-    // Process multipart form
-    let mut filename: Option<String> = None;
-    let mut content_type: Option<String> = None;
-    let mut data: Option<Vec<u8>> = None;
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-
-        if name == "image" || name == "file" {
-            filename = field.file_name().map(|s| s.to_string());
-            content_type = field.content_type().map(|s| s.to_string());
-
-            match field.bytes().await {
-                Ok(bytes) => data = Some(bytes.to_vec()),
-                Err(e) => {
-                    let status = if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                        StatusCode::PAYLOAD_TOO_LARGE
-                    } else {
-                        StatusCode::BAD_REQUEST
-                    };
-                    return (status, Json(serde_json::json!({ "success": 0 }))).into_response();
-                }
+    let (filename, content_type, data) =
+        match read_upload_part(&mut multipart, &["image", "file"]).await {
+            Ok(part) => part,
+            Err((status, _)) => {
+                return (status, Json(serde_json::json!({ "success": 0 }))).into_response();
             }
-            break;
-        }
-    }
+        };
 
     let Some(filename) = filename else {
         return (
@@ -523,6 +476,41 @@ async fn block_editor_preview(
     let html = crate::content::block_render::render_blocks(&blocks);
 
     Json(serde_json::json!({ "html": html })).into_response()
+}
+
+/// The first multipart part named one of `names`: its filename, declared
+/// content type and bytes, each `None` when absent.
+///
+/// A body past the route's `MAX_UPLOAD_BODY_SIZE` limit can fail on reading the
+/// part or on reaching it; either way the answer is 413 saying the file is too
+/// large, not "no file" or "failed to read".
+async fn read_upload_part(
+    multipart: &mut Multipart,
+    names: &[&str],
+) -> Result<(Option<String>, Option<String>, Option<Vec<u8>>), (StatusCode, String)> {
+    let refused = |e: axum::extract::multipart::MultipartError| {
+        if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("File too large (max {MAX_FILE_SIZE} bytes)"),
+            )
+        } else {
+            warn!(error = %e, "failed to read upload data");
+            (
+                StatusCode::BAD_REQUEST,
+                "Failed to read file data".to_string(),
+            )
+        }
+    };
+    while let Some(field) = multipart.next_field().await.map_err(refused)? {
+        if names.contains(&field.name().unwrap_or("")) {
+            let filename = field.file_name().map(str::to_string);
+            let content_type = field.content_type().map(str::to_string);
+            let bytes = field.bytes().await.map_err(refused)?;
+            return Ok((filename, content_type, Some(bytes.to_vec())));
+        }
+    }
+    Ok((None, None, None))
 }
 
 /// The status for an upload the service refused: 413 or 415 for a file at
