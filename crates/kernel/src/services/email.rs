@@ -237,21 +237,6 @@ impl EmailService {
         self.send(to, &subject, &body).await
     }
 
-    /// Send a password reset email with a tokenized link.
-    pub async fn send_password_reset(&self, to: &str, token: &str, site_name: &str) -> Result<()> {
-        let reset_url = format!("{}/user/password-reset/{}", self.site_url, token);
-        let subject = format!("Password reset for {site_name}");
-        let body = format!(
-            "A password reset has been requested for your account at {site_name}.\n\n\
-             To reset your password, visit the following link:\n\
-             {reset_url}\n\n\
-             If you did not request this, you can safely ignore this email.\n\n\
-             This link will expire in 1 hour."
-        );
-
-        self.send(to, &subject, &body).await
-    }
-
     /// Send a templated email with optional HTML body.
     ///
     /// If `html_body` is provided, sends a multipart message with both
