@@ -95,7 +95,7 @@ fn build_id_pair(html: &str) -> String {
 async fn seed_item(app: &TestApp, author: Uuid, fields: Value) -> Uuid {
     let user = trovato_kernel::tap::UserContext::authenticated(
         author,
-        vec!["administer site".to_string()],
+        vec!["administer site".to_string(), "publish content".to_string()],
     );
     let item = app
         .state
