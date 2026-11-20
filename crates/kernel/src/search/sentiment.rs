@@ -4,7 +4,7 @@
 //! hands the visitor's message and the answer before it to [`SentimentQueue`]
 //! and returns. One background worker drains the queue, asks the configured
 //! Chat provider for one word through the same send and parse path the search
-//! endpoints use ([`complete`](crate::routes::api_search::complete)), and adds
+//! endpoints use (`routes::api_search::complete`), and adds
 //! the label to the day's analytics counters. Nothing else is kept: the text
 //! goes to the provider and is dropped.
 //!
