@@ -192,6 +192,16 @@ async fn ensure_gallery_type(app: &TestApp) -> String {
         .await
         .expect("create gallery type");
     app.cleanup_content_type_on_exit(&name);
+    // Registered second so it runs first: the type cannot be deleted while
+    // items of it exist, and a leaked type grows the shared fixture every pass.
+    let pool = app.db.clone();
+    let item_type = name.clone();
+    common::defer_cleanup(move || async move {
+        let _ = sqlx::query("DELETE FROM item WHERE type = $1")
+            .bind(&item_type)
+            .execute(&pool)
+            .await;
+    });
     name
 }
 
