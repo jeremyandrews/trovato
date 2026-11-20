@@ -382,27 +382,6 @@ pub struct RuntimeConfig {
     pub search_expand_cache_ttl: u64,
 }
 
-/// The SMTP configuration mail is sent with, as an administrator may see it.
-///
-/// The environment is the one source of SMTP configuration. This is what the
-/// site settings page shows of it: the username and password say only whether
-/// they are set, never what they are.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SmtpSummary {
-    /// `SMTP_HOST`; `None` means mail is not sent at all.
-    pub host: Option<String>,
-    /// `SMTP_PORT`.
-    pub port: u16,
-    /// `SMTP_ENCRYPTION`.
-    pub encryption: String,
-    /// `SMTP_FROM_EMAIL`.
-    pub from: String,
-    /// Whether `SMTP_USERNAME` is set.
-    pub username_set: bool,
-    /// Whether `SMTP_PASSWORD` is set.
-    pub password_set: bool,
-}
-
 /// Application configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -726,20 +705,6 @@ impl Config {
             shutdown_timeout,
             runtime,
         })
-    }
-}
-
-impl Config {
-    /// The SMTP configuration without its secrets, for display.
-    pub fn smtp_summary(&self) -> SmtpSummary {
-        SmtpSummary {
-            host: self.smtp_host.clone(),
-            port: self.smtp_port,
-            encryption: self.smtp_encryption.clone(),
-            from: self.smtp_from_email.clone(),
-            username_set: self.smtp_username.as_deref().is_some_and(|u| !u.is_empty()),
-            password_set: self.smtp_password.as_deref().is_some_and(|p| !p.is_empty()),
-        }
     }
 }
 

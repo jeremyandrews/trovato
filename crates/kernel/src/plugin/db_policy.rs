@@ -158,12 +158,12 @@ pub const TABLE_PROTECTED: &str = "table-protected";
 /// `webhook`.
 ///
 /// `site_config` is on it, and that one is a behaviour change for raw SQL.
-/// The table used to hold the SMTP password, which `/admin/config/site` wrote
-/// in the clear; that form and its keys are gone (SMTP is configured in the
-/// environment only), but the table is still every site setting at once, and
-/// what a plugin may read of it goes through the kernel, not raw SQL. The one
-/// shipped plugin that reads the table, `trovato_ai`, is refused; see
-/// `UPGRADING.md`.
+/// The table holds the SMTP password: `/admin/config` writes whatever the
+/// administrator types into the `smtp_password` key, in the clear, unless they
+/// used the `env:` indirection. One `SELECT value FROM site_config` is
+/// therefore a credential read, which is the criterion every other name here
+/// meets. The one shipped plugin that reads the table, `trovato_ai`, is
+/// refused now; see `UPGRADING.md`.
 const PROTECTED_TABLES: &[&str] = &[
     "_sqlx_migrations",
     "api_tokens",

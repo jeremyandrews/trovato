@@ -235,10 +235,6 @@ struct AppStateInner {
     /// Email delivery service (available when SMTP_HOST is configured).
     email: Option<Arc<services::email::EmailService>>,
 
-    /// What the email service above was built from, without the secrets, for
-    /// the site settings page to show.
-    smtp_summary: crate::config::SmtpSummary,
-
     // --- Optional services (available when their plugins are enabled) ---
     /// Audit logging service.
     audit: Option<Arc<services::audit::AuditService>>,
@@ -1168,7 +1164,6 @@ impl AppState {
                 recovery_flows,
                 recovery_providers,
                 email,
-                smtp_summary: config.smtp_summary(),
                 audit,
                 content_lock,
                 image_styles,
@@ -1462,12 +1457,6 @@ impl AppState {
     /// Get the email service (if SMTP is configured).
     pub fn email(&self) -> Option<&Arc<services::email::EmailService>> {
         self.inner.email.as_ref()
-    }
-
-    /// The SMTP configuration the email service was built from, without the
-    /// username or password values.
-    pub fn smtp_summary(&self) -> &crate::config::SmtpSummary {
-        &self.inner.smtp_summary
     }
 
     /// The kernel-internal append-only security audit stream (Epic 4).
