@@ -156,6 +156,9 @@ unsafe extern "C" {
 
     #[link_name = "current-user-has-permission"]
     fn __current_user_has_permission(perm_ptr: i32, perm_len: i32) -> i32;
+
+    #[link_name = "load-users"]
+    fn __load_users(ids_ptr: i32, ids_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -829,6 +832,49 @@ pub fn current_user_id() -> String {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn current_user_id() -> String {
     String::new()
+}
+
+/// Public facts about the site's users, by id: name, status, timezone,
+/// language and when the account was created. Never an address.
+///
+/// Requires `user_directory = true` under `[capabilities]` as well as
+/// `user-api` in `host_interfaces`. Ids that name no user are left out of the
+/// answer. At most 100 ids a call, in one database query, so look a batch up
+/// rather than one id at a time.
+///
+/// # Errors
+///
+/// [`ERR_USER_DIRECTORY_DENIED`](crate::host_errors::ERR_USER_DIRECTORY_DENIED)
+/// without the capability,
+/// [`ERR_USER_IDS_INVALID`](crate::host_errors::ERR_USER_IDS_INVALID) for an id
+/// that is not a user id,
+/// [`ERR_USER_IDS_TOO_MANY`](crate::host_errors::ERR_USER_IDS_TOO_MANY) for more
+/// than 100, and the standard negative codes for a failed read.
+#[cfg(target_arch = "wasm32")]
+pub fn load_users(user_ids: &[&str]) -> Result<Vec<crate::types::UserSummary>, i32> {
+    let ids_json =
+        serde_json::to_string(user_ids).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __load_users(
+            ids_json.as_ptr() as i32,
+            ids_json.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// Look users up by id (stub for native testing; there is no directory to
+/// ask, so no user is found).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_users(_user_ids: &[&str]) -> Result<Vec<crate::types::UserSummary>, i32> {
+    Ok(Vec::new())
 }
 
 /// Filter `text` through the text format `format`, exactly as the kernel does

@@ -481,6 +481,24 @@ pub const ERR_MAIL_SEND_FAILED: i32 = -54;
 pub const ERR_MAIL_RATE_LIMITED: i32 = -55;
 
 // =============================================================================
+// User directory errors (`trovato:kernel/user-api` `load-users`) — added by B73
+// =============================================================================
+
+/// The plugin did not declare `user_directory = true` under `[capabilities]`.
+///
+/// `load-users` answers about users the plugin is not serving, so it is a
+/// separate grant from `user-api`, visible in the manifest and reviewable at
+/// install time.
+pub const ERR_USER_DIRECTORY_DENIED: i32 = -73;
+
+/// An id was not a user id (a UUID), or the list was not a JSON array of
+/// strings. Nothing was looked up.
+pub const ERR_USER_IDS_INVALID: i32 = -74;
+
+/// More than 100 ids in one call. Nothing was looked up; split the batch.
+pub const ERR_USER_IDS_TOO_MANY: i32 = -75;
+
+// =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)
 // =============================================================================
 

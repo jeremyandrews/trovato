@@ -636,6 +636,37 @@ if host::user::has_permission("administer my_plugin") {
 }
 ```
 
+### Other Users
+
+`host::load_users` answers public facts about users the plugin is not serving,
+by id: name, status (`"active"` or `"blocked"`), timezone, language and when
+the account was created. Never an address, a password hash or the user's
+`data`; no capability grants an address. It needs `user-api` in
+`host_interfaces` **and** `user_directory = true` under `[capabilities]`:
+declaring `user-api` alone does not grant it, and the call is refused with
+`ERR_USER_DIRECTORY_DENIED`.
+
+```toml
+[capabilities]
+host_interfaces = ["user-api"]
+user_directory = true
+```
+
+```rust
+// Up to 100 ids a call, one database query for the whole batch. Ids that
+// name no user are left out; a malformed id or more than 100 is refused.
+let users = host::load_users(&["0190...", "0190..."])?;
+for user in users.iter().filter(|u| u.status == "active") {
+    // user.name, user.timezone, user.language, user.created
+}
+```
+
+Look a digest's recipients up in batches of 100, not one at a time.
+
+ABI: a new function, `load-users`, in the existing `user-api` interface and a
+new manifest capability, `user_directory` (B73, after 0.104.0). No existing
+signature changed.
+
 ### Item Operations
 
 Declare `item-api` in `host_interfaces`. Every call acts as the user the plugin

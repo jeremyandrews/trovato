@@ -112,6 +112,22 @@ interface user-api {
     /// holder an administrator.
     current-user-has-permission: func(permission: string) -> bool;
     current-user-id: func() -> string;
+
+    /// Public facts about the site's users, by id, for a plugin that declares
+    /// `user_directory = true` under `[capabilities]`. Declaring `user-api`
+    /// alone does not grant it.
+    ///
+    /// Answers a JSON array of `{id, name, status, timezone, language,
+    /// created}` for the ids that name a user, in one query, where `status`
+    /// is `"active"` or `"blocked"` and `created` is unix seconds. An id that
+    /// names nobody is left out. Never an address, a password hash or the
+    /// user's `data`. At most 100 ids a call, so a digest over many members
+    /// costs one query per hundred, not one per member; a malformed id or
+    /// more than 100 is refused.
+    ///
+    /// Added by B73, after 0.104.0: a new function in an existing interface
+    /// and a new manifest capability; no existing signature changed.
+    load-users: func(user-ids: list<string>) -> result<string, string>;
 }
 
 /// Cache operations with tag-based invalidation.

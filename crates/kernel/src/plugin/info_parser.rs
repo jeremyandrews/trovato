@@ -250,6 +250,19 @@ pub struct PluginCapabilities {
     #[serde(default)]
     pub item_background: bool,
 
+    /// Whether this plugin may call `user-api.load-users`: public facts
+    /// (name, status, timezone, language, created) about users it is not
+    /// serving, by id. Defaults to `false`.
+    ///
+    /// A separate grant from declaring `user-api`, on the same manifest plane as
+    /// [`Self::ai_background`]: `user-api` answers about the request's own user,
+    /// and a plugin that wants to read about other people should say so where
+    /// the person installing it can see. Never grants an address; no capability
+    /// does. Without it the call is refused
+    /// ([`trovato_sdk::host_errors::ERR_USER_DIRECTORY_DENIED`]).
+    #[serde(default)]
+    pub user_directory: bool,
+
     /// Maximum total bytes a single streaming HTTP fetch (`http-open` /
     /// `http-read`, P11e / D-50) may transfer over the wire, in bytes.
     ///
