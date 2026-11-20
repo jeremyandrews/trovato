@@ -227,7 +227,7 @@ async fn post_form(app: &TestApp, cookies: &str, uri: &str, body: String) -> (St
 async fn seed_item(app: &TestApp, item_type: &str, author: Uuid, fields: Value) -> Uuid {
     let user = trovato_kernel::tap::UserContext::authenticated(
         author,
-        vec!["administer site".to_string()],
+        vec!["administer site".to_string(), "publish content".to_string()],
     );
     app.state
         .items()
