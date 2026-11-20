@@ -1063,6 +1063,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_ai_assistant::router())
         // Site configuration
         .merge(super::admin_config::router())
+        // Search settings
+        .merge(super::admin_search::router())
         // Plugin-queue dead-letter admin (P11d / D-46)
         .merge(super::admin_queue::router())
         // Async auto-embed lifecycle admin (P11f / D-51, D-52)

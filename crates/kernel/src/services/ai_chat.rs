@@ -1170,7 +1170,10 @@ mod tests {
     async fn build_messages_assembles_correctly() {
         let db = PgPool::connect_lazy("postgres://localhost/test").unwrap();
         let ai = Arc::new(AiProviderService::new(db.clone()));
-        let search = Arc::new(SearchService::new(db.clone()));
+        let cache = crate::cache::CacheLayer::new(
+            redis::Client::open("redis://localhost").expect("a valid Redis URL"),
+        );
+        let search = Arc::new(SearchService::new(db.clone(), cache));
         let service = ChatService::new(db, ai, search);
 
         let history = vec![
@@ -1207,7 +1210,10 @@ mod tests {
     async fn build_messages_without_rag_context() {
         let db = PgPool::connect_lazy("postgres://localhost/test").unwrap();
         let ai = Arc::new(AiProviderService::new(db.clone()));
-        let search = Arc::new(SearchService::new(db.clone()));
+        let cache = crate::cache::CacheLayer::new(
+            redis::Client::open("redis://localhost").expect("a valid Redis URL"),
+        );
+        let search = Arc::new(SearchService::new(db.clone(), cache));
         let service = ChatService::new(db, ai, search);
 
         let messages = service.build_messages("System prompt.", "", &[], "Hello");

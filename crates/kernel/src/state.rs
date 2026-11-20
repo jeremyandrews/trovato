@@ -840,7 +840,7 @@ impl AppState {
         let cache = CacheLayer::new(redis.clone());
 
         // Create search service
-        let search = Arc::new(SearchService::new(db.clone()));
+        let search = Arc::new(SearchService::new(db.clone(), cache.clone()));
 
         // (ai_providers and vector_store were created earlier, before the
         // gather service, since gather semantic search depends on them.)

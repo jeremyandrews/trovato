@@ -11,7 +11,7 @@ mod tasks;
 /// reach the static index without a Pagefind CLI on the path. The module itself
 /// is private.
 #[doc(hidden)]
-pub use pagefind::{IndexDocument, indexable_documents};
+pub use pagefind::{IndexDocument, IndexedField, indexable_documents, render_fragment};
 
 pub use tasks::UpdateCheckConfig;
 
