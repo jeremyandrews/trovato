@@ -6,10 +6,17 @@
 //!
 //! All endpoints require the `trovato_ai` plugin to be enabled and an AI
 //! provider configured for Chat operations.
+//!
+//! Each one first reads its stage switch from the search settings
+//! ([`SearchSettings`]) and answers 404 when the stage is off, before any cache
+//! or provider work, so switching a stage off stops the spending and not just
+//! the stock page's use of it. The follow-up endpoint also enforces the turn cap
+//! there.
 
 use std::convert::Infallible;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -18,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::models::SiteConfig;
-use crate::search::prompts;
+use crate::search::{SearchSettings, prompts};
 use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
 use crate::state::AppState;
 
@@ -103,6 +110,11 @@ struct Message {
 /// and none was built, so every call — including the same query typed twice —
 /// spent provider tokens.
 async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequest>) -> Response {
+    let settings = SearchSettings::load(state.db(), state.cache()).await;
+    if !settings.expand {
+        return stage_off("Query expansion");
+    }
+
     if body.query.trim().is_empty() {
         return AppError::bad_request("Query cannot be empty").into_response();
     }
@@ -251,6 +263,11 @@ pub fn normalize_query(query: &str) -> String {
 ///
 /// No CSRF required — read-only search enhancement.
 async fn summarize(State(state): State<AppState>, Json(body): Json<SummarizeRequest>) -> Response {
+    let settings = SearchSettings::load(state.db(), state.cache()).await;
+    if !settings.summarize {
+        return stage_off("The search summary");
+    }
+
     // Accept either structured excerpts or plain text context from scolta.js
     let context_text = if let Some(ref ctx) = body.context {
         ctx.clone()
@@ -276,6 +293,19 @@ async fn summarize(State(state): State<AppState>, Json(body): Json<SummarizeRequ
 ///
 /// No CSRF required — read-only search enhancement.
 async fn followup(State(state): State<AppState>, Json(body): Json<FollowupRequest>) -> Response {
+    let settings = SearchSettings::load(state.db(), state.cache()).await;
+    if !settings.followup {
+        return stage_off("Follow-up");
+    }
+    // The opening question plus `max_followups` follow-ups.
+    if user_turns(&body) > settings.max_followups as usize + 1 {
+        return AppError::bad_request(format!(
+            "A conversation may hold at most {} follow-up questions",
+            settings.max_followups
+        ))
+        .into_response();
+    }
+
     // Build conversation context from either messages (scolta.js) or query+history
     let user_prompt = if !body.messages.is_empty() {
         body.messages
@@ -306,6 +336,27 @@ async fn followup(State(state): State<AppState>, Json(body): Json<FollowupReques
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// The answer for a stage the search settings switched off: 404, with a short
+/// JSON error, before any cache or provider work.
+fn stage_off(stage: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "error": format!("{stage} is switched off on this site") })),
+    )
+        .into_response()
+}
+
+/// User turns in a follow-up request, counted on whichever shape it came in:
+/// `messages` as sent, or `history` plus the new `query`.
+fn user_turns(body: &FollowupRequest) -> usize {
+    let is_user = |m: &&Message| m.role.eq_ignore_ascii_case("user");
+    if body.messages.is_empty() {
+        body.history.iter().filter(is_user).count() + usize::from(body.query.is_some())
+    } else {
+        body.messages.iter().filter(is_user).count()
+    }
+}
 
 /// Build excerpt context string from a list of excerpts.
 fn build_excerpt_context(excerpts: &[Excerpt]) -> String {

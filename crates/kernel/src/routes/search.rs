@@ -157,6 +157,17 @@ async fn search_html(
     // Inject site context for page layout (header, nav, footer)
     super::helpers::inject_site_context(&state, &session, &mut context, "/search").await;
 
+    // The browser's ranking and AI settings, from the one settings model (read
+    // through the cache). The site name comes from the context just injected
+    // rather than a second read.
+    let site_name = context
+        .get("site_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Trovato")
+        .to_string();
+    let settings = crate::search::SearchSettings::load(state.db(), state.cache()).await;
+    context.insert("scolta_config", &settings.scolta_config(&site_name));
+
     // Render template
     match state.theme().tera().render("search.html", &context) {
         Ok(html) => Html(html).into_response(),

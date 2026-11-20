@@ -4,12 +4,17 @@
 //! full-text search across content items.
 
 pub mod prompts;
+pub mod settings;
+
+pub use settings::{PriorityPage, SearchSettings};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tracing::debug;
 use uuid::Uuid;
+
+use crate::cache::CacheLayer;
 
 /// Search result with ranking information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,17 +50,24 @@ pub struct SearchResults {
 #[derive(Clone)]
 pub struct SearchService {
     pool: PgPool,
+    /// Where the search settings are read from, so a search costs no extra
+    /// database round trip for them.
+    cache: CacheLayer,
 }
 
 impl SearchService {
     /// Create a new search service.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, cache: CacheLayer) -> Self {
+        Self { pool, cache }
     }
 
     /// Search for items matching the query.
     ///
-    /// Uses PostgreSQL full-text search with ts_rank for relevance scoring.
+    /// Uses PostgreSQL full-text search with ts_rank for relevance scoring,
+    /// multiplied by the item type's boost from [`SearchSettings::type_boosts`]
+    /// (1.0 for a type not listed). The boosts are bound as two parallel arrays
+    /// and joined in the same query, never one query per type.
+    ///
     /// Results are filtered to only include items whose `stage_id` is in
     /// `stage_ids`. If `user_id` is provided, also includes the user's
     /// draft items (still stage-filtered).
@@ -87,6 +99,9 @@ impl SearchService {
             .join(" & ");
 
         debug!(query = %query_clean, ts_query = %ts_query, "executing search");
+
+        let settings = SearchSettings::load(&self.pool, &self.cache).await;
+        let (boost_types, boost_values) = settings.type_boost_arrays();
 
         // Get total count
         let total: i64 = if let Some(uid) = user_id {
@@ -131,7 +146,8 @@ impl SearchService {
                     id,
                     type,
                     title,
-                    ts_rank(search_vector, to_tsquery('english', $1)) as rank,
+                    ts_rank(search_vector, to_tsquery('english', $1))
+                        * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
                         -- XSS-3 fix (FR-6 audit): HTML-escape the source text
@@ -158,6 +174,8 @@ impl SearchService {
                         'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=15'
                     ) as snippet
                 FROM item
+                LEFT JOIN unnest($6::text[], $7::real[]) AS boost(item_type, factor)
+                    ON boost.item_type = item.type
                 WHERE search_vector @@ to_tsquery('english', $1)
                   AND (status = 1 OR author_id = $2)
                   AND stage_id = ANY($3)
@@ -170,6 +188,8 @@ impl SearchService {
             .bind(stage_ids)
             .bind(limit)
             .bind(offset)
+            .bind(&boost_types)
+            .bind(&boost_values)
             .fetch_all(&self.pool)
             .await
             .context("failed to execute search query")?
@@ -180,7 +200,8 @@ impl SearchService {
                     id,
                     type,
                     title,
-                    ts_rank(search_vector, to_tsquery('english', $1)) as rank,
+                    ts_rank(search_vector, to_tsquery('english', $1))
+                        * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
                         -- XSS-3 fix (FR-6 audit): HTML-escape the source text
@@ -207,6 +228,8 @@ impl SearchService {
                         'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=15'
                     ) as snippet
                 FROM item
+                LEFT JOIN unnest($5::text[], $6::real[]) AS boost(item_type, factor)
+                    ON boost.item_type = item.type
                 WHERE search_vector @@ to_tsquery('english', $1)
                   AND status = 1
                   AND stage_id = ANY($2)
@@ -218,6 +241,8 @@ impl SearchService {
             .bind(stage_ids)
             .bind(limit)
             .bind(offset)
+            .bind(&boost_types)
+            .bind(&boost_values)
             .fetch_all(&self.pool)
             .await
             .context("failed to execute search query")?

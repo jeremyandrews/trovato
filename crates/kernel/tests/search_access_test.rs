@@ -454,15 +454,21 @@ fn the_pagefind_export_is_built_as_the_anonymous_visitor() {
             .iter()
             .find(|d| d.id == person)
             .expect("a published live item is still exported");
+        // Every indexed field's text: each field is its own element now, at its
+        // own weight, so the assertion reads them all rather than one string.
+        let body = doc
+            .fields
+            .iter()
+            .map(|f| f.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
-            doc.body.contains(&bio),
-            "the fields an anonymous visitor may see are still indexed, got {}",
-            doc.body
+            body.contains(&bio),
+            "the fields an anonymous visitor may see are still indexed, got {body}"
         );
         assert!(
-            !doc.body.contains(&ssn),
-            "a field denied to anonymous visitors must not be indexed, got {}",
-            doc.body
+            !body.contains(&ssn),
+            "a field denied to anonymous visitors must not be indexed, got {body}"
         );
         assert!(
             !doc.description.contains(&ssn) && !doc.location.contains(&ssn),

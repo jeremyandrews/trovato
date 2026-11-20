@@ -9,6 +9,28 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Rebuild the Pagefind index for titles and field weights to apply
+
+**Who is affected:** a site with the `trovato_search` plugin enabled, which builds
+the static Pagefind index the search page uses in the browser.
+
+**What changed.** The index now holds each item's title inside the indexed region
+and each configured search field at the weight its `search_field_config` letter
+gives it. An index built by an earlier version has neither: titles are not
+searchable on their own and every field weighs the same. Nothing breaks, but
+browser ranking stays as it was until the index is rebuilt.
+
+**What to do.** Request a rebuild and let cron run it:
+
+```sh
+psql "$DATABASE_URL" -c "UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1"
+curl -X POST http://localhost:3000/cron/<your cron key>
+```
+
+Editing any published item does the same on the next cron run. Search ranking
+settings are new and default to the values the search template used to carry,
+so there is nothing else to migrate; see `/admin/config/search`.
+
 ### The password reset link opens a page; `GET` answers JSON only when asked for it
 
 **Who is affected:** a client (a script, an app, a test harness) that fetches

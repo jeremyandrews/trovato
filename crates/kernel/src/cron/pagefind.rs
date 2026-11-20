@@ -45,8 +45,9 @@ pub struct IndexDocument {
     pub title: String,
     /// The URL the result card links to: the alias when there is one.
     pub url: String,
-    /// The indexed body text, built from the fields that survived the seam.
-    pub body: String,
+    /// The indexed fields that survived the seam, heaviest first, each with
+    /// the Pagefind weight its `search_field_config` letter maps to.
+    pub fields: Vec<IndexedField>,
     /// The `description` meta value, likewise.
     pub description: String,
     /// The `location` meta value, likewise.
@@ -55,6 +56,33 @@ pub struct IndexDocument {
     pub event_dates: String,
     /// The human-readable created date.
     pub created_display: String,
+}
+
+/// One field's text in the static index, at its weight.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexedField {
+    /// The field's machine name.
+    pub name: String,
+    /// Its `data-pagefind-weight` ([`pagefind_weight`] of its letter).
+    pub weight: f32,
+    /// Its text.
+    pub text: String,
+}
+
+/// The `data-pagefind-weight` for a `search_field_config` letter.
+///
+/// The ratios of PostgreSQL's default `ts_rank` weights (A 1.0, B 0.4, C 0.2,
+/// D 0.1), scaled so A is Pagefind's maximum of 10.0. The title is A, as in the
+/// tsvector trigger, so both backends rank a title match above a field match by
+/// the same factor. An unknown letter is D.
+pub fn pagefind_weight(letter: char) -> f32 {
+    match letter.to_ascii_uppercase() {
+        'A' => 10.0,
+        'B' => 4.0,
+        'C' => 2.0,
+        _ => 1.0,
+    }
 }
 
 /// Row type for URL alias lookup.
@@ -69,6 +97,7 @@ struct AliasRow {
 struct FieldConfigRow {
     bundle: String,
     field_name: String,
+    weight: String,
 }
 
 /// Check if the `trovato_search` plugin has requested a rebuild and
@@ -204,20 +233,22 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
         .filter_page_for_view(candidates, &anonymous, "view", page_size)
         .await;
 
-    // Query search field configs so we export all searchable fields,
-    // not just field_body (consistent with the trigger's indexing).
-    let field_configs =
-        sqlx::query_as::<_, FieldConfigRow>("SELECT bundle, field_name FROM search_field_config")
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+    // Every search field config with its weight, once per build, so the export
+    // indexes the fields the trigger indexes at the weights it gives them.
+    let field_configs = sqlx::query_as::<_, FieldConfigRow>(
+        "SELECT bundle, field_name, weight FROM search_field_config",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
-    let mut config_map: HashMap<String, Vec<String>> = HashMap::new();
-    for row in &field_configs {
+    let mut config_map: HashMap<String, Vec<(String, f32)>> = HashMap::new();
+    for row in field_configs {
+        let letter = row.weight.chars().next().unwrap_or('D');
         config_map
-            .entry(row.bundle.clone())
+            .entry(row.bundle)
             .or_default()
-            .push(row.field_name.clone());
+            .push((row.field_name, pagefind_weight(letter)));
     }
 
     // Batch-load URL aliases for all items so we can use friendly paths.
@@ -235,7 +266,7 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
 
     let mut documents = Vec::with_capacity(visible.len());
     for item in &visible {
-        let body = extract_searchable_text(&item.fields, &item.item_type, &config_map);
+        let fields = searchable_fields(&item.fields, &item.item_type, &config_map);
 
         // Use friendly URL alias if available, otherwise /item/{id}
         let source_path = format!("/item/{}", item.id);
@@ -255,7 +286,7 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
             item_type: item.item_type.clone(),
             title: item.title.clone(),
             url,
-            body,
+            fields,
             description: truncate_meta(&description_clean, 200),
             location: build_location_meta(&item.fields),
             event_dates: build_date_range_meta(&item.fields),
@@ -264,6 +295,74 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
     }
 
     Ok(documents)
+}
+
+/// One item's HTML fragment, as the Pagefind CLI indexes it.
+///
+/// Pagefind indexes only inside `data-pagefind-body` when a page has one, so
+/// everything searchable goes in there: the title, at weight A and still the
+/// result's `title` meta, then each field in its own element at its own weight,
+/// heaviest first. The meta values sit outside the region; they are shown on
+/// the result card but not searched.
+///
+/// Exposed (`#[doc(hidden)]`, re-exported from `cron`) beside
+/// [`indexable_documents`] so a test can read the fragment without the CLI.
+#[doc(hidden)]
+pub fn render_fragment(document: &IndexDocument) -> String {
+    let mut meta_tags = format!(
+        "<meta data-pagefind-meta=\"type:{}\" />\n\
+         <meta data-pagefind-meta=\"date:{}\" />",
+        html_escape(&document.item_type),
+        html_escape(&document.created_display),
+    );
+
+    if !document.description.is_empty() {
+        meta_tags.push_str(&format!(
+            "\n<meta data-pagefind-meta=\"description:{}\" />",
+            html_escape(&document.description)
+        ));
+    }
+    if !document.location.is_empty() {
+        meta_tags.push_str(&format!(
+            "\n<meta data-pagefind-meta=\"location:{}\" />",
+            html_escape(&document.location)
+        ));
+    }
+    if !document.event_dates.is_empty() {
+        meta_tags.push_str(&format!(
+            "\n<meta data-pagefind-meta=\"event_dates:{}\" />",
+            html_escape(&document.event_dates)
+        ));
+    }
+
+    // Store the item URL as a meta tag. Pagefind treats `url` as
+    // a special key that overrides the auto-detected file URL.
+    meta_tags.push_str(&format!(
+        "\n<meta data-pagefind-meta=\"url:{}\" />",
+        html_escape(&document.url)
+    ));
+
+    let mut body = format!(
+        "<h1 data-pagefind-meta=\"title\" data-pagefind-weight=\"{:.1}\">{}</h1>",
+        pagefind_weight('A'),
+        html_escape(&document.title),
+    );
+    for field in &document.fields {
+        body.push_str(&format!(
+            "\n<p data-pagefind-weight=\"{:.1}\">{}</p>",
+            field.weight,
+            html_escape(&field.text),
+        ));
+    }
+
+    format!(
+        "<html><head><title>{title}</title></head>\n\
+         <body>\n\
+         <div data-pagefind-body>\n{body}\n</div>\n\
+         {meta_tags}\n\
+         </body></html>",
+        title = html_escape(&document.title),
+    )
 }
 
 /// Inner build logic, separated for cleanup guarantee.
@@ -280,50 +379,7 @@ async fn build_index_inner(
 
     // Write each item as an HTML fragment with rich metadata
     for document in &documents {
-        let mut meta_tags = format!(
-            "<meta data-pagefind-meta=\"type:{}\" />\n\
-             <meta data-pagefind-meta=\"date:{}\" />",
-            html_escape(&document.item_type),
-            html_escape(&document.created_display),
-        );
-
-        if !document.description.is_empty() {
-            meta_tags.push_str(&format!(
-                "\n<meta data-pagefind-meta=\"description:{}\" />",
-                html_escape(&document.description)
-            ));
-        }
-        if !document.location.is_empty() {
-            meta_tags.push_str(&format!(
-                "\n<meta data-pagefind-meta=\"location:{}\" />",
-                html_escape(&document.location)
-            ));
-        }
-        if !document.event_dates.is_empty() {
-            meta_tags.push_str(&format!(
-                "\n<meta data-pagefind-meta=\"event_dates:{}\" />",
-                html_escape(&document.event_dates)
-            ));
-        }
-
-        // Store the item URL as a meta tag. Pagefind treats `url` as
-        // a special key that overrides the auto-detected file URL.
-        meta_tags.push_str(&format!(
-            "\n<meta data-pagefind-meta=\"url:{}\" />",
-            html_escape(&document.url)
-        ));
-
-        let html = format!(
-            "<html><head><title>{title}</title></head>\n\
-             <body>\n\
-             <h1 data-pagefind-meta=\"title\">{title}</h1>\n\
-             <div data-pagefind-body>{body}</div>\n\
-             {meta_tags}\n\
-             </body></html>",
-            title = html_escape(&document.title),
-            body = html_escape(&document.body),
-            meta_tags = meta_tags,
-        );
+        let html = render_fragment(document);
 
         let file_path = temp_dir.join(format!("{}.html", document.id));
         tokio::fs::write(&file_path, html)
@@ -438,54 +494,46 @@ fn truncate_meta(s: &str, max_len: usize) -> String {
     format!("{}…", &s[..end])
 }
 
-/// Extract searchable text from item fields, ordered by search weight.
+/// The configured searchable fields an item has text in, heaviest first, then
+/// by field name.
 ///
-/// Higher-weight fields (A=description, B=body) come first so Pagefind's
-/// auto-excerpt shows the most relevant text. Each field is labeled
-/// (e.g., "Portland, United States") so the excerpt provides context.
-fn extract_searchable_text(
+/// When none of the item's configured fields has text, the long text field
+/// (under either of its two names, BL-21) is indexed at weight D, so an item of
+/// a type with no search configuration is still findable by its body.
+fn searchable_fields(
     fields: &serde_json::Value,
     item_type: &str,
-    configs: &HashMap<String, Vec<String>>,
-) -> String {
-    let mut parts = Vec::new();
+    configs: &HashMap<String, Vec<(String, f32)>>,
+) -> Vec<IndexedField> {
+    let mut indexed: Vec<IndexedField> = configs
+        .get(item_type)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, weight)| {
+            extract_field_text(fields, name).map(|text| IndexedField {
+                name: name.clone(),
+                weight: *weight,
+                text,
+            })
+        })
+        .collect();
 
-    if let Some(field_names) = configs.get(item_type) {
-        // Put description/body fields first (they're the most likely to
-        // contain the matching text that users need to see in excerpts)
-        let mut ordered: Vec<&String> = field_names.iter().collect();
-        ordered.sort_by_key(|name| {
-            if name.contains("description") || name.contains("body") || name.contains("bio") {
-                0 // First — most likely to have matching content
-            } else if name.contains("title") || name.contains("name") {
-                1 // Second — titles
-            } else {
-                2 // Last — city, country, etc.
-            }
-        });
-
-        for name in ordered {
-            if let Some(text) = extract_field_text(fields, name) {
-                // Add field context for location-type fields
-                let label = name.strip_prefix("field_").unwrap_or(name);
-                if label == "city" || label == "country" {
-                    parts.push(text.to_string());
-                } else {
-                    parts.push(text);
-                }
-            }
-        }
-    }
-
-    // Fall back to the long text field, under either of its two names (BL-21),
-    // if no search_field_config entries matched.
-    if parts.is_empty()
+    if indexed.is_empty()
         && let Some(body) = crate::content::body_field::body_text(fields)
     {
-        parts.push(body);
+        indexed.push(IndexedField {
+            name: "body".to_string(),
+            weight: pagefind_weight('D'),
+            text: body,
+        });
     }
 
-    parts.join(". ")
+    indexed.sort_by(|a, b| {
+        b.weight
+            .total_cmp(&a.weight)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    indexed
 }
 
 /// Extract text from a single JSONB field.

@@ -64,6 +64,12 @@
       AI_SUMMARY_MAX_CHARS: s.AI_SUMMARY_MAX_CHARS ?? 2000,
       EXPAND_PRIMARY_WEIGHT: s.EXPAND_PRIMARY_WEIGHT ?? 0.7,
       AI_MAX_FOLLOWUPS: s.AI_MAX_FOLLOWUPS ?? 3,
+
+      // Item type machine name -> score multiplier; a type not listed is 1.
+      TYPE_BOOSTS: s.TYPE_BOOSTS ?? {},
+      // { boost, pages: [{ keyword, path }] }: a query containing a keyword as
+      // a whole word multiplies the result at its path by the boost.
+      PRIORITY_PAGES: s.PRIORITY_PAGES ?? { boost: 10, pages: [] },
     };
   }
 
@@ -350,12 +356,12 @@
           </div>
           <div class="scolta-ai-summary-text">${formatted}</div>
           <div id="scolta-followup-thread" class="scolta-ai-followup-thread" style="display:none;"></div>
-          <div class="scolta-ai-followup-input" id="scolta-followup-input">
+          ${CONFIG.AI_MAX_FOLLOWUPS > 0 ? `<div class="scolta-ai-followup-input" id="scolta-followup-input">
             <input type="text" id="scolta-followup-field" placeholder="Ask a follow-up question..."
                    data-scolta-followup-input>
             <button id="scolta-followup-btn" data-scolta-followup-submit>Ask</button>
             <span class="scolta-ai-followup-counter" id="scolta-followup-counter">${CONFIG.AI_MAX_FOLLOWUPS} remaining</span>
-          </div>
+          </div>` : ''}
           ${disclaimerHtml}`;
       } else {
         summaryEl.style.display = "none";
@@ -617,15 +623,52 @@
     return pagefind.search(query, searchOpts);
   }
 
+  // Lowercase, trimmed, whitespace collapsed: the form the server normalizes
+  // queries to as well.
+  function normalizeQuery(text) {
+    return (text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  function trimSlash(path) {
+    return path.length > 1 ? path.replace(/\/+$/, '') : path;
+  }
+
+  // The paths promoted by the user's query: every configured priority page
+  // whose keyword the normalized query contains as a whole word or phrase.
+  function promotedPaths(query) {
+    const CONFIG = getConfig();
+    const normalized = normalizeQuery(query);
+    const paths = new Set();
+    if (!normalized) return paths;
+    for (const page of CONFIG.PRIORITY_PAGES.pages || []) {
+      const keyword = normalizeQuery(page.keyword);
+      if (!keyword) continue;
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const whole = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:[^\\p{L}\\p{N}]|$)`, 'u');
+      if (whole.test(normalized)) paths.add(trimSlash(page.path));
+    }
+    return paths;
+  }
+
   // Score a set of loaded results against a query.
+  //
+  // The sum of the Pagefind position, recency, title and excerpt signals,
+  // times the source weight, times the result's type boost, times the
+  // priority boost when the user's query promotes its path.
   function scoreResults(loaded, query, sourceWeight) {
+    const CONFIG = getConfig();
     const count = loaded.length;
+    const promoted = promotedPaths(currentQuery || query);
     return loaded.map((data, i) => {
       const pagefindScore = count > 1 ? 1 - (i / (count - 1)) : 1;
       const recency = recencyScore(data.meta?.date);
       const titleBoost = titleMatchScore(data.meta?.title, query);
       const contentBoost = contentMatchScore(data.excerpt, query);
-      const finalScore = (pagefindScore + recency + titleBoost + contentBoost) * sourceWeight;
+      const typeBoost = CONFIG.TYPE_BOOSTS[data.meta?.type] ?? 1;
+      const url = trimSlash(data.meta?.url || data.url || '');
+      const priorityBoost = promoted.has(url) ? CONFIG.PRIORITY_PAGES.boost : 1;
+      const finalScore = (pagefindScore + recency + titleBoost + contentBoost)
+        * sourceWeight * typeBoost * priorityBoost;
       return { data, score: finalScore };
     });
   }
