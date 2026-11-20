@@ -201,6 +201,27 @@ impl From<FileRow> for FileInfo {
     }
 }
 
+/// A file for [`FileService::store`].
+#[derive(Debug, Clone, Copy)]
+pub struct StoreFile<'a> {
+    /// The `file_managed` id: new for an upload, declared by a config set.
+    pub id: Uuid,
+    /// The uploader; the anonymous user (nil) for a config import.
+    pub owner_id: Uuid,
+    /// The file's name as users see it.
+    pub filename: &'a str,
+    /// The declared type, checked against the content and the name.
+    pub mime_type: &'a str,
+    /// The bytes.
+    pub data: &'a [u8],
+    /// `Temporary` for an upload, `Permanent` for a config import.
+    pub status: FileStatus,
+    /// Alternative text, `None` when nobody has said.
+    pub alt_text: Option<&'a str>,
+    /// Tenant scoping for the storage URI.
+    pub tenant_id: Option<Uuid>,
+}
+
 /// File upload result.
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadResult {
@@ -245,6 +266,9 @@ impl FileService {
     /// URI includes a tenant prefix: `local://{tenant}/{YYYY}/{MM}/{uuid}_{name}`.
     /// When `None` or `DEFAULT_TENANT_ID`, the URI uses the original format
     /// without a tenant prefix (backward compatible).
+    ///
+    /// A new id and `Temporary` status: the file is promoted when an item
+    /// references it.
     pub async fn upload_for_tenant(
         &self,
         owner_id: Uuid,
@@ -253,7 +277,25 @@ impl FileService {
         data: &[u8],
         tenant_id: Option<Uuid>,
     ) -> Result<UploadResult> {
-        // Validate size
+        self.store(StoreFile {
+            id: Uuid::now_v7(),
+            owner_id,
+            filename,
+            mime_type,
+            data,
+            status: FileStatus::Temporary,
+            alt_text: None,
+            tenant_id,
+        })
+        .await
+    }
+
+    /// Check a file before it is stored: size, the type allowlist, the content's
+    /// magic bytes against the declared type, and the filename's extension
+    /// against that same type. The one copy of these checks: [`Self::store`]
+    /// runs it, and config import runs it while validating a set, before
+    /// anything is written. A failure is an [`UploadRejected`].
+    pub fn validate_file(filename: &str, mime_type: &str, data: &[u8]) -> Result<()> {
         if data.len() > MAX_FILE_SIZE {
             return Err(UploadRejected::TooLarge(format!(
                 "File too large: {} bytes (max {} bytes)",
@@ -263,13 +305,12 @@ impl FileService {
             .into());
         }
 
-        // Validate MIME type
         if !ALLOWED_MIME_TYPES.contains(&mime_type) {
             return Err(UploadRejected::Type(format!("File type not allowed: {mime_type}")).into());
         }
 
-        // Validate file content matches declared MIME type (magic byte check).
-        // This prevents uploading executables disguised as images, etc.
+        // The content must be what it is declared to be (magic byte check),
+        // so an executable cannot be stored as an image.
         validate_magic_bytes(data, mime_type)
             .map_err(|e| UploadRejected::Type(format!("{e:#}")))?;
 
@@ -282,7 +323,105 @@ impl FileService {
             ))
             .into());
         }
+        Ok(())
+    }
 
+    /// Validate a file ([`Self::validate_file`]), write it to storage and
+    /// upsert its `file_managed` row under the caller's id and status. Upload
+    /// passes a new id and `Temporary`; config import passes the id its set
+    /// declares and `Permanent`.
+    ///
+    /// Storing an id that already exists keeps its storage URI, rewrites the
+    /// bytes only when they changed, and touches the row only when something in
+    /// it changed, so re-importing an unchanged config set changes nothing.
+    pub async fn store(&self, file: StoreFile<'_>) -> Result<UploadResult> {
+        Self::validate_file(file.filename, file.mime_type, file.data)?;
+
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT uri FROM file_managed WHERE id = $1")
+                .bind(file.id)
+                .fetch_optional(&self.pool)
+                .await
+                .context("failed to look up file")?;
+
+        let (uri, bytes_changed) = match existing {
+            Some(uri) => {
+                let changed = match self.storage.read(&uri).await {
+                    Ok(stored) => stored != file.data,
+                    Err(_) => true,
+                };
+                (uri, changed)
+            }
+            None => (
+                self.new_storage_uri(file.filename, file.tenant_id).await?,
+                true,
+            ),
+        };
+
+        if bytes_changed {
+            self.storage
+                .write(&uri, file.data)
+                .await
+                .context("failed to write file to storage")?;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let alt_text = file.alt_text.map(|t| t.trim().to_string());
+        sqlx::query(
+            r#"
+            INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
+            ON CONFLICT (id) DO UPDATE SET
+                filename = EXCLUDED.filename,
+                filemime = EXCLUDED.filemime,
+                filesize = EXCLUDED.filesize,
+                status = EXCLUDED.status,
+                alt_text = EXCLUDED.alt_text,
+                changed = EXCLUDED.changed
+            WHERE $10
+               OR file_managed.filename IS DISTINCT FROM EXCLUDED.filename
+               OR file_managed.filemime IS DISTINCT FROM EXCLUDED.filemime
+               OR file_managed.status IS DISTINCT FROM EXCLUDED.status
+               OR file_managed.alt_text IS DISTINCT FROM EXCLUDED.alt_text
+            "#,
+        )
+        .bind(file.id)
+        .bind(file.owner_id)
+        .bind(file.filename)
+        .bind(&uri)
+        .bind(file.mime_type)
+        .bind(file.data.len() as i64)
+        .bind(file.status as i16)
+        .bind(now)
+        .bind(alt_text)
+        .bind(bytes_changed)
+        .execute(&self.pool)
+        .await
+        .context("failed to write file record")?;
+
+        let url = self.storage.public_url(&uri);
+
+        debug!(
+            id = %file.id,
+            filename = %file.filename,
+            uri = %uri,
+            size = file.data.len(),
+            "file stored"
+        );
+
+        Ok(UploadResult {
+            id: file.id,
+            filename: file.filename.to_string(),
+            uri,
+            url,
+            size: file.data.len() as i64,
+            mime_type: file.mime_type.to_string(),
+        })
+    }
+
+    /// A fresh storage URI for `filename`, under the tenant's prefix if it has
+    /// one. The scheme is the storage's own.
+    async fn new_storage_uri(&self, filename: &str, tenant_id: Option<Uuid>) -> Result<String> {
         // Determine tenant prefix for URI. Default tenant uses no prefix
         // (backward compatible with existing files).
         let tenant_prefix = match tenant_id {
@@ -303,65 +442,20 @@ impl FileService {
             _ => String::new(),
         };
 
-        // Generate storage URI
         let now = chrono::Utc::now();
         let unique_id = Uuid::now_v7().simple().to_string();
         let safe_name = sanitize_filename(filename);
 
-        let uri = match self.storage.scheme() {
-            scheme @ "local" => {
-                build_storage_uri(scheme, &tenant_prefix, now, &unique_id, &safe_name)
-            }
+        match self.storage.scheme() {
+            scheme @ "local" => Ok(build_storage_uri(
+                scheme,
+                &tenant_prefix,
+                now,
+                &unique_id,
+                &safe_name,
+            )),
             scheme => bail!("unsupported storage scheme: {scheme}"),
-        };
-
-        // Write to storage
-        self.storage
-            .write(&uri, data)
-            .await
-            .context("failed to write file to storage")?;
-
-        // Create database record
-        let id = Uuid::now_v7();
-        let now = chrono::Utc::now().timestamp();
-
-        sqlx::query(
-            r#"
-            INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            "#,
-        )
-        .bind(id)
-        .bind(owner_id)
-        .bind(filename)
-        .bind(&uri)
-        .bind(mime_type)
-        .bind(data.len() as i64)
-        .bind(FileStatus::Temporary as i16)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .context("failed to create file record")?;
-
-        let url = self.storage.public_url(&uri);
-
-        debug!(
-            id = %id,
-            filename = %filename,
-            uri = %uri,
-            size = data.len(),
-            "file uploaded"
-        );
-
-        Ok(UploadResult {
-            id,
-            filename: filename.to_string(),
-            uri,
-            url,
-            size: data.len() as i64,
-            mime_type: mime_type.to_string(),
-        })
+        }
     }
 
     /// List all files.

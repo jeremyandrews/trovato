@@ -34,6 +34,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::{ConfigEntity, ConfigStorage, SearchFieldConfig, entity_types};
+use crate::file::{FileService, MAX_FILE_SIZE};
 use crate::gather::types::GatherQuery;
 use crate::models::tile::Tile;
 use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, UrlAlias};
@@ -59,6 +60,9 @@ pub const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::GATHER_QUERY,
     entity_types::STAGE,
     entity_types::URL_ALIAS,
+    // Before ITEM and ITEM_TRANSLATION: an item's File field names a file, and
+    // the reference index records only files that exist when the item is saved.
+    entity_types::FILE,
     entity_types::ITEM,
     // After ITEM: a translation names the item it translates, so a config set
     // that ships both imports in one pass.
@@ -302,6 +306,9 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
         ConfigEntity::Stage(s) => serde_yml::to_string(s),
         ConfigEntity::Tile(t) => serde_yml::to_string(t),
         ConfigEntity::MenuLink(m) => serde_yml::to_string(m),
+        // The bytes are written beside it by `export_config`; `data` is never
+        // serialized.
+        ConfigEntity::File(f) => serde_yml::to_string(f),
         // Tags need parent hierarchy — callers must use serialize_tag_entity.
         ConfigEntity::Tag(tag) => {
             warnings.push(format!(
@@ -420,6 +427,9 @@ pub async fn export_config(
 
     let mut result = ConfigOpResult::default();
     let mut written_files: HashSet<String> = HashSet::new();
+    // Byte paths already used by an exported file entity, so two files with
+    // the same name do not overwrite each other.
+    let mut written_paths: HashSet<String> = HashSet::new();
 
     for &entity_type in ENTITY_TYPE_ORDER {
         let entities = storage
@@ -473,6 +483,23 @@ pub async fn export_config(
                         None => continue,
                     }
                 }
+                ConfigEntity::File(file) => {
+                    match export_file_bytes(dir, file, &mut written_paths).await {
+                        Ok(exported) => {
+                            match serialize_entity(
+                                &ConfigEntity::File(exported),
+                                &mut result.warnings,
+                            ) {
+                                Some(yaml) => yaml,
+                                None => continue,
+                            }
+                        }
+                        Err(e) => {
+                            result.warnings.push(format!("skipping file {id}: {e:#}"));
+                            continue;
+                        }
+                    }
+                }
                 other => match serialize_entity(other, &mut result.warnings) {
                     Some(yaml) => yaml,
                     None => continue,
@@ -512,6 +539,36 @@ pub async fn export_config(
     info!(total = result.total(), "Config export complete");
 
     Ok(result)
+}
+
+/// Write a file entity's bytes under `dir`, at `files/<sanitized filename>`,
+/// or `files/<id>_<sanitized filename>` when another file took that name.
+/// Returns the entity with the `path` it was written to.
+async fn export_file_bytes(
+    dir: &Path,
+    file: &super::ConfigFile,
+    written_paths: &mut HashSet<String>,
+) -> Result<super::ConfigFile> {
+    let data = file
+        .data
+        .as_deref()
+        .context("its bytes could not be read from file storage")?;
+    let safe = crate::file::service::sanitize_filename(&file.filename);
+    let mut rel = format!("files/{safe}");
+    if written_paths.contains(&rel) {
+        rel = format!("files/{}_{safe}", file.id.simple());
+    }
+    tokio::fs::create_dir_all(dir.join("files"))
+        .await
+        .context("failed to create the files directory")?;
+    tokio::fs::write(dir.join(&rel), data)
+        .await
+        .with_context(|| format!("failed to write {rel}"))?;
+    written_paths.insert(rel.clone());
+    let mut exported = file.clone();
+    exported.path = rel;
+    exported.data = None;
+    Ok(exported)
 }
 
 /// Import config entities from YAML files in the given directory.
@@ -1204,7 +1261,7 @@ async fn read_and_validate_files(
             }
         };
 
-        let parsed = match deserialize_entity(&entity_type, &content) {
+        let mut parsed = match deserialize_entity(&entity_type, &content) {
             Ok(result) => result,
             Err(e) => {
                 failures.push(ConfigImportFailure {
@@ -1214,6 +1271,21 @@ async fn read_and_validate_files(
                 continue;
             }
         };
+
+        // A file entity's bytes are read and validated now, with the rest of
+        // the set, so a bad file fails the import before anything is written.
+        if let ConfigEntity::File(file) = &mut parsed.entity {
+            match read_file_bytes(dir, file).await {
+                Ok(data) => file.data = Some(data),
+                Err(e) => {
+                    failures.push(ConfigImportFailure {
+                        filename,
+                        error: format!("{e:#}"),
+                    });
+                    continue;
+                }
+            }
+        }
 
         // Validate filename-content ID consistency
         let content_id = parsed.entity.id();
@@ -1252,6 +1324,51 @@ async fn read_and_validate_files(
     }
 
     Ok(grouped)
+}
+
+/// Read a file entity's bytes from its `path` inside the config set `dir`, and
+/// validate them as an upload would be ([`FileService::validate_file`]).
+///
+/// The path must be relative and name only ordinary components (no `..`, no
+/// root, no `.`), and once symlinks are resolved it must still lie inside
+/// `dir`. The size is checked before anything is read.
+async fn read_file_bytes(dir: &Path, file: &super::ConfigFile) -> Result<Vec<u8>> {
+    let rel = file.bytes_path();
+    let rel_path = Path::new(&rel);
+    if rel_path.is_absolute()
+        || !rel_path
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("file path '{rel}' must be relative and stay inside the config directory");
+    }
+    let root = tokio::fs::canonicalize(dir)
+        .await
+        .with_context(|| format!("failed to resolve {}", dir.display()))?;
+    let resolved = tokio::fs::canonicalize(dir.join(rel_path))
+        .await
+        .with_context(|| format!("file bytes not found at '{rel}'"))?;
+    if !resolved.starts_with(&root) {
+        anyhow::bail!("file path '{rel}' leads outside the config directory");
+    }
+    let metadata = tokio::fs::metadata(&resolved)
+        .await
+        .with_context(|| format!("failed to read '{rel}'"))?;
+    if !metadata.is_file() {
+        anyhow::bail!("file path '{rel}' is not a file");
+    }
+    if metadata.len() > MAX_FILE_SIZE as u64 {
+        anyhow::bail!(
+            "'{rel}' is {} bytes, over the {MAX_FILE_SIZE} byte limit",
+            metadata.len()
+        );
+    }
+    let data = tokio::fs::read(&resolved)
+        .await
+        .with_context(|| format!("failed to read '{rel}'"))?;
+    FileService::validate_file(&file.filename, &file.filemime, &data)
+        .with_context(|| format!("'{rel}' is not a valid {}", file.filemime))?;
+    Ok(data)
 }
 
 /// Deserialize YAML content into a ConfigEntity based on entity type.
@@ -1389,6 +1506,11 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
         entity_types::MENU_LINK => {
             let link: MenuLink = serde_yml::from_str(content).context("invalid menu_link YAML")?;
             Ok(ParsedFile::plain(ConfigEntity::MenuLink(link)))
+        }
+        entity_types::FILE => {
+            let file: super::ConfigFile =
+                serde_yml::from_str(content).context("invalid file YAML")?;
+            Ok(ParsedFile::plain(ConfigEntity::File(file)))
         }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
     }
@@ -1767,6 +1889,7 @@ mod tests {
             entity_types::URL_ALIAS,
             entity_types::ITEM,
             entity_types::ITEM_TRANSLATION,
+            entity_types::FILE,
             entity_types::ROLE,
             entity_types::STAGE,
             entity_types::TILE,

@@ -177,8 +177,8 @@ which it is.
 
 ### What is configuration import only, in full
 
-**Thirteen of the fourteen config entity types have an admin screen**, and the
-fourteenth (`language`) is import-only by the decision above. That leaves the
+**Fourteen of the fifteen config entity types have an admin screen** (files have
+the media screen at `/admin/content/files`), and the fifteenth (`language`) is import-only by the decision above. That leaves the
 `variable` type, which is a key/value store rather than one thing, and so is
 partly covered:
 

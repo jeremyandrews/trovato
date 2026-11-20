@@ -18,7 +18,16 @@ use sqlx::PgPool;
 use tracing::debug;
 use uuid::Uuid;
 
-use super::{ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage};
+use super::{ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage, entity_types};
+
+/// Whether an entity type is staged. Files are not: a file's bytes live in
+/// file storage, outside any revision table, and an item on a stage that
+/// references one needs it to exist; a staged file would be a row nobody
+/// could serve until publish. Every file operation passes straight through to
+/// live storage.
+fn is_staged(entity_type: &str) -> bool {
+    entity_type != entity_types::FILE
+}
 
 /// Stage-aware config storage decorator.
 ///
@@ -277,6 +286,9 @@ impl StageAwareConfigStorage {
 #[async_trait]
 impl ConfigStorage for StageAwareConfigStorage {
     async fn load(&self, entity_type: &str, id: &str) -> Result<Option<ConfigEntity>> {
+        if !is_staged(entity_type) {
+            return self.direct.load(entity_type, id).await;
+        }
         // 1. Check if entity is deleted in this stage
         if self.is_deleted(entity_type, id).await? {
             debug!(
@@ -312,11 +324,17 @@ impl ConfigStorage for StageAwareConfigStorage {
     }
 
     async fn save(&self, entity: &ConfigEntity) -> Result<()> {
+        if !is_staged(entity.entity_type()) {
+            return self.direct.save(entity).await;
+        }
         // Create a staged revision (don't touch live)
         self.create_staged_revision(entity, None).await
     }
 
     async fn delete(&self, entity_type: &str, id: &str) -> Result<bool> {
+        if !is_staged(entity_type) {
+            return self.direct.delete(entity_type, id).await;
+        }
         // Mark for deletion (don't actually delete until publish)
         self.mark_deleted(entity_type, id).await
     }
@@ -326,6 +344,9 @@ impl ConfigStorage for StageAwareConfigStorage {
         entity_type: &str,
         filter: Option<&ConfigFilter>,
     ) -> Result<Vec<ConfigEntity>> {
+        if !is_staged(entity_type) {
+            return self.direct.list(entity_type, filter).await;
+        }
         // Get deleted IDs to exclude
         let deleted_ids = self.get_deleted_ids(entity_type).await?;
 
@@ -368,6 +389,9 @@ impl ConfigStorage for StageAwareConfigStorage {
     }
 
     async fn exists(&self, entity_type: &str, id: &str) -> Result<bool> {
+        if !is_staged(entity_type) {
+            return self.direct.exists(entity_type, id).await;
+        }
         // Deleted in stage means doesn't exist
         if self.is_deleted(entity_type, id).await? {
             return Ok(false);

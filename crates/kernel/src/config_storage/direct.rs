@@ -9,10 +9,13 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use std::sync::Arc;
+
 use super::{
-    ConfigEntity, ConfigFilter, ConfigItem, ConfigItemTranslation, ConfigStorage,
+    ConfigEntity, ConfigFile, ConfigFilter, ConfigItem, ConfigItemTranslation, ConfigStorage,
     SearchFieldConfig, entity_types, parse_tag_id,
 };
+use crate::file::{FileService, FileStatus, StoreFile};
 use crate::gather::types::{GatherQuery, QueryDefinition, QueryDisplay};
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::models::{
@@ -27,12 +30,109 @@ use crate::models::{
 #[derive(Clone)]
 pub struct DirectConfigStorage {
     pool: PgPool,
+    /// Where `file` entities' bytes are stored. Without it, a `file` entity
+    /// can be listed but not saved or exported with its bytes.
+    files: Option<Arc<FileService>>,
 }
 
 impl DirectConfigStorage {
     /// Create a new DirectConfigStorage with a database connection pool.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self { pool, files: None }
+    }
+
+    /// The same storage, able to save and export `file` entities through
+    /// `files`.
+    pub fn with_files(mut self, files: Arc<FileService>) -> Self {
+        self.files = Some(files);
+        self
+    }
+
+    fn files(&self) -> Result<&Arc<FileService>> {
+        self.files
+            .as_ref()
+            .context("this config storage has no file storage, so it cannot handle file entities")
+    }
+
+    // ---- File helpers ----
+
+    /// A `file` entity from its managed row, with its bytes when the storage
+    /// can read them.
+    async fn file_entity(&self, info: crate::file::FileInfo) -> ConfigEntity {
+        let data = match &self.files {
+            Some(files) => files.storage().read(&info.uri).await.ok(),
+            None => None,
+        };
+        ConfigEntity::File(ConfigFile {
+            id: info.id,
+            path: format!(
+                "files/{}",
+                crate::file::service::sanitize_filename(&info.filename)
+            ),
+            filename: info.filename,
+            filemime: info.filemime,
+            alt_text: info.alt_text,
+            data,
+        })
+    }
+
+    async fn load_file(&self, id: &str) -> Result<Option<ConfigEntity>> {
+        let id = id.parse::<Uuid>().context("invalid file UUID")?;
+        let Some(info) = self.files()?.get(id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(self.file_entity(info).await))
+    }
+
+    /// Store a config set's file under its declared id, `Permanent`, owned by
+    /// the anonymous user (config import has no acting user), through the
+    /// same validation as an upload.
+    async fn save_file(&self, file: &ConfigFile) -> Result<()> {
+        let data = file
+            .data
+            .as_deref()
+            .with_context(|| format!("file {} has no bytes to store", file.id))?;
+        self.files()?
+            .store(StoreFile {
+                id: file.id,
+                owner_id: Uuid::nil(),
+                filename: &file.filename,
+                mime_type: &file.filemime,
+                data,
+                status: FileStatus::Permanent,
+                alt_text: file.alt_text.as_deref(),
+                tenant_id: None,
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_file(&self, id: &str) -> Result<bool> {
+        let id = id.parse::<Uuid>().context("invalid file UUID")?;
+        self.files()?.delete(id).await
+    }
+
+    /// Every `Permanent` file, in one query: a temporary upload is in flight,
+    /// not part of the site's configuration. A storage built without file
+    /// storage lists none, since it could not export their bytes.
+    async fn list_files(&self, filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
+        let Some(files) = &self.files else {
+            return Ok(Vec::new());
+        };
+        let limit = filter
+            .and_then(|f| f.limit)
+            .map_or(i64::MAX, |l| i64::try_from(l).unwrap_or(i64::MAX));
+        let offset = filter
+            .and_then(|f| f.offset)
+            .map_or(0, |o| i64::try_from(o).unwrap_or(i64::MAX));
+        let infos = files
+            .list_by_status(Some(FileStatus::Permanent), limit, offset)
+            .await?;
+        let mut out = Vec::with_capacity(infos.len());
+        for info in infos {
+            out.push(self.file_entity(info).await);
+        }
+        Ok(out)
     }
 
     // ---- ItemType helpers ----
@@ -1327,6 +1427,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::STAGE => self.load_stage(id).await,
             entity_types::TILE => self.load_tile(id).await,
             entity_types::MENU_LINK => self.load_menu_link(id).await,
+            entity_types::FILE => self.load_file(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -1347,6 +1448,7 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::Stage(s) => self.save_stage(s).await,
             ConfigEntity::Tile(t) => self.save_tile(t).await,
             ConfigEntity::MenuLink(m) => self.save_menu_link(m).await,
+            ConfigEntity::File(f) => self.save_file(f).await,
         }
     }
 
@@ -1366,6 +1468,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::STAGE => self.delete_stage(id).await,
             entity_types::TILE => self.delete_tile(id).await,
             entity_types::MENU_LINK => self.delete_menu_link(id).await,
+            entity_types::FILE => self.delete_file(id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -1390,6 +1493,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::STAGE => self.list_stages(filter).await,
             entity_types::TILE => self.list_tiles(filter).await,
             entity_types::MENU_LINK => self.list_menu_links(filter).await,
+            entity_types::FILE => self.list_files(filter).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }

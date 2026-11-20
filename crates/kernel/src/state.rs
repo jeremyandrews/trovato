@@ -371,7 +371,16 @@ impl AppState {
         // Create config storage
         // This is the central interface for all config entity access.
         // Post-MVP, we can swap this with StageAwareConfigStorage for stage awareness.
-        let config_storage: Arc<dyn ConfigStorage> = Arc::new(DirectConfigStorage::new(db.clone()));
+        // File service with local storage. Created here because config storage
+        // stores the bytes of `file` config entities through it.
+        let file_storage = Arc::new(LocalFileStorage::new(
+            &config.uploads_dir,
+            &config.files_url,
+        ));
+        let files = Arc::new(FileService::new(db.clone(), file_storage));
+
+        let config_storage: Arc<dyn ConfigStorage> =
+            Arc::new(DirectConfigStorage::new(db.clone()).with_files(files.clone()));
 
         // Create permission service
         let permissions = PermissionService::new(db.clone(), cache_config.ttl_permissions);
@@ -906,13 +915,6 @@ impl AppState {
         // a gather naming a `record_type` resolves it to its table + field map.
         gather.set_record_types(record_types.clone());
 
-        // Create file service with local storage
-        let file_storage = Arc::new(LocalFileStorage::new(
-            &config.uploads_dir,
-            &config.files_url,
-        ));
-        let files = Arc::new(FileService::new(db.clone(), file_storage));
-
         // Create cron service with file service for proper cleanup
         let mut cron = CronService::with_file_service(redis.clone(), db.clone(), files.clone());
 
@@ -1355,7 +1357,10 @@ impl AppState {
             self.inner.config_storage.clone()
         } else {
             // Non-live stages use stage-aware storage
-            let direct = Arc::new(DirectConfigStorage::new(self.inner.db.clone()));
+            let direct = Arc::new(
+                DirectConfigStorage::new(self.inner.db.clone())
+                    .with_files(self.inner.files.clone()),
+            );
             Arc::new(StageAwareConfigStorage::new(
                 direct,
                 self.inner.db.clone(),

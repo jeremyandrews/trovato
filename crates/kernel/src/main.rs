@@ -544,7 +544,15 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
         .await
         .context("failed to run migrations")?;
 
-    let storage = config_storage::DirectConfigStorage::new(pool.clone());
+    // `file` config entities carry bytes, which go to the site's file storage.
+    let files = std::sync::Arc::new(crate::file::FileService::new(
+        pool.clone(),
+        std::sync::Arc::new(crate::file::LocalFileStorage::new(
+            &config.uploads_dir,
+            &config.files_url,
+        )),
+    ));
+    let storage = config_storage::DirectConfigStorage::new(pool.clone()).with_files(files);
 
     match action {
         ConfigAction::Export { dir, clean } => {

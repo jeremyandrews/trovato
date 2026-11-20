@@ -332,7 +332,7 @@ Export the entire site configuration to YAML files:
 cargo run --release --bin trovato -- config export ./my-config/
 ```
 
-This creates one YAML file per config entity: item types, gather queries, categories, tags, URL aliases, languages, roles, stages, tiles, menu links, and content items. The export is a complete snapshot that can recreate the site on a fresh database.
+This creates one YAML file per config entity: item types, gather queries, categories, tags, URL aliases, languages, roles, stages, tiles, menu links, files, and content items. Each permanent file is written as `file.{uuid}.yml` with its bytes beside it under `files/`. The export is a complete snapshot that can recreate the site on a fresh database.
 
 ### Import
 
@@ -344,7 +344,7 @@ cargo run --release --bin trovato -- config import ./my-config/
 cargo run --release --bin trovato -- config import ./my-config/ --dry-run
 ```
 
-Entity types are imported in dependency order: variables → languages → roles → item types → categories → tags → search field configs → gather queries → stages → URL aliases → items → tiles → menu links. This ensures foreign key references resolve correctly.
+Entity types are imported in dependency order: variables → languages → roles → item types → categories → tags → search field configs → gather queries → stages → URL aliases → files → items → item translations → tiles → menu links. This ensures foreign key references resolve correctly.
 
 ### What's Importable
 
@@ -363,6 +363,43 @@ Entity types are imported in dependency order: variables → languages → roles
 | Tile | `tile.{uuid}.yml` | `tile.a1b2c3d4-....yml` |
 | Menu link | `menu_link.{uuid}.yml` | `menu_link.a1b2c3d4-....yml` |
 | Search config | `search_field_config.{uuid}.yml` | `search_field_config.a1b2c3d4-....yml` |
+| File | `file.{uuid}.yml` plus its bytes | `file.a1b2c3d4-....yml`, `files/programme.pdf` |
+
+### Shipping a file
+
+A config set can carry the files its items reference. The YAML holds the metadata
+and a `path` to the bytes, relative to the config set's directory; the bytes stay in
+their own file, never base64 in YAML:
+
+```yaml
+# file.0193a5a0-0005-7000-8000-000000000001.yml
+id: 0193a5a0-0005-7000-8000-000000000001
+filename: programme.pdf
+filemime: application/pdf
+alt_text: Conference programme   # optional; for images
+path: files/programme.pdf        # optional; this is the default
+```
+
+```yaml
+# item.0193a5a0-0006-7000-8000-000000000001.yml
+id: 0193a5a0-0006-7000-8000-000000000001
+type: conference
+title: RustConf 2026
+fields:
+  field_logo: 0193a5a0-0005-7000-8000-000000000001
+```
+
+Import validates the bytes exactly as an upload is validated: at most 10 MB, a type
+in the upload allowlist (SVG is not), content whose magic bytes match `filemime`, and
+a filename extension that maps to it. The `path` must be relative, may not use `..`,
+and may not lead outside the directory through a symlink. A file that fails any of
+these fails the whole import, and nothing in the set is written. The file is stored
+`Permanent` under the declared id, so an item's File field can name it; re-importing
+keeps the id and storage path and rewrites the bytes only when they changed.
+
+Files are not staged: a file saved through a stage's config storage goes straight to
+live, because its bytes live in file storage rather than a revision table, and an
+item on any stage that references it needs it to exist.
 
 The filename ID is always the entity's own identifier, which is what `config
 export` writes. Roles, stages, tiles and menu links are keyed by UUID, so their
