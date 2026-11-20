@@ -665,8 +665,7 @@ impl GatherService {
         context: &QueryContext,
     ) -> Result<GatherResult> {
         let query = self
-            .queries
-            .get(query_id)
+            .get_query(query_id)
             .ok_or_else(|| anyhow::anyhow!("query not found: {query_id}"))?;
 
         self.execute_definition_with_stages(
@@ -1728,8 +1727,7 @@ impl GatherService {
     /// Clone a query with a new ID.
     pub async fn clone_query(&self, source_id: &str, new_id: &str) -> Result<GatherQuery> {
         let source = self
-            .queries
-            .get(source_id)
+            .get_query(source_id)
             .ok_or_else(|| anyhow::anyhow!("query not found: {source_id}"))?
             .clone();
 
