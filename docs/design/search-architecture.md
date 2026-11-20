@@ -227,8 +227,12 @@ retention set, on `/admin/config/search`. Read at `/admin/reports/search`.
 The query is stored as `search::analytics::normalize_for_analytics` leaves it:
 trimmed, whitespace collapsed, lowercased (the same `search::normalize_query`
 the expansion cache keys on), then every email shaped token replaced by
-`[email]` and every run of six or more digits by `[number]`, then cut to 100
-characters. A query that normalizes to nothing is not recorded.
+`[email]` and every number of six or more digits by `[number]`, then cut to 100
+characters. A number is a token made only of digits and the punctuation numbers
+are written with (`+ - . , ( ) / #`): `12345678`, `+44(0)20-7946-0958`. Digits
+inside a word are left alone, so a product code such as `inv12345678` is stored
+as typed; five digits or fewer (a postcode, a year) are kept too. A query that
+normalizes to nothing is not recorded.
 
 **What is never stored**, in a table or in a log line this work adds: an IP
 address, a user id, a session id, a user agent, a referrer, or any time finer

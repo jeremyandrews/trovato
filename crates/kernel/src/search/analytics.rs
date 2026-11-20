@@ -39,15 +39,16 @@ pub const MAX_KEYS_PER_WINDOW: usize = 10_000;
 /// Longest stored query, in characters.
 pub const MAX_QUERY_CHARS: usize = 100;
 
-/// Digits in a row from which a number is treated as an identifier (a phone,
-/// account or order number) and not stored.
+/// Digits from which a number is treated as an identifier (a phone, account or
+/// order number) and not stored.
 pub const LONG_NUMBER_DIGITS: usize = 6;
 
 /// The form a query is stored in, or `None` when nothing is left to store.
 ///
 /// [`normalize_query`] first (trim, collapse whitespace, lowercase), then every
-/// email shaped token becomes `[email]` and every run of six or more digits
-/// `[number]`, then the result is cut to [`MAX_QUERY_CHARS`] characters.
+/// email shaped token becomes `[email]` and every number shaped token with six
+/// or more digits `[number]`, then the result is cut to [`MAX_QUERY_CHARS`]
+/// characters.
 pub fn normalize_for_analytics(query: &str) -> Option<String> {
     let normalized = normalize_query(query);
     let redacted = normalized
@@ -55,8 +56,10 @@ pub fn normalize_for_analytics(query: &str) -> Option<String> {
         .map(|token| {
             if is_email_shaped(token) {
                 "[email]".to_string()
+            } else if is_long_number(token) {
+                "[number]".to_string()
             } else {
-                replace_long_numbers(token)
+                token.to_string()
             }
         })
         .collect::<Vec<_>>()
@@ -78,29 +81,15 @@ fn is_email_shaped(token: &str) -> bool {
             .is_some_and(|(host, tld)| !host.is_empty() && !tld.is_empty())
 }
 
-/// `token` with every run of [`LONG_NUMBER_DIGITS`] or more digits replaced by
-/// `[number]`.
-fn replace_long_numbers(token: &str) -> String {
-    fn end_run(run: &mut String, out: &mut String) {
-        if run.chars().count() >= LONG_NUMBER_DIGITS {
-            out.push_str("[number]");
-        } else {
-            out.push_str(run);
-        }
-        run.clear();
-    }
-    let mut out = String::with_capacity(token.len());
-    let mut run = String::new();
-    for c in token.chars() {
-        if c.is_numeric() {
-            run.push(c);
-        } else {
-            end_run(&mut run, &mut out);
-            out.push(c);
-        }
-    }
-    end_run(&mut run, &mut out);
-    out
+/// Whether `token` is a number written out: only digits and the punctuation
+/// numbers are written with (`+ - . , ( ) / #`), at least [`LONG_NUMBER_DIGITS`]
+/// digits in all. So `12345678`, `+44(0)20-7946-0958` and `#1234567` are numbers;
+/// a word with digits in it (`rtx4090`, a product code, a hex id) is not.
+fn is_long_number(token: &str) -> bool {
+    token
+        .chars()
+        .all(|c| c.is_numeric() || "+-.,()/#".contains(c))
+        && token.chars().filter(|c| c.is_numeric()).count() >= LONG_NUMBER_DIGITS
 }
 
 /// A per day counter other than the query counts.
@@ -338,7 +327,11 @@ mod tests {
     fn emails_and_long_numbers_are_replaced() {
         assert_eq!(
             normalize_for_analytics("Mail a.b@c.io or (x@y.org) 1234567890 x12345678y 12345"),
-            Some("mail [email] or [email] [number] x[number]y 12345".to_string())
+            Some("mail [email] or [email] [number] x12345678y 12345".to_string())
+        );
+        assert_eq!(
+            normalize_for_analytics("+44(0)20-7946-0958 #1234567 12-34 12.5"),
+            Some("[number] [number] 12-34 12.5".to_string())
         );
         assert_eq!(
             normalize_for_analytics("@handle and a@b"),

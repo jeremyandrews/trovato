@@ -16,8 +16,9 @@ is you **before** you upgrade.
 
 **What is recorded.** Per UTC day: each normalized query with how often it was
 searched and how often it found nothing, and the day's expansion cache hits and
-misses. The query is lowercased, email addresses become `[email]` and runs of six
-or more digits become `[number]`. No IP address, account, session, user agent,
+misses. The query is lowercased, email addresses become `[email]` and numbers of
+six or more digits (phone, account, order numbers) become `[number]`; digits
+inside a word are kept. No IP address, account, session, user agent,
 referrer or time finer than the day is stored. Rows older than 90 days are deleted
 by cron.
 
