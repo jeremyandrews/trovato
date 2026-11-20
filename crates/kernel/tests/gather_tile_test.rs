@@ -23,8 +23,13 @@ use trovato_kernel::models::tile::{CreateTile, Tile};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
+/// A unique marker for this test's titles, machine names and gather ids.
+///
+/// Prefixed so it never parses as a UUID: a gather filter value is untagged,
+/// and a bare 32-digit hex string would be read as a `Uuid` and compared in its
+/// hyphenated form, matching no title.
 fn stamp() -> String {
-    Uuid::now_v7().simple().to_string()
+    format!("m{}", Uuid::now_v7().simple())
 }
 
 fn admin() -> UserContext {
