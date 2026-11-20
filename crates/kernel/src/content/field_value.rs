@@ -74,7 +74,7 @@ pub fn form_text(field_type: &FieldType, value: Option<&Value>) -> String {
         FieldType::Blocks | FieldType::PageBuilder | FieldType::Compound { .. } => {
             serde_json::to_string(value).unwrap_or_default()
         }
-        FieldType::RecordReference(_) => reference_id(value),
+        FieldType::RecordReference(_) | FieldType::CategoryReference(_) => reference_id(value),
         FieldType::Boolean => {
             if is_checked(value) {
                 "1".to_string()
@@ -348,6 +348,7 @@ pub fn parse(
         | FieldType::Date
         | FieldType::File
         | FieldType::RecordReference(_)
+        | FieldType::CategoryReference(_)
         | FieldType::Compound { .. }
         | FieldType::Blocks => Ok(Some(Value::String(raw.to_string()))),
     }
@@ -365,13 +366,10 @@ pub fn check_json(
     if value.is_null() {
         return Ok(());
     }
-    if field.cardinality != 1 {
+    if crate::content::field_values::stores_a_list(field) {
         let values = form_values(Some(value));
-        if field.cardinality > 0 && values.len() > field.cardinality as usize {
-            return Err(format!(
-                "{} allows at most {} values.",
-                field.label, field.cardinality
-            ));
+        if let Some(message) = crate::content::field_values::too_many_values(field, values.len()) {
+            return Err(message);
         }
         return values
             .into_iter()
@@ -394,6 +392,9 @@ fn check_one(
         FieldType::RecordReference(_) => {
             value.is_string() || !reference_id(value).is_empty() || value.is_number()
         }
+        // Whether the uuid names a tag of the field's category is the field
+        // value check's to decide, with the tag lookup.
+        FieldType::CategoryReference(_) => value.is_string(),
         FieldType::Boolean => match inner {
             Value::Bool(_) | Value::Number(_) | Value::Null => true,
             Value::String(s) => {
@@ -450,6 +451,7 @@ fn type_name(field_type: &FieldType) -> &'static str {
         FieldType::Float => "number",
         FieldType::Boolean => "Boolean",
         FieldType::RecordReference(_) => "reference",
+        FieldType::CategoryReference(_) => "tag reference",
         FieldType::File => "file reference",
         FieldType::Date => "date",
         FieldType::Email => "email address",

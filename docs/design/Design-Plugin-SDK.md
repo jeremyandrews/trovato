@@ -269,6 +269,8 @@ pub enum FieldType {
     File,
     Date,
     Email,
+    // … Compound, Blocks, PageBuilder
+    CategoryReference(String),         // category id; an array of tag uuids (B72)
 }
 ```
 

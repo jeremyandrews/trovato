@@ -86,7 +86,20 @@
                     <option value="date" {% if selected_type == "date" %}selected{% endif %}>{{ t(s="Date") }}</option>
                     <option value="email" {% if selected_type == "email" %}selected{% endif %}>{{ t(s="Email") }}</option>
                     <option value="record_reference" {% if selected_type == "record_reference" %}selected{% endif %}>{{ t(s="Reference") }}</option>
+                    <option value="category_reference" {% if selected_type == "category_reference" %}selected{% endif %}>{{ t(s="Category reference (tags)") }}</option>
                 </select>
+            </div>
+
+            <div class="form-item">
+                <label for="new_field_category" class="form-item__label">{{ t(s="Category") }}</label>
+                <select id="new_field_category" name="category" class="form-select" aria-describedby="new_field_category-hint">
+                    <option value="">{{ t(s="- None -") }}</option>
+                    {% set selected_category = values.category | default(value='') %}
+                    {% for category in categories %}
+                    <option value="{{ category.id }}"{% if selected_category == category.id %} selected{% endif %}>{{ category.label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="description" id="new_field_category-hint">{{ t(s="Required for a category reference: the field holds tags of this category.") }}</div>
             </div>
 
             <div class="form-item inline-fields__submit">
