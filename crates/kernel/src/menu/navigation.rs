@@ -13,7 +13,7 @@
 //!
 //! The cache is process-wide rather than held by a service, because the writes
 //! that change its answer are made in model functions that hold only a pool
-//! ([`MenuLink`](crate::models::MenuLink) and
+//! ([`MenuLink`] and
 //! [`UrlAlias`](crate::models::UrlAlias) create, update and delete), and in
 //! config import, stage publishing and item translation. Each of them calls
 //! [`invalidate_config_menus`] after it writes. A write made from outside the

@@ -355,7 +355,7 @@ fn viewer_may_see(menu: &MenuDefinition, viewer: &crate::tap::UserContext) -> bo
 /// A menu entry as `viewer` would follow it, or `None` when they would not.
 ///
 /// The one rule for plugin entries in navigation: the entry is visible, the
-/// viewer may see it ([`viewer_may_see`]), and its path is a link they can
+/// viewer may see it (`viewer_may_see`), and its path is a link they can
 /// follow. A `{uid}` segment becomes the signed-in viewer's id. An entry with
 /// any other `{...}` segment, or with `{uid}` for an anonymous viewer, names a
 /// page nobody can be sent to, so it is not a link at all.
