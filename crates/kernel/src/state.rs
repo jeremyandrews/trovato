@@ -488,34 +488,6 @@ impl AppState {
             tap_registry.clone(),
         ));
 
-        // Initialize email service (conditionally, when SMTP_HOST is set).
-        //
-        // Built here, before the first tap dispatch (`tap_install` below) and the
-        // tap services template, because the `mail` host interface is served
-        // from both: a plugin sending mail uses this same service, and therefore
-        // the same SMTP transport, `from` address and circuit breaker the
-        // kernel's own mail uses, on every dispatch path.
-        let email = config.smtp_host.as_ref().and_then(|host| {
-            match services::email::EmailService::new(
-                host,
-                config.smtp_port,
-                config.smtp_username.as_deref(),
-                config.smtp_password.as_deref(),
-                &config.smtp_encryption,
-                config.smtp_from_email.clone(),
-                config.site_url.clone(),
-            ) {
-                Ok(svc) => {
-                    info!(host = %host, port = config.smtp_port, "SMTP email service configured");
-                    Some(Arc::new(svc))
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to initialize email service");
-                    None
-                }
-            }
-        });
-
         use crate::tap::{RequestServices, RequestState, UserContext};
 
         // Dispatch tap_install for enabled plugins that haven't had it called yet.
@@ -532,23 +504,20 @@ impl AppState {
             let tap_install_db = db.clone();
             let tap_install_dispatcher = tap_dispatcher.clone();
             let tap_install_limiter = rate_limiter.clone();
-            let tap_install_email = email.clone();
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
                 for plugin_name in &pending {
-                    let mut install_services = RequestServices::for_background(
-                        tap_install_db.clone(),
-                        None,
-                        None,
-                        http.clone(),
-                    )
-                    .with_plugin_runtime(tap_install_dispatcher.runtime().clone())
-                    .with_rate_limiter(tap_install_limiter.clone());
-                    if let Some(ref email) = tap_install_email {
-                        install_services = install_services.with_email(email.clone());
-                    }
-                    let install_state =
-                        RequestState::new(UserContext::anonymous(), install_services);
+                    let install_state = RequestState::new(
+                        UserContext::anonymous(),
+                        RequestServices::for_background(
+                            tap_install_db.clone(),
+                            None,
+                            None,
+                            http.clone(),
+                        )
+                        .with_plugin_runtime(tap_install_dispatcher.runtime().clone())
+                        .with_rate_limiter(tap_install_limiter.clone()),
+                    );
                     // dispatch_to_plugin returns None when the plugin does not
                     // export tap_install (harmless) OR when the WASM call fails
                     // (the dispatcher already logs an error in that case).
@@ -870,6 +839,33 @@ impl AppState {
         // production tap dispatch — including the `variables::set` flush — operate
         // on the same instance.
         let field_access_cache = std::sync::Arc::new(crate::tap::new_field_access_cache());
+
+        // Initialize email service (conditionally, when SMTP_HOST is set).
+        //
+        // Built here, before the tap services template, because the `mail` host
+        // interface is served from that template: a plugin sending mail uses this
+        // same service, and therefore the same SMTP transport, `from` address and
+        // circuit breaker the kernel's own mail uses.
+        let email = config.smtp_host.as_ref().and_then(|host| {
+            match services::email::EmailService::new(
+                host,
+                config.smtp_port,
+                config.smtp_username.as_deref(),
+                config.smtp_password.as_deref(),
+                &config.smtp_encryption,
+                config.smtp_from_email.clone(),
+                config.site_url.clone(),
+            ) {
+                Ok(svc) => {
+                    info!(host = %host, port = config.smtp_port, "SMTP email service configured");
+                    Some(Arc::new(svc))
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to initialize email service");
+                    None
+                }
+            }
+        });
 
         let mut tap_services = RequestServices::for_request(
             db.clone(),

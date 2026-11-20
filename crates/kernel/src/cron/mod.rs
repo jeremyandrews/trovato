@@ -317,10 +317,14 @@ fn parse_queue_concurrency(output: &str) -> BTreeMap<String, usize> {
 /// A guest the dispatcher reports was cut off at the epoch deadline is treated
 /// differently: it is dead-lettered at once, whatever `attempts` says. See
 /// [`mark_job_cpu_exhausted`].
+#[allow(clippy::too_many_arguments)]
 async fn run_queue_job(
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
-    services: crate::tap::RequestServices,
+    ai_providers: Option<Arc<AiProviderService>>,
+    ai_budgets: Option<Arc<AiTokenBudgetService>>,
+    http: reqwest::Client,
+    rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
     plugin_name: String,
     queue_name: String,
     job: ClaimedJob,
@@ -331,9 +335,14 @@ async fn run_queue_job(
 
     // P11c / D-40: queue-worker dispatch carries the kernel-internal background
     // principal so a plugin holding `ai_background` may call AI from the worker.
-    // `services` comes from `CronService::background_services`, the builder
-    // `tap_cron` uses too, so the rate limiter and the email service reach a
-    // queue worker exactly as they reach cron.
+    let mut services =
+        crate::tap::RequestServices::for_background(pool.clone(), ai_providers, ai_budgets, http)
+            .with_plugin_runtime(dispatcher.runtime().clone());
+    // The per-plugin `mail` bucket has to bound a queue worker too, which is
+    // the path nothing bounded before.
+    if let Some(limiter) = rate_limiter {
+        services = services.with_rate_limiter(limiter);
+    }
     let state = RequestState::new(crate::tap::UserContext::background(), services)
         .with_invocation_sink(invocation_sink);
 
@@ -718,11 +727,6 @@ pub struct CronService {
     /// per-plugin `mail` bucket applies from `tap_cron` and `tap_queue_worker`
     /// and not only from a request.
     rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
-    /// The site's one email service, the same `Arc` its own `email:send` queue
-    /// uses, threaded into background dispatch so a plugin's `mail` calls from
-    /// `tap_cron` and `tap_queue_worker` send rather than report that SMTP is
-    /// not configured.
-    email: Option<Arc<crate::services::email::EmailService>>,
     /// Wall-clock budget for one drain pass ([`QUEUE_DRAIN_BUDGET_SECS`]).
     /// Carried here rather than read from the constant so a deployment can tune
     /// it and a test can drive it to a value it can observe.
@@ -754,7 +758,6 @@ impl CronService {
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
-            email: None,
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
@@ -779,7 +782,6 @@ impl CronService {
             pagefind_enabled: false,
             pagefind_static_dir: PathBuf::from("./static"),
             rate_limiter: None,
-            email: None,
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
@@ -910,13 +912,11 @@ impl CronService {
         self.tasks.set_plugin_services(content_lock, audit);
     }
 
-    /// Set the email service: for sending queued emails, and for the plugin
-    /// `mail` calls made from `tap_cron` and `tap_queue_worker`.
+    /// Set the email service for sending queued emails.
     pub fn set_email_service(
         &mut self,
         email: Option<std::sync::Arc<crate::services::email::EmailService>>,
     ) {
-        self.email = email.clone();
         self.tasks.set_email_service(email);
     }
 
@@ -1412,14 +1412,29 @@ impl CronService {
                     for job in claimed {
                         let pool = self.pool.clone();
                         let disp = dispatcher.clone();
-                        let services = self.background_services(&dispatcher);
+                        let ai_providers = self.ai_providers.clone();
+                        let ai_budgets = self.ai_budgets.clone();
+                        let http = self.http.clone();
+                        let limiter = self.rate_limiter.clone();
                         let plugin = plugin_name.clone();
                         let queue = queue_name.clone();
                         let sink = Arc::new(AtomicU64::new(0));
                         let job_record = job.clone();
                         let job_sink = sink.clone();
                         let handle = set.spawn(async move {
-                            run_queue_job(pool, disp, services, plugin, queue, job, job_sink).await
+                            run_queue_job(
+                                pool,
+                                disp,
+                                ai_providers,
+                                ai_budgets,
+                                http,
+                                limiter,
+                                plugin,
+                                queue,
+                                job,
+                                job_sink,
+                            )
+                            .await
                         });
                         inflight.insert(handle.id(), (job_record, sink));
                     }
@@ -1791,8 +1806,8 @@ impl CronService {
     /// The services every background dispatch from this service carries.
     ///
     /// One builder for `tap_cron` and `tap_queue_worker` both, so the per-plugin
-    /// `mail` bucket and the email service cannot be attached on one background
-    /// path and missing from the other.
+    /// `mail` bucket cannot be armed on one background path and missing from the
+    /// other.
     fn background_services(&self, dispatcher: &Arc<TapDispatcher>) -> crate::tap::RequestServices {
         let mut services = crate::tap::RequestServices::for_background(
             self.pool.clone(),
@@ -1803,9 +1818,6 @@ impl CronService {
         .with_plugin_runtime(dispatcher.runtime().clone());
         if let Some(limiter) = self.rate_limiter.clone() {
             services = services.with_rate_limiter(limiter);
-        }
-        if let Some(email) = self.email.clone() {
-            services = services.with_email(email);
         }
         services
     }
