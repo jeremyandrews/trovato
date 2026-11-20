@@ -603,9 +603,9 @@ Files uploaded through the block editor or the file field widget go through the 
 
 5. **Sanitize filename** -- `sanitize_filename()` strips path traversal sequences (`../`), special characters, and ensures the filename is safe for the filesystem. Raw user-supplied filenames are never used in storage paths.
 
-6. **Size check** -- Files exceeding `MAX_FILE_SIZE` are rejected.
+6. **Size check** -- Files exceeding `MAX_FILE_SIZE` (10 MB) are rejected with `413`. The upload routes accept a request body up to `MAX_UPLOAD_BODY_SIZE` (the file limit plus room for the multipart framing), so the service's own check is the one that answers.
 
-7. **Store** -- The file is written to the configured upload directory and a `file_managed` row is created with `status = 0` (temporary). When the parent item is saved, the file is promoted to `status = 1` (permanent).
+7. **Store** -- The file is written to the configured upload directory and a `file_managed` row is created with `status = 0` (temporary). When an item referencing it is saved, through any write path, the file is promoted to `status = 1` (permanent) in the item's own transaction.
 
 [<img src="images/part-05/files-admin.png" width="600" alt="The file management admin page showing uploaded files with metadata">](images/part-05/files-admin.png)
 

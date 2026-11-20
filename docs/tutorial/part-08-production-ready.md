@@ -115,7 +115,8 @@ S3_REGION=us-east-1
 
 Both backends enforce the same security rules:
 
-- **10 MB max file size** — configurable via `MAX_FILE_SIZE`
+- **10 MB max file size** — the `MAX_FILE_SIZE` constant; a larger upload is a `413`
+- **Extension agreement** — a filename whose extension does not map to the validated type is refused (a PNG named `x.svg` is not stored)
 - **MIME type allowlist** — images (JPEG, PNG, GIF, WebP), documents (PDF, Office), archives (ZIP, GZIP). SVG is excluded (XML-based format enables stored XSS).
 - **Magic byte validation** — the kernel verifies file content matches the declared MIME type using `infer` crate magic byte detection. An ELF binary declared as `image/jpeg` is rejected.
 - **Filename sanitization** — path traversal sequences (`../`) are stripped, filenames are limited to alphanumeric characters plus `.`, `-`, `_`.

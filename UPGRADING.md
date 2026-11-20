@@ -9,6 +9,34 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### File fields are indexed and promoted; uploads to 10 MB; served type is the stored type
+
+**Who is affected:** a site with File fields; anyone who saves items through
+the item API, a plugin or `config import`; a reverse proxy in front of uploads.
+
+**What changed.** Migration `20261120100001_index_file_field_references`
+records a `file_reference` row for every file id an existing item's File field
+holds (read from the item type's field definitions), then promotes every
+`Temporary` file that has a reference to `Permanent`. It is additive and safe to
+rerun. Reversing it means deleting the backfilled rows
+(`DELETE FROM file_reference` for the pairs it added); no data is lost either
+way, and promoted files simply stay.
+
+Behaviour changes that follow: a file in a File field is now served to every
+viewer of a published item that references it (before, only to its uploader
+and administrators); a referenced file is promoted on every write path, so the
+temporary file cleanup no longer deletes files attached through the item API, a
+plugin or config import; a save that attaches a file the acting user cannot
+fetch is refused with 403; uploads up to 10 MB work, and a larger one is a 413;
+an upload whose filename extension disagrees with its content is refused with
+415; `/files/` answers with the stored type, not one guessed from the path.
+
+**How to find out.** Files the migration will make public:
+`SELECT count(*) FROM file_managed f WHERE NOT EXISTS (SELECT 1 FROM
+file_reference r WHERE r.file_id = f.id);` before and after shows how many
+files gained a reference. If a proxy fronts the kernel, check its body limit on
+`/file/upload` (see INSTALL.md, "Serving uploaded files").
+
 ### Plugins filter user HTML through `host::filter_text`; plugin API 0.105
 
 **Who is affected:** a plugin that renders HTML a user wrote; anyone pinning

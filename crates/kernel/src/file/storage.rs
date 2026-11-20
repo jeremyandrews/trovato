@@ -9,7 +9,6 @@
 
 use std::path::PathBuf;
 
-use crate::file::service::sanitize_filename;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::fs;
@@ -69,23 +68,6 @@ impl LocalFileStorage {
             }
         }
         Ok(self.base_path.join(path))
-    }
-
-    /// Generate a storage URI for a new file.
-    pub fn generate_uri(&self, filename: &str) -> String {
-        let now = chrono::Utc::now();
-        let year = now.format("%Y");
-        let month = now.format("%m");
-        let unique_id = uuid::Uuid::now_v7().simple().to_string();
-        let safe_filename = sanitize_filename(filename);
-
-        format!(
-            "local://{}/{}/{}_{}",
-            year,
-            month,
-            &unique_id[..8],
-            safe_filename
-        )
     }
 }
 
@@ -168,6 +150,7 @@ mod tests {
     //! findings from Epic 27. Do not remove without security review.
 
     use super::*;
+    use crate::file::service::sanitize_filename;
 
     // SECURITY REGRESSION TEST — Story 27.6 Finding #2: path traversal prevention
     #[test]
@@ -193,15 +176,6 @@ mod tests {
         let result = sanitize_filename("..%2F..%2Fetc%2Fpasswd");
         assert!(!result.contains('%'), "percent signs should be sanitized");
         assert!(!result.contains('/'), "slashes should not appear");
-    }
-
-    #[test]
-    fn test_generate_uri() {
-        let storage = LocalFileStorage::new("/tmp/uploads", "/files");
-        let uri = storage.generate_uri("test.jpg");
-
-        assert!(uri.starts_with("local://"));
-        assert!(uri.ends_with("_test.jpg"));
     }
 
     #[test]

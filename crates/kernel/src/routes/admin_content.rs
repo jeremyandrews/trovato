@@ -20,52 +20,6 @@ use super::helpers::{
 /// Session key for flash messages on the content list page.
 const CONTENT_FLASH_KEY: &str = "content_admin_flash";
 
-/// Extract file UUIDs from item fields.
-///
-/// File fields store a UUID string referencing `file_managed.id`. Call this
-/// *before* moving `fields_json` into a `CreateItem`/`UpdateItem`, then pass
-/// the returned IDs to [`promote_file_ids`] after the save succeeds.
-fn extract_file_ids(
-    state: &AppState,
-    fields: &serde_json::Map<String, serde_json::Value>,
-    content_type_name: &str,
-) -> Vec<uuid::Uuid> {
-    let Some(ct) = state.content_types().get(content_type_name) else {
-        return Vec::new();
-    };
-
-    let mut file_ids = Vec::new();
-    for field_def in &ct.fields {
-        if matches!(field_def.field_type, trovato_sdk::types::FieldType::File)
-            && let Some(val) = fields.get(&field_def.field_name)
-            && let Some(id_str) = val.as_str()
-            && let Ok(id) = id_str.parse::<uuid::Uuid>()
-        {
-            file_ids.push(id);
-        }
-    }
-    file_ids
-}
-
-/// Promote extracted file IDs to permanent status.
-///
-/// Temporary uploads must be promoted so the cleanup cron does not delete them.
-async fn promote_file_ids(state: &AppState, file_ids: &[uuid::Uuid]) {
-    if file_ids.is_empty() {
-        return;
-    }
-    match state.files().mark_permanent_batch(file_ids).await {
-        Ok(count) => {
-            if count > 0 {
-                tracing::debug!(count, "promoted file(s) to permanent");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to promote files to permanent");
-        }
-    }
-}
-
 /// List all content.
 ///
 /// GET /admin/content
@@ -328,7 +282,6 @@ async fn add_content_submit(
             }
         };
 
-    let file_ids = extract_file_ids(&state, &fields_json, &type_name);
     let input = CreateItem {
         item_type: type_name.clone(),
         title: posted.get("title").unwrap_or_default().trim().to_string(),
@@ -344,9 +297,6 @@ async fn add_content_submit(
 
     match state.items().create(input, &user_ctx).await {
         Ok(item) => {
-            // Promote temporary file uploads to permanent
-            promote_file_ids(&state, &file_ids).await;
-
             // Auto-generate URL alias if pattern configured for this type
             if let Err(e) = crate::services::pathauto::auto_alias_item(
                 state.db(),
@@ -533,7 +483,6 @@ async fn edit_content_submit(
         return render_error("The form could not be read.");
     };
 
-    let file_ids = extract_file_ids(&state, &fields_json, &item.item_type);
     let input = crate::models::UpdateItem {
         stage_id,
         title: posted.get("title").map(|t| t.trim().to_string()),
@@ -546,9 +495,6 @@ async fn edit_content_submit(
 
     match state.items().update(item_id, input, &user_ctx).await {
         Ok(updated) => {
-            // Promote temporary file uploads to permanent
-            promote_file_ids(&state, &file_ids).await;
-
             // Auto-update URL alias from pathauto pattern
             if let Some(ref updated_item) = updated
                 && let Err(e) = crate::services::pathauto::update_alias_item(

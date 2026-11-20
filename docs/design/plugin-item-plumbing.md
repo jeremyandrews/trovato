@@ -45,7 +45,7 @@ compiled module and linker (`:437`). Walking every resource a nested write touch
 |---|---|
 | `TapRegistry` | No lock: an immutable `HashMap<String, Vec<TapHandler>>` (`tap/registry.rs:25-27`), read by `get_handlers`. |
 | Wasmtime pooling allocator | One slot per live instance (`plugin/runtime.rs:802-805`, 1000 by default). Exhaustion makes `instantiate_async` return an error, it never waits, so a deep chain fails one call rather than blocking. The depth bound caps a chain at 5 live instances. |
-| Postgres pool | Not held. `Item::create` and `Item::update` open and commit their own transaction (`models/item.rs:243,330`) and no tap is dispatched inside it; presave runs before, insert/update/index after. The plugin `db` host functions acquire and release per call (`host/db.rs:206-260`). `sync_file_references` opens its own short transaction after the taps. |
+| Postgres pool | Not held. `Item::create` and `Item::update` open and commit their own transaction (`models/item.rs:243,330`) and no tap is dispatched inside it; presave runs before, insert/update/index after. The plugin `db` host functions acquire and release per call (`host/db.rs:206-260`). The file reference sync (`content::file_refs`) runs inside the item's own transaction. |
 | Moka caches (`cache`, `stage_cache`, field access) | Lock-free from the caller's view; no guard lives across an `.await`. |
 | Store / epoch | Each level has its own `Store` and its own epoch deadline; host-call time is credited to the outer call, and the outer wall clock ceiling still bounds the whole chain. |
 | Semaphores | None on this path. The only bounded concurrency is the queue drain's `JoinSet` width, which sits *above* the worker dispatch, not inside it. |

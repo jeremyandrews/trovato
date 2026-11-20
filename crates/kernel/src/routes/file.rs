@@ -2,7 +2,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -12,7 +12,10 @@ use tower_sessions::Session;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::file::{ALLOWED_MIME_TYPES, MAX_FILE_SIZE, UploadResult};
+use crate::content::FileAccess;
+use crate::file::{
+    MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE, UploadRejected, UploadResult, mime_for_filename,
+};
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
@@ -22,7 +25,10 @@ const BLOCK_EDITOR_IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gi
 /// Create the file router.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/file/upload", post(upload_file))
+        .route(
+            "/file/upload",
+            post(upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
+        )
         .route("/file/{id}", get(get_file_info))
         .route("/files/{*path}", get(serve_uploaded_file))
 }
@@ -30,7 +36,10 @@ pub fn router() -> Router<AppState> {
 /// Create the block editor API router (gated by `block_editor` plugin).
 pub fn block_editor_router() -> Router<AppState> {
     Router::new()
-        .route("/api/block-editor/upload", post(block_editor_upload))
+        .route(
+            "/api/block-editor/upload",
+            post(block_editor_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
+        )
         .route("/api/block-editor/preview", post(block_editor_preview))
 }
 
@@ -78,54 +87,21 @@ async fn upload_file(
         return (status, json).into_response();
     }
 
-    // Process multipart form
-    let mut filename: Option<String> = None;
-    let mut content_type: Option<String> = None;
-    let mut data: Option<Vec<u8>> = None;
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-
-        if name == "file" {
-            filename = field.file_name().map(|s| s.to_string());
-            content_type = field.content_type().map(|s| s.to_string());
-
-            match field.bytes().await {
-                Ok(bytes) => {
-                    // Check size limit early
-                    if bytes.len() > MAX_FILE_SIZE {
-                        return (
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            Json(UploadResponse {
-                                success: false,
-                                file: None,
-                                error: Some(format!(
-                                    "File too large: {} bytes (max {} bytes)",
-                                    bytes.len(),
-                                    MAX_FILE_SIZE
-                                )),
-                            }),
-                        )
-                            .into_response();
-                    }
-                    data = Some(bytes.to_vec());
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to read upload data");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(UploadResponse {
-                            success: false,
-                            file: None,
-                            error: Some("Failed to read file data".to_string()),
-                        }),
-                    )
-                        .into_response();
-                }
-            }
-            break; // Only process first file
+    // Read the first `file` part.
+    let (filename, content_type, data) = match read_upload_part(&mut multipart, &["file"]).await {
+        Ok(part) => part,
+        Err((status, message)) => {
+            return (
+                status,
+                Json(UploadResponse {
+                    success: false,
+                    file: None,
+                    error: Some(message),
+                }),
+            )
+                .into_response();
         }
-    }
+    };
 
     // Validate we got a file
     let Some(filename) = filename else {
@@ -152,23 +128,12 @@ async fn upload_file(
             .into_response();
     };
 
-    // Determine MIME type
+    // The declared type, or the one the name's extension gives. Size, the
+    // allowlist, the content and the extension are all checked once, by the
+    // service.
     let mime_type = content_type
-        .or_else(|| guess_mime_type(&filename))
+        .or_else(|| mime_for_filename(&filename).map(str::to_string))
         .unwrap_or_else(|| "application/octet-stream".to_string());
-
-    // Check allowed MIME types
-    if !ALLOWED_MIME_TYPES.contains(&mime_type.as_str()) {
-        return (
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Json(UploadResponse {
-                success: false,
-                file: None,
-                error: Some(format!("File type not allowed: {mime_type}")),
-            }),
-        )
-            .into_response();
-    }
 
     // Upload file
     match state
@@ -186,9 +151,12 @@ async fn upload_file(
         )
             .into_response(),
         Err(e) => {
-            warn!(error = %e, "file upload failed");
+            let status = upload_error_status(&e);
+            if status == StatusCode::INTERNAL_SERVER_ERROR {
+                warn!(error = %e, "file upload failed");
+            }
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                status,
                 Json(UploadResponse {
                     success: false,
                     file: None,
@@ -330,20 +298,24 @@ async fn serve_uploaded_file(
     // FR-8 Story 3.5 — enforce access before streaming bytes (any-referencing
     // policy, D-29). A denied or unresolvable file returns 404, matching this
     // surface's existing not-found posture (no existence leak).
+    //
+    // The served type is the managed row's stored `filemime`, validated at
+    // upload; only an unmanaged path falls back to the extension table.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    match state.items().can_serve_file(&uri, &viewer).await {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+    let content_type = match state.items().file_access(&uri, &viewer).await {
+        Ok(FileAccess::Allowed { filemime }) => filemime,
+        Ok(FileAccess::Unmanaged) => mime_for_filename(path)
+            .unwrap_or("application/octet-stream")
+            .to_string(),
+        Ok(FileAccess::Denied) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             warn!(error = %e, path = %path, "failed to authorize file access");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-    }
+    };
 
     match state.files().load_file_data(&uri).await {
         Ok(Some(data)) => {
-            let content_type =
-                guess_mime_type(path).unwrap_or_else(|| "application/octet-stream".to_string());
             let cache_control = served_file_cache_control(&state, &uri, &viewer, 604_800).await;
 
             // Use inline disposition for images/PDFs, attachment for everything else
@@ -405,40 +377,13 @@ async fn block_editor_upload(
         return (status, json).into_response();
     }
 
-    // Process multipart form
-    let mut filename: Option<String> = None;
-    let mut content_type: Option<String> = None;
-    let mut data: Option<Vec<u8>> = None;
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-
-        if name == "image" || name == "file" {
-            filename = field.file_name().map(|s| s.to_string());
-            content_type = field.content_type().map(|s| s.to_string());
-
-            match field.bytes().await {
-                Ok(bytes) => {
-                    if bytes.len() > MAX_FILE_SIZE {
-                        return (
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            Json(serde_json::json!({ "success": 0 })),
-                        )
-                            .into_response();
-                    }
-                    data = Some(bytes.to_vec());
-                }
-                Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({ "success": 0 })),
-                    )
-                        .into_response();
-                }
+    let (filename, content_type, data) =
+        match read_upload_part(&mut multipart, &["image", "file"]).await {
+            Ok(part) => part,
+            Err((status, _)) => {
+                return (status, Json(serde_json::json!({ "success": 0 }))).into_response();
             }
-            break;
-        }
-    }
+        };
 
     let Some(filename) = filename else {
         return (
@@ -458,7 +403,7 @@ async fn block_editor_upload(
 
     // Determine and validate MIME type (images only)
     let mime_type = content_type
-        .or_else(|| guess_mime_type(&filename))
+        .or_else(|| mime_for_filename(&filename).map(str::to_string))
         .unwrap_or_else(|| "application/octet-stream".to_string());
 
     if !BLOCK_EDITOR_IMAGE_TYPES.contains(&mime_type.as_str()) {
@@ -489,12 +434,11 @@ async fn block_editor_upload(
                 .into_response()
         }
         Err(e) => {
-            warn!(error = %e, "block editor image upload failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "success": 0 })),
-            )
-                .into_response()
+            let status = upload_error_status(&e);
+            if status == StatusCode::INTERNAL_SERVER_ERROR {
+                warn!(error = %e, "block editor image upload failed");
+            }
+            (status, Json(serde_json::json!({ "success": 0 }))).into_response()
         }
     }
 }
@@ -534,27 +478,49 @@ async fn block_editor_preview(
     Json(serde_json::json!({ "html": html })).into_response()
 }
 
-/// Guess MIME type from filename extension.
-fn guess_mime_type(filename: &str) -> Option<String> {
-    let ext = filename.rsplit('.').next()?.to_lowercase();
-    let mime = match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "doc" => "application/msword",
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "xls" => "application/vnd.ms-excel",
-        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "txt" => "text/plain",
-        "csv" => "text/csv",
-        "zip" => "application/zip",
-        "gz" | "gzip" => "application/gzip",
-        _ => return None,
+/// The first multipart part named one of `names`: its filename, declared
+/// content type and bytes, each `None` when absent.
+///
+/// A body past the route's `MAX_UPLOAD_BODY_SIZE` limit can fail on reading the
+/// part or on reaching it; either way the answer is 413 saying the file is too
+/// large, not "no file" or "failed to read".
+async fn read_upload_part(
+    multipart: &mut Multipart,
+    names: &[&str],
+) -> Result<(Option<String>, Option<String>, Option<Vec<u8>>), (StatusCode, String)> {
+    let refused = |e: axum::extract::multipart::MultipartError| {
+        if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("File too large (max {MAX_FILE_SIZE} bytes)"),
+            )
+        } else {
+            warn!(error = %e, "failed to read upload data");
+            (
+                StatusCode::BAD_REQUEST,
+                "Failed to read file data".to_string(),
+            )
+        }
     };
-    Some(mime.to_string())
+    while let Some(field) = multipart.next_field().await.map_err(refused)? {
+        if names.contains(&field.name().unwrap_or("")) {
+            let filename = field.file_name().map(str::to_string);
+            let content_type = field.content_type().map(str::to_string);
+            let bytes = field.bytes().await.map_err(refused)?;
+            return Ok((filename, content_type, Some(bytes.to_vec())));
+        }
+    }
+    Ok((None, None, None))
+}
+
+/// The status for an upload the service refused: 413 or 415 for a file at
+/// fault ([`UploadRejected`]), 500 for anything else.
+fn upload_error_status(e: &anyhow::Error) -> StatusCode {
+    match e.downcast_ref::<UploadRejected>() {
+        Some(UploadRejected::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
+        Some(UploadRejected::Type(_)) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        None => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 #[cfg(test)]
