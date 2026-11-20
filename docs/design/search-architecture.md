@@ -122,6 +122,95 @@ The top N results (with excerpts) go to the server. An `ai_request(operation: Ch
 
 ---
 
+## Search Settings (as built)
+
+The ranking signals, the AI stage switches and the analytics switches are one
+typed model, `SearchSettings` (`crates/kernel/src/search/settings.rs`), stored as
+one JSON value under the `site_config` key `search` and edited at
+`/admin/config/search` (permission `administer site`). Config export carries it
+inside the `variable` entity like any other `site_config` row. Every reader goes
+through `SearchSettings::load`, which reads the kernel's two tier cache (key
+`search_settings`) and falls back to the database: a search request costs no
+database round trip for its settings. Saving through the screen drops the cached
+copy; a value written another way (config import, a hand edit) takes effect when
+the cached copy expires, within five minutes. A missing key is the defaults; a
+value that does not parse or is out of range is the defaults with a warning in
+the log.
+
+The defaults are the values `templates/search.html` carried as a literal JSON
+block before the model existed, so a site that never opens the screen ranks
+exactly as it did. The search page now renders that block from the model, with
+Tera's `json_encode` filter.
+
+| Setting | Default | Range |
+|---|---|---|
+| `recency_boost_max` | 0.5 | 0 to 10 |
+| `recency_half_life_days` | 365 | 1 to 36500 |
+| `recency_penalty_after_days` | 1825 | 1 to 36500 |
+| `recency_max_penalty` | 0.3 | 0 to 1 |
+| `title_match_boost` | 1.0 | 0 to 100 |
+| `title_all_terms_multiplier` | 1.5 | 0 to 100 |
+| `content_match_boost` | 0.4 | 0 to 100 |
+| `excerpt_length` | 300 | 50 to 2000 |
+| `results_per_page` | 10 | 1 to 100 |
+| `max_pagefind_results` | 50 | 1 to 500 |
+| `ai_summary_top_n` | 5 | 1 to 20 |
+| `ai_summary_max_chars` | 2000 | 100 to 20000 |
+| `type_boosts` | none (every type 1.0) | each 0 to 100, keyed by item type machine name |
+| `priority_pages` | none | at most 50 keyword and path pairs; keyword 1 to 100 characters, path starting with `/` |
+| `priority_boost` | 10.0 | 1 to 100 |
+| `expand`, `summarize`, `followup` | on | |
+| `max_followups` | 3 | 0 to 20 |
+| `analytics_enabled` | on | |
+| `analytics_retention_days` | 90 | 1 to 365 |
+| `sentiment_enabled` | off | |
+
+### Which backend applies which signal
+
+| Signal | Browser (Pagefind, `scolta.js` `scoreResults`) | Server (`SearchService::search`, tsvector) |
+|---|---|---|
+| Field weights (`search_field_config`, per type) | yes, as `data-pagefind-weight` in the index | yes, as `setweight` in the trigger |
+| Title as weight A | yes | yes |
+| Type boost | yes, multiplies the score by `TYPE_BOOSTS[meta.type]` | yes, multiplies `ts_rank`; the boosts are bound as two arrays and joined with `unnest`, in the same query |
+| Priority pages | yes, multiplies by `priority_boost` when the normalized query holds the keyword as a whole word and the result URL is the path | no |
+| Recency boost and age penalty | yes | no |
+| Title and excerpt match boosts | yes | no |
+
+Recency, the match boosts and priority pages stay browser signals by design: the
+brief puts them in the browser, where Pagefind's results already carry the date,
+title and excerpt they need, and server search is the fallback and the API, not
+the ranked experience. Type boosts are applied in both because a type boost is a
+statement about the content, not about the page it is shown on.
+
+### Field weights in the Pagefind index
+
+Each configured field is its own element inside `data-pagefind-body`, with a
+`data-pagefind-weight` from its letter, at the ratios of PostgreSQL's default
+`ts_rank` weights scaled so A is Pagefind's maximum:
+
+| Letter | `ts_rank` weight | `data-pagefind-weight` |
+|---|---|---|
+| A | 1.0 | 10.0 |
+| B | 0.4 | 4.0 |
+| C | 0.2 | 2.0 |
+| D | 0.1 | 1.0 |
+
+The title is A, as in the trigger, and sits inside the indexed region with
+`data-pagefind-meta="title"`, so a title alone is findable. Fields are ordered by
+weight, then by name. An item whose configured fields are all empty is indexed by
+its long text field at D, as before. A changed weight reaches the browser at the
+next index build.
+
+### AI stages are enforced on the server
+
+`/api/v1/search/expand`, `/summarize` and `/followup` read the settings first
+and answer 404 with a short JSON error when their stage is off, before any cache
+or provider work. `/followup` answers 400 to a conversation holding more user
+turns than `max_followups` plus one (the opening question), counted on `messages`
+or on `history` plus `query`, whichever it received.
+
+---
+
 ## The Vector Database Question
 
 The standard AI search architecture generates embeddings for all content, stores them in a vector database, converts each query to an embedding at search time, and finds nearest neighbors. This works, but for most content sites it's unnecessary complexity.
@@ -156,13 +245,16 @@ The architecture splits responsibility between the `trovato_search` WASM plugin 
 | Pagefind client JS | Frontend asset bundled with plugin | Loaded on search pages, optional preload on all pages |
 | Query expansion endpoint | `tap_menu` -> `/api/v1/search/expand` | Calls `ai_request(operation: Chat)`, returns expanded terms as JSON |
 | Expansion cache | KV store or in-memory cache | Same query -> same expansion. Configurable TTL. |
-| Re-ranking config | TOML config: priority pages, decay half-life, type boosts | Admin UI for non-technical configuration |
+| Re-ranking config | `SearchSettings` in `site_config` (see "Search Settings (as built)") | Admin UI at `/admin/config/search` |
 | AI summary endpoint | `tap_menu` -> `/api/v1/search/summarize` | SSE streaming via `ai_request(operation: Chat)` |
 | Conversational follow-up | Session-scoped history on summary endpoint | Reuses chatbot SSE infrastructure (Story 31.7) |
 | Sentiment classification | Async `ai_request()` post-response | Fast model, fire-and-forget to analytics |
 | tsvector fallback | Existing Gather search | Activated when Pagefind unavailable or for server-side consumers |
 
 ### Configuration
+
+The design sketch below predates the build. What exists is the settings model in
+"Search Settings (as built)" above; there is no `engine` setting.
 
 ```toml
 [search]
