@@ -14,7 +14,7 @@
                 name="{{ name }}"
                 value="{{ option.0 }}"
                 class="form-radio"
-                {% if element.default_value == option.0 %}checked{% endif %}
+                {% if element.default_value is defined and element.default_value == option.0 %}checked{% endif %}
                 {% if element.required and loop.first %}required{% endif %}
                 {% if element.disabled %}disabled{% endif %}
             >
