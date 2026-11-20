@@ -428,10 +428,11 @@ async fn view_item(
     // Render fields through filter pipeline
     let mut children_html = render_item_fields(&state, &item.fields, &content_type_fields);
 
-    // Include plugin render outputs
-    for output in render_outputs {
-        children_html.push_str(&output);
-    }
+    // Every plugin's `tap_item_view` output, collected once. It reaches the
+    // template on its own as `plugin_output`, for a theme that lays out its own
+    // fields, and is still appended to `children` exactly as before.
+    let plugin_output: String = render_outputs.concat();
+    children_html.push_str(&plugin_output);
 
     // Resolve forward RecordReference fields to linked item titles/URLs
     let mut referenced_items: std::collections::HashMap<String, Vec<serde_json::Value>> =
@@ -569,6 +570,10 @@ async fn view_item(
     let mut context = tera::Context::new();
     context.insert("item", &item);
     context.insert("children", &children_html);
+    context.insert("plugin_output", &plugin_output);
+    // The viewer this route already loaded, so the item template can name it
+    // and `inject_site_context_for` below does not load it again.
+    context.insert("viewer", &crate::theme::Viewer::of(&user));
     context.insert("referenced_items", &referenced_items);
     context.insert("referenced_files", &referenced_files);
     context.insert("reverse_references", &reverse_references);
@@ -597,7 +602,8 @@ async fn view_item(
     if let Some(Extension(crate::middleware::RequestedPath(ref requested_path))) = requested {
         context.insert("requested_path", requested_path);
     }
-    super::helpers::inject_site_context(&state, &session, &mut context, &item_path).await;
+    super::helpers::inject_site_context_for(&state, &session, &user, &mut context, &item_path)
+        .await;
 
     // Build breadcrumbs: Home > Content Type Label > Item Title
     let type_label = state
@@ -698,6 +704,12 @@ fn render_item_fields(
     let mut children_html = String::new();
     if let Some(fields) = fields.as_object() {
         for (name, value) in fields {
+            // A text field's format, stored beside it as `<name>_format`, is
+            // part of that field and not a field of its own (B63).
+            if is_text_format_key(content_type_fields, name) {
+                continue;
+            }
+
             // Blocks field: flat JSON array of {type, weight, data}
             let is_blocks_field = content_type_fields.iter().any(|f| {
                 f.field_name == *name
@@ -878,6 +890,24 @@ fn render_item_fields(
         }
     }
     children_html
+}
+
+/// Whether `key` is `<name>_format` for a field `<name>` the item type declares
+/// as text, which makes it that field's text format rather than a field.
+fn is_text_format_key(
+    content_type_fields: &[trovato_sdk::types::FieldDefinition],
+    key: &str,
+) -> bool {
+    key.strip_suffix("_format").is_some_and(|name| {
+        content_type_fields.iter().any(|f| {
+            f.field_name == name
+                && matches!(
+                    f.field_type,
+                    trovato_sdk::types::FieldType::Text { .. }
+                        | trovato_sdk::types::FieldType::TextLong
+                )
+        })
+    })
 }
 
 /// Render the assistant launcher for every scope that applies to this item type.

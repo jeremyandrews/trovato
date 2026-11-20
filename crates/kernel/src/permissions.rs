@@ -15,10 +15,19 @@ use crate::models::{Role, User};
 /// Maximum entries in the permission cache.
 const MAX_CAPACITY: u64 = 10_000;
 
-/// Permission cache entry.
+/// What a user's roles give them: the permissions, and the names of the roles
+/// themselves.
+///
+/// Loaded and cached as one entry, because both are read on the same requests
+/// (every render builds a [`UserContext`](crate::tap::UserContext) carrying
+/// both) and both change on the same writes.
 #[derive(Debug, Clone)]
-struct CachedPermissions {
-    permissions: HashSet<String>,
+pub struct UserAccess {
+    /// Every permission the user's roles grant (no administrator bypass).
+    pub permissions: HashSet<String>,
+    /// The names of the user's roles: `anonymous user` for the anonymous user;
+    /// every assigned role plus `authenticated user` for anyone signed in.
+    pub roles: Arc<Vec<String>>,
 }
 
 /// Permission service with TTL-based cached lookups.
@@ -28,13 +37,12 @@ pub struct PermissionService {
 }
 
 struct PermissionServiceInner {
-    /// Cache of user_id -> permissions (TTL-bounded).
-    user_cache: Cache<Uuid, CachedPermissions>,
-
-    /// Cache of user_id -> the names of the roles assigned to them (TTL-bounded,
-    /// invalidated with `user_cache`). Read by the per-user rate limit, which
-    /// runs on every authenticated request and must not cost a query each.
-    role_cache: Cache<Uuid, Arc<Vec<String>>>,
+    /// Cache of user_id -> permissions and role names (TTL-bounded).
+    ///
+    /// Read by context building on every request, and by the per-user rate
+    /// limit, which runs on every authenticated request and must not cost a
+    /// query each.
+    user_cache: Cache<Uuid, UserAccess>,
 
     /// Database pool for cache misses.
     pool: PgPool,
@@ -46,10 +54,6 @@ impl PermissionService {
         Self {
             inner: Arc::new(PermissionServiceInner {
                 user_cache: Cache::builder()
-                    .max_capacity(MAX_CAPACITY)
-                    .time_to_live(ttl)
-                    .build(),
-                role_cache: Cache::builder()
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
                     .build(),
@@ -86,19 +90,42 @@ impl PermissionService {
     /// for an answer the other just fetched — a loader that is expensive to call
     /// is a loader someone eventually replaces with a literal permission list.
     pub async fn user_permissions(&self, user: &User) -> Result<HashSet<String>> {
-        if let Some(cached) = self.inner.user_cache.get(&user.id) {
-            return Ok(cached.permissions);
+        Ok(self.user_access(user).await?.permissions)
+    }
+
+    /// A user's permissions and role names, served from the TTL cache when it
+    /// is warm, loaded together when it is not.
+    ///
+    /// Same lifetime and invalidation as [`user_permissions`](Self::user_permissions),
+    /// which reads the same entry: a warm cache costs no query for either.
+    pub async fn user_access(&self, user: &User) -> Result<UserAccess> {
+        self.access_for(user.id, user.is_anonymous()).await
+    }
+
+    /// The cached entry for `user_id`, loading it on a miss.
+    async fn access_for(&self, user_id: Uuid, anonymous: bool) -> Result<UserAccess> {
+        if let Some(cached) = self.inner.user_cache.get(&user_id) {
+            return Ok(cached);
         }
 
-        let permissions = self.load_user_permissions(user).await?;
-        self.inner.user_cache.insert(
-            user.id,
-            CachedPermissions {
-                permissions: permissions.clone(),
-            },
-        );
-
-        Ok(permissions)
+        let permissions = self.load_permissions(user_id, anonymous).await?;
+        let roles = if anonymous {
+            vec![well_known::ANONYMOUS_ROLE_NAME.to_string()]
+        } else {
+            let mut names: Vec<String> = Role::get_user_roles(&self.inner.pool, user_id)
+                .await?
+                .into_iter()
+                .map(|role| role.name)
+                .collect();
+            names.push(well_known::AUTHENTICATED_ROLE_NAME.to_string());
+            names
+        };
+        let access = UserAccess {
+            permissions,
+            roles: Arc::new(roles),
+        };
+        self.inner.user_cache.insert(user_id, access.clone());
+        Ok(access)
     }
 
     /// Load all permissions for a user from the database, bypassing the cache.
@@ -109,19 +136,25 @@ impl PermissionService {
     /// set to [`UserContext::administrator`](crate::tap::UserContext::administrator),
     /// which carries the column rather than adding anything to the set.
     pub async fn load_user_permissions(&self, user: &User) -> Result<HashSet<String>> {
+        self.load_permissions(user.id, user.is_anonymous()).await
+    }
+
+    /// The permission set behind [`load_user_permissions`](Self::load_user_permissions),
+    /// keyed by id so the cache can load it for a caller holding only an id.
+    async fn load_permissions(&self, user_id: Uuid, anonymous: bool) -> Result<HashSet<String>> {
         let mut permissions = HashSet::new();
 
         // Note: Uses Role model directly (not RoleService) because
         // PermissionService is initialized before RoleService in AppState.
         // These are read-only lookups with no cache invalidation needed.
-        if user.is_anonymous() {
+        if anonymous {
             // Anonymous users only get anonymous role permissions
             let anon_perms =
                 Role::get_permissions(&self.inner.pool, well_known::ANONYMOUS_ROLE_ID).await?;
             permissions.extend(anon_perms);
         } else {
             // Get user's direct role permissions
-            let user_perms = Role::get_user_permissions(&self.inner.pool, user.id).await?;
+            let user_perms = Role::get_user_permissions(&self.inner.pool, user_id).await?;
             permissions.extend(user_perms);
 
             // All authenticated users also get the authenticated role permissions
@@ -163,30 +196,18 @@ impl PermissionService {
     /// policy explicitly and say so — see
     /// [`routes::helpers::permissions_or_deny_all`](crate::routes::helpers::permissions_or_deny_all).
     pub async fn user_context(&self, user: &User) -> Result<crate::tap::UserContext> {
-        let permissions = self.user_permissions(user).await?;
-        Ok(context_from_permissions(user, permissions))
+        let access = self.user_access(user).await?;
+        Ok(context_from_permissions(user, access.permissions).with_roles(access.roles.to_vec()))
     }
 
     /// The names of the roles an authenticated user holds: every role assigned
     /// to them, plus the `authenticated user` role every signed-in user has.
     ///
-    /// Served from a cache with the same lifetime and invalidation as the
-    /// permission cache, because its caller is the per-user rate limit, which
-    /// runs on every authenticated request.
+    /// Read from the same cache entry as the permissions, because its caller is
+    /// the per-user rate limit, which runs on every authenticated request.
     pub async fn user_role_names(&self, user_id: Uuid) -> Result<Arc<Vec<String>>> {
-        if let Some(cached) = self.inner.role_cache.get(&user_id) {
-            return Ok(cached);
-        }
-
-        let mut names: Vec<String> = Role::get_user_roles(&self.inner.pool, user_id)
-            .await?
-            .into_iter()
-            .map(|role| role.name)
-            .collect();
-        names.push(well_known::AUTHENTICATED_ROLE_NAME.to_string());
-        let names = Arc::new(names);
-        self.inner.role_cache.insert(user_id, Arc::clone(&names));
-        Ok(names)
+        let anonymous = user_id == crate::models::user::ANONYMOUS_USER_ID;
+        Ok(self.access_for(user_id, anonymous).await?.roles)
     }
 
     /// Invalidate the cache for a specific user.
@@ -194,7 +215,6 @@ impl PermissionService {
     /// Call this when a user's roles or permissions change.
     pub fn invalidate_user(&self, user_id: Uuid) {
         self.inner.user_cache.invalidate(&user_id);
-        self.inner.role_cache.invalidate(&user_id);
     }
 
     /// Invalidate the entire cache.
@@ -202,7 +222,6 @@ impl PermissionService {
     /// Call this when role permissions change.
     pub fn invalidate_all(&self) {
         self.inner.user_cache.invalidate_all();
-        self.inner.role_cache.invalidate_all();
     }
 
     /// Get the number of cached entries (for monitoring).

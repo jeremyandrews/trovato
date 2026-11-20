@@ -5,6 +5,8 @@
 
 mod engine;
 mod render;
+mod viewer;
 
 pub use engine::ThemeEngine;
 pub use render::RenderTreeConsumer;
+pub use viewer::Viewer;

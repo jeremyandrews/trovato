@@ -80,6 +80,16 @@ pub struct UserContext {
     /// meaning: it gates the structure and configuration screens (#92) and
     /// nothing else.
     is_admin: bool,
+
+    /// The names of the user's roles, as [`PermissionService`](crate::permissions::PermissionService)
+    /// loaded and cached them with the permissions.
+    ///
+    /// `anonymous user` for the anonymous visitor; every assigned role plus
+    /// `authenticated user` for a signed-in user built through the permission
+    /// service. Empty for a context assembled by hand (tests, the background
+    /// principal). Carried for the template `viewer`, never consulted for an
+    /// access decision: permissions decide, not role names.
+    roles: Vec<String>,
 }
 
 impl UserContext {
@@ -91,6 +101,7 @@ impl UserContext {
             permissions: Vec::new(),
             background: false,
             is_admin: false,
+            roles: vec![crate::models::role::well_known::ANONYMOUS_ROLE_NAME.to_string()],
         }
     }
 
@@ -106,6 +117,7 @@ impl UserContext {
             permissions,
             background: false,
             is_admin: false,
+            roles: Vec::new(),
         }
     }
 
@@ -123,6 +135,7 @@ impl UserContext {
             permissions,
             background: false,
             is_admin: true,
+            roles: Vec::new(),
         }
     }
 
@@ -141,7 +154,22 @@ impl UserContext {
             permissions: Vec::new(),
             background: true,
             is_admin: false,
+            roles: Vec::new(),
         }
+    }
+
+    /// This context carrying `roles` as the names of the user's roles.
+    ///
+    /// Called by the permission service's context builders, which load the
+    /// names with the permissions; see the field's documentation.
+    pub fn with_roles(mut self, roles: Vec<String>) -> Self {
+        self.roles = roles;
+        self
+    }
+
+    /// The names of the user's roles. See [`with_roles`](Self::with_roles).
+    pub fn roles(&self) -> &[String] {
+        &self.roles
     }
 
     /// Whether this user's own roles grant a permission.
