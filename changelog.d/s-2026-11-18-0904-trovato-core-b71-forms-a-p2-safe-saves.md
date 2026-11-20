@@ -12,5 +12,6 @@ cardinality, long text to its value and a permitted format.
 `extract_content_fields` and the field loop in `ItemSubmission::from_form` are
 gone. Each item form now saves its state under the `_form_build_id` it prints,
 and a submission without a live state for the same user is refused as expired.
-A migration rewrites Boolean strings already stored in items and revisions, so
-gather filters on a Boolean match items saved from the admin form.
+A migration rewrites Boolean strings already stored in items, so gather
+filters on a Boolean match items saved from the admin form; revisions are
+immutable and keep theirs.

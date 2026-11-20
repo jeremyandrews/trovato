@@ -21,9 +21,11 @@ or the admin content forms without first loading the page.
 fields and overwrites only the fields the form rendered, so nothing else is
 erased. A checked Boolean is stored as JSON `true` and an unchecked one, when
 the form showed it, as `false`; a migration rewrites the `"1"`, `"0"`, `"true"`
-and `"on"` strings already stored in items and their revisions for fields a
-type declares as Boolean. Gather filters on a Boolean field now match items
-that were saved from the admin form. A field with a cardinality other than 1
+and `"on"` strings already stored in items for fields a type declares as
+Boolean. Gather filters on a Boolean field now match items that were saved
+from the admin form. Revisions are immutable history and keep the string they
+were saved with, so reverting to a revision from before the upgrade stores the
+string again until the item is next saved from a form. A field with a cardinality other than 1
 is posted as `name[0]`, `name[1]` and stored as an array; more values than its
 cardinality is a field error.
 

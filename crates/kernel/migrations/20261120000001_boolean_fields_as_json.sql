@@ -5,8 +5,12 @@
 -- import held `true`. A gather filter compares `fields->>'name'` with `'true'`,
 -- so a box ticked in the admin form never matched "Online only". The forms now
 -- store JSON `true` and `false` (`content::submission::build_item_fields`);
--- this rewrites the strings already written, in items and in their revisions,
--- so a revert does not bring a string back.
+-- this rewrites the strings already stored in items.
+--
+-- Revisions are not rewritten: `item_revision` rows are immutable history
+-- (the `prevent_item_revision_update` trigger), so a revision saved before
+-- this migration keeps its string, and reverting to it stores that string
+-- again until the item is next saved from a form.
 --
 -- Only fields a type declares as `Boolean`, and only values that are JSON
 -- strings: `"1"`, `"true"` and `"on"` become `true`, anything else (`"0"`,
@@ -34,14 +38,6 @@ BEGIN
                                to_jsonb(fields ->> f.name IN ('1', 'true', 'on')))
         WHERE type = f.item_type
           AND jsonb_typeof(fields -> f.name) = 'string';
-
-        UPDATE item_revision r
-        SET fields = jsonb_set(r.fields, ARRAY[f.name],
-                               to_jsonb(r.fields ->> f.name IN ('1', 'true', 'on')))
-        FROM item i
-        WHERE r.item_id = i.id
-          AND i.type = f.item_type
-          AND jsonb_typeof(r.fields -> f.name) = 'string';
     END LOOP;
 END
 $$;

@@ -314,8 +314,9 @@ fn a_multi_value_field_over_its_cardinality_is_refused() {
     });
 }
 
-/// The data migration rewrites the strings the forms used to store, in items
-/// and revisions, for declared Boolean fields only.
+/// The data migration rewrites the strings the forms used to store, in items,
+/// for declared Boolean fields only, and leaves revisions alone: they are
+/// immutable history.
 #[test]
 fn the_boolean_migration_rewrites_stored_strings() {
     run_test(async {
@@ -327,12 +328,14 @@ fn the_boolean_migration_rewrites_stored_strings() {
         let off = seed_item(app, uid, json!({"field_flag": "0"})).await;
         let typed = seed_item(app, uid, json!({"field_flag": true})).await;
 
-        sqlx::raw_sql(sqlx::AssertSqlSafe(include_str!(
-            "../migrations/20261120000001_boolean_fields_as_json.sql"
-        )))
-        .execute(&app.db)
-        .await
-        .expect("the migration runs, and runs again");
+        for _ in 0..2 {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(include_str!(
+                "../migrations/20261120000001_boolean_fields_as_json.sql"
+            )))
+            .execute(&app.db)
+            .await
+            .expect("the migration runs, and runs again");
+        }
 
         let on_fields = stored_fields(app, on).await;
         assert_eq!(on_fields["field_flag"], json!(true));
@@ -351,6 +354,10 @@ fn the_boolean_migration_rewrites_stored_strings() {
         .fetch_one(&app.db)
         .await
         .unwrap();
-        assert_eq!(revision["field_flag"], json!(true), "revisions too");
+        assert_eq!(
+            revision["field_flag"],
+            json!("1"),
+            "a revision is history and is not rewritten"
+        );
     });
 }
