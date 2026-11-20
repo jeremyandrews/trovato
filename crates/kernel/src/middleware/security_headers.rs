@@ -19,7 +19,6 @@ use crate::state::AppState;
 static DENY: HeaderValue = HeaderValue::from_static("DENY");
 static NOSNIFF: HeaderValue = HeaderValue::from_static("nosniff");
 static REFERRER: HeaderValue = HeaderValue::from_static("strict-origin-when-cross-origin");
-static NO_REFERRER: HeaderValue = HeaderValue::from_static("no-referrer");
 static PERMISSIONS: HeaderValue =
     HeaderValue::from_static("camera=(), microphone=(), geolocation=()");
 static HSTS: HeaderValue = HeaderValue::from_static("max-age=31536000; includeSubDomains");
@@ -129,8 +128,7 @@ impl Default for SecurityHeaders {
 /// - `Content-Security-Policy` (or `Content-Security-Policy-Report-Only`)
 /// - `X-Frame-Options: DENY`
 /// - `X-Content-Type-Options: nosniff`
-/// - `Referrer-Policy: strict-origin-when-cross-origin`, unless the route set
-///   `no-referrer`
+/// - `Referrer-Policy: strict-origin-when-cross-origin`
 /// - `Permissions-Policy: camera=(), microphone=(), geolocation=()`
 /// - `Strict-Transport-Security` (only when request arrived via HTTPS)
 ///
@@ -167,13 +165,7 @@ pub(crate) fn apply(headers: &mut HeaderMap, security: &SecurityHeaders, is_http
     headers.insert(security.csp_header_name, security.csp.clone());
     headers.insert("x-frame-options", DENY.clone());
     headers.insert("x-content-type-options", NOSNIFF.clone());
-    // A page whose URL carries a secret (a reset or unsubscribe token) sends
-    // `no-referrer` so no link on it leaks the token; overwriting that with the
-    // site default would undo it. Only the strictest policy survives: any
-    // other value a route set is replaced by the default.
-    if headers.get("referrer-policy") != Some(&NO_REFERRER) {
-        headers.insert("referrer-policy", REFERRER.clone());
-    }
+    headers.insert("referrer-policy", REFERRER.clone());
     headers.insert("permissions-policy", PERMISSIONS.clone());
 
     // HSTS — only on HTTPS connections. Sending it over plain HTTP would ask a

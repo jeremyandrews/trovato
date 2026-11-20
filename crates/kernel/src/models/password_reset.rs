@@ -72,29 +72,15 @@ impl PasswordResetToken {
         Ok(token)
     }
 
-    /// Spend a token: mark it used and answer whose it was, in one statement.
-    ///
-    /// Returns `None` if the token does not exist, has expired or was already
-    /// used. Two concurrent calls with one token cannot both get `Some`: the
-    /// row lock the `UPDATE` takes makes the second re-check `used_at IS NULL`
-    /// after the first commits. Spend the token *before* changing the password,
-    /// so a token can change it at most once.
-    pub async fn consume(pool: &PgPool, plain_token: &str) -> Result<Option<Uuid>> {
-        let token_hash = hash_token(plain_token);
+    /// Mark a token as used.
+    pub async fn mark_used(pool: &PgPool, id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("failed to mark token as used")?;
 
-        let user_id = sqlx::query_scalar::<_, Uuid>(
-            r#"
-            UPDATE password_reset_tokens SET used_at = now()
-            WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
-            RETURNING user_id
-            "#,
-        )
-        .bind(&token_hash)
-        .fetch_optional(pool)
-        .await
-        .context("failed to consume password reset token")?;
-
-        Ok(user_id)
+        Ok(())
     }
 
     /// Delete expired tokens (cleanup job).

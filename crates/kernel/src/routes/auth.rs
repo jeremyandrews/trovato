@@ -36,10 +36,6 @@ fn is_unique_violation(err: &anyhow::Error) -> bool {
 /// Session key for storing the authenticated user ID.
 pub const SESSION_USER_ID: &str = "user_id";
 
-/// Session key for a one-time notice the login page shows and removes, such as
-/// "your password has been reset".
-pub const SESSION_LOGIN_NOTICE: &str = "login_notice";
-
 /// Session key for storing the active stage.
 pub const SESSION_ACTIVE_STAGE: &str = "active_stage";
 
@@ -104,14 +100,6 @@ async fn login_form(State(state): State<AppState>, session: Session) -> Response
     // Render login form
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
-    if let Some(notice) = session
-        .remove::<String>(SESSION_LOGIN_NOTICE)
-        .await
-        .ok()
-        .flatten()
-    {
-        context.insert("success", &notice);
-    }
     super::helpers::inject_site_context(&state, &session, &mut context, "/user/login").await;
 
     match state.theme().tera().render("user/login.html", &context) {
