@@ -258,6 +258,17 @@ impl Item {
 
     /// Create a new item with initial revision.
     pub async fn create(pool: &PgPool, input: CreateItem) -> Result<Self> {
+        Self::create_with_file_refs(pool, input, None).await
+    }
+
+    /// [`Self::create`], also writing the item's file references (and promoting
+    /// the files they name) in the same transaction when `refs` is given. See
+    /// [`crate::content::file_refs`].
+    pub(crate) async fn create_with_file_refs(
+        pool: &PgPool,
+        input: CreateItem,
+        refs: Option<&crate::content::file_refs::FileReferences>,
+    ) -> Result<Self> {
         let now = chrono::Utc::now().timestamp();
         let item_id = Uuid::now_v7();
         let revision_id = Uuid::now_v7();
@@ -324,6 +335,10 @@ impl Item {
             .await
             .context("failed to update item with revision id")?;
 
+        if let Some(refs) = refs {
+            crate::content::file_refs::sync_item_file_references(&mut tx, item_id, refs).await?;
+        }
+
         tx.commit().await.context("failed to commit transaction")?;
 
         // Fetch and return the created item
@@ -338,6 +353,19 @@ impl Item {
         id: Uuid,
         author_id: Uuid,
         input: UpdateItem,
+    ) -> Result<Option<Self>> {
+        Self::update_with_file_refs(pool, id, author_id, input, None).await
+    }
+
+    /// [`Self::update`], also rewriting the item's file references (and
+    /// promoting the files they name) in the same transaction when `refs` is
+    /// given. See [`crate::content::file_refs`].
+    pub(crate) async fn update_with_file_refs(
+        pool: &PgPool,
+        id: Uuid,
+        author_id: Uuid,
+        input: UpdateItem,
+        refs: Option<&crate::content::file_refs::FileReferences>,
     ) -> Result<Option<Self>> {
         let now = chrono::Utc::now().timestamp();
         let revision_id = Uuid::now_v7();
@@ -414,6 +442,10 @@ impl Item {
         // narrowed to this item.
         if stage_id != current.stage_id {
             crate::stage::move_dependents(&mut tx, current.stage_id, stage_id, Some(id)).await?;
+        }
+
+        if let Some(refs) = refs {
+            crate::content::file_refs::sync_item_file_references(&mut tx, id, refs).await?;
         }
 
         tx.commit().await.context("failed to commit transaction")?;

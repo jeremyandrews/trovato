@@ -894,6 +894,16 @@ impl DirectConfigStorage {
         let now = declared_created.unwrap_or_else(|| chrono::Utc::now().timestamp());
         let changed = if item.changed > 0 { item.changed } else { now };
 
+        // The upsert and the item's file references commit together: an
+        // imported File field is indexed and its file promoted out of
+        // `Temporary` in the same transaction. Config import is operator
+        // trusted and has no acting user, so the write-time check that an
+        // editor may view every file they attach does not apply here.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to start item import")?;
         sqlx::query(
             r#"
             INSERT INTO item (id, type, title, author_id, status, fields, created, changed,
@@ -924,9 +934,18 @@ impl DirectConfigStorage {
         .bind(&item.language)
         .bind(Uuid::now_v7()) // item_group_id
         .bind(declared_created)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("failed to save item")?;
+
+        crate::content::file_refs::sync_item_file_references_for(
+            &mut tx,
+            item.id,
+            &item.item_type,
+            &item.fields,
+        )
+        .await?;
+        tx.commit().await.context("failed to commit item import")?;
 
         Ok(())
     }

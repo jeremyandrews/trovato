@@ -12,7 +12,7 @@ pub mod block_render;
 pub mod block_types;
 pub mod body_field;
 pub mod compound;
-mod file_refs;
+pub(crate) mod file_refs;
 mod filter;
 mod form;
 pub(crate) mod item_service;
@@ -32,8 +32,8 @@ pub use form::{
     FieldMode, FormBuilder, LOG_WEIGHT, STATUS_WEIGHT, SUBMIT_WEIGHT, extract_reference_id,
 };
 pub use item_service::{
-    ItemRevisions, ItemService, PUBLISH_CONTENT, RevisionAccess, RevisionSelection, USE_STAGES,
-    WriteDenied, decode_view_output,
+    FileAccess, ItemRevisions, ItemService, PUBLISH_CONTENT, RevisionAccess, RevisionSelection,
+    USE_STAGES, WriteDenied, decode_view_output,
 };
 pub use page_meta::PageMeta;
 pub use record_type::{RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry};

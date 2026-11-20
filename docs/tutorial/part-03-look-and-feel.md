@@ -168,10 +168,10 @@ The file upload widget (`static/js/file-upload.js`) provides an AJAX upload expe
 1. The user selects a file via the file input.
 2. JavaScript validates the file size (max 10 MB) on the client.
 3. The file is uploaded via `POST /file/upload` as a multipart form with an `X-CSRF-Token` header.
-4. The server validates the MIME type against an allowlist (`ALLOWED_MIME_TYPES`) and checks magic bytes against the declared content type. A `.exe` renamed to `.jpg` is rejected.
+4. The server validates the MIME type against an allowlist (`ALLOWED_MIME_TYPES`), checks magic bytes against the declared content type, and checks that the filename's extension maps to that same type. A `.exe` renamed to `.jpg` is rejected, and so is a PNG named `logo.svg`. A file over 10 MB is refused with `413 Payload Too Large` and a message saying so.
 5. On success, the file gets a UUID-based filename in temporary storage and a row in `file_managed` with `status = 0` (temporary).
-6. The widget shows a preview (thumbnails for images) with the filename and size.
-7. When the content form is saved, the kernel promotes referenced file IDs to permanent (`status = 1`).
+6. The widget shows a preview (thumbnails for images) with the filename and size, and stores the file's id in the field.
+7. When the item is saved, by any path (the content form, the item API, a plugin, or `config import`), the kernel records the reference in `file_reference` and promotes the file to permanent (`status = 1`) in the same transaction. A user may only attach a file they could already fetch: their own upload, or a file on an item they can view.
 
 Unreferenced temporary files are cleaned up by cron after 6 hours.
 
@@ -186,6 +186,8 @@ Click **Save** to save the conference. The file is now permanent.
 Uploaded files are served at `/files/{path}` with security hardening:
 
 - **Directory traversal prevention** -- Paths containing `..`, null bytes, or backslashes are rejected.
+- **Access** -- A file is served to anyone who may view an item that references it (so a logo on a published conference is public), and a file no item references only to its uploader and administrators. Anything else is a 404.
+- **Content-Type** -- The type stored in `file_managed` when the upload was validated, never a guess from the path. A path with no `file_managed` row falls back to the extension table, which has no SVG entry.
 - **Content-Disposition** -- Images and PDFs are served inline (browser displays them). All other types use `attachment` (forces download) to prevent browsers from executing uploaded content.
 - **X-Content-Type-Options: nosniff** -- Prevents browsers from MIME-sniffing the response.
 - **Cache-Control** -- `public, max-age=604800` (one week) for performance.
@@ -206,7 +208,7 @@ The `status` column should be `1` (permanent) for files referenced by saved item
 
 ### Allowed File Types
 
-The kernel allows these MIME types:
+The kernel allows these MIME types, and an uploaded file's extension must be one listed for its type. SVG is not allowed: it is XML that a browser will run scripts from.
 
 | MIME Type | Extensions |
 |---|---|
@@ -214,7 +216,6 @@ The kernel allows these MIME types:
 | `image/png` | .png |
 | `image/gif` | .gif |
 | `image/webp` | .webp |
-| `image/svg+xml` | .svg |
 | `application/pdf` | .pdf |
 | `application/msword` | .doc |
 | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | .docx |
@@ -223,7 +224,7 @@ The kernel allows these MIME types:
 | `text/plain` | .txt |
 | `text/csv` | .csv |
 | `application/zip` | .zip |
-| `application/gzip` | .gz |
+| `application/gzip` | .gz, .gzip |
 
 ---
 

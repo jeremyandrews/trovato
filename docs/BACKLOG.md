@@ -460,6 +460,17 @@ reproduces only by measurement, and BL-122 is narrower than the audit described.
 | BL-122 (tag1 audit K5) | The release image ships the in-tree test and reference plugins as installable plugins. The Dockerfile builds WebAssembly only for the stock plugins, then makes a directory under `/app/plugins` for every directory in `plugins/` and copies in its `.info.toml` and migrations. So `test_ai_background`, `test_assistant_scope`, `test_e2e_callee`, `test_e2e_caller`, `test_e2e_nocaps`, `test_plugin_api`, `test_queue_worker`, `test_recovery_bystander`, `trovato_field_access_ref`, `trovato_record_ref` and `trovato_recovery_ref` are discovered with no module behind them; all are `default_enabled = false`, so none loads unless an operator enables it, and then it fails. `test_e2e_bystander` and `ritrovo_importer` have no `.info.toml`, so each becomes an empty directory that discovery warns about, and discovery runs twice per boot. The audit described this as shipping test plugins; at `3c0c0d9` it is their manifests and migrations that ship, not their code. | `Dockerfile:20-31` (the build list), `:55-68` (every `plugins/` directory copied); `crates/kernel/src/plugin/runtime.rs:612-614` (the warning); `crates/kernel/src/state.rs:362` and `crates/kernel/src/plugin/runtime.rs:651` (the two discovery passes) | open | 1.0.x | additive (image build only) |
 | BL-123 (tag1 audit K6) | On first boot the kernel dispatches `tap_install` to every enabled plugin that has not had it, and logs `tap_install not implemented or failed` at WARN for each one that returns nothing. No in-tree plugin declares `tap_install`, so a stock first boot logs one warning per enabled plugin, and a real install failure reads the same as a missing export. The dispatcher already tells the two apart: `dispatch_to_plugin_outcome` returns `NoHandler` for a plugin that does not implement the tap, and the boot code calls `dispatch_to_plugin`, which folds that into `None`. | `crates/kernel/src/state.rs:488-503`; `crates/kernel/src/tap/dispatcher.rs:146-175` | open | 1.0.x | additive |
 
+## From Ritrovo's content model (B72)
+
+Five gaps Ritrovo's conference content model ran into: a File field's file was
+neither indexed nor kept, a config set could not ship a file, and category
+references had no field kind, no rendering and no cardinality check. Each row is
+marked in the pull request that fixes it.
+
+| ID | Finding | Where | Status | Class | Surface |
+|---|---|---|---|---|---|
+| BL-124 (G-CONFIG-IMPORT-NEVER-PROMOTES-A-FILE) | A File field stores the bare `file_managed` id, which the reference index did not read, and only the admin content form promoted a file out of `Temporary`. A file attached through `config import`, the item API or a plugin had no `file_reference` row (served to its uploader and admins only) and was deleted by the six hour temporary file cleanup. One seam, `content::file_refs`, now indexes File field ids and promotes every referenced file inside the item's write transaction on every write path, config import included, and a migration backfills stored items. | `crates/kernel/src/content/file_refs.rs`; `crates/kernel/src/content/item_service.rs` (`authorize_new_file_references`, `file_access`); `crates/kernel/src/config_storage/direct.rs` (`save_item`) | fixed (#176) | closed | additive |
+
 ## The fix series against this page
 
 Eleven of the twelve pull requests that were open against rows on this page have

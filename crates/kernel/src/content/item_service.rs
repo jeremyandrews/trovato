@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::file_refs::{self, FileReferences};
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
 use crate::models::workflow::{WORKFLOW_KEY, Workflow};
@@ -388,6 +389,10 @@ pub enum WriteDenied {
     /// The write would have changed whether the item is published, and the user
     /// does not hold [`PUBLISH_CONTENT`].
     Publish,
+    /// The write would add a reference to a file the user may not be served:
+    /// someone else's unattached upload, or a file only items they cannot view
+    /// hold. Attaching it to a published item would publish it.
+    Files,
 }
 
 impl std::fmt::Display for WriteDenied {
@@ -401,11 +406,47 @@ impl std::fmt::Display for WriteDenied {
                 f,
                 "changing whether an item is published requires `{PUBLISH_CONTENT}`"
             ),
+            Self::Files => write!(f, "you may not attach a file you cannot view"),
         }
     }
 }
 
 impl std::error::Error for WriteDenied {}
+
+/// Whether a file may be streamed to a viewer: [`ItemService::file_access`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileAccess {
+    /// No `file_managed` row has this URI: no ownership or reference model
+    /// applies, and the path serves as before.
+    Unmanaged,
+    /// A managed file the viewer may fetch, with its stored, validated type.
+    Allowed {
+        /// `file_managed.filemime`.
+        filemime: String,
+    },
+    /// A managed file the viewer may not fetch: answer as if it were absent.
+    Denied,
+}
+
+/// A managed file with every item that references it, as the access rule
+/// needs it. Read by [`MANAGED_FILE_REFS_SQL`].
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ManagedFileRefs {
+    id: Uuid,
+    owner_id: Uuid,
+    uri: String,
+    filename: String,
+    filemime: String,
+    alt_text: Option<String>,
+    item_ids: Vec<Uuid>,
+}
+
+/// The [`ManagedFileRefs`] of every managed file whose URI is in `$1` or whose
+/// id is in `$2`.
+const MANAGED_FILE_REFS_SQL: &str = "SELECT f.id, f.owner_id, f.uri, f.filename, f.filemime, f.alt_text, \
+     COALESCE(array_agg(fr.item_id) FILTER (WHERE fr.item_id IS NOT NULL), '{}') AS item_ids \
+     FROM file_managed f LEFT JOIN file_reference fr ON fr.file_id = f.id \
+     WHERE f.uri = ANY($1) OR f.id = ANY($2) GROUP BY f.id";
 
 /// Which of an item's revisions [`ItemService::load_revisions`] loads.
 #[derive(Debug, Clone, Copy)]
@@ -581,8 +622,17 @@ impl ItemService {
             }
         }
 
+        // The files the item will reference: any it may not attach refuse the
+        // write, and the rest are indexed and promoted in the item's own
+        // transaction.
+        let refs = self
+            .file_references(&input.item_type, input.fields.as_ref())
+            .await?;
+        self.authorize_new_file_references(None, &refs, user)
+            .await?;
+
         // Create the item in the database
-        let item = Item::create(&self.inner.pool, input).await?;
+        let item = Item::create_with_file_refs(&self.inner.pool, input, Some(&refs)).await?;
 
         // tap_item_insert is a notification: the row exists, and what a handler
         // returns is not read (BL-88). Failures are logged by the dispatcher.
@@ -593,9 +643,6 @@ impl ItemService {
         // Fire tap_item_update_index and regenerate the kernel embedding so the
         // new item is searchable via the SemanticSimilarity gather operator.
         self.index_item(&item, user).await;
-
-        // Maintain the file→item reference index (FR-8 Story 3.5).
-        self.sync_file_references(item.id, &item.fields).await;
 
         info!(item_id = %item.id, item_type = %item.item_type, "item created");
         Ok(item)
@@ -942,8 +989,23 @@ impl ItemService {
             }
         }
 
+        // A write that replaces `fields` replaces the item's file references,
+        // in the same transaction; one that leaves `fields` alone leaves them.
+        let refs = match input.fields.as_ref() {
+            Some(fields) => {
+                let refs = self
+                    .file_references(&existing.item_type, Some(fields))
+                    .await?;
+                self.authorize_new_file_references(Some(id), &refs, user)
+                    .await?;
+                Some(refs)
+            }
+            None => None,
+        };
+
         // Update the item
-        let item = Item::update(&self.inner.pool, id, user.id, input).await?;
+        let item = Item::update_with_file_refs(&self.inner.pool, id, user.id, input, refs.as_ref())
+            .await?;
 
         if let Some(ref i) = item {
             // tap_item_update is a notification, as tap_item_insert is.
@@ -954,9 +1016,6 @@ impl ItemService {
             // Fire tap_item_update_index and regenerate the kernel embedding so
             // the updated item's searchable vector reflects the new content.
             self.index_item(i, user).await;
-
-            // Maintain the file→item reference index (FR-8 Story 3.5).
-            self.sync_file_references(i.id, &i.fields).await;
 
             // Invalidate cache
             self.invalidate(id);
@@ -1133,92 +1192,194 @@ impl ItemService {
         Ok(deleted)
     }
 
-    /// Rebuild the file→item reference index for `item_id` from its `fields`
-    /// (FR-8 Story 3.5). Called after every item create/update. Extracts the
-    /// files the item references (`local://` URIs and `/files/` public URLs),
-    /// resolves them against `file_managed`, and replaces the item's
-    /// `file_reference` rows.
-    ///
-    /// Best-effort: a failure is logged, never propagated — the item is already
-    /// saved. A reference stored under a non-default `FILES_URL` (an absolute
-    /// CDN URL, not `/files/…`) is **not** indexed by the runtime extractor;
-    /// such files are not served through this kernel's `/files/{path}` route
-    /// either, so there is no serve-path enforcement gap. The backfill migration
-    /// is broader (a literal path-substring match) and catches any embedded
-    /// form for already-stored content.
-    async fn sync_file_references(&self, item_id: Uuid, fields: &serde_json::Value) {
-        if let Err(e) = self.sync_file_references_inner(item_id, fields).await {
-            warn!(item_id = %item_id, error = %e, "failed to sync file references");
-        }
+    /// The files `fields` references, for an item of `item_type`. See
+    /// [`file_refs`].
+    async fn file_references(
+        &self,
+        item_type: &str,
+        fields: Option<&serde_json::Value>,
+    ) -> Result<FileReferences> {
+        let Some(fields) = fields else {
+            return Ok(FileReferences::default());
+        };
+        let mut conn = self.inner.pool.acquire().await?;
+        let definitions = file_refs::load_field_definitions(&mut conn, item_type).await?;
+        Ok(file_refs::extract_file_references(fields, &definitions))
     }
 
-    async fn sync_file_references_inner(
+    /// Refuse a write that adds a reference to a file `user` may not be served
+    /// ([`Self::can_serve_file`]'s rule). A reference the item already holds
+    /// (`item_id` on an update) is not re-decided: losing access to a file does
+    /// not make an item unsaveable.
+    ///
+    /// One query for the whole set of files the write names, and one for the
+    /// items that already reference them. Administrators and the kernel
+    /// background principal pass, as they do every other write gate. Config
+    /// import does not come through here: it is operator trusted and has no
+    /// acting user (see `config_storage::direct`).
+    async fn authorize_new_file_references(
         &self,
-        item_id: Uuid,
-        fields: &serde_json::Value,
+        item_id: Option<Uuid>,
+        refs: &FileReferences,
+        user: &UserContext,
     ) -> Result<()> {
-        let uris = super::file_refs::extract_file_uris(fields);
-        let mut tx = self.inner.pool.begin().await?;
-        sqlx::query("DELETE FROM file_reference WHERE item_id = $1")
-            .bind(item_id)
-            .execute(&mut *tx)
-            .await?;
-        if !uris.is_empty() {
-            sqlx::query(
-                "INSERT INTO file_reference (file_id, item_id) \
-                 SELECT id, $1 FROM file_managed WHERE uri = ANY($2) \
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(item_id)
-            .bind(&uris)
-            .execute(&mut *tx)
-            .await?;
+        if user.is_admin() || user.is_background() || (refs.uris.is_empty() && refs.ids.is_empty())
+        {
+            return Ok(());
         }
-        tx.commit().await?;
+        let files = self.managed_file_refs(&refs.uris, &refs.ids).await?;
+        let new: Vec<ManagedFileRefs> = files
+            .into_iter()
+            .filter(|f| item_id.is_none_or(|id| !f.item_ids.contains(&id)))
+            .collect();
+        if new.is_empty() {
+            return Ok(());
+        }
+        let servable = self.servable_files(&new, user).await?;
+        if new.iter().any(|f| !servable.contains(&f.id)) {
+            warn!(user_id = %user.id, "write refused: it attaches a file the user may not view");
+            return Err(WriteDenied::Files.into());
+        }
         Ok(())
     }
 
-    /// FR-8 Story 3.5 — decide whether the file at `uri` may be streamed to
-    /// `viewer` under the any-referencing policy (D-29).
-    ///
-    /// Servable iff: the viewer is an admin; **or** any item referencing the
+    /// The managed files named by `uris` or `ids`, each with the items
+    /// referencing it, in one query.
+    async fn managed_file_refs(
+        &self,
+        uris: &[String],
+        ids: &[Uuid],
+    ) -> Result<Vec<ManagedFileRefs>> {
+        Ok(sqlx::query_as(MANAGED_FILE_REFS_SQL)
+            .bind(uris)
+            .bind(ids)
+            .fetch_all(&self.inner.pool)
+            .await?)
+    }
+
+    /// Which of `files` may be streamed to `viewer` under the any-referencing
+    /// policy (D-29): the viewer is an admin; **or** an item referencing the
     /// file passes item-level `check_access("view")`; **or** the file is
     /// referenced by no item (orphan / in-flight upload) and the viewer is its
-    /// uploader (`file_managed.owner_id`). An **unmanaged** path (no
-    /// `file_managed` row) is not access-controlled here and serves as before.
-    /// Returns `false` otherwise — the caller maps that to the surface's
-    /// existing not-found posture (404), leaking no existence.
-    pub async fn can_serve_file(&self, uri: &str, viewer: &UserContext) -> Result<bool> {
-        let managed: Option<(Uuid, Uuid)> =
-            sqlx::query_as("SELECT id, owner_id FROM file_managed WHERE uri = $1")
-                .bind(uri)
-                .fetch_optional(&self.inner.pool)
-                .await?;
-        let Some((file_id, owner_id)) = managed else {
-            // Not a managed file — no ownership/reference model to enforce.
-            return Ok(true);
-        };
+    /// uploader. The referencing items of the whole set load in one query.
+    async fn servable_files(
+        &self,
+        files: &[ManagedFileRefs],
+        viewer: &UserContext,
+    ) -> Result<std::collections::HashSet<Uuid>> {
         if viewer.is_admin() {
-            return Ok(true);
+            return Ok(files.iter().map(|f| f.id).collect());
         }
-        let item_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT item_id FROM file_reference WHERE file_id = $1")
-                .bind(file_id)
-                .fetch_all(&self.inner.pool)
-                .await?;
-        if item_ids.is_empty() {
-            // Orphan / in-flight upload: uploader only (admin handled above).
-            return Ok(viewer.authenticated && viewer.id == owner_id);
-        }
-        // Any-referencing: servable if the viewer can see any referencing item.
-        for item_id in item_ids {
-            if let Some(item) = self.load(item_id).await?
-                && self.check_access(&item, "view", viewer).await?
-            {
-                return Ok(true);
+        let mut item_ids: Vec<Uuid> = files.iter().flat_map(|f| f.item_ids.clone()).collect();
+        item_ids.sort();
+        item_ids.dedup();
+        let mut viewable = std::collections::HashSet::new();
+        for item in Item::find_by_ids(&self.inner.pool, &item_ids).await? {
+            if self.check_access(&item, "view", viewer).await? {
+                viewable.insert(item.id);
             }
         }
-        Ok(false)
+        Ok(files
+            .iter()
+            .filter(|f| {
+                if f.item_ids.is_empty() {
+                    viewer.authenticated && viewer.id == f.owner_id
+                } else {
+                    f.item_ids.iter().any(|id| viewable.contains(id))
+                }
+            })
+            .map(|f| f.id)
+            .collect())
+    }
+
+    /// FR-8 Story 3.5 — decide whether the file at `uri` may be streamed to
+    /// `viewer`, and with which stored type. See [`FileAccess`].
+    pub async fn file_access(&self, uri: &str, viewer: &UserContext) -> Result<FileAccess> {
+        let managed = self.managed_file_refs(&[uri.to_string()], &[]).await?;
+        let Some(file) = managed.into_iter().next() else {
+            // Not a managed file — no ownership/reference model to enforce.
+            return Ok(FileAccess::Unmanaged);
+        };
+        let servable = self
+            .servable_files(std::slice::from_ref(&file), viewer)
+            .await?;
+        Ok(if servable.contains(&file.id) {
+            FileAccess::Allowed {
+                filemime: file.filemime,
+            }
+        } else {
+            FileAccess::Denied
+        })
+    }
+
+    /// FR-8 Story 3.5 — whether the file at `uri` may be streamed to `viewer`
+    /// ([`Self::file_access`] without the type). An **unmanaged** path (no
+    /// `file_managed` row) is not access-controlled here and serves as before.
+    /// `false` maps to the surface's not-found posture (404), leaking no
+    /// existence.
+    pub async fn can_serve_file(&self, uri: &str, viewer: &UserContext) -> Result<bool> {
+        Ok(!matches!(
+            self.file_access(uri, viewer).await?,
+            FileAccess::Denied
+        ))
+    }
+
+    /// The File field values of `item`, resolved to the files `viewer` may be
+    /// served, keyed by field name: `{id, url, filename, mime, alt}` each, in
+    /// the field's order. One query for every file the item names, and one for
+    /// the items referencing them (the access rule of [`Self::can_serve_file`]).
+    /// A uuid naming no file, or a file the viewer may not fetch, is left out.
+    pub async fn referenced_files(
+        &self,
+        item: &Item,
+        definitions: &[trovato_sdk::types::FieldDefinition],
+        public_url: impl Fn(&str) -> String,
+        viewer: &UserContext,
+    ) -> Result<HashMap<String, Vec<serde_json::Value>>> {
+        let file_fields: Vec<(&str, Vec<Uuid>)> = definitions
+            .iter()
+            .filter(|d| matches!(d.field_type, trovato_sdk::types::FieldType::File))
+            .map(|d| {
+                (
+                    d.field_name.as_str(),
+                    file_refs::file_field_ids(item.fields.get(&d.field_name)),
+                )
+            })
+            .filter(|(_, ids)| !ids.is_empty())
+            .collect();
+        let ids: Vec<Uuid> = file_fields
+            .iter()
+            .flat_map(|(_, ids)| ids.clone())
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let files = self.managed_file_refs(&[], &ids).await?;
+        let servable = self.servable_files(&files, viewer).await?;
+        let by_id: HashMap<Uuid, &ManagedFileRefs> = files
+            .iter()
+            .filter(|f| servable.contains(&f.id))
+            .map(|f| (f.id, f))
+            .collect();
+        Ok(file_fields
+            .into_iter()
+            .filter_map(|(name, ids)| {
+                let entries: Vec<serde_json::Value> = ids
+                    .iter()
+                    .filter_map(|id| by_id.get(id))
+                    .map(|f| {
+                        serde_json::json!({
+                            "id": f.id,
+                            "url": public_url(&f.uri),
+                            "filename": f.filename,
+                            "mime": f.filemime,
+                            "alt": f.alt_text,
+                        })
+                    })
+                    .collect();
+                (!entries.is_empty()).then(|| (name.to_string(), entries))
+            })
+            .collect())
     }
 
     /// FR-8 Story 3.7 — route search results through the shared access seam.
@@ -2083,7 +2244,16 @@ impl ItemService {
         // verbatim and would undo the copy-back above. That model method, like
         // `Item::create` and `Item::update`, enforces nothing by design — the
         // service is where the gates live.
-        let updated = Item::update(
+        let refs = match fields.as_ref() {
+            Some(fields) => {
+                let refs = self.file_references(&item.item_type, Some(fields)).await?;
+                self.authorize_new_file_references(Some(item_id), &refs, user)
+                    .await?;
+                Some(refs)
+            }
+            None => None,
+        };
+        let updated = Item::update_with_file_refs(
             &self.inner.pool,
             item_id,
             user.id,
@@ -2096,6 +2266,7 @@ impl ItemService {
                 fields,
                 log: Some(format!("Reverted to revision {revision_id}")),
             },
+            refs.as_ref(),
         )
         .await?
         .ok_or_else(|| anyhow::anyhow!("failed to revert item"))?;

@@ -94,6 +94,14 @@ against the content that references it, so every file must be fetched through
 the kernel's `/files/` routes. A proxy in front of the kernel may cache what the
 kernel marks `public`; responses it marks `private, no-store` must not be kept.
 
+The kernel answers `/files/` with the type stored when the upload was validated
+and `X-Content-Type-Options: nosniff`; a proxy must pass `Content-Type` through
+unchanged. Uploads are limited to 10 MB, and the upload routes accept request
+bodies of up to 10 MB plus 64 KiB of multipart framing. A proxy with a smaller
+body limit (nginx defaults to 1 MB) must allow at least that on `/file/upload`
+and `/api/block-editor/upload`, for example `client_max_body_size 11m;`, or
+editors get the proxy's error instead of the kernel's.
+
 ### Rate Limits
 
 Every request is counted against one bucket, chosen by its path and method. A

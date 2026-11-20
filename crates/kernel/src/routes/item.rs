@@ -478,6 +478,22 @@ async fn view_item(
         }
     }
 
+    // Resolve File fields to the files this viewer may fetch: one query for
+    // every file the item names, filtered by the rule `/files/{path}` applies.
+    let referenced_files = state
+        .items()
+        .referenced_files(
+            &item,
+            &content_type_fields,
+            |uri| state.files().storage().public_url(uri),
+            &user,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, item_id = %item.id, "failed to resolve file fields");
+            std::collections::HashMap::new()
+        });
+
     // Resolve reverse references: items that reference this item (P11g / D-57).
     //
     // For each content type's RecordReference field, a GIN-indexed JSONB
@@ -554,6 +570,7 @@ async fn view_item(
     context.insert("item", &item);
     context.insert("children", &children_html);
     context.insert("referenced_items", &referenced_items);
+    context.insert("referenced_files", &referenced_files);
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
     context.insert("active_language", &active_language);

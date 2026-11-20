@@ -6,6 +6,7 @@ pub mod service;
 pub mod storage;
 
 pub use service::{
-    ALLOWED_MIME_TYPES, FileInfo, FileService, FileStatus, MAX_FILE_SIZE, MediaScope, UploadResult,
+    ALLOWED_MIME_TYPES, EXTENSION_MIME_TYPES, FileInfo, FileService, FileStatus, MAX_FILE_SIZE,
+    MAX_UPLOAD_BODY_SIZE, MediaScope, UploadRejected, UploadResult, mime_for_filename,
 };
 pub use storage::{FileStorage, LocalFileStorage};

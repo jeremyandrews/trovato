@@ -16,6 +16,72 @@ use crate::models::stage::LIVE_STAGE_ID;
 /// Maximum file size (10 MB).
 pub const MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 
+/// The request body limit of the upload routes: [`MAX_FILE_SIZE`] plus room for
+/// the multipart boundaries and part headers, so a file at the limit reaches
+/// [`FileService`]'s own size check, which is the one that answers.
+pub const MAX_UPLOAD_BODY_SIZE: usize = MAX_FILE_SIZE + 64 * 1024;
+
+/// The one table from filename extension to MIME type. Upload refuses a name
+/// whose extension does not map to the file's validated type; serving uses it
+/// only for a path with no `file_managed` row (a managed file is served with
+/// its stored type). Every type here is in [`ALLOWED_MIME_TYPES`], and SVG is
+/// in neither.
+pub const EXTENSION_MIME_TYPES: &[(&str, &str)] = &[
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("png", "image/png"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+    ("pdf", "application/pdf"),
+    ("doc", "application/msword"),
+    (
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+    ("xls", "application/vnd.ms-excel"),
+    (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
+    ("txt", "text/plain"),
+    ("csv", "text/csv"),
+    ("zip", "application/zip"),
+    ("gz", "application/gzip"),
+    ("gzip", "application/gzip"),
+];
+
+/// The MIME type [`EXTENSION_MIME_TYPES`] gives `filename`'s extension.
+pub fn mime_for_filename(filename: &str) -> Option<&'static str> {
+    let (_, ext) = filename.rsplit_once('.')?;
+    let ext = ext.to_ascii_lowercase();
+    EXTENSION_MIME_TYPES
+        .iter()
+        .find(|(e, _)| *e == ext)
+        .map(|(_, mime)| *mime)
+}
+
+/// Why an upload was refused: the file, not the server, was at fault. The
+/// upload routes answer 413 or 415 with the message; any other error from
+/// [`FileService::upload`] is a server error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadRejected {
+    /// Larger than [`MAX_FILE_SIZE`].
+    TooLarge(String),
+    /// A type outside the allowlist, content that is not the declared type, or
+    /// a filename extension that disagrees with it.
+    Type(String),
+}
+
+impl std::fmt::Display for UploadRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge(m) | Self::Type(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for UploadRejected {}
+
 /// Allowed MIME types for upload.
 pub const ALLOWED_MIME_TYPES: &[&str] = &[
     // Images (SVG excluded: XML-based format enables stored XSS)
@@ -189,21 +255,33 @@ impl FileService {
     ) -> Result<UploadResult> {
         // Validate size
         if data.len() > MAX_FILE_SIZE {
-            bail!(
-                "file too large: {} bytes (max {} bytes)",
+            return Err(UploadRejected::TooLarge(format!(
+                "File too large: {} bytes (max {} bytes)",
                 data.len(),
                 MAX_FILE_SIZE
-            );
+            ))
+            .into());
         }
 
         // Validate MIME type
         if !ALLOWED_MIME_TYPES.contains(&mime_type) {
-            bail!("file type not allowed: {mime_type}");
+            return Err(UploadRejected::Type(format!("File type not allowed: {mime_type}")).into());
         }
 
         // Validate file content matches declared MIME type (magic byte check).
         // This prevents uploading executables disguised as images, etc.
-        validate_magic_bytes(data, mime_type)?;
+        validate_magic_bytes(data, mime_type)
+            .map_err(|e| UploadRejected::Type(format!("{e:#}")))?;
+
+        // The name's extension must say the same thing as the content: a
+        // browser picks a handler from the extension once the file is
+        // downloaded, so a PNG named `x.svg` is not a PNG to anyone.
+        if mime_for_filename(filename) != Some(mime_type) {
+            return Err(UploadRejected::Type(format!(
+                "The file name's extension does not match its type ({mime_type})"
+            ))
+            .into());
+        }
 
         // Determine tenant prefix for URI. Default tenant uses no prefix
         // (backward compatible with existing files).
@@ -231,7 +309,7 @@ impl FileService {
         let safe_name = sanitize_filename(filename);
 
         let uri = match self.storage.scheme() {
-            scheme @ ("local" | "s3") => {
+            scheme @ "local" => {
                 build_storage_uri(scheme, &tenant_prefix, now, &unique_id, &safe_name)
             }
             scheme => bail!("unsupported storage scheme: {scheme}"),
@@ -822,11 +900,28 @@ mod tests {
             uri_a,
             "local://2026/07/01970000000070008000000000000001_note.txt"
         );
-        // Tenant prefix and s3 scheme use the same builder and full UUID.
+        // A tenant prefix uses the same builder and full UUID.
         assert_eq!(
-            build_storage_uri("s3", "acme/", now, &a, "note.txt"),
-            "s3://acme/2026/07/01970000000070008000000000000001_note.txt"
+            build_storage_uri("local", "acme/", now, &a, "note.txt"),
+            "local://acme/2026/07/01970000000070008000000000000001_note.txt"
         );
+    }
+
+    #[test]
+    fn extension_table_agrees_with_the_allowlist_and_has_no_svg() {
+        for (ext, mime) in EXTENSION_MIME_TYPES {
+            assert!(
+                ALLOWED_MIME_TYPES.contains(mime),
+                "{ext} maps outside the allowlist"
+            );
+        }
+        assert_eq!(mime_for_filename("x.svg"), None);
+        assert_eq!(mime_for_filename("Photo.PNG"), Some("image/png"));
+        assert_eq!(
+            mime_for_filename("archive.tar.gz"),
+            Some("application/gzip")
+        );
+        assert_eq!(mime_for_filename("README"), None);
     }
 
     #[test]
