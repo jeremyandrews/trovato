@@ -312,25 +312,20 @@ pub fn tap_item_presave(input_json: String) -> String {
 /// client-side JS (`static/js/ai-assist.js`) that calls
 /// `POST /api/v1/ai/assist` with the field value and selected operation.
 #[plugin_tap]
-pub fn tap_form_alter(form_json: String) -> String {
+pub fn tap_form_alter(mut form: serde_json::Value) -> serde_json::Value {
     if !host::current_user_has_permission("use ai chat") {
-        return form_json;
+        return form;
     }
-
-    let mut form: serde_json::Value = match serde_json::from_str(&form_json) {
-        Ok(v) => v,
-        Err(_) => return form_json,
-    };
 
     // Only alter content editing forms (item add/edit)
     let form_id = form.get("form_id").and_then(|v| v.as_str()).unwrap_or("");
     if !form_id.starts_with("item_") {
-        return form_json;
+        return form;
     }
 
     // Inject AI Assist buttons on text fields
     let Some(elements) = form.get_mut("elements").and_then(|v| v.as_object_mut()) else {
-        return form_json;
+        return form;
     };
 
     let text_field_names: Vec<String> = elements
@@ -371,7 +366,7 @@ pub fn tap_form_alter(form_json: String) -> String {
         }
     }
 
-    serde_json::to_string(&form).unwrap_or(form_json)
+    form
 }
 
 // ---- Chat Actions (tap_chat_actions) ----
@@ -524,9 +519,7 @@ mod tests {
             "form_id": "login_form",
             "elements": {}
         });
-        let json = serde_json::to_string(&form).unwrap();
-        let result = __inner_tap_form_alter(json);
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let parsed = __inner_tap_form_alter(form);
         assert_eq!(parsed["form_id"], "login_form");
     }
 
@@ -551,9 +544,7 @@ mod tests {
                 }
             }
         });
-        let json = serde_json::to_string(&form).unwrap();
-        let result = __inner_tap_form_alter(json);
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let parsed = __inner_tap_form_alter(form);
 
         // Text fields should have AI assist button suffix
         let desc = &parsed["elements"]["field_description"];

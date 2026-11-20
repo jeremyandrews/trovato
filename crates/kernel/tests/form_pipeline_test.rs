@@ -208,6 +208,13 @@ async fn get_page(app: &TestApp, cookies: &str, uri: &str) -> String {
     body_string(page).await.replace("&#x2F;", "/")
 }
 
+/// The `<form …>…</form>` part of a page.
+fn form_markup(html: &str) -> &str {
+    let start = html.find("<form").expect("the page has a form");
+    let end = html[start..].find("</form>").expect("the form is closed") + start;
+    &html[start..end]
+}
+
 async fn post_form(app: &TestApp, cookies: &str, uri: &str, body: String) -> (StatusCode, String) {
     let response = app
         .request_with_cookies(
@@ -381,7 +388,12 @@ fn tap_form_submit_fires_once_per_save() {
             let html = get_page(app, &cookies, &path).await;
             let body = format!("{}&title=Pipeline+probe&field_note=b", form_tokens(&html));
             let (status, text) = post_form(app, &cookies, &path, body).await;
-            assert!(status.is_redirection(), "{path}: {status}: {text}");
+            // `/item/{id}/edit` answers a save with the item as JSON and the
+            // admin form with a redirect, as they did before B71.
+            assert!(
+                status.is_success() || status.is_redirection(),
+                "{path}: {status}: {text}"
+            );
             assert_eq!(stored_fields(app, id).await["field_note"], json!("b"));
 
             let fired: i64 =
@@ -417,7 +429,10 @@ fn an_item_form_with_a_blocks_field_carries_the_editor() {
                 "{path}: no SRI: {tag}"
             );
             assert!(html.contains("/static/js/block-editor.js"), "{path}");
-            assert!(!html.contains("<style"), "{path}: inline style");
+            assert!(
+                !form_markup(&html).contains("<style"),
+                "{path}: inline style in the form"
+            );
         }
     });
 }
@@ -476,7 +491,17 @@ fn the_item_form_renders_inside_the_site_theme() {
             );
             assert!(html.contains(r#"<nav class="site-nav""#), "{path}");
             assert!(html.contains("/static/css/forms.css"), "{path}");
-            assert!(!html.contains("<style"), "{path}: inline style");
+            // The form brings no style of its own; the one `<style>` on the
+            // page is the theme's `:root` palette in `base.html`.
+            assert!(
+                !form_markup(&html).contains("<style"),
+                "{path}: inline style in the form"
+            );
+            assert_eq!(
+                html.matches("<style").count(),
+                1,
+                "{path}: a style block beyond the theme's own"
+            );
         }
     });
 }

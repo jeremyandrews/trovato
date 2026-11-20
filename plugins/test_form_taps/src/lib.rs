@@ -6,6 +6,10 @@
 //! forms for its own probe content type (`b71_alter_probe`) and the profile
 //! form of a user holding its permission, so the rest of the suite never sees
 //! it.
+//!
+//! Each tap takes and returns a `serde_json::Value`: `#[plugin_tap]`
+//! deserializes the input as the parameter's type, so a `String` parameter
+//! would expect a JSON string and refuse the object the kernel sends.
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
@@ -34,13 +38,10 @@ fn is_probe_form(form_id: &str) -> bool {
 
 /// Add a markup element saying this plugin altered the form.
 #[plugin_tap]
-pub fn tap_form_alter(form_json: String) -> String {
-    let Ok(mut form) = serde_json::from_str::<serde_json::Value>(&form_json) else {
-        return form_json;
-    };
+pub fn tap_form_alter(mut form: serde_json::Value) -> serde_json::Value {
     let form_id = form["form_id"].as_str().unwrap_or_default().to_string();
     if !is_probe_form(&form_id) {
-        return form_json;
+        return form;
     }
     if let Some(elements) = form["elements"].as_object_mut() {
         elements.insert(
@@ -52,32 +53,29 @@ pub fn tap_form_alter(form_json: String) -> String {
             }),
         );
     }
-    serde_json::to_string(&form).unwrap_or(form_json)
+    form
 }
 
 /// Refuse a probe item whose note says so, with an error on that field.
 #[plugin_tap]
-pub fn tap_form_validate(input_json: String) -> String {
-    let input: serde_json::Value = serde_json::from_str(&input_json).unwrap_or_default();
+pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
     if !is_probe_form(input["form_id"].as_str().unwrap_or_default()) {
-        return "{}".to_string();
+        return serde_json::json!({});
     }
     if input["values"]["field_note"].as_str() == Some("refuse me") {
         return serde_json::json!({
             "errors": [{"field": "field_note", "message": "The probe refuses this note."}]
-        })
-        .to_string();
+        });
     }
-    "{}".to_string()
+    serde_json::json!({})
 }
 
 /// Record that a probe form was submitted.
 #[plugin_tap]
-pub fn tap_form_submit(input_json: String) -> String {
-    let input: serde_json::Value = serde_json::from_str(&input_json).unwrap_or_default();
+pub fn tap_form_submit(input: serde_json::Value) -> serde_json::Value {
     let form_id = input["form_id"].as_str().unwrap_or_default();
     if !is_probe_form(form_id) {
-        return "{}".to_string();
+        return serde_json::json!({});
     }
     let item_id = input["item_id"].as_str().unwrap_or_default();
     if let Err(code) = host::execute_raw(
@@ -86,5 +84,5 @@ pub fn tap_form_submit(input_json: String) -> String {
     ) {
         host::log("error", "test_form_taps", &format!("insert failed: {code}"));
     }
-    "{}".to_string()
+    serde_json::json!({})
 }

@@ -190,7 +190,9 @@ fn the_rendered_add_form_can_be_submitted() {
         let edit_html = body_string(edit).await;
         assert_eq!(
             input_value(&edit_html, "field_headline").as_deref(),
-            Some("A headline &amp; &lt;b&gt;markup&lt;/b&gt;"),
+            // The form templates escape with Tera, which also writes `/` as
+            // `&#x2F;`; a browser reads both back as the text that was saved.
+            Some("A headline &amp; &lt;b&gt;markup&lt;&#x2F;b&gt;"),
             "the saved value must render back into the form, HTML-escaped"
         );
 

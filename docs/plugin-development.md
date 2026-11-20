@@ -321,19 +321,21 @@ item's own declared fields, so store anything else from `tap_form_submit`.
 
 ```rust
 #[plugin_tap]
-pub fn tap_form_alter(form_json: String) -> String {
-    let Ok(mut form) = serde_json::from_str::<serde_json::Value>(&form_json) else {
-        return form_json;
-    };
+pub fn tap_form_alter(mut form: serde_json::Value) -> serde_json::Value {
     if form["form_id"] != "item_edit_article" {
-        return form_json;
+        return form;
     }
     form["elements"]["my_notice"] = serde_json::json!({
         "type": "markup", "value": "<p>Reviewed weekly.</p>", "weight": 990,
     });
-    serde_json::to_string(&form).unwrap_or(form_json)
+    form
 }
 ```
+
+Declare the form taps with `serde_json::Value` (or a typed struct) in and out,
+never `String`: `#[plugin_tap]` deserializes the input as the parameter's type
+and serializes the return value, so a `String` parameter expects a JSON string
+and refuses the object the kernel sends.
 
 **`tap_form_validate`** receives `{form_id, values}`: the posted value of every
 input the form rendered (after alteration), a multi value field as an array.

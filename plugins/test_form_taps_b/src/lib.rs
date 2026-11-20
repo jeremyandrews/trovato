@@ -9,15 +9,16 @@ use trovato_sdk::prelude::*;
 
 /// Add an element naming what this plugin saw of the first alteration.
 #[plugin_tap]
-pub fn tap_form_alter(form_json: String) -> String {
-    let Ok(mut form) = serde_json::from_str::<serde_json::Value>(&form_json) else {
-        return form_json;
-    };
+///
+/// The form arrives and leaves as a JSON object: `#[plugin_tap]` deserializes
+/// the input as the parameter's type, so a `String` parameter would expect a
+/// JSON string and refuse the form.
+pub fn tap_form_alter(mut form: serde_json::Value) -> serde_json::Value {
     let Some(elements) = form["elements"].as_object_mut() else {
-        return form_json;
+        return form;
     };
     if !elements.contains_key("b71_probe_a") {
-        return form_json;
+        return form;
     }
     elements.insert(
         "b71_probe_b".to_string(),
@@ -27,5 +28,5 @@ pub fn tap_form_alter(form_json: String) -> String {
             "weight": 991,
         }),
     );
-    serde_json::to_string(&form).unwrap_or(form_json)
+    form
 }
