@@ -28,6 +28,11 @@ stores, add search queries counted per day. A site that runs its own search page
 template and wants browser searches counted sends `POST /api/search/log` with
 `{"query": "...", "results": n}` as `scolta.js` does.
 
+Server searches are counted from the first request after the upgrade. Browser
+searches are counted once a visitor's browser loads the new `scolta.js`; static
+files are served with a one day cache lifetime, so a returning visitor's searches
+may go uncounted for up to a day.
+
 ### Rebuild the Pagefind index for titles and field weights to apply
 
 **Who is affected:** a site with the `trovato_search` plugin enabled, which builds
