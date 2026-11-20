@@ -5,6 +5,7 @@
 
 pub mod analytics;
 pub mod prompts;
+pub mod sentiment;
 pub mod settings;
 
 pub use settings::{PriorityPage, SearchSettings};

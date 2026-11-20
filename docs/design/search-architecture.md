@@ -273,6 +273,38 @@ searches and zero result searches with their share, the top 25 queries, the top
 sentiment counts (zero until sentiment classification exists and is switched on). Each is one aggregate query over the period (`GROUP BY`,
 `ORDER BY`, `LIMIT`), run concurrently.
 
+
+### Follow-up sentiment (as built)
+
+The Ritrovo brief (30.6) asks that each follow-up be classified as satisfied,
+confused or unmet, asynchronously, so a high unmet rate can flag a content gap,
+without the visitor waiting. The follow-up endpoint and its client already
+existed; what the kernel lacked was the server side turn cap (Part 1), a
+classifier, and somewhere to count its labels (Part 2's `search_daily`). This is
+the small piece.
+
+When `sentiment_enabled` and `analytics_enabled` are both on (sentiment is off by
+default), `/api/v1/search/followup`, after it has built a successful answer,
+`try_send`s the visitor's newest message (without the search context
+`scolta.js` appends to it) and the assistant answer before it to a bounded
+channel (256 jobs) and returns. One background worker, owned by `AppState`
+(`search::sentiment::SentimentQueue`), drains it: it re-reads the settings,
+resolves the Chat provider the same way the endpoints do, sends the
+`CLASSIFY_SENTIMENT` prompt (`search/prompts.rs`, resolved through
+`prompts::resolve`) through `api_search::complete` (the one send and parse path
+all four AI search calls now share), and adds the label to the day's counter
+through the analytics aggregator. A reply that is not exactly one of the three
+words counts nothing and logs one warning, without the reply text. A full channel
+drops the job; the number dropped is logged at the next analytics flush. Provider
+failures are logged through `log_provider_failure`, like the endpoints'. Like
+the three search endpoints, the classifier records no token usage against the
+AI budgets.
+
+The text goes to the provider and nowhere else: no table, no log line. It costs
+tokens on every follow-up, which is why the settings screen says so beside the
+switch. There is no separate "lightweight model" setting: the classifier uses the
+site's Chat provider and model, the same resolution the endpoints use.
+
 ---
 
 ## The Vector Database Question

@@ -8,11 +8,11 @@
 //!
 //! What is stored, and only this: the UTC day; the query after
 //! [`normalize_for_analytics`] (lowercased, whitespace collapsed, email
-//! addresses and runs of six or more digits replaced, at most 100 characters);
-//! how many searches it had and how many found nothing; and per day the
-//! expansion cache hits and misses and the follow-up sentiment counts. Never an
-//! IP address, account, session, user agent, referrer or a time finer than the
-//! day, in a table or in a log line.
+//! addresses and numbers of six or more digits replaced, at most 100
+//! characters); how many searches it had and how many found nothing; and per
+//! day the expansion cache hits and misses and the follow-up sentiment counts
+//! ([`super::sentiment`]). Never an IP address, account, session, user agent,
+//! referrer or a time finer than the day, in a table or in a log line.
 //!
 //! Bounded: at most [`MAX_KEYS_PER_WINDOW`] distinct (day, query) keys wait
 //! between flushes; past that, new queries are dropped and the number dropped is
@@ -115,6 +115,7 @@ struct Pending {
     queries: HashMap<(NaiveDate, String), (i32, i32)>,
     days: HashMap<NaiveDate, DayCounters>,
     dropped: u64,
+    dropped_sentiment: u64,
 }
 
 /// The in process aggregator. One per kernel process, owned by the search
@@ -174,12 +175,24 @@ impl SearchAnalytics {
         *slot = slot.saturating_add(1);
     }
 
+    /// Note one follow-up the sentiment queue had no room for; the count is
+    /// logged at the next flush.
+    pub fn note_dropped_sentiment(&self) {
+        self.lock_pending().dropped_sentiment += 1;
+    }
+
     /// Write everything pending, one statement per table, adding to the rows
     /// already there. A batch that fails to write is logged and dropped.
     pub async fn flush(&self) -> Result<()> {
         let _flushing = self.flush_lock.lock().await;
         let batch = std::mem::take(&mut *self.lock_pending());
 
+        if batch.dropped_sentiment > 0 {
+            tracing::warn!(
+                dropped = batch.dropped_sentiment,
+                "sentiment classifier queue was full; follow-ups went unclassified"
+            );
+        }
         if batch.dropped > 0 {
             tracing::warn!(
                 dropped = batch.dropped,

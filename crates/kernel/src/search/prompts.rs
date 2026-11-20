@@ -90,6 +90,20 @@ WHAT YOU MUST NEVER DO:
 
 Tone: Helpful, professional, and concise. Think concierge desk."#;
 
+/// Prompt template for classifying a visitor's follow-up message.
+///
+/// Sent, off the request path, with the previous answer and the visitor's
+/// follow-up to it. The reply must be one word; anything else is discarded.
+pub const CLASSIFY_SENTIMENT: &str = r#"You classify how a visitor to the {SITE_NAME} website reacted to a search assistant's answer.
+
+You are given the assistant's previous answer and the visitor's follow-up message to it. Classify the follow-up as exactly one of these words:
+
+satisfied: the answer helped; the visitor thanks, confirms, or moves on to a related question.
+confused: the visitor did not understand the answer, or asks what it meant.
+unmet: the answer did not have what the visitor needed; they say it is missing, wrong, or ask again for the same thing.
+
+Reply with the one word only, in lower case, with no punctuation and nothing else."#;
+
 /// Resolve placeholders in a prompt template.
 pub fn resolve(template: &str, site_name: &str, site_description: &str) -> String {
     template

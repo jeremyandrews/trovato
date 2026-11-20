@@ -9,6 +9,21 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Follow-up sentiment classification is available and off
+
+**Who is affected:** a site that uses the AI search assistant's follow-up
+questions and wants to know whether answers help.
+
+**What changed.** "Classify follow-up sentiment" on `/admin/config/search` sends
+each follow-up question, with the answer before it, to the site's Chat provider
+for a one word label (satisfied, confused, unmet) and counts the labels per day on
+the search report. It is off by default and does nothing while analytics is off.
+
+**What to do.** Nothing, to keep it off. Before switching it on: every follow-up
+costs one extra provider call, and the follow-up text leaves the site for the
+provider. The search endpoints, and this classifier, do not record token usage
+against the AI budgets today, so watch the provider's own billing.
+
 ### Search analytics are on by default
 
 **Who is affected:** every site. The upgrade adds two tables,
