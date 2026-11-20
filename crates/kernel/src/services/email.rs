@@ -86,34 +86,7 @@ impl EmailService {
 
     /// Send a plain-text email.
     pub async fn send(&self, to: &str, subject: &str, body: &str) -> Result<()> {
-        self.send_plain(to, subject, body, None).await
-    }
-
-    /// Send a plain-text email to a member, carrying the `List-Unsubscribe`
-    /// and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers (RFC
-    /// 2369, RFC 8058) for `unsubscribe_url`, so a mail client can offer its
-    /// own unsubscribe button.
-    pub async fn send_with_unsubscribe(
-        &self,
-        to: &str,
-        subject: &str,
-        body: &str,
-        unsubscribe_url: &str,
-    ) -> Result<()> {
-        self.send_plain(to, subject, body, Some(unsubscribe_url))
-            .await
-    }
-
-    /// The one plain-text message builder, with the unsubscribe headers when a
-    /// URL is given.
-    async fn send_plain(
-        &self,
-        to: &str,
-        subject: &str,
-        body: &str,
-        unsubscribe_url: Option<&str>,
-    ) -> Result<()> {
-        let mut builder = Message::builder()
+        let email = Message::builder()
             .from(
                 self.from_email
                     .parse()
@@ -121,20 +94,7 @@ impl EmailService {
             )
             .to(to.parse().context("invalid recipient email address")?)
             .subject(subject)
-            .header(ContentType::TEXT_PLAIN);
-        if let Some(url) = unsubscribe_url {
-            use lettre::message::header::{HeaderName, HeaderValue};
-            builder = builder
-                .raw_header(HeaderValue::new(
-                    HeaderName::new_from_ascii_str("List-Unsubscribe"),
-                    format!("<{url}>"),
-                ))
-                .raw_header(HeaderValue::new(
-                    HeaderName::new_from_ascii_str("List-Unsubscribe-Post"),
-                    "List-Unsubscribe=One-Click".to_string(),
-                ));
-        }
-        let email = builder
+            .header(ContentType::TEXT_PLAIN)
             .body(body.to_string())
             .context("failed to build email message")?;
 

@@ -263,17 +263,6 @@ pub struct PluginCapabilities {
     #[serde(default)]
     pub user_directory: bool,
 
-    /// Whether this plugin may call `mail.send-to-user`: mail one of the
-    /// site's own members, by user id, with the kernel resolving the address.
-    /// Defaults to `false`.
-    ///
-    /// Declaring the `mail` interface keeps meaning the site contact address
-    /// only, so no installed plugin gains reach to members by upgrading; a
-    /// plugin that mails members says so here. Without it the call is refused
-    /// ([`trovato_sdk::host_errors::ERR_MAIL_USERS_DENIED`]).
-    #[serde(default)]
-    pub mail_users: bool,
-
     /// Maximum total bytes a single streaming HTTP fetch (`http-open` /
     /// `http-read`, P11e / D-50) may transfer over the wire, in bytes.
     ///

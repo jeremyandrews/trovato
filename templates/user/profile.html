@@ -46,25 +46,6 @@
     </p>
     <p style="color: #666; font-size: 0.875rem;">One download per hour.</p>
 
-    {% if mail_opt_outs %}
-    <section id="mail-preferences" class="mail-preferences">
-        <h2>Mail you turned off</h2>
-        <p>You unsubscribed from these. Resubscribe to receive their mail again.</p>
-        <ul class="mail-preferences__list">
-        {% for opt_out in mail_opt_outs %}
-            <li class="mail-preferences__item">
-                <span class="mail-preferences__label">{{ opt_out.label }}</span>
-                <form method="post" action="/user/mail/resubscribe" class="mail-preferences__form">
-                    <input type="hidden" name="_token" value="{{ mail_csrf_token }}">
-                    <input type="hidden" name="plugin" value="{{ opt_out.plugin }}">
-                    <button type="submit" class="button button--secondary">Resubscribe</button>
-                </form>
-            </li>
-        {% endfor %}
-        </ul>
-    </section>
-    {% endif %}
-
     <h2 style="margin-top: 2.5rem;">API tokens</h2>
     <p>A token lets a program use the site's API as you.
     <a href="/user/tokens">Manage your API tokens</a>.</p>

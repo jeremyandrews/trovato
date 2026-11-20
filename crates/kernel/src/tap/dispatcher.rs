@@ -362,7 +362,6 @@ pub(crate) async fn instantiate_and_call_export(
     .with_ai_background(plugin.ai_background())
     .with_item_background(plugin.item_background())
     .with_user_directory(plugin.user_directory())
-    .with_mail_users(plugin.mail_users())
     .with_http_max_transfer(plugin.http_max_transfer());
     let mut store = Store::new(engine, plugin_state);
 

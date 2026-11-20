@@ -44,7 +44,6 @@ pub mod install;
 pub mod item;
 pub mod item_form;
 pub mod lock;
-pub mod mail_preference;
 pub mod metrics;
 pub mod oauth;
 pub mod password_reset;

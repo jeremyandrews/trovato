@@ -18,7 +18,6 @@ pub mod tenant;
 pub mod tile;
 pub mod url_alias;
 pub mod user;
-pub mod user_mail_preference;
 pub mod webauthn_credential;
 pub mod workflow;
 

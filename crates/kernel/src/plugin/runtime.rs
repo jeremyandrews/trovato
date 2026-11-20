@@ -73,11 +73,6 @@ pub struct PluginState {
     /// probe constructors; the production dispatch path sets it via
     /// [`PluginState::with_user_directory`].
     pub user_directory: bool,
-    /// Whether this plugin declared the `mail_users` manifest capability, the
-    /// gate for `mail.send-to-user`. Defaults to `false` (deny) on the probe
-    /// constructors; the production dispatch path sets it via
-    /// [`PluginState::with_mail_users`].
-    pub mail_users: bool,
     /// Effective total-transfer ceiling (bytes) for this plugin's streaming HTTP
     /// fetches (`http-open`/`http-read`, P11e / D-50). Already clamped to
     /// `[1, 16 MB]` by [`CompiledPlugin::http_max_transfer`]; the streaming host
@@ -151,7 +146,6 @@ impl PluginState {
             ai_background: false,
             item_background: false,
             user_directory: false,
-            mail_users: false,
             http_max_transfer: crate::host::http::DEFAULT_TRANSFER_CEILING,
             http_streams: HashMap::new(),
             next_http_handle: 1,
@@ -185,15 +179,6 @@ impl PluginState {
     #[must_use]
     pub fn with_user_directory(mut self, user_directory: bool) -> Self {
         self.user_directory = user_directory;
-        self
-    }
-
-    /// Record whether this plugin holds the `mail_users` manifest capability.
-    /// Builder-style, set by the production dispatch path from the compiled
-    /// plugin's manifest; left `false` (deny) on probe contexts.
-    #[must_use]
-    pub fn with_mail_users(mut self, mail_users: bool) -> Self {
-        self.mail_users = mail_users;
         self
     }
 
@@ -336,16 +321,6 @@ impl CompiledPlugin {
             .capabilities
             .as_ref()
             .is_some_and(|c| c.user_directory)
-    }
-
-    /// Whether this plugin declared the `mail_users` manifest capability — the
-    /// gate for `mail.send-to-user`. Absent `[capabilities]` yields `false`
-    /// (deny).
-    pub fn mail_users(&self) -> bool {
-        self.info
-            .capabilities
-            .as_ref()
-            .is_some_and(|c| c.mail_users)
     }
 
     /// This plugin's effective streaming total-transfer ceiling in bytes (P11e /

@@ -32,19 +32,6 @@
 //!   site's own, so a plugin in a loop floods it regardless of who set it going,
 //!   and a per-IP bound cannot see that.
 //!
-//! # Mail to a member: `send-to-user`
-//!
-//! A plugin that declares `mail_users = true` may mail one of the site's own
-//! members by user id. The refusal to be a relay stands: the plugin names a
-//! user, never an address, and the address never comes back to it in a return
-//! value, an error or a log line at info or above (the kernel logs the user
-//! id). The kernel resolves the address of an active user, adds an
-//! unsubscribe footer and `List-Unsubscribe` headers carrying a per user, per
-//! plugin token, and refuses a user who opted out. Two buckets bound it, both
-//! checked before anything else for the reason given below: `mail_users` per
-//! plugin and `mail_recipient` per plugin and member. The `mail` bucket keeps
-//! bounding `send-to-site-contacts` only.
-//!
 //! # Delivery
 //!
 //! The send goes through the site's one
@@ -57,7 +44,7 @@
 use anyhow::Result;
 use base64::Engine as _;
 use serde::Deserialize;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use wasmtime::Linker;
 
 use super::trace::TracedLinker;
@@ -93,15 +80,6 @@ struct MailRequest {
     body: String,
     #[serde(default)]
     attachments: Vec<MailAttachment>,
-}
-
-/// A member mail request as it crosses the boundary. No attachments: member
-/// mail does not need them, and leaving them out keeps the surface small.
-#[derive(Debug, Deserialize)]
-struct UserMailRequest {
-    user_id: String,
-    subject: String,
-    body: String,
 }
 
 /// One attachment as it crosses the boundary.
@@ -240,185 +218,7 @@ pub fn register_mail_functions(linker: &mut Linker<PluginState>) -> Result<()> {
         )
         .into_anyhow()?;
 
-    // send-to-user(req_ptr, req_len) -> i32
-    // 0 on success, negative host_errors code otherwise.
-    linker
-        .func_wrap_async_traced(
-            "trovato:kernel/mail",
-            "send-to-user",
-            |mut caller: wasmtime::Caller<'_, PluginState>, (req_ptr, req_len): (i32, i32)| {
-                Box::new(async move {
-                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
-                        return host_errors::ERR_MEMORY_MISSING;
-                    };
-                    let plugin_name = caller.data().plugin_name.clone();
-                    if !caller.data().mail_users {
-                        warn!(
-                            plugin = %plugin_name,
-                            "member mail refused: the plugin does not declare mail_users"
-                        );
-                        return host_errors::ERR_MAIL_USERS_DENIED;
-                    }
-                    let Ok(request_json) =
-                        read_string_from_memory(&memory, &caller, req_ptr, req_len)
-                    else {
-                        return host_errors::ERR_PARAM1_READ;
-                    };
-                    let Some(services) = caller.data().request.services() else {
-                        return host_errors::ERR_NO_SERVICES;
-                    };
-                    send_to_user(services, &plugin_name, &request_json).await
-                })
-            },
-        )
-        .into_anyhow()?;
-
     Ok(())
-}
-
-/// Serve `send-to-user` for `plugin`, once the capability has been checked:
-/// 0 when sent, or the code the plugin gets.
-///
-/// The order is the contract. The buckets come before anything else is
-/// decided, for the reason `send-to-site-contacts` gives; the per-plugin one
-/// needs nothing from the request, the per-recipient one needs the user id.
-/// Then the message is validated by the same rules as `send-to-site-contacts`,
-/// the user resolved in one query, the preference row read or created in one
-/// statement, and the message sent.
-async fn send_to_user(
-    services: &crate::tap::RequestServices,
-    plugin: &str,
-    request_json: &str,
-) -> i32 {
-    if let Some(limiter) = services.rate_limiter.as_ref()
-        && let Err(retry_after) = limiter
-            .check("mail_users", &format!("plugin:{plugin}"))
-            .await
-    {
-        warn!(
-            plugin = %plugin,
-            retry_after_secs = retry_after,
-            "member mail refused: the plugin has sent as much as its bucket allows"
-        );
-        return host_errors::ERR_MAIL_RATE_LIMITED;
-    }
-
-    let request: UserMailRequest = match serde_json::from_str(request_json) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(plugin = %plugin, error = %e, "invalid member mail request JSON");
-            return host_errors::ERR_PARAM_DESERIALIZE;
-        }
-    };
-    // A malformed id names nobody: the same answer as an unknown one.
-    let Ok(user_id) = uuid::Uuid::parse_str(request.user_id.trim()) else {
-        return host_errors::ERR_MAIL_RECIPIENT_UNAVAILABLE;
-    };
-
-    if let Some(limiter) = services.rate_limiter.as_ref()
-        && let Err(retry_after) = limiter
-            .check("mail_recipient", &format!("plugin:{plugin}:user:{user_id}"))
-            .await
-    {
-        warn!(
-            plugin = %plugin,
-            user_id = %user_id,
-            retry_after_secs = retry_after,
-            "member mail refused: this member has had as much from this plugin as the bucket allows"
-        );
-        return host_errors::ERR_MAIL_RATE_LIMITED;
-    }
-
-    let Some(email) = services.email.clone() else {
-        warn!(
-            plugin = %plugin,
-            "plugin asked to mail a member and the site has no SMTP host configured"
-        );
-        return host_errors::ERR_MAIL_NOT_CONFIGURED;
-    };
-
-    let message = MailRequest {
-        subject: request.subject,
-        body: request.body,
-        attachments: Vec::new(),
-    };
-    let (subject, body, _) = match validate(&message) {
-        Ok(parts) => parts,
-        Err(code) => {
-            warn!(plugin = %plugin, code, "refusing a member mail the plugin built wrong");
-            return code;
-        }
-    };
-
-    let db = &services.db;
-    let address: Option<String> = match sqlx::query_scalar(
-        "SELECT mail FROM users WHERE id = $1 AND status = 1 AND mail <> ''",
-    )
-    .bind(user_id)
-    .fetch_optional(db)
-    .await
-    {
-        Ok(address) => address,
-        Err(e) => {
-            warn!(plugin = %plugin, error = %e, "failed to resolve a member for mail");
-            return host_errors::ERR_MAIL_SEND_FAILED;
-        }
-    };
-    let Some(address) = address else {
-        info!(
-            plugin = %plugin,
-            user_id = %user_id,
-            "member mail refused: no active user with an address"
-        );
-        return host_errors::ERR_MAIL_RECIPIENT_UNAVAILABLE;
-    };
-
-    let preference = match crate::models::user_mail_preference::for_send(db, user_id, plugin).await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(plugin = %plugin, error = %e, "failed to read the mail preference");
-            return host_errors::ERR_MAIL_SEND_FAILED;
-        }
-    };
-    if preference.opted_out {
-        info!(
-            plugin = %plugin,
-            user_id = %user_id,
-            "member mail refused: the member opted out of this plugin's mail"
-        );
-        return host_errors::ERR_MAIL_OPTED_OUT;
-    }
-
-    let unsubscribe_url = format!(
-        "{}/user/mail/unsubscribe/{}",
-        email.site_url().trim_end_matches('/'),
-        preference.token
-    );
-    let site_name = crate::models::SiteConfig::site_name(db)
-        .await
-        .unwrap_or_else(|_| "this site".to_string());
-    let body = format!(
-        "{body}\n\n-- \nYou are receiving this because you have an account at {site_name}.\n\
-         To stop receiving this kind of mail, open:\n{unsubscribe_url}\n"
-    );
-
-    match email
-        .send_with_unsubscribe(&address, subject, &body, &unsubscribe_url)
-        .await
-    {
-        Ok(()) => {
-            info!(plugin = %plugin, user_id = %user_id, "plugin sent mail to a member");
-            0
-        }
-        Err(e) => {
-            // The transport's own error can quote the recipient (an SMTP
-            // server's "550 <address>: rejected"), so it stays below info.
-            debug!(plugin = %plugin, user_id = %user_id, error = %e, "member mail send error");
-            warn!(plugin = %plugin, user_id = %user_id, "plugin mail to a member failed");
-            host_errors::ERR_MAIL_SEND_FAILED
-        }
-    }
 }
 
 /// Check a request and decode its attachments, or give back the code to return.

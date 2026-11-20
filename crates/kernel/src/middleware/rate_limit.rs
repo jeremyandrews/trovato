@@ -136,23 +136,6 @@ pub struct RateLimitConfig {
     /// per-client limit can see.
     pub reset_mail: (u32, Duration),
 
-    /// Member mail a plugin sends through `mail.send-to-user`, per plugin.
-    ///
-    /// Not a path bucket: checked inside the host function, like `mail`, so it
-    /// applies from a request, `tap_cron` and `tap_queue_worker` alike. Separate
-    /// from `mail`, which keeps bounding `send-to-site-contacts` only: that one
-    /// protects one mailbox, the site's own, and this one bounds how many
-    /// members' mailboxes a plugin can reach in an hour. Higher, because a
-    /// digest to a community legitimately sends one message per member.
-    pub mail_users: (u32, Duration),
-
-    /// Member mail one plugin sends to one member, keyed by plugin and user.
-    ///
-    /// The per-plugin bucket above bounds the total; this bounds what one
-    /// member receives from one plugin, so a plugin in a loop cannot fill one
-    /// person's inbox while staying inside its total.
-    pub mail_recipient: (u32, Duration),
-
     /// Per-role counts: bucket name, then [`role_key`], then the count.
     ///
     /// A bucket's count above is its default; an entry here replaces it for the
@@ -212,7 +195,7 @@ pub fn role_config_key(bucket: &str, role: &str) -> String {
 /// The one list: [`RateLimitConfig::bucket`] and its private `bucket_mut` twin
 /// resolve each of these to a field, and `every_bucket_resolves_to_a_field` fails
 /// if a name here has no field behind it.
-pub const BUCKETS: [&str; 20] = [
+pub const BUCKETS: [&str; 18] = [
     "login",
     "forms",
     "api",
@@ -231,8 +214,6 @@ pub const BUCKETS: [&str; 20] = [
     "static",
     "mail",
     "reset_mail",
-    "mail_users",
-    "mail_recipient",
 ];
 
 /// Path prefixes served as static assets.
@@ -275,8 +256,6 @@ impl Default for RateLimitConfig {
             static_assets: (2000, Duration::from_secs(60)), // 2000 per minute
             mail: (100, Duration::from_secs(3600)),       // 100 per hour, per plugin
             reset_mail: (3, Duration::from_secs(3600)),   // 3 per hour, per address
-            mail_users: (1000, Duration::from_secs(3600)), // 1000 per hour, per plugin
-            mail_recipient: (10, Duration::from_secs(3600)), // 10 per hour, per plugin and member
             by_role: BTreeMap::new(),
         }
     }
@@ -304,8 +283,6 @@ impl RateLimitConfig {
             "static" => self.static_assets,
             "mail" => self.mail,
             "reset_mail" => self.reset_mail,
-            "mail_users" => self.mail_users,
-            "mail_recipient" => self.mail_recipient,
             _ => return None,
         })
     }
@@ -331,8 +308,6 @@ impl RateLimitConfig {
             "static" => &mut self.static_assets,
             "mail" => &mut self.mail,
             "reset_mail" => &mut self.reset_mail,
-            "mail_users" => &mut self.mail_users,
-            "mail_recipient" => &mut self.mail_recipient,
             _ => return None,
         })
     }

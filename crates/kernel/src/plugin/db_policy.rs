@@ -157,11 +157,6 @@ pub const TABLE_PROTECTED: &str = "table-protected";
 /// plugin-owned tables that hold secrets of their own: `oauth_client` and
 /// `webhook`.
 ///
-/// `user_mail_preference` is on it because each row's `token` is the
-/// credential an unsubscribe link carries: a plugin that could read the table
-/// could opt any member out of any plugin's mail, and one that could write it
-/// could resubscribe a member who said no.
-///
 /// `site_config` is on it, and that one is a behaviour change for raw SQL.
 /// The table used to hold the SMTP password, which `/admin/config/site` wrote
 /// in the clear; that form and its keys are gone (SMTP is configured in the
@@ -186,7 +181,6 @@ const PROTECTED_TABLES: &[&str] = &[
     "security_audit_log",
     "site_config",
     "user_roles",
-    "user_mail_preference",
     "user_tenant",
     "users",
     "webauthn_credentials",
@@ -430,7 +424,6 @@ mod tests {
                 ai_background: false,
                 item_background: false,
                 user_directory: false,
-                mail_users: false,
                 http_max_transfer: None,
                 public_functions: vec![],
             }),
@@ -564,7 +557,6 @@ mod tests {
                 ai_background: false,
                 item_background: false,
                 user_directory: false,
-                mail_users: false,
                 http_max_transfer: None,
                 public_functions: vec![],
             }),
