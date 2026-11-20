@@ -10,6 +10,8 @@ use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use tracing::{debug, warn};
 
+use crate::metrics::{CacheName, Metrics};
+
 /// Default TTL for L1 cache (60 seconds).
 const L1_TTL_SECS: u64 = 60;
 
@@ -34,18 +36,25 @@ struct CacheLayerInner {
 
     /// L2 Redis client.
     redis: RedisClient,
+
+    /// Counts L1 and L2 hits and misses, separately.
+    metrics: Arc<Metrics>,
 }
 
 impl CacheLayer {
     /// Create a new cache layer.
-    pub fn new(redis: RedisClient) -> Self {
+    pub fn new(redis: RedisClient, metrics: Arc<Metrics>) -> Self {
         let local = Cache::builder()
             .max_capacity(L1_MAX_CAPACITY)
             .time_to_live(Duration::from_secs(L1_TTL_SECS))
             .build();
 
         Self {
-            inner: Arc::new(CacheLayerInner { local, redis }),
+            inner: Arc::new(CacheLayerInner {
+                local,
+                redis,
+                metrics,
+            }),
         }
     }
 
@@ -53,22 +62,29 @@ impl CacheLayer {
     ///
     /// Checks L1 first, then L2. On L2 hit, populates L1.
     pub async fn get(&self, key: &str) -> Option<String> {
+        let metrics = &self.inner.metrics;
         // Check L1 first
-        if let Some(val) = self.inner.local.get(key).await {
+        if let Some(val) = metrics.cache_lookup(CacheName::LayerL1, self.inner.local.get(key).await)
+        {
             debug!(key = %key, "cache L1 hit");
             return Some(val);
         }
 
-        // Check L2
+        // Check L2. A Redis that cannot be reached answers nothing, which is a
+        // miss to the caller and is counted as one.
         let mut conn = match self.inner.redis.get_multiplexed_async_connection().await {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "failed to get Redis connection for cache");
+                metrics.count_cache(CacheName::LayerL2, false);
                 return None;
             }
         };
 
-        let val: Option<String> = conn.get(key).await.ok()?;
+        let val: Option<String> = metrics.cache_lookup(
+            CacheName::LayerL2,
+            conn.get::<_, Option<String>>(key).await.ok().flatten(),
+        );
 
         if let Some(ref v) = val {
             debug!(key = %key, "cache L2 hit, populating L1");
@@ -322,7 +338,7 @@ mod tests {
         // This test requires Redis, so we just verify the struct can be created
         // In a real test environment, we'd use a mock or test Redis instance
         let client = RedisClient::open(trovato_test_utils::env::redis_url()).unwrap();
-        let cache = CacheLayer::new(client);
+        let cache = CacheLayer::new(client, Default::default());
 
         let stats = cache.stats().await;
         assert_eq!(stats.l1_entry_count, 0);

@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::file_refs::{self, FileReferences};
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
+use crate::metrics::{CacheName, Metrics};
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
 use crate::models::workflow::{WORKFLOW_KEY, Workflow};
 use crate::models::{CreateItem, Item, ItemRevision, SiteConfig, UpdateItem};
@@ -192,6 +193,8 @@ struct ItemServiceInner {
     /// `tap_services` `RequestServices` so a plugin config write flushes the same
     /// cache these read paths consult (amendment α).
     field_access_cache: Arc<Cache<String, bool>>,
+    /// Counts hits and misses in every cache above.
+    metrics: Arc<Metrics>,
     /// Optional embedding provider used to (re)generate item embeddings on
     /// index. `None` in builds without an AI provider wired (e.g. tests).
     ai_providers: Option<Arc<AiProviderService>>,
@@ -492,6 +495,7 @@ impl ItemService {
         ttl: Duration,
         ai_providers: Option<Arc<AiProviderService>>,
         vector_store: Option<Arc<PgVectorStore>>,
+        metrics: Arc<Metrics>,
     ) -> Self {
         // Share the field-access cache with `tap_services` so the `variables::set`
         // host path can flush the very cache these read paths consult (amendment
@@ -515,6 +519,7 @@ impl ItemService {
                     .time_to_live(STAGE_CACHE_TTL)
                     .build(),
                 field_access_cache,
+                metrics,
                 ai_providers,
                 vector_store,
             }),
@@ -648,10 +653,17 @@ impl ItemService {
         Ok(item)
     }
 
+    /// The cached copy of item `id`, counted as an item cache hit or miss.
+    fn cached_item(&self, id: Uuid) -> Option<Item> {
+        self.inner
+            .metrics
+            .cache_lookup(CacheName::Item, self.inner.cache.get(&id))
+    }
+
     /// Load an item by ID.
     pub async fn load(&self, id: Uuid) -> Result<Option<Item>> {
         // Check cache first
-        if let Some(item) = self.inner.cache.get(&id) {
+        if let Some(item) = self.cached_item(id) {
             return Ok(Some(item));
         }
 
@@ -676,7 +688,7 @@ impl ItemService {
     /// (e.g., it was loaded by a direct UUID link).
     pub async fn load_with_overlay(&self, id: Uuid, stage_ids: &[Uuid]) -> Result<Option<Item>> {
         // Check cache first (cache is stage-agnostic — items have single stage_id)
-        if let Some(item) = self.inner.cache.get(&id) {
+        if let Some(item) = self.cached_item(id) {
             // Verify the item's stage is in our overlay list
             if stage_ids.contains(&item.stage_id) {
                 return Ok(Some(item));
@@ -1493,7 +1505,10 @@ impl ItemService {
         let (is_internal, stage_machine_name) = if item.stage_id == LIVE_STAGE_ID {
             // Live stage is always public — no DB lookup needed.
             (false, Some("live".to_string()))
-        } else if let Some(stage) = self.inner.stage_cache.get(&item.stage_id) {
+        } else if let Some(stage) = self.inner.metrics.cache_lookup(
+            CacheName::ItemStage,
+            self.inner.stage_cache.get(&item.stage_id),
+        ) {
             (
                 stage.visibility == StageVisibility::Internal,
                 Some(stage.machine_name.clone()),
@@ -1700,7 +1715,10 @@ impl ItemService {
         let mut missing: Vec<String> = Vec::new();
         for name in field_names {
             let cache_key = Self::field_access_cache_key(user, item_type, name, operation);
-            if let Some(allowed) = self.inner.field_access_cache.get(&cache_key) {
+            if let Some(allowed) = self.inner.metrics.cache_lookup(
+                CacheName::FieldAccess,
+                self.inner.field_access_cache.get(&cache_key),
+            ) {
                 decisions.insert(name.clone(), allowed);
             } else if !missing.contains(name) {
                 missing.push(name.clone());
@@ -2316,7 +2334,11 @@ impl ItemService {
     /// [`WORKFLOW_KEY`] variable) and kept for the stage cache's TTL, so a
     /// change to either is seen within it; `clear_stage_cache` drops it at once.
     pub async fn stage_view(&self) -> Result<Arc<StageView>> {
-        if let Some(view) = self.inner.stage_view.get(&()) {
+        if let Some(view) = self
+            .inner
+            .metrics
+            .cache_lookup(CacheName::StageView, self.inner.stage_view.get(&()))
+        {
             return Ok(view);
         }
         let stages = Stage::list_all(&self.inner.pool).await?;

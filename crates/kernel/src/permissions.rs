@@ -9,6 +9,7 @@ use moka::sync::Cache;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::metrics::{CacheName, Metrics};
 use crate::models::role::well_known;
 use crate::models::{Role, User};
 
@@ -46,11 +47,14 @@ struct PermissionServiceInner {
 
     /// Database pool for cache misses.
     pool: PgPool,
+
+    /// Counts `user_cache` hits and misses.
+    metrics: Arc<Metrics>,
 }
 
 impl PermissionService {
     /// Create a new permission service.
-    pub fn new(pool: PgPool, ttl: Duration) -> Self {
+    pub fn new(pool: PgPool, ttl: Duration, metrics: Arc<Metrics>) -> Self {
         Self {
             inner: Arc::new(PermissionServiceInner {
                 user_cache: Cache::builder()
@@ -58,6 +62,7 @@ impl PermissionService {
                     .time_to_live(ttl)
                     .build(),
                 pool,
+                metrics,
             }),
         }
     }
@@ -104,7 +109,11 @@ impl PermissionService {
 
     /// The cached entry for `user_id`, loading it on a miss.
     async fn access_for(&self, user_id: Uuid, anonymous: bool) -> Result<UserAccess> {
-        if let Some(cached) = self.inner.user_cache.get(&user_id) {
+        if let Some(cached) = self
+            .inner
+            .metrics
+            .cache_lookup(CacheName::Permissions, self.inner.user_cache.get(&user_id))
+        {
             return Ok(cached);
         }
 

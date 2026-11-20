@@ -14,7 +14,13 @@
 
 use std::time::Instant;
 
-use axum::{body::Body, extract::State, http::Request, middleware::Next, response::Response};
+use axum::{
+    body::Body,
+    extract::{MatchedPath, State},
+    http::Request,
+    middleware::Next,
+    response::Response,
+};
 
 use crate::state::AppState;
 
@@ -44,7 +50,16 @@ pub(crate) fn classify(elapsed_ms: u128, threshold_ms: u128) -> Speed {
     }
 }
 
+/// The route label of a request that matched no route: one series for every
+/// 404 from the fallback, rather than one per path asked for.
+const UNMATCHED_ROUTE: &str = "<unmatched>";
+
 /// Middleware that reports total request duration in a `Server-Timing` header.
+///
+/// It also counts the request into `http_requests_total` and
+/// `http_request_duration_seconds`, labelled by method, status and the
+/// matched route template (`/item/{id}`, never the raw path), so the label
+/// set stays as small as the route table.
 ///
 /// Per-query tracking would require wrapping the `PgPool` and is not done here:
 /// the measurement is the whole request, from the outermost layer inward, which
@@ -58,8 +73,23 @@ pub async fn track_request_timing(
     next: Next,
 ) -> Response {
     let start = Instant::now();
+    let method = request.method().clone();
+    // The router has matched by the time a `Router::layer` middleware runs, so
+    // the template is already in the extensions.
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|m| m.as_str().to_string());
     let mut response = next.run(request).await;
-    let elapsed_ms = start.elapsed().as_millis();
+    let elapsed = start.elapsed();
+    let elapsed_ms = elapsed.as_millis();
+
+    state.metrics().record_request(
+        method.as_str(),
+        route.as_deref().unwrap_or(UNMATCHED_ROUTE),
+        response.status().as_u16(),
+        elapsed.as_secs_f64(),
+    );
 
     // Add Server-Timing header for browser DevTools
     let timing_value = format!("total;dur={elapsed_ms}");

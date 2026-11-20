@@ -1173,6 +1173,7 @@ mod tests {
         let ai = Arc::new(AiProviderService::new(db.clone()));
         let cache = crate::cache::CacheLayer::new(
             redis::Client::open("redis://localhost").expect("a valid Redis URL"),
+            Default::default(),
         );
         let search = Arc::new(SearchService::new(db.clone(), cache));
         let service = ChatService::new(db, ai, search);
@@ -1213,6 +1214,7 @@ mod tests {
         let ai = Arc::new(AiProviderService::new(db.clone()));
         let cache = crate::cache::CacheLayer::new(
             redis::Client::open("redis://localhost").expect("a valid Redis URL"),
+            Default::default(),
         );
         let search = Arc::new(SearchService::new(db.clone(), cache));
         let service = ChatService::new(db, ai, search);

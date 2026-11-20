@@ -17,6 +17,100 @@ pub struct HttpLabels {
     pub status: u16,
 }
 
+/// Cache labels: which kernel cache a hit or miss belongs to.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct CacheLabels {
+    /// One of the [`CacheName`] label values.
+    pub cache: &'static str,
+}
+
+/// Every cache the kernel counts hits and misses for.
+///
+/// A closed set, so the `cache` label on `cache_hits_total` and
+/// `cache_misses_total` has a fixed, small cardinality: one series per name,
+/// created at startup.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum CacheName {
+    /// `ItemService`: items by id.
+    Item,
+    /// `ItemService`: an item's stage, for its access decision.
+    ItemStage,
+    /// `ItemService`: the stage visibility view.
+    StageView,
+    /// `ItemService`: field-access decisions from `tap_field_access`.
+    FieldAccess,
+    /// `UserService`: users by id.
+    User,
+    /// `PermissionService`: a user's roles and permissions.
+    Permissions,
+    /// `ContentTypeRegistry`: content type definitions.
+    ContentType,
+    /// `GatherService`: registered gather queries.
+    GatherQuery,
+    /// `GatherService`: distinct values of a field, for exposed filters.
+    GatherDistinct,
+    /// `CategoryService`: categories by id.
+    Category,
+    /// `CategoryService`: the tags of a category.
+    CategoryTags,
+    /// The config menus of a stage and language.
+    Menu,
+    /// `LocaleService`: translated strings.
+    Locale,
+    /// `ThemeEngine`: the template a suggestion list resolves to.
+    TemplateSuggestion,
+    /// `CacheLayer`: the in-process (Moka) tier.
+    LayerL1,
+    /// `CacheLayer`: the shared (Redis) tier.
+    LayerL2,
+}
+
+impl CacheName {
+    /// Every cache name, in label order.
+    ///
+    /// In declaration order: a name's discriminant is its index here.
+    pub const ALL: [CacheName; 16] = [
+        CacheName::Item,
+        CacheName::ItemStage,
+        CacheName::StageView,
+        CacheName::FieldAccess,
+        CacheName::User,
+        CacheName::Permissions,
+        CacheName::ContentType,
+        CacheName::GatherQuery,
+        CacheName::GatherDistinct,
+        CacheName::Category,
+        CacheName::CategoryTags,
+        CacheName::Menu,
+        CacheName::Locale,
+        CacheName::TemplateSuggestion,
+        CacheName::LayerL1,
+        CacheName::LayerL2,
+    ];
+
+    /// The `cache` label value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CacheName::Item => "item",
+            CacheName::ItemStage => "item_stage",
+            CacheName::StageView => "stage_view",
+            CacheName::FieldAccess => "field_access",
+            CacheName::User => "user",
+            CacheName::Permissions => "permissions",
+            CacheName::ContentType => "content_type",
+            CacheName::GatherQuery => "gather_query",
+            CacheName::GatherDistinct => "gather_distinct",
+            CacheName::Category => "category",
+            CacheName::CategoryTags => "category_tags",
+            CacheName::Menu => "menu",
+            CacheName::Locale => "locale",
+            CacheName::TemplateSuggestion => "template_suggestion",
+            CacheName::LayerL1 => "layer_l1",
+            CacheName::LayerL2 => "layer_l2",
+        }
+    }
+}
+
 /// TAP invocation labels.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct TapLabels {
@@ -40,11 +134,19 @@ pub struct Metrics {
     /// Database query duration.
     pub db_query_duration_seconds: Histogram,
 
-    /// Cache hit counter.
-    pub cache_hits: Counter,
+    /// Cache hits by cache name.
+    pub cache_hits: Family<CacheLabels, Counter>,
 
-    /// Cache miss counter.
-    pub cache_misses: Counter,
+    /// Cache misses by cache name.
+    pub cache_misses: Family<CacheLabels, Counter>,
+
+    /// The `cache_hits` series, one per [`CacheName`], indexed by its
+    /// position in [`CacheName::ALL`]: counting a lookup is one atomic add,
+    /// with no label hashing or family lock on the read path.
+    hit_series: [Counter; CacheName::ALL.len()],
+
+    /// The `cache_misses` series, indexed like `hit_series`.
+    miss_series: [Counter; CacheName::ALL.len()],
 
     /// Active HTTP connections gauge.
     pub active_connections: Gauge,
@@ -124,15 +226,31 @@ impl Metrics {
             db_query_duration_seconds.clone(),
         );
 
-        let cache_hits = Counter::default();
-        registry.register("cache_hits_total", "Cache hit count", cache_hits.clone());
+        let cache_hits = Family::<CacheLabels, Counter>::default();
+        registry.register(
+            "cache_hits_total",
+            "Cache hit count, by cache",
+            cache_hits.clone(),
+        );
 
-        let cache_misses = Counter::default();
+        let cache_misses = Family::<CacheLabels, Counter>::default();
         registry.register(
             "cache_misses_total",
-            "Cache miss count",
+            "Cache miss count, by cache",
             cache_misses.clone(),
         );
+
+        let series = |family: &Family<CacheLabels, Counter>| {
+            CacheName::ALL.map(|name| {
+                family
+                    .get_or_create(&CacheLabels {
+                        cache: name.as_str(),
+                    })
+                    .clone()
+            })
+        };
+        let hit_series = series(&cache_hits);
+        let miss_series = series(&cache_misses);
 
         let active_connections = Gauge::default();
         registry.register(
@@ -219,6 +337,8 @@ impl Metrics {
             db_query_duration_seconds,
             cache_hits,
             cache_misses,
+            hit_series,
+            miss_series,
             active_connections,
             db_pool_size,
             db_pool_idle,
@@ -234,10 +354,13 @@ impl Metrics {
     }
 
     /// Record an HTTP request.
-    pub fn record_request(&self, method: &str, path: &str, status: u16, duration_secs: f64) {
+    ///
+    /// `route` is the matched route template (`/item/{id}`), never the raw
+    /// request path, so the label's cardinality is the number of routes.
+    pub fn record_request(&self, method: &str, route: &str, status: u16, duration_secs: f64) {
         let labels = HttpLabels {
             method: method.to_string(),
-            path: normalize_path(path),
+            path: route.to_string(),
             status,
         };
 
@@ -264,14 +387,31 @@ impl Metrics {
         self.db_query_duration_seconds.observe(duration_secs);
     }
 
-    /// Record a cache hit.
-    pub fn record_cache_hit(&self) {
-        self.cache_hits.inc();
+    /// Count one lookup in a kernel cache and pass its result through.
+    ///
+    /// The one place a cache read is counted: every read site wraps its
+    /// lookup, `metrics.cache_lookup(CacheName::Item, cache.get(&id))`, and
+    /// gets the lookup back unchanged. `Some` is a hit, `None` a miss.
+    pub fn cache_lookup<T>(&self, cache: CacheName, lookup: Option<T>) -> Option<T> {
+        self.count_cache(cache, lookup.is_some());
+        lookup
     }
 
-    /// Record a cache miss.
-    pub fn record_cache_miss(&self) {
-        self.cache_misses.inc();
+    /// Count a hit (`hit = true`) or a miss in `cache`.
+    ///
+    /// For a read whose result is not an `Option`; prefer
+    /// [`Metrics::cache_lookup`] where it is.
+    pub fn count_cache(&self, cache: CacheName, hit: bool) {
+        let series = if hit {
+            &self.hit_series
+        } else {
+            &self.miss_series
+        };
+        // `ALL` lists every variant in declaration order, so the discriminant
+        // is the index (pinned by `cache_names_index_their_own_series`).
+        if let Some(counter) = series.get(cache as usize) {
+            counter.inc();
+        }
     }
 
     /// Record a file upload.
@@ -324,46 +464,11 @@ impl std::fmt::Debug for Metrics {
     }
 }
 
-/// Normalize a path for metrics labels.
-///
-/// Replaces dynamic segments (UUIDs, IDs) with placeholders to limit cardinality.
-fn normalize_path(path: &str) -> String {
-    let segments: Vec<&str> = path.split('/').collect();
-    let normalized: Vec<String> = segments
-        .into_iter()
-        .map(|s| {
-            // Replace UUIDs and numeric IDs with a placeholder to limit cardinality
-            if uuid::Uuid::parse_str(s).is_ok()
-                || (!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
-            {
-                "{id}".to_string()
-            } else {
-                s.to_string()
-            }
-        })
-        .collect();
-    normalized.join("/")
-}
-
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_normalize_path() {
-        assert_eq!(normalize_path("/item/123"), "/item/{id}");
-        assert_eq!(
-            normalize_path("/item/550e8400-e29b-41d4-a716-446655440000"),
-            "/item/{id}"
-        );
-        assert_eq!(
-            normalize_path("/admin/structure/types"),
-            "/admin/structure/types"
-        );
-        assert_eq!(normalize_path("/"), "/");
-    }
 
     #[test]
     fn test_metrics_new() {
@@ -376,9 +481,42 @@ mod tests {
     #[test]
     fn test_record_request() {
         let metrics = Metrics::new();
-        metrics.record_request("GET", "/item/123", 200, 0.05);
+        metrics.record_request("GET", "/item/{id}", 200, 0.05);
 
         let output = metrics.encode();
         assert!(output.contains("http_requests_total"));
+    }
+
+    /// `count_cache` indexes the series by discriminant, which is only right
+    /// while `ALL` lists the variants in declaration order.
+    #[test]
+    fn cache_names_index_their_own_series() {
+        for (i, name) in CacheName::ALL.iter().enumerate() {
+            assert_eq!(*name as usize, i, "{name:?} is out of order in ALL");
+        }
+    }
+
+    /// Every cache has its own pair of series from startup, and a lookup
+    /// counts against its own name only.
+    #[test]
+    fn cache_lookups_count_per_cache() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.cache_lookup(CacheName::Item, Some(7)), Some(7));
+        assert_eq!(metrics.cache_lookup::<u8>(CacheName::Item, None), None);
+        metrics.count_cache(CacheName::Item, true);
+
+        let output = metrics.encode();
+        assert!(
+            output.contains("cache_hits_total{cache=\"item\"} 2"),
+            "{output}"
+        );
+        assert!(
+            output.contains("cache_misses_total{cache=\"item\"} 1"),
+            "{output}"
+        );
+        assert!(
+            output.contains("cache_hits_total{cache=\"layer_l2\"} 0"),
+            "{output}"
+        );
     }
 }

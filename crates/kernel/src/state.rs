@@ -390,8 +390,13 @@ impl AppState {
         let config_storage: Arc<dyn ConfigStorage> =
             Arc::new(DirectConfigStorage::new(db.clone()).with_files(files.clone()));
 
+        // Create metrics first: every service that owns a cache counts its
+        // hits and misses into this one registry, the one `/metrics` encodes.
+        let metrics = Arc::new(Metrics::new());
+
         // Create permission service
-        let permissions = PermissionService::new(db.clone(), cache_config.ttl_permissions);
+        let permissions =
+            PermissionService::new(db.clone(), cache_config.ttl_permissions, metrics.clone());
 
         // Create lockout service
         let lockout = LockoutService::new(redis.clone());
@@ -674,6 +679,7 @@ impl AppState {
         let content_types = Arc::new(ContentTypeRegistry::new(
             db.clone(),
             cache_config.ttl_content_types,
+            metrics.clone(),
         ));
         content_types
             .sync_from_plugins(&tap_dispatcher)
@@ -722,7 +728,8 @@ impl AppState {
         };
 
         // Create category service
-        let categories = CategoryService::new(db.clone(), cache_config.ttl_categories);
+        let categories =
+            CategoryService::new(db.clone(), cache_config.ttl_categories, metrics.clone());
 
         // Build Gather extension registry from plugin tap_gather_extend declarations
         let gather_extensions = {
@@ -776,6 +783,7 @@ impl AppState {
             },
             Some(ai_providers.clone()),
             Some(vector_store.clone()),
+            metrics.clone(),
         );
         gather
             .load_queries()
@@ -811,7 +819,7 @@ impl AppState {
 
         // Initialize locale service (before theme engine so trans filter is available)
         let locale = if enabled_set.contains("trovato_locale") {
-            let locale_service = services::locale::LocaleService::new(db.clone());
+            let locale_service = services::locale::LocaleService::new(db.clone(), metrics.clone());
             if let Err(e) = locale_service.load_language(&default_language).await {
                 tracing::warn!(error = %e, "failed to pre-load locale translations");
             }
@@ -825,11 +833,11 @@ impl AppState {
         // setting a field rather than exporting `TEMPLATES_DIR`.
         info!(template_dirs = ?config.templates_dirs, "loading templates from search path");
         let theme = Arc::new(
-            ThemeEngine::new(&config.templates_dirs, locale.clone())
+            ThemeEngine::new(&config.templates_dirs, locale.clone(), metrics.clone())
                 .inspect_err(
                     |e| tracing::warn!(error = ?e, "failed to load templates, using empty engine"),
                 )
-                .or_else(|_| ThemeEngine::empty())
+                .or_else(|_| ThemeEngine::empty(metrics.clone()))
                 .context("failed to create theme engine")?,
         );
 
@@ -841,7 +849,7 @@ impl AppState {
         ));
 
         // Create cache layer (Moka L1 + Redis L2)
-        let cache = CacheLayer::new(redis.clone());
+        let cache = CacheLayer::new(redis.clone(), metrics.clone());
 
         // Create search service
         let search = Arc::new(SearchService::new(db.clone(), cache.clone()));
@@ -909,6 +917,7 @@ impl AppState {
             cache_config.ttl_items,
             Some(ai_providers.clone()),
             Some(vector_store.clone()),
+            metrics.clone(),
         ));
 
         // Late-bind the item-access seam into the tap services template, so
@@ -940,9 +949,6 @@ impl AppState {
         // second one: a second would carry its own field-access cache.
         cron.set_item_service(items.clone());
 
-        // Create metrics
-        let metrics = Arc::new(Metrics::new());
-
         // Create batch service
         let batch = Arc::new(BatchService::new(redis.clone()));
 
@@ -955,6 +961,7 @@ impl AppState {
             tap_dispatcher.clone(),
             tap_services.clone(),
             cache_config.ttl_users,
+            metrics.clone(),
         ));
 
         // Create role service (depends on permission service for cache invalidation)

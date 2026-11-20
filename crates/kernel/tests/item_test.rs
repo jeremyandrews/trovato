@@ -9,7 +9,7 @@ use trovato_kernel::content::{FieldMode, FilterPipeline, FormBuilder};
 /// a browser gets.
 fn html(form: trovato_kernel::form::Form) -> String {
     let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
-    trovato_kernel::theme::ThemeEngine::new(&[templates], None)
+    trovato_kernel::theme::ThemeEngine::new(&[templates], None, Default::default())
         .expect("theme engine")
         .render_form(&form)
         .expect("render form")

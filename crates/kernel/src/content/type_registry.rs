@@ -13,6 +13,7 @@ use moka::sync::Cache;
 use sqlx::{AssertSqlSafe, PgPool};
 use tracing::{info, warn};
 
+use crate::metrics::{CacheName, Metrics};
 use crate::models::{CreateItemType, ItemType};
 use crate::tap::TapDispatcher;
 use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition};
@@ -33,6 +34,9 @@ pub struct ContentTypeRegistry {
 struct ContentTypeRegistryInner {
     pool: PgPool,
     types: Cache<String, ContentTypeDefinition>,
+
+    /// Counts `types` hits and misses.
+    metrics: Arc<Metrics>,
 }
 
 /// Why a field could not be added to a content type.
@@ -212,7 +216,7 @@ fn normalize_label(s: &str) -> Option<String> {
 
 impl ContentTypeRegistry {
     /// Create a new content type registry.
-    pub fn new(pool: PgPool, ttl: Duration) -> Self {
+    pub fn new(pool: PgPool, ttl: Duration, metrics: Arc<Metrics>) -> Self {
         Self {
             inner: Arc::new(ContentTypeRegistryInner {
                 pool,
@@ -220,6 +224,7 @@ impl ContentTypeRegistry {
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
                     .build(),
+                metrics,
             }),
         }
     }
@@ -378,12 +383,14 @@ impl ContentTypeRegistry {
 
     /// Get a content type by machine name (sync, cache-only).
     pub fn get(&self, type_name: &str) -> Option<ContentTypeDefinition> {
-        self.inner.types.get(type_name)
+        self.inner
+            .metrics
+            .cache_lookup(CacheName::ContentType, self.inner.types.get(type_name))
     }
 
     /// Get a content type by machine name with DB fallback on cache miss.
     pub async fn get_or_load(&self, type_name: &str) -> Result<Option<ContentTypeDefinition>> {
-        if let Some(def) = self.inner.types.get(type_name) {
+        if let Some(def) = self.get(type_name) {
             return Ok(Some(def));
         }
 
@@ -701,7 +708,7 @@ impl ContentTypeRegistry {
 
     /// Check if a content type exists.
     pub fn exists(&self, type_name: &str) -> bool {
-        self.inner.types.get(type_name).is_some()
+        self.get(type_name).is_some()
     }
 
     /// Get the number of registered content types.

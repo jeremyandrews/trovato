@@ -110,6 +110,7 @@ async fn wired_items(pool: PgPool) -> ItemService {
         Duration::from_secs(1),
         Some(ai),
         Some(store),
+        Default::default(),
     )
 }
 

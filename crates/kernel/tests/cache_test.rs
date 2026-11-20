@@ -58,7 +58,7 @@ async fn test_cache_layer_creation() {
     // This test verifies the CacheLayer can be created
     // Actual caching tests require Redis
     let client = redis::Client::open(trovato_test_utils::env::redis_url()).unwrap();
-    let cache = CacheLayer::new(client);
+    let cache = CacheLayer::new(client, Default::default());
 
     let stats = cache.stats().await;
     assert_eq!(stats.l1_entry_count, 0);

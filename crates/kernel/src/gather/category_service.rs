@@ -3,6 +3,7 @@
 //! Provides high-level operations on categories and tags with TTL-based
 //! Moka caching for fast lookups.
 
+use crate::metrics::{CacheName, Metrics};
 use crate::models::{
     Category, CreateCategory, CreateTag, Tag, TagWithDepth, UpdateCategory, UpdateTag,
 };
@@ -23,11 +24,13 @@ pub struct CategoryService {
     tag_cache: Cache<String, Vec<Tag>>,
     /// Cache: category id -> category
     category_cache: Cache<String, Category>,
+    /// Counts hits and misses in both caches.
+    metrics: Arc<Metrics>,
 }
 
 impl CategoryService {
     /// Create a new CategoryService.
-    pub fn new(pool: PgPool, ttl: Duration) -> Arc<Self> {
+    pub fn new(pool: PgPool, ttl: Duration, metrics: Arc<Metrics>) -> Arc<Self> {
         Arc::new(Self {
             pool,
             tag_cache: Cache::builder()
@@ -38,6 +41,7 @@ impl CategoryService {
                 .max_capacity(MAX_CAPACITY)
                 .time_to_live(ttl)
                 .build(),
+            metrics,
         })
     }
 
@@ -48,7 +52,10 @@ impl CategoryService {
     /// Get a category by ID, with caching.
     pub async fn get_category(&self, id: &str) -> Result<Option<Category>> {
         // Check cache first
-        if let Some(category) = self.category_cache.get(id) {
+        if let Some(category) = self
+            .metrics
+            .cache_lookup(CacheName::Category, self.category_cache.get(id))
+        {
             return Ok(Some(category));
         }
 
@@ -111,7 +118,10 @@ impl CategoryService {
     /// List tags in a category, with caching.
     pub async fn list_tags(&self, category_id: &str) -> Result<Vec<Tag>> {
         // Check cache first
-        if let Some(tags) = self.tag_cache.get(category_id) {
+        if let Some(tags) = self
+            .metrics
+            .cache_lookup(CacheName::CategoryTags, self.tag_cache.get(category_id))
+        {
             return Ok(tags);
         }
 

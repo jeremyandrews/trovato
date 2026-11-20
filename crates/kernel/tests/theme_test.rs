@@ -7,7 +7,7 @@ use trovato_sdk::render::RenderElement;
 
 #[test]
 fn test_theme_engine_empty() {
-    let engine = ThemeEngine::empty().unwrap();
+    let engine = ThemeEngine::empty(Default::default()).unwrap();
     assert!(engine.resolve_template(&["nonexistent"]).is_none());
 }
 
