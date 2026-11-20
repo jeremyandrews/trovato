@@ -9,6 +9,32 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### SMTP settings stored in `/admin/config/site` are deleted; use the environment
+
+**Who is affected:** a site whose administrator entered SMTP settings in the
+"Email / SMTP" section of `/admin/config/site`.
+
+**What changed.** Those values were never used for delivery. Mail has always
+been sent with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`,
+`SMTP_ENCRYPTION` and `SMTP_FROM_EMAIL` from the environment; the form only
+stored its values, the password in clear text, in `site_config`. The form is
+gone, the page now shows the effective environment configuration read only, and
+migration `20261121000001_remove_site_config_smtp` deletes the six keys
+(`smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`,
+`smtp_encryption`, `smtp_from`).
+
+**How to find out, before upgrading.** Read back what was stored:
+
+```sql
+SELECT key, value FROM site_config WHERE key LIKE 'smtp_%';
+```
+
+No rows means nothing to do. Otherwise, if those are the settings you meant
+mail to use, set them in the environment (`SMTP_HOST`, `SMTP_PORT`,
+`SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_ENCRYPTION`, `SMTP_FROM_EMAIL`) and
+restart; the migration deletes the rows on upgrade. A stored password was
+readable to anyone with database or backup access, so rotate it.
+
 ### File fields are indexed and promoted; uploads to 10 MB; served type is the stored type
 
 **Who is affected:** a site with File fields; anyone who saves items through
