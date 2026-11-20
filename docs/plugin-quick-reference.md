@@ -224,6 +224,9 @@ let val = host::context::get("key");  // Option<String>
 ```rust
 let user_id = host::user::current_user_id();
 let has_perm = host::user::has_permission("permission name");
+// Other users' public facts, by id (≤ 100 a call). Needs `user-api` and
+// `user_directory = true` under [capabilities]; never an address.
+let users = host::load_users(&[id_a, id_b])?;   // Vec<UserSummary>
 ```
 
 ### Items

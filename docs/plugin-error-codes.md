@@ -91,6 +91,17 @@ Returned by `host::filter_text` (`trovato:kernel/text-format`, added by B71).
 | -71 | `ERR_TEXT_FORMAT_UNKNOWN` | No such format | Use `plain_text`, `filtered_html` or `full_html` |
 | -72 | `ERR_TEXT_FORMAT_TOO_LARGE` | The filtered text is larger than the output buffer | Filter smaller pieces |
 
+## User Directory Errors
+
+Returned by `host::load_users` (`trovato:kernel/user-api` `load-users`, added by
+B73).
+
+| Code | Constant | Meaning | Recovery |
+|------|----------|---------|----------|
+| -73 | `ERR_USER_DIRECTORY_DENIED` | The plugin does not declare `user_directory = true` under `[capabilities]` | Declare it, if the plugin needs to read about users it is not serving |
+| -74 | `ERR_USER_IDS_INVALID` | An id is not a user id (a UUID) | Pass user ids as the kernel gave them |
+| -75 | `ERR_USER_IDS_TOO_MANY` | More than 100 ids in one call | Split the batch |
+
 ## Queue API Errors
 
 `queue.push` (byte-identical, unchanged) returns `-1` memory missing, `-2`/`-3`
