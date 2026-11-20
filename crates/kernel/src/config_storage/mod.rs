@@ -123,6 +123,51 @@ pub struct ConfigItemTranslation {
     pub fields: serde_json::Value,
 }
 
+/// A managed file shipped by a config set: `file.<uuid>.yml`.
+///
+/// The YAML holds the metadata and `path`, the location of the bytes relative
+/// to the config set's directory (by convention `files/<filename>`). The bytes
+/// stay in their own file, never base64 in YAML. Import reads them during
+/// validation, through the same checks an upload gets, and stores the file
+/// `Permanent` under this id; see [`crate::file::FileService::store`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigFile {
+    /// The `file_managed` id an item's File field names.
+    pub id: Uuid,
+
+    /// The file's name, as shown to users. Its extension must map to `filemime`.
+    pub filename: String,
+
+    /// The file's type. Must be in the upload allowlist and agree with the
+    /// bytes' magic numbers.
+    pub filemime: String,
+
+    /// Alternative text for an image. Absent means nobody has said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_text: Option<String>,
+
+    /// The bytes' path relative to the config set directory. Empty means
+    /// `files/<filename>`. It must stay inside the directory: no absolute path,
+    /// no `..`, no symlink leading out.
+    #[serde(default)]
+    pub path: String,
+
+    /// The bytes, read at import or loaded for export. Never serialized.
+    #[serde(skip)]
+    pub data: Option<Vec<u8>>,
+}
+
+impl ConfigFile {
+    /// `path`, or the `files/<filename>` convention when it is empty.
+    pub fn bytes_path(&self) -> String {
+        if self.path.trim().is_empty() {
+            format!("files/{}", self.filename)
+        } else {
+            self.path.clone()
+        }
+    }
+}
+
 fn generate_uuid() -> Uuid {
     Uuid::now_v7()
 }
@@ -200,6 +245,10 @@ pub enum ConfigEntity {
     /// Menu link definition.
     #[serde(rename = "menu_link")]
     MenuLink(MenuLink),
+
+    /// A managed file and its bytes.
+    #[serde(rename = "file")]
+    File(ConfigFile),
 }
 
 impl ConfigEntity {
@@ -220,6 +269,7 @@ impl ConfigEntity {
             Self::Stage(_) => "stage",
             Self::Tile(_) => "tile",
             Self::MenuLink(_) => "menu_link",
+            Self::File(_) => "file",
         }
     }
 
@@ -242,6 +292,7 @@ impl ConfigEntity {
             Self::Stage(s) => s.id.to_string(),
             Self::Tile(t) => t.id.to_string(),
             Self::MenuLink(m) => m.id.to_string(),
+            Self::File(f) => f.id.to_string(),
         }
     }
 
@@ -524,6 +575,9 @@ pub mod entity_types {
     /// item file does carry that the item struct does not (a tag's parents, a
     /// role's permissions) are both 1-to-N data with no identity of their own.
     pub const ITEM_TRANSLATION: &str = "item_translation";
+
+    /// A managed file, with its bytes beside the YAML.
+    pub const FILE: &str = "file";
 }
 
 /// Helper to parse a tag ID from a string (UUID format).
