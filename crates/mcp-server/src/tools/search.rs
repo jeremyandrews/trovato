@@ -40,9 +40,11 @@ pub async fn search(
     let limit = i64::from(params.limit.unwrap_or(20).clamp(1, 100));
     let offset = i64::from(params.offset.unwrap_or(0));
 
+    // Unrecorded: search analytics counts what visitors type into the site's
+    // search, and a tool call from an MCP client is not that.
     let mut results = state
         .search()
-        .search(query, &[LIVE_STAGE_ID], Some(user_ctx.id), limit, offset)
+        .search_unrecorded(query, &[LIVE_STAGE_ID], Some(user_ctx.id), limit, offset)
         .await
         .map_err(internal_err)?;
 

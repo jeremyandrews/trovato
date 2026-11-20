@@ -866,7 +866,20 @@
 
   // --- Main search ---
 
-  async function doSearch(preserveFilters) {
+  // Count one search for the site's search report. Sent once per search the
+  // visitor runs, after its results render, with the query and the number of
+  // results and nothing else: no cookie is read, nothing is retried. Off when
+  // the settings switch analytics off (`analytics` in the rendered config).
+  function logSearch(query, results) {
+    if (!(global.scolta && global.scolta.analytics) || !navigator.sendBeacon) return;
+    const body = new Blob([JSON.stringify({ query, results })], { type: 'application/json' });
+    navigator.sendBeacon('/api/search/log', body);
+  }
+
+  // `preserveFilters` is true for a filter toggle, which is not a new search.
+  // `fromUrl` is true for the search the page runs from its `?q=` parameter:
+  // the server already counted that one when it rendered the page.
+  async function doSearch(preserveFilters, fromUrl) {
     preserveFilters = preserveFilters || false;
     const CONFIG = getConfig();
     const query = els.queryInput.value.trim();
@@ -934,6 +947,10 @@
 
     renderFilters();
     renderResults();
+
+    if (!preserveFilters && !fromUrl && version === searchVersion) {
+      logSearch(query, allScoredResults.length);
+    }
 
     // Phase 2: Expanded searches — asynchronous merge
     expandPromise.then(expandedTerms => {
@@ -1297,7 +1314,7 @@
       var autoSearchInterval = setInterval(function () {
         if (pagefind) {
           clearInterval(autoSearchInterval);
-          doSearch();
+          doSearch(false, true);
         }
       }, 100);
       // Safety timeout — stop trying after 5 seconds.

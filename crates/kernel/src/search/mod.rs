@@ -3,10 +3,13 @@
 //! Uses PostgreSQL tsvector columns with GIN indexes for efficient
 //! full-text search across content items.
 
+pub mod analytics;
 pub mod prompts;
 pub mod settings;
 
 pub use settings::{PriorityPage, SearchSettings};
+
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,20 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::cache::CacheLayer;
+use analytics::SearchAnalytics;
+
+/// Reduce a query to the form it is compared and counted in: trimmed,
+/// internal whitespace collapsed, lowercased.
+///
+/// The one definition: the expansion cache keys on it and search analytics
+/// stores it (after removing identifying tokens).
+pub fn normalize_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
 
 /// Search result with ranking information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,12 +70,69 @@ pub struct SearchService {
     /// Where the search settings are read from, so a search costs no extra
     /// database round trip for them.
     cache: CacheLayer,
+    /// The in memory query counter every recorded search adds to.
+    analytics: Arc<SearchAnalytics>,
 }
 
 impl SearchService {
-    /// Create a new search service.
+    /// Create a new search service, with an empty analytics aggregator.
     pub fn new(pool: PgPool, cache: CacheLayer) -> Self {
-        Self { pool, cache }
+        let analytics = Arc::new(SearchAnalytics::new(pool.clone()));
+        Self {
+            pool,
+            cache,
+            analytics,
+        }
+    }
+
+    /// The current search settings, read through the cache.
+    pub async fn settings(&self) -> SearchSettings {
+        SearchSettings::load(&self.pool, &self.cache).await
+    }
+
+    /// The search analytics aggregator.
+    pub fn analytics(&self) -> &Arc<SearchAnalytics> {
+        &self.analytics
+    }
+
+    /// Search as a person searching: [`search_unrecorded`](Self::search_unrecorded),
+    /// then the query and its result total counted in search analytics.
+    ///
+    /// Counted once per search, on its first page: asking for page two of the
+    /// same query is not another search. Counting is in memory and never waits
+    /// on the database.
+    pub async fn search(
+        &self,
+        query: &str,
+        stage_ids: &[Uuid],
+        user_id: Option<Uuid>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<SearchResults> {
+        let settings = self.settings().await;
+        let results = self
+            .search_with(&settings, query, stage_ids, user_id, limit, offset)
+            .await?;
+        if offset == 0 {
+            self.analytics
+                .record(&settings, query, u64::try_from(results.total).unwrap_or(0));
+        }
+        Ok(results)
+    }
+
+    /// Search without counting it: for callers that are not a person typing a
+    /// query (retrieval for the AI chat, the MCP tool, tests).
+    pub async fn search_unrecorded(
+        &self,
+        query: &str,
+        stage_ids: &[Uuid],
+        user_id: Option<Uuid>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<SearchResults> {
+        let settings = self.settings().await;
+        self.search_with(&settings, query, stage_ids, user_id, limit, offset)
+            .await
     }
 
     /// Search for items matching the query.
@@ -71,8 +145,9 @@ impl SearchService {
     /// Results are filtered to only include items whose `stage_id` is in
     /// `stage_ids`. If `user_id` is provided, also includes the user's
     /// draft items (still stage-filtered).
-    pub async fn search(
+    async fn search_with(
         &self,
+        settings: &SearchSettings,
         query: &str,
         stage_ids: &[Uuid],
         user_id: Option<Uuid>,
@@ -100,7 +175,6 @@ impl SearchService {
 
         debug!(query = %query_clean, ts_query = %ts_query, "executing search");
 
-        let settings = SearchSettings::load(&self.pool, &self.cache).await;
         let (boost_types, boost_values) = settings.type_boost_arrays();
 
         // Get total count

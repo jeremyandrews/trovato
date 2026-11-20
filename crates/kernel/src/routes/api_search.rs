@@ -25,7 +25,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::models::SiteConfig;
-use crate::search::{SearchSettings, prompts};
+use crate::search::analytics::Counter;
+use crate::search::{SearchSettings, normalize_query, prompts};
 use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
 use crate::state::AppState;
 
@@ -135,9 +136,16 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
         && let Some(cached) = state.cache().get(&cache_key).await
         && let Ok(terms) = serde_json::from_str::<Vec<String>>(&cached)
     {
-        tracing::debug!(query = %body.query, "search expansion served from cache");
+        state
+            .search()
+            .analytics()
+            .count(&settings, Counter::ExpansionHit);
         return Json(ExpandResponse { terms }).into_response();
     }
+    state
+        .search()
+        .analytics()
+        .count(&settings, Counter::ExpansionMiss);
 
     // Resolve AI provider
     let ai_providers = state.ai_providers();
@@ -248,15 +256,6 @@ pub fn expansion_cache_key(query: &str, site_name: &str, site_slogan: &str) -> S
     }
 
     format!("{EXPANSION_CACHE_TAG}:{:x}", hasher.finalize())
-}
-
-/// Reduce a query to the form the cache keys on.
-pub fn normalize_query(query: &str) -> String {
-    query
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
 }
 
 /// Summarize search results via AI with SSE streaming.

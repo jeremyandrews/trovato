@@ -280,6 +280,8 @@ pub struct ScoltaConfig {
     pub scoring: ClientScoring,
     /// Text shown under an AI summary; empty for none.
     pub disclaimer: String,
+    /// Whether the browser reports its searches to `POST /api/search/log`.
+    pub analytics: bool,
 }
 
 impl SearchSettings {
@@ -486,6 +488,7 @@ impl SearchSettings {
             site_name: site_name.to_string(),
             scoring: self.client_scoring(),
             disclaimer: String::new(),
+            analytics: self.analytics_enabled,
         }
     }
 }
