@@ -38,3 +38,8 @@ queries deleted elsewhere now leave the other servers on reload.
 The session store's Redis pool had no reconnect policy, so after Redis
 restarted every request that touched a session hung for good. It now
 reconnects every half second and gives up on a command after five seconds.
+
+The content type registry, the gather service and the locale service now
+serialize their own writes with their reloads, so a reload that read the rows
+just before a write on the same server can no longer put the old definition
+back or drop one created meanwhile.

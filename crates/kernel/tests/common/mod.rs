@@ -1166,6 +1166,17 @@ pub async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) 
     app.state.permissions().invalidate_user(user_id);
 }
 
+/// Wait until the cache generations bumped by this test's writes so far have
+/// been seen and cleared.
+///
+/// A write bumps its kind from a background task and every server's watcher
+/// clears that kind on its next 250 ms poll, this one included. A test that
+/// warms a cache and then measures the next request has to let those clears
+/// land first, or one can arrive between the two.
+pub async fn settle_cache_generations() {
+    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+}
+
 /// Create a non-superuser holding exactly `permissions`, and log them in.
 ///
 /// Returns the user's id and their session cookies.

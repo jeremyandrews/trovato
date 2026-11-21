@@ -21,6 +21,9 @@ pub struct LocaleService {
     cache: DashMap<String, String>,
     /// The languages loaded into the cache, which [`Self::reload`] reads again.
     languages: Arc<parking_lot::Mutex<BTreeSet<String>>>,
+    /// Serializes imports with reloads, so a reload that read the rows just
+    /// before an import cannot put the old strings back over the new ones.
+    writes: Arc<tokio::sync::Mutex<()>>,
     /// Counts translation lookups: a hit when either key finds a translation.
     metrics: Arc<Metrics>,
 }
@@ -32,6 +35,7 @@ impl LocaleService {
             pool,
             cache: DashMap::new(),
             languages: Arc::default(),
+            writes: Arc::default(),
             metrics,
         }
     }
@@ -56,6 +60,7 @@ impl LocaleService {
     /// other, is current afterwards. Strings that did not change stay readable
     /// throughout. On a database error the cache is left as it was.
     pub async fn reload(&self) -> Result<()> {
+        let _reload = self.writes.lock().await;
         let languages: Vec<String> = self.languages.lock().iter().cloned().collect();
         let mut fresh = HashMap::new();
         for language in &languages {
@@ -113,6 +118,7 @@ impl LocaleService {
         language: &str,
         translations: &[(String, String, String)], // (source, translation, context)
     ) -> Result<usize> {
+        let _write = self.writes.lock().await;
         let mut count = 0usize;
 
         for (source, translation, context) in translations {

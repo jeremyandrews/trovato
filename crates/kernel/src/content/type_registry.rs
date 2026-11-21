@@ -35,6 +35,13 @@ struct ContentTypeRegistryInner {
     pool: PgPool,
     types: Cache<String, ContentTypeDefinition>,
 
+    /// Serializes this server's writes with its reloads. A write holds it from
+    /// its database write until its definition is cached; a reload holds it
+    /// from reading the rows until it has applied them. Without it a reload
+    /// could read the rows just before a write, then put the old definition
+    /// back over the new one, or drop a type created meanwhile.
+    writes: tokio::sync::Mutex<()>,
+
     /// Counts `types` hits and misses.
     metrics: Arc<Metrics>,
 }
@@ -224,6 +231,7 @@ impl ContentTypeRegistry {
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
                     .build(),
+                writes: tokio::sync::Mutex::new(()),
                 metrics,
             }),
         }
@@ -374,6 +382,7 @@ impl ContentTypeRegistry {
     /// Called periodically by the background reload task to keep the
     /// cache fresh so that external database changes become visible.
     pub async fn reload_from_db(&self) -> Result<()> {
+        let _reload = self.inner.writes.lock().await;
         let db_types = ItemType::list(&self.inner.pool).await?;
         let stored: std::collections::HashSet<String> =
             db_types.iter().map(|t| t.type_name.clone()).collect();
@@ -491,6 +500,8 @@ impl ContentTypeRegistry {
     ) -> Result<(), CreateContentTypeError> {
         let input = Self::core_type_input(machine_name, label, description, settings);
 
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let Some(row) = ItemType::insert_if_absent(&self.inner.pool, input).await? else {
             return Err(CreateContentTypeError::AlreadyExists {
                 machine_name: machine_name.to_string(),
@@ -518,6 +529,8 @@ impl ContentTypeRegistry {
         settings: serde_json::Value,
     ) -> Result<()> {
         let input = Self::core_type_input(machine_name, label, description, settings);
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let row = ItemType::upsert(&self.inner.pool, input).await?;
 
         self.cache_written(&row);
@@ -568,6 +581,8 @@ impl ContentTypeRegistry {
              {RETURNING_ITEM_TYPE}",
             merge = merge_settings_sql("$5"),
         );
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let row = sqlx::query_as::<_, ItemType>(AssertSqlSafe(sql))
             .bind(machine_name)
             .bind(label)
@@ -654,6 +669,8 @@ impl ContentTypeRegistry {
             "UPDATE item_type SET settings = {merge} WHERE type = $1 {RETURNING_ITEM_TYPE}",
             merge = merge_settings_sql("$2"),
         );
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let row = sqlx::query_as::<_, ItemType>(AssertSqlSafe(sql))
             .bind(type_name)
             .bind(&patch)
