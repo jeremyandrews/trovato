@@ -54,6 +54,7 @@
                registered under /user and the site's own `user` menu. #}
             <ul class="site-nav__account">
             {% if user_authenticated %}
+            {% if user_name is defined %}<li class="site-nav__item"><span class="site-nav__link">Logged in as {{ user_name }}</span></li>{% endif %}
             {% if user_can_access_admin %}<li class="site-nav__item"><a href="/admin" class="site-nav__link">Admin</a></li>{% endif %}
             <li class="site-nav__item"><a href="/user/profile" class="site-nav__link">Profile</a></li>
             {% else %}

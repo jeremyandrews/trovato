@@ -174,7 +174,8 @@ pub fn refusal_for(viewer: &UserContext, reason: impl Into<String>) -> crate::er
 
 /// Inject site-wide context variables into a Tera context.
 ///
-/// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`, `current_path`,
+/// Adds: `site_name`, `site_slogan`, `menus`, `user_authenticated`, `user_name`
+/// (signed-in only), `current_path`,
 /// `header_tiles`, `navigation_tiles`, `sidebar_tiles`, `footer_tiles`
 ///
 /// `active_language` and `text_direction` are a *fallback*, not a value: they
@@ -317,6 +318,17 @@ pub async fn inject_site_context_for(
 
     // User authentication status and roles for tile visibility
     context.insert("user_authenticated", &viewer.authenticated);
+
+    // The signed-in user's account name, so a theme can say who is signed in
+    // on every page, not only the profile. Taken from the user record the
+    // viewer was built from, so it costs no query; absent (not empty) for an
+    // anonymous visitor, so `{% if user_name is defined %}` is the test. The
+    // name and nothing else: no email, roles or permissions travel this way.
+    if viewer.authenticated
+        && let Some(name) = viewer.name()
+    {
+        context.insert("user_name", name);
+    }
 
     // Generate CSRF token for authenticated users (used by logout form in page.html)
     if viewer.authenticated {

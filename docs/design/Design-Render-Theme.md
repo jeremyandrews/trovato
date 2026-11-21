@@ -178,16 +178,35 @@ Every page template and every item template gets `viewer`, built by one function
 {% endif %}
 ```
 
-It is the only viewer data a template gets, on purpose. No email, no display name,
-no permission list, no session or token: what a template never receives it cannot
-print, and a theme is not where access is decided. A per-viewer control drawn
-from `viewer.roles` is a convenience; the page it leads to still checks for
-itself. The role names come from the permission service's cache, loaded with the
-permissions, so `viewer` costs no query on a warm cache. The item route builds it
-from the viewer it already loaded, so one request loads its viewer once.
+It is the only viewer data a template gets through `viewer`, on purpose. No email,
+no display name, no permission list, no session or token: what a template never
+receives it cannot print, and a theme is not where access is decided. A per-viewer
+control drawn from `viewer.roles` is a convenience; the page it leads to still
+checks for itself. The role names come from the permission service's cache,
+loaded with the permissions, so `viewer` costs no query on a warm cache. The item
+route builds it from the viewer it already loaded, so one request loads its
+viewer once.
 
 `user_authenticated`, `user_can_access_admin` and `csrf_token` are still there,
-unchanged.
+unchanged, beside one more page template key:
+
+| Key | What it holds |
+|---|---|
+| `user_authenticated` | Whether the viewer is signed in. |
+| `user_name` | The signed-in viewer's account name (`users.name`, the name `/user/profile` shows). Set only when the viewer is signed in; an anonymous visitor's context has no `user_name` key at all, so test it with `is defined`. |
+| `user_can_access_admin` | Whether the viewer may open `/admin`. |
+| `csrf_token` | The session's form token, for the logout form; signed-in only. |
+
+```jinja
+{% if user_name is defined %}Logged in as {{ user_name }}{% endif %}
+```
+
+`user_name` is a key of its own and stays one: it is not a field of `viewer`. It
+comes from the user record the viewer was built from, so it costs no query, and it
+is the account name and nothing else; no other account field reaches a template
+this way. It is user input, so print it with autoescape on, never with `| safe`.
+It is set wherever `user_authenticated` is, which is every page template rendered
+through `inject_site_context`; an item template gets neither.
 
 ### Plugin Output on the Item Template
 

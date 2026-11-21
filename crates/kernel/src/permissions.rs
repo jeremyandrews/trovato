@@ -275,11 +275,14 @@ pub fn context_from_permissions(
     // travels as itself, so `has_permission` keeps answering what the roles
     // grant while `can()` answers what the user may do.
     let permissions: Vec<String> = permissions.into_iter().collect();
-    if user.is_admin {
+    let ctx = if user.is_admin {
         UserContext::administrator(user.id, permissions)
     } else {
         UserContext::authenticated(user.id, permissions)
-    }
+    };
+    // The account name rides on the user record already loaded, so a page can
+    // say who is signed in without a query of its own.
+    ctx.with_name(user.name.clone())
 }
 
 #[cfg(test)]
