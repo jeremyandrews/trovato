@@ -583,7 +583,7 @@ impl GatherQueryBuilder {
             // restricts rather than widens.
             let compared = self
                 .having_condition(condition)
-                .unwrap_or_else(|| Expr::cust("FALSE"));
+                .unwrap_or_else(|| Expr::val(false).into());
             query.and_having(compared);
         }
     }
