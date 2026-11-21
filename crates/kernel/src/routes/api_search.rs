@@ -334,11 +334,11 @@ async fn followup(State(state): State<AppState>, Json(body): Json<FollowupReques
 /// The answer for a stage the search settings switched off: 404, with a short
 /// JSON error, before any cache or provider work.
 fn stage_off(stage: &str) -> Response {
-    (
+    crate::error::AppError::with_status(
         StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "error": format!("{stage} is switched off on this site") })),
+        format!("{stage} is switched off on this site"),
     )
-        .into_response()
+    .into_response()
 }
 
 /// User turns in a follow-up request, counted on whichever shape it came in:

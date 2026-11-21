@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use super::helpers::{JsonError, html_escape as escape_html, require_permission_json};
+use super::helpers::{html_escape as escape_html, require_permission_json};
 use crate::error::AppError;
 
 /// Determine the language for `QueryContext` from a resolved language extension.
@@ -376,15 +376,11 @@ async fn render_query_html(
     {
         Ok(html) => html.into_response(),
         Err(GatherPageError::Denied(denied)) => gather_denied_html(&denied),
-        Err(GatherPageError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "query not found".to_string(),
-            }),
-        )
-            .into_response(),
+        Err(GatherPageError::NotFound) => {
+            AppError::with_status(StatusCode::NOT_FOUND, "query not found").into_response()
+        }
         Err(GatherPageError::Failed(error)) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(JsonError { error })).into_response()
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, error).into_response()
         }
     }
 }

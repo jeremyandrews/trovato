@@ -543,8 +543,8 @@ fn an_eleven_megabyte_upload_is_413_with_a_clear_message() {
         data.resize(11 * 1024 * 1024, 0);
         let (status, json) = post_upload(app, &session, "huge.png", "image/png", &data).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "body: {json}");
-        assert_eq!(json["success"], false);
-        let message = json["error"].as_str().unwrap_or("").to_lowercase();
+        assert!(json["code"].is_string(), "an AppError body: {json}");
+        let message = json["message"].as_str().unwrap_or("").to_lowercase();
         assert!(
             message.contains("too large"),
             "the error must say the file is too large, got {json}"
@@ -564,7 +564,7 @@ fn a_png_named_svg_is_refused() {
             status.is_client_error(),
             "a PNG named .svg must be refused, got {status}: {json}"
         );
-        assert_eq!(json["success"], false);
+        assert!(json["code"].is_string(), "an AppError body: {json}");
     });
 }
 

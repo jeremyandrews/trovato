@@ -35,13 +35,6 @@ struct ListEnvelope<T: Serialize> {
     per_page: i64,
 }
 
-/// Error envelope.
-#[derive(Debug, Serialize)]
-struct ErrorEnvelope {
-    error: String,
-    status: u16,
-}
-
 // -------------------------------------------------------------------------
 // Query parameter types
 // -------------------------------------------------------------------------
@@ -103,17 +96,6 @@ async fn openapi_spec(State(state): State<AppState>) -> impl IntoResponse {
 
 // Helper functions
 // -------------------------------------------------------------------------
-
-/// Build an error response with envelope.
-fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<ErrorEnvelope>) {
-    (
-        status,
-        Json(ErrorEnvelope {
-            error: message.to_string(),
-            status: status.as_u16(),
-        }),
-    )
-}
 
 /// Clamp per_page to a sane range.
 fn clamp_per_page(per_page: i64) -> i64 {
@@ -183,7 +165,8 @@ async fn search(
         }
         Err(e) => {
             tracing::error!(error = %e, "search failed");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Search failed").into_response()
+            crate::error::AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Search failed")
+                .into_response()
         }
     }
 }
@@ -212,7 +195,8 @@ async fn export_user_data(
     // Determine which user to export
     let target_user_id = if let Some(uid_str) = params.get("user_id") {
         let Ok(uid) = Uuid::parse_str(uid_str) else {
-            return error_response(StatusCode::BAD_REQUEST, "Invalid user_id").into_response();
+            return crate::error::AppError::with_status(StatusCode::BAD_REQUEST, "Invalid user_id")
+                .into_response();
         };
 
         // Only admins can export other users' data
@@ -228,11 +212,15 @@ async fn export_user_data(
     let user = match crate::models::User::find_by_id(state.db(), target_user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
-            return error_response(StatusCode::NOT_FOUND, "User not found").into_response();
+            return crate::error::AppError::with_status(StatusCode::NOT_FOUND, "User not found")
+                .into_response();
         }
         Err(_) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-                .into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error",
+            )
+            .into_response();
         }
     };
 
@@ -506,8 +494,11 @@ async fn browse_media(
         Ok(t) => t,
         Err(e) => {
             tracing::error!(error = %e, "failed to count media");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to browse media")
-                .into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to browse media",
+            )
+            .into_response();
         }
     };
 
@@ -527,8 +518,11 @@ async fn browse_media(
         Ok(f) => f,
         Err(e) => {
             tracing::error!(error = %e, "failed to list media");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to browse media")
-                .into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to browse media",
+            )
+            .into_response();
         }
     };
 

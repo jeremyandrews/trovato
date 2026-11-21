@@ -330,7 +330,7 @@ fn revoking_the_last_way_into_an_account_is_blocked_and_audited() {
         );
         let body = json_body(response).await;
         assert!(
-            body["error"].as_str().unwrap_or("").contains("only way"),
+            body["message"].as_str().unwrap_or("").contains("only way"),
             "the refusal must say why: {body}"
         );
 
@@ -386,7 +386,7 @@ fn going_passwordless_is_blocked_without_a_recovery_path() {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = json_body(response).await;
         assert!(
-            body["error"]
+            body["message"]
                 .as_str()
                 .unwrap_or("")
                 .contains("recovery method"),

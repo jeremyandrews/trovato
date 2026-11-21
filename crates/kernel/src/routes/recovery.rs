@@ -60,10 +60,6 @@ use crate::tap::TapResult;
 const GENERIC_START_MESSAGE: &str =
     "If that account exists and has a recovery method configured, we have started the process.";
 
-fn json_error(status: StatusCode, message: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
-}
-
 /// The client IP and User-Agent for the audit stream.
 fn request_context(
     headers: &HeaderMap,
@@ -403,24 +399,27 @@ async fn load_flow(
 ) -> Result<RecoveryFlow, Response> {
     let Some(flow_id): Option<String> = session.get(SESSION_RECOVERY_FLOW).await.ok().flatten()
     else {
-        return Err(json_error(
+        return Err(crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "No recovery in progress.",
-        ));
+        )
+        .into_response());
     };
 
     match state.recovery_flows().get(&flow_id, now).await {
         Ok(Some(flow)) => Ok(flow),
-        Ok(None) => Err(json_error(
+        Ok(None) => Err(crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "That recovery attempt has expired. Start again.",
-        )),
+        )
+        .into_response()),
         Err(e) => {
             tracing::error!(error = %e, "failed to load the recovery flow");
-            Err(json_error(
+            Err(crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not continue the recovery.",
-            ))
+            )
+            .into_response())
         }
     }
 }
@@ -451,10 +450,11 @@ async fn recover_choose(
     // A method may only be chosen from `Started`. Re-choosing after a challenge
     // has begun would let a caller mint challenges without limit.
     if flow.state != FlowState::Started {
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::CONFLICT,
             "A recovery method has already been started.",
-        );
+        )
+        .into_response();
     }
 
     let input = RecoveryTapInput::Initiate {
@@ -481,20 +481,22 @@ async fn recover_choose(
     });
 
     let Some(challenge_hint) = initiated else {
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "That recovery method is not available.",
-        );
+        )
+        .into_response();
     };
 
     flow.state = FlowState::AwaitingVerification;
     flow.method_id = Some(body.method_id.clone());
     if let Err(e) = state.recovery_flows().put(&flow).await {
         tracing::error!(error = %e, "failed to advance the recovery flow");
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not continue the recovery.",
-        );
+        )
+        .into_response();
     }
 
     state
@@ -560,16 +562,18 @@ async fn recover_verify(
     // that was actually initiated. This is the step a hostile plugin would want
     // to skip, and it is enforced entirely on kernel state.
     if flow.state != FlowState::AwaitingVerification {
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::CONFLICT,
             "Choose a recovery method before verifying.",
-        );
+        )
+        .into_response();
     }
     let Some(method_id) = flow.method_id.clone() else {
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::CONFLICT,
             "Choose a recovery method before verifying.",
-        );
+        )
+        .into_response();
     };
 
     let input = RecoveryTapInput::Verify {
@@ -611,10 +615,11 @@ async fn recover_verify(
             };
             if let Err(e) = session.insert(SESSION_RECOVERY_GRANT, &grant).await {
                 tracing::error!(error = %e, "failed to store the recovery grant");
-                return json_error(
+                return crate::error::AppError::with_status(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Could not complete the recovery.",
-                );
+                )
+                .into_response();
             }
 
             info!(user_id = %flow.user_id, "recovery verified; scoped reset granted");
@@ -639,7 +644,8 @@ async fn recover_verify(
                 warn!(error = %e, "failed to burn a rejected recovery flow");
             }
             let _ = session.remove::<String>(SESSION_RECOVERY_FLOW).await;
-            json_error(StatusCode::UNAUTHORIZED, "That did not verify.")
+            crate::error::AppError::with_status(StatusCode::UNAUTHORIZED, "That did not verify.")
+                .into_response()
         }
     }
 }
@@ -669,17 +675,26 @@ async fn recover_reset(
     let Some(grant): Option<RecoveryGrant> =
         session.get(SESSION_RECOVERY_GRANT).await.ok().flatten()
     else {
-        return json_error(StatusCode::FORBIDDEN, "No verified recovery to complete.");
+        return crate::error::AppError::with_status(
+            StatusCode::FORBIDDEN,
+            "No verified recovery to complete.",
+        )
+        .into_response();
     };
     if !grant.is_live(now) {
         let _ = session
             .remove::<RecoveryGrant>(SESSION_RECOVERY_GRANT)
             .await;
-        return json_error(StatusCode::FORBIDDEN, "That recovery expired. Start again.");
+        return crate::error::AppError::with_status(
+            StatusCode::FORBIDDEN,
+            "That recovery expired. Start again.",
+        )
+        .into_response();
     }
 
     if let Err(message) = validate_password(&body.new_password) {
-        return json_error(StatusCode::BAD_REQUEST, message);
+        return crate::error::AppError::with_status(StatusCode::BAD_REQUEST, message)
+            .into_response();
     }
 
     // The acting principal for `tap_user_update`: the account owner, carrying
@@ -714,10 +729,11 @@ async fn recover_reset(
     {
         Ok(true) => {}
         _ => {
-            return json_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not set the new password.",
-            );
+            )
+            .into_response();
         }
     }
 
@@ -745,10 +761,11 @@ async fn recover_reset(
     // seam, so `cycle_id` fires (D-38's closing clause).
     if let Err(e) = crate::routes::auth::setup_session(&session, grant.user_id, false).await {
         tracing::error!(error = %e, "failed to establish a session after recovery");
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Password set, but sign-in failed. Try signing in.",
-        );
+        )
+        .into_response();
     }
 
     info!(user_id = %grant.user_id, "recovery completed");
@@ -787,12 +804,12 @@ async fn generate_recovery_codes(
     session: Session,
     headers: HeaderMap,
 ) -> Response {
-    let user = match crate::routes::helpers::require_login(&state, &session).await {
+    let user = match crate::routes::helpers::require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     match crate::services::recovery_builtins::RecoveryCodesProvider::generate(state.db(), user.id)
@@ -804,10 +821,11 @@ async fn generate_recovery_codes(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to generate recovery codes");
-            json_error(
+            crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not generate recovery codes.",
             )
+            .into_response()
         }
     }
 }
@@ -877,13 +895,13 @@ async fn admin_recovery_save(
     headers: HeaderMap,
     Json(body): Json<RecoveryConfigRequest>,
 ) -> Response {
-    if let Err(resp) =
-        crate::routes::helpers::require_permission(&state, &session, "administer users").await
+    if let Err(refusal) =
+        crate::routes::helpers::require_permission_json(&state, &session, "administer users").await
     {
-        return resp;
+        return refusal.into_response();
     }
-    if let Err((status, resp)) = require_csrf_header(&session, &headers).await {
-        return (status, resp).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     for (key, value) in [
@@ -900,10 +918,11 @@ async fn admin_recovery_save(
             crate::models::SiteConfig::set(state.db(), key, serde_json::Value::Bool(value)).await
         {
             tracing::error!(error = %e, key = key, "failed to save a recovery setting");
-            return json_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not save the recovery settings.",
-            );
+            )
+            .into_response();
         }
     }
 

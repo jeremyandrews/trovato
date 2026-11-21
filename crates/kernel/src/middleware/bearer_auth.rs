@@ -67,9 +67,8 @@ pub async fn authenticate_bearer_token(
         Err(e) => {
             debug!(error = %e, "invalid bearer token");
             return (
-                StatusCode::UNAUTHORIZED,
                 [("WWW-Authenticate", "Bearer error=\"invalid_token\"")],
-                "Invalid token",
+                crate::error::AppError::unauthorized("Invalid token"),
             )
                 .into_response();
         }
@@ -80,27 +79,26 @@ pub async fn authenticate_bearer_token(
         Ok(true) => {
             debug!(jti = %claims.jti, "bearer token revoked");
             return (
-                StatusCode::UNAUTHORIZED,
                 [("WWW-Authenticate", "Bearer error=\"invalid_token\"")],
-                "Token has been revoked",
+                crate::error::AppError::unauthorized("Token has been revoked"),
             )
                 .into_response();
         }
         Ok(false) => {}
         Err(e) => {
             tracing::warn!(error = %e, "failed to check token revocation; denying request");
-            return (
+            return crate::error::AppError::with_status(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Unable to verify token status",
             )
-                .into_response();
+            .into_response();
         }
     }
 
     // Parse user ID from claims
     let Ok(user_id) = claims.sub.parse::<Uuid>() else {
         debug!(sub = %claims.sub, "invalid user ID in token");
-        return (StatusCode::UNAUTHORIZED, "Invalid token subject").into_response();
+        return crate::error::AppError::unauthorized("Invalid token subject").into_response();
     };
 
     // Detect client_credentials tokens (machine-to-machine, no real user).

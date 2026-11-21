@@ -21,7 +21,8 @@ use uuid::Uuid;
 
 use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::routes::helpers::{
-    render_not_found, render_server_error, require_csrf_header, require_login, require_permission,
+    render_not_found, render_server_error, require_csrf_header, require_login, require_login_json,
+    require_permission, require_permission_json,
 };
 use crate::services::session_registry::{SESSION_DEVICE_ID, SessionEntry};
 use crate::state::AppState;
@@ -60,10 +61,6 @@ fn to_view(entry: &SessionEntry, current_device: Option<Uuid>) -> SessionView {
         last_seen: format_ts(entry.last_seen),
         is_current: current_device == Some(entry.device_id),
     }
-}
-
-fn json_error(status: StatusCode, message: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
 // ─── User self-service ───────────────────────────────────────────────────────
@@ -118,21 +115,22 @@ async fn rename_session(
     headers: HeaderMap,
     Json(body): Json<RenameSessionRequest>,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let name = body.device_name.unwrap_or_default();
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_DEVICE_NAME_LEN {
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "Give the device a name of 1 to 64 characters.",
-        );
+        )
+        .into_response();
     }
 
     match state
@@ -141,13 +139,15 @@ async fn rename_session(
         .await
     {
         Ok(true) => Json(serde_json::json!({ "success": true })).into_response(),
-        Ok(false) => json_error(StatusCode::NOT_FOUND, "No such session."),
+        Ok(false) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such session.")
+            .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to rename a session");
-            json_error(
+            crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not rename the session.",
             )
+            .into_response()
         }
     }
 }
@@ -160,12 +160,12 @@ async fn revoke_session(
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: HeaderMap,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
     // The trusted-proxy-gated client address, not raw `X-Forwarded-For`,
     // which a client writes for itself.
@@ -190,13 +190,15 @@ async fn revoke_session(
                 .await;
             Json(serde_json::json!({ "success": true })).into_response()
         }
-        Ok(None) => json_error(StatusCode::NOT_FOUND, "No such session."),
+        Ok(None) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such session.")
+            .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to revoke a session");
-            json_error(
+            crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not revoke the session.",
             )
+            .into_response()
         }
     }
 }
@@ -212,12 +214,12 @@ async fn revoke_other_sessions(
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: HeaderMap,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
     // The trusted-proxy-gated client address, not raw `X-Forwarded-For`,
     // which a client writes for itself.
@@ -250,10 +252,11 @@ async fn revoke_other_sessions(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to revoke other sessions");
-            json_error(
+            crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not revoke the other sessions.",
             )
+            .into_response()
         }
     }
 }
@@ -315,12 +318,12 @@ async fn admin_revoke_session(
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: HeaderMap,
 ) -> Response {
-    let admin = match require_permission(&state, &session, "administer users").await {
+    let admin = match require_permission_json(&state, &session, "administer users").await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
     // The trusted-proxy-gated client address, not raw `X-Forwarded-For`,
     // which a client writes for itself.
@@ -352,13 +355,15 @@ async fn admin_revoke_session(
                 .await;
             Json(serde_json::json!({ "success": true })).into_response()
         }
-        Ok(None) => json_error(StatusCode::NOT_FOUND, "No such session."),
+        Ok(None) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such session.")
+            .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to revoke a session as admin");
-            json_error(
+            crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not revoke the session.",
             )
+            .into_response()
         }
     }
 }

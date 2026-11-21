@@ -420,8 +420,9 @@ Error responses:
 
 ```json
 {
-  "error": "Conference not found",
-  "status": 404
+  "code": "not_found",
+  "message": "Conference not found",
+  "request_id": "01a1fe41-419c-7007-8397-218151015cdd"
 }
 ```
 

@@ -30,23 +30,12 @@ use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::models::WebauthnCredential;
 use crate::models::webauthn_credential::{counter_regressed, encode_credential_id};
-use crate::routes::helpers::{require_csrf_header, require_login};
+use crate::routes::helpers::{require_csrf_header, require_login, require_login_json};
 use crate::services::webauthn::{
     PendingAuthentication, PendingRegistration, SESSION_WEBAUTHN_AUTH, SESSION_WEBAUTHN_REG,
     ceremony_expiry, ceremony_is_live,
 };
 use crate::state::AppState;
-
-/// The generic failure a ceremony endpoint returns.
-///
-/// Ceremony errors are deliberately terse and uniform: a caller learns that the
-/// ceremony failed, not which of attestation, challenge expiry, origin binding,
-/// or credential lookup failed. The specific cause goes to the log and the audit
-/// stream, where it is useful, rather than to an unauthenticated caller, where
-/// it is an oracle.
-fn ceremony_error(status: StatusCode, message: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
-}
 
 /// The client IP and User-Agent for an audit event.
 fn request_context(
@@ -84,22 +73,23 @@ async fn register_start(
     session: Session,
     headers: HeaderMap,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let existing = match WebauthnCredential::list_for_user(state.db(), user.id).await {
         Ok(creds) => creds,
         Err(e) => {
             tracing::error!(error = %e, user_id = %user.id, "failed to load existing credentials");
-            return ceremony_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not start registration.",
-            );
+            )
+            .into_response();
         }
     };
 
@@ -121,10 +111,11 @@ async fn register_start(
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, user_id = %user.id, "failed to start passkey registration");
-            return ceremony_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not start registration.",
-            );
+            )
+            .into_response();
         }
     };
 
@@ -135,10 +126,11 @@ async fn register_start(
     };
     if let Err(e) = session.insert(SESSION_WEBAUTHN_REG, pending).await {
         tracing::error!(error = %e, "failed to store registration ceremony state");
-        return ceremony_error(
+        return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not start registration.",
-        );
+        )
+        .into_response();
     }
 
     // CSRF tokens are single-use (`form::csrf::verify_csrf_token` consumes the
@@ -162,12 +154,12 @@ async fn register_finish(
     headers: HeaderMap,
     Json(body): Json<RegisterFinishRequest>,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
     let (ip, ua) = request_context(&headers, &client_ip);
 
@@ -189,7 +181,11 @@ async fn register_finish(
             .security_audit()
             .emit(audit_failure("no_ceremony_in_progress"))
             .await;
-        return ceremony_error(StatusCode::BAD_REQUEST, "No registration in progress.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "No registration in progress.",
+        )
+        .into_response();
     };
 
     if !ceremony_is_live(pending.expires_at, chrono::Utc::now().timestamp()) {
@@ -197,7 +193,11 @@ async fn register_finish(
             .security_audit()
             .emit(audit_failure("ceremony_expired"))
             .await;
-        return ceremony_error(StatusCode::BAD_REQUEST, "Registration expired. Try again.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "Registration expired. Try again.",
+        )
+        .into_response();
     }
 
     // A ceremony started as one account must never be completed as another —
@@ -212,7 +212,11 @@ async fn register_finish(
             .security_audit()
             .emit(audit_failure("ceremony_account_mismatch"))
             .await;
-        return ceremony_error(StatusCode::BAD_REQUEST, "No registration in progress.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "No registration in progress.",
+        )
+        .into_response();
     }
 
     let passkey = match state
@@ -226,10 +230,11 @@ async fn register_finish(
                 .security_audit()
                 .emit(audit_failure("verification_failed"))
                 .await;
-            return ceremony_error(
+            return crate::error::AppError::with_status(
                 StatusCode::BAD_REQUEST,
                 "Registration could not be verified.",
-            );
+            )
+            .into_response();
         }
     };
 
@@ -251,10 +256,11 @@ async fn register_finish(
                     .security_audit()
                     .emit(audit_failure("credential_already_registered"))
                     .await;
-                return ceremony_error(
+                return crate::error::AppError::with_status(
                     StatusCode::CONFLICT,
                     "That authenticator is already registered.",
-                );
+                )
+                .into_response();
             }
         };
 
@@ -322,10 +328,11 @@ async fn login_start(
     }
 
     let generic = || {
-        ceremony_error(
+        crate::error::AppError::with_status(
             StatusCode::UNAUTHORIZED,
             "Could not start passkey authentication.",
         )
+        .into_response()
     };
 
     let user = match state.users().find_by_name(&body.username).await {
@@ -333,10 +340,11 @@ async fn login_start(
         Ok(_) => return generic(),
         Err(e) => {
             tracing::error!(error = %e, "database error starting passkey authentication");
-            return ceremony_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not start passkey authentication.",
-            );
+            )
+            .into_response();
         }
     };
 
@@ -344,10 +352,11 @@ async fn login_start(
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "failed to load credentials for authentication");
-            return ceremony_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not start passkey authentication.",
-            );
+            )
+            .into_response();
         }
     };
 
@@ -417,7 +426,11 @@ async fn login_finish(
             .security_audit()
             .emit(audit_login_failure(None, "no_ceremony_in_progress"))
             .await;
-        return ceremony_error(StatusCode::BAD_REQUEST, "No authentication in progress.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "No authentication in progress.",
+        )
+        .into_response();
     };
 
     if !ceremony_is_live(pending.expires_at, chrono::Utc::now().timestamp()) {
@@ -428,10 +441,11 @@ async fn login_finish(
                 "ceremony_expired",
             ))
             .await;
-        return ceremony_error(
+        return crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "Authentication expired. Try again.",
-        );
+        )
+        .into_response();
     }
 
     // Which credential is being asserted, for the D-37 flag and the audit trail.
@@ -502,7 +516,11 @@ async fn login_finish(
                     },
                 ))
                 .await;
-            return ceremony_error(StatusCode::UNAUTHORIZED, "Authentication failed.");
+            return crate::error::AppError::with_status(
+                StatusCode::UNAUTHORIZED,
+                "Authentication failed.",
+            )
+            .into_response();
         }
     };
 
@@ -520,7 +538,11 @@ async fn login_finish(
                 "credential_not_owned",
             ))
             .await;
-        return ceremony_error(StatusCode::UNAUTHORIZED, "Authentication failed.");
+        return crate::error::AppError::with_status(
+            StatusCode::UNAUTHORIZED,
+            "Authentication failed.",
+        )
+        .into_response();
     };
 
     // Belt-and-braces on D-37: state the invariant in kernel terms too, so a
@@ -555,7 +577,11 @@ async fn login_finish(
                 "counter_regression",
             ))
             .await;
-        return ceremony_error(StatusCode::UNAUTHORIZED, "Authentication failed.");
+        return crate::error::AppError::with_status(
+            StatusCode::UNAUTHORIZED,
+            "Authentication failed.",
+        )
+        .into_response();
     }
 
     let user = match crate::models::User::find_by_id(state.db(), pending.user_id).await {
@@ -568,7 +594,11 @@ async fn login_finish(
                     "account_unavailable",
                 ))
                 .await;
-            return ceremony_error(StatusCode::UNAUTHORIZED, "Authentication failed.");
+            return crate::error::AppError::with_status(
+                StatusCode::UNAUTHORIZED,
+                "Authentication failed.",
+            )
+            .into_response();
         }
     };
 
@@ -595,7 +625,11 @@ async fn login_finish(
     // act is `cycle_id`, so the fixation invariant holds here for free.
     if let Err(e) = crate::routes::auth::setup_session(&session, user.id, false).await {
         tracing::error!(error = %e, "failed to set up session after passkey authentication");
-        return ceremony_error(StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed.");
+        return crate::error::AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Authentication failed.",
+        )
+        .into_response();
     }
 
     info!(user_id = %user.id, "user logged in with a passkey");
@@ -689,21 +723,22 @@ async fn rename_credential(
     headers: HeaderMap,
     Json(body): Json<CredentialActionRequest>,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let name = body.device_name.unwrap_or_default();
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_DEVICE_NAME_LEN {
-        return ceremony_error(
+        return crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "Give the device a name of 1 to 64 characters.",
-        );
+        )
+        .into_response();
     }
 
     // Scoped to the owner, so guessing another account's credential id achieves
@@ -721,13 +756,15 @@ async fn rename_credential(
                 .await;
             Json(serde_json::json!({ "success": true, "device_name": name })).into_response()
         }
-        Ok(false) => ceremony_error(StatusCode::NOT_FOUND, "No such passkey."),
+        Ok(false) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such passkey.")
+            .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to rename credential");
-            ceremony_error(
+            crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not rename the passkey.",
             )
+            .into_response()
         }
     }
 }
@@ -759,12 +796,12 @@ async fn revoke_credential(
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     headers: HeaderMap,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
     let ip = client_ip_of(&headers, &state);
 
@@ -772,13 +809,17 @@ async fn revoke_credential(
     // than an invariant question about someone else's account.
     match WebauthnCredential::find_owned(state.db(), id, user.id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return ceremony_error(StatusCode::NOT_FOUND, "No such passkey."),
+        Ok(None) => {
+            return crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such passkey.")
+                .into_response();
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to load credential for revocation");
-            return ceremony_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not remove the passkey.",
-            );
+            )
+            .into_response();
         }
     }
 
@@ -798,7 +839,8 @@ async fn revoke_credential(
                     .detail("recovery_paths", access.non_password_recovery_paths),
             )
             .await;
-        return ceremony_error(StatusCode::CONFLICT, blocked.message());
+        return crate::error::AppError::with_status(StatusCode::CONFLICT, blocked.message())
+            .into_response();
     }
 
     match WebauthnCredential::delete_owned(state.db(), id, user.id).await {
@@ -816,13 +858,15 @@ async fn revoke_credential(
                 .await;
             Json(serde_json::json!({ "success": true })).into_response()
         }
-        Ok(false) => ceremony_error(StatusCode::NOT_FOUND, "No such passkey."),
+        Ok(false) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such passkey.")
+            .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to revoke credential");
-            ceremony_error(
+            crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not remove the passkey.",
             )
+            .into_response()
         }
     }
 }
@@ -837,12 +881,12 @@ async fn remove_password(
     session: Session,
     headers: HeaderMap,
 ) -> Response {
-    let user = match require_login(&state, &session).await {
+    let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
-        Err(resp) => return resp,
+        Err(refusal) => return refusal.into_response(),
     };
-    if let Err((status, body)) = require_csrf_header(&session, &headers).await {
-        return (status, body).into_response();
+    if let Err(refusal) = require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
     let ip = client_ip_of(&headers, &state);
 
@@ -868,7 +912,8 @@ async fn remove_password(
                     .detail("recovery_paths", access.non_password_recovery_paths),
             )
             .await;
-        return ceremony_error(StatusCode::CONFLICT, blocked.message());
+        return crate::error::AppError::with_status(StatusCode::CONFLICT, blocked.message())
+            .into_response();
     }
 
     if let Err(e) = sqlx::query("UPDATE users SET pass = '' WHERE id = $1")
@@ -877,10 +922,11 @@ async fn remove_password(
         .await
     {
         tracing::error!(error = %e, "failed to remove password");
-        return ceremony_error(
+        return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not remove the password.",
-        );
+        )
+        .into_response();
     }
     state.users().invalidate(user.id);
 

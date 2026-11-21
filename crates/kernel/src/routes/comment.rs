@@ -13,10 +13,9 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::content::FilterPipeline;
+use crate::error::AppError;
 use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
-use crate::routes::helpers::{
-    JsonError, require_csrf_header, require_login_json, user_context_for,
-};
+use crate::routes::helpers::{require_csrf_header, require_login_json, user_context_for};
 use crate::state::AppState;
 
 /// Render a comment body to HTML with safe format whitelisting.
@@ -103,28 +102,13 @@ pub struct CommentSubmission {
 
 impl CommentSubmission {
     /// Verify this submission's CSRF token from whichever place it travels.
-    async fn verify_csrf(
-        &self,
-        session: &Session,
-        headers: &HeaderMap,
-    ) -> Result<(), (StatusCode, Json<JsonError>)> {
-        let csrf_error = |s: StatusCode| {
-            (
-                s,
-                Json(JsonError {
-                    error: "Invalid or missing CSRF token".to_string(),
-                }),
-            )
-        };
-
+    async fn verify_csrf(&self, session: &Session, headers: &HeaderMap) -> Result<(), AppError> {
         match self.body_csrf {
             Some(ref token) => crate::routes::helpers::require_csrf(session, token)
                 .await
                 .map(|_| ())
-                .map_err(|_| csrf_error(StatusCode::FORBIDDEN)),
-            None => require_csrf_header(session, headers)
-                .await
-                .map_err(|(s, _)| csrf_error(s)),
+                .map_err(|_| AppError::forbidden("Invalid or missing CSRF token")),
+            None => require_csrf_header(session, headers).await,
         }
     }
 
@@ -146,7 +130,7 @@ impl CommentSubmission {
 }
 
 impl<S: Send + Sync> axum::extract::FromRequest<S> for CommentSubmission {
-    type Rejection = (StatusCode, Json<JsonError>);
+    type Rejection = AppError;
 
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
         let content_type = req
@@ -156,8 +140,7 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for CommentSubmission {
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        let bad_request =
-            |message: String| (StatusCode::BAD_REQUEST, Json(JsonError { error: message }));
+        let bad_request = |message: String| AppError::with_status(StatusCode::BAD_REQUEST, message);
 
         if content_type.starts_with("application/x-www-form-urlencoded") {
             let axum::Form(form) =
@@ -199,28 +182,16 @@ async fn list_item_comments(
     session: Session,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ListCommentsQuery>,
-) -> Result<Json<CommentListResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<CommentListResponse>, AppError> {
     // Verify item exists and is viewable by this user (FR-8 Story 3.3): comments
     // on an item the viewer cannot see must not leak. Denied access returns 404
     // (same as missing) so item existence is not disclosed.
     let item = state.items().load(item_id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load item");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
+        AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     })?;
 
-    let not_found = || {
-        (
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Item not found".to_string(),
-            }),
-        )
-    };
+    let not_found = || AppError::with_status(StatusCode::NOT_FOUND, "Item not found");
 
     let Some(item) = item else {
         return Err(not_found());
@@ -244,12 +215,7 @@ async fn list_item_comments(
     // Get comments (threaded order)
     let comments = state.comments().list_for_item(item_id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to list comments");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
+        AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     })?;
 
     let total = comments.len() as i64;
@@ -339,8 +305,8 @@ async fn create_comment(
         Err(_) => "error",
     };
 
-    if let Err((status, message)) = &result {
-        tracing::debug!(status = %status, error = %message.0.error, "comment form submission refused");
+    if let Err(refusal) = &result {
+        tracing::debug!(status = %refusal.status(), error = %refusal.public_message(), "comment form submission refused");
     }
 
     axum::response::Redirect::to(&format!("{target}?comment={outcome}#comments")).into_response()
@@ -364,7 +330,7 @@ async fn create_comment_inner(
     headers: &HeaderMap,
     item_id: Uuid,
     request: CommentSubmission,
-) -> Result<CommentResponse, (StatusCode, Json<JsonError>)> {
+) -> Result<CommentResponse, AppError> {
     // Check authentication
     let user = require_login_json(state, session).await?;
     let user_id = user.id;
@@ -379,21 +345,9 @@ async fn create_comment_inner(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to load item");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
         })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "Item not found".to_string(),
-                }),
-            )
-        })?;
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "Item not found"))?;
 
     // And the commenter has to be able to *see* the item. `post comments` used
     // to be the whole rule here, so it was also a way to learn that a draft
@@ -405,11 +359,9 @@ async fn create_comment_inner(
         .await
         .unwrap_or(false)
     {
-        return Err((
+        return Err(AppError::with_status(
             StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Item not found".to_string(),
-            }),
+            "Item not found",
         ));
     }
 
@@ -417,41 +369,30 @@ async fn create_comment_inner(
     if let Some(parent_id) = request.parent_id {
         let parent = state.comments().load(parent_id).await.map_err(|e| {
             tracing::error!(error = %e, "failed to load parent comment");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
         })?;
 
         let Some(parent) = parent else {
-            return Err((
+            return Err(AppError::with_status(
                 StatusCode::BAD_REQUEST,
-                Json(JsonError {
-                    error: "Parent comment not found".to_string(),
-                }),
+                "Parent comment not found",
             ));
         };
 
         // Verify parent is on the same item
         if parent.item_id != item_id {
-            return Err((
+            return Err(AppError::with_status(
                 StatusCode::BAD_REQUEST,
-                Json(JsonError {
-                    error: "Parent comment is on a different item".to_string(),
-                }),
+                "Parent comment is on a different item",
             ));
         }
     }
 
     // Validate body
     if request.body.trim().is_empty() {
-        return Err((
+        return Err(AppError::with_status(
             StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Comment body cannot be empty".to_string(),
-            }),
+            "Comment body cannot be empty",
         ));
     }
 
@@ -462,11 +403,9 @@ async fn create_comment_inner(
 
     // Check "post comments" permission
     if !user_ctx.is_admin() && !user_ctx.has_permission("post comments") {
-        return Err((
+        return Err(AppError::with_status(
             StatusCode::FORBIDDEN,
-            Json(JsonError {
-                error: "You do not have permission to post comments".to_string(),
-            }),
+            "You do not have permission to post comments",
         ));
     }
 
@@ -513,11 +452,9 @@ async fn create_comment_inner(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to create comment");
-            (
+            AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to create comment".to_string(),
-                }),
+                "Failed to create comment",
             )
         })?;
 
@@ -570,25 +507,13 @@ async fn get_comment(
     session: Session,
     Path(id): Path<Uuid>,
     Query(query): Query<ListCommentsQuery>,
-) -> Result<Json<CommentResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<CommentResponse>, AppError> {
     let comment = state.comments().load(id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load comment");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
+        AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     })?;
 
-    let not_found = || {
-        (
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Comment not found".to_string(),
-            }),
-        )
-    };
+    let not_found = || AppError::with_status(StatusCode::NOT_FOUND, "Comment not found");
 
     let comment = comment.ok_or_else(not_found)?;
 
@@ -665,41 +590,21 @@ async fn update_comment(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(request): Json<UpdateCommentRequest>,
-) -> Result<Json<CommentResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<CommentResponse>, AppError> {
     // Check authentication
     let user = require_login_json(&state, &session).await?;
 
     // Verify CSRF token from header
-    require_csrf_header(&session, &headers)
-        .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+    require_csrf_header(&session, &headers).await?;
 
     // Load existing comment
     let existing = state.comments().load(id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load comment");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
+        AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     })?;
 
-    let existing = existing.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Comment not found".to_string(),
-            }),
-        )
-    })?;
+    let existing = existing
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "Comment not found"))?;
 
     // Build UserContext for the acting user to check access
     // One loader, one context shape: the same one every read handler in this
@@ -713,19 +618,12 @@ async fn update_comment(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check comment access");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
         })?;
     if !has_access {
-        return Err((
+        return Err(AppError::with_status(
             StatusCode::FORBIDDEN,
-            Json(JsonError {
-                error: "You do not have permission to edit this comment".to_string(),
-            }),
+            "You do not have permission to edit this comment",
         ));
     }
 
@@ -733,11 +631,9 @@ async fn update_comment(
     if let Some(ref body) = request.body
         && body.trim().is_empty()
     {
-        return Err((
+        return Err(AppError::with_status(
             StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: "Comment body cannot be empty".to_string(),
-            }),
+            "Comment body cannot be empty",
         ));
     }
 
@@ -753,21 +649,12 @@ async fn update_comment(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to update comment");
-            (
+            AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Failed to update comment".to_string(),
-                }),
+                "Failed to update comment",
             )
         })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "Comment not found".to_string(),
-                }),
-            )
-        })?;
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "Comment not found"))?;
 
     let author = state
         .users()
@@ -805,41 +692,21 @@ async fn delete_comment(
     session: Session,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<serde_json::Value>, AppError> {
     // Check authentication
     let user = require_login_json(&state, &session).await?;
 
     // Verify CSRF token from header
-    require_csrf_header(&session, &headers)
-        .await
-        .map_err(|(s, j)| {
-            (
-                s,
-                Json(JsonError {
-                    error: j.0["error"].as_str().unwrap_or("CSRF error").to_string(),
-                }),
-            )
-        })?;
+    require_csrf_header(&session, &headers).await?;
 
     // Load existing comment
     let existing = state.comments().load(id).await.map_err(|e| {
         tracing::error!(error = %e, "failed to load comment");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
+        AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     })?;
 
-    let existing = existing.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "Comment not found".to_string(),
-            }),
-        )
-    })?;
+    let existing = existing
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "Comment not found"))?;
 
     // Build UserContext for access check
     // One loader, one context shape: the same one every read handler in this
@@ -853,29 +720,20 @@ async fn delete_comment(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check comment access");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
-            )
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
         })?;
     if !has_access {
-        return Err((
+        return Err(AppError::with_status(
             StatusCode::FORBIDDEN,
-            Json(JsonError {
-                error: "You do not have permission to delete this comment".to_string(),
-            }),
+            "You do not have permission to delete this comment",
         ));
     }
 
     state.comments().delete(id, &user_ctx).await.map_err(|e| {
         tracing::error!(error = %e, "failed to delete comment");
-        (
+        AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Failed to delete comment".to_string(),
-            }),
+            "Failed to delete comment",
         )
     })?;
 

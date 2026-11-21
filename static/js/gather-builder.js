@@ -828,7 +828,7 @@
             } else {
                 try {
                     var errResponse = JSON.parse(xhr.responseText);
-                    showPreviewError(errResponse.error || 'Preview failed (' + xhr.status + ')');
+                    showPreviewError(errResponse.message || 'Preview failed (' + xhr.status + ')');
                 } catch (e) {
                     showPreviewError('Preview failed (' + xhr.status + ')');
                 }

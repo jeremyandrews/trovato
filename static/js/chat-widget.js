@@ -85,9 +85,9 @@
 
         if (!response.ok) {
           var err = await response.json().catch(function () {
-            return { error: 'Request failed' };
+            return { message: 'Request failed' };
           });
-          assistantDiv.textContent = 'Error: ' + (err.error || 'Unknown error');
+          assistantDiv.textContent = 'Error: ' + (err.message || 'Unknown error');
           assistantDiv.classList.add('chat-message--error');
           return;
         }

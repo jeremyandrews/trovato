@@ -9,6 +9,34 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### JSON errors are one shape: read `message`, not `error`
+
+**Who is affected:** an API client, script or theme JavaScript that reads the
+reason out of a kernel JSON error.
+
+**What changed.** Every JSON error from a kernel route is now
+
+```json
+{"code": "not_found", "message": "Comment not found", "request_id": "..."}
+```
+
+with `details` added for a validation failure. The `{"error": ...}` bodies
+(comments, categories, gathers, items, passkeys, sessions, recovery, account
+deletion, CSRF and API token failures), `/api/v1`'s `{"error", "status"}`, the
+rate limiter's `{"error", "retry_after"}` and the plain-text answers of the
+content-lock, OAuth, image style and bearer-token routes are gone. Status codes
+are unchanged, except that the passkey, session and recovery JSON endpoints
+answer an anonymous caller `401` instead of redirecting it to the login form.
+The rate limit still sends `Retry-After`.
+
+A plugin's own API routes (`handler_type = "api"`) answer the same body plus
+`error`, the same string as `message`, until 2.0.
+
+**What to do.** Read `message` (and branch on `code` rather than on the
+text). A client of plugin API routes needs nothing now and should move to
+`message` before 2.0. Find readers with `grep -rn '\.error\b' static/ templates/`
+in a theme or site.
+
 ### Anonymous JSON callers get `401`, signed-in ones `403`
 
 **Who is affected:** an API client or script that calls kernel JSON endpoints

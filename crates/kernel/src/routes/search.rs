@@ -250,13 +250,11 @@ async fn search_json(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "search failed");
-            return (
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "Search failed"
-                })),
+                "Search failed",
             )
-                .into_response();
+            .into_response();
         }
     };
 
