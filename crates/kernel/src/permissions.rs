@@ -9,6 +9,7 @@ use moka::sync::Cache;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::role::well_known;
 use crate::models::{Role, User};
@@ -219,17 +220,25 @@ impl PermissionService {
         Ok(self.access_for(user_id, anonymous).await?.roles)
     }
 
-    /// Invalidate the cache for a specific user.
+    /// Invalidate the cache for a specific user, here and on every other server.
     ///
-    /// Call this when a user's roles or permissions change.
+    /// Call this when a user's roles or permissions change, after the write
+    /// commits. Other servers clear their whole permission cache.
     pub fn invalidate_user(&self, user_id: Uuid) {
         self.inner.user_cache.invalidate(&user_id);
+        bump(CacheKind::Permissions);
     }
 
-    /// Invalidate the entire cache.
+    /// Invalidate the entire cache, here and on every other server.
     ///
-    /// Call this when role permissions change.
+    /// Call this when role permissions change, after the write commits.
     pub fn invalidate_all(&self) {
+        self.clear_local();
+        bump(CacheKind::Permissions);
+    }
+
+    /// Clear this server's cache only: what another server's bump does here.
+    pub fn clear_local(&self) {
         self.inner.user_cache.invalidate_all();
     }
 

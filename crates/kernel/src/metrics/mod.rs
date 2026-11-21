@@ -33,10 +33,6 @@ pub struct CacheLabels {
 pub enum CacheName {
     /// `ItemService`: items by id.
     Item,
-    /// `ItemService`: an item's stage, for its access decision.
-    ItemStage,
-    /// `ItemService`: the stage visibility view.
-    StageView,
     /// `ItemService`: field-access decisions from `tap_field_access`.
     FieldAccess,
     /// `UserService`: users by id.
@@ -59,9 +55,8 @@ pub enum CacheName {
     Locale,
     /// `ThemeEngine`: the template a suggestion list resolves to.
     TemplateSuggestion,
-    /// `CacheLayer`: the in-process (Moka) tier.
-    LayerL1,
-    /// `CacheLayer`: the shared (Redis) tier.
+    /// `CacheLayer`, in Redis. The label keeps its `layer_l2` name from when
+    /// the layer also had an in-process tier, so existing dashboards still read.
     LayerL2,
 }
 
@@ -69,10 +64,8 @@ impl CacheName {
     /// Every cache name, in label order.
     ///
     /// In declaration order: a name's discriminant is its index here.
-    pub const ALL: [CacheName; 16] = [
+    pub const ALL: [CacheName; 13] = [
         CacheName::Item,
-        CacheName::ItemStage,
-        CacheName::StageView,
         CacheName::FieldAccess,
         CacheName::User,
         CacheName::Permissions,
@@ -84,7 +77,6 @@ impl CacheName {
         CacheName::Menu,
         CacheName::Locale,
         CacheName::TemplateSuggestion,
-        CacheName::LayerL1,
         CacheName::LayerL2,
     ];
 
@@ -92,8 +84,6 @@ impl CacheName {
     pub const fn as_str(self) -> &'static str {
         match self {
             CacheName::Item => "item",
-            CacheName::ItemStage => "item_stage",
-            CacheName::StageView => "stage_view",
             CacheName::FieldAccess => "field_access",
             CacheName::User => "user",
             CacheName::Permissions => "permissions",
@@ -105,7 +95,6 @@ impl CacheName {
             CacheName::Menu => "menu",
             CacheName::Locale => "locale",
             CacheName::TemplateSuggestion => "template_suggestion",
-            CacheName::LayerL1 => "layer_l1",
             CacheName::LayerL2 => "layer_l2",
         }
     }

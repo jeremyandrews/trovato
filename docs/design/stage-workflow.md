@@ -30,11 +30,10 @@ every such site's workflow.
 
 The kernel parses it into a typed `Workflow` (`models/workflow.rs`, beside the
 stage model): a list of `Transition { from, to, permission, label }`, each
-stage resolved to its id. It is loaded through `ItemService`, cached with the
-stage cache (same capacity bound and TTL, cleared by `clear_stage_cache`), so a
-change to the variable is seen within the stage cache's TTL with no hook in
-the config storage, and a `config import` from another process is seen the
-same way stages are.
+stage resolved to its id. It is loaded through `ItemService` together with the
+stages, read from Postgres each time and not cached, so a change to the
+variable or to a stage is seen at once by every server, with no hook in the
+config storage, including a `config import` from another process.
 
 Validation, twice:
 

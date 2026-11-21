@@ -482,6 +482,8 @@ impl AiTokenBudgetService {
         .execute(pool)
         .await
         .context("failed to save user budget override")?;
+        // The override lives in the cached user record.
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::Users);
 
         Ok(())
     }
@@ -507,6 +509,7 @@ impl AiTokenBudgetService {
         .execute(pool)
         .await
         .context("failed to remove user budget override")?;
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::Users);
 
         Ok(())
     }

@@ -1149,7 +1149,7 @@ impl AppState {
             });
         }
 
-        Ok(Self {
+        let state = Self {
             inner: Arc::new(AppStateInner {
                 runtime: config.runtime.clone(),
                 db,
@@ -1214,7 +1214,55 @@ impl AppState {
                 },
                 comments,
             }),
-        })
+        };
+
+        // Cache generations (`cache::generation`): writes from here bump, and
+        // a bump from any server clears that cache here. A single server runs
+        // this too; it then only ever sees its own bumps.
+        crate::cache::generation::init(state.redis());
+        let watched = state.clone();
+        crate::cache::generation::spawn_watcher(state.redis().clone(), move |kind| {
+            let state = watched.clone();
+            async move { state.clear_local_cache(kind).await }
+        });
+
+        Ok(state)
+    }
+
+    /// Clear this server's cache of `kind`, without bumping: what a bump from
+    /// any server, this one included, does here.
+    async fn clear_local_cache(&self, kind: crate::cache::generation::CacheKind) {
+        use crate::cache::generation::CacheKind;
+        match kind {
+            CacheKind::Permissions => self.permissions().clear_local(),
+            CacheKind::Users => self.users().clear_local(),
+            CacheKind::Items => self.items().clear_local(),
+            CacheKind::FieldAccess => self.items().flush_field_access_cache(),
+            CacheKind::ContentTypes => {
+                if let Err(e) = self.content_types().reload_from_db().await {
+                    warn!(error = %e, "failed to reload content types after a bump");
+                }
+            }
+            CacheKind::Categories => self.categories().clear_local(),
+            CacheKind::Gather => {
+                if let Err(e) = self.gather().refresh_local().await {
+                    warn!(error = %e, "failed to reload gather queries after a bump");
+                }
+            }
+            CacheKind::Redirects => {
+                if let Some(redirects) = self.redirect_cache() {
+                    redirects.clear();
+                }
+            }
+            CacheKind::Locale => {
+                if let Some(locale) = self.locale()
+                    && let Err(e) = locale.reload().await
+                {
+                    warn!(error = %e, "failed to reload locale strings after a bump");
+                }
+            }
+            CacheKind::Menus => crate::menu::clear_local_config_menus(),
+        }
     }
 
     /// The configuration request handling reads.

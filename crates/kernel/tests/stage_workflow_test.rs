@@ -137,7 +137,6 @@ async fn stage(app: &TestApp, prefix: &str) -> Stage {
             .execute(&pool)
             .await;
     });
-    app.state.items().clear_stage_cache();
     Stage::find_by_id(&app.db, id)
         .await
         .expect("read stage")
@@ -151,7 +150,6 @@ async fn set_workflow(app: &TestApp, transitions: serde_json::Value) {
     SiteConfig::set(&app.db, WORKFLOW_KEY, json!({ "transitions": transitions }))
         .await
         .expect("store the workflow");
-    app.state.items().clear_stage_cache();
 }
 
 /// Remove the workflow, putting it back when the test ends.
@@ -160,7 +158,6 @@ async fn clear_workflow(app: &TestApp) {
     SiteConfig::delete(&app.db, WORKFLOW_KEY)
         .await
         .expect("remove the workflow");
-    app.state.items().clear_stage_cache();
 }
 
 async fn remember_workflow(app: &TestApp) {
@@ -168,13 +165,11 @@ async fn remember_workflow(app: &TestApp) {
         .await
         .expect("read the workflow");
     let pool = app.db.clone();
-    let items = Arc::clone(app.state.items());
     common::defer_cleanup(move || async move {
         let _ = match previous {
             Some(value) => SiteConfig::set(&pool, WORKFLOW_KEY, value).await,
             None => SiteConfig::delete(&pool, WORKFLOW_KEY).await.map(|_| ()),
         };
-        items.clear_stage_cache();
     });
 }
 
@@ -831,7 +826,6 @@ fn an_item_whose_stage_row_is_gone_is_denied() {
             .execute(&app.db)
             .await
             .expect("remove the stage row");
-        app.state.items().clear_stage_cache();
 
         let viewer = context_of(viewer_id, &["access content", "edit any content"]);
         let allowed = app

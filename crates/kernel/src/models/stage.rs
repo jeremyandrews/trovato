@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::cache::generation::{CacheKind, bump};
 use crate::routes::helpers::is_valid_machine_name;
 
 /// Deterministic UUID for the "live" stage tag, matching the migration seed.
@@ -302,6 +303,8 @@ impl Stage {
         .context("failed to insert stage config")?;
 
         tx.commit().await.context("failed to commit transaction")?;
+        // A stage is a tag in the `stages` category.
+        bump(CacheKind::Categories);
 
         Self::find_by_id(pool, id)
             .await?
@@ -378,6 +381,7 @@ impl Stage {
         .execute(pool)
         .await
         .context("failed to update stage label")?;
+        bump(CacheKind::Categories);
 
         Ok(result.rows_affected() > 0)
     }
@@ -406,6 +410,7 @@ impl Stage {
                 .execute(pool)
                 .await
                 .context("failed to update stage changed timestamp")?;
+            bump(CacheKind::Categories);
         }
 
         Ok(result.rows_affected() > 0)
@@ -514,6 +519,7 @@ impl Stage {
         .context("failed to update stage config")?;
 
         tx.commit().await.context("failed to commit transaction")?;
+        bump(CacheKind::Categories);
 
         Self::find_by_id(pool, id).await
     }
@@ -585,6 +591,7 @@ impl Stage {
                 .execute(pool)
                 .await
                 .context("failed to delete stage")?;
+        bump(CacheKind::Categories);
 
         Ok(result.rows_affected() > 0)
     }

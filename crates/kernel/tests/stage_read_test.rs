@@ -44,7 +44,6 @@ async fn internal_stage(app: &TestApp) -> Uuid {
             let _ = sqlx::query(sql).bind(id).execute(&pool).await;
         }
     });
-    app.state.items().clear_stage_cache();
     id
 }
 

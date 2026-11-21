@@ -54,6 +54,13 @@ static CONFIG_MENUS: LazyLock<Cache<(Uuid, String), Arc<ConfigMenus>>> = LazyLoc
 /// URL alias or an item translation created, updated or deleted, a config
 /// import and a stage publish.
 pub fn invalidate_config_menus() {
+    clear_local_config_menus();
+    crate::cache::generation::bump(crate::cache::generation::CacheKind::Menus);
+}
+
+/// Drop this server's cached config menus only: what another server's bump
+/// does here.
+pub fn clear_local_config_menus() {
     CONFIG_MENUS.invalidate_all();
 }
 

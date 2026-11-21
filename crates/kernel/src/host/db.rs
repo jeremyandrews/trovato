@@ -22,6 +22,7 @@ use wasmtime::Linker;
 use super::sql_guard;
 use super::trace::TracedLinker;
 
+use crate::cache::generation::CacheKind;
 use crate::plugin::WasmtimeExt;
 
 /// Maximum execution time for plugin SQL queries (5 seconds).
@@ -302,8 +303,22 @@ async fn do_execute_raw(
     };
 
     let _ = conn.execute("COMMIT").await;
+    bump_tables(sql_guard::relations(sql).iter().map(String::as_str));
 
     Ok(result.rows_affected())
+}
+
+/// Tell every server whose in-process cache holds rows of `tables` to clear it
+/// (`cache::generation`). A plugin write has no handle on the kernel's
+/// services, so this server clears on its own bump too, within the poll.
+fn bump_tables<'a>(tables: impl IntoIterator<Item = &'a str>) {
+    let kinds: Vec<CacheKind> = tables
+        .into_iter()
+        .filter_map(CacheKind::for_table)
+        .collect();
+    if !kinds.is_empty() {
+        crate::cache::generation::bump_all(&kinds);
+    }
 }
 
 /// Reject a structured call whose target table is outside the plugin's effective
@@ -436,7 +451,9 @@ async fn do_insert(
     );
 
     // Bypass read-only guard since INSERT RETURNING needs row results.
-    fetch_rows(pool, &sql, &params, Access::ReadWrite).await
+    let rows = fetch_rows(pool, &sql, &params, Access::ReadWrite).await?;
+    bump_tables([table]);
+    Ok(rows)
 }
 
 /// Build and execute a structured UPDATE.
@@ -668,7 +685,9 @@ async fn do_upsert(
         set.join(", ")
     );
     let params: Vec<serde_json::Value> = data.into_iter().map(|(_, v)| v).collect();
-    fetch_rows(pool, &sql, &params, Access::ReadWrite).await
+    let rows = fetch_rows(pool, &sql, &params, Access::ReadWrite).await?;
+    bump_tables([table]);
+    Ok(rows)
 }
 
 /// Most rows one `insert-many` writes.

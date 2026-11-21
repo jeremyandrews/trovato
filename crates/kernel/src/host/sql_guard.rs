@@ -92,6 +92,24 @@ pub fn check_query_raw(sql: &str) -> Result<(), RawSqlReject> {
     walk(&statement, Mode::Read)
 }
 
+/// Every table `sql` names, bare and lowercased (as the guard sees them), or
+/// none if it does not parse. Used after a plugin write to tell the servers'
+/// caches which tables changed; a table only read in the statement is named
+/// too, which costs at most an extra cache clear.
+pub fn relations(sql: &str) -> Vec<String> {
+    let Ok(statement) = parse_one(sql) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    let _ = sqlparser::ast::visit_relations(&statement, |relation| {
+        if let Some(name) = last_ident(relation) {
+            names.push(name);
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    names
+}
+
 /// What `execute-raw` will carry: one INSERT, UPDATE or DELETE and nothing else.
 pub fn check_execute_raw(sql: &str) -> Result<(), RawSqlReject> {
     let statement = parse_one(sql)?;

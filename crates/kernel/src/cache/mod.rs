@@ -1,77 +1,48 @@
-//! Two-tier cache with Moka (L1) and Redis (L2).
+//! The shared cache: values in Redis, with tag-based invalidation.
 //!
-//! Supports tag-based invalidation for efficient cache management.
+//! There is no in-process tier. Every server reads the same Redis, so a value
+//! invalidated by one server is gone for all of them at once.
+
+pub mod generation;
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use moka::future::Cache;
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use tracing::{debug, warn};
 
 use crate::metrics::{CacheName, Metrics};
 
-/// Default TTL for L1 cache (60 seconds).
-const L1_TTL_SECS: u64 = 60;
+/// Default TTL for a cached value (5 minutes).
+const DEFAULT_TTL_SECS: u64 = 300;
 
-/// Default TTL for L2 cache (5 minutes).
-const L2_TTL_SECS: u64 = 300;
-
-/// Maximum L1 cache capacity.
-const L1_MAX_CAPACITY: u64 = 10_000;
-
-/// Two-tier cache layer.
-///
-/// L1 (Moka): In-process, short TTL, per-instance
-/// L2 (Redis): Shared across instances, longer TTL
+/// The shared cache layer.
 #[derive(Clone)]
 pub struct CacheLayer {
     inner: Arc<CacheLayerInner>,
 }
 
 struct CacheLayerInner {
-    /// L1 in-process cache.
-    local: Cache<String, String>,
-
-    /// L2 Redis client.
+    /// Redis client.
     redis: RedisClient,
 
-    /// Counts L1 and L2 hits and misses, separately.
+    /// Counts hits and misses (the `layer_l2` cache label).
     metrics: Arc<Metrics>,
 }
 
 impl CacheLayer {
     /// Create a new cache layer.
     pub fn new(redis: RedisClient, metrics: Arc<Metrics>) -> Self {
-        let local = Cache::builder()
-            .max_capacity(L1_MAX_CAPACITY)
-            .time_to_live(Duration::from_secs(L1_TTL_SECS))
-            .build();
-
         Self {
-            inner: Arc::new(CacheLayerInner {
-                local,
-                redis,
-                metrics,
-            }),
+            inner: Arc::new(CacheLayerInner { redis, metrics }),
         }
     }
 
     /// Get a value from cache.
-    ///
-    /// Checks L1 first, then L2. On L2 hit, populates L1.
     pub async fn get(&self, key: &str) -> Option<String> {
         let metrics = &self.inner.metrics;
-        // Check L1 first
-        if let Some(val) = metrics.cache_lookup(CacheName::LayerL1, self.inner.local.get(key).await)
-        {
-            debug!(key = %key, "cache L1 hit");
-            return Some(val);
-        }
-
-        // Check L2. A Redis that cannot be reached answers nothing, which is a
-        // miss to the caller and is counted as one.
+        // A Redis that cannot be reached answers nothing, which is a miss to
+        // the caller and is counted as one.
         let mut conn = match self.inner.redis.get_multiplexed_async_connection().await {
             Ok(c) => c,
             Err(e) => {
@@ -81,36 +52,24 @@ impl CacheLayer {
             }
         };
 
-        let val: Option<String> = metrics.cache_lookup(
+        metrics.cache_lookup(
             CacheName::LayerL2,
             conn.get::<_, Option<String>>(key).await.ok().flatten(),
-        );
-
-        if let Some(ref v) = val {
-            debug!(key = %key, "cache L2 hit, populating L1");
-            self.inner.local.insert(key.to_string(), v.clone()).await;
-        }
-
-        val
+        )
     }
 
     /// Set a value in cache with TTL and tags.
-    ///
-    /// Writes to both L1 and L2.
     pub async fn set(&self, key: &str, value: &str, ttl_secs: u64, tags: &[&str]) {
-        // Set in L1
-        self.inner
-            .local
-            .insert(key.to_string(), value.to_string())
-            .await;
-
-        // Set in L2 with TTL
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for cache set");
             return;
         };
 
-        let ttl = if ttl_secs > 0 { ttl_secs } else { L2_TTL_SECS };
+        let ttl = if ttl_secs > 0 {
+            ttl_secs
+        } else {
+            DEFAULT_TTL_SECS
+        };
 
         if let Err(e) = conn.set_ex::<_, _, ()>(key, value, ttl).await {
             warn!(error = %e, key = %key, "failed to set cache value in Redis");
@@ -130,10 +89,6 @@ impl CacheLayer {
 
     /// Invalidate a single cache key.
     pub async fn invalidate(&self, key: &str) {
-        // Invalidate L1
-        self.inner.local.invalidate(key).await;
-
-        // Invalidate L2
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for cache invalidate");
             return;
@@ -157,28 +112,12 @@ impl CacheLayer {
             return;
         };
 
-        // Get all keys for this tag
-        let keys: Vec<String> = match conn.smembers(&tag_key).await {
-            Ok(k) => k,
-            Err(e) => {
-                warn!(error = %e, tag = %tag, "failed to get tag members");
-                return;
-            }
-        };
-
-        // Invalidate L1 for all tagged keys
-        for key in &keys {
-            self.inner.local.invalidate(key).await;
-        }
-
         // Use Lua script for atomic Redis invalidation
         let script = redis::Script::new(INVALIDATE_TAG_SCRIPT);
-        if let Err(e) = script.key(&tag_key).invoke_async::<()>(&mut conn).await {
-            warn!(error = %e, tag = %tag, "failed to invalidate tag in Redis");
-            return;
+        match script.key(&tag_key).invoke_async::<usize>(&mut conn).await {
+            Ok(count) => debug!(tag = %tag, keys_invalidated = %count, "tag invalidated"),
+            Err(e) => warn!(error = %e, tag = %tag, "failed to invalidate tag in Redis"),
         }
-
-        debug!(tag = %tag, keys_invalidated = %keys.len(), "tag invalidated");
     }
 
     /// Generate a stage-scoped cache key.
@@ -250,11 +189,6 @@ impl CacheLayer {
             };
 
             if !keys.is_empty() {
-                // Invalidate L1
-                for key in &keys {
-                    self.inner.local.invalidate(key).await;
-                }
-
                 // Delete from Redis
                 if let Err(e) = conn.del::<_, ()>(&keys).await {
                     warn!(error = %e, "failed to delete stage keys from Redis");
@@ -272,23 +206,27 @@ impl CacheLayer {
         debug!(stage_id = %stage_id, keys_deleted = %total_deleted, "stage cache invalidated");
     }
 
-    /// Get cache statistics (for monitoring).
+    /// Get cache statistics (for monitoring), read from Redis.
+    ///
+    /// `redis_keys` is `None` when Redis cannot be reached.
     pub async fn stats(&self) -> CacheStats {
-        CacheStats {
-            l1_entry_count: self.inner.local.entry_count(),
-            l1_weighted_size: self.inner.local.weighted_size(),
-        }
+        let redis_keys = match self.inner.redis.get_multiplexed_async_connection().await {
+            Ok(mut conn) => redis::cmd("DBSIZE")
+                .query_async::<u64>(&mut conn)
+                .await
+                .ok(),
+            Err(_) => None,
+        };
+        CacheStats { redis_keys }
     }
 }
 
 /// Cache statistics.
 #[derive(Debug, Clone)]
 pub struct CacheStats {
-    /// Number of entries in L1 cache.
-    pub l1_entry_count: u64,
-
-    /// Weighted size of L1 cache.
-    pub l1_weighted_size: u64,
+    /// Number of keys in the Redis database the cache uses (which also holds
+    /// sessions, locks and queues), or `None` if Redis was unreachable.
+    pub redis_keys: Option<u64>,
 }
 
 /// Lua script for atomic tag invalidation.
@@ -340,7 +278,7 @@ mod tests {
         let client = RedisClient::open(trovato_test_utils::env::redis_url()).unwrap();
         let cache = CacheLayer::new(client, Default::default());
 
-        let stats = cache.stats().await;
-        assert_eq!(stats.l1_entry_count, 0);
+        // With no Redis the count is simply absent; it never panics.
+        let _ = cache.stats().await;
     }
 }

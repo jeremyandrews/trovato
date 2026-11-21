@@ -62,6 +62,8 @@ impl RoleService {
     pub async fn update(&self, id: Uuid, name: &str) -> Result<Option<Role>> {
         let role = Role::update(&self.inner.pool, id, name).await?;
         if let Some(ref r) = role {
+            // Cached access carries role names, so a rename changes it.
+            self.inner.permissions.invalidate_all();
             info!(role_id = %r.id, name = %r.name, "role updated");
         }
         Ok(role)

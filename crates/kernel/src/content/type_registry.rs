@@ -375,8 +375,17 @@ impl ContentTypeRegistry {
     /// cache fresh so that external database changes become visible.
     pub async fn reload_from_db(&self) -> Result<()> {
         let db_types = ItemType::list(&self.inner.pool).await?;
+        let stored: std::collections::HashSet<String> =
+            db_types.iter().map(|t| t.type_name.clone()).collect();
         for db_type in db_types {
             self.cache_row(&db_type);
+        }
+        // A type deleted elsewhere (an import) leaves this server too. Every type,
+        // a plugin's included, is a row, so the rows are the whole list.
+        for name in self.type_names() {
+            if !stored.contains(&name) {
+                self.inner.types.invalidate(&name);
+            }
         }
         Ok(())
     }
@@ -438,6 +447,13 @@ impl ContentTypeRegistry {
             .insert(row.type_name.clone(), self.definition_from_row(row));
     }
 
+    /// Cache the definition a write just returned, and tell every other
+    /// server to read the types again. Call it after the write commits.
+    fn cache_written(&self, row: &ItemType) {
+        self.cache_row(row);
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::ContentTypes);
+    }
+
     /// The row input `create` and `replace` both write.
     fn core_type_input(
         machine_name: &str,
@@ -481,7 +497,7 @@ impl ContentTypeRegistry {
             });
         };
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         info!(type_name = %machine_name, "content type created");
         Ok(())
     }
@@ -504,7 +520,7 @@ impl ContentTypeRegistry {
         let input = Self::core_type_input(machine_name, label, description, settings);
         let row = ItemType::upsert(&self.inner.pool, input).await?;
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         info!(type_name = %machine_name, "content type replaced");
         Ok(())
     }
@@ -563,7 +579,7 @@ impl ContentTypeRegistry {
             .context("failed to update item_type")?
             .with_context(|| format!("content type '{machine_name}' not found"))?;
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         info!(type_name = %machine_name, "content type updated");
         Ok(())
     }
@@ -646,7 +662,7 @@ impl ContentTypeRegistry {
             .context("failed to update item_type")?
             .with_context(|| format!("content type '{type_name}' not found"))?;
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         Ok(())
     }
 
@@ -726,7 +742,8 @@ impl ContentTypeRegistry {
         self.inner.types.invalidate(type_name);
     }
 
-    /// Clear all cached content types.
+    /// Clear all cached content types. `get` answers `None` until the next
+    /// [`Self::reload_from_db`], which is what a bump from another server runs.
     pub fn clear(&self) {
         self.inner.types.invalidate_all();
     }

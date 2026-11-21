@@ -422,6 +422,7 @@ impl SearchService {
         .execute(&self.pool)
         .await
         .context("failed to reindex item")?;
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);
 
         Ok(())
     }
@@ -440,6 +441,7 @@ impl SearchService {
         .execute(&self.pool)
         .await
         .context("failed to reindex bundle")?;
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);
 
         debug!(bundle = %bundle, count = %result.rows_affected(), "bundle reindexed");
         Ok(result.rows_affected())

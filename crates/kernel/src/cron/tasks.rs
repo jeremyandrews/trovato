@@ -395,6 +395,7 @@ impl CronTasks {
         .execute(&self.pool)
         .await
         .context("failed to reindex item")?;
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);
 
         debug!(item_id = %item_id, "reindexed item");
         Ok(())

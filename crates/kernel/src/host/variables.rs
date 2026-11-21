@@ -204,7 +204,11 @@ pub fn register_variables_functions(linker: &mut Linker<PluginState>) -> Result<
                             // takes effect on the next request instead of riding
                             // the ≤5-minute TTL. Blunt whole-cache flush: config
                             // writes are rare and moka coalesces the refill.
+                            // Every other server flushes its own on the bump.
                             services.field_access_cache.invalidate_all();
+                            crate::cache::generation::bump(
+                                crate::cache::generation::CacheKind::FieldAccess,
+                            );
                             0
                         }
                         Err(e) => {

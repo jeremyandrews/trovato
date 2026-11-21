@@ -3,6 +3,7 @@
 //! Loads translations into an in-memory cache and provides a
 //! translate() method used by the Tera t() function.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -18,6 +19,8 @@ pub struct LocaleService {
     pool: PgPool,
     /// In-memory translation cache: key = "language:context:source" → translation.
     cache: DashMap<String, String>,
+    /// The languages loaded into the cache, which [`Self::reload`] reads again.
+    languages: Arc<parking_lot::Mutex<BTreeSet<String>>>,
     /// Counts translation lookups: a hit when either key finds a translation.
     metrics: Arc<Metrics>,
 }
@@ -28,23 +31,15 @@ impl LocaleService {
         Self {
             pool,
             cache: DashMap::new(),
+            languages: Arc::default(),
             metrics,
         }
     }
 
     /// Load all translations for a language into the cache.
     pub async fn load_language(&self, language: &str) -> Result<usize> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            r#"
-            SELECT source, translation, context
-            FROM locale_string
-            WHERE language = $1
-            "#,
-        )
-        .bind(language)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        self.languages.lock().insert(language.to_string());
+        let rows = self.fetch(language).await.unwrap_or_default();
 
         let count = rows.len();
         for (source, translation, context) in rows {
@@ -54,6 +49,34 @@ impl LocaleService {
 
         info!(language = %language, count = count, "loaded locale translations");
         Ok(count)
+    }
+
+    /// Read every loaded language again from Postgres, in place: a string
+    /// added, changed or removed since it was loaded, on this server or any
+    /// other, is current afterwards. Strings that did not change stay readable
+    /// throughout. On a database error the cache is left as it was.
+    pub async fn reload(&self) -> Result<()> {
+        let languages: Vec<String> = self.languages.lock().iter().cloned().collect();
+        let mut fresh = HashMap::new();
+        for language in &languages {
+            for (source, translation, context) in self.fetch(language).await? {
+                fresh.insert(cache_key(language, &context, &source), translation);
+            }
+        }
+        self.cache.retain(|key, _| fresh.contains_key(key));
+        for (key, translation) in fresh {
+            self.cache.insert(key, translation);
+        }
+        Ok(())
+    }
+
+    /// Every translation stored for `language`: (source, translation, context).
+    async fn fetch(&self, language: &str) -> Result<Vec<(String, String, String)>> {
+        sqlx::query_as("SELECT source, translation, context FROM locale_string WHERE language = $1")
+            .bind(language)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to load locale translations")
     }
 
     /// Translate a source string.
@@ -114,6 +137,7 @@ impl LocaleService {
             count += 1;
         }
 
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::Locale);
         info!(language = %language, count = count, "imported translations");
         Ok(count)
     }
