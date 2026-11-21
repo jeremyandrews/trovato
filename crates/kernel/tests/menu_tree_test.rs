@@ -547,7 +547,9 @@ fn a_warm_page_with_four_menus_runs_no_menu_or_alias_query() {
         let (_, cookies) = member(app, &[]).await;
         let path = format!("/it/gather/{query_id}");
 
-        // Warm, then count.
+        // Warm, then count, once the writes above have had their cache
+        // generations seen and cleared.
+        common::settle_cache_generations().await;
         let warm = get(app, &path, &cookies).await;
         assert!(
             warm.contains(&format!("B74 pagina {s}")),

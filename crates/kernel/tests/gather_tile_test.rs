@@ -393,7 +393,9 @@ fn a_gather_tile_costs_the_same_queries_for_one_row_as_for_six() {
         )
         .await;
 
-        // Warm every cache, then count with only the one-row tile placed.
+        // Warm every cache, then count with only the one-row tile placed. The
+        // writes above bump cache generations; let those clears land first.
+        common::settle_cache_generations().await;
         let _ = get(app, &page, "").await;
         let one_count = statement_count(&events_for(app, &page, "").await);
         Tile::delete(&app.db, one_tile_id).await.unwrap();
@@ -411,6 +413,7 @@ fn a_gather_tile_costs_the_same_queries_for_one_row_as_for_six() {
         )
         .await;
 
+        common::settle_cache_generations().await;
         let _ = get(app, &page, "").await;
         let html = get(app, &page, "").await;
         let six_html = tile_html(&html, &six_tile).unwrap_or_else(|| panic!("{html}"));

@@ -7,3 +7,8 @@ harness locally. The Pagefind swap has been tested on a Docker volume only.
 `INSTALL.md` points to it, and `UPGRADING.md` lists what changed for every site.
 The cluster compose file's test command now runs the scenarios one at a time,
 as they require.
+
+Two more tests that count a warm page's queries (`gather_tile_test`,
+`menu_tree_test`) now let the cache generations their own writes bumped be
+seen before they warm and count, as the revision page test already did; a
+clear landing between the warm-up and the count made the count one higher.
