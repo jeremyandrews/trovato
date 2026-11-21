@@ -92,6 +92,15 @@ pub struct UserContext {
     /// principal). Carried for the template `viewer`, never consulted for an
     /// access decision: permissions decide, not role names.
     roles: Vec<String>,
+
+    /// The account name (`users.name`) of a signed-in user, loaded with the
+    /// user record the context was built from.
+    ///
+    /// `None` for the anonymous visitor, the background principal and a context
+    /// assembled by hand. Carried only so the page template can print who is
+    /// signed in (`user_name`) without loading the user a second time; never
+    /// consulted for an access decision.
+    name: Option<String>,
 }
 
 impl UserContext {
@@ -104,6 +113,7 @@ impl UserContext {
             background: false,
             is_admin: false,
             roles: vec![crate::models::role::well_known::ANONYMOUS_ROLE_NAME.to_string()],
+            name: None,
         }
     }
 
@@ -120,6 +130,7 @@ impl UserContext {
             background: false,
             is_admin: false,
             roles: Vec::new(),
+            name: None,
         }
     }
 
@@ -138,6 +149,7 @@ impl UserContext {
             background: false,
             is_admin: true,
             roles: Vec::new(),
+            name: None,
         }
     }
 
@@ -157,6 +169,7 @@ impl UserContext {
             background: true,
             is_admin: false,
             roles: Vec::new(),
+            name: None,
         }
     }
 
@@ -172,6 +185,20 @@ impl UserContext {
     /// The names of the user's roles. See [`with_roles`](Self::with_roles).
     pub fn roles(&self) -> &[String] {
         &self.roles
+    }
+
+    /// This context carrying `name` as the signed-in user's account name.
+    ///
+    /// Called by [`context_from_permissions`](crate::permissions::context_from_permissions)
+    /// for every signed-in user it builds; see the field's documentation.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// The signed-in user's account name. See [`with_name`](Self::with_name).
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Whether this user's own roles grant a permission.
