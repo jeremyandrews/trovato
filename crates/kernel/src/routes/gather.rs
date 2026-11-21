@@ -153,9 +153,7 @@ struct AdhocQueryRequest {
 pub fn gather_denied_html(denied: &GatherDenied) -> Response {
     match denied {
         GatherDenied::Anonymous { .. } => Redirect::to("/user/login").into_response(),
-        GatherDenied::Forbidden { .. } => {
-            (StatusCode::FORBIDDEN, Html("Access denied")).into_response()
-        }
+        GatherDenied::Forbidden { .. } => super::helpers::render_forbidden(&denied.to_string()),
     }
 }
 
@@ -561,7 +559,10 @@ pub async fn execute_and_render(
     let page_html = state
         .theme()
         .render_page(base_path, &gather_query.label, &content_html, &mut context)
-        .unwrap_or_else(|_| render_gather_html(&gather_query, &result));
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to render a gather page");
+            GatherPageError::Failed("This page could not be displayed.".to_string())
+        })?;
 
     Ok(Html(page_html))
 }
@@ -1237,26 +1238,6 @@ fn compute_page_list(current: u32, total: u32) -> Vec<serde_json::Value> {
         last = p;
     }
     pages
-}
-
-/// Full standalone fallback page (used when theme engine fails).
-fn render_gather_html(query: &GatherQuery, result: &crate::gather::GatherResult) -> String {
-    let base_path = format!("/gather/{}", query.query_id);
-    let empty_preload = WidgetPreloadData {
-        category_options: HashMap::new(),
-        dynamic_options: HashMap::new(),
-    };
-    let content =
-        render_gather_content_html(query, result, &HashMap::new(), &base_path, &empty_preload);
-    format!(
-        "<!DOCTYPE html>\n<html>\n<head>\n<title>{}</title>\n\
-        <style>\nbody {{ font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }}\n\
-        table {{ width: 100%; border-collapse: collapse; }}\nth, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}\n\
-        th {{ background: #f5f5f5; }}\n.pager {{ margin-top: 20px; }}\n.pager a {{ margin: 0 5px; }}\n\
-        .empty {{ color: #666; font-style: italic; }}\n</style>\n</head>\n<body>\n{}\n</body>\n</html>",
-        escape_html(&query.label),
-        content
-    )
 }
 
 #[cfg(test)]

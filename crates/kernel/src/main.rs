@@ -424,6 +424,15 @@ async fn run_server() -> Result<()> {
             state.clone(),
             crate::middleware::resolve_client_ip,
         ))
+        // One error page (B84): every marked error, and every bare plain-text
+        // one, rendered as the themed error page for a browser and as the
+        // AppError body for anyone else. Inside the session layer, which the
+        // page's navigation needs; outside everything else, so a rate-limit or
+        // authentication refusal is rendered the same way.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::render_error_pages,
+        ))
         .layer(session_layer)
         .layer(cors)
         .layer(axum::middleware::from_fn_with_state(

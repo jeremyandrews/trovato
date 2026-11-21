@@ -9,6 +9,22 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Errors on HTML pages: a themed page for browsers, `AppError` for scripts
+
+Every error a page answers with is decided in one place from the request's
+`Accept` header. A browser (`Accept` naming `text/html`) is shown the site's
+`error.html` in the normal page wrapper, or `error--404.html` and the like if
+the theme has one, and is redirected to `/user/login` when signed out. Every
+other caller gets the `AppError` JSON body (`code`, `message`, `request_id`)
+with the same status.
+
+- **Themes**: to restyle errors, override `error.html` or add
+  `error--{status}.html`. The context carries `status`, `error_title`,
+  `message`, `home` and `home_label`.
+- **Scripts calling HTML pages**: a failure that was an HTML page (or an empty
+  `404`) is now JSON unless you send `Accept: text/html`. `/item/{id}` and the
+  item forms answer a browser with the themed page instead of JSON.
+
 ### JSON errors are one shape: read `message`, not `error`
 
 **Who is affected:** an API client, script or theme JavaScript that reads the

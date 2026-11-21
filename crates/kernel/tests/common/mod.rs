@@ -499,6 +499,11 @@ impl TestApp {
             router
         };
         let router = router
+            // The error-page layer, inside the session layer as in `main.rs`.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::render_error_pages,
+            ))
             .layer(session_layer)
             // Resolve the trusted-proxy-gated client IP (RATE-1) so handlers see
             // the `ClientIp` extension exactly as in production.

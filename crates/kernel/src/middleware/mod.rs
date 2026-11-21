@@ -5,6 +5,7 @@
 
 pub mod api_token;
 pub mod bearer_auth;
+pub mod error_page;
 pub mod install_check;
 pub mod language;
 pub mod path_alias;
@@ -18,6 +19,7 @@ pub mod tenant;
 
 pub use api_token::authenticate_api_token;
 pub use bearer_auth::authenticate_bearer_token;
+pub use error_page::{ErrorPage, PluginBody, render_error_pages};
 pub use install_check::check_installation;
 pub use language::negotiate_language;
 pub use path_alias::{path_alias_fallback, resolve_path_alias};

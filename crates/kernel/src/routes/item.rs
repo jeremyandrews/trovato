@@ -680,7 +680,7 @@ async fn view_item(
     let page_html = state
         .theme()
         .render_page(&item_path, &item.title, &item_html, &mut context)
-        .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{item_html}</body></html>"));
+        .map_err(|e| AppError::internal_ctx(e, "render item page"))?;
 
     Ok(Html(page_html))
 }

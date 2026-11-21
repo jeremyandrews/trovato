@@ -188,11 +188,16 @@ async fn page_error(
     crate::routes::helpers::inject_site_context(state, session, &mut context, "/ai/assistant")
         .await;
     let body = format!("<p class=\"assistant-error\">{}</p>", html_escape(message));
-    let html = state
+    match state
         .theme()
         .render_page("/ai/assistant", "Assistant", &body, &mut context)
-        .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{body}</body></html>"));
-    (status, axum::response::Html(html)).into_response()
+    {
+        Ok(html) => (status, axum::response::Html(html)).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render the assistant page");
+            crate::routes::helpers::render_server_error("The assistant could not be displayed.")
+        }
+    }
 }
 
 /// Check a `scope_id` against what the scope says one is.
@@ -531,12 +536,16 @@ async fn render_conversation(
     let mut context = tera::Context::new();
     crate::routes::helpers::inject_site_context(state, session, &mut context, "/ai/assistant")
         .await;
-    let html = state
+    match state
         .theme()
         .render_page("/ai/assistant", &conversation.title, &body, &mut context)
-        .unwrap_or_else(|_| format!("<!DOCTYPE html><html><body>{body}</body></html>"));
-
-    axum::response::Html(html).into_response()
+    {
+        Ok(html) => axum::response::Html(html).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render the assistant page");
+            crate::routes::helpers::render_server_error("The assistant could not be displayed.")
+        }
+    }
 }
 
 // =============================================================================

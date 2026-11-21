@@ -458,6 +458,11 @@ fn raw_response(parsed: ApiResponse) -> Response {
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
+    // The plugin's own body, whatever its status: never rewritten into an
+    // error page.
+    response
+        .extensions_mut()
+        .insert(crate::middleware::PluginBody);
     response
 }
 
@@ -478,9 +483,8 @@ fn raw_response(parsed: ApiResponse) -> Response {
 /// contract every view tap has. Theming changes what surrounds a plugin's HTML,
 /// not what it is.
 ///
-/// A template failure degrades to the plugin's body in a minimal document rather
-/// than to a 500: the page is the plugin's work and it is better served plain than
-/// not at all, which is the same fallback `routes::item` takes.
+/// A template failure is the one server error page, as it is for every other
+/// route: the theme that failed would be needed to make the plugin's body a page.
 async fn themed_response(
     state: &AppState,
     session: &Session,
@@ -505,20 +509,21 @@ async fn themed_response(
     {
         Ok(html) => html,
         Err(e) => {
-            tracing::warn!(
+            tracing::error!(
                 path = %path,
                 error = %e,
-                "failed to render a plugin page into the site theme; serving it unwrapped"
+                "failed to render a plugin page into the site theme"
             );
-            format!(
-                "<!DOCTYPE html><html><head><title>{}</title></head><body>{}</body></html>",
-                crate::routes::helpers::html_escape(&parsed.title),
-                parsed.body
-            )
+            return crate::routes::helpers::render_server_error(
+                "This page could not be displayed.",
+            );
         }
     };
 
     let mut response = (status_or_500(parsed.status), html).into_response();
+    response
+        .extensions_mut()
+        .insert(crate::middleware::PluginBody);
     // A themed page is HTML whatever the plugin put in `content_type`.
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -544,7 +549,16 @@ fn error_response(status: StatusCode, message: &str) -> Response {
     if let Some(object) = body.as_object_mut() {
         object.insert("error".to_string(), serde_json::Value::from(message));
     }
-    (status, axum::Json(body)).into_response()
+    let mut response = (status, axum::Json(body)).into_response();
+    // A browser gets the error page (or the login form for a 401); a script
+    // keeps this body, `error` key included.
+    response
+        .extensions_mut()
+        .insert(crate::middleware::ErrorPage {
+            status,
+            message: message.to_string(),
+        });
+    response
 }
 
 #[cfg(test)]

@@ -1,0 +1,17 @@
+{#
+  The one error page. Rendered by `middleware::error_page` into the normal page
+  wrapper (`page.html`, or `page--admin.html` on an admin path) for every error
+  a browser is shown. A theme overrides it, or adds `error--{status}.html`
+  (`error--404.html`, `error--403.html`, ...) for one status.
+
+  Context: `status` (number), `error_title`, `message` (safe to show, escaped
+  here; left out when it only repeats the title), `admin_path` (whether the
+  request was for an admin page), `home` and `home_label` (`/` from the front
+  end, `/admin` from an admin path), plus the site context every page has.
+#}
+<section class="error-page error-page--{{ status }}">
+  <h1 class="error-page__title">{{ error_title }}</h1>
+  {% if message != error_title %}<p class="error-page__message">{{ message }}</p>{% endif %}
+  <p class="error-page__status">Error {{ status }}</p>
+  <p class="error-page__home"><a href="{{ home | safe }}">{{ home_label }}</a></p> {# SAFE: `home` is the constant "/" or "/admin", set by middleware::error_page, never user text #}
+</section>

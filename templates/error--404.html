@@ -1,0 +1,17 @@
+{#
+  The 404 page: `error.html` with a way to find what was looked for. See
+  `error.html` for the context. The search box is offered on the front end
+  only (`admin_path` is false).
+#}
+<section class="error-page error-page--404">
+  <h1 class="error-page__title">{{ error_title }}</h1>
+  {% if message != error_title %}<p class="error-page__message">{{ message }}</p>{% endif %}
+  {% if not admin_path %}
+  <form class="error-page__search" method="get" action="/search" role="search">
+    <label for="error-page-search">Search this site</label>
+    <input type="search" id="error-page-search" name="q">
+    <button type="submit">Search</button>
+  </form>
+  {% endif %}
+  <p class="error-page__home"><a href="{{ home | safe }}">{{ home_label }}</a></p> {# SAFE: `home` is the constant "/" or "/admin", set by middleware::error_page, never user text #}
+</section>

@@ -548,7 +548,10 @@ async fn get_breadcrumb(
 ///
 /// Lists all tags in the "topics" category as a link grid pointing to
 /// `/topics/{slug}`.
-async fn browse_topics(State(state): State<AppState>, session: Session) -> Html<String> {
+async fn browse_topics(
+    State(state): State<AppState>,
+    session: Session,
+) -> axum::response::Response {
     let mut tags = state
         .categories()
         .list_tags("topics")
@@ -580,10 +583,14 @@ async fn browse_topics(State(state): State<AppState>, session: Session) -> Html<
     let mut context = tera::Context::new();
     inject_site_context(&state, &session, &mut context, "/topics").await;
 
-    let html = state
+    match state
         .theme()
         .render_page("/topics", "Topics", &content, &mut context)
-        .unwrap_or_else(|_| format!("<html><body>{content}</body></html>"));
-
-    Html(html)
+    {
+        Ok(html) => axum::response::IntoResponse::into_response(Html(html)),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render the topics page");
+            crate::routes::helpers::render_server_error("The topics page could not be displayed.")
+        }
+    }
 }
