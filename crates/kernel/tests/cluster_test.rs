@@ -1110,7 +1110,6 @@ async fn page_count(c: &Cluster, on: On) -> Option<u64> {
 /// 7. Pagefind rebuild on whichever node wins cron; search on the other node
 /// finds the new item.
 #[tokio::test]
-#[ignore = "fixed in part 4"]
 async fn s07_pagefind_built_by_one_node_is_served_by_the_other() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };

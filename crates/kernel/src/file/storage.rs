@@ -37,6 +37,41 @@ pub trait FileStorage: Send + Sync {
     fn scheme(&self) -> &'static str;
 }
 
+/// Prove this server can write, read back and delete a file in `dir`.
+///
+/// Run once at startup against `UPLOADS_DIR`. A directory this server cannot
+/// use would otherwise surface only when someone uploads a file, and on several
+/// servers only on the one whose mount is broken. The sentinel's name is unique
+/// so servers starting together against a shared volume never touch each
+/// other's.
+pub async fn check_writable(dir: &std::path::Path) -> Result<()> {
+    let fail = |step: &str, e: &dyn std::fmt::Display| {
+        anyhow::anyhow!(
+            "the uploads directory {} is not usable: could not {step} a test file ({e}). \
+             Set UPLOADS_DIR to a directory this server can write, read and delete in \
+             (on several servers, the volume they share).",
+            dir.display()
+        )
+    };
+    fs::create_dir_all(dir)
+        .await
+        .map_err(|e| fail("create the directory for", &e))?;
+    let sentinel = dir.join(format!(".trovato-write-check-{}", uuid::Uuid::now_v7()));
+    let expected = sentinel.to_string_lossy().into_owned();
+    fs::write(&sentinel, expected.as_bytes())
+        .await
+        .map_err(|e| fail("write", &e))?;
+    let read = fs::read(&sentinel).await;
+    let removed = fs::remove_file(&sentinel).await;
+    match read {
+        Ok(bytes) if bytes == expected.as_bytes() => {}
+        Ok(_) => return Err(fail("read back", &"its contents differed")),
+        Err(e) => return Err(fail("read back", &e)),
+    }
+    removed.map_err(|e| fail("delete", &e))?;
+    Ok(())
+}
+
 /// Local filesystem storage.
 pub struct LocalFileStorage {
     /// Base path for file storage.
@@ -184,5 +219,29 @@ mod tests {
         let url = storage.public_url("local://2026/02/abc123_test.jpg");
 
         assert_eq!(url, "https://example.com/files/2026/02/abc123_test.jpg");
+    }
+
+    #[tokio::test]
+    async fn a_usable_uploads_directory_passes_and_is_left_as_it_was() {
+        let dir = std::env::temp_dir().join(format!("trovato-uploads-{}", uuid::Uuid::now_v7()));
+        check_writable(&dir)
+            .await
+            .expect("a fresh directory is usable");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert!(left.is_empty(), "the sentinel was left behind: {left:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unusable_uploads_directory_is_refused_by_name() {
+        // A path under a regular file can never be created.
+        let file = std::env::temp_dir().join(format!("trovato-not-a-dir-{}", uuid::Uuid::now_v7()));
+        std::fs::write(&file, b"x").unwrap();
+        let dir = file.join("uploads");
+        let err = check_writable(&dir).await.expect_err("must refuse");
+        let message = err.to_string();
+        assert!(message.contains(&dir.display().to_string()), "{message}");
+        assert!(message.contains("UPLOADS_DIR"), "{message}");
+        std::fs::remove_file(&file).unwrap();
     }
 }

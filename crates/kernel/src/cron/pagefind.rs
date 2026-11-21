@@ -4,8 +4,8 @@
 //! `trovato_search` plugin) and rebuilds the client-side search index
 //! when requested. Exports published live-stage items as HTML fragments,
 //! runs the Pagefind CLI, and atomically deploys the index to
-//! `pagefind/` under the base directory of the static search path
-//! (`./static/pagefind/` by default).
+//! `PAGEFIND_OUTPUT_DIR` (`./static/pagefind/` by default), which the kernel
+//! serves at `/static/pagefind/`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -105,12 +105,12 @@ struct FieldConfigRow {
 ///
 /// Returns `Ok(true)` if an index was built, `Ok(false)` if no rebuild
 /// was needed (or the signal table doesn't exist), and `Err` on failure.
-/// `static_dir` is the base directory the generated index is written into,
-/// supplied by the caller from the configured static search path rather than
-/// read back out of the environment here.
+/// `output_dir` is the directory the generated index is written to
+/// (`PAGEFIND_OUTPUT_DIR`), supplied by the caller rather than read back out of
+/// the environment here.
 pub async fn maybe_rebuild_index(
     pool: &PgPool,
-    static_dir: &Path,
+    output_dir: &Path,
     items: &ItemService,
 ) -> Result<bool> {
     // Check if the signal table exists and a rebuild is requested.
@@ -139,7 +139,7 @@ pub async fn maybe_rebuild_index(
         .context("failed to clear pagefind rebuild signal")?;
 
     // Run the actual build, recording errors in the status table
-    match build_index(pool, static_dir, items).await {
+    match build_index(pool, output_dir, items).await {
         Ok(count) => {
             sqlx::query(
                 "UPDATE pagefind_index_status SET last_indexed_at = $1, last_error = NULL WHERE id = 1",
@@ -168,24 +168,60 @@ pub async fn maybe_rebuild_index(
 
 /// Build the Pagefind index from published live-stage items.
 ///
-/// `static_dir` is the base (first) entry of the static search path, chosen by
-/// `CronService::apply_runtime_config`: the index needs exactly one destination.
-async fn build_index(pool: &PgPool, static_dir: &Path, items: &ItemService) -> Result<usize> {
-    // Create a temp directory inside static/ (same filesystem for atomic rename)
-    let temp_dir = static_dir.join(format!(".pagefind_build_{}", std::process::id()));
-    tokio::fs::create_dir_all(&temp_dir)
+/// `output_dir` is `PAGEFIND_OUTPUT_DIR`, set by
+/// `CronService::apply_runtime_config`: the index needs exactly one
+/// destination.
+async fn build_index(pool: &PgPool, output_dir: &Path, items: &ItemService) -> Result<usize> {
+    let paths = SwapPaths::for_output(output_dir);
+    tokio::fs::create_dir_all(&paths.temp)
         .await
         .context("failed to create pagefind temp directory")?;
 
     // Ensure cleanup on both success and failure
-    let result = build_index_inner(pool, static_dir, &temp_dir, items).await;
+    let result = build_index_inner(pool, &paths, items).await;
 
     // Clean up temp directory
-    if let Err(e) = tokio::fs::remove_dir_all(&temp_dir).await {
-        debug!(error = %e, path = %temp_dir.display(), "failed to remove pagefind temp dir");
+    if let Err(e) = tokio::fs::remove_dir_all(&paths.temp).await {
+        debug!(error = %e, path = %paths.temp.display(), "failed to remove pagefind temp dir");
     }
 
     result
+}
+
+/// Where a build is made, and where the old index goes while the new one is
+/// renamed into place.
+///
+/// Both are siblings of the output directory, in the same parent, so the swap
+/// is a rename within one filesystem (on several servers, the volume they
+/// share). Their names carry a fresh id rather than the process id, which is 1
+/// in every container.
+#[derive(Debug)]
+struct SwapPaths {
+    /// The directory the index is served from.
+    output: PathBuf,
+    /// The directory the build is made in.
+    temp: PathBuf,
+    /// Where the old index goes during the swap.
+    backup: PathBuf,
+}
+
+impl SwapPaths {
+    fn for_output(output: &Path) -> Self {
+        let parent = match output.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let name = output
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "pagefind".to_string());
+        let id = Uuid::now_v7().simple();
+        Self {
+            output: output.to_path_buf(),
+            temp: parent.join(format!(".{name}_build_{id}")),
+            backup: parent.join(format!(".{name}_old_{id}")),
+        }
+    }
 }
 
 /// The items this index may carry, and the text each contributes.
@@ -366,12 +402,8 @@ pub fn render_fragment(document: &IndexDocument) -> String {
 }
 
 /// Inner build logic, separated for cleanup guarantee.
-async fn build_index_inner(
-    pool: &PgPool,
-    static_dir: &Path,
-    temp_dir: &Path,
-    items: &ItemService,
-) -> Result<usize> {
+async fn build_index_inner(pool: &PgPool, paths: &SwapPaths, items: &ItemService) -> Result<usize> {
+    let temp_dir = paths.temp.as_path();
     let documents = indexable_documents(pool, items).await?;
 
     let count = documents.len();
@@ -423,29 +455,24 @@ async fn build_index_inner(
     // 3. Remove old backup
     // This ensures the index is never fully absent if a crash occurs
     // between steps.
-    let target = static_dir.join("pagefind");
-    let backup = static_dir.join("pagefind.old");
-
-    // Remove any stale backup from a previous interrupted deploy
-    if backup.exists() {
-        tokio::fs::remove_dir_all(&backup).await.ok();
-    }
+    let target = &paths.output;
+    let backup = &paths.backup;
 
     if target.exists() {
-        tokio::fs::rename(&target, &backup)
+        tokio::fs::rename(target, backup)
             .await
             .context("failed to back up old pagefind index")?;
     }
 
     if output_path.exists() {
-        tokio::fs::rename(&output_path, &target)
+        tokio::fs::rename(&output_path, target)
             .await
             .context("failed to deploy new pagefind index")?;
     }
 
     // Remove backup (best-effort)
     if backup.exists() {
-        tokio::fs::remove_dir_all(&backup).await.ok();
+        tokio::fs::remove_dir_all(backup).await.ok();
     }
 
     Ok(count)
@@ -574,4 +601,45 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_path: &Path) -> bool {
     true
+}
+
+#[cfg(test)]
+// Tests are allowed to use unwrap/expect freely.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_build_and_the_backup_sit_beside_the_output() {
+        let paths = SwapPaths::for_output(Path::new("/shared/pagefind"));
+        assert_eq!(paths.output, PathBuf::from("/shared/pagefind"));
+        assert_eq!(paths.temp.parent(), Some(Path::new("/shared")));
+        assert_eq!(paths.backup.parent(), Some(Path::new("/shared")));
+        let temp = paths.temp.file_name().unwrap().to_string_lossy();
+        let backup = paths.backup.file_name().unwrap().to_string_lossy();
+        assert!(temp.starts_with(".pagefind_build_"), "{temp}");
+        assert!(backup.starts_with(".pagefind_old_"), "{backup}");
+    }
+
+    #[test]
+    fn each_build_gets_its_own_names() {
+        let a = SwapPaths::for_output(Path::new("./static/pagefind"));
+        let b = SwapPaths::for_output(Path::new("./static/pagefind"));
+        assert_ne!(a.temp, b.temp);
+        assert_ne!(a.backup, b.backup);
+    }
+
+    #[test]
+    fn a_bare_name_uses_the_current_directory() {
+        let paths = SwapPaths::for_output(Path::new("index"));
+        assert_eq!(paths.temp.parent(), Some(Path::new(".")));
+        assert!(
+            paths
+                .temp
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".index_build_")
+        );
+    }
 }

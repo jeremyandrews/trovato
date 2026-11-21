@@ -68,10 +68,11 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `DATABASE_MAX_CONNECTIONS` | `10` | PostgreSQL connection pool size |
 | `RUST_LOG` | `info` | Log filter, in `RUST_LOG` format |
 | `PLUGINS_DIR` | `./plugins` | Plugin search path. Several directories may be given, separated by `:`; later ones win a name collision. |
-| `UPLOADS_DIR` | `./uploads` | Path for file uploads |
+| `UPLOADS_DIR` | `./uploads` | Path for file uploads. The server checks at startup that it can write, read and delete a file there, and refuses to start if it cannot. |
 | `FILES_URL` | `/files` | Base URL that uploaded files are served under |
 | `TEMPLATES_DIR` | `./templates` | Tera template search path. Several directories may be given, separated by `:`; later ones override templates of the same name. |
-| `STATIC_DIR` | `./static` | Static asset search path, served under `/static`. Several directories may be given, separated by `:`; later ones override assets of the same path. The generated Pagefind index is written to the first directory. |
+| `STATIC_DIR` | `./static` | Static asset search path, served under `/static`. Several directories may be given, separated by `:`; later ones override assets of the same path. The generated Pagefind index is written to the first directory unless `PAGEFIND_OUTPUT_DIR` says otherwise. |
+| `PAGEFIND_OUTPUT_DIR` | `pagefind` under the first `STATIC_DIR` | Where the Pagefind index is built and served from; its URL stays `/static/pagefind/`. Each rebuild is made beside it and renamed into place, so its parent must be writable and on the same filesystem. On several servers, point it into the shared volume. |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins |
 | `COOKIE_SAME_SITE` | `strict` | Cookie SameSite policy (`strict`, `lax`, `none`) |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |

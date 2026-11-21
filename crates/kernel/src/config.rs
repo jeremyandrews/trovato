@@ -324,6 +324,13 @@ pub struct RuntimeConfig {
     /// Static-asset search path. A later directory wins a collision.
     pub static_dirs: Vec<PathBuf>,
 
+    /// Where the Pagefind index is written and served from (`PAGEFIND_OUTPUT_DIR`,
+    /// default `pagefind` under the first static directory). Its URL is
+    /// `/static/pagefind/` wherever it lives. On several servers it is a
+    /// directory they share, so the index one server builds is the one every
+    /// server serves.
+    pub pagefind_output_dir: PathBuf,
+
     /// Secret path segment guarding `POST /cron/{key}`.
     pub cron_key: String,
 
@@ -620,6 +627,15 @@ impl Config {
         let plugins_dirs = settings.search_path("PLUGINS_DIR", "./plugins");
         let templates_dirs = settings.search_path("TEMPLATES_DIR", "./templates");
         let static_dirs = settings.search_path("STATIC_DIR", "./static");
+        let pagefind_output_dir = get("PAGEFIND_OUTPUT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                static_dirs
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| PathBuf::from("./static"))
+                    .join("pagefind")
+            });
 
         let uploads_dir = get("UPLOADS_DIR")
             .map(PathBuf::from)
@@ -677,6 +693,7 @@ impl Config {
 
         let runtime = RuntimeConfig {
             static_dirs,
+            pagefind_output_dir,
             cron_key: get("CRON_KEY").unwrap_or_else(|| "default-cron-key".to_string()),
             security_headers: crate::middleware::SecurityHeaders::from_lookup(get),
             tenant_resolution: crate::middleware::TenantResolution::from_lookup(get),
@@ -825,6 +842,18 @@ mod config_tests {
         config_from(&pairs).expect("config resolves")
     }
 
+    /// `PAGEFIND_OUTPUT_DIR` moves the index, say onto a volume every server
+    /// shares, without moving the static directories.
+    #[test]
+    fn pagefind_output_dir_can_be_set() {
+        let config = with_db(&[("PAGEFIND_OUTPUT_DIR", "/shared/pagefind")]);
+        assert_eq!(
+            config.runtime.pagefind_output_dir,
+            PathBuf::from("/shared/pagefind")
+        );
+        assert_eq!(config.runtime.static_dirs, vec![PathBuf::from("./static")]);
+    }
+
     #[test]
     fn database_url_is_required() {
         let err = config_from(&[]).expect_err("no DATABASE_URL must fail");
@@ -861,6 +890,10 @@ mod config_tests {
 
         // The values request handling reads.
         assert_eq!(config.runtime.static_dirs, vec![PathBuf::from("./static")]);
+        assert_eq!(
+            config.runtime.pagefind_output_dir,
+            PathBuf::from("./static/pagefind")
+        );
         assert_eq!(config.runtime.cron_key, "default-cron-key");
         assert_eq!(config.runtime.slow_request_threshold_ms, 100);
         assert_eq!(
@@ -933,6 +966,11 @@ mod config_tests {
                 PathBuf::from("/srv/static"),
                 PathBuf::from("/opt/app/static")
             ]
+        );
+        // The index goes under the base (first) static directory.
+        assert_eq!(
+            config.runtime.pagefind_output_dir,
+            PathBuf::from("/srv/static/pagefind")
         );
     }
 

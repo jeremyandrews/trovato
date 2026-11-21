@@ -32,6 +32,9 @@ x-kernel: &kernel
     # The shared volume: uploads (and their image derivatives) live here, so a
     # file written by one node is served by the other.
     UPLOADS_DIR: /shared/uploads
+    # The Pagefind index too: whichever node wins cron builds it beside
+    # /shared/pagefind and swaps it in, and both serve it at /static/pagefind/.
+    PAGEFIND_OUTPUT_DIR: /shared/pagefind
     # The harness adds one template (a 404 page with a translated string).
     TEMPLATES_DIR: ./templates:/cluster/templates
     # Every test request reaches the kernels from the proxy's one address, so

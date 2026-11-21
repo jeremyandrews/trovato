@@ -712,11 +712,11 @@ pub struct CronService {
     /// skipped rather than written unfiltered — the index is a world-readable
     /// file, so "no access model available" has to mean "publish nothing".
     items: Option<Arc<ItemService>>,
-    /// Base directory the generated Pagefind index is written into.
+    /// The directory the generated Pagefind index is written to.
     ///
-    /// Defaults to `./static` so a harness without a `Config` still has a
-    /// destination; `apply_runtime_config` sets it from the static search path.
-    pagefind_static_dir: PathBuf,
+    /// Defaults to `./static/pagefind` so a harness without a `Config` still has
+    /// a destination; `apply_runtime_config` sets it from `PAGEFIND_OUTPUT_DIR`.
+    pagefind_output_dir: PathBuf,
     /// The site's rate limiter, threaded into background dispatch so the
     /// per-plugin `mail` bucket applies from `tap_cron` and `tap_queue_worker`
     /// and not only from a request.
@@ -758,7 +758,7 @@ impl CronService {
             http: build_http_client(),
             items: None,
             pagefind_enabled: false,
-            pagefind_static_dir: PathBuf::from("./static"),
+            pagefind_output_dir: PathBuf::from("./static/pagefind"),
             rate_limiter: None,
             email: None,
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
@@ -784,7 +784,7 @@ impl CronService {
             http: build_http_client(),
             items: None,
             pagefind_enabled: false,
-            pagefind_static_dir: PathBuf::from("./static"),
+            pagefind_output_dir: PathBuf::from("./static/pagefind"),
             rate_limiter: None,
             email: None,
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
@@ -889,11 +889,11 @@ impl CronService {
 
     /// Apply the configuration the cron tasks used to read from the environment.
     ///
-    /// The Pagefind index needs one destination, so it goes into the **base**
-    /// (first) static directory: writing it into every root would leave several
-    /// copies of a generated artifact to keep in step, and writing it into the
-    /// last root would mean a cron job dropping build output into an
-    /// application's own repository.
+    /// The Pagefind index needs one destination: `PAGEFIND_OUTPUT_DIR`, which
+    /// defaults to `pagefind` under the **base** (first) static directory.
+    /// Writing it into every root would leave several copies of a generated
+    /// artifact to keep in step, and writing it into the last root would mean a
+    /// cron job dropping build output into an application's own repository.
     pub fn apply_runtime_config(&mut self, runtime: &crate::config::RuntimeConfig) {
         self.tasks
             .set_security_audit_retention_days(runtime.security_audit_retention_days);
@@ -909,9 +909,7 @@ impl CronService {
                     interval_secs: runtime.update_check_interval_secs,
                 }
             }));
-        if let Some(base) = runtime.static_dirs.first() {
-            self.pagefind_static_dir = base.clone();
-        }
+        self.pagefind_output_dir = runtime.pagefind_output_dir.clone();
     }
 
     /// Set optional plugin services for cron tasks.
@@ -1182,7 +1180,7 @@ impl CronService {
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
             if let Some(items) = self.items.clone() {
-                match pagefind::maybe_rebuild_index(&self.pool, &self.pagefind_static_dir, &items)
+                match pagefind::maybe_rebuild_index(&self.pool, &self.pagefind_output_dir, &items)
                     .await
                 {
                     Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
