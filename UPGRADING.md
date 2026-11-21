@@ -9,6 +9,33 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Several servers can share one site; plugin changes on the admin page wait for a restart
+
+**Who is affected:** everyone, in four small ways; anyone running, or planning
+to run, more than one server, in the ways
+[docs/deployment/multi-server.md](docs/deployment/multi-server.md) describes.
+
+**What changed.**
+
+- The server checks at startup that it can write, read back and delete a file
+  in `UPLOADS_DIR`, and refuses to start, naming the directory, if it cannot.
+  **Check before upgrading:** the user the server runs as can create and delete
+  files in `UPLOADS_DIR` (or create the directory if it does not exist yet).
+- Enabling or disabling a plugin at `/admin/plugins` now changes only its
+  stored status, as `trovato plugin enable` and `disable` already did. It takes
+  effect when the server restarts (every server, if more than one); the page
+  says so and marks what is waiting. A script or habit that relied on the
+  admin page applying a change at once now needs a restart after it.
+- `trovato config import` no longer asks for a restart, because the servers'
+  caches now follow a write within about 250 ms. It still asks when the import
+  changed which plugins are enabled.
+- The chat, assistant and AI provider rate limits count in Redis, so they are
+  per site rather than per server, and a counter survives a server restart.
+- New optional `PAGEFIND_OUTPUT_DIR`. Unset, the Pagefind index goes where it
+  always has, `pagefind` under the first `STATIC_DIR`.
+
+Nothing to configure for a single server.
+
 ### Config export carries plugin configuration and leaves runtime state out; plugin API 0.106
 
 **Who is affected:** anyone who moves a site with `trovato config export` and
