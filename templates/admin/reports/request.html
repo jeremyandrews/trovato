@@ -1,8 +1,11 @@
 {% extends "page--admin.html" %}
 
 {% block content %}
+{# A route is a template from the kernel's own router, never request data.
+    It is escaped by hand rather than by autoescape, which writes `/` as
+    `&#x2F;`, so the page source reads as the route it shows. #}
 <div class="admin-header">
-    <h2>{{ profile.method }} <code>{{ profile.route }}</code></h2>
+    <h2>{{ profile.method }} <code>{{ profile.route | replace(from="&", to="&amp;") | replace(from="<", to="&lt;") | replace(from=">", to="&gt;") | replace(from='"', to="&quot;") | safe }}</code></h2>
 </div>
 
 <p><a href="/admin/reports/requests">&larr; Request profiles</a></p>

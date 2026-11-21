@@ -1,6 +1,9 @@
 {% extends "page--admin.html" %}
 
 {% block content %}
+{# A route is a template from the kernel's own router, never request data.
+    It is escaped by hand rather than by autoescape, which writes `/` as
+    `&#x2F;`, so the page source reads as the route it shows. #}
 <div class="admin-header">
     <h2>Request profiles</h2>
 </div>
@@ -33,7 +36,7 @@
         {% for p in profiles %}
         <tr>
             <td data-label="Time (UTC)">{{ p.at }}</td>
-            <td data-label="Request"><a href="/admin/reports/requests/{{ p.id }}">{{ p.method }} <code>{{ p.route }}</code></a></td>
+            <td data-label="Request"><a href="/admin/reports/requests/{{ p.id }}">{{ p.method }} <code>{{ p.route | replace(from="&", to="&amp;") | replace(from="<", to="&lt;") | replace(from=">", to="&gt;") | replace(from='"', to="&quot;") | safe }}</code></a></td>
             <td data-label="Status">{{ p.status }}</td>
             <td data-label="Total">{{ p.total_ms }} ms</td>
             <td data-label="Queries">{{ p.query_count }} ({{ p.query_ms }} ms)</td>
