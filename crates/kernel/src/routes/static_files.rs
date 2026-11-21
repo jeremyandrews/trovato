@@ -28,8 +28,16 @@ pub fn router() -> Router<AppState> {
 async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -> Response<Body> {
     let path = path.trim_start_matches('/');
 
-    let dirs = &state.runtime().static_dirs;
-    let Some((file_path, content)) = resolve_static_file(dirs, path).await else {
+    let runtime = state.runtime();
+    let found = match pagefind_path(path) {
+        // The Pagefind index is served from wherever it is built, and only
+        // from there, so a server never mixes its files with a stale copy.
+        Some(rest) => {
+            resolve_static_file(std::slice::from_ref(&runtime.pagefind_output_dir), rest).await
+        }
+        None => resolve_static_file(&runtime.static_dirs, path).await,
+    };
+    let Some((file_path, content)) = found else {
         return not_found();
     };
 
@@ -44,6 +52,11 @@ async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -
         .header(header::CACHE_CONTROL, "public, max-age=86400") // 1 day cache
         .body(Body::from(content))
         .unwrap()
+}
+
+/// The part of a `/static/` path inside the Pagefind index, if it is one.
+fn pagefind_path(path: &str) -> Option<&str> {
+    path.strip_prefix("pagefind/")
 }
 
 /// Find the highest-precedence readable file for `path` across the search path.

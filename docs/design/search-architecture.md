@@ -47,7 +47,7 @@ User types query
 **How it works in Trovato:**
 
 - **Change detection (plugin):** The `trovato_search` plugin's `tap_cron` handler compares `MAX(changed)` of published live-stage items against a stored `last_indexed_at` timestamp. When content is newer, it sets `rebuild_requested = true` in the `pagefind_index_status` signal table.
-- **Index generation (kernel):** The kernel cron task checks the signal table. When a rebuild is requested, it exports live-stage published items as HTML fragments (title, body, configured search fields, metadata), runs the Pagefind CLI, and atomically deploys the index via rename-swap to `./static/pagefind/`.
+- **Index generation (kernel):** The kernel cron task checks the signal table. When a rebuild is requested, it exports live-stage published items as HTML fragments (title, body, configured search fields, metadata), runs the Pagefind CLI, and atomically deploys the index via rename-swap to `PAGEFIND_OUTPUT_DIR` (`./static/pagefind/` by default), served at `/static/pagefind/`.
 - **Why the split:** WASM plugins run in sandboxed instances with no access to the filesystem or subprocess spawning. The plugin detects *when* a rebuild is needed; the kernel performs the *how*.
 - **Client-side search:** The Pagefind JS library loads in the browser. When the user types, Pagefind searches its local index and returns results. No HTTP request, no database query, no server involvement.
 - **Fallback:** If JavaScript is disabled or Pagefind fails to load, the search form submits to the server-side tsvector endpoint. Progressive enhancement means the server-side search is always available.

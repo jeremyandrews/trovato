@@ -202,6 +202,9 @@ async fn run_server() -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
     info!(port = config.port, "Configuration loaded");
 
+    // Refuse to start on an uploads directory this server cannot use.
+    crate::file::check_writable(&config.uploads_dir).await?;
+
     // Initialize application state (database connections, etc.)
     let state = AppState::new(&config)
         .await
