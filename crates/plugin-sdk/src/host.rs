@@ -1336,6 +1336,358 @@ pub fn ai_request(_request: &crate::types::AiRequest) -> Result<crate::types::Ai
     ))
 }
 
+// --------------------------------------------------------------------------
+// Translations (`item-api`, B80)
+// --------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/item-api")]
+unsafe extern "C" {
+    #[link_name = "list-translations"]
+    fn __item_list_translations(ids_ptr: i32, ids_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "save-translation"]
+    fn __item_save_translation(in_ptr: i32, in_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "delete-translation"]
+    fn __item_delete_translation(id_ptr: i32, id_len: i32, lang_ptr: i32, lang_len: i32) -> i32;
+}
+
+/// The translations of up to 100 items that the user the plugin is acting for
+/// may view, by item in the order given and then by language, in one call.
+/// `fields` in each has the field tier applied. Needs `item-api`; from cron or a
+/// queue worker, `item_background`.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Item API". More than 100
+/// ids is [`crate::host_errors::ERR_PARAM_DESERIALIZE`].
+#[cfg(target_arch = "wasm32")]
+pub fn list_translations(item_ids: &[&str]) -> Result<Vec<crate::types::ItemTranslation>, i32> {
+    let json =
+        serde_json::to_string(item_ids).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    item_call(|out, max| unsafe {
+        __item_list_translations(json.as_ptr() as i32, json.len() as i32, out, max)
+    })
+}
+
+/// Create or replace an item's translation into one language, through the
+/// kernel's item service: decided as an edit (`edit` access, or `translate
+/// content` and `view`), field-gated, and then `tap_item_update` fires on the
+/// other plugins and the item cache drops the item.
+///
+/// `translation` is `{"item_id", "language", "title", "fields"}`; `fields`
+/// holds the translated values and is replaced whole. The language must be one
+/// of the site's and not the item's own.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Item API":
+/// [`ERR_ITEM_NOT_FOUND`](crate::host_errors::ERR_ITEM_NOT_FOUND),
+/// [`ERR_ITEM_ACCESS_DENIED`](crate::host_errors::ERR_ITEM_ACCESS_DENIED), and
+/// [`ERR_PARAM_DESERIALIZE`](crate::host_errors::ERR_PARAM_DESERIALIZE) for a
+/// language it cannot be translated into or an empty title.
+#[cfg(target_arch = "wasm32")]
+pub fn save_translation(
+    translation: &serde_json::Value,
+) -> Result<crate::types::ItemTranslation, i32> {
+    let json =
+        serde_json::to_string(translation).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    item_call(|out, max| unsafe {
+        __item_save_translation(json.as_ptr() as i32, json.len() as i32, out, max)
+    })
+}
+
+/// Remove an item's translation in one language, decided as
+/// [`save_translation`] is. `Ok(true)` when there was one to remove.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Item API".
+#[cfg(target_arch = "wasm32")]
+pub fn delete_translation(item_id: &str, language: &str) -> Result<bool, i32> {
+    let result = unsafe {
+        __item_delete_translation(
+            item_id.as_ptr() as i32,
+            item_id.len() as i32,
+            language.as_ptr() as i32,
+            language.len() as i32,
+        )
+    };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(result == 1)
+    }
+}
+
+/// List translations (stub for native testing, always empty).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn list_translations(_item_ids: &[&str]) -> Result<Vec<crate::types::ItemTranslation>, i32> {
+    Ok(Vec::new())
+}
+
+/// Save a translation (stub for native testing, always not found).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_translation(
+    _translation: &serde_json::Value,
+) -> Result<crate::types::ItemTranslation, i32> {
+    Err(crate::host_errors::ERR_ITEM_NOT_FOUND)
+}
+
+/// Delete a translation (stub for native testing, always nothing removed).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn delete_translation(_item_id: &str, _language: &str) -> Result<bool, i32> {
+    Ok(false)
+}
+
+/// The structured `db` calls, on the plugin's own tables.
+///
+/// Each is confined to the plugin's effective allowlist (the tables its
+/// migrations create and its `db_tables`), under the kernel's protected floor;
+/// a table outside it is [`crate::host_errors::ERR_TABLE_NOT_DECLARED`]. No
+/// `raw_sql` is needed. Content is not written here: `item_translation` and the
+/// item tables belong to [`super::save_item`] and [`super::save_translation`],
+/// which decide access, fire the item taps and keep the cache right.
+///
+/// A `where` is a map (each key equal to its value) or an array of
+/// `{"field", "op", "value"}` conditions, ANDed, with `op` one of `=`, `!=`,
+/// `<`, `<=`, `>`, `>=`, `in`, `not_in`, `is_null`, `is_not_null`. An empty
+/// `where`, an unknown op or an empty `in` list is refused, so none can mean
+/// every row.
+///
+/// Values bind as JSON types: a string binds as text, so comparing a `uuid`
+/// column needs the column to be text, or the comparison done in a `query`
+/// definition.
+pub mod db {
+    #[cfg(target_arch = "wasm32")]
+    #[link(wasm_import_module = "trovato:kernel/db")]
+    unsafe extern "C" {
+        #[link_name = "select"]
+        fn __db_select(q_ptr: i32, q_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+        #[link_name = "insert"]
+        fn __db_insert(
+            t_ptr: i32,
+            t_len: i32,
+            d_ptr: i32,
+            d_len: i32,
+            out_ptr: i32,
+            out_max_len: i32,
+        ) -> i32;
+
+        #[link_name = "update"]
+        fn __db_update(
+            t_ptr: i32,
+            t_len: i32,
+            d_ptr: i32,
+            d_len: i32,
+            w_ptr: i32,
+            w_len: i32,
+        ) -> i64;
+
+        #[link_name = "delete"]
+        fn __db_delete(t_ptr: i32, t_len: i32, w_ptr: i32, w_len: i32) -> i64;
+
+        #[link_name = "upsert"]
+        fn __db_upsert(
+            t_ptr: i32,
+            t_len: i32,
+            d_ptr: i32,
+            d_len: i32,
+            c_ptr: i32,
+            c_len: i32,
+            out_ptr: i32,
+            out_max_len: i32,
+        ) -> i32;
+
+        #[link_name = "insert-many"]
+        fn __db_insert_many(t_ptr: i32, t_len: i32, r_ptr: i32, r_len: i32) -> i64;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn json(value: &serde_json::Value) -> Result<String, i32> {
+        serde_json::to_string(value).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn rows(result: i64) -> Result<u64, i32> {
+        if result < 0 {
+            Err(result as i32)
+        } else {
+            Ok(result as u64)
+        }
+    }
+
+    /// `{"table", "columns", "where", "order": [{"column", "direction"}],
+    /// "limit"}`; `where` here is a map. The rows, as JSON objects.
+    ///
+    /// # Errors
+    ///
+    /// A host error code; see [`crate::host_errors`], "Database".
+    #[cfg(target_arch = "wasm32")]
+    pub fn select(query: &serde_json::Value) -> Result<Vec<serde_json::Value>, i32> {
+        let q = json(query)?;
+        super::item_call(|out, max| unsafe {
+            __db_select(q.as_ptr() as i32, q.len() as i32, out, max)
+        })
+    }
+
+    /// Insert one row; returns it (`RETURNING *`), in a one-element array.
+    ///
+    /// # Errors
+    ///
+    /// A host error code; see [`crate::host_errors`], "Database".
+    #[cfg(target_arch = "wasm32")]
+    pub fn insert(table: &str, data: &serde_json::Value) -> Result<Vec<serde_json::Value>, i32> {
+        let d = json(data)?;
+        super::item_call(|out, max| unsafe {
+            __db_insert(
+                table.as_ptr() as i32,
+                table.len() as i32,
+                d.as_ptr() as i32,
+                d.len() as i32,
+                out,
+                max,
+            )
+        })
+    }
+
+    /// Update the rows `where` matches; returns how many.
+    ///
+    /// # Errors
+    ///
+    /// A host error code; see [`crate::host_errors`], "Database".
+    #[cfg(target_arch = "wasm32")]
+    pub fn update(
+        table: &str,
+        data: &serde_json::Value,
+        where_: &serde_json::Value,
+    ) -> Result<u64, i32> {
+        let (d, w) = (json(data)?, json(where_)?);
+        rows(unsafe {
+            __db_update(
+                table.as_ptr() as i32,
+                table.len() as i32,
+                d.as_ptr() as i32,
+                d.len() as i32,
+                w.as_ptr() as i32,
+                w.len() as i32,
+            )
+        })
+    }
+
+    /// Delete the rows `where` matches; returns how many.
+    ///
+    /// # Errors
+    ///
+    /// A host error code; see [`crate::host_errors`], "Database".
+    #[cfg(target_arch = "wasm32")]
+    pub fn delete(table: &str, where_: &serde_json::Value) -> Result<u64, i32> {
+        let w = json(where_)?;
+        rows(unsafe {
+            __db_delete(
+                table.as_ptr() as i32,
+                table.len() as i32,
+                w.as_ptr() as i32,
+                w.len() as i32,
+            )
+        })
+    }
+
+    /// Insert a row, or on a conflict over `{"target": [cols]}` update it:
+    /// `"update": [cols]` names the columns to change, every other column of
+    /// the row when absent. Returns the row, in a one-element array.
+    ///
+    /// # Errors
+    ///
+    /// A host error code; see [`crate::host_errors`], "Database".
+    #[cfg(target_arch = "wasm32")]
+    pub fn upsert(
+        table: &str,
+        data: &serde_json::Value,
+        conflict: &serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>, i32> {
+        let (d, c) = (json(data)?, json(conflict)?);
+        super::item_call(|out, max| unsafe {
+            __db_upsert(
+                table.as_ptr() as i32,
+                table.len() as i32,
+                d.as_ptr() as i32,
+                d.len() as i32,
+                c.as_ptr() as i32,
+                c.len() as i32,
+                out,
+                max,
+            )
+        })
+    }
+
+    /// Insert up to 500 rows, each naming the same columns, in one statement:
+    /// all of them or none. Returns how many.
+    ///
+    /// # Errors
+    ///
+    /// A host error code; see [`crate::host_errors`], "Database". More than 500
+    /// rows is [`crate::host_errors::ERR_DB_BATCH_TOO_LARGE`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn insert_many(table: &str, rows_: &[serde_json::Value]) -> Result<u64, i32> {
+        let r = serde_json::to_string(rows_).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+        rows(unsafe {
+            __db_insert_many(
+                table.as_ptr() as i32,
+                table.len() as i32,
+                r.as_ptr() as i32,
+                r.len() as i32,
+            )
+        })
+    }
+
+    /// Select (stub for native testing, always no rows).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn select(_query: &serde_json::Value) -> Result<Vec<serde_json::Value>, i32> {
+        Ok(Vec::new())
+    }
+
+    /// Insert (stub for native testing, returns the data as the row).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn insert(_table: &str, data: &serde_json::Value) -> Result<Vec<serde_json::Value>, i32> {
+        Ok(vec![data.clone()])
+    }
+
+    /// Update (stub for native testing, no rows).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn update(
+        _table: &str,
+        _data: &serde_json::Value,
+        _where: &serde_json::Value,
+    ) -> Result<u64, i32> {
+        Ok(0)
+    }
+
+    /// Delete (stub for native testing, no rows).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn delete(_table: &str, _where: &serde_json::Value) -> Result<u64, i32> {
+        Ok(0)
+    }
+
+    /// Upsert (stub for native testing, returns the data as the row).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn upsert(
+        _table: &str,
+        data: &serde_json::Value,
+        _conflict: &serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>, i32> {
+        Ok(vec![data.clone()])
+    }
+
+    /// Insert many (stub for native testing, counts the rows).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn insert_many(_table: &str, rows: &[serde_json::Value]) -> Result<u64, i32> {
+        Ok(rows.len() as u64)
+    }
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]

@@ -199,13 +199,14 @@ calls do. The SDK binds `select`, `insert`, `update`, `delete`, `upsert` and
 (at most 100 ids; rows for the items the user may view, with the field tier
 applied to `fields`), `save-translation(translation-json)` and
 `delete-translation(item-id, language)`. The writes are new `ItemService`
-methods that check `edit` access on the item, run the field write gate, fire
-`tap_item_update` with the item, and invalidate the item cache; the admin route
-moves onto them. Who a call acts as is `acting_for`, so a background write
-needs `item_background`. A plugin no longer needs `item_translation` in
-`db_tables` at all; it can still declare it, and the capability reference says
-why it should not: a `db` write skips access, taps, the cache and the menu
-label refresh.
+methods that check `edit` access on the item (or `translate content` with
+`view`, the rule the admin screen already applied; amended in B80.4), run the
+field write gate, fire `tap_item_update` with the item, and invalidate the item
+cache; the admin route moves onto them. Who a call acts as is `acting_for`, so
+a background write needs `item_background`. A plugin no longer needs
+`item_translation` in `db_tables` at all; it can still declare it, and the
+capability reference says why it should not: a `db` write skips access, taps,
+the cache and the menu label refresh.
 
 ## 7. The language line
 

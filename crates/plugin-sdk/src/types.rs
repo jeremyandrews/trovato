@@ -132,6 +132,27 @@ pub struct QueryResult {
     pub access_capped: bool,
 }
 
+/// One language's translation of an item, as `item-api` returns it.
+///
+/// `fields` holds the translated values only; the item supplies the rest. A
+/// list has the field tier applied, so it holds the fields the user may view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemTranslation {
+    /// The item translated.
+    pub item_id: Uuid,
+    /// The language code.
+    pub language: String,
+    /// The translated title.
+    pub title: String,
+    /// The translated field values.
+    #[serde(default)]
+    pub fields: serde_json::Value,
+    /// Unix seconds, when the translation was first saved.
+    pub created: i64,
+    /// Unix seconds, when it was last saved.
+    pub changed: i64,
+}
+
 /// A text field value with its format (e.g., "filtered_html", "plain_text").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextValue {

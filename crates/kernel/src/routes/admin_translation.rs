@@ -11,6 +11,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::content::TranslationRefused;
 use crate::form::csrf::generate_csrf_token;
 use crate::state::AppState;
 
@@ -265,9 +266,12 @@ async fn translation_save(
     }
     let fields = serde_json::Value::Object(fields);
 
+    // Through the service's translation write, the one `item-api` uses: it
+    // decides the write again, drops the item from the cache and fires
+    // `tap_item_update`, so a translation is an edit wherever it comes from.
     match state
         .items()
-        .save_translation(id, &lang, title, &fields, &user_ctx)
+        .translate(id, &lang, title, &fields, &user_ctx)
         .await
     {
         Ok(_) => {
@@ -278,6 +282,7 @@ async fn translation_save(
             }
             Redirect::to(&format!("/admin/content/{id}/translate/{lang}")).into_response()
         }
+        Err(e) if e.downcast_ref::<TranslationRefused>().is_some() => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, item_id = %id, language = %lang, "failed to save translation");
             render_server_error("Failed to save the translation.")
@@ -318,7 +323,11 @@ async fn translation_delete(
         return render_not_found();
     }
 
-    match state.items().delete_translation(id, &lang).await {
+    match state
+        .items()
+        .withdraw_translation(id, &lang, &user_ctx)
+        .await
+    {
         Ok(removed) => {
             let msg = if removed {
                 format!("The {lang} translation has been removed.")
@@ -331,6 +340,7 @@ async fn translation_delete(
             }
             Redirect::to(&format!("/admin/content/{id}/translate")).into_response()
         }
+        Err(e) if e.downcast_ref::<TranslationRefused>().is_some() => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, item_id = %id, language = %lang, "failed to delete translation");
             render_server_error("Failed to remove the translation.")

@@ -34,9 +34,6 @@ use wasmtime::{Engine, Linker, Module, Store};
 const WITNESS: &str = "test_item_writer";
 const TABLE: &str = "b80w_tally";
 
-/// `host_errors::ERR_DB_BATCH_TOO_LARGE`, which the change adds.
-const ERR_DB_BATCH_TOO_LARGE: i32 = -82;
-
 // =============================================================================
 // App: the shared shape, with the witness loaded
 // =============================================================================
@@ -531,7 +528,7 @@ fn insert_many_is_all_or_nothing() {
             .map(|i| json!({"k": format!("{run}-{i}"), "run": run, "n": i}))
             .collect();
         let code = db_count("insert-many", &[TABLE, &json!(too_many).to_string()]).await;
-        assert_eq!(code, ERR_DB_BATCH_TOO_LARGE);
+        assert_eq!(code, host_errors::ERR_DB_BATCH_TOO_LARGE);
 
         let mixed = json!([
             {"k": format!("{run}-a"), "run": run, "n": 1},

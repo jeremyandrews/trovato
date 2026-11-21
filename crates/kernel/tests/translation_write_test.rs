@@ -10,8 +10,9 @@
 //! create.
 //!
 //! Two write paths are covered here: the admin form, and `config import`. The
-//! third asked for, an SDK-visible one, is deliberately absent — see the note at
-//! the bottom of this file.
+//! third, an SDK-visible one, was absent when this file was written (see the
+//! note at the bottom of this file); B80 added it as new `item-api` functions,
+//! and `plugin_write_seam_test.rs` covers it.
 //!
 //! Requires Postgres + Redis (the shared `TestApp`); runs in CI.
 
@@ -428,6 +429,11 @@ fn a_written_translation_reaches_the_reader() {
 //
 // Adding a carrier would mean changing a WIT function signature or an SDK type,
 // which this work is fenced against. Recorded as a finding instead.
+//
+// Since then B80 added the carrier without changing a signature: new `item-api`
+// functions (`list-translations`, `save-translation`, `delete-translation`) over
+// `ItemService::translate` and `withdraw_translation`, which the admin form now
+// uses too. See `plugin_write_seam_test.rs`.
 
 // =============================================================================
 // Problem 8, the write half — `translation_save` and `translation_delete` asked
