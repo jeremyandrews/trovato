@@ -164,7 +164,7 @@ async fn load_config_menus(
     let sources = crate::models::UrlAlias::sources_for_aliases(
         state.db(),
         &paths,
-        crate::models::stage::LIVE_STAGE_ID,
+        &[crate::models::stage::LIVE_STAGE_ID],
         state.default_language(),
     )
     .await?;

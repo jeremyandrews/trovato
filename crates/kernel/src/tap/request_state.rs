@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use crate::cache::CacheLayer;
 use crate::content::ItemService;
+use crate::gather::GatherService;
 use crate::lockout::LockoutService;
+use crate::models::stage::LIVE_STAGE_ID;
 use crate::plugin::PluginRuntime;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::ai_token_budget::AiTokenBudgetService;
@@ -279,6 +281,12 @@ pub struct RequestServices {
     /// held by `ItemService` in turn.
     pub(crate) item_service: Arc<std::sync::OnceLock<std::sync::Weak<ItemService>>>,
 
+    /// The gather service, for the `query` host interface and for nothing else.
+    ///
+    /// `Weak` and late-bound for the reason [`Self::item_service`] is: the
+    /// gather service holds the item service, which holds a `RequestServices`.
+    pub(crate) gather_service: Arc<std::sync::OnceLock<std::sync::Weak<GatherService>>>,
+
     /// The site's rate limiter, for the per-plugin `mail` bucket.
     ///
     /// Carried on **every** dispatch path rather than only the request one,
@@ -313,6 +321,7 @@ impl RequestServices {
             email: None,
             rate_limiter: None,
             item_service: Arc::new(std::sync::OnceLock::new()),
+            gather_service: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -335,6 +344,7 @@ impl RequestServices {
             email: None,
             rate_limiter: None,
             item_service: Arc::new(std::sync::OnceLock::new()),
+            gather_service: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -386,6 +396,17 @@ impl RequestServices {
     /// strong reference cannot live here.
     pub fn set_item_service(&self, items: &Arc<ItemService>) {
         let _ = self.item_service.set(Arc::downgrade(items));
+    }
+
+    /// Late-bind the gather service the `query` host interface runs with.
+    /// Same contract as [`Self::set_item_service`]: once, first wins, weak.
+    pub fn set_gather_service(&self, gather: &Arc<GatherService>) {
+        let _ = self.gather_service.set(Arc::downgrade(gather));
+    }
+
+    /// The gather service, if one was bound and is still alive.
+    pub fn gather_service(&self) -> Option<Arc<GatherService>> {
+        self.gather_service.get().and_then(std::sync::Weak::upgrade)
     }
 
     /// The item service, if one was bound and is still alive.
@@ -476,6 +497,15 @@ pub struct RequestState {
     /// the state; the kernel writes the id here at `Store` construction and the
     /// drain holds the other end of the `Arc`.
     pub(crate) invocation_sink: Option<Arc<AtomicU64>>,
+    /// The stages a read made for this request draws on, Live where the
+    /// dispatch site has no request to resolve them from (cron, the queue, a tap
+    /// dispatched by a service). Set from the one stage resolver
+    /// (`routes::helpers::read_stages`) by the dispatch sites that have one.
+    /// The `query` host interface reads it; a plugin cannot set it.
+    pub(crate) read_stages: Vec<Uuid>,
+    /// The language the page is rendered in, where the dispatch site knows it.
+    /// `None` is the site's base language, with no translation overlay.
+    pub(crate) language: Option<String>,
 }
 
 impl RequestState {
@@ -487,6 +517,8 @@ impl RequestState {
             services: Some(services),
             invocation_depth: 0,
             invocation_sink: None,
+            read_stages: vec![LIVE_STAGE_ID],
+            language: None,
         }
     }
 
@@ -499,6 +531,30 @@ impl RequestState {
         self
     }
 
+    /// Set the stages and language a read made for this request uses.
+    ///
+    /// Called by a dispatch site that resolved them for the request it is
+    /// serving; everything else reads Live in the base language. An empty
+    /// `stages` keeps Live, so a read never runs on no stage at all.
+    #[must_use]
+    pub fn with_read_context(mut self, stages: Vec<Uuid>, language: Option<String>) -> Self {
+        if !stages.is_empty() {
+            self.read_stages = stages;
+        }
+        self.language = language;
+        self
+    }
+
+    /// The stages a read made for this request draws on.
+    pub fn read_stages(&self) -> &[Uuid] {
+        &self.read_stages
+    }
+
+    /// The language a read made for this request is rendered in.
+    pub fn language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
     /// Create request state without services (for testing).
     pub fn without_services(user: UserContext) -> Self {
         Self {
@@ -507,6 +563,8 @@ impl RequestState {
             services: None,
             invocation_depth: 0,
             invocation_sink: None,
+            read_stages: vec![LIVE_STAGE_ID],
+            language: None,
         }
     }
 

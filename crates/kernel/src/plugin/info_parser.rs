@@ -444,6 +444,9 @@ pub const KNOWN_HOST_INTERFACES: &[&str] = &[
     "mail",
     // Filter user text through a text format (added by B71, after 0.104.0).
     "text-format",
+    // Run a Gather definition for the request's viewer (added by B80, after
+    // 0.105.0; docs/design/plugin-query-surface.md).
+    "query",
 ];
 
 fn default_true() -> bool {

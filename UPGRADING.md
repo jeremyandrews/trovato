@@ -9,6 +9,21 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### `query-items` lists the request's stage only
+
+**Who is affected:** a plugin that calls `item-api` `query-items` (or the SDK's
+`host::query_items`) on a site with more than one stage.
+
+**What changed.** `query-items` used to list items on every stage. It now lists
+the request's read stages only: Live, unless the request is a plugin route
+served to a viewer who reads another stage. The order is still newest change
+first, with the id breaking ties. A published item on an `accessible` or
+`internal` stage no longer appears in a live listing.
+
+**What to do.** Nothing, unless a plugin relied on seeing other stages' items in
+a live request, which was the defect. For listings, the new `query` host
+interface (`host::query`) sorts, joins, pages and returns each row's URL.
+
 ### Follow-up sentiment classification is available and off
 
 **Who is affected:** a site that uses the AI search assistant's follow-up

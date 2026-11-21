@@ -34,11 +34,6 @@ const DOCS: &str = "b80q_docs";
 /// A table of this file's own, standing in for a plugin-owned table.
 const OWN_TABLE: &str = "b80q_votes";
 
-/// The two refusals the seam adds (`docs/design/plugin-query-surface.md`
-/// section 8). Written out until the SDK defines them.
-const ERR_QUERY_INVALID: i32 = -80;
-const ERR_QUERY_BOUND: i32 = -81;
-
 // =============================================================================
 // Harness
 // =============================================================================
@@ -384,7 +379,7 @@ fn stage_aware_false_on_content_is_refused() {
         let mut definition = of_type(BLOG);
         definition["stage_aware"] = json!(false);
         let answer = run_query(app, visitor(), definition, json!({})).await;
-        assert_eq!(answer.code, ERR_QUERY_INVALID);
+        assert_eq!(answer.code, host_errors::ERR_QUERY_INVALID);
     });
 }
 
@@ -581,7 +576,7 @@ fn joins_between_content_and_a_plugins_table() {
                                "local_field": "item_id", "foreign_field": "id"}]
         });
         let answer = run_query(app, visitor(), own_base, json!({})).await;
-        assert_eq!(answer.code, ERR_QUERY_INVALID);
+        assert_eq!(answer.code, host_errors::ERR_QUERY_INVALID);
     });
 }
 
@@ -594,8 +589,8 @@ fn joins_between_content_and_a_plugins_table() {
 fn each_bound_returns_its_error() {
     run_test(async {
         let app = shared_app().await;
-        let bound = ERR_QUERY_BOUND;
-        let invalid = ERR_QUERY_INVALID;
+        let bound = host_errors::ERR_QUERY_BOUND;
+        let invalid = host_errors::ERR_QUERY_INVALID;
 
         let answer = run_query(app, visitor(), of_type(BLOG), json!({"per_page": 101})).await;
         assert_eq!(answer.code, bound, "per_page");

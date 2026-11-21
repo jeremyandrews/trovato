@@ -12,10 +12,11 @@
 #[cfg(target_arch = "wasm32")]
 const MAX_OUTPUT_BUFFER: usize = 256 * 1024;
 
-/// Output buffer size for [`invoke`] results (1 MiB).
+/// Output buffer size for [`invoke`] and [`query`] results (1 MiB).
 ///
 /// Matches the kernel's frozen 1 MiB payload/result cap (FR-4a), so any result
-/// the host is willing to return fits without truncation.
+/// the host is willing to return fits without truncation; a page of 100 item
+/// rows can pass the 256 KiB every other call gets.
 #[cfg(target_arch = "wasm32")]
 const INVOKE_MAX_BUFFER: usize = 1_048_576;
 
@@ -179,6 +180,20 @@ unsafe extern "C" {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/query")]
+unsafe extern "C" {
+    #[link_name = "run"]
+    fn __query_run(
+        def_ptr: i32,
+        def_len: i32,
+        opt_ptr: i32,
+        opt_len: i32,
+        out_ptr: i32,
+        out_max_len: i32,
+    ) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "trovato:kernel/item-api")]
 unsafe extern "C" {
     #[link_name = "get-item"]
@@ -226,6 +241,55 @@ fn item_call<T: serde::de::DeserializeOwned>(call: impl FnOnce(i32, i32) -> i32)
     }
     let len = result as usize;
     if len >= MAX_OUTPUT_BUFFER {
+        return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
+    }
+    buf.truncate(len);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// Run a Gather definition for the request's viewer, stages and language.
+///
+/// `definition` is a Gather `QueryDefinition`, the JSON a gather is stored as;
+/// `options` is `{"page", "per_page", "url_args"}`, every key optional
+/// (`per_page` defaults to 20 and is at most 100). A definition over `item`
+/// reads only what the viewer may see, on the request's stages, in its
+/// language, and each row carries `url`; a filter on `url` looks an item up by
+/// the address it is served at. A definition over one of the plugin's own
+/// tables reads it as it is. Declare `query` in `host_interfaces`; from cron or a
+/// queue worker a content read needs `item_background`. See
+/// `docs/design/plugin-query-surface.md`.
+///
+/// # Errors
+///
+/// A host error code; see [`crate::host_errors`], "Query":
+/// [`ERR_TABLE_NOT_DECLARED`](crate::host_errors::ERR_TABLE_NOT_DECLARED),
+/// [`ERR_QUERY_INVALID`](crate::host_errors::ERR_QUERY_INVALID),
+/// [`ERR_QUERY_BOUND`](crate::host_errors::ERR_QUERY_BOUND),
+/// [`ERR_ITEM_BACKGROUND_DENIED`](crate::host_errors::ERR_ITEM_BACKGROUND_DENIED).
+#[cfg(target_arch = "wasm32")]
+pub fn query(
+    definition: &serde_json::Value,
+    options: &serde_json::Value,
+) -> Result<crate::types::QueryResult, i32> {
+    let def =
+        serde_json::to_string(definition).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let opt = serde_json::to_string(options).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let mut buf = vec![0u8; INVOKE_MAX_BUFFER];
+    let result = unsafe {
+        __query_run(
+            def.as_ptr() as i32,
+            def.len() as i32,
+            opt.as_ptr() as i32,
+            opt.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    let len = result as usize;
+    if len >= INVOKE_MAX_BUFFER {
         return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
     }
     buf.truncate(len);
@@ -281,8 +345,11 @@ pub fn delete_item(id: &str) -> Result<(), i32> {
 /// List items the user the plugin is acting for may view.
 ///
 /// `query` is a JSON object with optional `type`, `status`, `limit` (at most
-/// 100, default 50) and `offset`. A page can come back shorter than `limit`:
-/// items the user may not view are left out, not counted.
+/// 100, default 50) and `offset`. Only the request's read stages are listed
+/// (Live outside a plugin route), newest change first, ties broken by id. A
+/// page can come back shorter than `limit`: items the user may not view are
+/// left out, not counted. For a listing, [`query`] sorts, joins, pages and
+/// returns each row's URL.
 ///
 /// # Errors
 ///
@@ -291,6 +358,15 @@ pub fn delete_item(id: &str) -> Result<(), i32> {
 pub fn query_items(query: &serde_json::Value) -> Result<Vec<crate::types::Item>, i32> {
     let json = serde_json::to_string(query).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
     item_call(|out, max| unsafe { __item_query(json.as_ptr() as i32, json.len() as i32, out, max) })
+}
+
+/// Run a Gather definition (stub for native testing, always an empty page).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn query(
+    _definition: &serde_json::Value,
+    _options: &serde_json::Value,
+) -> Result<crate::types::QueryResult, i32> {
+    Ok(crate::types::QueryResult::default())
 }
 
 /// Load an item (stub for native testing, always `Ok(None)`).

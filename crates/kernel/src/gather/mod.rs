@@ -25,8 +25,9 @@ pub use extension::{
     GatherExtensionRegistry, JoinSpec, RelationshipContext, RelationshipExtension,
     RelationshipHandler, SortContext, SortExtension, SortHandler,
 };
+pub(crate) use gather_service::GATHER_JOIN_TABLES;
 #[allow(unused_imports)]
-pub use gather_service::{GatherConfig, GatherService, MAX_ITEMS_PER_PAGE};
+pub use gather_service::{GatherConfig, GatherService, MAX_ITEMS_PER_PAGE, PluginScope};
 #[allow(unused_imports)]
 pub use handlers::{HierarchicalInFilterHandler, JsonbArrayContainsFilterHandler};
 #[allow(unused_imports)]

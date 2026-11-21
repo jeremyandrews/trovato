@@ -214,6 +214,25 @@
 //!   - `-72`: the filtered text does not fit the output buffer ([`ERR_TEXT_FORMAT_TOO_LARGE`])
 //!   - `≥ 0`: bytes of filtered text written
 //!
+//! ## Query (`trovato:kernel/query`)
+//!
+//! - **`run(def_ptr, def_len, opt_ptr, opt_len, out_ptr, out_max_len) → i32`**
+//!   - `-1`: memory missing, `-2`: definition read failed, `-3`: options read failed,
+//!     `-4`: output write failed
+//!   - `-10`: no services, or no gather service, in this context
+//!   - `-12`: the query failed, or ran past the 5 second statement timeout
+//!   - `-13`: the result could not be serialized
+//!   - `-14`: the definition or the options are not valid JSON of their shape
+//!   - `-16`: a table the definition names is outside the plugin's allowlist, or
+//!     protected ([`ERR_TABLE_NOT_DECLARED`])
+//!   - `-60`: called while an item access decision is being made
+//!     ([`ERR_ITEM_ACCESS_DENIED`])
+//!   - `-61`: a content read from cron or the queue without `item_background`
+//!     ([`ERR_ITEM_BACKGROUND_DENIED`])
+//!   - `-80`: the definition is refused ([`ERR_QUERY_INVALID`])
+//!   - `-81`: the definition exceeds a bound ([`ERR_QUERY_BOUND`])
+//!   - `≥ 0`: bytes written (a JSON `GatherResult`)
+//!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
 //!
 //! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
@@ -384,6 +403,25 @@ pub const ERR_TEXT_FORMAT_UNKNOWN: i32 = -71;
 ///
 /// Added by B71, after 0.104.0.
 pub const ERR_TEXT_FORMAT_TOO_LARGE: i32 = -72;
+
+// =============================================================================
+// Query errors (`trovato:kernel/query`)
+// =============================================================================
+
+/// The definition is refused: `stage_aware = false` on a content base, an
+/// include, a `semantic_similarity` filter, a plugin-table base joining
+/// content, a `url` filter that is not `equals` or `in`, or anything else the
+/// gather validator rejects. The host log carries the reason.
+///
+/// Added by B80, after 0.105.0.
+pub const ERR_QUERY_INVALID: i32 = -80;
+
+/// The definition exceeds a bound: more than 100 rows per call, 32 filters,
+/// 8 sorts or 3 relationships. Refused rather than capped, so a plugin never
+/// mistakes a truncated answer for the whole one.
+///
+/// Added by B80, after 0.105.0.
+pub const ERR_QUERY_BOUND: i32 = -81;
 
 // =============================================================================
 // HTTP API errors (`trovato:kernel/http`)

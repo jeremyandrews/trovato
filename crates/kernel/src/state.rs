@@ -930,6 +930,9 @@ impl AppState {
         // lines above sees this binding, and neither side keeps the other
         // alive.
         tap_services.set_item_service(&items);
+        // And the gather service, for the `query` host interface, by the same
+        // shared, weak cell.
+        tap_services.set_gather_service(&gather);
 
         // Late-bind the item-access seam into the gather service (Story 3.4):
         // gather is constructed before ItemService, so it holds a OnceLock the

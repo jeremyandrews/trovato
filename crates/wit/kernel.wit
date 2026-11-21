@@ -43,7 +43,12 @@ interface item-api {
     /// (ERR_ITEM_NOT_FOUND).
     delete-item: func(id: string) -> result<_, string>;
 
-    /// Query items with structured query, returns JSON array.
+    /// Query items with structured query, returns JSON array: {type, status,
+    /// limit (at most 100, default 50), offset}, the items the user may view on
+    /// the request's read stages (Live outside a plugin route), newest change
+    /// first, ties broken by id. Until B80 it listed every stage. Deprecated for
+    /// listings in favour of `query.run`, which sorts, joins, pages and returns
+    /// each row's URL; this stays for loading full items.
     query-items: func(query-json: string) -> result<string, string>;
 }
 
@@ -333,6 +338,39 @@ interface text-format {
     filter-text: func(text: string, format: string) -> result<string, string>;
 }
 
+/// Query: run a Gather definition for the request's viewer, stages and language
+/// (docs/design/plugin-query-surface.md, D-60).
+///
+/// `definition-json` is a Gather `QueryDefinition`, the JSON a site's gather is
+/// stored as. `options-json` is {page, per_page, url_args}, every key optional;
+/// `per_page` defaults to 20 and may be at most 100. The result is a
+/// GatherResult: {items, total, page, per_page, total_pages, has_next,
+/// has_prev, access_capped}.
+///
+/// A definition over `item` (or a record type) always reads for the user the
+/// plugin is acting for, on the request's read stages (Live outside a plugin
+/// route), in the request's language; the plugin sets none of the three and
+/// `stage_aware = false` is refused (-80). Each item row carries `url`, its
+/// alias or `/item/{id}`, and a filter on `url` (`equals` or `in`) finds items
+/// by the address they are served at. From cron or the queue a content read
+/// needs `item_background` (-61). It may join the kernel's join tables and the
+/// plugin's own tables.
+///
+/// A definition over one of the plugin's own tables (migration-owned or in
+/// `db_tables`) reads it as it is: no access predicate, no stage, no `url`. It
+/// may join only the plugin's own tables, never content (-80).
+///
+/// Any table that is not content must be in the plugin's allowlist (-16).
+/// Refused (-80): includes, `semantic_similarity`, a `url` filter other than
+/// `equals` or `in`, and anything the gather validator rejects. Bounds (-81):
+/// 100 rows, 32 filters, 8 sorts, 3 relationships. Statements run under a
+/// 5 second timeout (-12 when it is hit).
+///
+/// Added by B80, after 0.105.0: a new interface; no existing signature changed.
+interface query {
+    run: func(definition-json: string, options-json: string) -> result<string, string>;
+}
+
 /// The plugin world — all imports and exports for a Trovato plugin.
 /// All tap functions use full-serialization (JSON in, JSON out).
 ///
@@ -378,6 +416,7 @@ world plugin {
     import queue;
     import mail;
     import text-format;
+    import query;
 
     // --- Tap export naming convention (PF-3 / D-1, sub-decision 1) ----------
     // Host *import* fields above are kebab-case and match these WIT identifiers

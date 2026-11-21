@@ -247,7 +247,20 @@ let item = host::get_item(&id)?;                                   // None: miss
 let saved = host::save_item(&json!({ "id": id, "title": "New" }))?;  // no id + "type": create
 let moved = host::save_item(&json!({ "id": id, "stage": "curated" }))?; // by the workflow; create: default stage
 host::delete_item(&id)?;                                          // Err(-62): no such item
-let list = host::query_items(&json!({ "type": "page", "limit": 20 }))?;
+let list = host::query_items(&json!({ "type": "page", "limit": 20 }))?; // full items, request's stage
+```
+
+### Queries
+Needs `query` in `host_interfaces`. A Gather definition, run for the requesting
+user on the request's stage and language; item rows carry `url`.
+```rust
+let page = host::query(&json!({
+    "base_table": "item",
+    "filters": [{"field": "type", "operator": "in", "value": ["blog", "news"]}],
+    "sorts": [{"field": "created", "direction": "desc"}]
+}), &json!({"per_page": 10}))?;                    // page.items, page.has_next
+// by address: {"field": "url", "operator": "equals", "value": "/about"}
+// Err(-16): table not declared  Err(-80): refused  Err(-81): over a bound
 ```
 
 ### Text formats

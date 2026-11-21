@@ -587,12 +587,48 @@ impl Item {
         Ok(items)
     }
 
-    /// List items with optional filters.
+    /// List items with optional filters, on every stage.
+    ///
+    /// Newest change first, ties broken by id so a page is stable.
     pub async fn list_filtered(
         pool: &PgPool,
         item_type: Option<&str>,
         status: Option<i16>,
         author_id: Option<Uuid>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Self>> {
+        Self::list_where(pool, item_type, status, author_id, None, limit, offset).await
+    }
+
+    /// List items with optional filters, on `stage_ids` only: what a read made
+    /// for a request may list (`item-api` `query-items`).
+    pub async fn list_filtered_on_stages(
+        pool: &PgPool,
+        item_type: Option<&str>,
+        status: Option<i16>,
+        stage_ids: &[Uuid],
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Self>> {
+        Self::list_where(
+            pool,
+            item_type,
+            status,
+            None,
+            Some(stage_ids),
+            limit,
+            offset,
+        )
+        .await
+    }
+
+    async fn list_where(
+        pool: &PgPool,
+        item_type: Option<&str>,
+        status: Option<i16>,
+        author_id: Option<Uuid>,
+        stage_ids: Option<&[Uuid]>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Self>> {
@@ -615,13 +651,17 @@ impl Item {
             conditions.push(format!(" AND author_id = ${param_idx}"));
             param_idx += 1;
         }
+        if stage_ids.is_some() {
+            conditions.push(format!(" AND stage_id = ANY(${param_idx})"));
+            param_idx += 1;
+        }
 
         for cond in conditions {
             query.push_str(&cond);
         }
 
         query.push_str(&format!(
-            " ORDER BY changed DESC LIMIT ${} OFFSET ${}",
+            " ORDER BY changed DESC, id DESC LIMIT ${} OFFSET ${}",
             param_idx,
             param_idx + 1
         ));
@@ -636,6 +676,9 @@ impl Item {
         }
         if let Some(a) = author_id {
             query_builder = query_builder.bind(a);
+        }
+        if let Some(stages) = stage_ids {
+            query_builder = query_builder.bind(stages.to_vec());
         }
 
         query_builder = query_builder.bind(limit).bind(offset);
