@@ -159,7 +159,12 @@ pub async fn track_session(
             // The session was in the index and is not any more: revoked from
             // another device or by an admin. Terminate it here so the next
             // request is anonymous regardless of what the store still holds.
-            if let Err(e) = session.delete().await {
+            //
+            // `flush`, not `delete`: the handler may have written to this
+            // session, and a session only deleted from the store is then
+            // saved again by the session layer, which fails on the missing
+            // key (see `routes::auth::logout`).
+            if let Err(e) = session.flush().await {
                 warn!(error = %e, "failed to delete a revoked session");
             }
         }
