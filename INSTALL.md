@@ -348,6 +348,13 @@ cargo run --release
 The installer will not run again. Any new database or plugin migrations
 are applied automatically on startup.
 
+## More Than One Server
+
+Several servers can run one site behind a load balancer, with no sticky
+sessions and no extra setting, if they share one Postgres, one Redis and one
+read-write volume for `UPLOADS_DIR` and `PAGEFIND_OUTPUT_DIR`. See
+[docs/deployment/multi-server.md](docs/deployment/multi-server.md).
+
 ## Configuration Export/Import
 
 Trovato supports exporting and importing site configuration as YAML files:
