@@ -106,16 +106,26 @@ pub async fn get_pending_tap_install(pool: &PgPool) -> Result<Vec<String>> {
     Ok(rows.iter().map(|r| r.get("name")).collect())
 }
 
-/// Mark `tap_install` as called for a plugin.
-pub async fn mark_tap_install_called(pool: &PgPool, name: &str) -> Result<()> {
-    sqlx::query(
-        "UPDATE plugin_status SET tap_install_called = TRUE, updated_at = $1 WHERE name = $2",
+/// Claim a plugin's `tap_install` before dispatching it.
+///
+/// Marks it called and returns `true` only if it was still pending, in one
+/// statement, so when several servers start at once exactly one of them runs
+/// each plugin's `tap_install`. The others get `false` and skip it.
+///
+/// The claim is kept even if the dispatch then fails: to run it again, set
+/// `tap_install_called = FALSE` in `plugin_status` and restart.
+pub async fn claim_tap_install(pool: &PgPool, name: &str) -> Result<bool> {
+    let claimed = sqlx::query(
+        "UPDATE plugin_status SET tap_install_called = TRUE, updated_at = $1 \
+         WHERE name = $2 AND status = $3 AND tap_install_called = FALSE \
+         RETURNING name",
     )
     .bind(chrono::Utc::now().timestamp())
     .bind(name)
-    .execute(pool)
+    .bind(STATUS_ENABLED)
+    .fetch_optional(pool)
     .await?;
-    Ok(())
+    Ok(claimed.is_some())
 }
 
 /// Auto-install any plugins found on disk but not yet in the plugin_status table.

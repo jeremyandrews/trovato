@@ -13,7 +13,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use dashmap::DashMap;
 use serde::Deserialize;
 use tower_sessions::Session;
 
@@ -27,63 +26,41 @@ use crate::state::AppState;
 // Rate limiter
 // =============================================================================
 
-/// Per-user rate limit state: `(count, window_start)`.
+/// Count one chat request for a user against the hourly limit.
 ///
-/// **Limitation:** This is an in-process, non-persistent rate limiter. It
-/// resets on server restart and is not shared across multiple instances.
-/// For single-instance deployments this is adequate; clustered deployments
-/// should add a Redis-backed rate limiter.
-static CHAT_RATE_LIMITS: std::sync::LazyLock<DashMap<String, (u32, Instant)>> =
-    std::sync::LazyLock::new(DashMap::new);
-
-/// Timestamp of the last eviction pass.
-static LAST_EVICTION: std::sync::LazyLock<std::sync::Mutex<Instant>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(Instant::now()));
-
-/// Check and increment the rate counter for a user.
-///
-/// Returns `true` if the request is allowed, `false` if rate limited.
-fn check_chat_rate_limit(user_key: &str, limit_per_hour: u32) -> bool {
+/// Returns `true` if the request is allowed. Counted in Redis by the shared
+/// [`RateLimiter`](crate::middleware::RateLimiter), so a limit of N is N across
+/// every server, not N per server. A limit of 0 means unlimited.
+async fn check_chat_rate_limit(state: &AppState, user_key: &str, limit_per_hour: u32) -> bool {
     if limit_per_hour == 0 {
         return true;
     }
-
-    let now = Instant::now();
-
-    // Evict stale entries every 60 seconds (avoids unbounded growth without
-    // the old approach of only evicting above 100 entries).
-    if let Ok(mut last) = LAST_EVICTION.lock()
-        && now.duration_since(*last) > Duration::from_secs(60)
-    {
-        CHAT_RATE_LIMITS.retain(|_, v| now.duration_since(v.1) < Duration::from_secs(3600));
-        *last = now;
-    }
-
-    let mut entry = CHAT_RATE_LIMITS
-        .entry(user_key.to_string())
-        .or_insert((0, now));
-
-    if now.duration_since(entry.1) > Duration::from_secs(3600) {
-        *entry = (1, now);
-        return true;
-    }
-
-    if entry.0 >= limit_per_hour {
-        return false;
-    }
-    entry.0 += 1;
-    true
+    state
+        .rate_limiter()
+        .check_limit(
+            CHAT_RATE_CATEGORY,
+            user_key,
+            limit_per_hour,
+            Duration::from_secs(3600),
+        )
+        .await
+        .is_ok()
 }
 
-/// Clear all rate limit state.
+/// The rate limiter category the chat limit counts under.
+const CHAT_RATE_CATEGORY: &str = "chat";
+
+/// Clear every user's chat count.
 ///
 /// This is `pub` (but `#[doc(hidden)]`) solely for integration tests in the
-/// separate `tests/` crate. It has no side effects beyond resetting the
-/// in-memory counter. Not part of the public API — do not call from
+/// separate `tests/` crate. Not part of the public API — do not call from
 /// production code.
 #[doc(hidden)]
-pub fn clear_chat_rate_limits() {
-    CHAT_RATE_LIMITS.clear();
+pub async fn clear_chat_rate_limits(state: &AppState) {
+    state
+        .rate_limiter()
+        .reset_category(CHAT_RATE_CATEGORY)
+        .await;
 }
 
 // =============================================================================
@@ -171,7 +148,7 @@ async fn chat_handler(
     // even if the budget check later denies the request; this is intentional
     // since rate limiting protects server resources, not billing.
     let rate_key = uid.to_string();
-    if !check_chat_rate_limit(&rate_key, config.rate_limit_per_hour) {
+    if !check_chat_rate_limit(&state, &rate_key, config.rate_limit_per_hour).await {
         return (AppError::RateLimited {
             retry_after_secs: 3600,
             category: "chat".to_string(),

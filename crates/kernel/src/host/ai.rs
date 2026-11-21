@@ -5,9 +5,6 @@
 //! request, and returns a normalized `AiResponse`. API keys never cross
 //! the WASM boundary.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -28,69 +25,39 @@ use trovato_sdk::types::{AiRequest, AiResponse, AiUsage};
 use super::{read_string_from_memory, write_string_to_memory};
 
 // =============================================================================
-// Rate limiter (best-effort, in-memory, per-provider)
+// Rate limiter (per provider, shared through Redis)
 // =============================================================================
 
-/// Per-provider rate limit state.
-struct RateWindow {
-    count: AtomicU64,
-    window_start: Mutex<Instant>,
-}
+/// The Redis rate limit category for a provider's requests per minute.
+const AI_PROVIDER_RATE_CATEGORY: &str = "ai_provider";
 
-/// Simple in-memory per-provider RPM rate limiter.
+/// Count one request against a provider's requests-per-minute limit.
 ///
-/// Uses a fixed 60-second sliding window. Not distributed — sufficient
-/// for single-instance deployments.
-static RATE_LIMITS: std::sync::LazyLock<Mutex<HashMap<String, RateWindow>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Check and increment the rate counter for a provider.
-///
-/// Returns `true` if the request is allowed, `false` if rate limited.
-/// Only increments the counter when the request is allowed (not on rejection).
-fn check_rate_limit(provider_id: &str, rpm_limit: u32) -> bool {
+/// Returns `true` if the request is allowed. The count lives in Redis under
+/// `rate:ai_provider:{provider_id}`, so every server shares one budget per
+/// provider. A limit of 0 means unlimited. With no limiter (a serviceless or
+/// test context) or no Redis, the request is allowed, as the limiter fails
+/// open everywhere else.
+async fn check_rate_limit(
+    limiter: Option<&crate::middleware::RateLimiter>,
+    provider_id: &str,
+    rpm_limit: u32,
+) -> bool {
     if rpm_limit == 0 {
         return true;
     }
-
-    let mut map = RATE_LIMITS.lock().unwrap_or_else(|e| e.into_inner());
-
-    // Evict stale entries (windows older than 2 minutes) to prevent unbounded growth.
-    // Provider IDs are admin-configured UUIDs so the map is naturally small,
-    // but this guards against edge cases (e.g. deleted providers).
-    if map.len() > 50 {
-        map.retain(|_, w| {
-            w.window_start
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .elapsed()
-                .as_secs()
-                < 120
-        });
-    }
-
-    let window = map
-        .entry(provider_id.to_string())
-        .or_insert_with(|| RateWindow {
-            count: AtomicU64::new(0),
-            window_start: Mutex::new(Instant::now()),
-        });
-
-    let mut start = window
-        .window_start
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if start.elapsed().as_secs() >= 60 {
-        window.count.store(0, Ordering::Relaxed);
-        *start = Instant::now();
-    }
-
-    let current = window.count.load(Ordering::Relaxed);
-    if current >= u64::from(rpm_limit) {
-        return false;
-    }
-    window.count.fetch_add(1, Ordering::Relaxed);
-    true
+    let Some(limiter) = limiter else {
+        return true;
+    };
+    limiter
+        .check_limit(
+            AI_PROVIDER_RATE_CATEGORY,
+            provider_id,
+            rpm_limit,
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .is_ok()
 }
 
 // =============================================================================
@@ -686,7 +653,13 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     }
 
                     // Check rate limit
-                    if !check_rate_limit(&resolved.config.id, resolved.config.rate_limit_rpm) {
+                    if !check_rate_limit(
+                        services.rate_limiter.as_deref(),
+                        &resolved.config.id,
+                        resolved.config.rate_limit_rpm,
+                    )
+                    .await
+                    {
                         warn!(
                             plugin = %plugin_name,
                             provider = %resolved.config.label,
@@ -804,6 +777,10 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     let op_key = kernel_op.config_key();
                     let timeout =
                         timeout_cfg.resolve_timeout(op_key, &resolved.config.id, is_background);
+                    // The circuit breakers stay per server on purpose: each one
+                    // reacts to the failures this server sees, opens and probes
+                    // on its own, and sharing them would add a Redis round trip
+                    // to every AI call to save a few failed requests per server.
                     let breaker =
                         ai_svc.breaker_for_operation(op_key, timeout_cfg.resolve_breaker_window(op_key));
 
@@ -981,6 +958,7 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use trovato_sdk::types::{AiMessage, AiOperationType, AiRequestOptions};
 
     // -------------------------------------------------------------------------
@@ -1516,17 +1494,6 @@ mod tests {
     }
 
     #[test]
-    fn rate_limiter_allows_within_limit() {
-        assert!(check_rate_limit("test-provider-1", 10));
-        assert!(check_rate_limit("test-provider-1", 10));
-    }
-
-    #[test]
-    fn rate_limiter_zero_means_unlimited() {
-        assert!(check_rate_limit("test-provider-2", 0));
-    }
-
-    #[test]
     fn build_anthropic_concatenates_multiple_system_messages() {
         let resolved = ResolvedProvider {
             config: crate::services::ai_provider::AiProviderConfig {
@@ -1576,23 +1543,6 @@ mod tests {
 
         let resp = parse_anthropic_response(json, 50).unwrap();
         assert_eq!(resp.content, "Hello world!");
-    }
-
-    #[test]
-    fn rate_limiter_does_not_increment_on_rejection() {
-        // Fill up the rate limit
-        let provider = "test-provider-rejection";
-        for _ in 0..3 {
-            assert!(check_rate_limit(provider, 3));
-        }
-        // Should be rejected
-        assert!(!check_rate_limit(provider, 3));
-        assert!(!check_rate_limit(provider, 3));
-
-        // Counter should still be at 3, not 5
-        let map = RATE_LIMITS.lock().unwrap();
-        let window = map.get(provider).unwrap();
-        assert_eq!(window.count.load(Ordering::Relaxed), 3);
     }
 
     #[test]

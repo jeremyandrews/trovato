@@ -4721,10 +4721,11 @@ fn e2e_admin_plugin_toggle() {
 // Runtime Plugin Gate Tests
 // =============================================================================
 
-/// Verify that POST /admin/plugins/toggle on a gated plugin immediately
-/// affects route availability (no restart needed).
+/// Verify that POST /admin/plugins/toggle on a gated plugin changes only its
+/// stored status: the running server keeps serving the plugin's routes, and
+/// the plugin list says the change waits for a restart.
 #[test]
-fn e2e_toggle_gated_plugin_affects_routes() {
+fn e2e_toggle_gated_plugin_waits_for_restart() {
     run_test(async {
         let _lock = PLUGIN_STATE_LOCK.write().await;
         let app = shared_app().await;
@@ -4734,89 +4735,90 @@ fn e2e_toggle_gated_plugin_affects_routes() {
         let cookies = app
             .create_and_login_admin("gate_toggle_admin", "password123", "gatetoggle@test.com")
             .await;
+        let cookies = &cookies;
 
-        // Route should be reachable
+        let stored_status = || async {
+            sqlx::query_scalar::<_, i16>("SELECT status FROM plugin_status WHERE name = $1")
+                .bind("trovato_categories")
+                .fetch_one(&app.db)
+                .await
+                .unwrap()
+        };
+        let plugin_page = || async {
+            let response = app
+                .request_with_cookies(
+                    Request::get("/admin/plugins").body(Body::empty()).unwrap(),
+                    cookies,
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            response_text(response).await
+        };
+        let toggle = |body: String, action: &'static str| async move {
+            let csrf_token = body
+                .split("name=\"_token\" value=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .expect("CSRF token")
+                .to_string();
+            let form_body =
+                format!("_token={csrf_token}&plugin_name=trovato_categories&action={action}");
+            app.request_with_cookies(
+                Request::post("/admin/plugins/toggle")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_body))
+                    .unwrap(),
+                cookies,
+            )
+            .await
+        };
+
+        let body = plugin_page().await;
+        assert!(
+            body.contains(
+                "Changes take effect when the server restarts (all servers, if more than one)."
+            ),
+            "the plugin list should say when a change takes effect"
+        );
+        assert!(
+            !body.contains("data-pending-restart=\"trovato_categories\""),
+            "nothing is waiting for a restart yet"
+        );
+
+        // Disable categories via the admin UI toggle.
+        let response = toggle(body, "disable").await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(stored_status().await, 0, "the stored status is disabled");
+
+        // This server keeps running the plugin until it restarts.
+        assert!(app.state.is_plugin_enabled("trovato_categories"));
         let response = app
             .request(Request::get("/api/categories").body(Body::empty()).unwrap())
             .await;
         assert_ne!(
             response.status(),
             StatusCode::NOT_FOUND,
-            "Route should be reachable when categories is enabled"
+            "the gated route stays until the server restarts"
         );
 
-        // Get CSRF token from plugin list page
-        let response = app
-            .request_with_cookies(
-                Request::get("/admin/plugins").body(Body::empty()).unwrap(),
-                &cookies,
-            )
-            .await;
-        let body = response_text(response).await;
-        let csrf_token = body
-            .split("name=\"_token\" value=\"")
-            .nth(1)
-            .and_then(|s| s.split('"').next())
-            .expect("CSRF token");
-
-        // Disable categories via the admin UI toggle
-        let form_body =
-            format!("_token={csrf_token}&plugin_name=trovato_categories&action=disable");
-        let response = app
-            .request_with_cookies(
-                Request::post("/admin/plugins/toggle")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(form_body))
-                    .unwrap(),
-                &cookies,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-
-        // Gated route should now return 404
-        let response = app
-            .request(Request::get("/api/categories").body(Body::empty()).unwrap())
-            .await;
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "Gated route should return 404 after disabling via admin toggle"
+        let body = plugin_page().await;
+        assert!(
+            body.contains("disabled. Changes take effect when the server restarts"),
+            "the flash should say the change waits for a restart"
+        );
+        assert!(
+            body.contains("data-pending-restart=\"trovato_categories\""),
+            "the plugin list should mark the plugin as waiting for a restart"
         );
 
-        // Re-enable via toggle
-        let response = app
-            .request_with_cookies(
-                Request::get("/admin/plugins").body(Body::empty()).unwrap(),
-                &cookies,
-            )
-            .await;
-        let body = response_text(response).await;
-        let csrf_token = body
-            .split("name=\"_token\" value=\"")
-            .nth(1)
-            .and_then(|s| s.split('"').next())
-            .expect("CSRF token for re-enable");
-
-        let form_body = format!("_token={csrf_token}&plugin_name=trovato_categories&action=enable");
-        let response = app
-            .request_with_cookies(
-                Request::post("/admin/plugins/toggle")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(form_body))
-                    .unwrap(),
-                &cookies,
-            )
-            .await;
+        // Re-enable: the stored status matches what is running again.
+        let response = toggle(body, "enable").await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-
-        // Route should be reachable again
-        let response = app
-            .request(Request::get("/api/categories").body(Body::empty()).unwrap())
-            .await;
-        assert_ne!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "Gated route should be reachable again after re-enabling via admin toggle"
+        assert_eq!(stored_status().await, 1, "the stored status is enabled");
+        let body = plugin_page().await;
+        assert!(
+            !body.contains("data-pending-restart=\"trovato_categories\""),
+            "nothing waits for a restart once stored and running agree"
         );
     });
 }
@@ -8657,7 +8659,7 @@ fn e2e_ai_chat_rate_limit_returns_429() {
         let app = shared_app().await;
 
         // Clear any leftover rate limit state from prior tests.
-        trovato_kernel::routes::api_chat::clear_chat_rate_limits();
+        trovato_kernel::routes::api_chat::clear_chat_rate_limits(&app.state).await;
 
         // Save config with rate_limit_per_hour = 1
         let mut config = app.state.ai_chat().load_config().await.unwrap();
@@ -8709,6 +8711,6 @@ fn e2e_ai_chat_rate_limit_returns_429() {
         // Clean up: restore reasonable rate limit and clear state.
         config.rate_limit_per_hour = 20;
         app.state.ai_chat().save_config(&config).await.unwrap();
-        trovato_kernel::routes::api_chat::clear_chat_rate_limits();
+        trovato_kernel::routes::api_chat::clear_chat_rate_limits(&app.state).await;
     });
 }

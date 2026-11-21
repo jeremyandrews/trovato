@@ -26,7 +26,7 @@
 //! a rate token, which is the same trade `routes::api_chat` makes.
 
 use std::convert::Infallible;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -34,7 +34,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use dashmap::DashMap;
 use serde::Deserialize;
 use tower_sessions::Session;
 use trovato_sdk::types::{
@@ -71,46 +70,27 @@ const MAX_BODY_BYTES: usize = 16 * 1024;
 // Rate limiting
 // =============================================================================
 
-/// Per-person message counters: `(count, window_start)`.
-///
-/// In-process and non-persistent, the same shape and the same limitation as the
-/// chatbot's: it resets on restart and is not shared across instances. Adequate
-/// for a single instance; a clustered deployment wants a Redis-backed limiter
-/// for both.
-static ASSISTANT_RATE_LIMITS: std::sync::LazyLock<DashMap<String, (u32, Instant)>> =
-    std::sync::LazyLock::new(DashMap::new);
-
-/// When the counters were last swept.
-static LAST_EVICTION: std::sync::LazyLock<std::sync::Mutex<Instant>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(Instant::now()));
+/// The rate limiter category the assistant's hourly limit counts under.
+const ASSISTANT_RATE_CATEGORY: &str = "assistant";
 
 /// Count one message against a person's hourly limit.
-fn check_rate_limit(user_key: &str, limit_per_hour: u32) -> bool {
+///
+/// Counted in Redis by the shared [`RateLimiter`](crate::middleware::RateLimiter),
+/// like the chatbot's, so the limit holds across servers. Zero is unlimited.
+async fn check_rate_limit(state: &AppState, user_key: &str, limit_per_hour: u32) -> bool {
     if limit_per_hour == 0 {
         return true;
     }
-    let now = Instant::now();
-
-    if let Ok(mut last) = LAST_EVICTION.lock()
-        && now.duration_since(*last) > Duration::from_secs(60)
-    {
-        ASSISTANT_RATE_LIMITS.retain(|_, v| now.duration_since(v.1) < Duration::from_secs(3600));
-        *last = now;
-    }
-
-    let mut entry = ASSISTANT_RATE_LIMITS
-        .entry(user_key.to_string())
-        .or_insert((0, now));
-
-    if now.duration_since(entry.1) > Duration::from_secs(3600) {
-        *entry = (1, now);
-        return true;
-    }
-    if entry.0 >= limit_per_hour {
-        return false;
-    }
-    entry.0 += 1;
-    true
+    state
+        .rate_limiter()
+        .check_limit(
+            ASSISTANT_RATE_CATEGORY,
+            user_key,
+            limit_per_hour,
+            Duration::from_secs(3600),
+        )
+        .await
+        .is_ok()
 }
 
 /// Clear every rate-limit counter.
@@ -119,8 +99,11 @@ fn check_rate_limit(user_key: &str, limit_per_hour: u32) -> bool {
 /// `tests/` crate, which need to prove the limit both bites and resets. Not part
 /// of the public API; nothing in production calls it.
 #[doc(hidden)]
-pub fn clear_assistant_rate_limits() {
-    ASSISTANT_RATE_LIMITS.clear();
+pub async fn clear_assistant_rate_limits(state: &AppState) {
+    state
+        .rate_limiter()
+        .reset_category(ASSISTANT_RATE_CATEGORY)
+        .await;
 }
 
 // =============================================================================
@@ -687,7 +670,7 @@ async fn run_message(
             .into_response();
     }
 
-    if !check_rate_limit(&user.id.to_string(), config.rate_limit_per_hour) {
+    if !check_rate_limit(&state, &user.id.to_string(), config.rate_limit_per_hour).await {
         return (AppError::RateLimited {
             retry_after_secs: 3600,
             category: "assistant".to_string(),
@@ -1276,19 +1259,5 @@ mod tests {
             ..conversation(0, 0, 0)
         };
         assert_eq!(back_to(&site_wide), "/ai/assistant/s");
-    }
-
-    #[test]
-    fn the_rate_limit_bites_and_zero_means_unlimited() {
-        clear_assistant_rate_limits();
-        assert!(check_rate_limit("someone", 2));
-        assert!(check_rate_limit("someone", 2));
-        assert!(!check_rate_limit("someone", 2));
-        // Another person has their own counter.
-        assert!(check_rate_limit("somebody-else", 2));
-        // Zero is unlimited, however many have gone before.
-        assert!(check_rate_limit("someone", 0));
-        clear_assistant_rate_limits();
-        assert!(check_rate_limit("someone", 2));
     }
 }

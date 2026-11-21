@@ -1249,8 +1249,8 @@ obtain a CSRF token for a raw curl workflow; the tests scrape it out of a
 rendered form, and a reviewer scripting this will have to do the same.
 
 **Enable a plugin:** `trovato plugin install <name>`, or `/admin/plugins` in the
-UI. A plugin enabled while the server runs registers its permissions only on
-restart, so restart after enabling.
+UI. Either way only the stored status changes; the plugin loads, and its
+permissions register, when the server restarts, so restart after enabling.
 
 **AI assistant:** this one has no offline mode, and the gap is worth
 understanding because it is itself a finding. A real provider key is required,

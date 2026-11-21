@@ -1536,7 +1536,7 @@ fn the_rate_limit_refuses_a_second_message_in_the_hour() {
     common::run_test(async {
         let app = app();
         let _guard = SITE_LOCK.lock().await;
-        trovato_kernel::routes::assistant::clear_assistant_rate_limits();
+        trovato_kernel::routes::assistant::clear_assistant_rate_limits(&app.state).await;
         set_config(
             app,
             AssistantConfig {
@@ -1566,7 +1566,7 @@ fn the_rate_limit_refuses_a_second_message_in_the_hour() {
             )
             .await;
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        trovato_kernel::routes::assistant::clear_assistant_rate_limits();
+        trovato_kernel::routes::assistant::clear_assistant_rate_limits(&app.state).await;
     });
 }
 
