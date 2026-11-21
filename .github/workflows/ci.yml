@@ -211,7 +211,7 @@ jobs:
             -p test_ai_background \
             -p trovato_field_access_ref \
             -p trovato_recovery_ref -p test_recovery_bystander \
-            -p test_queue_worker -p test_item_writer -p test_item_deny -p test_members -p test_menu_entries \
+            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries \
             -p trovato_record_ref \
             -p trovato_spam \
             -p trovato_series -p test_plugin_api \
@@ -225,7 +225,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/test_item_writer plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
+            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
             plugins/trovato_ai plugins/test_form_taps plugins/test_form_taps_b
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
@@ -239,6 +239,7 @@ jobs:
           cp target/wasm32-wasip1/release/test_recovery_bystander.wasm plugins/test_recovery_bystander/
           cp target/wasm32-wasip1/release/test_queue_worker.wasm plugins/test_queue_worker/
           cp target/wasm32-wasip1/release/test_item_writer.wasm plugins/test_item_writer/
+          cp target/wasm32-wasip1/release/test_site_queries.wasm plugins/test_site_queries/
           cp target/wasm32-wasip1/release/test_item_deny.wasm plugins/test_item_deny/
           cp target/wasm32-wasip1/release/test_members.wasm plugins/test_members/
           cp target/wasm32-wasip1/release/test_menu_entries.wasm plugins/test_menu_entries/
@@ -527,7 +528,7 @@ jobs:
             -p test_ai_background \
             -p trovato_field_access_ref \
             -p trovato_recovery_ref -p test_recovery_bystander \
-            -p test_queue_worker -p test_item_writer -p test_item_deny -p test_members -p test_menu_entries \
+            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries \
             -p trovato_record_ref \
             -p trovato_spam \
             -p trovato_series -p test_plugin_api \
@@ -541,7 +542,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/test_item_writer plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
+            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
             plugins/trovato_ai plugins/test_form_taps plugins/test_form_taps_b
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
@@ -555,6 +556,7 @@ jobs:
           cp target/wasm32-wasip1/release/test_recovery_bystander.wasm plugins/test_recovery_bystander/
           cp target/wasm32-wasip1/release/test_queue_worker.wasm plugins/test_queue_worker/
           cp target/wasm32-wasip1/release/test_item_writer.wasm plugins/test_item_writer/
+          cp target/wasm32-wasip1/release/test_site_queries.wasm plugins/test_site_queries/
           cp target/wasm32-wasip1/release/test_item_deny.wasm plugins/test_item_deny/
           cp target/wasm32-wasip1/release/test_members.wasm plugins/test_members/
           cp target/wasm32-wasip1/release/test_menu_entries.wasm plugins/test_menu_entries/

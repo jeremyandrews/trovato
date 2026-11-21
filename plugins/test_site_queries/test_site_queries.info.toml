@@ -1,0 +1,18 @@
+name = "test_site_queries"
+description = "B80 fixture: a site plugin's listings, sitemap, docs and translation sync without raw_sql"
+version = "0.105.0"
+api_version = "0.105"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_queue_worker"]
+weight = 0
+
+# Everything this fixture does goes through the kernel: content reads through
+# `query` (the request's viewer, stage and language) and translation writes
+# through `item-api` (`ItemService`). No `db`, no `db_tables`, no `raw_sql`.
+# `logging` because the #[plugin_tap] macro references the logging import on
+# its error paths.
+[capabilities]
+host_interfaces = ["logging", "query", "item-api"]

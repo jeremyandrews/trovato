@@ -63,6 +63,10 @@ members = [
     # item-api SDK bindings; built with --target wasm32-wasip1.
     "plugins/test_item_writer",
     "plugins/test_item_deny",
+    # B80 site fixture: a site plugin's listings, sitemap, docs and translation
+    # sync through `query` and item-api, with no raw_sql; built with
+    # --target wasm32-wasip1.
+    "plugins/test_site_queries",
     # B73 member fixture: reads about the site's members by id through
     # user-api.load-users; built with --target wasm32-wasip1.
     "plugins/test_members",
