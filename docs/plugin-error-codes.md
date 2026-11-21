@@ -162,20 +162,25 @@ These are produced by SDK wrapper functions before/after the WASM boundary:
 ## Handling Errors in Plugins
 
 ```rust
-use trovato_sdk::host::{query_raw, log};
+use trovato_sdk::host::{query, log};
 use trovato_sdk::host_errors;
 
-match query_raw("SELECT * FROM item WHERE type = $1 LIMIT 100", &[json!("conference")]) {
-    Ok(result) => {
-        // Process JSON result
+let conferences = json!({
+    "base_table": "item",
+    "item_type": "conference",
+    "sorts": [{"field": "created", "direction": "desc"}]
+});
+match query(&conferences, &json!({"per_page": 100})) {
+    Ok(page) => {
+        // page.items: what the viewer may see, each with its url
     }
-    Err(host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED) => {
-        // Result too large — reduce LIMIT or paginate
-        log("warn", "my_plugin", "query result exceeded 256KB buffer");
+    Err(host_errors::ERR_QUERY_BOUND) => {
+        // Past a bound (100 rows a page, 32 filters, ...): page or narrow it
+        log("warn", "my_plugin", "query past a bound");
     }
-    Err(host_errors::ERR_SQL_FAILED) => {
-        // SQL error — log and return gracefully
-        log("error", "my_plugin", "SQL query failed");
+    Err(host_errors::ERR_QUERY_INVALID) => {
+        // The definition was refused — log and return gracefully
+        log("error", "my_plugin", "query definition refused");
     }
     Err(code) => {
         // Unknown error — log the code for debugging

@@ -466,6 +466,16 @@ impl AppState {
             .await
             .context("failed to load plugins")?;
 
+        // One line naming every plugin that runs SQL the kernel does not
+        // compile, so an operator reading the boot log sees each grant (D-60).
+        let raw_sql = plugin_runtime.raw_sql_holders();
+        if !raw_sql.is_empty() {
+            tracing::warn!(
+                plugins = %raw_sql.join(", "),
+                "plugins holding raw_sql: SQL the kernel does not compile, with no viewer, stage or language applied"
+            );
+        }
+
         // Run pending plugin migrations for enabled plugins
         let enabled_discovered: std::collections::HashMap<
             String,

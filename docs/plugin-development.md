@@ -149,6 +149,7 @@ weight = 0  # Lower weight = earlier execution
 | `[taps].weight` | No | Execution order (default: 0) |
 | `[migrations].files` | No | Array of SQL migration file paths |
 | `[migrations].depends_on` | No | Plugin names whose migrations run first |
+| `[capabilities]` | No | What the plugin may reach: host interfaces, tables, `raw_sql` and the background grants. Absent means nothing. See [plugin-capabilities.md](plugin-capabilities.md) |
 
 ### SQL Migrations
 
@@ -1043,6 +1044,10 @@ To count, sum or group your own rows, use `host::query` with `group_by` and
 the protected floor, with no viewer, stage or language. Keep it for what the
 structured calls and `host::query` cannot express: recursive CTEs, window
 functions, extension operators, locking reads.
+
+The admin plugin listing marks every plugin holding it and boot logs one line
+naming them all; [plugin-capabilities.md](plugin-capabilities.md#raw_sql) is
+what to tell an administrator the grant means.
 
 ```rust
 let rows = host::query_raw("SELECT * FROM my_table WHERE name = $1", &[json!("Example")])?;

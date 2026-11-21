@@ -516,6 +516,14 @@ fn is_valid_field_ref(value: &str) -> bool {
 }
 
 impl PluginInfo {
+    /// Whether the manifest grants `raw_sql`: SQL the kernel does not compile,
+    /// past the table allowlist, with no viewer, stage or language applied. The
+    /// admin plugin listing marks every holder and boot names them
+    /// (`docs/plugin-capabilities.md`).
+    pub fn holds_raw_sql(&self) -> bool {
+        self.capabilities.as_ref().is_some_and(|caps| caps.raw_sql)
+    }
+
     /// Parse a plugin info file from the given path.
     pub fn parse(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)

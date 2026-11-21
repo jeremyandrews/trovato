@@ -9,6 +9,20 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Boot warns about every plugin holding `raw_sql`
+
+**Who is affected:** an operator whose site runs a plugin with `raw_sql = true`
+under `[capabilities]`, and anyone alerting on warnings in the boot log.
+
+**What changed.** Boot logs one warning, `plugins holding raw_sql: ...`, with
+the holders' names in `plugins`, and the admin plugin listing marks each holder
+**raw SQL**. Nothing a plugin may do changed.
+
+**What to do.** Nothing, unless an alert fires on any boot warning: then expect
+this one while a `raw_sql` plugin is enabled. To make it go away, move the
+plugin's reads to the `query` interface and its writes to `db` and `item-api`
+(`docs/plugin-capabilities.md`) and drop the grant.
+
 ### `query-items` lists the request's stage only
 
 **Who is affected:** a plugin that calls `item-api` `query-items` (or the SDK's

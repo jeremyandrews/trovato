@@ -523,7 +523,7 @@ interface db {
     update: func(table: string, data-json: string, where-json: string) -> result<u64, string>;
     delete: func(table: string, where-json: string) -> result<u64, string>;
 
-    // Permission-gated raw SQL (requires "raw_sql" in .info.toml permissions)
+    // Raw SQL, gated on `raw_sql = true` under [capabilities] in .info.toml
     query-raw: func(sql: string, params-json: string) -> result<string, string>;
     execute-raw: func(sql: string, params-json: string) -> result<u64, string>;
 }
@@ -676,14 +676,14 @@ The Kernel translates this to SeaQuery, preventing SQL injection. Plugins cannot
 
 For JSONB fields referenced via `fields->>'field_name'`, the Kernel applies `::numeric` casts automatically when the operator is a numeric comparison and the value is a number.
 
-**For queries too complex for the structured API**, plugins can request `raw_sql` permission in `.info.toml`:
+**For queries too complex for the structured API and the `query` interface**, a plugin declares the `raw_sql` capability in `.info.toml` (B80 corrected this paragraph, which named a `[permissions]` key that never existed):
 
 ```toml
-[permissions]
-requires = ["raw_sql"]
+[capabilities]
+raw_sql = true
 ```
 
-Administrators must explicitly grant this permission. Plugins with `raw_sql` access are treated as trusted.
+The grant is the manifest: nothing asks an administrator. The admin plugin listing marks each holder and boot logs one line naming them all; what the grant means is in [plugin-capabilities.md](../plugin-capabilities.md#raw_sql).
 
 ### 6.2 Host Functions Not Yet Specified (Deferred)
 

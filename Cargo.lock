@@ -4883,6 +4883,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_site_queries"
+version = "0.105.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"

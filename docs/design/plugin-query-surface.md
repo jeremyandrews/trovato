@@ -302,8 +302,11 @@ holds `raw_sql` for six statements. Each, on the seams above:
 | `TRANSLATION_LIST_SQL`, `_READ_SQL`, `_DELETE_SQL` (`:727-737`) | `item-api` `list-translations` (ids from one `query::run`), `delete-translation` |
 | `TRANSLATION_WRITE_SQL` (`:742`) | `item-api` `save-translation` |
 
-Part 5 proves all six with `plugins/test_site_queries`, which declares no
-`raw_sql`.
+Part 5 proves all six with `plugins/test_site_queries`, which declares
+`query`, `item-api` and `logging` and no `db`, `db_tables` or `raw_sql`
+(`crates/kernel/tests/site_queries_test.rs`). The translation sync reads every
+stored translation of the items in one `list-translations` call where the
+statement read one at a time, and writes only what differs.
 
 The next five plugins, from the backlog's sources: a blog or news archive
 (listing plus count per month: grouping on its own table, or a follow-up for
