@@ -27,11 +27,19 @@ TOTAL_SHARDS="${TOTAL_SHARDS:?TOTAL_SHARDS must be set}"
 #
 # The enumeration itself is the one thing that could fail open, so it is
 # checked: an empty workspace list, or an empty shard, fails the job.
+#
+# One target is left out by name: `cluster_test`, which needs the two node
+# harness and runs in the `cluster` job; here it would only skip itself. Left
+# in, it also moved every target sorted after it into a different shard, and
+# two of those (language_navigation_test, config_admin_coverage_test) fail
+# when they no longer share a database with the targets that enable the
+# plugins they rely on. That order dependence is real and is not fixed here.
 ALL=$(
   cargo metadata --no-deps --format-version 1 \
     | jq -r '.packages[] | .name as $p
              | .targets[] | select(.kind[] == "test")
              | "\($p) \(.name)"' \
+    | grep -v ' cluster_test$' \
     | sort
 )
 

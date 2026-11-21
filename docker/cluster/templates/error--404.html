@@ -1,0 +1,19 @@
+{#
+  The cluster harness's 404 page: the kernel's own (templates/error--404.html)
+  plus one translated string, so a test can see a locale string imported on
+  one node reach the other. Harness only; loaded after the kernel's templates
+  through TEMPLATES_DIR in docker-compose.cluster.yml.
+#}
+<section class="error-page error-page--404">
+  <h1 class="error-page__title">{{ error_title }}</h1>
+  {% if message != error_title %}<p class="error-page__message">{{ message }}</p>{% endif %}
+  {% if not admin_path %}
+  <form class="error-page__search" method="get" action="/search" role="search">
+    <label for="error-page-search">Search this site</label>
+    <input type="search" id="error-page-search" name="q">
+    <button type="submit">Search</button>
+  </form>
+  {% endif %}
+  <p class="error-page__home"><a href="{{ home | safe }}">{{ home_label }}</a></p> {# SAFE: `home` is the constant "/" or "/admin", set by middleware::error_page, never user text #}
+  <p class="cluster-locale-probe">{{ "Cluster locale probe" | trans(lang="en") }}</p>
+</section>

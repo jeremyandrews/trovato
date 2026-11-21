@@ -823,6 +823,48 @@ jobs:
             echo "::warning::Drupal terminology found. See docs/coding-standards.md for Trovato equivalents."
           fi
 
+  # Two kernels behind a round robin proxy (docker-compose.cluster.yml), driven
+  # over HTTP by crates/kernel/tests/cluster_test.rs. The test file skips itself
+  # unless TROVATO_CLUSTER_URL is set, so the Test shards above run it as a
+  # no-op; this is the one job that points it at a cluster. The image is the
+  # release Dockerfile, built here from the branch.
+  cluster:
+    name: Cluster (two nodes)
+    runs-on: ubuntu-latest
+    env:
+      TROVATO_CLUSTER_URL: http://localhost:8095
+      TROVATO_CLUSTER_DATABASE_URL: postgres://trovato:trovato@localhost:56432/trovato
+    steps:
+      - uses: actions/checkout@v5
+      # Same reclaim as the Test job: a release image build and a debug test
+      # build do not both fit in the runner's default free space.
+      - name: Free up runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/local/share/powershell || true
+          sudo docker image prune --all --force || true
+          df -h /
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the image and start the cluster
+        run: docker compose -f docker-compose.cluster.yml up -d --build
+      - name: Build the cluster tests
+        run: cargo test -p trovato-kernel --test cluster_test --no-run
+      - name: Run the cluster tests
+        run: cargo test -p trovato-kernel --test cluster_test -- --test-threads=1
+      - name: Kernel logs
+        if: failure()
+        run: |
+          docker compose -f docker-compose.cluster.yml ps -a
+          docker compose -f docker-compose.cluster.yml logs --no-color node-a
+          docker compose -f docker-compose.cluster.yml logs --no-color node-b
+          docker compose -f docker-compose.cluster.yml logs --no-color proxy
+      - name: Stop the cluster
+        if: always()
+        run: docker compose -f docker-compose.cluster.yml down -v
+
   changelog:
     name: Changelog Fragment
     runs-on: ubuntu-latest
