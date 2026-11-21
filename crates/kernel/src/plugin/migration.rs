@@ -294,6 +294,7 @@ mod tests {
             },
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         }
     }
 

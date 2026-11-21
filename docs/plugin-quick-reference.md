@@ -36,6 +36,11 @@ dependencies = []
 [taps]
 implements = ["tap_item_info", "tap_item_view"]
 weight = 0
+
+# Optional (API 0.106): tables of your own holding site configuration,
+# carried by `trovato config export` / `config import`.
+[config]
+tables = ["my_plugin_setting"]
 ```
 
 ---

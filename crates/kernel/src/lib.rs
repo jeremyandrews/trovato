@@ -43,8 +43,7 @@ pub mod update_status;
 // Re-export key types for testing
 pub use config::Config;
 pub use config_storage::{
-    ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage, SearchFieldConfig,
-    StageAwareConfigStorage, entity_types,
+    ConfigEntity, ConfigFilter, ConfigStorage, DirectConfigStorage, SearchFieldConfig, entity_types,
 };
 pub use models::stage::{LIVE_STAGE_ID, StageVisibility};
 pub use stage::{

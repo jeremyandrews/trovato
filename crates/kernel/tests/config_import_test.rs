@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 
 use sqlx::PgPool;
 use trovato_kernel::config_storage::yaml::{ConfigImportFailed, export_config, import_config};
-use trovato_kernel::config_storage::{ConfigStorage, DirectConfigStorage, entity_types};
+use trovato_kernel::config_storage::{
+    ConfigPluginStatus, ConfigStorage, DirectConfigStorage, PluginConfigSet, entity_types,
+    plugin_config,
+};
 
 /// A database created for one test and dropped when the test ends.
 ///
@@ -41,6 +44,14 @@ impl ScratchDb {
 
     fn storage(&self) -> DirectConfigStorage {
         DirectConfigStorage::new(self.pool().clone())
+    }
+
+    /// Storage that also knows the repository's plugins, so their config
+    /// tables are entity types, as they are for `trovato config`.
+    async fn plugin_storage(&self) -> DirectConfigStorage {
+        let plugins_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        self.storage()
+            .with_plugins(PluginConfigSet::discover(&[plugins_dir]).await)
     }
 
     /// This database's own connection URL, for the one test that drives the
@@ -626,15 +637,50 @@ fn yaml_declares(document: &str, field: &str, value: &str) -> bool {
 /// exported documents catches a field that survives neither direction only if it
 /// is also absent from the file, which the assertion on the first export's
 /// content covers.
+///
+/// The set also carries plugin configuration: the six plugins that own config
+/// tables are enabled by `plugin_status` files, and each table has a row. The
+/// whole second export must equal the first, byte for byte, which also proves
+/// that a fresh install's seeded rows (the image styles) give way to the
+/// exported ones, and that runtime state never enters the set.
 #[tokio::test]
 async fn the_menu_tree_survives_export_and_re_import() {
     let first = ScratchDb::new("rtfirst").await;
     let second = ScratchDb::new("rtsecond").await;
+    let first_storage = first.plugin_storage().await;
+    let second_storage = second.plugin_storage().await;
+    // The second database stands for a fresh install, which has booted with
+    // these plugins enabled: their migrations have seeded image styles and
+    // roles under ids of their own, which the imported ones must replace.
+    for plugin in PLUGINS_WITH_CONFIG {
+        plugin_config::save_status(
+            second.pool(),
+            &ConfigPluginStatus {
+                name: plugin.to_string(),
+                enabled: true,
+            },
+            "0",
+        )
+        .await
+        .unwrap();
+    }
+    second_storage
+        .plugins()
+        .unwrap()
+        .migrate_enabled(second.pool())
+        .await
+        .unwrap();
 
     let source = TempConfigDir::new("rtsource");
     let (root, child, grandchild) = write_menu_tree(&source);
+    let plugin_files = write_plugin_config(&source);
+    // Runtime state, which import must ignore.
+    source.write(
+        "variable.update_status.yml",
+        "key: update_status\nvalue: {latest: 9.9.9}\n",
+    );
 
-    if let Err(e) = import_config(&first.storage(), first.pool(), source.path(), false).await {
+    if let Err(e) = import_config(&first_storage, first.pool(), source.path(), false).await {
         first.cleanup().await;
         second.cleanup().await;
         panic!("the menu tree must import clean: {e:#}");
@@ -642,7 +688,7 @@ async fn the_menu_tree_survives_export_and_re_import() {
 
     // Export everything the first database holds.
     let export_one = TempConfigDir::new("rtexport1");
-    if let Err(e) = export_config(&first.storage(), first.pool(), export_one.path(), false).await {
+    if let Err(e) = export_config(&first_storage, first.pool(), export_one.path(), false).await {
         first.cleanup().await;
         second.cleanup().await;
         panic!("export must succeed: {e:#}");
@@ -676,16 +722,14 @@ async fn the_menu_tree_survives_export_and_re_import() {
     );
 
     // Re-import that export into a second, independent database.
-    if let Err(e) = import_config(&second.storage(), second.pool(), export_one.path(), false).await
-    {
+    if let Err(e) = import_config(&second_storage, second.pool(), export_one.path(), false).await {
         first.cleanup().await;
         second.cleanup().await;
         panic!("re-importing an export must succeed: {e:#}");
     }
 
     let export_two = TempConfigDir::new("rtexport2");
-    if let Err(e) = export_config(&second.storage(), second.pool(), export_two.path(), false).await
-    {
+    if let Err(e) = export_config(&second_storage, second.pool(), export_two.path(), false).await {
         first.cleanup().await;
         second.cleanup().await;
         panic!("the second export must succeed: {e:#}");
@@ -706,8 +750,163 @@ async fn the_menu_tree_survives_export_and_re_import() {
     }
     assert_eq!(compared, 3, "all three links must have been compared");
 
+    // Every plugin entity the source set carried is in the export, with what
+    // the source said.
+    for (name, field, value) in &plugin_files {
+        let exported = std::fs::read_to_string(export_one.path().join(name))
+            .unwrap_or_else(|_| panic!("{name} must be exported"));
+        assert!(
+            yaml_declares(&exported, field, value),
+            "{name} must carry {field}: {value}, got:\n{exported}"
+        );
+    }
+    // Runtime state is neither imported nor exported.
+    for key in trovato_kernel::config_storage::RUNTIME_STATE_KEYS {
+        assert!(
+            !export_one
+                .path()
+                .join(format!("variable.{key}.yml"))
+                .exists(),
+            "runtime state '{key}' must not be exported"
+        );
+    }
+    let update_status: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT value FROM site_config WHERE key = 'update_status'")
+            .fetch_optional(first.pool())
+            .await
+            .unwrap();
+    assert!(
+        update_status.is_none(),
+        "importing runtime state must not write it, got {update_status:?}"
+    );
+
+    // The whole second export equals the first.
+    let listing = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let names = listing(export_one.path());
+    assert_eq!(
+        names,
+        listing(export_two.path()),
+        "both exports must hold the same files"
+    );
+    for name in &names {
+        let a = std::fs::read(export_one.path().join(name)).unwrap();
+        let b = std::fs::read(export_two.path().join(name)).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&a),
+            String::from_utf8_lossy(&b),
+            "{name} did not survive the round trip"
+        );
+    }
+
     first.cleanup().await;
     second.cleanup().await;
+}
+
+/// Every in-tree plugin whose manifest declares `[config] tables`.
+const PLUGINS_WITH_CONFIG: [&str; 6] = [
+    "trovato_config_translation",
+    "trovato_image_styles",
+    "trovato_locale",
+    "trovato_oauth2",
+    "trovato_redirects",
+    "trovato_webhooks",
+];
+
+/// The six plugins that own config tables, enabled, and one row in each of
+/// their tables. Returns `(file, field, value)` for one field of each file,
+/// for asserting the export carries it.
+fn write_plugin_config(dir: &TempConfigDir) -> Vec<(String, &'static str, String)> {
+    let mut expect = Vec::new();
+    for plugin in PLUGINS_WITH_CONFIG {
+        let name = format!("plugin_status.{plugin}.yml");
+        dir.write(&name, &format!("name: {plugin}\nenabled: true\n"));
+        expect.push((name, "enabled", "true".to_string()));
+    }
+
+    let style = "0193a5a0-0092-7000-8000-000000000001";
+    dir.write(
+        &format!("image_style.{style}.yml"),
+        &format!(
+            "id: {style}\nname: hero\nlabel: Hero (1600w)\n\
+             effects:\n- type: scale\n  width: 1600\ncreated: 1700000000\nchanged: 1700000001\n"
+        ),
+    );
+    expect.push((
+        format!("image_style.{style}.yml"),
+        "label",
+        "Hero (1600w)".to_string(),
+    ));
+
+    let redirect = "0193a5a0-0092-7000-8000-000000000002";
+    dir.write(
+        &format!("redirect.{redirect}.yml"),
+        &format!(
+            "id: {redirect}\nsource: /old-page\ndestination: /new-page\nstatus_code: 301\n\
+             language: en\ncreated: 1700000000\n"
+        ),
+    );
+    expect.push((
+        format!("redirect.{redirect}.yml"),
+        "source",
+        "/old-page".to_string(),
+    ));
+
+    let client = "0193a5a0-0092-7000-8000-000000000003";
+    dir.write(
+        &format!("oauth_client.{client}.yml"),
+        &format!(
+            "id: {client}\nclient_id: rt-client\nclient_secret_hash: $argon2id$v=19$x\n\
+             name: Round trip\nredirect_uris:\n- https://example.com/cb\n\
+             grant_types:\n- authorization_code\nscopes: []\ncreated: 1700000000\n"
+        ),
+    );
+    expect.push((
+        format!("oauth_client.{client}.yml"),
+        "client_id",
+        "rt-client".to_string(),
+    ));
+
+    let hook = "0193a5a0-0092-7000-8000-000000000004";
+    dir.write(
+        &format!("webhook.{hook}.yml"),
+        &format!(
+            "id: {hook}\nname: Deploy\nurl: https://example.com/hook\nevents:\n- item.insert\n\
+             secret: s3cret\nactive: true\ncreated: 1700000000\nchanged: 1700000000\n"
+        ),
+    );
+    expect.push((format!("webhook.{hook}.yml"), "name", "Deploy".to_string()));
+
+    let string = "0193a5a0-0092-7000-8000-000000000005";
+    dir.write(
+        &format!("locale_string.{string}.yml"),
+        &format!(
+            "id: {string}\nsource: Read more\ntranslation: Leggi di più\nlanguage: it\ncontext: ''\n"
+        ),
+    );
+    expect.push((
+        format!("locale_string.{string}.yml"),
+        "translation",
+        "Leggi di più".to_string(),
+    ));
+
+    dir.write(
+        "config_translation.variable.site_name.it.yml",
+        "entity_type: variable\nentity_id: site_name\nlanguage: it\ndata:\n  value: Il sito\n",
+    );
+    expect.push((
+        "config_translation.variable.site_name.it.yml".to_string(),
+        "language",
+        "it".to_string(),
+    ));
+
+    expect
 }
 
 /// A menu link whose declared parent is in neither the import set nor the
@@ -1824,6 +2023,69 @@ async fn import_refuses_a_gather_tile_item_count_outside_one_to_fifty() {
             failed.failures
         );
     }
+
+    db.cleanup().await;
+}
+
+/// A plugin config row is refused before anything is written when its plugin
+/// would not be enabled, when it names a column its table lacks, and when a
+/// plugin the set enables is not on disk.
+#[tokio::test]
+async fn a_plugin_row_is_refused_by_name_when_it_cannot_be_written() {
+    let db = ScratchDb::new("pluginrow").await;
+    let storage = db.plugin_storage().await;
+    let redirect = "0193a5a0-0092-7000-8000-0000000000aa";
+    let row = format!(
+        "id: {redirect}\nsource: /a\ndestination: /b\nstatus_code: 301\nlanguage: en\ncreated: 1\n"
+    );
+
+    // The redirects plugin is not enabled, and the set does not enable it.
+    let dir = TempConfigDir::new("pluginrow_disabled");
+    dir.write(&format!("redirect.{redirect}.yml"), &row);
+    dir.write(
+        "plugin_status.no_such_plugin.yml",
+        "name: no_such_plugin\nenabled: true\n",
+    );
+    let err = import_config(&storage, db.pool(), dir.path(), false)
+        .await
+        .expect_err("a row for a plugin that is not enabled must be refused");
+    let failed = err.downcast_ref::<ConfigImportFailed>().unwrap();
+    assert_eq!(
+        failed.imported_total(),
+        0,
+        "nothing may be written: {failed}"
+    );
+    let text = failed.to_string();
+    assert!(
+        text.contains(&format!("redirect.{redirect}.yml")) && text.contains("trovato_redirects"),
+        "the row's file and its plugin must be named: {text}"
+    );
+    assert!(
+        text.contains("plugin_status.no_such_plugin.yml") && text.contains("not on disk"),
+        "enabling a plugin that is not on disk must be refused: {text}"
+    );
+
+    // Enabled, with its table in place: a column the table lacks is refused.
+    let dir = TempConfigDir::new("pluginrow_column");
+    dir.write(
+        "plugin_status.trovato_redirects.yml",
+        "name: trovato_redirects\nenabled: true\n",
+    );
+    import_config(&storage, db.pool(), dir.path(), false)
+        .await
+        .expect("enabling the plugin must import");
+    dir.write(
+        &format!("redirect.{redirect}.yml"),
+        &format!("{row}no_such_column: 1\n"),
+    );
+    let err = import_config(&storage, db.pool(), dir.path(), false)
+        .await
+        .expect_err("an unknown column must be refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("no_such_column"),
+        "the unknown column must be named: {text}"
+    );
 
     db.cleanup().await;
 }

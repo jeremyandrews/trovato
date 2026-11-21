@@ -13,5 +13,4 @@ The file is stored `Permanent` under its declared id through
 `FileService::store`, the one write path upload now uses too; re-import keeps
 the id and storage URI and rewrites the bytes only when they changed. Files
 import before items, so the item's reference is indexed on the same run.
-Export writes every permanent file's YAML and bytes. Files are not staged: the
-stage aware config storage passes them straight to live storage.
+Export writes every permanent file's YAML and bytes. Files are not staged.

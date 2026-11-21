@@ -1102,6 +1102,7 @@ fn dependency_resolution_no_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         },
     );
     plugins.insert(
@@ -1117,6 +1118,7 @@ fn dependency_resolution_no_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         },
     );
 
@@ -1143,6 +1145,7 @@ fn dependency_resolution_with_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         },
     );
     plugins.insert(
@@ -1158,6 +1161,7 @@ fn dependency_resolution_with_deps() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         },
     );
 
@@ -1188,6 +1192,7 @@ fn dependency_resolution_circular() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         },
     );
     plugins.insert(
@@ -1203,6 +1208,7 @@ fn dependency_resolution_circular() {
             migrations: trovato_kernel::plugin::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         },
     );
 
@@ -1304,6 +1310,7 @@ fn db_probe_state(plugin: &str) -> PluginState {
             public_functions: vec![],
         }),
         record_types: vec![],
+        config: Default::default(),
     };
     let policy = DbPolicy::derive(&info, &dir);
     std::fs::remove_dir_all(&dir).ok();
@@ -1450,6 +1457,7 @@ async fn raw_probe_state(plugin: &str) -> PluginState {
             public_functions: vec![],
         }),
         record_types: vec![],
+        config: Default::default(),
     };
     let policy = DbPolicy::derive(&info, Path::new("/nonexistent"));
 

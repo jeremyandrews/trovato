@@ -259,6 +259,7 @@ mod tests {
                 public_functions: vec![],
             }),
             record_types: vec![],
+            config: Default::default(),
         };
         DbPolicy::derive(&info, Path::new("/nonexistent-plugin-dir"))
     }

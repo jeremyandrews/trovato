@@ -1,7 +1,7 @@
 name = "test_members"
 description = "B73 fixture: a plugin that reads about and mails the site's members by id"
-version = "0.105.0"
-api_version = "0.105"
+version = "0.106.0"
+api_version = "0.106"
 default_enabled = false
 dependencies = []
 

@@ -150,6 +150,32 @@ weight = 0  # Lower weight = earlier execution
 | `[migrations].files` | No | Array of SQL migration file paths |
 | `[migrations].depends_on` | No | Plugin names whose migrations run first |
 | `[capabilities]` | No | What the plugin may reach: host interfaces, tables, `raw_sql` and the background grants. Absent means nothing. See [plugin-capabilities.md](plugin-capabilities.md) |
+| `[config].tables` | No | The plugin's own tables that hold site configuration, carried by `config export` and `config import` (API 0.106). See [Configuration Tables](#configuration-tables) |
+
+### Configuration Tables
+
+A table your migrations create that holds site configuration (a list of
+redirects, image styles, API clients) should travel with the site's other
+configuration. Name it under `[config]`:
+
+```toml
+[config]
+tables = ["redirect"]
+```
+
+`trovato config export` then writes each row as `redirect.<primary key>.yml`,
+a map of column to value, after the kernel's own config entities, and
+`trovato config import` upserts the rows by primary key, in the order the
+plugins' migrations run. A row whose other unique key (a `name`, say) is held
+under a different primary key, as a row your migration seeded with a random id
+would be, takes that row over. Import refuses a row whose plugin would not be
+enabled, that names a column the table lacks, or whose value does not fit its
+column, before it writes anything.
+
+Name only configuration: not content, not a log, a queue, a cache or anything
+else that changes while the site runs. The table must be one your migrations
+create and the table needs a primary key. Whether the plugin is enabled travels
+too, as `plugin_status.<name>.yml`.
 
 ### SQL Migrations
 

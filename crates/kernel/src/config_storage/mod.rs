@@ -1,10 +1,7 @@
 //! Configuration storage abstraction layer.
 //!
-//! This module provides a unified interface for accessing all config entities.
-//! The key principle: **all config reads/writes must go through ConfigStorage**.
-//!
-//! This enables future stage-aware config by simply swapping the implementation
-//! with a decorator, without changing any call sites.
+//! This module provides a unified interface for accessing all config entities,
+//! and the YAML export and import built on it ([`yaml`]).
 //!
 //! # Entity Types
 //!
@@ -19,6 +16,10 @@
 //! - `stage` - Stage definitions (editorial workflow stages)
 //! - `tile` - Tile definitions (UI region components)
 //! - `menu_link` - Menu link definitions
+//! - `file` - Managed files, with their bytes
+//! - `plugin_status` - Which plugins are enabled
+//! - every table a plugin manifest names under `[config] tables`, one entity
+//!   per row (see [`plugin_config`])
 //!
 //! # Usage
 //!
@@ -31,7 +32,7 @@
 //! ```
 
 mod direct;
-mod stage_aware;
+pub mod plugin_config;
 pub mod yaml;
 
 use std::fmt;
@@ -42,7 +43,22 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use direct::DirectConfigStorage;
-pub use stage_aware::StageAwareConfigStorage;
+pub use plugin_config::{ConfigPluginStatus, PluginConfigSet, PluginRow};
+
+/// `site_config` keys that record what the running site has done or found,
+/// not how it is configured. Variable export skips them and import ignores
+/// them, so a config set never carries one site's state into another.
+///
+/// - `installed`: whether the installer has run on this database.
+/// - `update_status`: the last release check's answer.
+/// - `update_check`: whether this deployment checks for releases.
+/// - `queue_runner`: whether this deployment runs the resident queue runner.
+pub const RUNTIME_STATE_KEYS: &[&str] = &[
+    "installed",
+    crate::update_status::UPDATE_STATUS_KEY,
+    crate::update_status::UPDATE_CHECK_KEY,
+    "queue_runner",
+];
 
 use crate::gather::types::GatherQuery;
 use crate::models::tile::Tile;
@@ -182,8 +198,7 @@ fn default_status() -> i16 {
 
 /// A configuration entity that can be stored and retrieved.
 ///
-/// This enum covers all config entity types that need stage-aware access.
-/// Each variant wraps the corresponding model type.
+/// One variant per config entity type, each wrapping its model type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "entity_type", content = "data")]
 pub enum ConfigEntity {
@@ -249,11 +264,19 @@ pub enum ConfigEntity {
     /// A managed file and its bytes.
     #[serde(rename = "file")]
     File(ConfigFile),
+
+    /// Whether a plugin is enabled.
+    #[serde(rename = "plugin_status")]
+    PluginStatus(ConfigPluginStatus),
+
+    /// One row of a plugin config table. Its entity type is the table.
+    #[serde(rename = "plugin_row")]
+    PluginRow(PluginRow),
 }
 
 impl ConfigEntity {
     /// Get the entity type name.
-    pub fn entity_type(&self) -> &'static str {
+    pub fn entity_type(&self) -> &str {
         match self {
             Self::ItemType(_) => "item_type",
             Self::SearchFieldConfig(_) => "search_field_config",
@@ -270,6 +293,8 @@ impl ConfigEntity {
             Self::Tile(_) => "tile",
             Self::MenuLink(_) => "menu_link",
             Self::File(_) => "file",
+            Self::PluginStatus(_) => "plugin_status",
+            Self::PluginRow(r) => &r.table,
         }
     }
 
@@ -293,6 +318,8 @@ impl ConfigEntity {
             Self::Tile(t) => t.id.to_string(),
             Self::MenuLink(m) => m.id.to_string(),
             Self::File(f) => f.id.to_string(),
+            Self::PluginStatus(p) => p.name.clone(),
+            Self::PluginRow(r) => r.id.clone(),
         }
     }
 
@@ -487,15 +514,7 @@ impl ConfigFilter {
 
 /// The core trait for config entity storage.
 ///
-/// All config entity access MUST go through this trait. This is critical
-/// for enabling stage-aware config in the future - by wrapping the
-/// implementation with a decorator, we can inject stage context without
-/// changing any call sites.
-///
-/// # Drupal Workspaces Lesson
-///
-/// If any code bypasses this trait with raw SQL, stage awareness breaks.
-/// Keep the interface small and stable.
+/// Config export and import go through this trait, one entity at a time.
 #[async_trait]
 pub trait ConfigStorage: Send + Sync {
     /// Load a single config entity by type and ID.
@@ -523,6 +542,13 @@ pub trait ConfigStorage: Send + Sync {
     /// Check if a config entity exists.
     async fn exists(&self, entity_type: &str, id: &str) -> Result<bool> {
         Ok(self.load(entity_type, id).await?.is_some())
+    }
+
+    /// The plugins on disk, whose `[config] tables` extend the entity types
+    /// this storage handles. `None` means kernel types and `plugin_status`
+    /// only.
+    fn plugins(&self) -> Option<&PluginConfigSet> {
+        None
     }
 }
 
@@ -578,6 +604,9 @@ pub mod entity_types {
 
     /// A managed file, with its bytes beside the YAML.
     pub const FILE: &str = "file";
+
+    /// Whether each installed plugin is enabled.
+    pub const PLUGIN_STATUS: &str = "plugin_status";
 }
 
 /// Helper to parse a tag ID from a string (UUID format).
@@ -677,8 +706,7 @@ mod tests {
         assert_eq!(format!("{lang}"), "language:en");
     }
 
-    /// Verify ConfigEntity::Language survives JSON round-trip (the path
-    /// StageAwareConfigStorage uses: serde_json::to_value → serde_json::from_value).
+    /// Verify ConfigEntity::Language survives a JSON round trip.
     #[test]
     fn config_entity_language_json_round_trip() {
         let original = ConfigEntity::Language(Language {

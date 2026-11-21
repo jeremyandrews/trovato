@@ -1,7 +1,7 @@
 name = "test_item_writer"
 description = "B68 fixture: item write taps, re-entrant writes, item-api SDK bindings"
-version = "0.105.0"
-api_version = "0.105"
+version = "0.106.0"
+api_version = "0.106"
 default_enabled = false
 dependencies = []
 

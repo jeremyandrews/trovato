@@ -3,6 +3,12 @@
 //! Exports all config entities to individual YAML files (one per entity)
 //! and re-imports them. File naming: `{entity_type}.{id}.yml`.
 //!
+//! The entity types are the kernel's ([`ENTITY_TYPE_ORDER`]) followed by every
+//! table an enabled plugin names under `[config] tables` in its manifest, one
+//! file per row (see [`super::plugin_config`]). `site_config` keys that are
+//! runtime state ([`super::RUNTIME_STATE_KEYS`]) are neither exported nor
+//! imported.
+//!
 //! Import is idempotent: `ConfigStorage::save()` performs upsert, so
 //! re-running import on a partially-imported database converges to the
 //! correct state.
@@ -33,7 +39,8 @@ use sqlx::PgPool;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use super::{ConfigEntity, ConfigStorage, SearchFieldConfig, entity_types};
+use super::plugin_config::{self, PluginRow};
+use super::{ConfigEntity, ConfigStorage, RUNTIME_STATE_KEYS, SearchFieldConfig, entity_types};
 use crate::file::{FileService, MAX_FILE_SIZE};
 use crate::gather::types::GatherQuery;
 use crate::models::tile::Tile;
@@ -49,7 +56,14 @@ use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, Ur
 /// an admin screen or is recorded in `KNOWN-ISSUES.md` as deliberately
 /// import-only. Adding a type here without deciding which it is fails that test,
 /// which is the point.
+///
+/// Plugin config tables come after all of these, in plugin dependency order;
+/// see [`plugin_tables`].
 pub const ENTITY_TYPE_ORDER: &[&str] = &[
+    // First: enabling a plugin runs its migrations, which create its config
+    // tables and may seed kernel config (a gather query, say) that the rest of
+    // the set then overrides.
+    entity_types::PLUGIN_STATUS,
     entity_types::VARIABLE,
     entity_types::LANGUAGE,
     entity_types::ROLE,
@@ -244,11 +258,34 @@ fn validate_entity_id_for_filename(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Every plugin config table `storage` knows of, as `(plugin, table)`, in
+/// import order. Tables with a problem (see
+/// [`plugin_config::PluginConfigSet::problems`]) are left out.
+pub fn plugin_tables(storage: &dyn ConfigStorage) -> Vec<(String, String)> {
+    let Some(plugins) = storage.plugins() else {
+        return Vec::new();
+    };
+    let bad: HashSet<String> = plugins
+        .problems(ENTITY_TYPE_ORDER)
+        .into_iter()
+        .map(|(table, _)| table)
+        .collect();
+    plugins
+        .tables()
+        .into_iter()
+        .filter(|(_, table)| !bad.contains(table))
+        .collect()
+}
+
 /// Parse entity type and ID from a config filename.
 ///
 /// Returns `None` if the filename doesn't match the expected pattern
-/// or the entity type prefix is unrecognized.
-fn parse_config_filename(filename: &str) -> Option<(&str, &str)> {
+/// or the entity type prefix is neither a kernel type nor one of
+/// `plugin_tables`.
+fn parse_config_filename<'a>(
+    filename: &'a str,
+    plugin_tables: &[String],
+) -> Option<(&'a str, &'a str)> {
     let stem = filename
         .strip_suffix(".yml")
         .or_else(|| filename.strip_suffix(".yaml"))?;
@@ -262,7 +299,8 @@ fn parse_config_filename(filename: &str) -> Option<(&str, &str)> {
         return None;
     }
 
-    if !ENTITY_TYPE_ORDER.contains(&entity_type) {
+    if !ENTITY_TYPE_ORDER.contains(&entity_type) && !plugin_tables.iter().any(|t| t == entity_type)
+    {
         return None;
     }
 
@@ -309,6 +347,9 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
         // The bytes are written beside it by `export_config`; `data` is never
         // serialized.
         ConfigEntity::File(f) => serde_yml::to_string(f),
+        ConfigEntity::PluginStatus(p) => serde_yml::to_string(p),
+        // The file is the row: its table and id are in the file name.
+        ConfigEntity::PluginRow(r) => serde_yml::to_string(&r.row),
         // Tags need parent hierarchy — callers must use serialize_tag_entity.
         ConfigEntity::Tag(tag) => {
             warnings.push(format!(
@@ -384,6 +425,7 @@ fn serialize_tag_entity(
 async fn clean_stale_yml_files(
     dir: &Path,
     keep: &HashSet<String>,
+    plugin_tables: &[String],
     warnings: &mut Vec<String>,
 ) -> Result<()> {
     let mut entries = tokio::fs::read_dir(dir)
@@ -393,7 +435,7 @@ async fn clean_stale_yml_files(
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && parse_config_filename(name).is_some()
+            && parse_config_filename(name, plugin_tables).is_some()
             && !keep.contains(name)
             && let Err(e) = tokio::fs::remove_file(&path).await
         {
@@ -431,7 +473,29 @@ pub async fn export_config(
     // the same name do not overwrite each other.
     let mut written_paths: HashSet<String> = HashSet::new();
 
-    for &entity_type in ENTITY_TYPE_ORDER {
+    // The kernel's types, then the config tables of every enabled plugin.
+    let all_plugin_tables = plugin_tables(storage);
+    if let Some(plugins) = storage.plugins() {
+        for (_, problem) in plugins.problems(ENTITY_TYPE_ORDER) {
+            result.warnings.push(format!("not exported: {problem}"));
+        }
+    }
+    let enabled: HashSet<String> = crate::plugin::status::get_enabled_names(pool)
+        .await
+        .context("failed to read which plugins are enabled")?
+        .into_iter()
+        .collect();
+    let mut order: Vec<String> = ENTITY_TYPE_ORDER.iter().map(|t| t.to_string()).collect();
+    order.extend(
+        all_plugin_tables
+            .iter()
+            .filter(|(plugin, _)| enabled.contains(plugin))
+            .map(|(_, table)| table.clone()),
+    );
+    let table_names: Vec<String> = all_plugin_tables.into_iter().map(|(_, t)| t).collect();
+
+    for entity_type in &order {
+        let entity_type = entity_type.as_str();
         let entities = storage
             .list(entity_type, None)
             .await
@@ -441,6 +505,27 @@ pub async fn export_config(
 
         for entity in entities {
             let id = entity.id();
+
+            // Runtime state is not configuration.
+            if let ConfigEntity::Variable { key, .. } = &entity
+                && RUNTIME_STATE_KEYS.contains(&key.as_str())
+            {
+                continue;
+            }
+
+            // A gather no import would accept (a plugin migration can seed one
+            // over a table gathers may not read) would only make the set fail.
+            if let ConfigEntity::GatherQuery(q) = &entity {
+                let errors = crate::gather::GatherService::validate_definition(&q.definition);
+                if !errors.is_empty() {
+                    result.warnings.push(format!(
+                        "not exported: gather query '{id}' is invalid, so no import would accept \
+                         it: {}",
+                        errors.join("; ")
+                    ));
+                    continue;
+                }
+            }
 
             if let Err(e) = validate_entity_id_for_filename(&id) {
                 result
@@ -525,7 +610,9 @@ pub async fn export_config(
         }
     }
 
-    if clean && let Err(e) = clean_stale_yml_files(dir, &written_files, &mut result.warnings).await
+    if clean
+        && let Err(e) =
+            clean_stale_yml_files(dir, &written_files, &table_names, &mut result.warnings).await
     {
         result
             .warnings
@@ -607,7 +694,16 @@ pub async fn import_config(
     // Phase 1: read, parse and schema check every file. No write happens until
     // the whole set has passed, so one bad file cannot leave a half-applied
     // config behind.
-    let parsed = read_and_validate_files(dir, &mut result.warnings, &mut failures).await?;
+    // Every declared table, including one whose declaration has a problem: its
+    // files are recognized so that validation can fail them by name.
+    let mut table_names: Vec<String> = storage
+        .plugins()
+        .map(|p| p.tables().into_iter().map(|(_, t)| t).collect())
+        .unwrap_or_default();
+    let mut seen = HashSet::new();
+    table_names.retain(|t| seen.insert(t.clone()));
+    let parsed =
+        read_and_validate_files(dir, &table_names, &mut result.warnings, &mut failures).await?;
     let parsed_total: usize = parsed.values().map(|v| v.len()).sum();
     debug!(
         files = parsed_total,
@@ -618,6 +714,7 @@ pub async fn import_config(
 
     // Phase 2: resolve every reference the set makes, before writing anything.
     validate_references(storage, pool, &parsed, &mut failures).await;
+    validate_plugins(storage, pool, &parsed, &mut result.warnings, &mut failures).await;
 
     if !failures.is_empty() {
         return Err(ConfigImportFailed {
@@ -642,7 +739,30 @@ pub async fn import_config(
     let mut tag_parents: Vec<(String, Uuid, Vec<Uuid>)> = Vec::new();
     let mut role_grants: Vec<(String, Uuid, Vec<String>)> = Vec::new();
 
-    for &entity_type in ENTITY_TYPE_ORDER {
+    let order: Vec<&str> = ENTITY_TYPE_ORDER
+        .iter()
+        .copied()
+        .chain(table_names.iter().map(String::as_str))
+        .collect();
+    let mut migrated = false;
+    for entity_type in order {
+        // Once the plugins are enabled or disabled as the set says, bring the
+        // enabled ones' tables up to date, as the server would at boot, so
+        // their rows have somewhere to go.
+        if entity_type != entity_types::PLUGIN_STATUS
+            && !migrated
+            && let Some(plugins) = storage.plugins()
+        {
+            migrated = true;
+            if let Err(e) = plugins.migrate_enabled(pool).await {
+                failures.push(ConfigImportFailure {
+                    filename: "(plugin migrations)".to_string(),
+                    error: format!("{e:#}"),
+                });
+                break;
+            }
+        }
+
         let Some(entities) = parsed.get(entity_type) else {
             continue;
         };
@@ -856,6 +976,163 @@ async fn validate_references(
     validate_menu_link_parents(storage, parsed, failures).await;
     validate_role_permissions(pool, parsed, failures).await;
     validate_workflow(pool, parsed, failures).await;
+}
+
+/// Check the plugin half of the set against the plugins on disk and the
+/// database, before anything is written.
+///
+/// - A plugin the set enables must be on disk, built for an API this kernel
+///   serves, and have every dependency enabled once the set is applied. A
+///   plugin the set disables need not be on disk.
+/// - A plugin config table's rows need their plugin enabled once the set is
+///   applied, and, where the table already exists, must name only its columns,
+///   carry the whole primary key, and hold values Postgres accepts for each
+///   column. A table the import is about to create is checked when it writes.
+/// - A file for a table whose declaration is unusable fails, naming why.
+async fn validate_plugins(
+    storage: &dyn ConfigStorage,
+    pool: &PgPool,
+    parsed: &BTreeMap<String, Vec<ParsedEntity>>,
+    warnings: &mut Vec<String>,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
+    let incoming: Vec<super::ConfigPluginStatus> = parsed
+        .get(entity_types::PLUGIN_STATUS)
+        .map(|v| {
+            v.iter()
+                .filter_map(|pe| match &pe.entity {
+                    ConfigEntity::PluginStatus(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let has_rows = parsed
+        .values()
+        .flatten()
+        .any(|pe| matches!(pe.entity, ConfigEntity::PluginRow(_)));
+    if incoming.is_empty() && !has_rows {
+        return;
+    }
+
+    let enabled = match plugin_config::enabled_after(pool, &incoming).await {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            failures.push(ConfigImportFailure {
+                filename: "(plugin status)".to_string(),
+                error: format!("failed to read which plugins are enabled: {e:#}"),
+            });
+            return;
+        }
+    };
+    let is_enabled = |name: &str| enabled.get(name).copied().unwrap_or(false);
+
+    if let (Some(plugins), Some(statuses)) =
+        (storage.plugins(), parsed.get(entity_types::PLUGIN_STATUS))
+    {
+        for pe in statuses {
+            let ConfigEntity::PluginStatus(status) = &pe.entity else {
+                continue;
+            };
+            let Some(info) = plugins.info(&status.name) else {
+                if status.enabled {
+                    failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!(
+                            "plugin '{}' is enabled in the set but is not on disk here",
+                            status.name
+                        ),
+                    });
+                } else {
+                    warnings.push(format!(
+                        "{}: plugin '{}' is not on disk here; it is recorded as disabled",
+                        pe.filename, status.name
+                    ));
+                }
+                continue;
+            };
+            if !status.enabled {
+                continue;
+            }
+            if let Err(e) = info.check_api_compatibility() {
+                failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!("{e:#}"),
+                });
+            }
+            for dep in &info.dependencies {
+                if !is_enabled(dep) {
+                    failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!(
+                            "plugin '{}' depends on '{dep}', which would not be enabled",
+                            status.name
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    let Some(plugins) = storage.plugins() else {
+        return;
+    };
+    let problems: HashMap<String, String> =
+        plugins.problems(ENTITY_TYPE_ORDER).into_iter().collect();
+    let mut shapes: HashMap<String, Option<plugin_config::TableShape>> = HashMap::new();
+    for pe in parsed.values().flatten() {
+        let ConfigEntity::PluginRow(row) = &pe.entity else {
+            continue;
+        };
+        if let Some(problem) = problems.get(&row.table) {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: problem.clone(),
+            });
+            continue;
+        }
+        let owner = plugins.owner(&row.table).unwrap_or("?");
+        if !is_enabled(owner) {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: format!(
+                    "table '{}' belongs to plugin '{owner}', which would not be enabled",
+                    row.table
+                ),
+            });
+            continue;
+        }
+        if !shapes.contains_key(&row.table) {
+            match plugin_config::table_shape(pool, &row.table).await {
+                Ok(shape) => {
+                    shapes.insert(row.table.clone(), shape);
+                }
+                Err(e) => {
+                    failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!("failed to read table '{}': {e:#}", row.table),
+                    });
+                    continue;
+                }
+            }
+        }
+        if let Some(Some(shape)) = shapes.get(&row.table) {
+            if let Err(error) = plugin_config::check_row(pool, &row.table, shape, &row.row).await {
+                failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error,
+                });
+                continue;
+            }
+            let id = plugin_config::row_id(shape, &row.row);
+            if id != row.id {
+                warnings.push(format!(
+                    "{}: filename ID '{}' does not match content ID '{id}'",
+                    pe.filename, row.id
+                ));
+            }
+        }
+    }
 }
 
 /// Every permission name an import accepts: the kernel's, every plugin
@@ -1191,6 +1468,7 @@ struct ParsedEntity {
 ///   entity ID.
 async fn read_and_validate_files(
     dir: &Path,
+    plugin_tables: &[String],
     warnings: &mut Vec<String>,
     failures: &mut Vec<ConfigImportFailure>,
 ) -> Result<BTreeMap<String, Vec<ParsedEntity>>> {
@@ -1243,7 +1521,8 @@ async fn read_and_validate_files(
             continue;
         }
 
-        let Some((entity_type, filename_id)) = parse_config_filename(&filename) else {
+        let Some((entity_type, filename_id)) = parse_config_filename(&filename, plugin_tables)
+        else {
             warnings.push(format!("skipping unrecognized file: {filename}"));
             continue;
         };
@@ -1261,7 +1540,12 @@ async fn read_and_validate_files(
             }
         };
 
-        let mut parsed = match deserialize_entity(&entity_type, &content) {
+        let parsed = if plugin_tables.contains(&entity_type) {
+            deserialize_plugin_row(&entity_type, &filename_id, &content)
+        } else {
+            deserialize_entity(&entity_type, &content)
+        };
+        let mut parsed = match parsed {
             Ok(result) => result,
             Err(e) => {
                 failures.push(ConfigImportFailure {
@@ -1285,6 +1569,15 @@ async fn read_and_validate_files(
                     continue;
                 }
             }
+        }
+
+        if let ConfigEntity::Variable { key, .. } = &parsed.entity
+            && RUNTIME_STATE_KEYS.contains(&key.as_str())
+        {
+            warnings.push(format!(
+                "{filename}: ignored, '{key}' is runtime state rather than configuration"
+            ));
+            continue;
         }
 
         // Validate filename-content ID consistency
@@ -1397,6 +1690,22 @@ impl ParsedFile {
             role_permissions: None,
         }
     }
+}
+
+/// One row of a plugin config table. The id is the file name's: the primary
+/// key's columns are known only to the database, whose table may not exist
+/// until the import enables the plugin.
+fn deserialize_plugin_row(table: &str, id: &str, content: &str) -> Result<ParsedFile> {
+    let value: serde_json::Value =
+        serde_yml::from_str(content).with_context(|| format!("invalid {table} YAML"))?;
+    let serde_json::Value::Object(row) = value else {
+        anyhow::bail!("a {table} file must be a map of column to value");
+    };
+    Ok(ParsedFile::plain(ConfigEntity::PluginRow(PluginRow {
+        table: table.to_string(),
+        id: id.to_string(),
+        row,
+    })))
 }
 
 fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
@@ -1518,6 +1827,14 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
                 serde_yml::from_str(content).context("invalid file YAML")?;
             Ok(ParsedFile::plain(ConfigEntity::File(file)))
         }
+        entity_types::PLUGIN_STATUS => {
+            let status: super::ConfigPluginStatus =
+                serde_yml::from_str(content).context("invalid plugin_status YAML")?;
+            if status.name.is_empty() {
+                anyhow::bail!("plugin_status name must not be empty");
+            }
+            Ok(ParsedFile::plain(ConfigEntity::PluginStatus(status)))
+        }
         _ => anyhow::bail!("unknown entity type: {entity_type}"),
     }
 }
@@ -1572,13 +1889,13 @@ mod tests {
 
     #[test]
     fn parse_config_filename_item_type() {
-        let result = parse_config_filename("item_type.blog.yml");
+        let result = parse_config_filename("item_type.blog.yml", &[]);
         assert_eq!(result, Some(("item_type", "blog")));
     }
 
     #[test]
     fn parse_config_filename_tag_uuid() {
-        let result = parse_config_filename("tag.019483a7-b1c2-7def-8012-abcdef123456.yml");
+        let result = parse_config_filename("tag.019483a7-b1c2-7def-8012-abcdef123456.yml", &[]);
         assert_eq!(
             result,
             Some(("tag", "019483a7-b1c2-7def-8012-abcdef123456"))
@@ -1587,14 +1904,16 @@ mod tests {
 
     #[test]
     fn parse_config_filename_variable() {
-        let result = parse_config_filename("variable.site_name.yml");
+        let result = parse_config_filename("variable.site_name.yml", &[]);
         assert_eq!(result, Some(("variable", "site_name")));
     }
 
     #[test]
     fn parse_config_filename_search_field_config() {
-        let result =
-            parse_config_filename("search_field_config.019483a7-b1c2-7def-8012-abcdef789012.yml");
+        let result = parse_config_filename(
+            "search_field_config.019483a7-b1c2-7def-8012-abcdef789012.yml",
+            &[],
+        );
         assert_eq!(
             result,
             Some((
@@ -1606,30 +1925,30 @@ mod tests {
 
     #[test]
     fn parse_config_filename_bad_no_dot() {
-        assert_eq!(parse_config_filename("bad-filename.yml"), None);
+        assert_eq!(parse_config_filename("bad-filename.yml", &[]), None);
     }
 
     #[test]
     fn parse_config_filename_unknown_type() {
-        assert_eq!(parse_config_filename("unknown_type.foo.yml"), None);
+        assert_eq!(parse_config_filename("unknown_type.foo.yml", &[]), None);
     }
 
     #[test]
     fn parse_config_filename_yaml_extension() {
         assert_eq!(
-            parse_config_filename("item_type.blog.yaml"),
+            parse_config_filename("item_type.blog.yaml", &[]),
             Some(("item_type", "blog"))
         );
     }
 
     #[test]
     fn parse_config_filename_no_extension() {
-        assert_eq!(parse_config_filename("item_type.blog.json"), None);
+        assert_eq!(parse_config_filename("item_type.blog.json", &[]), None);
     }
 
     #[test]
     fn parse_config_filename_empty_id() {
-        assert_eq!(parse_config_filename("item_type..yml"), None);
+        assert_eq!(parse_config_filename("item_type..yml", &[]), None);
     }
 
     // ── Filename generation ────────────────────────────────────────
@@ -1879,12 +2198,57 @@ mod tests {
             pos(entity_types::ITEM_TYPE) < pos(entity_types::SEARCH_FIELD_CONFIG),
             "item_types must be imported before search_field_configs"
         );
+
+        // Plugin status first: enabling a plugin runs migrations that may seed
+        // kernel config the set then overrides.
+        assert_eq!(pos(entity_types::PLUGIN_STATUS), 0);
+    }
+
+    #[test]
+    fn parse_config_filename_knows_declared_plugin_tables() {
+        let tables = vec!["redirect".to_string()];
+        assert_eq!(
+            parse_config_filename("redirect.0193a5b0-7000-7000-8000-000000000001.yml", &tables),
+            Some(("redirect", "0193a5b0-7000-7000-8000-000000000001"))
+        );
+        assert_eq!(parse_config_filename("redirect.x.yml", &[]), None);
+    }
+
+    #[tokio::test]
+    async fn runtime_state_variables_are_ignored_on_import() {
+        let dir = TestDir::new("runtime_state");
+        std::fs::write(
+            dir.join("variable.installed.yml"),
+            "key: installed\nvalue: true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("variable.site_name.yml"),
+            "key: site_name\nvalue: Example\n",
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let mut failures = Vec::new();
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
+            .await
+            .unwrap();
+        assert!(failures.is_empty());
+        let keys: Vec<String> = parsed[entity_types::VARIABLE]
+            .iter()
+            .map(|pe| pe.entity.id())
+            .collect();
+        assert_eq!(keys, vec!["site_name".to_string()]);
+        assert!(
+            warnings.iter().any(|w| w.contains("runtime state")),
+            "ignoring a file must say so: {warnings:?}"
+        );
     }
 
     #[test]
     fn entity_type_order_covers_all_known_types() {
         // Ensures ENTITY_TYPE_ORDER stays in sync with entity_types constants.
         let expected: HashSet<&str> = [
+            entity_types::PLUGIN_STATUS,
             entity_types::VARIABLE,
             entity_types::LANGUAGE,
             entity_types::ITEM_TYPE,
@@ -2192,7 +2556,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 
@@ -2223,7 +2587,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 
@@ -2242,7 +2606,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 
@@ -2262,7 +2626,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 
@@ -2289,7 +2653,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 
@@ -2316,7 +2680,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 
@@ -2353,7 +2717,7 @@ parents:
 
         let keep: HashSet<String> = ["variable.site_name.yml".to_string()].into_iter().collect();
         let mut warnings = Vec::new();
-        clean_stale_yml_files(&dir, &keep, &mut warnings)
+        clean_stale_yml_files(&dir, &keep, &[], &mut warnings)
             .await
             .unwrap();
 
@@ -2392,7 +2756,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 
@@ -2426,7 +2790,7 @@ parents:
 
         let mut warnings = Vec::new();
         let mut failures = Vec::new();
-        let parsed = read_and_validate_files(&dir, &mut warnings, &mut failures)
+        let parsed = read_and_validate_files(&dir, &[], &mut warnings, &mut failures)
             .await
             .unwrap();
 

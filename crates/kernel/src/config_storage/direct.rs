@@ -1,7 +1,7 @@
 //! Direct database implementation of ConfigStorage.
 //!
-//! This is the v1.0 implementation - no stage awareness, just a clean interface.
-//! Post-MVP, a `StageAwareConfigStorage` decorator can wrap this to add stage context.
+//! Every config entity is read and written on the live site; config is not
+//! staged.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use std::sync::Arc;
 
+use super::plugin_config::{self, PluginConfigSet};
 use super::{
     ConfigEntity, ConfigFile, ConfigFilter, ConfigItem, ConfigItemTranslation, ConfigStorage,
     SearchFieldConfig, entity_types, parse_tag_id,
@@ -26,19 +27,51 @@ use crate::models::{
 /// Direct database implementation of ConfigStorage.
 ///
 /// This implementation executes SQL directly against the database.
-/// It provides the baseline behavior that stage-aware decorators will wrap.
 #[derive(Clone)]
 pub struct DirectConfigStorage {
     pool: PgPool,
     /// Where `file` entities' bytes are stored. Without it, a `file` entity
     /// can be listed but not saved or exported with its bytes.
     files: Option<Arc<FileService>>,
+    /// The plugins on disk. Without them, no plugin config table is an entity
+    /// type and a newly installed plugin gets an empty version.
+    plugins: Option<Arc<PluginConfigSet>>,
 }
 
 impl DirectConfigStorage {
     /// Create a new DirectConfigStorage with a database connection pool.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool, files: None }
+        Self {
+            pool,
+            files: None,
+            plugins: None,
+        }
+    }
+
+    /// The same storage, handling the config tables the plugins in `plugins`
+    /// declare.
+    pub fn with_plugins(mut self, plugins: PluginConfigSet) -> Self {
+        self.plugins = Some(Arc::new(plugins));
+        self
+    }
+
+    /// Whether `entity_type` is a table a plugin on disk declares.
+    fn is_plugin_table(&self, entity_type: &str) -> bool {
+        self.plugins
+            .as_ref()
+            .is_some_and(|p| p.owner(entity_type).is_some())
+    }
+
+    /// Save a plugin's status, installing it under its manifest's version
+    /// when it is not installed yet.
+    async fn save_plugin_status(&self, entry: &super::ConfigPluginStatus) -> Result<()> {
+        let version = self
+            .plugins
+            .as_ref()
+            .and_then(|p| p.info(&entry.name))
+            .map(|info| info.version.clone())
+            .unwrap_or_default();
+        plugin_config::save_status(&self.pool, entry, &version).await
     }
 
     /// The same storage, able to save and export `file` entities through
@@ -711,15 +744,19 @@ impl DirectConfigStorage {
         Ok(alias.map(ConfigEntity::UrlAlias))
     }
 
+    /// Save a URL alias. The alias that already holds this path, language and
+    /// stage (one a plugin migration seeded under a random id, say) takes the
+    /// file's id and timestamp, so an exported alias reads back the same from
+    /// another install.
     async fn save_url_alias(&self, alias: &UrlAlias) -> Result<()> {
-        let now = Utc::now().timestamp();
-
         sqlx::query(
             r#"
             INSERT INTO url_alias (id, source, alias, language, stage_id, created)
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (alias, language, stage_id) DO UPDATE SET
-                source = EXCLUDED.source
+                id = EXCLUDED.id,
+                source = EXCLUDED.source,
+                created = EXCLUDED.created
             "#,
         )
         .bind(alias.id)
@@ -727,7 +764,7 @@ impl DirectConfigStorage {
         .bind(&alias.alias)
         .bind(&alias.language)
         .bind(alias.stage_id)
-        .bind(now)
+        .bind(alias.created)
         .execute(&self.pool)
         .await
         .context("failed to save url alias")?;
@@ -1122,17 +1159,60 @@ impl DirectConfigStorage {
         Ok(row.map(ConfigEntity::Role))
     }
 
+    /// Save a role. A role of the same name under another id (one a plugin
+    /// migration seeded with a random id, say) becomes this one: its grants
+    /// and members move to this id and the old row goes, so an exported role
+    /// arrives under the id its file names.
     async fn save_role(&self, role: &crate::models::Role) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let old: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM roles WHERE name = $1 AND id <> $2")
+                .bind(&role.name)
+                .bind(role.id)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("failed to look up the role by name")?;
+        if let Some(old) = old {
+            // Free the name for the row being saved.
+            sqlx::query("UPDATE roles SET name = '__rekey_' || id::text WHERE id = $1")
+                .bind(old)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query(
             "INSERT INTO roles (id, name, created) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, created = EXCLUDED.created",
         )
         .bind(role.id)
         .bind(&role.name)
         .bind(role.created)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("failed to save role")?;
+        if let Some(old) = old {
+            for table in ["role_permissions", "user_roles"] {
+                let key = if table == "role_permissions" {
+                    "permission"
+                } else {
+                    "user_id"
+                };
+                let sql = format!(
+                    "INSERT INTO {table} (role_id, {key}) SELECT $1, {key} FROM {table} \
+                     WHERE role_id = $2 ON CONFLICT DO NOTHING"
+                );
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(role.id)
+                    .bind(old)
+                    .execute(&mut *tx)
+                    .await
+                    .with_context(|| format!("failed to move {table} to the imported role"))?;
+            }
+            sqlx::query("DELETE FROM roles WHERE id = $1")
+                .bind(old)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1254,6 +1334,19 @@ impl DirectConfigStorage {
                 stage.id
             ),
         }
+
+        // The file's timestamps, as for every other config entity, so an
+        // exported stage reads back the same from another install.
+        sqlx::query(
+            "UPDATE category_tag SET created = $1, changed = $2 \
+             WHERE id = $3 AND category_id = 'stages'",
+        )
+        .bind(stage.created)
+        .bind(stage.changed)
+        .bind(stage.id)
+        .execute(&self.pool)
+        .await
+        .context("failed to set the stage's timestamps")?;
 
         Ok(())
     }
@@ -1428,6 +1521,14 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TILE => self.load_tile(id).await,
             entity_types::MENU_LINK => self.load_menu_link(id).await,
             entity_types::FILE => self.load_file(id).await,
+            entity_types::PLUGIN_STATUS => Ok(plugin_config::load_status(&self.pool, id)
+                .await?
+                .map(ConfigEntity::PluginStatus)),
+            other if self.is_plugin_table(other) => Ok(plugin_config::list_rows(&self.pool, other)
+                .await?
+                .into_iter()
+                .find(|r| r.id == id)
+                .map(ConfigEntity::PluginRow)),
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
     }
@@ -1458,6 +1559,8 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::Tile(t) => self.save_tile(t).await,
             ConfigEntity::MenuLink(m) => self.save_menu_link(m).await,
             ConfigEntity::File(f) => self.save_file(f).await,
+            ConfigEntity::PluginStatus(p) => self.save_plugin_status(p).await,
+            ConfigEntity::PluginRow(r) => plugin_config::save_row(&self.pool, r).await,
         };
         if navigation {
             crate::menu::invalidate_config_menus();
@@ -1489,6 +1592,7 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TILE => self.delete_tile(id).await,
             entity_types::MENU_LINK => self.delete_menu_link(id).await,
             entity_types::FILE => self.delete_file(id).await,
+            entity_types::PLUGIN_STATUS => plugin_config::delete_status(&self.pool, id).await,
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         };
         if navigation {
@@ -1518,8 +1622,22 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::TILE => self.list_tiles(filter).await,
             entity_types::MENU_LINK => self.list_menu_links(filter).await,
             entity_types::FILE => self.list_files(filter).await,
+            entity_types::PLUGIN_STATUS => Ok(plugin_config::list_statuses(&self.pool)
+                .await?
+                .into_iter()
+                .map(ConfigEntity::PluginStatus)
+                .collect()),
+            other if self.is_plugin_table(other) => Ok(plugin_config::list_rows(&self.pool, other)
+                .await?
+                .into_iter()
+                .map(ConfigEntity::PluginRow)
+                .collect()),
             _ => Err(anyhow::anyhow!("unknown entity type: {entity_type}")),
         }
+    }
+
+    fn plugins(&self) -> Option<&PluginConfigSet> {
+        self.plugins.as_deref()
     }
 }
 
