@@ -82,7 +82,7 @@ async fn body_string(response: axum::response::Response) -> String {
 
 /// Register `blog` exactly as startup does, through the real writer.
 async fn register_through_the_real_writer(app: &TestApp) {
-    ContentTypeRegistry::new(app.db.clone(), Duration::from_secs(60))
+    ContentTypeRegistry::new(app.db.clone(), Duration::from_secs(60), Default::default())
         .sync_from_plugins(&dispatcher())
         .await
         .expect("sync content types from plugins");
@@ -394,7 +394,8 @@ fn field_names(settings: &serde_json::Value) -> Vec<String> {
 
 /// `blog` as a fresh registry reads it from the database.
 async fn blog_from_a_fresh_registry(app: &TestApp) -> trovato_sdk::types::ContentTypeDefinition {
-    let registry = ContentTypeRegistry::new(app.db.clone(), Duration::from_secs(60));
+    let registry =
+        ContentTypeRegistry::new(app.db.clone(), Duration::from_secs(60), Default::default());
     registry
         .reload_from_db()
         .await

@@ -3,10 +3,14 @@
 //! Loads translations into an in-memory cache and provides a
 //! translate() method used by the Tera t() function.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use sqlx::PgPool;
 use tracing::info;
+
+use crate::metrics::{CacheName, Metrics};
 
 /// Locale translation service.
 #[derive(Clone)]
@@ -14,14 +18,17 @@ pub struct LocaleService {
     pool: PgPool,
     /// In-memory translation cache: key = "language:context:source" → translation.
     cache: DashMap<String, String>,
+    /// Counts translation lookups: a hit when either key finds a translation.
+    metrics: Arc<Metrics>,
 }
 
 impl LocaleService {
     /// Create a new locale service.
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, metrics: Arc<Metrics>) -> Self {
         Self {
             pool,
             cache: DashMap::new(),
+            metrics,
         }
     }
 
@@ -53,21 +60,28 @@ impl LocaleService {
     ///
     /// Falls back to the source string if no translation is found.
     pub fn translate(&self, source: &str, context: &str, language: &str) -> String {
+        let found = self.lookup(source, context, language);
+        self.metrics
+            .cache_lookup(CacheName::Locale, found)
+            // Return source as fallback
+            .unwrap_or_else(|| source.to_string())
+    }
+
+    /// The translation of `source` in `context`, or without a context.
+    fn lookup(&self, source: &str, context: &str, language: &str) -> Option<String> {
         let key = cache_key(language, context, source);
         if let Some(translation) = self.cache.get(&key) {
-            return translation.clone();
+            return Some(translation.clone());
         }
 
         // Try without context
         if !context.is_empty() {
             let key = cache_key(language, "", source);
             if let Some(translation) = self.cache.get(&key) {
-                return translation.clone();
+                return Some(translation.clone());
             }
         }
-
-        // Return source as fallback
-        source.to_string()
+        None
     }
 
     /// Bulk insert translations from parsed .po data.

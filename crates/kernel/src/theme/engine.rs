@@ -10,6 +10,7 @@ use tracing::debug;
 
 use crate::content::FilterPipeline;
 use crate::form::Form;
+use crate::metrics::{CacheName, Metrics};
 use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
@@ -338,6 +339,8 @@ pub struct ThemeEngine {
     tera: Tera,
     /// Cache mapping suggestion lists to resolved template names.
     suggestion_cache: DashMap<String, String>,
+    /// Counts `suggestion_cache` hits and misses.
+    metrics: Arc<Metrics>,
     /// Render tree consumer for RenderElement → HTML.
     render_consumer: RenderTreeConsumer,
 }
@@ -353,7 +356,11 @@ impl ThemeEngine {
     ///
     /// If a `LocaleService` is provided, a `trans` filter is registered that
     /// translates interface strings.
-    pub fn new(template_dirs: &[PathBuf], locale: Option<Arc<LocaleService>>) -> Result<Self> {
+    pub fn new(
+        template_dirs: &[PathBuf],
+        locale: Option<Arc<LocaleService>>,
+        metrics: Arc<Metrics>,
+    ) -> Result<Self> {
         if template_dirs.is_empty() {
             anyhow::bail!("at least one template directory is required");
         }
@@ -399,6 +406,7 @@ impl ThemeEngine {
         Ok(Self {
             tera,
             suggestion_cache: DashMap::new(),
+            metrics,
             render_consumer: RenderTreeConsumer::new(),
         })
     }
@@ -446,11 +454,12 @@ impl ThemeEngine {
     }
 
     /// Create a theme engine with no templates (for testing).
-    pub fn empty() -> Result<Self> {
+    pub fn empty(metrics: Arc<Metrics>) -> Result<Self> {
         let tera = Tera::default();
         Ok(Self {
             tera,
             suggestion_cache: DashMap::new(),
+            metrics,
             render_consumer: RenderTreeConsumer::new(),
         })
     }
@@ -698,8 +707,11 @@ impl ThemeEngine {
         let cache_key = suggestions.join("|");
 
         // Check cache first
-        if let Some(cached) = self.suggestion_cache.get(&cache_key) {
-            return Some(cached.clone());
+        if let Some(cached) = self.metrics.cache_lookup(
+            CacheName::TemplateSuggestion,
+            self.suggestion_cache.get(&cache_key).map(|c| c.clone()),
+        ) {
+            return Some(cached);
         }
 
         // Find first template that exists
@@ -1043,7 +1055,7 @@ mod tests {
     fn a_choice_element_without_a_default_renders() {
         use crate::form::{Form, FormElement};
         let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
-        let engine = ThemeEngine::new(&[templates], None).unwrap();
+        let engine = ThemeEngine::new(&[templates], None, Default::default()).unwrap();
         let options = || vec![("a".to_string(), "A".to_string())];
         let form = Form::new("probe")
             .element("pick", FormElement::select(options()))
@@ -1500,7 +1512,7 @@ mod tests {
             "{% extends \"gather/query.html\" %}{% block body %}APP{% endblock %}",
         );
 
-        let engine = ThemeEngine::new(&[kernel.clone(), app.clone()], None)
+        let engine = ThemeEngine::new(&[kernel.clone(), app.clone()], None, Default::default())
             .expect("engine must build with a cross-root inheritance chain");
 
         let rendered = engine
@@ -1523,7 +1535,8 @@ mod tests {
         write_template(&kernel, "elements/item.html", "KERNEL");
         write_template(&app, "elements/item.html", "APP");
 
-        let engine = ThemeEngine::new(&[kernel.clone(), app.clone()], None).expect("engine builds");
+        let engine = ThemeEngine::new(&[kernel.clone(), app.clone()], None, Default::default())
+            .expect("engine builds");
         let rendered = engine
             .tera
             .render("elements/item.html", &tera::Context::new())
@@ -1541,7 +1554,8 @@ mod tests {
         let root = scratch_root("single");
         write_template(&root, "gather/includes/card.html", "CARD");
 
-        let engine = ThemeEngine::new(std::slice::from_ref(&root), None).expect("engine builds");
+        let engine = ThemeEngine::new(std::slice::from_ref(&root), None, Default::default())
+            .expect("engine builds");
         let rendered = engine
             .tera
             .render("gather/includes/card.html", &tera::Context::new())
@@ -1560,8 +1574,8 @@ mod tests {
         let absent = std::env::temp_dir().join("trovato_tpl_definitely_absent_dir");
         std::fs::remove_dir_all(&absent).ok();
 
-        let engine =
-            ThemeEngine::new(&[kernel.clone(), absent], None).expect("absent overlay is tolerated");
+        let engine = ThemeEngine::new(&[kernel.clone(), absent], None, Default::default())
+            .expect("absent overlay is tolerated");
         assert_eq!(
             engine
                 .tera
@@ -1575,7 +1589,7 @@ mod tests {
 
     #[test]
     fn empty_search_path_is_rejected() {
-        assert!(ThemeEngine::new(&[], None).is_err());
+        assert!(ThemeEngine::new(&[], None, Default::default()).is_err());
     }
 
     /// Render `{{ v | render_blocks | safe }}` with `v` bound to `value`.

@@ -709,7 +709,7 @@ mod tests {
     /// The real templates, so these check the markup a browser gets.
     fn render(form: &Form) -> String {
         let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
-        crate::theme::ThemeEngine::new(&[templates], None)
+        crate::theme::ThemeEngine::new(&[templates], None, Default::default())
             .unwrap()
             .render_form(form)
             .unwrap()

@@ -819,6 +819,7 @@ fn witnessed(pool: &PgPool) -> Witnessed {
         std::time::Duration::from_secs(60),
         None,
         None,
+        Default::default(),
     ));
     services.set_item_service(&items);
     Witnessed {

@@ -20,9 +20,10 @@
 `[CLI]` Verify cache is operational:
 
 ```bash
-# Check Prometheus metrics include cache stats
-curl -s http://localhost:3000/metrics | grep -c "cache"
-# Expect: > 0
+# Check Prometheus metrics count cache hits and misses, per cache
+curl -s http://localhost:3000/metrics | grep -E '^cache_(hits|misses)_total\{cache="item"\}'
+# Expect: cache_hits_total{cache="item"} N and cache_misses_total{cache="item"} N
+# (non-zero once an item page has been loaded twice)
 
 # Verify cache config env vars are read
 grep "CACHE_TTL" .env || echo "Using defaults (60s global, 300s for users/items/categories)"
@@ -99,8 +100,10 @@ docker exec trovato-redis-1 redis-cli LLEN queue:ritrovo_import
 `[CLI]`
 
 ```bash
-# Prometheus metrics
-curl -s http://localhost:3000/metrics | head -20
+# Prometheus metrics: requests are counted by route template
+curl -s http://localhost:3000/metrics | grep -E '^(http_requests_total|cache_(hits|misses)_total)'
+# Expect: http_requests_total{method="GET",path="/",status="200"} N, and one
+# cache_hits_total / cache_misses_total pair per cache, labelled cache="..."
 
 # Health check
 curl -s http://localhost:3000/health

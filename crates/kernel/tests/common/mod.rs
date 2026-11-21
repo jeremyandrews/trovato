@@ -1254,5 +1254,6 @@ pub fn item_service_with_ref_plugin(pool: PgPool) -> trovato_kernel::content::It
         Duration::from_secs(60),
         None,
         None,
+        Default::default(),
     )
 }

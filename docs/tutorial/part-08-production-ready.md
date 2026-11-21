@@ -55,9 +55,24 @@ This means editors previewing draft content on the "Incoming" stage see their ch
 ### Verify
 
 ```bash
-# Cache stats are visible in Prometheus metrics
-curl -s http://localhost:3000/metrics | grep cache
+# Cache hits and misses are counted per cache in Prometheus metrics
+curl -s http://localhost:3000/metrics | grep -E '^cache_(hits|misses)_total'
 ```
+
+Every kernel cache has its own pair of series, named by the `cache` label. Load
+an item page twice and the item cache shows the miss, then the hit:
+
+```
+cache_hits_total{cache="item"} 1
+cache_misses_total{cache="item"} 1
+cache_hits_total{cache="layer_l1"} 0
+cache_misses_total{cache="layer_l1"} 0
+```
+
+The names are `item`, `item_stage`, `stage_view`, `field_access`, `user`,
+`permissions`, `content_type`, `gather_query`, `gather_distinct`, `category`,
+`category_tags`, `menu`, `locale`, `template_suggestion`, and `layer_l1` and
+`layer_l2` for the two tiers of the cache layer described above.
 
 ---
 
@@ -192,11 +207,22 @@ curl http://localhost:3000/metrics
 ```
 
 Metrics include:
-- **HTTP request duration** — histogram by method and path
-- **HTTP request count** — counter by status code
-- **Active connections** — gauge
-- **Cache hit/miss rates** — per cache tier
+- **HTTP request count** — `http_requests_total`, by method, route and status
+- **HTTP request duration** — `http_request_duration_seconds`, a histogram with the same labels
+- **Cache hits and misses** — `cache_hits_total` and `cache_misses_total`, by `cache`
+- **Active connections** — `http_active_connections`, a gauge (registered, not yet recorded)
 - **Database query duration** — histogram
+
+The `path` label on the HTTP series is the route template that answered, such as
+`/item/{id}`, never the address asked for, so there is one series per route and
+not one per item. A request no route matched is counted under `<fallback>`: the
+fallback serves URL aliases (`/conferences/rustconf-2026`) and answers 404s, so
+both land there.
+
+```bash
+curl -s http://localhost:3000/metrics | grep -E '^http_requests_total'
+# http_requests_total{method="GET",path="/item/{id}",status="200"} 2
+```
 
 ### Health Check
 

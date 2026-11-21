@@ -16,6 +16,7 @@ use super::types::{
     QueryDefinition, QueryDisplay, QueryFilter,
 };
 use crate::content::{ItemService, RecordTypeRegistry};
+use crate::metrics::{CacheName, Metrics};
 use crate::models::UrlAlias;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::vector_store::{PgVectorStore, VectorStore};
@@ -90,6 +91,8 @@ pub struct GatherService {
     /// [`Self::item_access`]. When unset or a gather names no `record_type`, every
     /// gather is an Item gather and this is never consulted.
     record_types: OnceLock<Arc<RecordTypeRegistry>>,
+    /// Counts hits and misses in `queries` and `distinct_values_cache`.
+    metrics: Arc<Metrics>,
 }
 
 /// Resolved context for a lightweight-record gather (P11g / D-54, D-55): the
@@ -132,6 +135,7 @@ impl GatherService {
         config: GatherConfig,
         ai_providers: Option<Arc<AiProviderService>>,
         vector_store: Option<Arc<PgVectorStore>>,
+        metrics: Arc<Metrics>,
     ) -> Arc<Self> {
         Arc::new(Self {
             pool,
@@ -151,6 +155,7 @@ impl GatherService {
             vector_store,
             item_access: OnceLock::new(),
             record_types: OnceLock::new(),
+            metrics,
         })
     }
 
@@ -219,7 +224,8 @@ impl GatherService {
 
     /// Get a query by ID.
     pub fn get_query(&self, query_id: &str) -> Option<GatherQuery> {
-        self.queries.get(query_id)
+        self.metrics
+            .cache_lookup(CacheName::GatherQuery, self.queries.get(query_id))
     }
 
     /// List all registered queries.
@@ -287,7 +293,10 @@ impl GatherService {
 
         let cache_key = format!("{item_type}::{source_field}");
 
-        if let Some(cached) = self.distinct_values_cache.get(&cache_key) {
+        if let Some(cached) = self.metrics.cache_lookup(
+            CacheName::GatherDistinct,
+            self.distinct_values_cache.get(&cache_key),
+        ) {
             return Ok(cached);
         }
 
@@ -656,8 +665,7 @@ impl GatherService {
         context: &QueryContext,
     ) -> Result<GatherResult> {
         let query = self
-            .queries
-            .get(query_id)
+            .get_query(query_id)
             .ok_or_else(|| anyhow::anyhow!("query not found: {query_id}"))?;
 
         self.execute_definition_with_stages(
@@ -1719,8 +1727,7 @@ impl GatherService {
     /// Clone a query with a new ID.
     pub async fn clone_query(&self, source_id: &str, new_id: &str) -> Result<GatherQuery> {
         let source = self
-            .queries
-            .get(source_id)
+            .get_query(source_id)
             .ok_or_else(|| anyhow::anyhow!("query not found: {source_id}"))?
             .clone();
 
@@ -2014,7 +2021,7 @@ impl GatherService {
         for query in defaults {
             let query_id = query.query_id.clone();
             // Only register if not already in the database (don't overwrite customizations)
-            if self.queries.get(&query_id).is_none() {
+            if self.get_query(&query_id).is_none() {
                 self.register_query(query)
                     .await
                     .context(format!("failed to register default view '{query_id}'"))?;

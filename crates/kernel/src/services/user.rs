@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::metrics::{CacheName, Metrics};
 use crate::models::{CreateUser, UpdateUser, User};
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 
@@ -38,6 +39,8 @@ struct UserServiceInner {
     dispatcher: Arc<TapDispatcher>,
     tap_services: RequestServices,
     cache: Cache<Uuid, User>,
+    /// Counts `cache` hits and misses.
+    metrics: Arc<Metrics>,
 }
 
 impl UserService {
@@ -47,6 +50,7 @@ impl UserService {
         dispatcher: Arc<TapDispatcher>,
         tap_services: RequestServices,
         ttl: Duration,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             inner: Arc::new(UserServiceInner {
@@ -57,6 +61,7 @@ impl UserService {
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
                     .build(),
+                metrics,
             }),
         }
     }
@@ -64,7 +69,11 @@ impl UserService {
     /// Find a user by ID (cached).
     pub async fn find_by_id(&self, id: Uuid) -> Result<Option<User>> {
         // Check cache first
-        if let Some(user) = self.inner.cache.get(&id) {
+        if let Some(user) = self
+            .inner
+            .metrics
+            .cache_lookup(CacheName::User, self.inner.cache.get(&id))
+        {
             return Ok(Some(user));
         }
 

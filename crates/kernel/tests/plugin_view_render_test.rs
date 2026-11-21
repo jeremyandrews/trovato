@@ -100,7 +100,7 @@ async fn fresh_pool() -> PgPool {
     trovato_kernel::db::run_migrations(&pool)
         .await
         .expect("run kernel migrations");
-    ContentTypeRegistry::new(pool.clone(), Duration::from_secs(60))
+    ContentTypeRegistry::new(pool.clone(), Duration::from_secs(60), Default::default())
         .sync_from_plugins(&dispatcher())
         .await
         .expect("sync content types");
@@ -135,6 +135,7 @@ fn item_service(pool: &PgPool) -> Arc<ItemService> {
         Duration::from_secs(60),
         None,
         None,
+        Default::default(),
     ))
 }
 

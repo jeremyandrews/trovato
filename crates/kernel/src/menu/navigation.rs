@@ -29,6 +29,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::MenuDefinition;
+use crate::metrics::CacheName;
 use crate::models::MenuLink;
 use crate::state::AppState;
 use crate::tap::UserContext;
@@ -126,7 +127,10 @@ impl ConfigMenus {
 /// tries again.
 pub async fn config_menus(state: &AppState, stage: Uuid, language: &str) -> Arc<ConfigMenus> {
     let key = (stage, language.to_string());
-    if let Some(cached) = CONFIG_MENUS.get(&key) {
+    if let Some(cached) = state
+        .metrics()
+        .cache_lookup(CacheName::Menu, CONFIG_MENUS.get(&key))
+    {
         return cached;
     }
     match load_config_menus(state, stage, language).await {

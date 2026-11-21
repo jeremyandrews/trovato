@@ -94,9 +94,11 @@ async fn wire(pool: sqlx::PgPool) -> Arc<GatherService> {
         Duration::from_secs(60),
         None,
         None,
+        Default::default(),
     ));
 
-    let categories = CategoryService::new(pool.clone(), Duration::from_secs(60));
+    let categories =
+        CategoryService::new(pool.clone(), Duration::from_secs(60), Default::default());
     let gather = GatherService::new(
         pool,
         categories,
@@ -108,6 +110,7 @@ async fn wire(pool: sqlx::PgPool) -> Arc<GatherService> {
         },
         None,
         None,
+        Default::default(),
     );
     gather.set_item_service(items);
     gather.set_record_types(registry_arc);

@@ -410,7 +410,7 @@ tracing::info!(
 
 ### Metrics
 
-Expose Prometheus metrics on `/metrics` (restricted to internal IPs via NGINX): HTTP request duration histogram, WASM tap invocation duration histogram, database query duration histogram, cache hit/miss counters, active WASM plugin instance count, Redis connection pool utilization.
+Expose Prometheus metrics on `/metrics` (restricted to internal IPs via NGINX): HTTP request duration histogram, WASM tap invocation duration histogram, database query duration histogram, cache hit/miss counters labelled by cache, active WASM plugin instance count, Redis connection pool utilization.
 
 ### Health Check
 
