@@ -29,6 +29,8 @@ struct PluginRow {
     status: String,
     is_installed: bool,
     default_enabled: bool,
+    /// The manifest grants `raw_sql`; the listing marks it.
+    raw_sql: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +89,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
             status: status_str,
             is_installed,
             default_enabled: info.default_enabled,
+            raw_sql: info.holds_raw_sql(),
         });
     }
 
@@ -106,6 +109,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
                 status: status_str.to_string(),
                 is_installed: true,
                 default_enabled: true,
+                raw_sql: false,
             });
         }
     }
@@ -119,7 +123,9 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
     }
 
     let mut context = tera::Context::new();
+    let raw_sql_count = rows.iter().filter(|row| row.raw_sql).count();
     context.insert("plugins", &rows);
+    context.insert("raw_sql_count", &raw_sql_count);
     context.insert("csrf_token", &csrf_token);
     context.insert("flash", &flash);
     context.insert("path", "/admin/plugins");

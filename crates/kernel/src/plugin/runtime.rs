@@ -560,6 +560,22 @@ impl PluginRuntime {
         &self.plugins
     }
 
+    /// The loaded plugins that hold `raw_sql`, sorted by name.
+    ///
+    /// `raw_sql` runs SQL the kernel does not compile, past the table
+    /// allowlist and with no viewer, stage or language, so boot names every
+    /// holder (D-60, `docs/plugin-capabilities.md`).
+    pub fn raw_sql_holders(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .plugins
+            .iter()
+            .filter(|(_, plugin)| plugin.info.holds_raw_sql())
+            .map(|(name, _)| name.as_str())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Get the number of loaded plugins.
     pub fn plugin_count(&self) -> usize {
         self.plugins.len()

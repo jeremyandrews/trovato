@@ -14,6 +14,12 @@
 {% endif %}
 
 <div class="admin-card">
+    {% if raw_sql_count > 0 %}
+    <p class="plugin-raw-sql-note" id="plugin-raw-sql-note">
+        <span class="badge badge--raw-sql">raw SQL</span>
+        {{ raw_sql_count }} {% if raw_sql_count == 1 %}plugin holds{% else %}plugins hold{% endif %} <code>raw_sql</code>: SQL the kernel does not compile, which can read any table outside the protected floor with no viewer, stage or language applied. Grant it only to a plugin you trust with all of the site's content. See <code>docs/plugin-capabilities.md</code>.
+    </p>
+    {% endif %}
     {% if plugins | length > 0 %}
     <table class="table">
         <thead>
@@ -29,7 +35,7 @@
         <tbody>
             {% for plugin in plugins %}
             <tr>
-                <td><code>{{ plugin.name }}</code></td>
+                <td><code>{{ plugin.name }}</code>{% if plugin.raw_sql %}<span class="badge badge--raw-sql" data-raw-sql="{{ plugin.name }}" title="Holds raw_sql: runs SQL the kernel does not compile">raw SQL</span>{% endif %}</td>
                 <td>{{ plugin.description }}</td>
                 <td>{{ plugin.version }}</td>
                 <td>{{ plugin.dependencies }}</td>
@@ -71,4 +77,23 @@
     <p>No plugins found.</p>
     {% endif %}
 </div>
+
+<style>
+    .badge {
+        display: inline-block;
+        padding: 0.125rem 0.375rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
+        margin-left: 0.5rem;
+    }
+    .badge--raw-sql {
+        background: #fff3cd;
+        color: #664d03;
+        font-weight: 600;
+    }
+    .plugin-raw-sql-note .badge {
+        margin-left: 0;
+        margin-right: 0.25rem;
+    }
+</style>
 {% endblock %}

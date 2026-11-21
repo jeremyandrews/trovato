@@ -295,6 +295,9 @@ let n = db::delete("my_votes", &json!([{"field": "voter", "op": "in", "value": [
 let row = db::upsert("my_votes", &json!({"k": k, "score": 3}), &json!({"target": ["k"]}))?;
 let n = db::insert_many("my_votes", &rows)?;                      // ≤ 500, all or none; Err(-82)
 ```
+`raw_sql = true` opens `host::query_raw`/`execute_raw` with no viewer, stage or
+language; the admin listing and the boot log name every holder. Before asking
+for it, read [plugin-capabilities.md](plugin-capabilities.md#raw_sql).
 
 ### Inter-Plugin
 ```rust
