@@ -9,11 +9,12 @@ builds the image, brings the harness up and runs them, printing both kernels'
 logs on failure.
 
 Sessions, form tokens, passkey challenges, uploads on the shared volume,
-blocking a user and the cron lock already work across nodes, as does a
-`tap_install` on two kernels booting together (only because the migration lock
-staggers their boots). Eight scenarios fail today and are ignored, each naming
-the change that fixes it: in-process caches invalidated only on the node that
-wrote (roles, items, types, terms, gather queries, redirects, locale strings,
-the cache layer's local tier, and an import run from another process), chat
-limits counted per node, a plugin toggle applied live on one node only, and a
-Pagefind index written to one node's disk.
+blocking a user and the cron lock already work across nodes. Nine scenarios
+fail today and are ignored, each naming the change that fixes it: in-process
+caches invalidated only on the node that wrote (roles, items, types, terms,
+gather queries, redirects, locale strings, the cache layer's local tier, and an
+import run from another process), chat limits counted per node, a
+`tap_install` that two kernels booting together both run, a plugin toggle
+applied live on one node only, and a Pagefind index written to one node's
+disk. The CI test shards leave `cluster_test` out of their round robin
+partition, where it would only skip itself.
