@@ -272,8 +272,8 @@ pub async fn path_alias_fallback(
             .unwrap_or_else(|err| match err {});
     }
 
-    // No alias and no language prefix — return 404
-    axum::http::StatusCode::NOT_FOUND.into_response()
+    // No alias and no language prefix: the one 404 page.
+    crate::routes::helpers::render_not_found()
 }
 
 /// Strip a language prefix from the path if it matches a known non-default language.

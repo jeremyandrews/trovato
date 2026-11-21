@@ -70,12 +70,16 @@ async fn front_page(
     }
     inject_site_context(&state, &session, &mut context, "/").await;
 
-    let html = state
+    match state
         .theme()
         .render_page("/front", "Home", &content, &mut context)
-        .unwrap_or_else(|_| format!("<html><body>{content}</body></html>"));
-
-    Html(html).into_response()
+    {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render the front page");
+            super::helpers::render_server_error("The front page could not be displayed.")
+        }
+    }
 }
 
 /// Serve the configured front page, or `None` to fall through to the default.

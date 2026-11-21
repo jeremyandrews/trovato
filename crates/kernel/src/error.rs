@@ -415,7 +415,13 @@ impl IntoResponse for AppError {
             _ => {}
         }
 
+        let marker = crate::middleware::ErrorPage {
+            status,
+            message: body.message.clone(),
+        };
         let mut response = (status, Json(body)).into_response();
+        // So a browser asking for this gets the themed error page instead.
+        response.extensions_mut().insert(marker);
 
         // Add Retry-After header for rate limiting
         if let AppError::RateLimited {

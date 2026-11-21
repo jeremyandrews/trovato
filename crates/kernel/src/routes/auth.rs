@@ -17,8 +17,8 @@ use crate::models::email_verification::{
 };
 use crate::models::{CreateUser, SiteConfig, User};
 use crate::routes::helpers::{
-    CsrfOnlyForm, JsonSuccess, html_escape, is_valid_email, is_valid_timezone, require_csrf,
-    validate_password, validate_username,
+    CsrfOnlyForm, JsonSuccess, is_valid_email, is_valid_timezone, require_csrf, validate_password,
+    validate_username,
 };
 use crate::state::AppState;
 
@@ -118,21 +118,7 @@ async fn login_form(State(state): State<AppState>, session: Session) -> Response
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to render login form");
-            let escaped_token = html_escape(&csrf_token);
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><head><title>Log in</title></head>
-<body style="font-family: sans-serif; max-width: 400px; margin: 100px auto; padding: 2rem;">
-<h1>Log in</h1>
-<form method="post" action="/user/login">
-<input type="hidden" name="_token" value="{escaped_token}">
-<p><label>Username<br><input type="text" name="username" required></label></p>
-<p><label>Password<br><input type="password" name="password" required></label></p>
-<p><button type="submit">Log in</button></p>
-</form>
-</body></html>"#
-            ))
-            .into_response()
+            super::helpers::render_server_error("The login form could not be displayed.")
         }
     }
 }
@@ -193,11 +179,10 @@ async fn render_login_error(state: &AppState, session: &Session, error: &str) ->
 
     match state.theme().tera().render("user/login.html", &context) {
         Ok(html) => Html(html).into_response(),
-        Err(_) => Html(format!(
-            "<h1>Login Error</h1><p>{}</p><p><a href=\"/user/login\">Try again</a></p>",
-            html_escape(error)
-        ))
-        .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render login form");
+            super::helpers::render_server_error("The login form could not be displayed.")
+        }
     }
 }
 
@@ -551,8 +536,7 @@ async fn render_register_form(
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to render register form");
-            Html("<h1>Error</h1><p>Failed to render registration form</p>".to_string())
-                .into_response()
+            super::helpers::render_server_error("The registration form could not be displayed.")
         }
     }
 }
@@ -1253,8 +1237,7 @@ async fn render_profile(
         Ok(html) => html,
         Err(e) => {
             tracing::error!(error = %e, "failed to build the profile form");
-            return Html("<h1>Error</h1><p>Failed to render profile page</p>".to_string())
-                .into_response();
+            return super::helpers::render_server_error("The profile page could not be displayed.");
         }
     };
 
@@ -1295,7 +1278,7 @@ async fn render_profile(
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to render profile form");
-            Html("<h1>Error</h1><p>Failed to render profile page</p>".to_string()).into_response()
+            super::helpers::render_server_error("The profile page could not be displayed.")
         }
     }
 }

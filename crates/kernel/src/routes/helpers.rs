@@ -67,7 +67,7 @@ async fn holds(state: &AppState, user: &User, permission: &str) -> bool {
 
 /// The HTML refusal for a signed-in user who may not do this.
 fn html_forbidden() -> Response {
-    (StatusCode::FORBIDDEN, Html("Access denied")).into_response()
+    render_forbidden("You do not have permission to view this page.")
 }
 
 /// The HTML refusal for nobody signed in: off to the login form.
@@ -430,16 +430,7 @@ pub async fn render_admin_template(
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, template = %template, "failed to render template");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    r#"<!DOCTYPE html>
-<html><head><title>Error</title></head>
-<body><h1>Template Error</h1><pre>{}</pre></body></html>"#,
-                    html_escape(&e.to_string())
-                )),
-            )
-                .into_response()
+            render_server_error("This page could not be displayed.")
         }
     }
 }
@@ -659,80 +650,48 @@ pub fn is_valid_machine_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// Render a simple error page with the given message.
+/// An error page for `status` with `message`, marked for the error-page layer.
 ///
-/// Returns a `400 Bad Request` response with escaped HTML content.
+/// The body is the built-in page, which is what a caller sees only when the
+/// layer is absent (a unit test of a handler); with the layer in place a
+/// browser gets the site's themed `error.html` and any other caller the
+/// `AppError` body (see [`crate::middleware::error_page`]).
+fn error_page(status: StatusCode, message: &str) -> Response {
+    let marker = crate::middleware::ErrorPage {
+        status,
+        message: message.to_string(),
+    };
+    let html = crate::middleware::error_page::fallback_page(&marker, ("/", "Go to the home page"));
+    let mut response = (status, Html(html)).into_response();
+    response.extensions_mut().insert(marker);
+    response
+}
+
+/// An error page for a request that could not be used: `400 Bad Request`.
 pub fn render_error(message: &str) -> Response {
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html><head><title>Error</title></head>
-<body>
-<div style="max-width: 600px; margin: 100px auto; text-align: center;">
-<h1>Error</h1>
-<p>{}</p>
-<p><a href="javascript:history.back()">Go back</a></p>
-</div>
-</body></html>"#,
-        html_escape(message)
-    );
-
-    (StatusCode::BAD_REQUEST, Html(html)).into_response()
+    error_page(StatusCode::BAD_REQUEST, message)
 }
 
-/// Render a simple refusal page with the given message.
-///
-/// Returns a `403 Forbidden` response with escaped HTML content, for an actor
-/// who may use a screen but not on this target.
+/// A refusal page for an actor who may use a screen but not on this target:
+/// `403 Forbidden`.
 pub fn render_forbidden(message: &str) -> Response {
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html><head><title>Access denied</title></head>
-<body>
-<div style="max-width: 600px; margin: 100px auto; text-align: center;">
-<h1>Access denied</h1>
-<p>{}</p>
-<p><a href="javascript:history.back()">Go back</a></p>
-</div>
-</body></html>"#,
-        html_escape(message)
-    );
-
-    (StatusCode::FORBIDDEN, Html(html)).into_response()
+    error_page(StatusCode::FORBIDDEN, message)
 }
 
-/// Render a simple error page for server-side failures.
+/// An error page for a server-side failure: `500 Internal Server Error`.
 ///
-/// Returns a `500 Internal Server Error` response with escaped HTML content.
+/// Also the one page a route serves when its own template cannot be rendered;
+/// no route writes a fallback document of its own.
 pub fn render_server_error(message: &str) -> Response {
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html><head><title>Error</title></head>
-<body>
-<div style="max-width: 600px; margin: 100px auto; text-align: center;">
-<h1>Error</h1>
-<p>{}</p>
-<p><a href="javascript:history.back()">Go back</a></p>
-</div>
-</body></html>"#,
-        html_escape(message)
-    );
-
-    (StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response()
+    error_page(StatusCode::INTERNAL_SERVER_ERROR, message)
 }
 
-/// Render a simple 404 page.
+/// A `404 Not Found` page.
 pub fn render_not_found() -> Response {
-    let html = r#"<!DOCTYPE html>
-<html><head><title>Not Found</title></head>
-<body>
-<div style="max-width: 600px; margin: 100px auto; text-align: center;">
-<h1>Not Found</h1>
-<p>The requested page could not be found.</p>
-<p><a href="/admin">Return to admin</a></p>
-</div>
-</body></html>"#;
-
-    (StatusCode::NOT_FOUND, Html(html)).into_response()
+    error_page(
+        StatusCode::NOT_FOUND,
+        "The requested page could not be found.",
+    )
 }
 
 /// Build local task tab data from the menu registry, merged with hardcoded tabs.
