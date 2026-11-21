@@ -501,11 +501,8 @@ async fn is_registration_enabled(state: &AppState) -> bool {
 /// - Returns 404 if registration is disabled
 async fn register_form(State(state): State<AppState>, session: Session) -> Response {
     // Check if already logged in
-    if session
-        .get::<uuid::Uuid>(SESSION_USER_ID)
+    if super::helpers::session_user(&state, &session)
         .await
-        .ok()
-        .flatten()
         .is_some()
     {
         return Redirect::to("/").into_response();
@@ -1138,28 +1135,7 @@ struct PasswordChangeRequest {
 /// Returns the user only if they exist AND have an active account (status=1).
 /// Blocked or deactivated users are redirected to login.
 async fn get_current_user(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: uuid::Uuid = session
-        .get(SESSION_USER_ID)
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(|| Redirect::to("/user/login").into_response())?;
-
-    let user = state
-        .users()
-        .find_by_id(user_id)
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(|| Redirect::to("/user/login").into_response())?;
-
-    // Reject blocked/deactivated users — destroy their session
-    if !user.is_active() {
-        let _ = session.delete().await;
-        return Err(Redirect::to("/user/login").into_response());
-    }
-
-    Ok(user)
+    super::helpers::require_login(state, session).await
 }
 
 /// The profile form, `user_profile_form`, showing `values` (name, mail,

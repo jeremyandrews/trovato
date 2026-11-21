@@ -972,7 +972,7 @@ async fn add_item_form(
 
     let permission = format!("create {item_type} content");
     if !user.can(&permission) {
-        return Err(AppError::forbidden("Access denied"));
+        return Err(super::helpers::refusal_for(&user, "Access denied"));
     }
     let content_type = state
         .content_types()
@@ -1119,7 +1119,7 @@ async fn create_item(
     // Check permission
     let permission = format!("create {item_type} content");
     if !user.can(&permission) {
-        return Err(AppError::forbidden("Access denied"));
+        return Err(super::helpers::refusal_for(&user, "Access denied"));
     }
 
     // Check content type exists
@@ -1230,7 +1230,7 @@ async fn edit_item_form(
         .await
         .unwrap_or(false)
     {
-        return Err(AppError::forbidden("Access denied"));
+        return Err(super::helpers::refusal_for(&user, "Access denied"));
     }
 
     let content_type = state
@@ -1398,7 +1398,7 @@ async fn delete_item(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("access denied") {
-                Err(AppError::forbidden("Access denied"))
+                Err(super::helpers::refusal_for(&user, "Access denied"))
             } else {
                 Err(AppError::internal_ctx(e, "delete item"))
             }

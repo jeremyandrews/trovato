@@ -244,8 +244,9 @@ async fn passkey_start(
     session: Session,
     headers: HeaderMap,
 ) -> Response {
-    let Ok(user) = require_login(&state, &session).await else {
-        return json_error(StatusCode::UNAUTHORIZED, "Not signed in.");
+    let user = match super::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal.into_response(),
     };
     if require_csrf_header(&session, &headers).await.is_err() {
         return json_error(StatusCode::FORBIDDEN, "Invalid or missing CSRF token.");
@@ -307,8 +308,9 @@ async fn passkey_finish(
     headers: HeaderMap,
     Json(body): Json<PasskeyFinishRequest>,
 ) -> Response {
-    let Ok(user) = require_login(&state, &session).await else {
-        return json_error(StatusCode::UNAUTHORIZED, "Not signed in.");
+    let user = match super::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal.into_response(),
     };
     if require_csrf_header(&session, &headers).await.is_err() {
         return json_error(StatusCode::FORBIDDEN, "Invalid or missing CSRF token.");

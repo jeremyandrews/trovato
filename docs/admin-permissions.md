@@ -25,6 +25,13 @@ helper every row below goes through. It:
 - otherwise returns the user if any of their roles grants the named permission,
   and 403 if not.
 
+Its JSON sibling, `require_permission_json`, asks the same question and answers
+in `AppError` JSON instead: **401** when nobody is signed in (or the session's
+user is blocked or gone), **403** when a signed-in user lacks the permission.
+`require_login` and `require_login_json` are the same pair without a permission,
+and `refusal_for` gives the same 401-or-403 answer for a handler that already
+holds the viewer. That is the one refusal rule: no route decides it for itself.
+
 So for a user without the permission, every route below is exactly as strict as
 it was when it called `require_admin`, and for a superuser nothing changed at
 all. The only behaviour that is new is the middle case: a non-superuser role
@@ -197,7 +204,6 @@ neither.
 
 | Route | Method | Permission |
 |---|---|---|
-| `/admin/config/ai/features` | GET, POST | `configure ai` |
 | The AI provider, budget, chat and assistant screens | GET, POST | `configure ai`, and `view ai usage` for usage reporting |
 
 ## Translation

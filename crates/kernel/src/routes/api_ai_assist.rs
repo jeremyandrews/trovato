@@ -14,10 +14,8 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
-use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::require_csrf_header;
 use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
 use crate::state::AppState;
@@ -69,18 +67,12 @@ async fn ai_assist_handler(
         return AppError::forbidden("Invalid or missing CSRF token").into_response();
     }
 
-    // Auth check: load user from session
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let Some(uid) = user_id else {
-        return AppError::unauthorized("Authentication required").into_response();
+    // Auth check: the signed-in, active user, or the JSON 401.
+    let user = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal.into_response(),
     };
-
-    let user = match state.users().find_by_id(uid).await {
-        Ok(Some(u)) if u.is_active() => u,
-        _ => {
-            return AppError::unauthorized("User not found or inactive").into_response();
-        }
-    };
+    let uid = user.id;
 
     // Permission check. `user_has_permission` is the effective answer and
     // already returns true for a site administrator, so the hand-written

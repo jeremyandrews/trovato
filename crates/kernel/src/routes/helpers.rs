@@ -48,24 +48,52 @@ pub struct CsrfOnlyForm {
     pub token: String,
 }
 
+/// The session's signed-in user, if there is one: the user the session names,
+/// provided that user still exists and is active.
+///
+/// The one place a request handler reads `SESSION_USER_ID` to decide who is
+/// asking. A session naming a blocked user is deleted here, so every guard built
+/// on this signs a blocked account out the same way. A session naming a user
+/// who no longer exists is simply nobody.
+pub async fn session_user(state: &AppState, session: &Session) -> Option<User> {
+    let id: Uuid = session.get(SESSION_USER_ID).await.ok().flatten()?;
+    let user = state.users().find_by_id(id).await.ok().flatten()?;
+    if !user.is_active() {
+        let _ = session.delete().await;
+        return None;
+    }
+    Some(user)
+}
+
+/// Whether `user` holds `permission`; an administrator holds every permission.
+async fn holds(state: &AppState, user: &User, permission: &str) -> bool {
+    user.is_admin
+        || state
+            .permissions()
+            .user_has_permission(user, permission)
+            .await
+            .unwrap_or(false)
+}
+
+/// The HTML refusal for a signed-in user who may not do this.
+fn html_forbidden() -> Response {
+    (StatusCode::FORBIDDEN, Html("Access denied")).into_response()
+}
+
+/// The HTML refusal for nobody signed in: off to the login form.
+fn html_login() -> Response {
+    Redirect::to("/user/login").into_response()
+}
+
 /// Require an authenticated, active user, or redirect to login.
 ///
 /// Returns the [`User`] if one is logged in and active (`status=1`).
 /// Destroys the session and redirects to login if the user is blocked.
+///
+/// This is the HTML half of the one refusal rule; [`require_login_json`] is
+/// the JSON half.
 pub async fn require_login(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    if let Some(id) = user_id
-        && let Ok(Some(user)) = state.users().find_by_id(id).await
-    {
-        if !user.is_active() {
-            let _ = session.delete().await;
-            return Err(Redirect::to("/user/login").into_response());
-        }
-        return Ok(user);
-    }
-
-    Err(Redirect::to("/user/login").into_response())
+    session_user(state, session).await.ok_or_else(html_login)
 }
 
 /// Require an authenticated, active **admin** user, or redirect/reject.
@@ -74,22 +102,12 @@ pub async fn require_login(state: &AppState, session: &Session) -> Result<User, 
 /// session has no valid user or the user is blocked. Returns 403 if the user
 /// exists and is active but is not an admin.
 pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    if let Some(id) = user_id
-        && let Ok(Some(user)) = state.users().find_by_id(id).await
-    {
-        if !user.is_active() {
-            let _ = session.delete().await;
-            return Err(Redirect::to("/user/login").into_response());
-        }
-        if user.is_admin {
-            return Ok(user);
-        }
-        return Err((StatusCode::FORBIDDEN, Html("Access denied")).into_response());
+    let user = require_login(state, session).await?;
+    if user.is_admin {
+        Ok(user)
+    } else {
+        Err(html_forbidden())
     }
-
-    Err(Redirect::to("/user/login").into_response())
 }
 
 /// Require an authenticated, active user with a specific permission.
@@ -103,51 +121,78 @@ pub async fn require_permission(
     session: &Session,
     permission: &str,
 ) -> Result<User, Response> {
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    if let Some(id) = user_id
-        && let Ok(Some(user)) = state.users().find_by_id(id).await
-    {
-        if !user.is_active() {
-            let _ = session.delete().await;
-            return Err(Redirect::to("/user/login").into_response());
-        }
-        // Admin users implicitly have all permissions
-        if user.is_admin {
-            return Ok(user);
-        }
-        if state
-            .permissions()
-            .user_has_permission(&user, permission)
-            .await
-            .unwrap_or(false)
-        {
-            return Ok(user);
-        }
-        return Err((StatusCode::FORBIDDEN, Html("Access denied")).into_response());
+    let user = require_login(state, session).await?;
+    if holds(state, &user, permission).await {
+        Ok(user)
+    } else {
+        Err(html_forbidden())
     }
+}
 
-    Err(Redirect::to("/user/login").into_response())
+/// The refusal every JSON caller gets for being nobody: `401` with an
+/// [`AppError`](crate::error::AppError) body.
+fn json_login() -> crate::error::AppError {
+    crate::error::AppError::unauthorized("Authentication required")
+}
+
+/// Require an authenticated, active user for a JSON endpoint.
+///
+/// The JSON half of [`require_login`]: the same question, answered with an
+/// [`AppError`](crate::error::AppError) `401` instead of a redirect, because a
+/// script cannot follow a redirect to a login form.
+pub async fn require_login_json(
+    state: &AppState,
+    session: &Session,
+) -> Result<User, crate::error::AppError> {
+    session_user(state, session).await.ok_or_else(json_login)
 }
 
 /// Require an authenticated, active user with a specific permission for JSON
 /// API endpoints.
 ///
-/// Returns `Ok(())` on success. Returns a JSON 403 error if the user lacks
-/// the permission or the session is invalid.
+/// `401` when nobody is signed in, `403` when the signed-in user lacks the
+/// permission — the same rule [`require_permission`] applies to HTML, in
+/// [`AppError`](crate::error::AppError) form.
 pub async fn require_permission_json(
     state: &AppState,
     session: &Session,
     permission: &str,
-) -> Result<(), (StatusCode, axum::Json<JsonError>)> {
-    match require_permission(state, session, permission).await {
-        Ok(_) => Ok(()),
-        Err(_) => Err((
-            StatusCode::FORBIDDEN,
+) -> Result<User, crate::error::AppError> {
+    let user = require_login_json(state, session).await?;
+    if holds(state, &user, permission).await {
+        Ok(user)
+    } else {
+        Err(crate::error::AppError::forbidden(format!(
+            "Permission required: {permission}"
+        )))
+    }
+}
+
+/// The refusal for `viewer`, decided by the one rule: `401` when nobody is
+/// signed in, `403` when someone is and may not do this.
+///
+/// For a handler that has already loaded the viewer's [`UserContext`] and asks
+/// a question no guard above can ask for it, such as "may this viewer create
+/// this type", rather than a guard reading the session a second time.
+pub fn refusal_for(viewer: &UserContext, reason: impl Into<String>) -> crate::error::AppError {
+    if viewer.authenticated {
+        crate::error::AppError::forbidden(reason)
+    } else {
+        json_login()
+    }
+}
+
+/// Bridge for the handlers still answering in [`JsonError`]: a guard's
+/// [`AppError`](crate::error::AppError) keeps its status and message.
+impl From<crate::error::AppError> for (StatusCode, axum::Json<JsonError>) {
+    fn from(e: crate::error::AppError) -> Self {
+        let status = e.status();
+        (
+            status,
             axum::Json(JsonError {
-                error: format!("Permission required: {permission}"),
+                error: e.public_message(),
             }),
-        )),
+        )
     }
 }
 
@@ -799,15 +844,17 @@ pub fn validate_username(name: &str) -> Result<(), &'static str> {
 
 /// Require an authenticated, active **admin** user for JSON API endpoints.
 ///
-/// Returns `Ok(())` on success. Returns a `Forbidden` error if the
-/// user is not an admin, or the session is invalid.
+/// `401` when nobody is signed in, `403` when the signed-in user is not an
+/// administrator.
 pub async fn require_admin_json(
     state: &AppState,
     session: &Session,
-) -> Result<(), crate::error::AppError> {
-    match require_admin(state, session).await {
-        Ok(_) => Ok(()),
-        Err(_) => Err(crate::error::AppError::forbidden("Admin access required")),
+) -> Result<User, crate::error::AppError> {
+    let user = require_login_json(state, session).await?;
+    if user.is_admin {
+        Ok(user)
+    } else {
+        Err(crate::error::AppError::forbidden("Admin access required"))
     }
 }
 
@@ -863,7 +910,7 @@ pub async fn user_context_for(state: &AppState, user: &User) -> UserContext {
 /// request path should build a context from a literal permission list.
 ///
 /// A session naming a user who no longer exists yields the anonymous context,
-/// which then carries the anonymous role's permissions.
+/// carrying the anonymous role's permissions, exactly as no session does.
 pub async fn get_user_context(session: &Session, state: &AppState) -> UserContext {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
@@ -887,7 +934,8 @@ pub async fn get_user_context(session: &Session, state: &AppState) -> UserContex
             anonymous_user_context(state).await
         }
         Some(user) => user_context_for(state, &user).await,
-        None => UserContext::anonymous(),
+        // A deleted user is nobody, and nobody has the anonymous role.
+        None => anonymous_user_context(state).await,
     }
 }
 

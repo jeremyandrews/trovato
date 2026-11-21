@@ -16,10 +16,8 @@ use axum::{Json, Router};
 use dashmap::DashMap;
 use serde::Deserialize;
 use tower_sessions::Session;
-use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::require_csrf_header;
 use crate::services::ai_chat::{ChatRole, ChatStreamEvent, ChatTurn};
 use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
@@ -124,18 +122,12 @@ async fn chat_handler(
         return AppError::forbidden("Invalid or missing CSRF token").into_response();
     }
 
-    // Auth check: load user from session
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let Some(uid) = user_id else {
-        return AppError::unauthorized("Authentication required").into_response();
+    // Auth check: the signed-in, active user, or the JSON 401.
+    let user = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal.into_response(),
     };
-
-    let user = match state.users().find_by_id(uid).await {
-        Ok(Some(u)) if u.is_active() => u,
-        _ => {
-            return AppError::unauthorized("Authentication required").into_response();
-        }
-    };
+    let uid = user.id;
 
     // Permission check: use ai + use ai chat. `user_has_permission` is the
     // effective answer and already returns true for a site administrator, so

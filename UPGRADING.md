@@ -9,6 +9,25 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Anonymous JSON callers get `401`, signed-in ones `403`
+
+**Who is affected:** an API client or script that calls kernel JSON endpoints
+without signing in, or with a session or token for a user who lacks the
+permission, and tells the two cases apart by status code.
+
+**What changed.** Every JSON refusal follows one rule: `401` when nobody is
+signed in (no session, or the session's account is blocked or deleted), `403`
+when a signed-in user lacks the permission. The ad hoc gather endpoint
+(`POST /api/gather/query`), the dead-letter queue and embed admin endpoints,
+`/system/ajax`, the block editor endpoints and `POST /api/lock/break` used to
+answer `403` to an anonymous caller. Browser screens are unchanged except the
+translation screens, which answered `400` and now redirect to the login form or
+answer `403` like every other admin screen. `/admin/config/ai/features`, which
+was never reachable, is gone.
+
+**What to do.** If a client treats `403` from those endpoints as "sign in",
+make it treat `401` that way.
+
 ### Boot warns about every plugin holding `raw_sql`
 
 **Who is affected:** an operator whose site runs a plugin with `raw_sql = true`

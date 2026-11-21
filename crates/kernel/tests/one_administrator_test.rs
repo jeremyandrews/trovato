@@ -186,7 +186,7 @@ fn the_anonymous_role_is_unaffected() {
         let add = get_anonymous(app, ADD_CONFERENCE, "onadmin-anon-add").await;
         assert_eq!(
             add,
-            StatusCode::FORBIDDEN,
+            StatusCode::UNAUTHORIZED,
             "anonymous must not reach {ADD_CONFERENCE}, got {add}"
         );
 

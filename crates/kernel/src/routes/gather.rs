@@ -159,16 +159,15 @@ pub fn gather_denied_html(denied: &GatherDenied) -> Response {
     }
 }
 
-/// The refusal a JSON path gives a viewer who may not run a gather: the 403
-/// and error body [`require_permission_json`] gives.
+/// The refusal a JSON path gives a viewer who may not run a gather: 401 for
+/// an anonymous caller, 403 for a signed-in one, exactly as
+/// [`require_permission_json`] answers.
 pub fn gather_denied_json(denied: &GatherDenied) -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(JsonError {
-            error: denied.to_string(),
-        }),
-    )
-        .into_response()
+    match denied {
+        GatherDenied::Anonymous { .. } => AppError::unauthorized(denied.to_string()),
+        GatherDenied::Forbidden { .. } => AppError::forbidden(denied.to_string()),
+    }
+    .into_response()
 }
 
 // -------------------------------------------------------------------------

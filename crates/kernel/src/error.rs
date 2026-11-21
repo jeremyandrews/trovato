@@ -232,11 +232,25 @@ impl From<sqlx::Error> for AppError {
 // HTTP response conversion
 // =========================================================================
 
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let request_id = uuid::Uuid::now_v7().to_string();
+impl AppError {
+    /// The HTTP status this error answers with.
+    pub fn status(&self) -> StatusCode {
+        self.describe().0
+    }
 
-        let (status, code, message, details) = match &self {
+    /// The machine-readable code this error answers with (`not_found`, ...).
+    pub fn code(&self) -> &'static str {
+        self.describe().1
+    }
+
+    /// The message a caller is shown: never a database or internal detail.
+    pub fn public_message(&self) -> String {
+        self.describe().2
+    }
+
+    /// Status, code, public message and field details, with no side effects.
+    fn describe(&self) -> (StatusCode, &'static str, String, Option<Vec<FieldError>>) {
+        match self {
             AppError::NotFound { entity, id } => {
                 let msg = match id {
                     Some(id) => format!("{entity} '{id}' not found"),
@@ -288,49 +302,61 @@ impl IntoResponse for AppError {
                     None,
                 )
             }
-            AppError::Database {
-                source, operation, ..
-            } => {
-                let msg = classify_db_error(source, operation);
-                let db_status = classify_db_status(source);
-                tracing::error!(
-                    error = %source,
-                    operation = operation,
-                    request_id = %request_id,
-                    "Database error"
-                );
-                (db_status, "database_error", msg, None)
-            }
+            AppError::Database { source, operation } => (
+                classify_db_status(source),
+                "database_error",
+                classify_db_error(source, operation),
+                None,
+            ),
+            AppError::ServiceUnavailable { service, .. } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_unavailable",
+                format!("{service} is temporarily unavailable"),
+                None,
+            ),
+            AppError::Internal { .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "An unexpected error occurred".to_string(),
+                None,
+            ),
+            AppError::Plugin { plugin, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "plugin_error",
+                format!("Plugin '{plugin}' encountered an error"),
+                None,
+            ),
+        }
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let request_id = uuid::Uuid::now_v7().to_string();
+
+        match &self {
+            AppError::Database { source, operation } => tracing::error!(
+                error = %source,
+                operation = operation,
+                request_id = %request_id,
+                "Database error"
+            ),
             AppError::ServiceUnavailable { service, reason } => {
                 tracing::warn!(service = service, reason = reason, "Service unavailable");
-                let msg = format!("{service} is temporarily unavailable");
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "service_unavailable",
-                    msg,
-                    None,
-                )
             }
-            AppError::Internal { source, context } => {
-                tracing::error!(
-                    error = %source,
-                    context = context.as_deref().unwrap_or("none"),
-                    request_id = %request_id,
-                    "Internal error"
-                );
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error",
-                    "An unexpected error occurred".to_string(),
-                    None,
-                )
-            }
+            AppError::Internal { source, context } => tracing::error!(
+                error = %source,
+                context = context.as_deref().unwrap_or("none"),
+                request_id = %request_id,
+                "Internal error"
+            ),
             AppError::Plugin { plugin, message } => {
                 tracing::error!(plugin = plugin, message = message, "Plugin error");
-                let msg = format!("Plugin '{plugin}' encountered an error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "plugin_error", msg, None)
             }
-        };
+            _ => {}
+        }
+
+        let (status, code, message, details) = self.describe();
 
         let body = ErrorResponse {
             code,

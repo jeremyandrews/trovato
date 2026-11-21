@@ -2,7 +2,7 @@
 //! comment moderation, and AJAX callbacks.
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
@@ -491,23 +491,19 @@ async fn ajax_callback(
     headers: HeaderMap,
     Json(request): Json<AjaxRequest>,
 ) -> Response {
-    use crate::form::AjaxResponse;
-
+    // Who is asking comes before whether the request is forged, so nobody
+    // gets the 401 the refusal rule promises rather than a CSRF 403.
+    if request.trigger == "add_field"
+        && let Err(refusal) =
+            super::helpers::require_permission_json(&state, &session, "administer site").await
+    {
+        return refusal.into_response();
+    }
     if let Err((status, json)) = super::helpers::require_csrf_header(&session, &headers).await {
         return (status, json).into_response();
     }
 
     let mut response = if request.trigger == "add_field" {
-        if require_permission(&state, &session, "administer site")
-            .await
-            .is_err()
-        {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(AjaxResponse::new().alert("Access denied.")),
-            )
-                .into_response();
-        }
         super::admin_content_type::handle_ajax_add_field(&state, &request).await
     } else {
         super::item_form::ajax(&state, &session, &request).await

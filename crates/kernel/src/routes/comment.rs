@@ -14,8 +14,9 @@ use uuid::Uuid;
 
 use crate::content::FilterPipeline;
 use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
-use crate::routes::auth::SESSION_USER_ID;
-use crate::routes::helpers::{JsonError, require_csrf_header, user_context_for};
+use crate::routes::helpers::{
+    JsonError, require_csrf_header, require_login_json, user_context_for,
+};
 use crate::state::AppState;
 
 /// Render a comment body to HTML with safe format whitelisting.
@@ -365,15 +366,8 @@ async fn create_comment_inner(
     request: CommentSubmission,
 ) -> Result<CommentResponse, (StatusCode, Json<JsonError>)> {
     // Check authentication
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let user_id = user_id.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "Authentication required".to_string(),
-            }),
-        )
-    })?;
+    let user = require_login_json(state, session).await?;
+    let user_id = user.id;
 
     // Verify the CSRF token from wherever this submission carries it.
     request.verify_csrf(session, headers).await?;
@@ -462,23 +456,6 @@ async fn create_comment_inner(
     }
 
     // Build UserContext with real permissions for access check
-    let user = state.users().find_by_id(user_id).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to load user");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
-    let user = user.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "User not found".to_string(),
-            }),
-        )
-    })?;
     // One loader, one context shape: the same one every read handler in this
     // module gets from `get_user_context`, reached from an already-loaded user.
     let user_ctx = user_context_for(state, &user).await;
@@ -690,15 +667,7 @@ async fn update_comment(
     Json(request): Json<UpdateCommentRequest>,
 ) -> Result<Json<CommentResponse>, (StatusCode, Json<JsonError>)> {
     // Check authentication
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let user_id = user_id.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "Authentication required".to_string(),
-            }),
-        )
-    })?;
+    let user = require_login_json(&state, &session).await?;
 
     // Verify CSRF token from header
     require_csrf_header(&session, &headers)
@@ -733,23 +702,6 @@ async fn update_comment(
     })?;
 
     // Build UserContext for the acting user to check access
-    let user = state.users().find_by_id(user_id).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to load user");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
-    let user = user.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "User not found".to_string(),
-            }),
-        )
-    })?;
     // One loader, one context shape: the same one every read handler in this
     // module gets from `get_user_context`, reached from an already-loaded user.
     let user_ctx = user_context_for(&state, &user).await;
@@ -855,15 +807,7 @@ async fn delete_comment(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<JsonError>)> {
     // Check authentication
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let user_id = user_id.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "Authentication required".to_string(),
-            }),
-        )
-    })?;
+    let user = require_login_json(&state, &session).await?;
 
     // Verify CSRF token from header
     require_csrf_header(&session, &headers)
@@ -898,23 +842,6 @@ async fn delete_comment(
     })?;
 
     // Build UserContext for access check
-    let user = state.users().find_by_id(user_id).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to load user");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
-    let user = user.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(JsonError {
-                error: "User not found".to_string(),
-            }),
-        )
-    })?;
     // One loader, one context shape: the same one every read handler in this
     // module gets from `get_user_context`, reached from an already-loaded user.
     let user_ctx = user_context_for(&state, &user).await;
