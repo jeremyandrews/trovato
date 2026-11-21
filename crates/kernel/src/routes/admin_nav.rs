@@ -44,6 +44,8 @@ pub struct Link {
     pub plugin: Option<&'static str>,
     /// Other path prefixes that belong to this screen.
     pub also: &'static [&'static str],
+    /// Whether the screen exists only while the request profiler is on.
+    pub profiler: bool,
 }
 
 const fn link(section: &'static str, label: &'static str, href: &'static str, gate: Gate) -> Link {
@@ -54,6 +56,7 @@ const fn link(section: &'static str, label: &'static str, href: &'static str, ga
         gate,
         plugin: None,
         also: &[],
+        profiler: false,
     }
 }
 
@@ -68,6 +71,7 @@ pub const LINKS: &[Link] = &[
         gate: Permission("access administration pages"),
         plugin: None,
         also: &[],
+        profiler: false,
     },
     link(
         "Content",
@@ -184,6 +188,15 @@ pub const LINKS: &[Link] = &[
         "/admin/reports/search",
         Permission("administer site"),
     ),
+    Link {
+        section: Some("System"),
+        label: "Request profiles",
+        href: crate::profiler::PAGES,
+        gate: Permission(crate::profiler::PERMISSION),
+        plugin: None,
+        also: &[],
+        profiler: true,
+    },
     link("System", "Plugins", "/admin/plugins", Administrator),
     link(
         "System",
@@ -239,10 +252,19 @@ fn under(path: &str, prefix: &str) -> bool {
 /// marked active: the link whose address is the longest prefix of `path`, so
 /// `/admin/content/files/3` is Files rather than Content, and `/admin` itself
 /// only for the dashboard. A section with no link left is dropped.
-pub fn sidebar(viewer: &UserContext, enabled_plugins: &[String], path: &str) -> Vec<NavSection> {
+///
+/// `profiler` says whether the request profiler is on; off, its screen does
+/// not exist and is not linked.
+pub fn sidebar(
+    viewer: &UserContext,
+    enabled_plugins: &[String],
+    profiler: bool,
+    path: &str,
+) -> Vec<NavSection> {
     let visible: Vec<&Link> = LINKS
         .iter()
         .filter(|l| l.gate.admits(viewer))
+        .filter(|l| profiler || !l.profiler)
         .filter(|l| {
             l.plugin
                 .is_none_or(|p| enabled_plugins.iter().any(|e| e == p))
@@ -312,6 +334,7 @@ mod tests {
         let nav = sidebar(
             &viewer(&["access administration pages", "edit any content"]),
             &[],
+            false,
             "/admin/content",
         );
         assert_eq!(hrefs(&nav), vec!["/admin", "/admin/content"]);
@@ -322,9 +345,9 @@ mod tests {
     #[test]
     fn a_plugin_screen_needs_its_plugin() {
         let v = viewer(&["access administration pages", "administer comments"]);
-        assert!(!hrefs(&sidebar(&v, &[], "/admin")).contains(&"/admin/content/comments"));
+        assert!(!hrefs(&sidebar(&v, &[], false, "/admin")).contains(&"/admin/content/comments"));
         assert!(
-            hrefs(&sidebar(&v, &["comments".to_string()], "/admin"))
+            hrefs(&sidebar(&v, &["comments".to_string()], false, "/admin"))
                 .contains(&"/admin/content/comments")
         );
     }
@@ -333,7 +356,7 @@ mod tests {
     fn the_longest_matching_link_is_active() {
         let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
         let active = |path: &str| -> Vec<&'static str> {
-            sidebar(&admin, &["categories".to_string()], path)
+            sidebar(&admin, &["categories".to_string()], false, path)
                 .iter()
                 .flat_map(|s| s.links.iter().filter(|l| l.active).map(|l| l.href))
                 .collect()
@@ -355,9 +378,21 @@ mod tests {
         assert!(active("/admin/somewhere-else").is_empty());
     }
 
+    /// The profiler's screen is linked only while the profiler is on, and then
+    /// only for a holder of its permission.
+    #[test]
+    fn request_profiles_need_the_profiler_and_the_permission() {
+        let holder = viewer(&["access administration pages", "view request profiles"]);
+        let other = viewer(&["access administration pages", "administer site"]);
+        let page = crate::profiler::PAGES;
+        assert!(!hrefs(&sidebar(&holder, &[], false, "/admin")).contains(&page));
+        assert!(hrefs(&sidebar(&holder, &[], true, "/admin")).contains(&page));
+        assert!(!hrefs(&sidebar(&other, &[], true, "/admin")).contains(&page));
+    }
+
     #[test]
     fn plugins_is_for_the_site_administrator_only() {
         let holder = viewer(&["administer site", "access administration pages"]);
-        assert!(!hrefs(&sidebar(&holder, &[], "/admin")).contains(&"/admin/plugins"));
+        assert!(!hrefs(&sidebar(&holder, &[], false, "/admin")).contains(&"/admin/plugins"));
     }
 }

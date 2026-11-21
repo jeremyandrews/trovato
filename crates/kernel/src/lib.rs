@@ -29,6 +29,7 @@ pub mod models;
 pub(crate) mod net_policy;
 pub mod permissions;
 pub mod plugin;
+pub mod profiler;
 pub mod recovery;
 pub mod routes;
 pub mod search;

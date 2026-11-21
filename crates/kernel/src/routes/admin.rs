@@ -1066,6 +1066,8 @@ pub fn router() -> Router<AppState> {
         // Search settings and the search report
         .merge(super::admin_search::router())
         .merge(super::admin_search_report::router())
+        // The request profiler's pages (404 while it is off)
+        .merge(super::admin_profiler::router())
         // Plugin-queue dead-letter admin (P11d / D-46)
         .merge(super::admin_queue::router())
         // Async auto-embed lifecycle admin (P11f / D-51, D-52)

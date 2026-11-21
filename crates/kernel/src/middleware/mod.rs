@@ -21,7 +21,7 @@ pub use bearer_auth::authenticate_bearer_token;
 pub use install_check::check_installation;
 pub use language::negotiate_language;
 pub use path_alias::{path_alias_fallback, resolve_path_alias};
-pub use query_profiler::track_request_timing;
+pub use query_profiler::{profile_handler, track_request_timing};
 pub use rate_limit::{
     BUCKETS, ClientIp, DEFAULT_STATIC_PREFIXES, RateLimitCaller, RateLimitConfig, RateLimiter,
     bucket_config_key, bucket_env_key, categorize_path, categorize_path_with,

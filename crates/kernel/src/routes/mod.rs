@@ -14,6 +14,7 @@ pub mod admin_embed;
 pub mod admin_menu;
 pub mod admin_nav;
 pub mod admin_pathauto;
+pub mod admin_profiler;
 pub mod admin_queue;
 pub mod admin_record_type;
 pub mod admin_search;

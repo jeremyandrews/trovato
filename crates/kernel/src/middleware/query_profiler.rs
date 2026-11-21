@@ -7,12 +7,19 @@
 //! - `QUERY_SLOW_THRESHOLD_MS` (default: 100) — a request taking longer than
 //!   this is logged at WARN, and longer than five times this at ERROR.
 //!
-//! The module used to claim a `query-profiler` cargo feature, which
-//! `Cargo.toml` has never defined, and per-query profiling, which it has never
-//! done: it measures the whole request. The name is the one thing left of that
-//! ambition, kept because the setting it reads is named after it.
+//! It is also where a request becomes something the request profiler can see:
+//! it opens the profiler's root span for the request (method, matched route,
+//! status; nothing else), and counts the request into `http_requests_total`.
+//! Per-query, per-tap and per-template timing are not measured here: they come
+//! from `tracing` spans at those points and sqlx's own statement events,
+//! collected by [`crate::profiler`] when `PROFILER_ENABLED` is set. With it off
+//! the span is disabled at its callsite and this middleware does what it did
+//! before the profiler existed. The module keeps its name because the setting
+//! it reads, `QUERY_SLOW_THRESHOLD_MS`, is named after it.
 
 use std::time::Instant;
+
+use tracing::Instrument;
 
 use axum::{
     body::Body,
@@ -57,14 +64,16 @@ const UNMATCHED_ROUTE: &str = "<fallback>";
 
 /// Middleware that reports total request duration in a `Server-Timing` header.
 ///
-/// It also counts the request into `http_requests_total` and
+/// It also opens the request profiler's root span, and counts the request into `http_requests_total` and
 /// `http_request_duration_seconds`, labelled by method, status and the
 /// matched route template (`/item/{id}`, never the raw path), so the label
 /// set stays as small as the route table.
 ///
-/// Per-query tracking would require wrapping the `PgPool` and is not done here:
-/// the measurement is the whole request, from the outermost layer inward, which
-/// is what a browser's DevTools shows against `total;dur=`.
+/// The `Server-Timing` measurement is the whole request, from the outermost
+/// layer inward, which is what a browser's DevTools shows against `total;dur=`.
+/// Routing happens before this layer runs (axum matches the route first), so
+/// it is not part of any measurement here; the profile records which route
+/// matched.
 ///
 /// The threshold comes from the application state, resolved once at startup;
 /// it used to be read from the environment on every single request.
@@ -81,13 +90,16 @@ pub async fn track_request_timing(
         .extensions()
         .get::<MatchedPath>()
         .map(|m| m.as_str().to_string());
-    let mut response = next.run(request).await;
+    let route = route.as_deref().unwrap_or(UNMATCHED_ROUTE);
+    let span = crate::profiler::request_span(method.as_str(), route);
+    let mut response = next.run(request).instrument(span.clone()).await;
     let elapsed = start.elapsed();
     let elapsed_ms = elapsed.as_millis();
+    crate::profiler::record_status(&span, response.status().as_u16());
 
     state.metrics().record_request(
         method.as_str(),
-        route.as_deref().unwrap_or(UNMATCHED_ROUTE),
+        route,
         response.status().as_u16(),
         elapsed.as_secs_f64(),
     );
@@ -107,6 +119,18 @@ pub async fn track_request_timing(
     }
 
     response
+}
+
+/// Middleware that marks the handler as a phase of the request profile.
+///
+/// Installed innermost, around the routes, and only when the profiler is on:
+/// off, it is not in the stack at all. What lies between the request span and
+/// this one is the rest of the middleware (sessions, authentication, rate
+/// limits).
+pub async fn profile_handler(request: Request<Body>, next: Next) -> Response {
+    next.run(request)
+        .instrument(crate::profiler::phase("handler", ""))
+        .await
 }
 
 #[cfg(test)]

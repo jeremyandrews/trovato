@@ -208,6 +208,21 @@ neither.
 | `/admin/content/{id}/translate/{lang}` | GET, POST | `translate content` |
 | `/admin/content/{id}/translate/{lang}/delete` | POST | `translate content` |
 
+## Diagnostics
+
+The request profiler's pages show how the site spends its time: per request,
+the phases, every SQL statement (literals redacted), the plugin tap calls and
+the cache hits and misses. That is diagnostic data about the site's internals,
+so it has a permission of its own, which no role is granted by default; a
+superuser holds it implicitly. While `PROFILER_ENABLED` is off the pages do not
+exist and answer 404 to everyone, before any permission is asked for. See
+[profiler.md](profiler.md).
+
+| Route | Method | Permission |
+|---|---|---|
+| `/admin/reports/requests` | GET | `view request profiles` |
+| `/admin/reports/requests/{id}` | GET | `view request profiles` |
+
 ## Superuser only
 
 Two routes keep `require_admin` and are not delegable by permission, because

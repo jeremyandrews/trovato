@@ -402,7 +402,12 @@ impl Metrics {
     ///
     /// For a read whose result is not an `Option`; prefer
     /// [`Metrics::cache_lookup`] where it is.
+    ///
+    /// The same call tells the request profiler, as a `TRACE` event carrying
+    /// the cache's name and whether it hit (never the key). With the profiler
+    /// off that callsite is disabled and the event costs a level check.
     pub fn count_cache(&self, cache: CacheName, hit: bool) {
+        tracing::trace!(target: crate::profiler::TARGET, cache = cache.as_str(), hit, "cache");
         let series = if hit {
             &self.hit_series
         } else {

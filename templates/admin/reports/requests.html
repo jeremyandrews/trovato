@@ -1,0 +1,53 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+{# A route is a template from the kernel's own router, never request data.
+    It is escaped by hand rather than by autoescape, which writes `/` as
+    `&#x2F;`, so the page source reads as the route it shows. #}
+<div class="admin-header">
+    <h2>Request profiles</h2>
+</div>
+
+<div class="admin-card">
+    <p class="form-item__description">The last {{ capacity }} requests this process
+    answered, newest first, kept in memory and lost on restart; each server process
+    keeps its own. A profile records the method, the route that matched, the status,
+    and where the time went. It never records headers, cookies, the session, the
+    request body, the query string or cache keys.{% if show_sql_values %}
+    <strong>SQL literal values are shown (PROFILER_SHOW_SQL_VALUES is set).</strong>{% else %}
+    SQL literal values are replaced by <code>?</code>.{% endif %}</p>
+</div>
+
+<div class="admin-card" id="request-profiles">
+    {% if profiles %}
+    <table class="admin-table profile-table">
+        <thead>
+            <tr>
+                <th scope="col">Time (UTC)</th>
+                <th scope="col">Request</th>
+                <th scope="col">Status</th>
+                <th scope="col">Total</th>
+                <th scope="col">Queries</th>
+                <th scope="col">Cache hits</th>
+                <th scope="col">Cache misses</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for p in profiles %}
+        <tr>
+            <td data-label="Time (UTC)">{{ p.at }}</td>
+            <td data-label="Request"><a href="/admin/reports/requests/{{ p.id }}">{{ p.method }} <code>{{ p.route | replace(from="&", to="&amp;") | replace(from="<", to="&lt;") | replace(from=">", to="&gt;") | replace(from='"', to="&quot;") | safe }}</code></a></td>
+            <td data-label="Status">{{ p.status }}</td>
+            <td data-label="Total">{{ p.total_ms }} ms</td>
+            <td data-label="Queries">{{ p.query_count }} ({{ p.query_ms }} ms)</td>
+            <td data-label="Cache hits">{{ p.cache_hits }}</td>
+            <td data-label="Cache misses">{{ p.cache_misses }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No requests recorded yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

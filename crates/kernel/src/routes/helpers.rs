@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use tower_sessions::Session;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,13 @@ pub struct CsrfOnlyForm {
 /// Returns the [`User`] if one is logged in and active (`status=1`).
 /// Destroys the session and redirects to login if the user is blocked.
 pub async fn require_login(state: &AppState, session: &Session) -> Result<User, Response> {
+    login_check(state, session)
+        .instrument(crate::profiler::phase("access", "login"))
+        .await
+}
+
+/// [`require_login`], outside its profiler span.
+async fn login_check(state: &AppState, session: &Session) -> Result<User, Response> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id
@@ -74,6 +82,13 @@ pub async fn require_login(state: &AppState, session: &Session) -> Result<User, 
 /// session has no valid user or the user is blocked. Returns 403 if the user
 /// exists and is active but is not an admin.
 pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
+    admin_check(state, session)
+        .instrument(crate::profiler::phase("access", "administrator"))
+        .await
+}
+
+/// [`require_admin`], outside its profiler span.
+async fn admin_check(state: &AppState, session: &Session) -> Result<User, Response> {
     let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
 
     if let Some(id) = user_id
@@ -99,6 +114,17 @@ pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, 
 /// permissions. Redirects to `/user/login` if unauthenticated or blocked.
 /// Returns 403 if the user exists but lacks the permission.
 pub async fn require_permission(
+    state: &AppState,
+    session: &Session,
+    permission: &str,
+) -> Result<User, Response> {
+    permission_check(state, session, permission)
+        .instrument(crate::profiler::phase("access", permission))
+        .await
+}
+
+/// [`require_permission`], outside its profiler span.
+async fn permission_check(
     state: &AppState,
     session: &Session,
     permission: &str,
@@ -397,7 +423,7 @@ pub async fn render_admin_template(
         .to_string();
     context.insert(
         "admin_nav",
-        &super::admin_nav::sidebar(viewer, &enabled, &path),
+        &super::admin_nav::sidebar(viewer, &enabled, state.profiler().is_some(), &path),
     );
     context.insert("enabled_plugins", &enabled);
     // Ensure "errors" is always available for form templates that use form::errors().
@@ -405,7 +431,11 @@ pub async fn render_admin_template(
         let empty: Vec<String> = Vec::new();
         context.insert("errors", &empty);
     }
-    match state.theme().tera().render(template, &context) {
+    let rendered = {
+        let _span = crate::profiler::phase("render", template).entered();
+        state.theme().tera().render(template, &context)
+    };
+    match rendered {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, template = %template, "failed to render template");

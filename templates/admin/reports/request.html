@@ -1,0 +1,100 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+{# A route is a template from the kernel's own router, never request data.
+    It is escaped by hand rather than by autoescape, which writes `/` as
+    `&#x2F;`, so the page source reads as the route it shows. #}
+<div class="admin-header">
+    <h2>{{ profile.method }} <code>{{ profile.route | replace(from="&", to="&amp;") | replace(from="<", to="&lt;") | replace(from=">", to="&gt;") | replace(from='"', to="&quot;") | safe }}</code></h2>
+</div>
+
+<p><a href="/admin/reports/requests">&larr; Request profiles</a></p>
+
+<div class="admin-card" id="profile-summary">
+    <dl class="profile-summary">
+        <dt>Time (UTC)</dt><dd>{{ profile.at }}</dd>
+        <dt>Status</dt><dd>{{ profile.status }}</dd>
+        <dt>Total</dt><dd>{{ profile.total_ms }} ms</dd>
+        <dt>SQL</dt><dd>{{ profile.query_count }} queries, {{ profile.query_ms }} ms</dd>
+        <dt>Cache</dt><dd>{{ profile.cache_hits }} hits, {{ profile.cache_misses }} misses</dd>
+    </dl>
+    {% if profile.truncated %}
+    <p class="form-item__description"><strong>Truncated:</strong> this request had more
+    phases, queries or tap calls than a profile keeps; the counts and totals above
+    include them all.</p>
+    {% endif %}
+    <p class="form-item__description">The route is the one that matched: routing itself
+    happens before the profiler's first span and is not timed separately.</p>
+</div>
+
+<div class="admin-card" id="profile-phases">
+    <h3>Phases</h3>
+    {% if profile.phases %}
+    <ol class="profile-tree">
+        {% for ph in profile.phases %}
+        <li class="profile-depth-{% if ph.depth > 6 %}6{% else %}{{ ph.depth }}{% endif %}">
+            <strong>{{ ph.name }}</strong>{% if ph.detail %} <code>{{ ph.detail }}</code>{% endif %}
+            <span class="profile-numbers">{{ ph.duration_ms }} ms, at {{ ph.start_ms }} ms{% if ph.queries > 0 %}, {{ ph.queries }} {% if ph.queries == 1 %}query{% else %}queries{% endif %}{% endif %}</span>
+        </li>
+        {% endfor %}
+    </ol>
+    {% else %}
+    <p>No phases recorded.</p>
+    {% endif %}
+</div>
+
+<div class="admin-card" id="profile-queries">
+    <h3>SQL queries</h3>
+    {% if not show_sql_values %}<p class="form-item__description">Literal values are replaced by <code>?</code>.</p>{% endif %}
+    {% if profile.queries %}
+    <table class="admin-table profile-table">
+        <thead><tr><th scope="col">#</th><th scope="col">Statement</th><th scope="col">Time</th><th scope="col">Rows</th><th scope="col">Phase</th></tr></thead>
+        <tbody>
+        {% for q in profile.queries %}
+        <tr>
+            <td data-label="#">{{ loop.index }}</td>
+            <td data-label="Statement"><code class="profile-sql">{{ q.statement }}</code></td>
+            <td data-label="Time">{{ q.duration_ms }} ms</td>
+            <td data-label="Rows">{{ q.rows }}</td>
+            <td data-label="Phase">{{ q.phase }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No SQL queries.</p>
+    {% endif %}
+</div>
+
+<div class="admin-card" id="profile-taps">
+    <h3>Plugin tap calls</h3>
+    {% if profile.taps %}
+    <table class="admin-table profile-table">
+        <thead><tr><th scope="col">Tap</th><th scope="col">Plugin</th><th scope="col">Time</th></tr></thead>
+        <tbody>
+        {% for t in profile.taps %}
+        <tr><td data-label="Tap"><code>{{ t.tap }}</code></td><td data-label="Plugin">{{ t.plugin }}</td><td data-label="Time">{{ t.duration_ms }} ms</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No tap calls.</p>
+    {% endif %}
+</div>
+
+<div class="admin-card" id="profile-caches">
+    <h3>Cache hits and misses</h3>
+    {% if profile.caches %}
+    <table class="admin-table profile-table">
+        <thead><tr><th scope="col">Cache</th><th scope="col">Hits</th><th scope="col">Misses</th></tr></thead>
+        <tbody>
+        {% for c in profile.caches %}
+        <tr><td data-label="Cache"><code>{{ c.cache }}</code></td><td data-label="Hits">{{ c.hits }}</td><td data-label="Misses">{{ c.misses }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No cache reads.</p>
+    {% endif %}
+</div>
+{% endblock %}

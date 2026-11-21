@@ -427,21 +427,30 @@ impl TestApp {
         let inner_with_state: Router = inner_router.clone().with_state(state.clone());
         let shared_router = std::sync::Arc::new(inner_with_state);
 
-        let router = inner_router
-            .fallback({
-                let router = shared_router.clone();
-                let app_state = state.clone();
-                move |session: tower_sessions::Session, request: axum::extract::Request| {
-                    let router = router.clone();
-                    let app_state = app_state.clone();
-                    async move {
-                        trovato_kernel::middleware::path_alias_fallback(
-                            app_state, session, router, request,
-                        )
-                        .await
-                    }
+        let router = inner_router.fallback({
+            let router = shared_router.clone();
+            let app_state = state.clone();
+            move |session: tower_sessions::Session, request: axum::extract::Request| {
+                let router = router.clone();
+                let app_state = app_state.clone();
+                async move {
+                    trovato_kernel::middleware::path_alias_fallback(
+                        app_state, session, router, request,
+                    )
+                    .await
                 }
-            })
+            }
+        });
+        // The request profiler's `handler` phase, innermost and only when the
+        // profiler is on, as in `main.rs`.
+        let router = if state.profiler().is_some() {
+            router.layer(axum::middleware::from_fn(
+                trovato_kernel::middleware::profile_handler,
+            ))
+        } else {
+            router
+        };
+        let router = router
             // Middleware layers (must match main.rs ordering):
             // MockConnectInfo → resolve_client_ip → TraceLayer → session →
             // bearer_auth → api_token → negotiate_language → routes

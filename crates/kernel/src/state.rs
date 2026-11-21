@@ -175,6 +175,11 @@ struct AppStateInner {
     /// Prometheus metrics.
     metrics: Arc<Metrics>,
 
+    /// The request profiler's ring of recent profiles; `None` when
+    /// `PROFILER_ENABLED` is off, which is also what the profiler pages and
+    /// the handler span ask to decide whether they exist.
+    profiler: Option<Arc<crate::profiler::ProfileStore>>,
+
     /// Rate limiter.
     rate_limiter: Arc<RateLimiter>,
 
@@ -305,7 +310,26 @@ async fn load_rate_limit_overrides(db: &PgPool) -> Vec<(String, String)> {
 impl AppState {
     /// Create new application state with database connections.
     ///
+    /// Makes its own metrics registry and, if the config turns the profiler
+    /// on, its own profile store. The server builds both first instead, and
+    /// passes them to [`Self::with_observability`], because its tracing layer
+    /// has to hold them before anything here logs.
     pub async fn new(config: &Config) -> Result<Self> {
+        Self::with_observability(
+            config,
+            Arc::new(Metrics::new()),
+            crate::profiler::ProfileStore::for_config(&config.runtime.profiler),
+        )
+        .await
+    }
+
+    /// Create application state around an existing metrics registry and
+    /// profile store: the ones the process's tracing layer records into.
+    pub async fn with_observability(
+        config: &Config,
+        metrics: Arc<Metrics>,
+        profiler: Option<Arc<crate::profiler::ProfileStore>>,
+    ) -> Result<Self> {
         // Load cache configuration from environment
         let cache_config = CacheConfig::from_env();
 
@@ -390,9 +414,8 @@ impl AppState {
         let config_storage: Arc<dyn ConfigStorage> =
             Arc::new(DirectConfigStorage::new(db.clone()).with_files(files.clone()));
 
-        // Create metrics first: every service that owns a cache counts its
-        // hits and misses into this one registry, the one `/metrics` encodes.
-        let metrics = Arc::new(Metrics::new());
+        // Every service that owns a cache counts its hits and misses into the
+        // one registry, the one `/metrics` encodes.
 
         // Create permission service
         let permissions =
@@ -1175,6 +1198,7 @@ impl AppState {
                 files,
                 cron,
                 metrics,
+                profiler,
                 rate_limiter,
                 batch,
                 stage,
@@ -1439,6 +1463,11 @@ impl AppState {
     /// Get the metrics registry.
     pub fn metrics(&self) -> &Arc<Metrics> {
         &self.inner.metrics
+    }
+
+    /// The request profiler's store, or `None` when the profiler is off.
+    pub fn profiler(&self) -> Option<&Arc<crate::profiler::ProfileStore>> {
+        self.inner.profiler.as_ref()
     }
 
     /// Get the rate limiter.
