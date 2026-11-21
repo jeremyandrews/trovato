@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 use tower_sessions::Session;
 
-use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::html_escape;
 use crate::routes::helpers::{read_stages, session_stage};
 use crate::state::AppState;
@@ -138,11 +137,12 @@ async fn search_html(
     let limit = params.limit.clamp(1, 50);
     let offset = (page - 1) * limit;
 
-    // Get user ID if logged in
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     // Live, or the session's stage with Live beneath it for a holder of
     // `use stages`: the one resolver every read path uses.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    // The signed-in user's id, from the viewer the guards loaded: a deleted
+    // or blocked account is nobody here too.
+    let user_id = viewer.authenticated.then_some(viewer.id);
     let stage_ids = read_stages(&state, &viewer, session_stage(&session).await).await;
 
     // Execute search
@@ -233,11 +233,12 @@ async fn search_json(
     let limit = params.limit.clamp(1, 50);
     let offset = (page - 1) * limit;
 
-    // Get user ID if logged in
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
     // Live, or the session's stage with Live beneath it for a holder of
     // `use stages`: the one resolver every read path uses.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    // The signed-in user's id, from the viewer the guards loaded: a deleted
+    // or blocked account is nobody here too.
+    let user_id = viewer.authenticated.then_some(viewer.id);
     let stage_ids = read_stages(&state, &viewer, session_stage(&session).await).await;
 
     // Execute search

@@ -22,8 +22,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::models::api_token::{ApiToken, MAX_TOKENS_PER_USER};
-use crate::routes::auth::SESSION_USER_ID;
-use crate::routes::helpers::require_csrf_header;
+use crate::routes::helpers::{require_csrf_header, require_login_json};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -57,12 +56,7 @@ async fn create_token(
     headers: HeaderMap,
     Json(body): Json<CreateTokenRequest>,
 ) -> Result<(StatusCode, Json<CreateTokenResponse>), AppError> {
-    let user_id: Uuid = session
-        .get(SESSION_USER_ID)
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
+    let user_id = require_login_json(&state, &session).await?.id;
 
     // Verify CSRF token from header
     require_csrf_header(&session, &headers)
@@ -109,12 +103,7 @@ async fn list_tokens(
     State(state): State<AppState>,
     session: Session,
 ) -> Result<Json<Vec<TokenListItem>>, AppError> {
-    let user_id: Uuid = session
-        .get(SESSION_USER_ID)
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
+    let user_id = require_login_json(&state, &session).await?.id;
 
     let tokens = ApiToken::list_for_user(state.db(), user_id)
         .await
@@ -141,12 +130,7 @@ async fn delete_token(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let user_id: Uuid = session
-        .get(SESSION_USER_ID)
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(|| AppError::unauthorized("Authentication required"))?;
+    let user_id = require_login_json(&state, &session).await?.id;
 
     // Verify CSRF token from header
     require_csrf_header(&session, &headers)

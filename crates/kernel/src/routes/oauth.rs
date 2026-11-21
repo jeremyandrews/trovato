@@ -107,8 +107,9 @@ async fn authorize(
         return (StatusCode::BAD_REQUEST, "response_type must be 'code'").into_response();
     }
 
-    let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
-        return (StatusCode::UNAUTHORIZED, "Authentication required").into_response();
+    let user_id = match super::helpers::require_login(&state, &session).await {
+        Ok(user) => user.id,
+        Err(redirect) => return redirect,
     };
 
     let client_id = params.get("client_id").map(|s| s.as_str()).unwrap_or("");

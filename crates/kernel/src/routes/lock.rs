@@ -10,7 +10,6 @@ use axum::{
     routing::post,
 };
 use serde::Deserialize;
-use uuid::Uuid;
 
 use crate::state::AppState;
 
@@ -51,8 +50,9 @@ async fn heartbeat(
         return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
     }
 
-    let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
-        return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
+    let user_id = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user.id,
+        Err(refusal) => return refusal.into_response(),
     };
 
     // Verify CSRF token from header
@@ -97,38 +97,18 @@ async fn break_lock(
         return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
     }
 
-    let Some(user_id) = session.get::<Uuid>("user_id").await.ok().flatten() else {
-        return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
-    };
+    if let Err(refusal) =
+        crate::routes::helpers::require_permission_json(&state, &session, "break content lock")
+            .await
+    {
+        return refusal.into_response();
+    }
 
     // Verify CSRF token from header
     if let Err((status, json)) =
         crate::routes::helpers::require_csrf_header(&session, &headers).await
     {
         return (status, json).into_response();
-    }
-
-    // Check permission - load user to check against their roles
-    let user = match state.users().find_by_id(user_id).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return (StatusCode::UNAUTHORIZED, "User not found").into_response(),
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load user").into_response();
-        }
-    };
-
-    let has_perm = state
-        .permissions()
-        .user_has_permission(&user, "break content lock")
-        .await
-        .unwrap_or(false);
-
-    if !has_perm {
-        return (
-            StatusCode::FORBIDDEN,
-            "Missing 'break content lock' permission",
-        )
-            .into_response();
     }
 
     let Some(lock_service) = state.content_lock() else {

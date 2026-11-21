@@ -20,7 +20,6 @@ use uuid::Uuid;
 
 use crate::file::service::{FileStatus, MediaScope};
 use crate::models::stage::LIVE_STAGE_ID;
-use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
 // -------------------------------------------------------------------------
@@ -147,7 +146,8 @@ async fn search(
         .into_response();
     }
 
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    let user_id = viewer.authenticated.then_some(viewer.id);
     let offset = (page - 1) * per_page;
     match state
         .search()
@@ -156,7 +156,6 @@ async fn search(
     {
         Ok(mut results) => {
             // FR-8 Story 3.7 — route result rows through the shared access seam.
-            let viewer = crate::routes::item::get_user_context(&session, &state).await;
             results.results = state
                 .items()
                 .filter_search_results(results.results, &viewer)
@@ -204,11 +203,11 @@ async fn export_user_data(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     // Require authentication
-    let session_user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-
-    let Some(requester_id) = session_user_id else {
-        return error_response(StatusCode::UNAUTHORIZED, "Authentication required").into_response();
+    let requester = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal.into_response(),
     };
+    let requester_id = requester.id;
 
     // Determine which user to export
     let target_user_id = if let Some(uid_str) = params.get("user_id") {
@@ -217,15 +216,8 @@ async fn export_user_data(
         };
 
         // Only admins can export other users' data
-        if uid != requester_id {
-            let requester = crate::models::User::find_by_id(state.db(), requester_id).await;
-            if !requester
-                .as_ref()
-                .is_ok_and(|u| u.as_ref().is_some_and(|u| u.is_admin))
-            {
-                return error_response(StatusCode::FORBIDDEN, "Admin access required")
-                    .into_response();
-            }
+        if uid != requester_id && !requester.is_admin {
+            return crate::error::AppError::forbidden("Admin access required").into_response();
         }
         uid
     } else {
@@ -470,9 +462,9 @@ async fn browse_media(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     // Require authentication
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let Some(user_id) = user_id else {
-        return error_response(StatusCode::UNAUTHORIZED, "Authentication required").into_response();
+    let user_id = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user.id,
+        Err(refusal) => return refusal.into_response(),
     };
 
     // File administrators browse every file, as on the admin file screens;

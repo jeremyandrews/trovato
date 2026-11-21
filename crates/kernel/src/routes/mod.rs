@@ -4,7 +4,6 @@ pub mod admin;
 pub mod admin_ai_assistant;
 pub mod admin_ai_budget;
 pub mod admin_ai_chat;
-pub mod admin_ai_features;
 pub mod admin_ai_provider;
 pub mod admin_alias;
 pub mod admin_config;
@@ -169,4 +168,63 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
                 gate_block_editor,
             )),
         )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// Every `routes::*::router()` is reachable from `main.rs`.
+    ///
+    /// A module with a `router()` nobody merges is a set of handlers no request
+    /// can reach, and documentation that names its paths describes a site that
+    /// does not exist (`admin_ai_features` was exactly that). A module counts as
+    /// mounted when `main.rs`, this file (whose `gated_plugin_routes` `main.rs`
+    /// merges), or an already-mounted module calls `<module>::router()`.
+    #[test]
+    fn every_router_is_mounted() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut modules: BTreeMap<String, String> = BTreeMap::new();
+        for entry in std::fs::read_dir(src.join("routes")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+            modules.insert(name, std::fs::read_to_string(&path).unwrap());
+        }
+        let with_router: BTreeSet<&String> = modules
+            .iter()
+            .filter(|(name, text)| {
+                name.as_str() != "mod" && text.contains("pub fn router() -> Router<AppState>")
+            })
+            .map(|(name, _)| name)
+            .collect();
+
+        let mut sources = vec![
+            std::fs::read_to_string(src.join("main.rs")).unwrap(),
+            modules["mod"].clone(),
+        ];
+        let mut mounted: BTreeSet<&String> = BTreeSet::new();
+        loop {
+            let before = mounted.len();
+            for name in &with_router {
+                let call = format!("{name}::router()");
+                if !mounted.contains(name) && sources.iter().any(|s| s.contains(&call)) {
+                    mounted.insert(name);
+                    sources.push(modules[*name].clone());
+                }
+            }
+            if mounted.len() == before {
+                break;
+            }
+        }
+
+        let unmounted: Vec<&&String> = with_router.difference(&mounted).collect();
+        assert!(
+            unmounted.is_empty(),
+            "routes with a router() that nothing mounts: {unmounted:?}"
+        );
+    }
 }

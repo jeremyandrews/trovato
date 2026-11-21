@@ -550,8 +550,8 @@ async fn test_provider(
     Path(provider_id): Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err((status, json)) = require_permission_json(&state, &session, "configure ai").await {
-        return (status, json).into_response();
+    if let Err(refusal) = require_permission_json(&state, &session, "configure ai").await {
+        return refusal.into_response();
     }
     if require_csrf(&session, &form.token).await.is_err() {
         return Json(serde_json::json!({

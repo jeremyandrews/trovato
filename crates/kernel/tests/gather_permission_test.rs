@@ -292,9 +292,9 @@ fn execute_api_refuses_without_the_permission_and_serves_the_holder() {
         let path = format!("/api/query/{}/execute", fx.query.query_id);
 
         let (status, _, body) = get(app, &path, "").await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "anonymous: {body}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "anonymous: {body}");
         let json: serde_json::Value = serde_json::from_str(&body).expect("JSON error body");
-        assert!(json.get("error").is_some(), "JSON error: {body}");
+        assert!(json.get("message").is_some(), "JSON error: {body}");
         assert!(!body.contains(&fx.title));
 
         let (_, cookies) = user_holding(app, "gperm-exec-none", &[]).await;
@@ -316,9 +316,9 @@ fn query_definition_api_refuses_without_the_permission() {
         let path = format!("/api/query/{}", fx.query.query_id);
 
         let (status, _, body) = get(app, &path, "").await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "anonymous: {body}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "anonymous: {body}");
         let json: serde_json::Value = serde_json::from_str(&body).expect("JSON error body");
-        assert!(json.get("error").is_some(), "JSON error: {body}");
+        assert!(json.get("message").is_some(), "JSON error: {body}");
 
         let (_, cookies) = user_holding(app, "gperm-def", &[PERMISSION]).await;
         let (status, _, body) = get(app, &path, &cookies).await;
@@ -363,12 +363,12 @@ fn route_alias_refuses_without_the_permission_in_html_and_json() {
         let (status, _, body) = get_startup_routes(app, &fx.query, &json_path, "").await;
         assert_eq!(
             status,
-            StatusCode::FORBIDDEN,
+            StatusCode::UNAUTHORIZED,
             "anonymous alias JSON: {body}"
         );
         assert!(!body.contains(&fx.title));
         let json: serde_json::Value = serde_json::from_str(&body).expect("JSON error body");
-        assert!(json.get("error").is_some(), "JSON error: {body}");
+        assert!(json.get("message").is_some(), "JSON error: {body}");
 
         let (_, cookies) = user_holding(app, "gperm-alias-none", &[]).await;
         let (status, _, body) = get_startup_routes(app, &fx.query, &fx.alias_path, &cookies).await;

@@ -428,9 +428,9 @@ fn adhoc_gather_refuses_anonymous() {
             &username("gadhoc-anon"),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
-        let json: serde_json::Value = serde_json::from_str(&body).expect("the 403 body is JSON");
-        assert!(json.get("error").is_some(), "JSON error body: {body}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("the 401 body is JSON");
+        assert!(json.get("message").is_some(), "JSON error body: {body}");
     });
 }
 
@@ -450,7 +450,7 @@ fn adhoc_gather_anonymous_users_join_leaks_nothing() {
             &username("gadhoc-leak"),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
         assert!(!body.contains(&hash), "the author's hash leaked: {body}");
         assert!(!body.contains("$argon2"), "a password hash leaked: {body}");
     });

@@ -28,7 +28,6 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::models::user_mail_preference;
-use crate::routes::auth::SESSION_USER_ID;
 use crate::routes::helpers::{render_server_error, require_csrf};
 use crate::state::AppState;
 
@@ -167,13 +166,9 @@ async fn resubscribe(
     session: Session,
     Form(form): Form<ResubscribeForm>,
 ) -> Response {
-    let Some(user_id) = session
-        .get::<uuid::Uuid>(SESSION_USER_ID)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return Redirect::to("/user/login").into_response();
+    let user_id = match crate::routes::helpers::require_login(&state, &session).await {
+        Ok(user) => user.id,
+        Err(redirect) => return redirect,
     };
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;

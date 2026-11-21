@@ -62,8 +62,9 @@ async fn translation_list(
     session: Session,
     Path(id): Path<Uuid>,
 ) -> Response {
-    let Ok(user) = require_permission(&state, &session, "translate content").await else {
-        return super::helpers::render_error("Permission denied");
+    let user = match require_permission(&state, &session, "translate content").await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
     };
 
     // `translate content` says this user translates; it does not say *what*.
@@ -126,8 +127,9 @@ async fn translation_edit(
     session: Session,
     Path((id, lang)): Path<(Uuid, String)>,
 ) -> Response {
-    let Ok(user) = require_permission(&state, &session, "translate content").await else {
-        return super::helpers::render_error("Permission denied");
+    let user = match require_permission(&state, &session, "translate content").await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
     };
 
     // Same bar as the list, and the same field filtering: the side-by-side form
@@ -207,8 +209,9 @@ async fn translation_save(
     Path((id, lang)): Path<(Uuid, String)>,
     Form(form): Form<TranslationFormData>,
 ) -> Response {
-    let Ok(user) = require_permission(&state, &session, "translate content").await else {
-        return super::helpers::render_error("Permission denied");
+    let user = match require_permission(&state, &session, "translate content").await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
     };
 
     // Same `_token` protection as the rest of the admin, checked after the
@@ -299,8 +302,9 @@ async fn translation_delete(
     Path((id, lang)): Path<(Uuid, String)>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    let Ok(user) = require_permission(&state, &session, "translate content").await else {
-        return super::helpers::render_error("Permission denied");
+    let user = match require_permission(&state, &session, "translate content").await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
     };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {

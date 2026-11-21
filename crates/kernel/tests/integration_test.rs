@@ -3474,7 +3474,7 @@ fn e2e_api_category_create_anonymous_rejected() {
 
         assert_eq!(
             response.status(),
-            StatusCode::FORBIDDEN,
+            StatusCode::UNAUTHORIZED,
             "anonymous category create must be rejected"
         );
 

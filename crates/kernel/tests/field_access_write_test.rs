@@ -473,7 +473,7 @@ fn anonymous_gets_no_edit_form_and_no_write() {
         let (status, _) = get_as(app, &format!("/item/{id}/edit"), "", "fw-anon").await;
         assert_eq!(
             status,
-            StatusCode::FORBIDDEN,
+            StatusCode::UNAUTHORIZED,
             "anonymous must not get the edit form"
         );
 

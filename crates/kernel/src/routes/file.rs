@@ -16,7 +16,6 @@ use crate::content::FileAccess;
 use crate::file::{
     MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE, UploadRejected, UploadResult, mime_for_filename,
 };
-use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
 /// Allowed image MIME types for block editor uploads.
@@ -67,17 +66,9 @@ async fn upload_file(
     mut multipart: Multipart,
 ) -> Response {
     // Require authentication
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let Some(user_id) = user_id else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(UploadResponse {
-                success: false,
-                file: None,
-                error: Some("Authentication required".to_string()),
-            }),
-        )
-            .into_response();
+    let user_id = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user.id,
+        Err(refusal) => return refusal.into_response(),
     };
 
     // Verify CSRF token from header
@@ -361,13 +352,9 @@ async fn block_editor_upload(
     mut multipart: Multipart,
 ) -> Response {
     // Require authentication
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    let Some(user_id) = user_id else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "success": 0 })),
-        )
-            .into_response();
+    let user_id = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user.id,
+        Err(refusal) => return refusal.into_response(),
     };
 
     // Verify CSRF token from header
@@ -449,15 +436,14 @@ async fn block_editor_upload(
 ///
 /// Accepts JSON block data and returns rendered HTML.
 async fn block_editor_preview(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     // Require authentication
-    let user_id: Option<Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
-    if user_id.is_none() {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(refusal) = crate::routes::helpers::require_login_json(&state, &session).await {
+        return refusal.into_response();
     }
 
     // Verify CSRF token from header
