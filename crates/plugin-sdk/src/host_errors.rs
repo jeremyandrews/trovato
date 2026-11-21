@@ -51,6 +51,19 @@
 //!   - `-1`: memory missing, `-2`: table read failed, `-3`: where-clause read failed
 //!   - `≥ 0`: rows affected
 //!
+//!   `update` and `delete` take `where` as a map (equality) or, since B80, an
+//!   array of `{"field", "op", "value"}` conditions, ANDed. An empty `where`,
+//!   an unknown op or an empty `in` list is `-14`: none may mean every row.
+//!
+//! - **`upsert(table_ptr, table_len, data_ptr, data_len, conflict_ptr, conflict_len, out_ptr, out_max_len) → i32`**
+//!   (B80) `-16` as above; `-14` for a malformed conflict spec; `≥ 0`: bytes
+//!   written (a JSON array holding the row)
+//!
+//! - **`insert-many(table_ptr, table_len, rows_ptr, rows_len) → i64`** (B80)
+//!   - `-82`: more than 500 rows ([`ERR_DB_BATCH_TOO_LARGE`]), nothing written
+//!   - `-14`: no rows, or rows that disagree on their columns
+//!   - `≥ 0`: rows inserted, all of them in one statement
+//!
 //! - **`execute-raw(sql_ptr, sql_len, params_ptr, params_len) → i64`**
 //!   - `-1`: memory missing, `-2`: SQL read failed, `-3`: params read failed
 //!   - `≥ 0`: rows affected
@@ -283,6 +296,12 @@ pub const ERR_TABLE_NOT_DECLARED: i32 = -16;
 /// `raw_sql` capability (WASM-2 / D-19). The host logs the declarative
 /// `raw-sql-not-declared: <plugin>` detail.
 pub const ERR_RAW_SQL_NOT_DECLARED: i32 = -17;
+
+/// `insert-many` was given more than 500 rows. Refused whole, before anything
+/// is written: split the batch.
+///
+/// Added by B80, after 0.105.0.
+pub const ERR_DB_BATCH_TOO_LARGE: i32 = -82;
 
 // =============================================================================
 // AI API errors (`trovato:kernel/ai-api`)

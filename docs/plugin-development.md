@@ -749,10 +749,25 @@ host::delete_item(&id)?;
 
 // Load what the user may view, in full, on the request's stage.
 let pages = host::query_items(&json!({ "type": "page", "limit": 20 }))?;
+
+// Translations: read many items' at once, write one language at a time.
+let translations = host::list_translations(&[&id_a, &id_b])?;   // ≤ 100 ids
+let saved = host::save_translation(&json!({
+    "item_id": id, "language": "it", "title": "Ciao", "fields": {"body": {"value": "…", "format": "plain_text"}}
+}))?;
+let removed = host::delete_translation(&id, "it")?;              // Ok(false): there was none
 ```
 
 For a listing, use a query (below): `query_items` takes one type, one order and
 no joins, and returns whole items rather than the columns a list shows.
+
+A translation write is an edit of the item. It needs `edit` access, or
+`translate content` and `view`, as the admin translation screen does. The
+field write gate applies, `tap_item_update` fires on the other plugins, and
+the item cache drops the item. A language the site does not have, or the item's
+own language, is `ERR_PARAM_DESERIALIZE`. A plugin does not need
+`item_translation` in `db_tables`, and should not declare it: a `db` write
+there skips access, the taps, the cache and the menu label refresh.
 
 A write is the same write a person makes on the edit form. It goes through the
 kernel's item service, so the other plugins' `tap_item_presave`,
@@ -966,69 +981,74 @@ fn tap_perm() -> Vec<PermissionDefinition> {
 
 ## Database Operations
 
-### Structured Queries (Recommended)
+The `db` calls work on the plugin's own tables: the ones its migrations
+create, and any it lists in `db_tables`. Each call is checked against that
+allowlist, and the kernel's protected tables are refused whatever the
+manifest says (`-16`). Content does not go through `db`. Read it with
+[Queries](#queries), and write it with `host::save_item` and
+`host::save_translation`, which decide access, fire the item taps and keep the
+item cache right. A `db` write to `item` or `item_translation` would do none
+of that.
 
-Use structured queries to prevent SQL injection:
+### Structured Calls
 
 ```rust
-let results = host::db::select(json!({
-    "table": "item",
-    "fields": ["id", "title", "created"],
-    "conditions": [
-        {"field": "type", "op": "=", "value": "blog"},
-        {"field": "status", "op": "=", "value": 1}
-    ],
-    "order_by": [{"field": "created", "direction": "DESC"}],
+use trovato_sdk::host::db;
+use serde_json::json;
+
+// Read: `where` is a map of equalities here.
+let rows = db::select(&json!({
+    "table": "my_votes",
+    "columns": ["item_id", "score"],
+    "where": {"voter": voter},
+    "order": [{"column": "score", "direction": "desc"}],
     "limit": 10
 }))?;
+
+// Insert one row; the row comes back.
+let row = db::insert("my_votes", &json!({"item_id": id, "voter": voter, "score": 1}))?;
+
+// Update and delete take a map, or an array of conditions, ANDed.
+let changed = db::update(
+    "my_votes",
+    &json!({"score": 0}),
+    &json!([{"field": "voter", "op": "=", "value": voter},
+            {"field": "score", "op": ">", "value": 5}]),
+)?;
+let removed = db::delete("my_votes", &json!([{"field": "voter", "op": "in", "value": ["a", "b"]}]))?;
+
+// Insert, or update on a conflict over the key; the row comes back.
+let row = db::upsert(
+    "my_votes",
+    &json!({"item_id": id, "voter": voter, "score": 3}),
+    &json!({"target": ["item_id", "voter"]}),   // "update": [cols] to narrow the set
+)?;
+
+// Up to 500 rows in one statement: all or none (-82 over the bound).
+let written = db::insert_many("my_votes", &rows_to_write)?;
 ```
 
-### Supported Operators
+A condition's `op` is one of `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`,
+`is_null` or `is_not_null`. An empty `where`, an unknown op or an empty `in`
+list is refused with `-14`, so none of them can turn into "every row". Values
+bind as their JSON type, and a string binds as text. To compare a `uuid`
+column, store the key as text or filter on it in a [query](#queries).
 
-| Operator | Example |
-|----------|---------|
-| `=`, `!=`, `>`, `<`, `>=`, `<=` | `{"field": "status", "op": "=", "value": 1}` |
-| `LIKE` | `{"field": "title", "op": "LIKE", "value": "%search%"}` |
-| `IN` | `{"field": "type", "op": "IN", "value": ["blog", "article"]}` |
-| `IS NULL` | `{"field": "deleted", "op": "IS NULL"}` |
-| `BETWEEN` | `{"field": "created", "op": "BETWEEN", "value": [start, end]}` |
+To count, sum or group your own rows, use `host::query` with `group_by` and
+`aggregates` ([Queries](#queries)) rather than raw SQL.
 
-### Insert/Update/Delete
+### Raw SQL (Requires `raw_sql`)
 
-```rust
-// Insert
-let id = host::db::insert("my_table", json!({
-    "name": "Example",
-    "value": 42
-}))?;
-
-// Update
-let affected = host::db::update("my_table",
-    json!({"value": 100}),
-    json!([{"field": "id", "op": "=", "value": id}])
-)?;
-
-// Delete
-let deleted = host::db::delete("my_table",
-    json!([{"field": "id", "op": "=", "value": id}])
-)?;
-```
-
-### Raw SQL (Requires Permission)
-
-Only use when structured queries aren't sufficient:
+`raw_sql = true` under `[capabilities]` lets a plugin read any table outside
+the protected floor, with no viewer, stage or language. Keep it for what the
+structured calls and `host::query` cannot express: recursive CTEs, window
+functions, extension operators, locking reads.
 
 ```rust
-// Query
-let results = host::db::query_raw(
-    "SELECT * FROM my_table WHERE name = $1",
-    json!(["Example"])
-)?;
-
-// Execute
-let affected = host::db::execute_raw(
+let rows = host::query_raw("SELECT * FROM my_table WHERE name = $1", &[json!("Example")])?;
+let affected = host::execute_raw(
     "UPDATE my_table SET counter = counter + 1 WHERE id = $1",
-    json!([id])
+    &[json!(id)],
 )?;
 ```
 

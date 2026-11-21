@@ -61,7 +61,7 @@ use super::{read_string_from_memory, write_string_to_memory};
 use std::sync::Arc;
 
 use crate::content::reentry::{self, WriteTooDeep};
-use crate::content::{ItemService, WriteDenied};
+use crate::content::{ItemService, TranslationRefused, WriteDenied};
 use crate::models::{CreateItem, Item, Language, UpdateItem};
 use crate::plugin::{PluginState, WasmtimeExt};
 use crate::tap::UserContext;
@@ -542,6 +542,207 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         )
                         .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT),
                         Err(_) => host_errors::ERR_SERIALIZE_FAILED,
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
+
+    register_translation_functions(linker)?;
+
+    Ok(())
+}
+
+/// Most item ids one `list-translations` call takes.
+pub const MAX_TRANSLATION_ITEMS: usize = 100;
+
+/// `save-translation`'s input.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TranslationInput {
+    item_id: Uuid,
+    language: String,
+    title: String,
+    #[serde(default = "empty_object")]
+    fields: serde_json::Value,
+}
+
+fn empty_object() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+/// The host code for a refused or failed translation write.
+fn translation_error_code(e: &anyhow::Error) -> i32 {
+    match e.downcast_ref::<TranslationRefused>() {
+        Some(TranslationRefused::NoItem) => host_errors::ERR_ITEM_NOT_FOUND,
+        Some(TranslationRefused::Denied) => host_errors::ERR_ITEM_ACCESS_DENIED,
+        Some(TranslationRefused::Language) => host_errors::ERR_PARAM_DESERIALIZE,
+        None => write_error_code(e),
+    }
+}
+
+/// The user a translation call is made as, or the code refusing it: the
+/// `item-api` rules (an access decision in progress, a background call
+/// without `item_background`).
+fn translator(state: &PluginState) -> std::result::Result<UserContext, i32> {
+    if reentry::inside_access_decision() {
+        return Err(host_errors::ERR_ITEM_ACCESS_DENIED);
+    }
+    acting_for(state)
+        .writer()
+        .ok_or(host_errors::ERR_ITEM_BACKGROUND_DENIED)
+}
+
+/// The item service, or `ERR_NO_SERVICES`.
+fn service_of(state: &PluginState) -> std::result::Result<Arc<ItemService>, i32> {
+    state
+        .request
+        .services()
+        .and_then(decide_with)
+        .ok_or(host_errors::ERR_NO_SERVICES)
+}
+
+/// `list-translations`, `save-translation` and `delete-translation` (B80):
+/// translation reads and writes through [`ItemService`], so a plugin needs no
+/// `item_translation` in `db_tables`.
+fn register_translation_functions(linker: &mut Linker<PluginState>) -> Result<()> {
+    // list-translations(item_ids_json, out) -> i32 (bytes written or error)
+    linker
+        .func_wrap_async_traced(
+            "trovato:kernel/item-api",
+            "list-translations",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (ids_ptr, ids_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
+                    let Ok(ids_json) = read_string_from_memory(&memory, &caller, ids_ptr, ids_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
+                    let Ok(ids) = serde_json::from_str::<Vec<Uuid>>(&ids_json) else {
+                        return host_errors::ERR_PARAM_DESERIALIZE;
+                    };
+                    if ids.len() > MAX_TRANSLATION_ITEMS {
+                        return host_errors::ERR_PARAM_DESERIALIZE;
+                    }
+                    let user = match translator(caller.data()) {
+                        Ok(user) => user,
+                        Err(code) => return code,
+                    };
+                    let items = match service_of(caller.data()) {
+                        Ok(items) => items,
+                        Err(code) => return code,
+                    };
+                    let rows = match items.translations_for_view(&ids, &user).await {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            warn!(error = %e, "list-translations failed");
+                            return host_errors::ERR_SQL_FAILED;
+                        }
+                    };
+                    match serde_json::to_string(&rows) {
+                        Ok(json) => write_string_to_memory(
+                            &memory,
+                            &mut caller,
+                            out_ptr,
+                            out_max_len,
+                            &json,
+                        )
+                        .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT),
+                        Err(_) => host_errors::ERR_SERIALIZE_FAILED,
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
+
+    // save-translation(translation_json, out) -> i32 (bytes written or error)
+    linker
+        .func_wrap_async_traced(
+            "trovato:kernel/item-api",
+            "save-translation",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (in_ptr, in_len, out_ptr, out_max_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
+                    let Ok(input) = read_string_from_memory(&memory, &caller, in_ptr, in_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
+                    let Ok(input) = serde_json::from_str::<TranslationInput>(&input) else {
+                        return host_errors::ERR_PARAM_DESERIALIZE;
+                    };
+                    let title = input.title.trim();
+                    if title.is_empty() || !input.fields.is_object() {
+                        return host_errors::ERR_PARAM_DESERIALIZE;
+                    }
+                    let user = match translator(caller.data()) {
+                        Ok(user) => user,
+                        Err(code) => return code,
+                    };
+                    let items = match service_of(caller.data()) {
+                        Ok(items) => items,
+                        Err(code) => return code,
+                    };
+                    let saved = items
+                        .translate(input.item_id, &input.language, title, &input.fields, &user)
+                        .await;
+                    match saved {
+                        Ok(row) => match serde_json::to_string(&row) {
+                            Ok(json) => write_string_to_memory(
+                                &memory,
+                                &mut caller,
+                                out_ptr,
+                                out_max_len,
+                                &json,
+                            )
+                            .unwrap_or(host_errors::ERR_PARAM2_OR_OUTPUT),
+                            Err(_) => host_errors::ERR_SERIALIZE_FAILED,
+                        },
+                        Err(e) => translation_error_code(&e),
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
+
+    // delete-translation(item_id, language) -> i32 (1 removed, 0 none, or error)
+    linker
+        .func_wrap_async_traced(
+            "trovato:kernel/item-api",
+            "delete-translation",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (id_ptr, id_len, lang_ptr, lang_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
+                    let Ok(id) = read_string_from_memory(&memory, &caller, id_ptr, id_len) else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
+                    let Ok(id) = id.parse::<Uuid>() else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
+                    let Ok(language) =
+                        read_string_from_memory(&memory, &caller, lang_ptr, lang_len)
+                    else {
+                        return host_errors::ERR_PARAM2_OR_OUTPUT;
+                    };
+                    let user = match translator(caller.data()) {
+                        Ok(user) => user,
+                        Err(code) => return code,
+                    };
+                    let items = match service_of(caller.data()) {
+                        Ok(items) => items,
+                        Err(code) => return code,
+                    };
+                    match items.withdraw_translation(id, &language, &user).await {
+                        Ok(removed) => i32::from(removed),
+                        Err(e) => translation_error_code(&e),
                     }
                 })
             },

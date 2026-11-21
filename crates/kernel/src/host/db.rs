@@ -456,44 +456,122 @@ async fn do_update(
 
     let data: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(data_json).map_err(|_| host_errors::ERR_PARAM_DESERIALIZE)?;
-    let where_map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(where_json).map_err(|_| host_errors::ERR_PARAM_DESERIALIZE)?;
 
-    if data.is_empty() || where_map.is_empty() {
+    if data.is_empty() {
         return Err(host_errors::ERR_PARAM_DESERIALIZE);
     }
 
     let mut set_parts = Vec::new();
     let mut params = Vec::new();
-    let mut idx = 1;
 
     for (col, val) in &data {
         if !VALID_IDENTIFIER.is_match(col) {
             return Err(host_errors::ERR_INVALID_IDENTIFIER);
         }
-        set_parts.push(format!("{col} = ${idx}"));
         params.push(val.clone());
-        idx += 1;
+        set_parts.push(format!("{col} = ${}", params.len()));
     }
 
-    let mut where_parts = Vec::new();
-    for (col, val) in &where_map {
-        if !VALID_IDENTIFIER.is_match(col) {
-            return Err(host_errors::ERR_INVALID_IDENTIFIER);
-        }
-        where_parts.push(format!("{col} = ${idx}"));
-        params.push(val.clone());
-        idx += 1;
-    }
-
+    let where_sql = where_sql(where_json, &mut params)?;
     let sql = format!(
-        "UPDATE {} SET {} WHERE {}",
+        "UPDATE {} SET {} WHERE {where_sql}",
         table,
-        set_parts.join(", "),
-        where_parts.join(" AND ")
+        set_parts.join(", ")
     );
 
     do_execute_raw(pool, &sql, &params).await
+}
+
+/// One condition of an array `where`: `{"field", "op", "value"}`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Condition {
+    field: String,
+    op: String,
+    #[serde(default)]
+    value: serde_json::Value,
+}
+
+/// A `where` as SQL, its values appended to `params` as placeholders.
+///
+/// A map means equality on each key, as it always has. An array is
+/// `{"field", "op", "value"}` conditions, ANDed, with `op` one of `=`, `!=`,
+/// `<`, `<=`, `>`, `>=`, `in`, `not_in`, `is_null`, `is_not_null`. Nothing that
+/// could mean every row gets through: an empty `where`, an unknown op, and an
+/// empty or non-scalar `in` list are [`host_errors::ERR_PARAM_DESERIALIZE`].
+fn where_sql(
+    where_json: &str,
+    params: &mut Vec<serde_json::Value>,
+) -> std::result::Result<String, i32> {
+    let bad = host_errors::ERR_PARAM_DESERIALIZE;
+    let parsed: serde_json::Value = serde_json::from_str(where_json).map_err(|_| bad)?;
+    let conditions: Vec<Condition> = match parsed {
+        // A map binds each value as it always has, null included.
+        serde_json::Value::Object(map) => {
+            if map.is_empty() {
+                return Err(bad);
+            }
+            let mut parts = Vec::with_capacity(map.len());
+            for (col, val) in map {
+                if !VALID_IDENTIFIER.is_match(&col) {
+                    return Err(host_errors::ERR_INVALID_IDENTIFIER);
+                }
+                params.push(val);
+                parts.push(format!("{col} = ${}", params.len()));
+            }
+            return Ok(parts.join(" AND "));
+        }
+        array @ serde_json::Value::Array(_) => serde_json::from_value(array).map_err(|_| bad)?,
+        _ => return Err(bad),
+    };
+    if conditions.is_empty() {
+        return Err(bad);
+    }
+
+    let mut parts = Vec::with_capacity(conditions.len());
+    for Condition { field, op, value } in conditions {
+        if !VALID_IDENTIFIER.is_match(&field) {
+            return Err(host_errors::ERR_INVALID_IDENTIFIER);
+        }
+        let part = match op.as_str() {
+            "=" | "!=" | "<" | "<=" | ">" | ">=" => {
+                if !is_scalar(&value) {
+                    return Err(bad);
+                }
+                params.push(value);
+                let op = if op == "!=" { "<>" } else { op.as_str() };
+                format!("{field} {op} ${}", params.len())
+            }
+            "in" | "not_in" => {
+                let serde_json::Value::Array(values) = value else {
+                    return Err(bad);
+                };
+                if values.is_empty() || !values.iter().all(is_scalar) {
+                    return Err(bad);
+                }
+                let mut holes = Vec::with_capacity(values.len());
+                for v in values {
+                    params.push(v);
+                    holes.push(format!("${}", params.len()));
+                }
+                let not = if op == "in" { "" } else { "NOT " };
+                format!("{field} {not}IN ({})", holes.join(", "))
+            }
+            "is_null" => format!("{field} IS NULL"),
+            "is_not_null" => format!("{field} IS NOT NULL"),
+            _ => return Err(bad),
+        };
+        parts.push(part);
+    }
+    Ok(parts.join(" AND "))
+}
+
+/// A value a comparison can bind: not null, not an array, not an object.
+fn is_scalar(value: &serde_json::Value) -> bool {
+    matches!(
+        value,
+        serde_json::Value::String(_) | serde_json::Value::Number(_) | serde_json::Value::Bool(_)
+    )
 }
 
 /// Build and execute a structured DELETE.
@@ -510,26 +588,151 @@ async fn do_delete(
     // WASM-2 allowlist gate (before any pool work).
     enforce_table(policy, table)?;
 
-    let where_map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(where_json).map_err(|_| host_errors::ERR_PARAM_DESERIALIZE)?;
-
-    if where_map.is_empty() {
-        return Err(host_errors::ERR_PARAM_DESERIALIZE);
-    }
-
-    let mut where_parts = Vec::new();
     let mut params = Vec::new();
+    let where_sql = where_sql(where_json, &mut params)?;
+    let sql = format!("DELETE FROM {table} WHERE {where_sql}");
 
-    for (idx, (col, val)) in (1..).zip(&where_map) {
+    do_execute_raw(pool, &sql, &params).await
+}
+
+/// `upsert`'s conflict spec: the unique columns, and the columns a conflict
+/// updates (every other column of the row when absent).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Conflict {
+    target: Vec<String>,
+    update: Option<Vec<String>>,
+}
+
+/// Build and execute `INSERT ... ON CONFLICT (target) DO UPDATE ... RETURNING *`.
+///
+/// The row comes back either way. When the update set is empty (every column
+/// is in the target) the first target column is set to itself, which changes
+/// nothing and still returns the row, where `DO NOTHING` would return none.
+async fn do_upsert(
+    policy: &DbPolicy,
+    pool: &PgPool,
+    table: &str,
+    data_json: &str,
+    conflict_json: &str,
+) -> std::result::Result<String, i32> {
+    let bad = host_errors::ERR_PARAM_DESERIALIZE;
+    if !VALID_IDENTIFIER.is_match(table) {
+        return Err(host_errors::ERR_INVALID_IDENTIFIER);
+    }
+    enforce_table(policy, table)?;
+
+    let data: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(data_json).map_err(|_| bad)?;
+    let conflict: Conflict = serde_json::from_str(conflict_json).map_err(|_| bad)?;
+    if data.is_empty() || conflict.target.is_empty() {
+        return Err(bad);
+    }
+    for col in data.keys() {
         if !VALID_IDENTIFIER.is_match(col) {
             return Err(host_errors::ERR_INVALID_IDENTIFIER);
         }
-        where_parts.push(format!("{col} = ${idx}"));
-        params.push(val.clone());
+    }
+    let update = conflict.update.unwrap_or_else(|| {
+        data.keys()
+            .filter(|c| !conflict.target.contains(c))
+            .cloned()
+            .collect()
+    });
+    // Both lists name columns of the row, so both are already checked
+    // identifiers once they are found in it.
+    if !conflict
+        .target
+        .iter()
+        .chain(&update)
+        .all(|c| data.contains_key(c))
+    {
+        return Err(bad);
     }
 
-    let sql = format!("DELETE FROM {} WHERE {}", table, where_parts.join(" AND "));
+    let columns: Vec<&str> = data.keys().map(String::as_str).collect();
+    let holes: Vec<String> = (1..=data.len()).map(|i| format!("${i}")).collect();
+    let set: Vec<String> = if update.is_empty() {
+        vec![format!("{0} = EXCLUDED.{0}", conflict.target[0])]
+    } else {
+        update
+            .iter()
+            .map(|c| format!("{c} = EXCLUDED.{c}"))
+            .collect()
+    };
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {} RETURNING *",
+        columns.join(", "),
+        holes.join(", "),
+        conflict.target.join(", "),
+        set.join(", ")
+    );
+    let params: Vec<serde_json::Value> = data.into_iter().map(|(_, v)| v).collect();
+    fetch_rows(pool, &sql, &params, Access::ReadWrite).await
+}
 
+/// Most rows one `insert-many` writes.
+pub const MAX_INSERT_MANY: usize = 500;
+
+/// The most placeholders one PostgreSQL statement binds.
+const MAX_BIND_PARAMS: usize = 65_535;
+
+/// Build and execute one multi-row INSERT: every row or none.
+///
+/// Every row names the same columns, so the statement has one shape. Over
+/// [`MAX_INSERT_MANY`] rows, or more values than one statement binds, is
+/// [`host_errors::ERR_DB_BATCH_TOO_LARGE`] before anything is written.
+async fn do_insert_many(
+    policy: &DbPolicy,
+    pool: &PgPool,
+    table: &str,
+    rows_json: &str,
+) -> std::result::Result<u64, i32> {
+    let bad = host_errors::ERR_PARAM_DESERIALIZE;
+    if !VALID_IDENTIFIER.is_match(table) {
+        return Err(host_errors::ERR_INVALID_IDENTIFIER);
+    }
+    enforce_table(policy, table)?;
+
+    let rows: Vec<serde_json::Map<String, serde_json::Value>> =
+        serde_json::from_str(rows_json).map_err(|_| bad)?;
+    let Some(first) = rows.first() else {
+        return Err(bad);
+    };
+    let columns: Vec<String> = first.keys().cloned().collect();
+    if rows.len() > MAX_INSERT_MANY || rows.len() * columns.len() > MAX_BIND_PARAMS {
+        return Err(host_errors::ERR_DB_BATCH_TOO_LARGE);
+    }
+    if columns.is_empty() {
+        return Err(bad);
+    }
+    for col in &columns {
+        if !VALID_IDENTIFIER.is_match(col) {
+            return Err(host_errors::ERR_INVALID_IDENTIFIER);
+        }
+    }
+
+    let mut params = Vec::with_capacity(rows.len() * columns.len());
+    let mut tuples = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        if row.len() != columns.len() {
+            return Err(bad);
+        }
+        let mut holes = Vec::with_capacity(columns.len());
+        for col in &columns {
+            let Some(value) = row.remove(col) else {
+                return Err(bad);
+            };
+            params.push(value);
+            holes.push(format!("${}", params.len()));
+        }
+        tuples.push(format!("({})", holes.join(", ")));
+    }
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES {}",
+        columns.join(", "),
+        tuples.join(", ")
+    );
     do_execute_raw(pool, &sql, &params).await
 }
 
@@ -740,6 +943,88 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
                     match do_delete(&policy, &pool, &table, &where_json).await {
                         Ok(rows) => rows as i64,
+                        Err(code) => i64::from(code),
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
+
+    // upsert(table, data_json, conflict_json, out) -> i32 (bytes written or error)
+    linker
+        .func_wrap_async_traced(
+            "trovato:kernel/db",
+            "upsert",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (t_ptr, t_len, d_ptr, d_len, c_ptr, c_len, out_ptr, out_max_len): (
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+                i32,
+            )| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
+                    let Ok(table) = read_string_from_memory(&memory, &caller, t_ptr, t_len) else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
+                    let Ok(data) = read_string_from_memory(&memory, &caller, d_ptr, d_len) else {
+                        return host_errors::ERR_PARAM2_OR_OUTPUT;
+                    };
+                    let Ok(conflict) = read_string_from_memory(&memory, &caller, c_ptr, c_len)
+                    else {
+                        return host_errors::ERR_PARAM3_READ;
+                    };
+                    let policy = caller.data().db_policy.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return host_errors::ERR_NO_SERVICES;
+                    };
+                    let pool = services.db.clone();
+                    match do_upsert(&policy, &pool, &table, &data, &conflict).await {
+                        Ok(result) => write_string_to_memory(
+                            &memory,
+                            &mut caller,
+                            out_ptr,
+                            out_max_len,
+                            &result,
+                        )
+                        .unwrap_or(host_errors::ERR_PARAM3_READ),
+                        Err(code) => code,
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
+
+    // insert-many(table, rows_json) -> i64 (rows inserted or error)
+    linker
+        .func_wrap_async_traced(
+            "trovato:kernel/db",
+            "insert-many",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (t_ptr, t_len, r_ptr, r_len): (i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return i64::from(host_errors::ERR_MEMORY_MISSING);
+                    };
+                    let Ok(table) = read_string_from_memory(&memory, &caller, t_ptr, t_len) else {
+                        return i64::from(host_errors::ERR_PARAM1_READ);
+                    };
+                    let Ok(rows) = read_string_from_memory(&memory, &caller, r_ptr, r_len) else {
+                        return i64::from(host_errors::ERR_PARAM2_OR_OUTPUT);
+                    };
+                    let policy = caller.data().db_policy.clone();
+                    let Some(services) = caller.data().request.services() else {
+                        return i64::from(host_errors::ERR_NO_SERVICES);
+                    };
+                    let pool = services.db.clone();
+                    match do_insert_many(&policy, &pool, &table, &rows).await {
+                        Ok(n) => n as i64,
                         Err(code) => i64::from(code),
                     }
                 })

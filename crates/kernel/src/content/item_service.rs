@@ -416,6 +416,33 @@ impl std::fmt::Display for WriteDenied {
 
 impl std::error::Error for WriteDenied {}
 
+/// Why [`ItemService::translate`] or [`ItemService::withdraw_translation`]
+/// refused, as an error a caller can map without reading a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranslationRefused {
+    /// No item has that id.
+    NoItem,
+    /// The user may not translate the item ([`ItemService::may_translate`]).
+    Denied,
+    /// The language is not one of the site's, or is the item's own.
+    Language,
+}
+
+impl std::fmt::Display for TranslationRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoItem => "no such item",
+            Self::Denied => "access denied",
+            Self::Language => "not a language this item can be translated into",
+        })
+    }
+}
+
+impl std::error::Error for TranslationRefused {}
+
+/// The permission that lets a user translate an item they may view.
+pub const TRANSLATE_CONTENT: &str = "translate content";
+
 /// Whether a file may be streamed to a viewer: [`ItemService::file_access`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileAccess {
@@ -832,6 +859,154 @@ impl ItemService {
         .fetch_all(&self.inner.pool)
         .await
         .context("failed to list translations")?;
+        Ok(rows)
+    }
+
+    /// Whether `user` may write a translation of `item`: `edit` access on it,
+    /// or [`TRANSLATE_CONTENT`] and `view` access, the rule the admin
+    /// translation screens apply. The background principal passes, as it does
+    /// [`Self::check_access`].
+    pub async fn may_translate(&self, item: &Item, user: &UserContext) -> bool {
+        if self.check_access(item, "edit", user).await.unwrap_or(false) {
+            return true;
+        }
+        user.has_permission(TRANSLATE_CONTENT)
+            && self.check_access(item, "view", user).await.unwrap_or(false)
+    }
+
+    /// Load the item a translation write is for and decide it, or refuse.
+    async fn translatable(&self, item_id: Uuid, user: &UserContext) -> Result<Item, anyhow::Error> {
+        Self::refuse_if_too_deep()?;
+        let Some(item) = self.load(item_id).await? else {
+            return Err(TranslationRefused::NoItem.into());
+        };
+        if !self.may_translate(&item, user).await {
+            return Err(TranslationRefused::Denied.into());
+        }
+        Ok(item)
+    }
+
+    /// A translation write is an edit of the item: the cache drops it and
+    /// `tap_item_update` fires with it, so a plugin that indexes or mirrors
+    /// items hears about it as it hears about any other edit.
+    async fn translation_written(&self, item: &Item, user: &UserContext) -> Result<()> {
+        self.invalidate(item.id);
+        let item_json = serde_json::to_string(item).context("serialize item")?;
+        self.dispatch_write_tap("tap_item_update", &item_json, user)
+            .await;
+        Ok(())
+    }
+
+    /// Write `item_id`'s translation into `language` as `user`: decided as an
+    /// edit ([`Self::may_translate`]), field-gated by [`Self::save_translation`],
+    /// then the item cache is dropped and `tap_item_update` fires.
+    ///
+    /// Refuses, as a [`TranslationRefused`] error, an item that is not there,
+    /// a user who may not translate it, and a language that is not one of the
+    /// site's or is the item's own.
+    pub async fn translate(
+        &self,
+        item_id: Uuid,
+        language: &str,
+        title: &str,
+        fields: &serde_json::Value,
+        user: &UserContext,
+    ) -> Result<ItemTranslation> {
+        let item = self.translatable(item_id, user).await?;
+        let known = crate::models::Language::find_by_id(&self.inner.pool, language)
+            .await?
+            .is_some();
+        if !known || language == item.language {
+            return Err(TranslationRefused::Language.into());
+        }
+        let row = self
+            .save_translation(item_id, language, title, fields, user)
+            .await?;
+        self.translation_written(&item, user).await?;
+        Ok(row)
+    }
+
+    /// Remove `item_id`'s translation in `language` as `user`, decided as
+    /// [`Self::translate`] is. Returns whether a row was there; only a removal
+    /// fires `tap_item_update`.
+    pub async fn withdraw_translation(
+        &self,
+        item_id: Uuid,
+        language: &str,
+        user: &UserContext,
+    ) -> Result<bool> {
+        let item = self.translatable(item_id, user).await?;
+        let removed = self.delete_translation(item_id, language).await?;
+        if removed {
+            self.translation_written(&item, user).await?;
+        }
+        Ok(removed)
+    }
+
+    /// The translations of `item_ids` that `user` may view, by item in the
+    /// order asked and then by language, with the field tier applied to each
+    /// translation's `fields` as it is to an item's.
+    ///
+    /// Three queries and one field decision per distinct type, whatever the
+    /// number of items: the items, their translations, and the decisions.
+    pub async fn translations_for_view(
+        &self,
+        item_ids: &[Uuid],
+        user: &UserContext,
+    ) -> Result<Vec<ItemTranslation>> {
+        let items = Item::find_by_ids(&self.inner.pool, item_ids).await?;
+        let count = items.len();
+        let visible = self.filter_page_for_view(items, user, "view", count).await;
+        let type_of: HashMap<Uuid, String> = visible
+            .into_iter()
+            .map(|item| (item.id, item.item_type))
+            .collect();
+        let ids: Vec<Uuid> = type_of.keys().copied().collect();
+        let mut rows = sqlx::query_as::<_, ItemTranslation>(
+            "SELECT item_id, language, title, fields, created, changed \
+             FROM item_translation WHERE item_id = ANY($1)",
+        )
+        .bind(&ids)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("failed to list item translations")?;
+
+        // The background principal reads with kernel authority, as `get-item`
+        // does for it: no field tier.
+        let mut fields_by_type: HashMap<&str, Vec<String>> = HashMap::new();
+        for row in rows.iter().filter(|_| !user.is_background()) {
+            let names = fields_by_type
+                .entry(type_of[&row.item_id].as_str())
+                .or_default();
+            for key in row.fields.as_object().into_iter().flat_map(|o| o.keys()) {
+                if !names.contains(key) {
+                    names.push(key.clone());
+                }
+            }
+        }
+        let mut decisions_by_type: HashMap<String, HashMap<String, bool>> = HashMap::new();
+        for (item_type, names) in fields_by_type {
+            let decisions = self
+                .field_access_decisions(user, item_type, &names, "view")
+                .await;
+            decisions_by_type.insert(item_type.to_string(), decisions);
+        }
+        for row in &mut rows {
+            if let Some(decisions) = decisions_by_type.get(&type_of[&row.item_id]) {
+                apply_field_decisions(&mut row.fields, decisions);
+            }
+        }
+
+        let rank: HashMap<Uuid, usize> = item_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, i))
+            .collect();
+        rows.sort_by(|a, b| {
+            rank[&a.item_id]
+                .cmp(&rank[&b.item_id])
+                .then_with(|| a.language.cmp(&b.language))
+        });
         Ok(rows)
     }
 

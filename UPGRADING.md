@@ -24,6 +24,21 @@ first, with the id breaking ties. A published item on an `accessible` or
 a live request, which was the defect. For listings, the new `query` host
 interface (`host::query`) sorts, joins, pages and returns each row's URL.
 
+### A translation save fires `tap_item_update`
+
+**Who is affected:** a plugin that implements `tap_item_update`, on a site
+whose editors translate content.
+
+**What changed.** A translation saved or removed on the admin translation
+screen, or through the new `item-api` translation calls, is now an edit of the
+item. `tap_item_update` fires with the item, and the item cache drops it.
+Before, nothing fired, so a plugin that mirrors or indexes items did not hear
+about a translation.
+
+**What to do.** Nothing, unless a `tap_item_update` handler assumes the item
+row itself changed. The item it receives is the stored item; the translation
+is in `item_translation`, which `host::list_translations` reads.
+
 ### Gather definitions can group filters and summarise rows
 
 **Who is affected:** code that builds a `trovato_kernel::gather::QueryDefinition`

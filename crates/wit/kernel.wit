@@ -50,6 +50,26 @@ interface item-api {
     /// listings in favour of `query.run`, which sorts, joins, pages and returns
     /// each row's URL; this stays for loading full items.
     query-items: func(query-json: string) -> result<string, string>;
+
+    /// The translations of up to 100 items (`item-ids-json`, a JSON array of
+    /// ids) the user may view, as a JSON array of `{item_id, language, title,
+    /// fields, created, changed}`, by item in the order asked and then by
+    /// language, with the field tier applied to `fields`. Added by B80.
+    list-translations: func(item-ids-json: string) -> result<string, string>;
+
+    /// Create or replace one language's translation of an item from
+    /// `{item_id, language, title, fields}`, through the kernel's item
+    /// service: it needs `edit` access, or `translate content` and `view`;
+    /// the field write gate applies; tap-item-update fires on the other
+    /// plugins and the item cache drops the item. A language that is not the
+    /// site's, or is the item's own, is -14; no such item is -62. Returns the
+    /// saved translation. Added by B80.
+    save-translation: func(translation-json: string) -> result<string, string>;
+
+    /// Remove one language's translation of an item, decided as
+    /// save-translation is; tap-item-update fires when one was removed.
+    /// Returns whether there was one. Added by B80.
+    delete-translation: func(item-id: string, language: string) -> result<bool, string>;
 }
 
 /// Structured database API — prevents SQL injection from plugins.
@@ -85,8 +105,25 @@ interface item-api {
 interface db {
     select: func(query-json: string) -> result<string, string>;
     insert: func(table: string, data-json: string) -> result<string, string>;
+    /// `where-json` on update and delete is a map (each key equal to its value)
+    /// or, since B80, an array of `{"field", "op", "value"}` conditions, ANDed,
+    /// with `op` one of `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`,
+    /// `is_null`, `is_not_null`. An empty where, an unknown op or an empty `in`
+    /// list is -14: none of them may mean every row.
     update: func(table: string, data-json: string, where-json: string) -> result<u64, string>;
     delete: func(table: string, where-json: string) -> result<u64, string>;
+
+    /// Insert a row, or on a conflict update it. `conflict-json` is
+    /// `{"target": [cols], "update": [cols]}`; the update set defaults to
+    /// every column of the row not in the target. Returns the row, as insert
+    /// does. Added by B80: a new function, no signature changed.
+    upsert: func(table: string, data-json: string, conflict-json: string) -> result<string, string>;
+
+    /// Insert up to 500 rows (`rows-json`, a JSON array of objects that name
+    /// the same columns) in one statement, so all or none are written. More
+    /// than 500 is refused whole with -82 (ERR_DB_BATCH_TOO_LARGE). Returns
+    /// the rows written. Added by B80: a new function, no signature changed.
+    insert-many: func(table: string, rows-json: string) -> result<u64, string>;
     query-raw: func(sql: string, params-json: string) -> result<string, string>;
     execute-raw: func(sql: string, params-json: string) -> result<u64, string>;
 }

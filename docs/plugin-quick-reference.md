@@ -248,6 +248,8 @@ let saved = host::save_item(&json!({ "id": id, "title": "New" }))?;  // no id + 
 let moved = host::save_item(&json!({ "id": id, "stage": "curated" }))?; // by the workflow; create: default stage
 host::delete_item(&id)?;                                          // Err(-62): no such item
 let list = host::query_items(&json!({ "type": "page", "limit": 20 }))?; // full items, request's stage
+let tr = host::list_translations(&[&id])?;                        // ≤ 100 ids, viewable only
+host::save_translation(&json!({"item_id": id, "language": "it", "title": "Ciao"}))?; // an edit
 ```
 
 ### Queries
@@ -281,29 +283,17 @@ host::cache::invalidate_tag("tag:items");
 ```
 
 ### Database
+Your own tables only (migration-created or `db_tables`); content goes through
+`host::query`, `save_item` and `save_translation`.
 ```rust
-// Structured query (recommended)
-let results = host::db::select(json!({
-    "table": "item",
-    "fields": ["id", "title"],
-    "conditions": [{"field": "status", "op": "=", "value": 1}],
-    "order_by": [{"field": "created", "direction": "DESC"}],
-    "limit": 10
-}))?;
-
-// Insert
-let id = host::db::insert("table", json!({"name": "value"}))?;
-
-// Update
-let affected = host::db::update("table",
-    json!({"name": "new"}),
-    json!([{"field": "id", "op": "=", "value": id}])
-)?;
-
-// Delete
-let deleted = host::db::delete("table",
-    json!([{"field": "id", "op": "=", "value": id}])
-)?;
+use trovato_sdk::host::db;
+let rows = db::select(&json!({"table": "my_votes", "where": {"voter": v}, "limit": 10}))?;
+let row = db::insert("my_votes", &json!({"voter": v, "score": 1}))?;
+let n = db::update("my_votes", &json!({"score": 0}),
+    &json!([{"field": "score", "op": ">", "value": 5}]))?;       // map or array where
+let n = db::delete("my_votes", &json!([{"field": "voter", "op": "in", "value": ["a", "b"]}]))?;
+let row = db::upsert("my_votes", &json!({"k": k, "score": 3}), &json!({"target": ["k"]}))?;
+let n = db::insert_many("my_votes", &rows)?;                      // ≤ 500, all or none; Err(-82)
 ```
 
 ### Inter-Plugin
@@ -315,15 +305,13 @@ if host::plugin::exists("other_plugin") {
 
 ---
 
-## Query Operators
+## `db` where operators
 
 | Op | Example |
 |----|---------|
 | `=`, `!=`, `>`, `<`, `>=`, `<=` | `{"field": "x", "op": "=", "value": 1}` |
-| `LIKE` | `{"field": "x", "op": "LIKE", "value": "%term%"}` |
-| `IN` | `{"field": "x", "op": "IN", "value": [1, 2, 3]}` |
-| `IS NULL` | `{"field": "x", "op": "IS NULL"}` |
-| `BETWEEN` | `{"field": "x", "op": "BETWEEN", "value": [1, 10]}` |
+| `in`, `not_in` | `{"field": "x", "op": "in", "value": [1, 2, 3]}` (not empty) |
+| `is_null`, `is_not_null` | `{"field": "x", "op": "is_null"}` |
 
 ---
 
