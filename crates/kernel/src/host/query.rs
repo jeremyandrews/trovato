@@ -2,7 +2,7 @@
 //!
 //! `run(definition-json, options-json)` takes a Gather `QueryDefinition`, the
 //! JSON a site owner's gather is stored as, and returns the `GatherResult` of
-//! running it through [`GatherService::execute_for_plugin`], the pipeline every
+//! running it through [`GatherService::execute_for_plugin`](crate::gather::GatherService::execute_for_plugin), the pipeline every
 //! gather goes through. `docs/design/plugin-query-surface.md` is the design;
 //! this module is its plugin rules.
 //!
