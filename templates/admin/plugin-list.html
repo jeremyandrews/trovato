@@ -14,6 +14,7 @@
 {% endif %}
 
 <div class="admin-card">
+    <p class="plugin-restart-notice" id="plugin-restart-notice" role="note">{{ restart_notice }}</p>
     {% if raw_sql_count > 0 %}
     <p class="plugin-raw-sql-note" id="plugin-raw-sql-note">
         <span class="badge badge--raw-sql">raw SQL</span>
@@ -46,6 +47,9 @@
                     <span style="color: var(--warning, #b45309); font-weight: 600;">Disabled</span>
                     {% else %}
                     <span style="color: var(--gray-500, #6b7280);">Not installed</span>
+                    {% endif %}
+                    {% if plugin.pending_restart %}
+                    <span class="plugin-pending-restart" data-pending-restart="{{ plugin.name }}">Waiting for restart</span>
                     {% endif %}
                 </td>
                 <td>
@@ -90,6 +94,14 @@
         background: #fff3cd;
         color: #664d03;
         font-weight: 600;
+    }
+    .plugin-restart-notice {
+        font-weight: 600;
+    }
+    .plugin-pending-restart {
+        display: block;
+        font-size: 0.75rem;
+        color: var(--gray-500, #6b7280);
     }
     .plugin-raw-sql-note .badge {
         margin-left: 0;

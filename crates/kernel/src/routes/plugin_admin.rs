@@ -16,6 +16,10 @@ use super::helpers::{render_admin_template, require_admin, require_csrf};
 
 const FLASH_KEY: &str = "plugin_admin_flash";
 
+/// When an enable or disable reaches the running site.
+const RESTART_NOTICE: &str =
+    "Changes take effect when the server restarts (all servers, if more than one).";
+
 // =============================================================================
 // Template data
 // =============================================================================
@@ -31,6 +35,9 @@ struct PluginRow {
     default_enabled: bool,
     /// The manifest grants `raw_sql`; the listing marks it.
     raw_sql: bool,
+    /// The stored status differs from what this server is running: the
+    /// change waits for a restart.
+    pending_restart: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +97,9 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
             is_installed,
             default_enabled: info.default_enabled,
             raw_sql: info.holds_raw_sql(),
+            pending_restart: status_map
+                .get(name)
+                .is_some_and(|s| (s.status == STATUS_ENABLED) != state.is_plugin_enabled(name)),
         });
     }
 
@@ -110,6 +120,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
                 is_installed: true,
                 default_enabled: true,
                 raw_sql: false,
+                pending_restart: (ps.status == STATUS_ENABLED) != state.is_plugin_enabled(&ps.name),
             });
         }
     }
@@ -128,6 +139,7 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
     context.insert("raw_sql_count", &raw_sql_count);
     context.insert("csrf_token", &csrf_token);
     context.insert("flash", &flash);
+    context.insert("restart_notice", RESTART_NOTICE);
     context.insert("path", "/admin/plugins");
 
     render_admin_template(
@@ -189,14 +201,19 @@ async fn toggle_plugin(
         _ => return render_plugin_error(&state, &session, "Invalid action.").await,
     };
 
-    let want_enabled = new_status == STATUS_ENABLED;
-
-    // Check dependencies before enabling: all declared dependencies must be
-    // enabled first (mirrors the CLI's install-time check).
-    if want_enabled {
+    // Check dependencies before enabling: every declared dependency must be
+    // enabled in the stored statuses (mirrors the CLI's install-time check).
+    if new_status == STATUS_ENABLED {
         let discovered = PluginRuntime::discover_plugins(state.plugins_dirs()).await;
         if let Some((info, _)) = discovered.get(&form.plugin_name) {
-            let enabled = state.enabled_plugins();
+            let enabled = match status::get_enabled_names(state.db()).await {
+                Ok(names) => names,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to read enabled plugins");
+                    return render_plugin_error(&state, &session, "Failed to check plugin status.")
+                        .await;
+                }
+            };
             for dep in &info.dependencies {
                 if !enabled.contains(dep) {
                     let msg = format!(
@@ -210,35 +227,23 @@ async fn toggle_plugin(
         }
     }
 
-    // Capture the actual prior state so rollback restores it correctly even
-    // when the form re-submits the current state (e.g. enable → enable).
-    let was_enabled = state.is_plugin_enabled(&form.plugin_name);
-
-    // Update in-memory state first so a crash between the DB write and the
-    // in-memory update leaves the runtime matching the admin's intent.
-    // On restart, in-memory state is reloaded from the DB, so the two
-    // converge regardless of where a failure occurs.
-    state.set_plugin_enabled(&form.plugin_name, want_enabled);
-
+    // Only the stored status changes. The running server keeps the plugins it
+    // started with: every server loads the enabled set once at boot, so a
+    // change made here takes effect on each server when it restarts.
     match status::set_status(state.db(), &form.plugin_name, new_status).await {
         Ok(true) => {
             // Flash messages are rendered in Tera templates that autoescape
             // .html files, so we must NOT pre-escape here.
-            let msg = format!("Plugin '{}' {}.", form.plugin_name, action_word);
+            let msg = format!(
+                "Plugin '{}' {}. {}",
+                form.plugin_name, action_word, RESTART_NOTICE
+            );
             let _ = session.insert(FLASH_KEY, &msg).await;
-
-            if want_enabled {
-                refresh_declared_permissions(&state, &form.plugin_name).await;
-            }
         }
         Ok(false) => {
-            // Row not found — roll back in-memory change to actual prior state.
-            state.set_plugin_enabled(&form.plugin_name, was_enabled);
             let _ = session.insert(FLASH_KEY, "Plugin not found.").await;
         }
         Err(e) => {
-            // DB write failed — roll back in-memory change to actual prior state.
-            state.set_plugin_enabled(&form.plugin_name, was_enabled);
             tracing::error!(error = %e, "failed to toggle plugin status");
             let _ = session
                 .insert(FLASH_KEY, "Failed to update plugin status.")
@@ -247,57 +252,6 @@ async fn toggle_plugin(
     }
 
     Redirect::to("/admin/plugins").into_response()
-}
-
-/// Ask a just-enabled plugin what permissions it declares, and store them.
-///
-/// The boot dispatch in `AppState::new` is the main path and covers every
-/// plugin enabled at startup. This covers the plugin enabled from this screen
-/// while the server is running, so its permissions reach the grid without
-/// waiting for a restart.
-///
-/// **It cannot always succeed, and that is a property of the runtime, not of
-/// this function.** `PluginRuntime::load_enabled` compiles only the plugins
-/// enabled at boot, and the tap registry is built from that set once, so a
-/// plugin enabled afterwards has no compiled module to dispatch to until the
-/// next restart. The dispatch then returns nothing, which is reported here as
-/// what it is rather than logged as a failure: it is the same restart boundary
-/// the CLI already documents for `plugin enable`, and the same one `tap_install`
-/// already waits for.
-async fn refresh_declared_permissions(state: &AppState, plugin: &str) {
-    use crate::plugin::permission_registry::{PluginPermissionRegistry, persist};
-    use crate::tap::{RequestState, UserContext};
-
-    let tap_state = RequestState::without_services(UserContext::anonymous());
-    let Some(result) = state
-        .tap_dispatcher()
-        .dispatch_to_plugin("tap_perm", "{}", plugin, tap_state)
-        .await
-    else {
-        tracing::info!(
-            plugin = %plugin,
-            "plugin declared no permissions yet; they register on the next restart"
-        );
-        return;
-    };
-
-    let registry =
-        PluginPermissionRegistry::from_tap_results(vec![(plugin.to_string(), result.output)]);
-    if registry.is_empty() {
-        return;
-    }
-    match persist(state.db(), &registry).await {
-        Ok(()) => tracing::info!(
-            plugin = %plugin,
-            count = registry.len(),
-            "registered a newly enabled plugin's permissions"
-        ),
-        Err(e) => tracing::error!(
-            plugin = %plugin,
-            error = %e,
-            "failed to store a newly enabled plugin's permissions"
-        ),
-    }
 }
 
 // =============================================================================

@@ -553,6 +553,23 @@ impl AppState {
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
                 for plugin_name in &pending {
+                    // Claim before dispatching: with several servers starting
+                    // together, only the one whose claim lands runs it.
+                    match plugin_status::claim_tap_install(&tap_install_db, plugin_name).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            info!(plugin = %plugin_name, "tap_install already claimed by another server");
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(
+                                plugin = %plugin_name,
+                                error = %e,
+                                "failed to claim tap_install; skipping it"
+                            );
+                            continue;
+                        }
+                    }
                     let mut install_services = RequestServices::for_background(
                         tap_install_db.clone(),
                         None,
@@ -568,8 +585,8 @@ impl AppState {
                         RequestState::new(UserContext::anonymous(), install_services);
                     // dispatch_to_plugin returns None when the plugin does not
                     // export tap_install (harmless) OR when the WASM call fails
-                    // (the dispatcher already logs an error in that case).
-                    // Mark called in either case — to retry, set
+                    // (the dispatcher already logs an error in that case). The
+                    // claim stands either way — to retry, set
                     // tap_install_called = FALSE in plugin_status and restart.
                     let result = tap_install_dispatcher
                         .dispatch_to_plugin("tap_install", "{}", plugin_name, install_state)
@@ -581,15 +598,6 @@ impl AppState {
                             plugin = %plugin_name,
                             "tap_install not implemented or failed — check error log; \
                              reset tap_install_called = FALSE in plugin_status to retry"
-                        );
-                    }
-                    if let Err(e) =
-                        plugin_status::mark_tap_install_called(&tap_install_db, plugin_name).await
-                    {
-                        error!(
-                            plugin = %plugin_name,
-                            error = %e,
-                            "failed to mark tap_install_called"
                         );
                     }
                 }
@@ -1300,6 +1308,10 @@ impl AppState {
     }
 
     /// Update the in-memory enabled state for a plugin.
+    ///
+    /// Nothing in a running server calls this: the admin page and the CLI
+    /// change only the stored status, which each server reads when it starts.
+    /// Tests use it to flip a plugin without a restart.
     ///
     /// When enabling `"comments"`, this also late-initializes the
     /// `CommentService` if it wasn't created at startup.

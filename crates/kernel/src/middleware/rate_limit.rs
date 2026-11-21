@@ -561,8 +561,32 @@ impl RateLimiter {
         self.check_at(category, identifier, limit).await
     }
 
+    /// Check a request against a limit and window the caller supplies, for a
+    /// count that is site configuration rather than a bucket (the AI chat and
+    /// assistant hourly limits, a provider's requests per minute). Counted in
+    /// Redis like every bucket, so the limit holds across servers.
+    pub async fn check_limit(
+        &self,
+        category: &str,
+        identifier: &str,
+        limit: u32,
+        window: Duration,
+    ) -> Result<(), u64> {
+        self.check_window(category, identifier, limit, window).await
+    }
+
     async fn check_at(&self, category: &str, identifier: &str, limit: u32) -> Result<(), u64> {
         let (_, window) = self.get_limit(category);
+        self.check_window(category, identifier, limit, window).await
+    }
+
+    async fn check_window(
+        &self,
+        category: &str,
+        identifier: &str,
+        limit: u32,
+        window: Duration,
+    ) -> Result<(), u64> {
         let key = format!("rate:{category}:{identifier}");
         let window_secs = window.as_secs();
 
@@ -631,6 +655,21 @@ impl RateLimiter {
         let mut conn = self.redis.get_multiplexed_async_connection().await?;
         let count: Option<i64> = conn.get(&key).await?;
         Ok(count.unwrap_or(0))
+    }
+
+    /// Delete every counter in `category` (for testing).
+    pub async fn reset_category(&self, category: &str) {
+        let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await else {
+            return;
+        };
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg(format!("rate:{category}:*"))
+            .query_async(&mut conn)
+            .await
+            .unwrap_or_default();
+        if !keys.is_empty() {
+            let _: Result<(), _> = conn.del(&keys).await;
+        }
     }
 
     /// Reset the counter for a key (for testing).

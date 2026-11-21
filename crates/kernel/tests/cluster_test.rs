@@ -1187,7 +1187,6 @@ async fn s08_concurrent_cron_runs_once() {
 
 /// 9. Chat requests alternating A and B are refused at N, not 2N.
 #[tokio::test]
-#[ignore = "fixed in part 3"]
 async fn s09_chat_limit_is_shared() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
@@ -1323,12 +1322,9 @@ async fn s11_redis_restart() {
 /// `tap_install` it dispatched, so the two logs together must name each plugin
 /// once.
 ///
-/// Timing decides whether this fails before the claim exists: on a fast machine
-/// the migration lock staggers the two boots enough that the first kernel has
-/// marked every row before the second reads them; on a CI runner both run
-/// every plugin's `tap_install`.
+/// Each kernel claims a plugin's row before dispatching it, so only one of them
+/// runs it, however the two boots interleave.
 #[tokio::test]
-#[ignore = "fixed in part 3"]
 async fn s12_fresh_boot_runs_tap_install_once() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
@@ -1379,17 +1375,41 @@ async fn s12_fresh_boot_runs_tap_install_once() {
         pending == Some(0) && total.unwrap_or(0) > 0
     })
     .await;
-    // Let a slower kernel finish whatever it started.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    let enabled: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plugin_status WHERE status = 1")
+        .fetch_one(&fresh)
+        .await
+        .unwrap_or(0);
 
-    let mut logs = String::new();
-    for name in &names {
-        let out = Command::new("docker")
-            .args(["logs", name])
-            .output()
+    let dispatch =
+        Regex::new(r"tap_install (?:dispatched|not implemented or failed)[^\n]*plugin\S*?=(\w+)")
             .unwrap();
-        logs.push_str(&String::from_utf8_lossy(&out.stdout));
-        logs.push_str(&String::from_utf8_lossy(&out.stderr));
+    let ansi = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let read_logs = || {
+        let mut logs = String::new();
+        for name in &names {
+            let out = Command::new("docker")
+                .args(["logs", name])
+                .output()
+                .unwrap();
+            logs.push_str(&String::from_utf8_lossy(&out.stdout));
+            logs.push_str(&String::from_utf8_lossy(&out.stderr));
+        }
+        let plain = ansi.replace_all(&logs, "").to_string();
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for cap in dispatch.captures_iter(&plain) {
+            *counts.entry(cap[1].to_string()).or_default() += 1;
+        }
+        (plain, counts)
+    };
+    // Every row is claimed before its dispatch finishes; wait until a dispatch
+    // line names each enabled plugin, then a moment more for any duplicate.
+    eventually(Duration::from_secs(120), || async {
+        read_logs().1.len() as i64 >= enabled
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let (plain, counts) = read_logs();
+    for name in &names {
         let _ = Command::new("docker").args(["rm", "-f", name]).output();
     }
     fresh.close().await;
@@ -1400,20 +1420,9 @@ async fn s12_fresh_boot_runs_tap_install_once() {
     .await;
     assert!(
         done,
-        "tap_install never finished on the fresh database:\n{logs}"
+        "tap_install never finished on the fresh database:\n{plain}"
     );
 
-    let dispatch =
-        Regex::new(r"tap_install (?:dispatched|not implemented or failed)[^\n]*plugin\S*?=(\w+)")
-            .unwrap();
-    let plain = Regex::new(r"\x1b\[[0-9;]*m")
-        .unwrap()
-        .replace_all(&logs, "")
-        .to_string();
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for cap in dispatch.captures_iter(&plain) {
-        *counts.entry(cap[1].to_string()).or_default() += 1;
-    }
     let twice: Vec<_> = counts.iter().filter(|(_, n)| **n > 1).collect();
     assert!(
         twice.is_empty(),
@@ -1428,7 +1437,6 @@ async fn s12_fresh_boot_runs_tap_install_once() {
 /// 13. Disable a plugin on A; both nodes keep dispatching it until restarted,
 /// and after a rolling restart neither does.
 #[tokio::test]
-#[ignore = "fixed in part 3"]
 async fn s13_plugin_disable_waits_for_restart() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
