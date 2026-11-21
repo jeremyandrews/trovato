@@ -768,6 +768,131 @@ fn a_lookup_by_alias_returns_one_field_of_one_item() {
     });
 }
 
+// =============================================================================
+// B80.3: grouping and aggregates through the seam
+// =============================================================================
+
+/// An `or` group: blog or news, not docs, among this test's items only.
+#[test]
+fn an_or_group_returns_either_type() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+        let run = Uuid::now_v7().to_string();
+        let marker = json!({"run": run});
+        let blog = seed(app, BLOG, 1, 1_020, LIVE_STAGE_ID, marker.clone()).await;
+        let news = seed(app, NEWS, 1, 1_021, LIVE_STAGE_ID, marker.clone()).await;
+        let docs = seed(app, DOCS, 1, 1_022, LIVE_STAGE_ID, marker).await;
+
+        let definition = json!({
+            "base_table": "item",
+            "filters": [{"field": "fields.run", "operator": "equals", "value": run}],
+            "filter_groups": [{
+                "conjunction": "or",
+                "filters": [
+                    {"field": "type", "operator": "equals", "value": BLOG},
+                    {"field": "type", "operator": "equals", "value": NEWS}
+                ]
+            }],
+            "sorts": [{"field": "created", "direction": "asc"}]
+        });
+        let answer = run_query(app, visitor(), definition, json!({})).await;
+        assert_eq!(
+            answer.ids(),
+            vec![blog.to_string(), news.to_string()],
+            "{}",
+            answer.body
+        );
+        assert_eq!(answer.json()["total"], 2);
+        let _ = docs;
+    });
+}
+
+/// Votes per item on the plugin's own table: grouped, counted, summed, and
+/// filtered on the count.
+#[test]
+fn aggregates_on_a_plugins_own_table() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_types(app).await;
+        let twice = seed(app, BLOG, 1, 1_023, LIVE_STAGE_ID, json!({})).await;
+        let once = seed(app, BLOG, 1, 1_024, LIVE_STAGE_ID, json!({})).await;
+        own_table(app, twice).await;
+        own_table(app, twice).await;
+        own_table(app, once).await;
+
+        let definition = json!({
+            "base_table": OWN_TABLE,
+            "filters": [{"field": "item_id", "operator": "in",
+                         "value": [twice.to_string(), once.to_string()]}],
+            "group_by": ["item_id"],
+            "aggregates": [
+                {"function": "count", "label": "votes"},
+                {"function": "sum", "field": "score", "label": "total"}
+            ],
+            "having": [{"field": "votes", "operator": "greater_or_equal", "value": 2}],
+            "sorts": [{"field": "votes", "direction": "desc"}]
+        });
+        let answer = run_query(app, visitor(), definition, json!({})).await;
+        let rows = answer.items();
+        assert_eq!(rows.len(), 1, "{}", answer.body);
+        assert_eq!(rows[0]["item_id"], json!(twice.to_string()));
+        assert_eq!(rows[0]["votes"], 2);
+        assert_eq!(rows[0]["total"], 10);
+        assert_eq!(answer.json()["total"], 1, "the total counts groups");
+    });
+}
+
+/// An aggregate over content would count rows the viewer may not see.
+#[test]
+fn an_aggregate_on_content_is_refused() {
+    run_test(async {
+        let app = shared_app().await;
+        let definition = json!({
+            "base_table": "item",
+            "group_by": ["type"],
+            "aggregates": [{"function": "count", "label": "n"}]
+        });
+        let answer = run_query(app, editor(), definition, json!({})).await;
+        assert_eq!(
+            answer.code,
+            host_errors::ERR_QUERY_INVALID,
+            "{}",
+            answer.body
+        );
+    });
+}
+
+/// Nesting past three, and filters past 32 counted inside groups, are bounds.
+#[test]
+fn group_bounds_return_the_bound_error() {
+    run_test(async {
+        let app = shared_app().await;
+        let leaf = json!({"filters": [{"field": "status", "operator": "equals", "value": 1}]});
+        let mut deep = of_type(BLOG);
+        deep["filter_groups"] = json!([{"groups": [{"groups": [{"groups": [leaf]}]}]}]);
+        assert_eq!(
+            run_query(app, visitor(), deep, json!({})).await.code,
+            host_errors::ERR_QUERY_BOUND,
+            "nesting"
+        );
+
+        let mut many = of_type(BLOG);
+        many["filters"] = json!([{"field": "status", "operator": "equals", "value": 1}]);
+        many["filter_groups"] = json!([{
+            "conjunction": "or",
+            "filters": (0..32)
+                .map(|_| json!({"field": "status", "operator": "equals", "value": 1}))
+                .collect::<Vec<_>>()
+        }]);
+        assert_eq!(
+            run_query(app, visitor(), many, json!({})).await.code,
+            host_errors::ERR_QUERY_BOUND,
+            "33 filters, 32 of them grouped"
+        );
+    });
+}
+
 /// A per-test offset, so two runs against one database do not share `created`
 /// values.
 fn rand_offset() -> u32 {
