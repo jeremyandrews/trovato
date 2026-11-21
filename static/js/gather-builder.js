@@ -144,6 +144,12 @@
                 // Not edited here, but kept: dropping it on save would make a
                 // gather that requires a permission public.
                 if (parsed.access) { definition.access = parsed.access; }
+                // Not shown here either, but carried, so the preview runs the
+                // whole definition. The server refuses to save one carrying
+                // them, because this form cannot show what it would save.
+                ['filter_groups', 'group_by', 'aggregates', 'having', 'distinct'].forEach(function (key) {
+                    if (parsed[key] !== undefined) { definition[key] = parsed[key]; }
+                });
             }
         } catch (e) {
             // Keep defaults on parse error

@@ -818,6 +818,30 @@ From cron or a queue worker an item query needs `item_background`. Every error
 code is in [plugin-error-codes.md](plugin-error-codes.md#query-errors), and
 the design is [plugin-query-surface.md](design/plugin-query-surface.md).
 
+`filter_groups` add `or` (and nested `and`) to a definition, at most three deep.
+Every grouped filter counts toward the 32. Over the plugin's own table,
+`group_by`, `aggregates` (`count`, `sum`, `min`, `max`, `avg`), `having` and
+`distinct` summarise rows; they are refused on content (-80), where they would
+count rows the viewer may not see:
+
+```rust
+// Votes per item, for items with at least two.
+let tally = host::query(
+    &json!({
+        "base_table": "my_votes",
+        "group_by": ["item_id"],
+        "aggregates": [{"function": "count", "label": "votes"},
+                       {"function": "sum", "field": "score", "label": "total"}],
+        "having": [{"field": "votes", "operator": "greater_or_equal", "value": 2}],
+        "sorts": [{"field": "total", "direction": "desc"}]
+    }),
+    &json!({}),
+)?;
+```
+
+Both are described in
+[Design-Query-Engine.md](design/Design-Query-Engine.md#filter-groups-and-aggregates).
+
 ### Text Formats
 
 Declare `text-format` in `host_interfaces`. **A plugin that renders HTML a user

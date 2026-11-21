@@ -260,6 +260,8 @@ let page = host::query(&json!({
     "sorts": [{"field": "created", "direction": "desc"}]
 }), &json!({"per_page": 10}))?;                    // page.items, page.has_next
 // by address: {"field": "url", "operator": "equals", "value": "/about"}
+// or: "filter_groups": [{"conjunction": "or", "filters": [...]}]   (3 deep)
+// own table only: "group_by", "aggregates": [{"function": "count", "label": "n"}], "having"
 // Err(-16): table not declared  Err(-80): refused  Err(-81): over a bound
 ```
 

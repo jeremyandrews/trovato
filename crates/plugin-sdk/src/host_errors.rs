@@ -416,8 +416,9 @@ pub const ERR_TEXT_FORMAT_TOO_LARGE: i32 = -72;
 /// Added by B80, after 0.105.0.
 pub const ERR_QUERY_INVALID: i32 = -80;
 
-/// The definition exceeds a bound: more than 100 rows per call, 32 filters,
-/// 8 sorts or 3 relationships. Refused rather than capped, so a plugin never
+/// The definition exceeds a bound: more than 100 rows per call, 32 filters
+/// (grouped ones and `having` included), 8 sorts, 3 relationships, filter
+/// groups nested past 3, or more than 8 `group_by` columns or aggregates. Refused rather than capped, so a plugin never
 /// mistakes a truncated answer for the whole one.
 ///
 /// Added by B80, after 0.105.0.

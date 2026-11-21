@@ -331,6 +331,53 @@ under a 5 second statement timeout. A filter on the pseudo-field `url`
 read's stages and language, for any gather. The design and its reasons are
 [plugin-query-surface.md](plugin-query-surface.md).
 
+### Filter Groups and Aggregates
+
+`filters` are ANDed. `filter_groups` add parenthesised groups, each ANDed with
+the rest, which join their own `filters` and nested `groups` with `and` (the
+default) or `or`, at most three deep:
+
+```json
+"filter_groups": [{"conjunction": "or", "filters": [
+    {"field": "type", "operator": "equals", "value": "blog"},
+    {"field": "fields.featured", "operator": "equals", "value": "true"}
+]}]
+```
+
+A member that places no constraint, such as an empty `in` or an absent URL
+argument, is true: an `and` group drops it, and an `or` group holding one
+places no constraint. Grouped filters go through the same resolution as
+top-level ones, including category hierarchies, custom operators, contextual
+values and `url`. Exposed and `semantic_similarity` filters are top-level only.
+
+`group_by`, `aggregates`, `having` and `distinct` summarise the base rows:
+
+```json
+"group_by": ["item_id"],
+"aggregates": [{"function": "count", "label": "votes"},
+               {"function": "sum", "field": "score", "label": "total"}],
+"having": [{"field": "votes", "operator": "greater_or_equal", "value": 2}],
+"sorts": [{"field": "total", "direction": "desc"}]
+```
+
+- Each row holds the `group_by` columns and one key per label.
+- The functions are `count`, `sum`, `min`, `max` and `avg`. `count` with no
+  field is `COUNT(*)`.
+- `having` compares a label with a number.
+- Sorts name a `group_by` column or a label.
+- The total counts groups.
+- Columns are plain base-table columns, and a grouped definition sets no
+  `fields`.
+
+These clauses are refused on `item` and on record types. Their rows are
+decided one at a time after the query, by item access and field visibility,
+so an aggregate would count or sum what the viewer may not see. In practice
+they are for a plugin's own tables, through the `query` interface.
+
+The admin gather builder has no control for either shape. It refuses to save
+a gather that carries one, rather than drop it; such a gather is changed where
+it is defined.
+
 ### Stage-Aware Gather Queries
 
 When executing a Gather query in a stage context, the query must:

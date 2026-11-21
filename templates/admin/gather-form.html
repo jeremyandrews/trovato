@@ -22,6 +22,15 @@
         </div>
         {% endif %}
 
+        {% if builder_cannot_show %}
+        <div class="message message--warning" role="status" id="gather-builder-cannot-show">
+            This gather uses filter groups or a summary (group_by, aggregates, having,
+            distinct), which this builder cannot show. Saving is off here,
+            because saving would lose them. Change it where it is
+            defined: its config file or the plugin that installs it.
+        </div>
+        {% endif %}
+
         <div class="form-item">
             <label for="query_id" class="form-item__label form-item__label--required">Query ID</label>
             <input type="text" id="query_id" name="query_id" class="form-text"
@@ -127,7 +136,7 @@
 
         <hr>
         <div class="form-actions">
-            <button type="submit" class="button button--primary">{% if editing %}Save changes{% else %}Create query{% endif %}</button>
+            <button type="submit" class="button button--primary"{% if builder_cannot_show %} disabled{% endif %}>{% if editing %}Save changes{% else %}Create query{% endif %}</button>
             <a href="/admin/gather" class="button button--secondary">Cancel</a>
         </div>
     </form>

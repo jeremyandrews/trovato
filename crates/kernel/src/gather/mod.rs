@@ -34,8 +34,9 @@ pub use handlers::{HierarchicalInFilterHandler, JsonbArrayContainsFilterHandler}
 pub use query_builder::{CategoryHierarchyQuery, GatherQueryBuilder};
 #[allow(unused_imports)]
 pub use types::{
-    DisplayFormat, ExposedWidget, FilterOperator, FilterValue, GatherAccess, GatherQuery,
-    GatherResult, GatherRoute, GatherRouteParam, IncludeDefinition, JoinType, NullsOrder,
-    PagerConfig, PagerStyle, QueryContext, QueryDefinition, QueryDisplay, QueryField, QueryFilter,
-    QueryRelationship, QuerySort, SortDirection,
+    AggregateFunction, Aggregation, Conjunction, DisplayFormat, ExposedWidget, FilterGroup,
+    FilterOperator, FilterValue, GatherAccess, GatherQuery, GatherResult, GatherRoute,
+    GatherRouteParam, IncludeDefinition, JoinType, MAX_GROUP_DEPTH, NullsOrder, PagerConfig,
+    PagerStyle, QueryAggregate, QueryContext, QueryDefinition, QueryDisplay, QueryField,
+    QueryFilter, QueryRelationship, QuerySort, SortDirection,
 };

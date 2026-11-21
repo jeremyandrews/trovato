@@ -24,6 +24,22 @@ first, with the id breaking ties. A published item on an `accessible` or
 a live request, which was the defect. For listings, the new `query` host
 interface (`host::query`) sorts, joins, pages and returns each row's URL.
 
+### Gather definitions can group filters and summarise rows
+
+**Who is affected:** code that builds a `trovato_kernel::gather::QueryDefinition`
+as a Rust struct literal, and anyone who edits a gather in the admin builder.
+
+**What changed.** `QueryDefinition` has two new fields: `filter_groups` (for
+`or` and nested groups) and `aggregation` (`group_by`, `aggregates`, `having`,
+`distinct`, which are flattened into the JSON). Stored definitions and config
+files without them read as before and emit the same SQL. The admin builder has
+no control for either one, so it will not save a gather that has them. Its edit
+form says so and turns saving off, because saving would drop them.
+
+**What to do.** In a struct literal, add the two fields or end it with
+`..Default::default()`. Change a gather that uses them in its config file, or
+in the plugin that installs it.
+
 ### Follow-up sentiment classification is available and off
 
 **Who is affected:** a site that uses the AI search assistant's follow-up

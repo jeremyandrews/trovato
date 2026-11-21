@@ -12,8 +12,8 @@ use super::category_service::CategoryService;
 use super::extension::GatherExtensionRegistry;
 use super::query_builder::GatherQueryBuilder;
 use super::types::{
-    ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult, QueryContext,
-    QueryDefinition, QueryDisplay, QueryFilter,
+    AggregateFunction, ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult,
+    MAX_GROUP_DEPTH, QueryContext, QueryDefinition, QueryDisplay, QueryFilter,
 };
 use crate::content::{ItemService, RecordTypeRegistry};
 use crate::metrics::{CacheName, Metrics};
@@ -1112,13 +1112,20 @@ impl GatherService {
     ) -> Result<QueryDefinition> {
         if definition.base_table != "item"
             || definition.record_type.is_some()
-            || !definition.filters.iter().any(|f| f.field == URL_FIELD)
+            || !definition
+                .all_filters()
+                .iter()
+                .any(|f| f.field == URL_FIELD)
         {
             return Ok(definition);
         }
 
         let mut paths: Vec<String> = Vec::new();
-        for filter in definition.filters.iter().filter(|f| f.field == URL_FIELD) {
+        for filter in definition
+            .all_filters()
+            .into_iter()
+            .filter(|f| f.field == URL_FIELD)
+        {
             paths.extend(url_filter_paths(filter)?);
         }
         let aliases: Vec<String> = paths
@@ -1132,8 +1139,8 @@ impl GatherService {
             .context("failed to resolve url filters")?;
 
         for filter in definition
-            .filters
-            .iter_mut()
+            .all_filters_mut()
+            .into_iter()
             .filter(|f| f.field == URL_FIELD)
         {
             let mut ids: Vec<FilterValue> = url_filter_paths(filter)?
@@ -1398,7 +1405,7 @@ impl GatherService {
         definition.item_type = None;
         definition.stage_aware = false;
 
-        for filter in &mut definition.filters {
+        for filter in definition.all_filters_mut() {
             if let Some(target) = def.resolve_field(&filter.field) {
                 filter.field = target.to_string();
             }
@@ -1583,8 +1590,20 @@ impl GatherService {
                 resolved_filters.push(filter);
             }
         }
-
         definition.filters = resolved_filters;
+
+        // A grouped filter is rewritten in place: one with no tag places no
+        // constraint, which the builder already gives it.
+        for filter in definition.group_filters_mut() {
+            if filter.operator == FilterOperator::HasTagOrDescendants
+                && let Some(tag_id) = filter.value.as_uuid()
+            {
+                let descendant_ids = self.categories.get_tag_with_descendants(tag_id).await?;
+                filter.operator = FilterOperator::HasAnyTag;
+                filter.value =
+                    FilterValue::List(descendant_ids.into_iter().map(FilterValue::Uuid).collect());
+            }
+        }
         Ok(definition)
     }
 
@@ -1734,8 +1753,19 @@ impl GatherService {
                 resolved_filters.push(filter);
             }
         }
-
         definition.filters = resolved_filters;
+
+        for filter in definition.group_filters_mut() {
+            if let FilterOperator::Custom(ref name) = filter.operator
+                && let Some((handler, config)) = self.extensions.get_filter(name)
+            {
+                let name = name.clone();
+                *filter = handler
+                    .resolve(filter.clone(), config, &self.pool)
+                    .await
+                    .context(format!("failed to resolve custom filter '{name}'"))?;
+            }
+        }
         Ok(definition)
     }
 
@@ -1745,7 +1775,7 @@ impl GatherService {
         mut definition: QueryDefinition,
         context: &QueryContext,
     ) -> QueryDefinition {
-        for filter in &mut definition.filters {
+        for filter in definition.all_filters_mut() {
             if let FilterValue::Contextual(ref ctx_val) = filter.value {
                 filter.value = match ctx_val {
                     ContextualValue::CurrentUser => {
@@ -2353,8 +2383,8 @@ impl GatherService {
             }
         }
 
-        // Validate filter field names
-        for filter in &definition.filters {
+        // Validate filter field names, grouped ones too
+        for filter in definition.all_filters() {
             if !is_valid_field_name(&filter.field) {
                 errors.push(format!(
                     "Filter field '{}' contains invalid characters",
@@ -2367,6 +2397,31 @@ impl GatherService {
                 ));
             }
         }
+
+        // A group is not a form: an exposed filter or a semantic search is
+        // resolved for the top level only.
+        if definition.group_depth() > MAX_GROUP_DEPTH {
+            errors.push(format!(
+                "Filter groups nest {} deep (maximum {MAX_GROUP_DEPTH})",
+                definition.group_depth()
+            ));
+        }
+        for filter in definition.group_filters() {
+            if filter.exposed {
+                errors.push(format!(
+                    "Filter '{}' in a filter group cannot be exposed",
+                    filter.field
+                ));
+            }
+            if filter.operator == FilterOperator::SemanticSimilarity {
+                errors.push(format!(
+                    "Filter '{}' in a filter group cannot be semantic_similarity",
+                    filter.field
+                ));
+            }
+        }
+
+        errors.extend(Self::validate_aggregation(definition));
 
         // Validate sort field names
         for sort in &definition.sorts {
@@ -2394,6 +2449,105 @@ impl GatherService {
             }
         }
 
+        errors
+    }
+
+    /// The rules for `group_by`, `aggregates`, `having` and `distinct`.
+    ///
+    /// Content is refused (see [`Aggregation`](super::types::Aggregation)). Every column named is a plain
+    /// base-table column; a grouped definition projects its `group_by` columns
+    /// and aggregate labels only, so it sets no `fields` and sorts by those.
+    fn validate_aggregation(definition: &QueryDefinition) -> Vec<String> {
+        let agg = &definition.aggregation;
+        let mut errors = Vec::new();
+        if !agg.is_set() {
+            return errors;
+        }
+        if definition.base_table == "item" || definition.record_type.is_some() {
+            errors.push(
+                "group_by, aggregates, having and distinct are not available on content: \
+                 an aggregate would count rows the viewer may not see"
+                    .to_string(),
+            );
+            return errors;
+        }
+        let plain_column = |name: &str| is_safe_table_name(name) && !is_secret_column(name);
+        for column in &agg.group_by {
+            if !plain_column(column) {
+                errors.push(format!("group_by column '{column}' is not a plain column"));
+            }
+        }
+        for (i, aggregate) in agg.aggregates.iter().enumerate() {
+            if !is_safe_table_name(&aggregate.label) {
+                errors.push(format!(
+                    "Aggregate label '{}' contains invalid characters",
+                    aggregate.label
+                ));
+            }
+            if agg.group_by.contains(&aggregate.label)
+                || agg.aggregates[..i]
+                    .iter()
+                    .any(|a| a.label == aggregate.label)
+            {
+                errors.push(format!(
+                    "Aggregate label '{}' is used twice",
+                    aggregate.label
+                ));
+            }
+            match aggregate.field.as_deref() {
+                None if aggregate.function != AggregateFunction::Count => {
+                    errors.push(format!("Aggregate '{}' needs a field", aggregate.label));
+                }
+                Some(column) if !plain_column(column) => {
+                    errors.push(format!("Aggregate field '{column}' is not a plain column"));
+                }
+                _ => {}
+            }
+        }
+        for condition in &agg.having {
+            if agg.aggregate(&condition.field).is_none() {
+                errors.push(format!(
+                    "having names '{}', which is not an aggregate label",
+                    condition.field
+                ));
+            }
+            let comparison = matches!(
+                condition.operator,
+                FilterOperator::Equals
+                    | FilterOperator::NotEquals
+                    | FilterOperator::GreaterThan
+                    | FilterOperator::LessThan
+                    | FilterOperator::GreaterOrEqual
+                    | FilterOperator::LessOrEqual
+            );
+            let number = matches!(
+                condition.value,
+                FilterValue::Integer(_) | FilterValue::Float(_)
+            );
+            if !comparison || !number {
+                errors.push(format!(
+                    "having on '{}' must compare it with a number",
+                    condition.field
+                ));
+            }
+        }
+        if agg.is_grouped() {
+            if !definition.fields.is_empty() {
+                errors.push(
+                    "A grouped definition returns its group_by columns and aggregates; \
+                     it sets no fields"
+                        .to_string(),
+                );
+            }
+            for sort in &definition.sorts {
+                if !agg.group_by.contains(&sort.field) && agg.aggregate(&sort.field).is_none() {
+                    errors.push(format!(
+                        "Sort '{}' is neither a group_by column nor an aggregate label",
+                        sort.field
+                    ));
+                }
+            }
+        }
         errors
     }
 

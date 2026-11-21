@@ -106,6 +106,8 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                             includes: std::collections::HashMap::new(),
                             stage_aware: true,
                             relevance_order: None,
+                            filter_groups: Vec::new(),
+                            aggregation: Default::default(),
                         },
                         display: QueryDisplay {
                             format: DisplayFormat::Table,
